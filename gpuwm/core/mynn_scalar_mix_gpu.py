@@ -27,7 +27,7 @@ def _solve_scratch_floats(nz: int) -> int:
 
 
 def _device_2d(cp, value, shape, name):
-    array = cp.ascontiguousarray(cp.asarray(value, dtype=DTYPE))
+    array = cp.asfortranarray(cp.asarray(value, dtype=DTYPE))
     if array.shape != shape:
         raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
     return array
@@ -48,7 +48,7 @@ def mynn_mix_scalar_columns_cuda(
 
     import cupy as cp
 
-    qn = cp.ascontiguousarray(cp.asarray(qn, dtype=DTYPE))
+    qn = cp.asfortranarray(cp.asarray(qn, dtype=DTYPE))
     if qn.ndim != 2:
         raise ValueError("qn must have shape (ncol, nz)")
     ncol, nz = qn.shape
@@ -59,13 +59,13 @@ def mynn_mix_scalar_columns_cuda(
     dfh = _device_2d(cp, dfh, (ncol, nz), "dfh")
     s_aw = _device_2d(cp, s_aw, (ncol, nz + 1), "s_aw")
     s_awqn = _device_2d(cp, s_awqn, (ncol, nz + 1), "s_awqn")
-    delt = cp.ascontiguousarray(cp.asarray(delt, dtype=DTYPE))
+    delt = cp.asfortranarray(cp.asarray(delt, dtype=DTYPE))
     if delt.shape != (ncol,):
         raise ValueError(f"delt must have shape ({ncol},)")
-    qn2 = cp.empty((ncol, nz), dtype=DTYPE)
-    dqn = cp.empty((ncol, nz), dtype=DTYPE)
+    qn2 = cp.empty((ncol, nz), dtype=DTYPE, order="F")
+    dqn = cp.empty((ncol, nz), dtype=DTYPE, order="F")
     if scratch is None:
-        scratch = cp.empty((ncol, _solve_scratch_floats(nz)), dtype=DTYPE)
+        scratch = cp.empty((ncol, _solve_scratch_floats(nz)), dtype=DTYPE, order="F")
     blocks = (ncol + _TPB - 1) // _TPB
     kernel = get_kernel("mynn_scalar_mix", "mynn_mix_scalar_columns")
     kernel(
@@ -92,24 +92,27 @@ def mynn_dmp_qn_flux_columns_cuda(
 
     import cupy as cp
 
-    qn = cp.ascontiguousarray(cp.asarray(qn, dtype=DTYPE))
+    qn = cp.asfortranarray(cp.asarray(qn, dtype=DTYPE))
     if qn.ndim != 2:
         raise ValueError("qn must have shape (ncol, nz)")
     ncol, nz = qn.shape
-    up_w = cp.ascontiguousarray(cp.asarray(up_w, dtype=DTYPE))
+    up_w = cp.ascontiguousarray(
+        cp.asarray(up_w, dtype=DTYPE).transpose(1, 2, 0)).transpose(2, 0, 1)
     if up_w.ndim != 3 or up_w.shape[:2] != (ncol, nz + 1):
         raise ValueError("up_w must have shape (ncol, nz+1, nup)")
     nup = up_w.shape[2]
     dz = _device_2d(cp, dz, (ncol, nz), "dz")
     zw = _device_2d(cp, zw, (ncol, nz + 1), "zw")
-    up_a = cp.ascontiguousarray(cp.asarray(up_a, dtype=DTYPE))
+    up_a = cp.ascontiguousarray(
+        cp.asarray(up_a, dtype=DTYPE).transpose(1, 2, 0)).transpose(2, 0, 1)
     if up_a.shape != (ncol, nz + 1, nup):
         raise ValueError(f"up_a must have shape ({ncol},{nz + 1},{nup})")
-    ent = cp.ascontiguousarray(cp.asarray(ent, dtype=DTYPE))
+    ent = cp.ascontiguousarray(
+        cp.asarray(ent, dtype=DTYPE).transpose(1, 2, 0)).transpose(2, 0, 1)
     if ent.shape != (ncol, nz, nup):
         raise ValueError(f"ent must have shape ({ncol},{nz},{nup})")
     rhoz = _device_2d(cp, rhoz, (ncol, nz), "rhoz")
-    psig_w = cp.ascontiguousarray(cp.asarray(psig_w, dtype=DTYPE))
+    psig_w = cp.asfortranarray(cp.asarray(psig_w, dtype=DTYPE))
     limiter_adjustment = cp.ascontiguousarray(
         cp.asarray(limiter_adjustment, dtype=DTYPE))
     plume_active = cp.ascontiguousarray(
@@ -118,9 +121,9 @@ def mynn_dmp_qn_flux_columns_cuda(
                         ("limiter_adjustment", limiter_adjustment)):
         if array.shape != (ncol,):
             raise ValueError(f"{name} must have shape ({ncol},)")
-    s_awqn = cp.empty((ncol, nz + 1), dtype=DTYPE)
+    s_awqn = cp.empty((ncol, nz + 1), dtype=DTYPE, order="F")
     if scratch is None:
-        scratch = cp.empty((ncol, (nz + 1) * nup), dtype=DTYPE)
+        scratch = cp.empty((ncol, (nz + 1) * nup), dtype=DTYPE, order="F")
     blocks = (ncol + _TPB - 1) // _TPB
     kernel = get_kernel("mynn_scalar_mix", "mynn_dmp_qn_flux_columns")
     kernel(

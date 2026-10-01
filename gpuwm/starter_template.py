@@ -685,7 +685,7 @@ def _tiles_memory_plan(path, experiment, *, original):
         single = streaming.options_for_domain(experiment.root, experiment.tiles)
         try:
             decision = streaming.cold_single_domain_decision(
-                experiment, machine=machine)
+                experiment, machine=machine, source=source)
             # estimate_phases already uses this domain's governing table.
             # Keep the current shared cold admission rather than reintroduce
             # the older report-only decision carried by this group.

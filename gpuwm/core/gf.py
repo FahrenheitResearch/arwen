@@ -143,15 +143,114 @@ GFWS_SLOTS = GFWS_SLOT_COUNT_COL + GFWS_SLOT_COUNT_DRV
 #: blocks.
 GF_BLOCK = 64
 
-#: Blocks per SM the tile is sized for.  MEASURED, not assumed: at 100,000
-#: columns on node-1 (RTX 5070 Ti, 70 SMs) the kernel's wall is 31.07 ms at
-#: 2 blocks/SM, 24.18 at 4, 24.33 at 6, 25.14 at 8 and 26.63 at 12, against
-#: 19.33 ms for the pre-cut local-frame kernel.  4 is the plateau and the
-#: cheapest point on it: 422 MiB of workspace where 12 would cost 1,266 MiB
-#: and run slower.  The kernel's hardware occupancy at block=64 is 12
-#: blocks/SM, so this is a throughput choice, not a residency limit, and the
-#: query below only ever lowers it.
-GF_TILE_BLOCKS_PER_SM = 4
+#: Blocks per SM the tile is sized for.  MEASURED, not assumed.  At 100,000
+#: columns on an RTX 5070 Ti (70 SMs) the unbounded driver's wall was 31.07
+#: ms at 2 blocks/SM, 24.18 at 4, 24.33 at 6, 25.14 at 8 and 26.63 at 12, so
+#: 4 was the plateau while the driver held 168 registers and at most six
+#: 64-thread blocks were resident.  ``gf_gfdrv_stage`` now carries
+#: ``__launch_bounds__(64, 8)`` (128 registers, the same 88 B local frame),
+#: so eight blocks are resident and the tile keeps them all busy.  On an
+#: 82-SM RTX PRO 4500 at 50,000 columns a GF call took 10.85 ms against
+#: 11.53 with the unbounded driver at 4 blocks/SM (equal at 16,384), every
+#: output word unchanged; the query below only ever lowers it.
+GF_TILE_BLOCKS_PER_SM = 8
+
+
+_NATIVE_RESULT_TYPE = None
+
+
+def _native_result_type():
+    """The receipt type for fresh arrays returned by the production adapter.
+
+    Built on first use rather than at import, because the memory pricing in
+    ``gpuwm.core.preflight`` imports this module's tile constants on hosts
+    with no GPU runtime, and ``gpuwm.core.physics`` imports CuPy.
+    """
+    global _NATIVE_RESULT_TYPE
+    if _NATIVE_RESULT_TYPE is None:
+        from gpuwm.core.physics import CumulusResult
+
+        class _NativeGFCumulusResult(CumulusResult):
+            """Receipt for fresh arrays returned by the exact adapter."""
+
+            def __init__(self, *, owner, **values):
+                super().__init__(**values)
+                self._owner = owner
+
+        _NATIVE_RESULT_TYPE = _NativeGFCumulusResult
+    return _NATIVE_RESULT_TYPE
+
+
+def __getattr__(name):
+    if name == "_NativeGFCumulusResult":
+        return _native_result_type()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def is_native_gf_result(result, owner, state, cfg) -> bool:
+    """Admit owned outputs only when provenance and layout match GF."""
+    import cupy as cp
+
+    if (int(cfg.cu_physics) != 3 or type(owner) is not GrellFreitas
+            or type(result) is not _native_result_type()
+            or result._owner is not owner):
+        return False
+    if any(getattr(result, name) is not None for name in (
+            "rqrcuten", "rqscuten", "rucuten", "rvcuten",
+            "nca_seconds", "pratec")):
+        return False
+    if ((result.rqicuten is not None)
+            != (getattr(state, "qi", None) is not None)):
+        return False
+    shape = tuple(state.p.shape)
+    for name in ("rthcuten", "rqvcuten", "rqccuten", "rqicuten", "rainc"):
+        value = getattr(result, name)
+        if name == "rqicuten" and value is None:
+            continue
+        expected = shape[1:] if name == "rainc" else shape
+        if (type(value) is not cp.ndarray or value.shape != expected
+                or value.dtype != DTYPE or not value.flags.c_contiguous):
+            return False
+    return True
+
+
+def validate_native_gf_result(result, state) -> None:
+    """Check every native output in one pass with one ordered readback."""
+    import cupy as cp
+
+    from gpuwm.core import health_ledger
+    from gpuwm.core.kernels import get_kernel
+
+    # The existing scanner has six volume slots and two surface slots.
+    # Inactive slots use valid pointers but are never loaded.
+    placeholder = result.rthcuten
+    values = (result.rthcuten, result.rqvcuten, result.rqccuten,
+              placeholder if result.rqicuten is None else result.rqicuten,
+              placeholder, placeholder, result.rainc, result.rainc)
+    active = 0x47 | (0x08 if result.rqicuten is not None else 0)
+    labels = ((0, "cumulus rthcuten"), (1, "cumulus rqvcuten"),
+              (2, "cumulus rqccuten"), (3, "cumulus rqicuten"),
+              (6, "cumulus RAINC increment"))
+
+    def describe(flags):
+        for bit, label in labels:
+            if flags & (1 << bit):
+                raise FloatingPointError(
+                    f"{label} contains a non-finite value"
+                    + health_ledger.deferred_note())
+
+    status = state.scratch((1,), "physics_validation_status").view(cp.uint32)
+    status.fill(cp.uint32(0))
+    count = int(placeholder.size)
+    get_kernel("kf_validation", "kf_validate_outputs")(
+        ((count + 255) // 256,), (256,),
+        values + (np.uint32(active), status,
+                  np.int64(count), np.int64(result.rainc.size)))
+    flags = health_ledger.read_status(
+        status, site="grell-freitas", describe=describe)
+    for bit, label in labels:
+        if flags & (1 << bit):
+            raise FloatingPointError(f"{label} contains a non-finite value")
 
 
 def gf_workspace_floats(nz: int, columns: int) -> int:
@@ -241,15 +340,12 @@ class GrellFreitas:
     def __call__(self, *, atmosphere, fields, state, cfg):
         import cupy as cp
 
-        from gpuwm.core.physics import CumulusResult
-
         nz, ny, nx = state.p.shape
         ncol = ny * nx
 
         def cols(a):
-            # (nz, ny, nx) -> (ncol, nz), C-contiguous
-            return cp.ascontiguousarray(
-                a.reshape(nz, ncol).T, dtype=DTYPE)
+            # Assignment into lvin packs this view without a temporary copy.
+            return cp.asarray(a, dtype=DTYPE).reshape(nz, ncol).T
 
         w_mass = DTYPE(0.5) * (state.w[:-1] + state.w[1:])
         if self._driver is not None:
@@ -316,9 +412,10 @@ class GrellFreitas:
         iin[:, 1] = np.int32(int(cfg.ishallow))
         iin[:, 2] = np.int32(int(cfg.clos_choice))
 
-        lev = cp.zeros((ncol, len(_OUT_LEV), nz), dtype=DTYPE)
-        sca = cp.zeros((ncol, len(_OUT_SCA)), dtype=DTYPE)
-        isc = cp.zeros((ncol, len(_OUT_ISCA)), dtype=cp.int32)
+        # GFDRV writes every output slot, so clearing these slabs is redundant.
+        lev = cp.empty((ncol, len(_OUT_LEV), nz), dtype=DTYPE)
+        sca = cp.empty((ncol, len(_OUT_SCA)), dtype=DTYPE)
+        isc = cp.empty((ncol, len(_OUT_ISCA)), dtype=cp.int32)
 
         module = _gf_module(nz)
         fn = module.get_function("gf_gfdrv_stage")
@@ -357,7 +454,8 @@ class GrellFreitas:
         rainc = cp.ascontiguousarray(
             sca[:, _OUT_SCA.index("raincv")].reshape(ny, nx))
 
-        return CumulusResult(
+        return _native_result_type()(
+            owner=self,
             rthcuten=rthcuten, rqvcuten=rqvcuten, rqccuten=rqc,
             rqicuten=rqi, rainc=rainc)
 

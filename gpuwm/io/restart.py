@@ -109,6 +109,7 @@ from gpuwm.checkpoint_identity import (
     SHORTWAVE_ABOVE_ATMOSPHERE_POLICIES,
     SHORTWAVE_ALGORITHM_IDENTITIES,
     SURFACE_LAYER_ALGORITHM_IDENTITIES,
+    URBAN_ALGORITHM_IDENTITIES,
     require_identifiable_checkpoint_schemes,
     unidentifiable_checkpoint_schemes,
 )
@@ -146,8 +147,10 @@ from gpuwm.core.nssl2_contract import (
 #: here under the name every reader in the tree spells.
 from gpuwm.state_serialization_contract import (
     ADVECTIVE_FORCING_STATE,
+    BUILT_END_FRAME_PREFIX_SCHEMA,
     CHECKPOINT_ONLY_STATE,
-    LATERAL_BOUNDARY_PREFIX_SCHEMA,
+    LATERAL_BOUNDARY_PREFIX_SCHEMAS,
+    REBUILT_END_FRAME_PREFIX_SCHEMAS,
     STATE_SERIALIZED_ATTRS,
     STATE_DERIVED_SETUP_ARRAYS,
     STATE_SETUP_ARRAYS,
@@ -458,6 +461,8 @@ STATE_REBUILT_ATTRS = frozenset({
 #: Machinery: handled by dedicated sections (scratch, physics, clock) or
 #: rebuilt by attach/prepare (LBC device mirrors, host caches).
 STATE_INFRA_ATTRS = frozenset({
+    # Cached launch descriptors are rebuilt from the live state buffers.
+    "_rk_copy_launch", "_rk_zero_launch",
     # Used only by analysis snapshot producers. The published LBC field
     # names/bytes, not this preparation selector, own forecast forcing and
     # are already covered by setup_fingerprint/lateral prefix identity.
@@ -525,6 +530,13 @@ STATE_INFRA_ATTRS = frozenset({
     # run happened to be streaming, which
     # gpuwm.core.streaming.identity_payload_entry deliberately refuses.
     "_streamed_store",
+    # Set by gpuwm.core.streaming.prepared_tile_state_factory on every tile
+    # buffer it builds, so MYNN walks the tile width the buffer is priced
+    # at (gpuwm.core.mynn_pbl_scratch.resolve_mynn_tile_column_chunk).
+    # INFRA: a buffer is never checkpointed as itself, and the width never
+    # changes a bit.  Without it classify_state_attr refused every streamed
+    # buffer's inventory (measured on node-4's RTX 5070 Ti, 2026-09-30).
+    "_tile_buffer",
 })
 
 # --------------------------------------------------------------------------
@@ -740,6 +752,12 @@ REBUILT_SCRATCH_SLOTS = frozenset({
     # read and neither carries anything across a step.
     "da_nssl_rho", "da_nssl_t",
     "cu_expiring",
+    # The UW moist-turbulence PBL's zero plane (gpuwm/core/physics.py
+    # _run_uwpbl): assigned zero at every call before the launch reads it as
+    # WRF's zero QNC_CURR/WSEDL3D.  Its carried state (the diffusivities,
+    # the residual stress, the held cloud fraction) lives in driver.fields,
+    # which every checkpoint serializes whole.
+    "uwpbl_zero",
 })
 
 REBUILT_SCRATCH_PREFIXES = (
@@ -777,6 +795,11 @@ REBUILT_SCRATCH_PREFIXES = (
     # serialized as fields and mp_* slots, deliberately not under this
     # prefix.
     "my2_",
+    # zadvect_implicit (gpuwm/core/ieva.py): the eta mass-flux split and
+    # the three column masses, each written in full at the top of the last
+    # RK substep (and the split again before the scalars) before anything
+    # reads it.  Nothing in them survives a step.
+    "ieva_",
 )
 
 # --------------------------------------------------------------------------
@@ -886,7 +909,17 @@ DRIVER_CHECKPOINT_ONLY_ATTRS = frozenset({"olr"})
 DRIVER_HELD_FORCING_ATTRS = frozenset({"gf_rthblten", "gf_rqvblten"})
 
 DRIVER_REBUILT_ATTRS = frozenset({
+    "noah_mosaic",  # Rebuilt by the LANDUSEF door; arrays live in fields.
     "cam_ozone",
+    # WRF's slope_rad/topo_shading carrier (gpuwm.core.topo_radiation):
+    # initialize_physics rebuilds it from the resumed RunConfig, terrain
+    # and lat/lon, and every array it holds -- slope, slp_azi, the
+    # radiation-time diffuse_frac/topo_coszen/hrang/topo_declin, SWNORM,
+    # the shadow mask and ht_shad -- lives in ``fields``, which is
+    # serialized and restored in place, so the rebuilt carrier reads the
+    # checkpoint's values.  Unclassified, it ended every slope_rad run's
+    # forecast at the final state digest (first real run of the port).
+    "topo_shortwave",
     # SASE: the active flag and the kernel-module tuple are re-derived
     # from the resumed RunConfig at driver init; the ledger is a
     # per-step diagnostic replaced before any consumer reads it; the
@@ -960,6 +993,21 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # so there is no second identity to bind.  The per-call census is a
     # receipt the next call overwrites.
     "ruc_params", "last_ruc_census",
+    # The urban canopy model (sf_urban_physics > 0).  Its ARRAYS are not
+    # here: every UrbanState array lives in ``fields`` under its WRF
+    # Registry name (gpuwm/core/urban_state.py), so it rides the serialized
+    # surface inventory and is restored in place.  What is rebuilt is the
+    # view object over those arrays, the parsed URBPARM tables (hash-pinned
+    # in gpuwm/core/urban_tables.py), the coupler that calls the model, and
+    # the config the DA refresh hands it.  The rural snapshot and the BEP
+    # PBL terms are rewritten by every surface call before anything reads
+    # them.
+    "urban", "urban_coupler", "_urban_cfg",
+    # Whether the last radiation call handed over SWDDIR/SWDDIF itself
+    # (option 3).  Rewritten by every radiation call; between calls the
+    # split rides the checkpoint in fields, so a resume needs no record of
+    # who produced it.
+    "_swdd_from_scheme",
     # The opt-in surface-moisture ledger (gpuwm/core/
     # surface_moisture_ledger.py).  A DIAGNOSTIC an operator attaches to
     # one run: it writes no physics field and no restart-carried buffer,
@@ -1691,10 +1739,12 @@ def setup_core_fingerprint(state) -> str:
         state, error_type=RestartManifestError)
 
 
-def lateral_boundary_prefix_identity(state):
+def lateral_boundary_prefix_identity(state, *,
+                                     rebuilt_end_frames: bool = False):
     """Compact byte identity for the root forcing interval inventory."""
     return _lateral_boundary_prefix_identity(
-        state, error_type=RestartManifestError)
+        state, error_type=RestartManifestError,
+        rebuilt_end_frames=rebuilt_end_frames)
 
 
 def _canonical_json(value) -> str:
@@ -2264,6 +2314,42 @@ _DIGEST_DROPPED_DIAGNOSTIC_FIELDS = frozenset(
     {"nwp_diagnostics", "tke_budget", "sase_flux_diag"})
 
 
+#: WRF's slope_rad / topo_shading / shadlen (gpuwm.core.topo_radiation),
+#: absent-stays-absent in the config echo and the configuration digest, the
+#: rule gpuwm.core.model.restart_identity_payload applies to the same keys:
+#: off, none of the three is read, so a checkpoint written with them off is
+#: byte-identical to one written before they existed.
+TOPO_RADIATION_RUN_DEFAULTS = {"slope_rad": 0, "topo_shading": 0,
+                               "shadlen": 25000.0}
+
+
+def _drop_inert_topo_radiation(values: dict) -> None:
+    if not values.get("slope_rad", 0):
+        for name in TOPO_RADIATION_RUN_DEFAULTS:
+            values.pop(name, None)
+    elif not values.get("topo_shading", 0):
+        values.pop("topo_shading", None)
+        values.pop("shadlen", None)
+
+
+def _drop_inert_mosaic(values: dict) -> None:
+    """Noah mosaic's three keys, absent-stays-absent (the rule
+    gpuwm.core.model.restart_identity_payload applies): off, none is read;
+    on, the urban canopy rule is written only when it is not WRF's."""
+    if values.get("sf_surface_mosaic", 0) == 0:
+        for name in ("sf_surface_mosaic", "mosaic_cat", "mosaic_urban_canopy"):
+            values.pop(name, None)
+    elif values.get("mosaic_urban_canopy") == "dominant":
+        values.pop("mosaic_urban_canopy", None)
+
+
+def _mosaic_checkpoint_config(config: Mapping) -> dict:
+    """Keep pre-mosaic headers and comparisons byte-identical when off."""
+    values = dict(config)
+    _drop_inert_mosaic(values)
+    return values
+
+
 def _configuration_digest_values(config: Mapping) -> dict:
     """A RunConfig echo as the configuration digest reads it.
 
@@ -2274,10 +2360,31 @@ def _configuration_digest_values(config: Mapping) -> dict:
     values = {key: value for key, value in dict(config).items()
               if key not in CONFIG_RUN_LENGTH_FIELDS
               and key not in _DIGEST_DROPPED_DIAGNOSTIC_FIELDS}
+    if not values.get("adaptive_nest_lattice", False):
+        values.pop("adaptive_nest_lattice", None)
+    if not values.get("zadvect_implicit", 0):
+        values.pop("zadvect_implicit", None)
+    if float(values.get("w_crit_cfl", 1.0)) == 1.0:
+        values.pop("w_crit_cfl", None)
+    _drop_inert_topo_radiation(values)
+    # New default-off options must not move existing checkpoint digests.
+    _drop_inert_mosaic(values)
     for key in CONFIG_DIAGNOSTIC_FIELDS - _DIGEST_DROPPED_DIAGNOSTIC_FIELDS:
         if key in values:
             values[key] = _run_config_default(key)
+    if int(values.get("sf_urban_physics", 0) or 0) == 0:
+        # With no urban model the three urban keys reach nothing, and a
+        # digest that bound them would reject every checkpoint written
+        # before they existed.  They join the digest exactly when an urban
+        # model runs, so a resume across urban settings is still refused.
+        for key in _URBAN_DIGEST_FIELDS:
+            values.pop(key, None)
     return values
+
+
+#: The RunConfig keys of the urban canopy selector; see
+#: :func:`_configuration_digest_values`.
+_URBAN_DIGEST_FIELDS = ("sf_urban_physics", "use_wudapt_lcz", "num_urban_hi")
 
 
 def _configuration_fingerprint(cfg) -> str:
@@ -2590,6 +2697,12 @@ def physics_setup_identity(state, cfg) -> dict:
         "cumulus": _scheme_algorithm(
             CUMULUS_ALGORITHM_IDENTITIES, cfg.cu_physics, "cumulus"),
     }
+    if int(getattr(cfg, "sf_urban_physics", 0)) > 0:
+        # Only when an urban model runs, so every existing header is
+        # unchanged; a resume across urban models is then refused here as
+        # well as by the configuration fingerprint.
+        algorithms["urban"] = _scheme_algorithm(
+            URBAN_ALGORITHM_IDENTITIES, cfg.sf_urban_physics, "urban")
     microphysics = {"scheme_id": int(cfg.mp_physics)}
     if int(cfg.mp_physics) == 6:
         from gpuwm.core.wsm6_constants import rimed_ice_constants
@@ -2704,6 +2817,20 @@ def physics_setup_identity(state, cfg) -> dict:
             cadence[name] = _json_value(
                 getattr(driver, name), f"PhysicsDriver.{name}")
         driver_identity["cadence"] = cadence
+        if int(getattr(cfg, "sf_surface_mosaic", 0)) == 1:
+            from gpuwm.checkpoint_identity import NOAH_MOSAIC_ALGORITHM_IDENTITY
+            mosaic = getattr(driver, "noah_mosaic", None)
+            if mosaic is None:
+                raise ValueError("mosaic checkpoint has no tile setup; resuming "
+                                 "would integrate the dominant category")
+            # Strict JSON (the LCZ tuple becomes the list a stored header
+            # reads back as), so a resumed identity compares equal.
+            driver_identity["noah_mosaic"] = _json_value({
+                "algorithm": NOAH_MOSAIC_ALGORITHM_IDENTITY,
+                "mosaic_cat": mosaic.mosaic_cat,
+                "categories": dataclasses.asdict(mosaic.categories),
+                "xice_threshold": mosaic.xice_threshold,
+            }, "PhysicsDriver.noah_mosaic")
         owner = getattr(driver, "cam_ozone", None)
         if owner is not None and not (4 in radiation_scheme_ids(cfg)
                 and rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY and cfg.o3input == 2):
@@ -3220,6 +3347,18 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
         arrays[key] = host
         array_manifest[key] = {"shape": list(host.shape),
                                "dtype": str(host.dtype)}
+    config_echo = dataclasses.asdict(cfg)
+    if not config_echo.get("adaptive_nest_lattice", False):
+        config_echo.pop("adaptive_nest_lattice", None)
+    # zadvect_implicit (A158) at its default is the explicit advection every
+    # header written before the field describes, so it is echoed only on.
+    if not config_echo.get("zadvect_implicit", 0):
+        config_echo.pop("zadvect_implicit", None)
+    # w_crit_cfl (A165) at its default 1.0 is the w_damp every header
+    # written before the field ran, so it is echoed only when moved.
+    if float(config_echo.get("w_crit_cfl", 1.0)) == 1.0:
+        config_echo.pop("w_crit_cfl", None)
+    _drop_inert_topo_radiation(config_echo)
     header = {
         "format_version": RESTART_FORMAT_VERSION,
         "case": cfg.case,
@@ -3238,7 +3377,7 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
             RESIDENT_WRITTEN_MODE, cfg),
         "elapsed_seconds": _admissible_elapsed_seconds(
             state.elapsed_seconds, "restart write"),
-        "config": dataclasses.asdict(cfg),
+        "config": _mosaic_checkpoint_config(config_echo),
         "setup_fingerprint": setup_fingerprint(view),
         "physics_setup": physics_setup,
         "physics_setup_fingerprint": physics_setup_sha256,
@@ -3346,7 +3485,8 @@ def _run_config_default(key: str):
 
 
 def _require_config_match(stored_config: dict, cfg, path) -> None:
-    live_config = dataclasses.asdict(cfg)
+    stored_config = _mosaic_checkpoint_config(stored_config)
+    live_config = _mosaic_checkpoint_config(dataclasses.asdict(cfg))
     absent = object()
     differences = []
     policy_changes: list[str] = []
@@ -3416,6 +3556,27 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             continue
         stored = stored_config.get(key, absent)
         live = live_config.get(key, absent)
+        if key == "adaptive_nest_lattice":
+            # Older checkpoints used the original clock. A flipped mode
+            # must refuse because it changes the integration trajectory.
+            stored = False if stored is absent else stored
+            live = False if live is absent else live
+        if key == "zadvect_implicit":
+            # Older checkpoints advected explicitly; a flip is refused,
+            # because it changes the integration trajectory.
+            stored = 0 if stored is absent else stored
+            live = 0 if live is absent else live
+        if key == "w_crit_cfl":
+            # Older checkpoints measured w_damp from Courant 1.0; a moved
+            # value is refused, because it changes the trajectory.
+            stored = 1.0 if stored is absent else stored
+            live = 1.0 if live is absent else live
+        if key in TOPO_RADIATION_RUN_DEFAULTS:
+            # Absent is the default (_drop_inert_topo_radiation); a
+            # flipped slope/shadow setting still refuses below.
+            default = TOPO_RADIATION_RUN_DEFAULTS[key]
+            stored = default if stored is absent else stored
+            live = default if live is absent else live
         if key == "ra_rrtmg_variant" and stored is absent:
             # Migration rule (2026-07-27 assembly dossier): a v5 header
             # written before the radiation-variant field existed could
@@ -4087,8 +4248,9 @@ def tree_fingerprint_mismatch_reason(gid: int, header, model) -> str:
     named = ", ".join(differing)
     reason = (
         f"{prefix}: {named} differ(s) from the checkpoint.  A restart "
-        "may change the forecast length, the output/restart cadence and "
-        "the output-only diagnostic switches "
+        "may change the forecast length, the output/restart cadence, "
+        "each domain's history window (history_begin_s, history_end_s) "
+        "and the output-only diagnostic switches "
         f"({', '.join(sorted(CONFIG_DIAGNOSTIC_FIELDS))}); "
         "everything else -- geometry, timestep, physics, nesting, "
         "prepared inputs -- must be the run that wrote the checkpoint")
@@ -4183,7 +4345,9 @@ def _require_held_lifecycle_reflectivity(model, nodes, headers, validated,
         # Reduced state-only callers have no diagnostic production clock.
         if history_ticks is None:
             continue
-        first_due = int(spec.start_ticks) + int(history_ticks)
+        first_due = (int(spec.first_history_ticks())
+                     if hasattr(spec, "first_history_ticks")
+                     else int(spec.start_ticks) + int(history_ticks))
         if int(headers[gid]["elapsed_ticks"]) < first_due:
             continue
         if (REFL_SCRATCH_SLOT not in stored_slots.get(str(gid), ())
@@ -5497,8 +5661,36 @@ def _validate_driver_payload(stored, header, state, driver, elapsed,
             "the next child radiation call requires that held field")
 
 
+def _rebuilt_frame_note(schema) -> str:
+    """What a frame refusal adds for a document in the rebuilt identity."""
+
+    if schema not in REBUILT_END_FRAME_PREFIX_SCHEMAS:
+        return ""
+    return (f" as the rebuilt end-frame identity ({schema}) sees it: its "
+            "end frame is FP32(value + tendency * duration), which a "
+            "boundary value clearing out also moves.  That identity is a "
+            "checkpoint's written before 2.8.1, and a forcing series' "
+            "whose builder recorded no end frame (a wrfbdy file, a "
+            "prepared cache written before 2.8.1); a checkpoint written by "
+            "2.8.1 or later on forcing whose builder records its end "
+            "frames resumes across such a frame")
+
+
 def _validated_forcing_prefix(value, *, label: str, path: Path):
-    """Validate and normalize one append-only LBC identity document."""
+    """Validate and normalize one append-only LBC identity document.
+
+    Each interval's end frame must be the next interval's start frame: the
+    refusal of a splice, a series whose interval k+1 does not start where
+    interval k's tendency was built to go.  In the built end-frame identity
+    (:data:`BUILT_END_FRAME_PREFIX_SCHEMA`) a row's end frame is that frame
+    as its builder recorded it, so one preparation's series passes exactly,
+    a hydrometeor table that clears out between two forcing times included,
+    and the check applies to every checkpoint, bound to a prepared head or
+    not (A140b).  A document in the rebuilt identity
+    (:data:`REBUILT_END_FRAME_PREFIX_SCHEMAS`, which a checkpoint written
+    before 2.8.1 carries) is checked the way its writer checked it, and its
+    refusal says so, because a clear-out also breaks a rebuilt frame.
+    """
     if not isinstance(value, dict):
         raise RestartMismatchError(
             f"restart file {path} has no {label} forcing inventory")
@@ -5511,8 +5703,7 @@ def _validated_forcing_prefix(value, *, label: str, path: Path):
         raise RestartMismatchError(
             f"restart file {path} has malformed {label} forcing document "
             f"(missing {missing}, extra {extra})")
-    if value.get("schema") not in (
-            LATERAL_BOUNDARY_PREFIX_SCHEMA, "gpuwm-lateral-boundary-prefix-v3"):
+    if value.get("schema") not in LATERAL_BOUNDARY_PREFIX_SCHEMAS:
         raise RestartMismatchError(
             f"restart file {path} has unknown {label} forcing schema "
             f"{value.get('schema')!r}")
@@ -5573,11 +5764,12 @@ def _validated_forcing_prefix(value, *, label: str, path: Path):
                 raise RestartMismatchError(
                     f"restart file {path} has invalid {label} forcing "
                     f"{digest_key} at interval {index}")
-        if intervals and intervals[-1]["end_frame_sha256"] != \
-                row["start_frame_sha256"]:
+        if intervals and \
+                intervals[-1]["end_frame_sha256"] != row["start_frame_sha256"]:
             raise RestartMismatchError(
                 f"restart file {path} has a discontinuous {label} forcing "
-                f"frame at interval {index}")
+                f"frame at interval {index}"
+                + _rebuilt_frame_note(value.get("schema")))
         intervals.append({
             "start_seconds": start,
             "end_seconds": end,
@@ -5617,9 +5809,43 @@ def _require_sealable_forcing_prefix(state, cfg, *, path: Path,
         "child")
 
 
+def _live_forcing_prefix(state, stored, *, path: Path):
+    """The live forcing document in the identity ``stored`` was written in.
+
+    ``stored`` is a validated checkpoint document.  One written before
+    2.8.1 is in the rebuilt end-frame identity, and the live series is
+    hashed the same way, so the checkpoint reads and every row is compared
+    like with like.  One in the built identity needs a live series whose
+    builder recorded every end frame; a series that records none (a
+    prepared cache written before 2.8.1, a wrfbdy file) is refused by name
+    rather than compared under two meanings of the same digest.
+    """
+
+    schema = stored.get("schema") if isinstance(stored, dict) else None
+    if schema in REBUILT_END_FRAME_PREFIX_SCHEMAS:
+        return lateral_boundary_prefix_identity(
+            state, rebuilt_end_frames=True)
+    live = lateral_boundary_prefix_identity(state)
+    if (schema == BUILT_END_FRAME_PREFIX_SCHEMA and isinstance(live, dict)
+            and live.get("schema") != schema):
+        raise RestartMismatchError(
+            f"restart file {path} records each forcing interval's end frame "
+            f"as its builder recorded it ({schema}), and the forcing it is "
+            "resumed on records none (a prepared cache or boundary series "
+            "made before 2.8.1, or a wrfbdy file), so their frames cannot "
+            "be compared; resume on the preparation the checkpoint was "
+            "written against, or prepare that forcing again")
+    return live
+
+
 def _require_sealed_forcing_extension(header, state, *, path: Path,
                                       elapsed: float) -> None:
-    """Admit only a byte-identical sealed prefix plus contiguous future LBCs."""
+    """Admit only a byte-identical sealed prefix plus contiguous future LBCs.
+
+    The join is the shared checkpoint-boundary frame: the stored last row's
+    end frame, the frame its tendency was built toward, against the first
+    appended interval's start frame (A140b).
+    """
     if header.get("forcing_extension_mode") != SEALED_FORCING_EXTENSION_MODE:
         raise RestartMismatchError(
             f"restart file {path} was not intentionally sealed for forcing "
@@ -5631,9 +5857,9 @@ def _require_sealed_forcing_extension(header, state, *, path: Path,
             f"restart file {path} immutable setup changed while extending "
             "forcing (base state / coordinates / map factors mismatch)")
     stored_value = header.get("lateral_boundary_prefix")
-    live_value = lateral_boundary_prefix_identity(state)
     stored_controls, stored = _validated_forcing_prefix(
         stored_value, label="sealed", path=path)
+    live_value = _live_forcing_prefix(state, stored_value, path=path)
     live_controls, live = _validated_forcing_prefix(
         live_value, label="live", path=path)
     if stored_controls != live_controls:
@@ -5665,7 +5891,8 @@ def _require_sealed_forcing_extension(header, state, *, path: Path,
             "start_frame_sha256"]:
         raise RestartMismatchError(
             f"restart file {path} forcing suffix changes the shared "
-            "checkpoint-boundary frame")
+            "checkpoint-boundary frame"
+            + _rebuilt_frame_note(stored_value.get("schema")))
 
 
 #: Header key naming the prepared head a pre-seal checkpoint was written
@@ -5710,11 +5937,19 @@ class _ReadyPrefixState:
         return getattr(object.__getattribute__(self, "_state"), name)
 
 
-def _require_preservable_forcing_prefix(state, cfg, *, path, elapsed):
+def _require_preservable_forcing_prefix(state, cfg, *, path, elapsed,
+                                        prefix=None):
+    """Validate the live series a preserved-prefix checkpoint records.
+
+    ``prefix`` is that series' document when the caller already made it in
+    a stored checkpoint's identity (:func:`_live_forcing_prefix`); a writer
+    passes nothing and records the series in its own identity.
+    """
     if not getattr(cfg, 'specified', False) or getattr(cfg, 'nested', False):
         raise RestartMismatchError(f'{path}: preserved forcing requires a specified root domain')
     controls, intervals = _validated_forcing_prefix(
-        lateral_boundary_prefix_identity(state), label='preserved', path=path)
+        lateral_boundary_prefix_identity(state) if prefix is None else prefix,
+        label='preserved', path=path)
     if elapsed > float(intervals[-1]['end_seconds']):
         raise RestartMismatchError(f'{path}: the forcing inventory ends before the checkpoint clock')
     return controls, intervals
@@ -5748,9 +5983,17 @@ def _require_preserved_forcing_prefix(header, state, cfg, *, path, elapsed):
         raise RestartMismatchError(f'{path}: this checkpoint has no preserved forcing-prefix contract; restore its exact preparation')
     if header.get('setup_core_fingerprint') != setup_core_fingerprint(state):
         raise RestartMismatchError(f'{path}: forcing renewal changes immutable base state, coordinates or map factors')
+    stored_value = header.get('lateral_boundary_prefix')
     old_controls, old = _validated_forcing_prefix(
-        header.get('lateral_boundary_prefix'), label='stored preserved', path=path)
-    new_controls, new = _require_preservable_forcing_prefix(state, cfg, path=path, elapsed=elapsed)
+        stored_value, label='stored preserved', path=path)
+    # A renewal that appends past the stored prefix joins its last row's
+    # end frame, the frame that row's tendency was built toward, to the
+    # next interval's start frame, which the live document's continuity
+    # check proves (A140b), a boundary value that clears out at the join
+    # included.
+    new_controls, new = _require_preservable_forcing_prefix(
+        state, cfg, path=path, elapsed=elapsed,
+        prefix=_live_forcing_prefix(state, stored_value, path=path))
     if elapsed > float(old[-1]['end_seconds']):
         raise RestartMismatchError(f'{path}: the stored forcing ends before its checkpoint clock')
     if old_controls != new_controls or new[:len(old)] != old:
@@ -6329,6 +6572,7 @@ __all__ = [
     "LAND_SURFACE_PARAMETER_SOURCES",
     "MICROPHYSICS_COMPONENTS", "REBUILT_SCRATCH_PREFIXES",
     "MICROPHYSICS_ALGORITHM_IDENTITIES", "PBL_ALGORITHM_IDENTITIES",
+    "URBAN_ALGORITHM_IDENTITIES",
     "NSSL2_LEGACY_RESTART_ALIASES", "NSSL2_RESTART_AUXILIARY_STATE",
     "NSSL2_RESTART_CONTRACT_VERSION", "NSSL2_RESTART_PRECIPITATION_SLOTS",
     "NSSL2_RESTART_PROGNOSTICS",

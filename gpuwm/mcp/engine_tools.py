@@ -17,12 +17,47 @@ import json
 from pathlib import Path
 from typing import Any
 
-from gpuwm.mcp.doors import (ArwenRefusal, TREE_ROOT, door_json, run_door)
+from gpuwm.mcp.doors import (ArwenRefusal, TREE_ROOT, as_posted_support,
+                             door_json, run_door)
 from gpuwm.mcp.jobs import MAX_EVENT_BYTES, JobManager
 
 
 def _clean_args(extra_args: list[str] | None) -> list[str]:
     return [str(a) for a in (extra_args or [])]
+
+
+def as_posted_flags(door: str, as_posted: bool | None) -> tuple[list[str], bool]:
+    """The flags a run tool passes for ``as_posted``, and whether the job runs as its source posts.
+
+    ``door`` is ``"fetch"`` or ``"go"``.  ``None`` passes nothing: the
+    engine's own rule, as posted where the engine offers it
+    (:func:`gpuwm.mcp.doors.as_posted_support`) and the whole cycle
+    otherwise.  ``False`` passes ``--whole-cycle`` where the door takes
+    it; an engine without it already waits for the cycle's last hour, so
+    nothing is passed.  ``True`` passes ``--as-posted`` to a fetch that
+    takes it and nothing to ``go``, where it is the default; on an engine
+    without the as-posted fetch it is refused, because the job would
+    start only once the cycle's last hour is posted, hours after the
+    first hours a caller asked to start from.
+    """
+
+    support = as_posted_support()
+    streams = bool(support["fetch_as_posted"] if door == "fetch"
+                   else support["go_whole_cycle"])
+    if as_posted is None:
+        return [], streams
+    if not isinstance(as_posted, bool):
+        raise ArwenRefusal(f"as_posted must be true, false or left out, not {as_posted!r}.")
+    if as_posted is False:
+        takes = support["fetch_whole_cycle" if door == "fetch" else "go_whole_cycle"]
+        return (["--whole-cycle"] if takes else []), False
+    if not streams:
+        raise ArwenRefusal(
+            f"as_posted was asked, and this engine's gpuwm {door} has no as-posted "
+            "fetch: it starts a cycle only once the cycle's last hour is posted, "
+            "hours after the first hours this call asked to start from. Leave "
+            "as_posted out (or false) to run the whole cycle.")
+    return (["--as-posted"] if door == "fetch" else []), True
 
 
 def register(server: Any, manager: JobManager) -> list[str]:
@@ -284,17 +319,23 @@ def register(server: Any, manager: JobManager) -> list[str]:
                     point: str | None = None,
                     radius_km: float | None = None,
                     forecast_start_hour: int | None = None,
+                    as_posted: bool | None = None,
                     extra_args: list[str] | None = None) -> dict[str, Any]:
         """Download one cycle's forcing data as a background job.
 
         Launches `gpuwm fetch --source ... --out ...` detached and
-        returns {job_id}; follow it with job_status / job_events
-        (stream "stdout") / job_result.  `area` is
+        returns {job_id, as_posted}; follow it with job_status /
+        job_events (stream "stdout") / job_result.  `area` is
         "LAT0,LON0,LAT1,LON1", or use `point` ("LAT,LON") with
         `radius_km`.  `cycle` is "YYYY-MM-DDTHH" or "latest".
+        `as_posted` true fetches each hour as the source posts it,
+        false waits for the whole cycle, and left out takes the
+        engine's own rule; the reply's `as_posted` says which the job
+        runs.  An engine without the as-posted fetch refuses true.
         """
 
-        args = ["fetch", "--source", source, "--out", out_dir]
+        posting, streams = as_posted_flags("fetch", as_posted)
+        args = ["fetch", "--source", source, "--out", out_dir, *posting]
         if cycle:
             args += ["--cycle", cycle]
         if hours is not None:
@@ -308,9 +349,10 @@ def register(server: Any, manager: JobManager) -> list[str]:
         if forecast_start_hour is not None:
             args += ["--forecast-start-hour", str(forecast_start_hour)]
         args += _clean_args(extra_args)
-        return manager.launch(
+        launched = manager.launch(
             "fetch", [*_engine_prefix(), *args], cwd=TREE_ROOT, gpu=False,
             outputs={"outdir": out_dir})
+        return {**launched, "as_posted": streams}
 
     @tool
     def arwen_prep(output_root: str,
@@ -365,6 +407,7 @@ def register(server: Any, manager: JobManager) -> list[str]:
                        data_dir: str | None = None,
                        products: str | None = None,
                        dry_run: bool = False,
+                       as_posted: bool | None = None,
                        extra_args: list[str] | None = None,
                        timeout_s: float = 300.0) -> dict[str, Any]:
         """Run a forecast as a job -- the whole chain, or the model alone.
@@ -377,15 +420,22 @@ def register(server: Any, manager: JobManager) -> list[str]:
         naming the running job.  `dry_run` (mode "go") answers
         synchronously with the six commands the chain would run and
         launches nothing.  `products` is go's render product list
-        ("all", "none", or comma-separated slugs).
+        ("all", "none", or comma-separated slugs).  `as_posted` (mode
+        "go") true starts at the source's first hours and waits at a
+        seam for an hour not posted yet, false waits for the whole
+        cycle (go --whole-cycle), and left out takes the engine's own
+        rule; the reply's `as_posted` says which the job runs.  An
+        engine without the as-posted fetch refuses true.
         """
 
         if mode not in ("go", "run"):
             raise ArwenRefusal(
                 f"mode {mode!r} is not 'go' or 'run', so there is no door "
                 "to launch.")
+        streams = False
         if mode == "go":
-            args = ["go", config]
+            posting, streams = as_posted_flags("go", as_posted)
+            args = ["go", config, *posting]
             if outdir:
                 args += ["--outdir", outdir]
             if data_dir:
@@ -400,6 +450,11 @@ def register(server: Any, manager: JobManager) -> list[str]:
                     "dry_run belongs to mode 'go' (`gpuwm run` has no "
                     "--dry-run), so this call would launch a real "
                     "integration you asked not to run.")
+            if as_posted is not None:
+                raise ArwenRefusal(
+                    "as_posted belongs to mode 'go': `gpuwm run` fetches "
+                    "nothing, so there is no source posting to follow or "
+                    "wait for.")
             args = ["run", config]
             if outdir:
                 args += ["--outdir", outdir]
@@ -407,11 +462,13 @@ def register(server: Any, manager: JobManager) -> list[str]:
         if dry_run:
             proc = run_door(args, timeout_s=timeout_s)
             return {"exit_code": proc.returncode,
-                    "commands": proc.stdout.splitlines()}
+                    "commands": proc.stdout.splitlines(),
+                    "as_posted": streams}
         declared_out = outdir or ""
-        return manager.launch(
+        launched = manager.launch(
             mode, [*_engine_prefix(), *args], cwd=TREE_ROOT, gpu=True,
             outputs={"outdir": declared_out} if declared_out else {})
+        return {**launched, "as_posted": streams}
 
     @tool
     def arwen_render(out_dir: str,

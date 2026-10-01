@@ -593,7 +593,8 @@ def test_node_plan_mirrors_the_faithful_arms_radiation(tmp_path):
     assert " ghg_input                           = 0," in stock
 
 
-def test_node_plan_emits_the_resolved_fidelity_axis(tmp_path):
+def test_node_plan_emits_the_resolved_fidelity_axis(tmp_path,
+                                                     pinned_thompson_tables):
     """What the first Shin-Hong root preparation on node 18 found.
 
     The axis resolved ``bl_pbl_physics`` to 11 and the loader wrote it

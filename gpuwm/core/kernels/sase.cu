@@ -346,7 +346,7 @@ void sase_model_stress(const real* __restrict__ e,
     real nu_mom = ck_over_prt * delta_mom * root_e;
     real nu = f_blend * nu_eddy + (1.0f - f_blend) * nu_mom;
     real a = s0[q], b = s1[q];
-    real div3 = (a + b + s2[q]) / 3.0f;
+    real div3 = __fdiv_rn((a + b + s2[q]), 3.0f);
     real iso_visc = 2.0f * nu * div3;
     real iso_e = (2.0f / 3.0f) * ef;
     real txx = (-2.0f * nu * a + iso_visc) + iso_e;
@@ -400,7 +400,7 @@ void sase_model_stress_gov(const real* __restrict__ e,
     real nu_eddy = c_nu * delta * root_e;
     real nu_smag = (1.0f - f_blend) * k_smag;
     real nu = f_blend * nu_eddy + nu_smag;
-    real div3 = (a + b + s2[q]) / 3.0f;
+    real div3 = __fdiv_rn((a + b + s2[q]), 3.0f);
     real iso_visc = 2.0f * nu * div3;
     real iso_e = (2.0f / 3.0f) * ef;
     real txx = (-2.0f * nu * a + iso_visc) + iso_e;
@@ -439,7 +439,7 @@ void sase_basis_premultiply(const real* __restrict__ e,
     if (q >= ncell) return;
     real root_e = sqrtf(fmaxf(e[q], e_min));
     real c = -2.0f * delta * root_e;
-    real div3 = (s0[q] + s1[q] + s2[q]) / 3.0f;
+    real div3 = __fdiv_rn((s0[q] + s1[q] + s2[q]), 3.0f);
     p0[q] = c * (s0[q] - div3);
     p1[q] = c * (s1[q] - div3);
     p2[q] = c * (s2[q] - div3);
@@ -511,8 +511,8 @@ void sase_solve_partial(const real* __restrict__ e,
         real sc[6] = {sc0[q], sc1[q], sc2[q], sc3[q], sc4[q], sc5[q]};
         real rf[6] = {rf0[q], rf1[q], rf2[q], rf3[q], rf4[q], rf5[q]};
         real lv[6] = {l0[q], l1[q], l2[q], l3[q], l4[q], l5[q]};
-        real div3 = (sc[0] + sc[1] + sc[2]) / 3.0f;
-        real trl = (lv[0] + lv[1] + lv[2]) / 3.0f;
+        real div3 = __fdiv_rn((sc[0] + sc[1] + sc[2]), 3.0f);
+        real trl = __fdiv_rn((lv[0] + lv[1] + lv[2]), 3.0f);
         for (int k = 0; k < 6; ++k) {
             real scd = (k < 3) ? sc[k] - div3 : sc[k];
             real av = ca * scd - rf[k];

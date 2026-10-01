@@ -527,6 +527,48 @@ def test_unknown_domain_identity_keeps_the_native_grid_token(
         assert _domain_of(name) == "native_grid", name
 
 
+@needs_renderer
+def test_a_delayed_start_nest_draws_every_frame_on_the_runs_lead_clock(
+        tmp_path):
+    """A137: a nest that starts an hour after the forecast drew nothing.
+
+    WRF, and this writer, put a nest's own start in START_DATE and the
+    run's in SIMULATION_START_DATE, so a delayed nest's START_DATE is
+    later by design.  The renderer refused every one of its frames as
+    "conflicting WRF references", live and through ``gpuwm render``.  Its
+    frames draw now, their leads measured from the run's start, so the
+    nest's 14Z frame is f002 exactly as its parent's 14Z frame is.
+    """
+
+    grid = SimpleNamespace(truelat1=38.5, truelat2=39.5, stand_lon=-96.5,
+                           ref_lat=39.0, ref_lon=-96.5)
+    run_start = datetime.datetime(2026, 5, 20, 12)
+    nest_start = run_start + datetime.timedelta(hours=1)
+    attrs = wrf_global_attrs(
+        grid, nest_start, grid_id=3, parent_id=2, i_parent_start=5,
+        j_parent_start=5, parent_grid_ratio=3, dt=2.0,
+        simulation_start_time=run_start)
+    assert attrs["START_DATE"] == "2026-05-20_13:00:00"
+    assert attrs["SIMULATION_START_DATE"] == "2026-05-20_12:00:00"
+    path = tmp_path / "wrfout_d03_2026-05-20_13-00-00.nc"
+    with WrfoutWriter(path, nx=_NX, ny=_NY, nz=_NZ, dx=333.3333,
+                      dy=333.3333, global_attrs=attrs) as writer:
+        for index, stamp in enumerate(("2026-05-20_13:00:00",
+                                       "2026-05-20_14:00:00")):
+            writer.write_frame(stamp, _frame(seed=31 + index))
+    out = tmp_path / "png"
+    rc = cli.main(["render", str(path), "--engine", "rust",
+                   "--products", "refl", "--out", str(out)])
+    assert rc == 0
+    produced = _delivered(out)
+    assert len(produced) == 2, produced
+    clocks = sorted(re.search(r"_(\d{1,2})z_f(\d{3})", Path(name).name).groups()
+                    for name in produced)
+    assert clocks == [("12", "001"), ("12", "002")], produced
+    for name in produced:
+        assert _domain_of(name) == "d03-333m", name
+
+
 def test_the_engines_skip_line_is_read_and_is_not_a_failure(monkeypatch,
                                                             tmp_path):
     """`rw_wrfbatch` has always emitted three verdicts; two were read.
@@ -1358,6 +1400,103 @@ def test_list_products_whole_hour_axis_serves_windowed(
 
 
 @needs_renderer
+def test_an_hourly_wind_snapshot_is_not_listed_as_a_maximum(
+        wrfout_hourly, tmp_path):
+    """A wrfout with no sub-hourly 10 m wind maximum (no WSPD10MAX, which
+    is every ArWen history and this fixture's) gives the 1 h and run
+    maxima on whole hours only top-of-hour snapshots.  They were drawn
+    under "(1 h max)" and "(run max)" titles and only the catalog detail
+    said "lower bound"; the detail now names the fold and why it is not
+    the maximum, and the picture is titled the same way (``rusty-weather``
+    ``windowed_store`` tests pin the title)."""
+
+    rows, _summary = rustwx.list_products(
+        RENDERER, wrfout_hourly, store_root=tmp_path / "wind-store")
+    detail = {slug: (status, detail) for slug, _kind, status, detail in rows}
+    for slug in ("10m_wind_1h_max", "10m_wind_run_max"):
+        status, text = detail[slug]
+        assert status == "renderable", (slug, text)
+        assert "top-of-hour 10 m wind speed" in text, (slug, text)
+        assert "WSPD10MAX" in text and "not the maximum" in text, (slug, text)
+        assert "stored sub-hourly 1 h max" not in text, (slug, text)
+
+
+@needs_renderer
+def test_a_wrfout_that_stores_wspd10max_draws_the_wind_maximum(tmp_path):
+    """WRF written with nwp_diagnostics = 1 stores WSPD10MAX, the 10 m wind
+    maximum over each history interval, and the import keeps it as
+    ``wrf_wspd10max``.  The 10 m wind windows read only the GRIB lane's
+    ``wind_speed_10m_max_1h`` and then top-of-hour U10/V10 speeds, so such
+    a history was drawn as snapshots under "no stored max" titles and its
+    detail said it stores no WSPD10MAX.  The windows now read it as the
+    maximum it is and keep their maximum titles (``rusty-weather``
+    ``windowed_store`` tests pin the titles and values)."""
+
+    netCDF4 = pytest.importorskip("netCDF4")
+    path = _write_wrfout(
+        tmp_path / "wrfout_d02_1974-04-03_18-00-00.nc",
+        ("1974-04-03_18:00:00", "1974-04-03_19:00:00"))
+    with netCDF4.Dataset(path, "a") as dataset:
+        speed = np.hypot(dataset["U10"][:], dataset["V10"][:])
+        wspd10max = dataset.createVariable(
+            "WSPD10MAX", "f4", ("Time", "south_north", "west_east"))
+        wspd10max.setncattr("FieldType", np.int32(104))
+        wspd10max.MemoryOrder = "XY "
+        wspd10max.description = "WIND SPD MAX 10 M"
+        wspd10max.units = "m s-1"
+        wspd10max.stagger = ""
+        wspd10max[:] = (speed + 2.5).astype(np.float32)
+
+    rows, _summary = rustwx.list_products(
+        RENDERER, path, store_root=tmp_path / "wind-store")
+    detail = {slug: (status, detail) for slug, _kind, status, detail in rows}
+    for slug in ("10m_wind_1h_max", "10m_wind_run_max"):
+        status, text = detail[slug]
+        assert status == "renderable", (slug, text)
+        assert "WRF WSPD10MAX per-history-interval max at F001" in text, (
+            slug, text)
+        for wrong in ("snapshot", "hypot", "not the maximum", "lower bound",
+                      "stores no"):
+            assert wrong not in text, (slug, wrong, text)
+
+
+@needs_renderer
+def test_the_render_after_the_availability_listing_imports_nothing(
+        wrfout_hourly, tmp_path, monkeypatch):
+    """One import per render, through the door.
+
+    ``gpuwm render`` asks the catalog what the frames can draw and then
+    draws them: two launches into one scratch store.  Each imported every
+    frame, and the listing imported in full: nine long windows over four
+    750 m frames cost 219 CPU-s through the door against 11 CPU-s in the
+    renderer alone, and the listing was about 26 of the 34.7 CPU-s of
+    every live frame.  The listing of named products imports them as their
+    render does, and the render finds that run in the store.
+    """
+
+    transcripts: list[str] = []
+    real = rustwx.subprocess.run
+
+    def record(command, *args, **kwargs):
+        result = real(command, *args, **kwargs)
+        if "--store-root" in command:
+            transcripts.append(result.stdout or "")
+        return result
+
+    monkeypatch.setattr(rustwx.subprocess, "run", record)
+    out = tmp_path / "door"
+    rc = cli.main(["render", str(wrfout_hourly), "--engine", "rust",
+                   "--products", "qpf_1h,10m_wind_1h_max,2m_temperature",
+                   "--out", str(out), "--run-stamp", "off"])
+    assert rc == 0 and _delivered(out)
+    assert len(transcripts) == 2, "one availability listing, one render"
+    listing, draw = transcripts
+    assert "PROCESS Opening WRF " in listing
+    assert "PROCESS Reusing the imported WRF run " in draw, draw
+    assert "PROCESS Opening WRF " not in draw, draw
+
+
+@needs_renderer
 def test_list_products_rejects_identity_gated_rows(
         wrfout, wrfout_hourly, tmp_path, capsys):
     """Architectural guard: availability rows must justify themselves
@@ -1520,6 +1659,229 @@ def test_carrier_updates_do_not_join_different_source_or_scientific_histories(tm
     with netCDF4.Dataset(last, "a") as dataset:
         dataset.setncattr(attribute, value)
     assert {tuple(group) for group in group_history_series([first, last])} == {(first,), (last,)}
+
+
+def _write_moved_wrfout(path, stamps, *, i_parent_start, seed_offset=0):
+    """A frame of the same nest as :func:`_write_wrfout`, moved east.
+
+    One parent cell at ratio 3 is three nest cells, and the coordinates
+    move with the place exactly as a relocated nest's do.
+    """
+    import netCDF4
+
+    _write_wrfout(path, stamps, seed_offset=seed_offset)
+    shift = 3 * (i_parent_start - 5)
+    step = np.float32(3.0 / (_NX - 1))
+    with netCDF4.Dataset(path, "a") as dataset:
+        dataset.I_PARENT_START = np.int32(i_parent_start)
+        dataset.CEN_LON = np.float32(dataset.CEN_LON + shift * step)
+        dataset.variables["XLONG"][:] = (
+            dataset.variables["XLONG"][:] + np.float32(shift) * step)
+    return path
+
+
+def test_a_moving_nests_earlier_places_close_its_later_places_windows(tmp_path):
+    """THE DEFECT: the series was split by place, so the first window after
+    a move had no earlier frame and was never drawn.  Frames of one nest at
+    an earlier place now join each later place's series as context."""
+
+    import netCDF4
+    from gpuwm.render import group_history_series, history_series_groups
+
+    stamps = ("1974-04-03_18:00:00", "1974-04-03_19:00:00",
+              "1974-04-03_20:00:00", "1974-04-03_21:00:00")
+    first = _write_wrfout(tmp_path / "wrfout_d02_1974-04-03_18:00:00", stamps[:1])
+    second = _write_wrfout(tmp_path / "wrfout_d02_1974-04-03_19:00:00", stamps[1:2],
+                           seed_offset=1)
+    third = _write_moved_wrfout(tmp_path / "wrfout_d02_1974-04-03_20:00:00",
+                                stamps[2:3], i_parent_start=6, seed_offset=2)
+    fourth = _write_moved_wrfout(tmp_path / "wrfout_d02_1974-04-03_21:00:00",
+                                 stamps[3:], i_parent_start=7, seed_offset=3)
+    groups = history_series_groups([fourth, third, second, first])
+    assert ([first, second], []) in groups
+    assert ([first, second, third], [first, second]) in groups
+    assert ([first, second, third, fourth], [first, second, third]) in groups
+    assert len(groups) == 3
+
+    # Another run of the same nest (another start) never joins, and
+    # neither does another folder: only the place may differ.
+    other = _write_moved_wrfout(tmp_path / "other_start", stamps[2:3],
+                                i_parent_start=6)
+    with netCDF4.Dataset(other, "a") as dataset:
+        dataset.START_DATE = "1974-04-03_17:00:00"
+    elsewhere = tmp_path / "another-run"
+    elsewhere.mkdir()
+    apart = _write_moved_wrfout(elsewhere / "wrfout_d02", stamps[2:3],
+                                i_parent_start=6)
+    assert [other] in group_history_series([first, second, other])
+    assert [apart] in group_history_series([first, second, apart])
+
+
+@needs_renderer
+def test_the_first_hour_after_a_move_draws_its_1h_rain(tmp_path, capsys):
+    stamps = ("1974-04-03_18:00:00", "1974-04-03_19:00:00")
+    first = _write_wrfout(tmp_path / "wrfout_d02_1974-04-03_18:00:00", stamps[:1])
+    moved = _write_moved_wrfout(tmp_path / "wrfout_d02_1974-04-03_19:00:00",
+                                stamps[1:], i_parent_start=6, seed_offset=1)
+    out = tmp_path / "png"
+    rc = cli.main(["render", str(first), str(moved), "--engine", "rust", "--series",
+                   "--products", "qpf_1h", "--size", "400x300", "--run-stamp", "off",
+                   "--out", str(out)])
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
+    drawn = sorted(path.name for path in out.rglob("*.png") if "qpf_1h" in path.parts)
+    assert len(drawn) == 1 and "_f001" in drawn[0], (drawn, captured.out, captured.err)
+
+    # A frame whose coordinates no whole-cell move lands on the later
+    # frame's is refused by name, not differenced: the rain of other ground
+    # is never subtracted.
+    lying = tmp_path / "lying"
+    lying.mkdir()
+    early = _write_wrfout(lying / "wrfout_d02_1974-04-03_18:00:00", stamps[:1])
+    late = _write_moved_wrfout(lying / "wrfout_d02_1974-04-03_19:00:00", stamps[1:],
+                               i_parent_start=6, seed_offset=1)
+    import netCDF4
+    with netCDF4.Dataset(late, "a") as dataset:
+        dataset.variables["XLONG"][:] = dataset.variables["XLONG"][:] + np.float32(0.1)
+    rc = cli.main(["render", str(early), str(late), "--engine", "rust", "--series",
+                   "--products", "qpf_1h", "--size", "400x300", "--run-stamp", "off",
+                   "--out", str(tmp_path / "lying-png")])
+    captured = capsys.readouterr()
+    assert not any("qpf_1h" in path.parts for path in (tmp_path / "lying-png").rglob("*.png"))
+    assert "different ground" in captured.out + captured.err, captured.out + captured.err
+
+
+def _far_travelled_nest(root):
+    """Four hourly frames of one nest at parent starts 5, 5, 8 and 11.
+
+    One parent cell at ratio 3 is three nest cells, so the last place is
+    18 cells east of the first on a 16-cell-wide nest: they share no
+    ground, while each move on its own (9 cells) leaves 7 columns shared.
+    """
+
+    stamps = ("1974-04-03_18:00:00", "1974-04-03_19:00:00",
+              "1974-04-03_20:00:00", "1974-04-03_21:00:00")
+    first = _write_wrfout(root / "wrfout_d02_1974-04-03_18:00:00", stamps[:1])
+    second = _write_wrfout(root / "wrfout_d02_1974-04-03_19:00:00", stamps[1:2],
+                           seed_offset=1)
+    third = _write_moved_wrfout(root / "wrfout_d02_1974-04-03_20:00:00",
+                                stamps[2:3], i_parent_start=8, seed_offset=2)
+    fourth = _write_moved_wrfout(root / "wrfout_d02_1974-04-03_21:00:00",
+                                 stamps[3:], i_parent_start=11, seed_offset=3)
+    return first, second, third, fourth
+
+
+def test_a_place_that_shares_no_ground_never_joins_a_later_series(tmp_path):
+    """THE DEFECT: every earlier frame at every earlier place joined each
+    later place's series, so once the nest had travelled its own width the
+    renderer was handed frames with no cell in common, refused the whole
+    series, and each place re-imported the run so far.  Only places that
+    share ground with the series' place join it."""
+
+    from gpuwm.render import history_series_groups
+
+    first, second, third, fourth = _far_travelled_nest(tmp_path)
+    groups = history_series_groups([fourth, third, second, first])
+    assert ([first, second], []) in groups
+    assert ([first, second, third], [first, second]) in groups
+    assert ([third, fourth], [third]) in groups
+    assert len(groups) == 3
+
+
+@needs_renderer
+def test_a_nest_that_left_its_first_footprint_draws_every_frame(tmp_path, capsys):
+    first, second, third, fourth = _far_travelled_nest(tmp_path)
+    out = tmp_path / "png"
+    rc = cli.main(["render", str(first), str(second), str(third), str(fourth),
+                   "--engine", "rust", "--series", "--products", "2m_temperature,qpf_1h",
+                   "--size", "400x300", "--run-stamp", "off", "--out", str(out)])
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
+
+    def drawn(product):
+        return sorted(re.search(r"_f(\d{3})", path.name).group(1)
+                      for path in out.rglob("*.png") if product in path.parts)
+
+    assert drawn("2m_temperature") == ["000", "001", "002", "003"], (
+        captured.out, captured.err)
+    # F003 is the hour after the last move; F002 the hour after the first.
+    assert drawn("qpf_1h") == ["001", "002", "003"], (captured.out, captured.err)
+
+
+@needs_renderer
+def test_a_frame_with_no_ground_in_common_is_stored_missing_not_refused(tmp_path):
+    """The renderer's own answer when such a frame reaches it anyway (an
+    explicit context list): the frame holds nothing on the later place's
+    ground, so it is stored missing there and the series is drawn.  Its
+    refusal took every product of the later place with it, 2 m temperature
+    included."""
+
+    from gpuwm.render import render_series_rust
+
+    first, _second, _third, fourth = _far_travelled_nest(tmp_path)
+    written, failures, _skipped = render_series_rust(
+        [first, fourth], context_paths=[first], products="2m_temperature",
+        timeidx=None, outdir=tmp_path / "png", size=(400, 300))
+    assert not failures, failures
+    assert [path.name for path in written if "_f003" in path.name], written
+    assert not [path for path in written if "_f000" in path.name], written
+
+
+def test_a_series_joined_across_moves_asks_for_each_wanted_frame(monkeypatch):
+    """Joined across a nest's moves, a series' baselines are other places'
+    frames and usually outnumber the frames it delivers: each wanted frame
+    gets its own launch instead of every baseline being drawn and thrown
+    away.  A series without moves keeps the rule it had."""
+
+    from gpuwm import render
+
+    start = datetime.datetime(1974, 4, 3, 18)
+    stamps = {Path(f"f{i}"): (None, (start + datetime.timedelta(hours=i),))
+              for i in range(6)}
+    monkeypatch.setattr(render, "_history_series_record",
+                        lambda path: stamps[Path(path)])
+    series = list(stamps)
+    two = {start + datetime.timedelta(hours=i) for i in (4, 5)}
+    assert render._wanted_slots(series, two, each=True) == ["4", "5"]
+    assert render._wanted_slots(series, two) is None
+    everything = {start + datetime.timedelta(hours=i) for i in range(6)}
+    assert render._wanted_slots(series, everything, each=True) is None
+
+
+@needs_renderer
+def test_a_place_with_two_frames_draws_them_without_its_baselines(tmp_path, capsys,
+                                                                   monkeypatch):
+    stamps = ("1974-04-03_18:00:00", "1974-04-03_19:00:00", "1974-04-03_20:00:00")
+    first = _write_wrfout(tmp_path / "wrfout_d02_1974-04-03_18:00:00", stamps[:1])
+    second = _write_moved_wrfout(tmp_path / "wrfout_d02_1974-04-03_19:00:00",
+                                 stamps[1:2], i_parent_start=8, seed_offset=1)
+    third = _write_moved_wrfout(tmp_path / "wrfout_d02_1974-04-03_20:00:00",
+                                stamps[2:], i_parent_start=8, seed_offset=2)
+    launched = []
+    real = rustwx.run_renderer_series
+
+    def recording(renderer, paths, **kwargs):
+        launched.append((len(list(paths)), kwargs["frames"]))
+        return real(renderer, paths, **kwargs)
+
+    monkeypatch.setattr(rustwx, "run_renderer_series", recording)
+    out = tmp_path / "png"
+    rc = cli.main(["render", str(first), str(second), str(third), "--engine", "rust",
+                   "--series", "--products", "2m_temperature,qpf_1h", "--size", "400x300",
+                   "--run-stamp", "off", "--out", str(out)])
+    captured = capsys.readouterr()
+    assert rc == 0, captured.out + captured.err
+    # The first place's lone frame is one launch of its own; the second
+    # place's series (the first place's frame its baseline) launches once
+    # per frame it delivers, never drawing the baseline.
+    assert sorted(launched) == [(1, "all"), (3, "1"), (3, "2")], launched
+
+    def drawn(product):
+        return sorted(re.search(r"_f(\d{3})", path.name).group(1)
+                      for path in out.rglob("*.png") if product in path.parts)
+
+    assert drawn("2m_temperature") == ["000", "001", "002"]
+    assert drawn("qpf_1h") == ["001", "002"]
 
 
 @needs_renderer

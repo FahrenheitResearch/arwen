@@ -417,18 +417,19 @@ class _HostAdapterState:
 
 #: Every launcher ``_apply_thompson`` imports from ``gpuwm.core.thompson``.
 ADAPTER_LAUNCHER_NAMES = (
+    "launch_adapter_entry",
+    "launch_adapter_finish",
+    "launch_adapter_masks",
+    "launch_adapter_prepare",
     "launch_cloud_sedimentation",
     "launch_cloud_saturation_adjust",
     "launch_classic_graupel_number_finalize",
-    "launch_classic_graupel_number_init",
     "launch_effective_radius",
     "launch_final_phase_cleanup",
     "launch_frozen_vapor_network_from_owner",
-    "launch_graupel_fallout_column_mask",
     "launch_graupel_sedimentation",
     "launch_hydrometeor_column_mask",
     "launch_ice_sedimentation",
-    "launch_microphysics_columns",
     "launch_rain_evaporation",
     "launch_rain_sedimentation",
     "launch_snow_sedimentation",

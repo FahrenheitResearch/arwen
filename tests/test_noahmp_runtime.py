@@ -977,10 +977,12 @@ def test_the_column_cost_is_what_the_registry_says():
     The registry warning quotes measured cost figures (per 360,000-column
     slab call since 2026-07-27; per column in the host era).  A quoted
     figure nobody measures is a figure that becomes false, so this pins the
-    order of magnitude at a width every box can afford.  The bracket stays
-    0.3 ms to 30 ms per land column deliberately: it has to survive a
+    order of magnitude at a width every box can afford.  The bracket is
+    0.03 ms to 30 ms per land column deliberately: it has to survive a
     slower box and a faster one, and its job is to catch a 100x
-    regression, not to be a benchmark.
+    regression, not to be a benchmark.  Its floor was 0.3 ms until the slab
+    caches (2026-09-30) took this grid to about 0.20 ms/column on an RTX
+    4090, under the old floor; the ceiling is unchanged.
 
     With all seven leaves batched -- THERMOPROP, RADIATION, VEGE_FLUX,
     BARE_FLUX, TSNOSOI, PHASECHANGE and WATER -- this 48-land-column grid
@@ -1006,7 +1008,7 @@ def test_the_column_cost_is_what_the_registry_says():
         step(state, cfg)
     cp.cuda.runtime.deviceSynchronize()
     per_column = (time.perf_counter() - t0) / (3 * columns)
-    assert 3.0e-4 < per_column < 3.0e-2, (
+    assert 3.0e-5 < per_column < 3.0e-2, (
         f"{per_column * 1e3:.2f} ms per land column is outside the published "
         "bracket; update the registry warning and this gate together")
 

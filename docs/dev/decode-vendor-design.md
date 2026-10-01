@@ -805,11 +805,22 @@ other template unpacks from `&self` into a fresh `Vec` and pays nothing.
 The staged RAP case packs this way and is decoded at 1 and 32 workers to
 the same bytes.
 
-**THE WORKER COUNT** is the machine's parallelism capped at eight, and
-the cap is a measured knee, not a guess -- the sweep is written into
-`threads.rs` beside the constant.  `GPUWM_MAPPED_ENGINE_THREADS`
-overrides it, which is what a caller running several engines at once
-should use.
+**THE WORKER COUNT** is every core the process may run on.  It used to
+be capped at eight, the measured knee of ONE valid time's message decode
+(the sweep is still written into `threads.rs`), but a whole-series decode
+is not one valid time: most of a valid time's wall is serial work after
+its messages are unpacked, and with the cap a 49-lead compose ran on about
+2.3 cores of work whatever the box had.  A series whose objects each serve
+one valid time now keeps several valid times in flight (`threads::lanes`:
+the pool width, lowered so the valid times in flight fit in 0.7 of the
+available memory, one valid time's size measured from the first), each
+decoded on its own and all written by one thread in frameset order, with
+every atmospheric-window request made in that order and every refusal
+reported where the one-lane writer would report it.
+`GPUWM_MAPPED_ENGINE_THREADS` overrides the width (`gpuwm prep
+--preprocess-workers` sets it), which is what a caller running several
+engines at once should use; `GPUWM_MAPPED_ENGINE_LANES` overrides the
+lane count, for measurement.
 
 **THE GATE.**  A change here is proven by byte identity, not by a digest
 comparison: `frames.json` diffs clean, `frames.f64` keeps its sha256 and

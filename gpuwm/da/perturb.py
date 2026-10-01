@@ -749,6 +749,81 @@ def _device_fft_available(xp) -> bool:
     return _DEVICE_FFT_AVAILABLE
 
 
+def _device_fft_plan(shape: Sequence[int], dtype, value_type: str):
+    """The uncached cuFFT plan one device transform of a draw runs under.
+
+    ``shape`` is the REAL field's ``(nz, ny, nx)`` and ``value_type`` is
+    ``"R2C"`` (the forward transform) or ``"C2R"`` (the inverse, whose
+    input is the ``nx // 2 + 1`` half spectrum).  The plan comes from
+    ``cupy.fft._fft._get_cufft_plan_nd``, the builder ``cupy.fft`` itself
+    and ``cupyx.scipy.fft.get_fft_plan`` both call, with the arguments
+    ``cupy.fft.rfftn``/``irfftn`` pass it for a C-ordered transform over
+    all three axes, so the plan a draw runs under and the plan
+    :func:`fft_plan_work_bytes` measures are the same plan.  It is built
+    from the shape alone because the admission sizes it before any field
+    exists.
+    """
+    from cupy.cuda import cufft                            # noqa: PLC0415
+    from cupy.fft._fft import _get_cufft_plan_nd           # noqa: PLC0415
+
+    nz, ny, nx = (int(extent) for extent in shape)
+    double = np.dtype(dtype) == np.float64
+    if value_type == "R2C":
+        fft_type = cufft.CUFFT_D2Z if double else cufft.CUFFT_R2C
+        return _get_cufft_plan_nd((nz, ny, nx), fft_type, axes=(0, 1, 2),
+                                  order="C", out_size=nx // 2 + 1,
+                                  to_cache=False)
+    if value_type == "C2R":
+        fft_type = cufft.CUFFT_Z2D if double else cufft.CUFFT_C2R
+        return _get_cufft_plan_nd((nz, ny, nx // 2 + 1), fft_type,
+                                  axes=(0, 1, 2), order="C", out_size=nx,
+                                  to_cache=False)
+    raise ValueError(f"value_type must be 'R2C' or 'C2R', got {value_type!r}")
+
+
+def _draw_shapes(cfg: "PerturbationConfig", mass_shape: Sequence[int]
+                 ) -> tuple[tuple[int, int, int], ...]:
+    """Every distinct field shape :func:`apply_perturbations` draws."""
+    nz, ny, nx = (int(extent) for extent in mass_shape)
+    shapes = [_expected_shape(name, nz, ny, nx) for name in cfg.field_names]
+    if cfg.species:
+        shapes.append((nz, ny, nx))
+    return tuple(dict.fromkeys(shapes))
+
+
+def fft_plan_work_bytes(cfg: "PerturbationConfig", mass_shape: Sequence[int],
+                        xp=None) -> dict:
+    """cuFFT's own work area for each plan a member's perturbation runs.
+
+    ``{shape: (forward_bytes, inverse_bytes)}`` for every distinct field
+    shape the configuration draws, read off the plans themselves: each is
+    built with :func:`_device_fft_plan`, exactly as the draw builds it, and
+    its work area (allocated from the device pool at the size
+    ``cufftMakePlanMany`` reported) is measured and released.  Empty when
+    no draw transforms on the device: ``fft_host``, a host namespace, or a
+    device whose cuFFT does not load.
+    """
+    if xp is None:
+        xp = default_array_module()
+    if cfg.fft_host or xp is np or not _device_fft_available(xp):
+        return {}
+    dtype = np.float32 if cfg.compute_dtype == "float32" else np.float64
+    sizes = {}
+    for shape in _draw_shapes(cfg, mass_shape):
+        measured = []
+        for value_type in ("R2C", "C2R"):
+            plan = _device_fft_plan(shape, dtype, value_type)
+            area = plan.work_area
+            measured.append(0 if area is None else int(area.mem.size))
+            del plan, area
+        sizes[shape] = tuple(measured)
+    # The measured work areas went back to the pool as idle blocks, which
+    # cudaMemGetInfo counts as used; hand them to the driver so the free
+    # reading an admission takes next sees the card as it was.
+    xp.get_default_memory_pool().free_all_blocks()
+    return sizes
+
+
 # --------------------------------------------------------------------------
 # Deterministic noise
 # --------------------------------------------------------------------------
@@ -964,7 +1039,16 @@ def gaussian_random_field(shape: Sequence[int], *, seed: int, name: str,
     fft_xp = np if fft_host else (xp if _device_fft_available(xp) else np)
     working = noise if fft_xp is np else fft_xp.asarray(noise)
 
-    spectrum = fft_xp.fft.rfftn(working, axes=(0, 1, 2))
+    if fft_xp is np:
+        spectrum = fft_xp.fft.rfftn(working, axes=(0, 1, 2))
+    else:
+        # Each transform runs under its own uncached plan, dropped as the
+        # transform returns, so cuFFT's work area is a transient of this
+        # draw (priced by device_working_bytes from fft_plan_work_bytes).
+        # cupy's plan cache would keep both plans of every drawn shape,
+        # work areas included, on the card for the rest of the process.
+        with _device_fft_plan(shape, np_dtype, "R2C"):
+            spectrum = fft_xp.fft.rfftn(working, axes=(0, 1, 2))
     hz = _axis_filter(nz, 1.0, float(vertical_scale_levels), half=False)
     hy = _axis_filter(ny, float(dy_km), float(length_scale_km), half=False)
     hx = _axis_filter(nx, float(dx_km), float(length_scale_km), half=True)
@@ -973,7 +1057,11 @@ def gaussian_random_field(shape: Sequence[int], *, seed: int, name: str,
     if fft_xp is not np:
         kernel = fft_xp.asarray(kernel)
     spectrum = spectrum * kernel
-    field = fft_xp.fft.irfftn(spectrum, s=shape, axes=(0, 1, 2))
+    if fft_xp is np:
+        field = fft_xp.fft.irfftn(spectrum, s=shape, axes=(0, 1, 2))
+    else:
+        with _device_fft_plan(shape, np_dtype, "C2R"):
+            field = fft_xp.fft.irfftn(spectrum, s=shape, axes=(0, 1, 2))
 
     variance = (_analytic_variance(nz, 1.0, float(vertical_scale_levels))
                 * _analytic_variance(ny, float(dy_km),
@@ -1499,7 +1587,8 @@ def _apply_species_perturbations(state, seed: int, cfg: PerturbationConfig,
 
 
 def device_working_bytes(cfg: PerturbationConfig,
-                         mass_shape: Sequence[int]) -> int:
+                         mass_shape: Sequence[int],
+                         plan_work_bytes: Mapping | None = None) -> int:
     """Peak device bytes :func:`apply_perturbations` holds beside the state.
 
     A census of the arrays this module allocates on the state's device,
@@ -1508,13 +1597,20 @@ def device_working_bytes(cfg: PerturbationConfig,
     and ``K = nz * ny * (nx // 2 + 1)`` its real-FFT spectrum points.
 
     One draw (:func:`gaussian_random_field`) with the device FFT peaks at
-    the largest of its four stages: the spectrum multiply (the working
-    copy ``sM``, the old and new spectra ``2sK`` each and the kernel
-    ``sK``), the inverse transform (the output ``sM`` beside the spectrum,
-    the kernel and cuFFT's copy of its complex input), the normalisation
-    (a second ``sM`` beside the first) and the realized RMS (a float64 copy
-    and its square, ``16M``).  With ``fft_host`` only the finished field
-    reaches the device.
+    the largest of its five stages: the forward transform (the working
+    copy ``sM``, the spectrum ``2sK`` and the forward plan's work area),
+    the spectrum multiply (the working copy, the old and new spectra
+    ``2sK`` each and the kernel ``sK``), the inverse transform (the output
+    ``sM`` beside the spectrum, the kernel, cuFFT's copy of its complex
+    input and the inverse plan's work area), the normalisation (a second
+    ``sM`` beside the first) and the realized RMS (a float64 copy and its
+    square, ``16M``).  With ``fft_host`` only the finished field reaches
+    the device.
+
+    ``plan_work_bytes`` is :func:`fft_plan_work_bytes`'s answer, the work
+    area each plan reported on the card that will run it; each plan lives
+    only for its own transform.  Omitted, the plans are priced at zero,
+    which only a caller with no device may do.
 
     The application loops keep their last iteration's arrays bound while
     the next draw runs: the draw, and the float32 increment (plus the
@@ -1528,13 +1624,18 @@ def device_working_bytes(cfg: PerturbationConfig,
     width = 4 if cfg.compute_dtype == "float32" else 8
     mass_points = nz * ny * nx
 
+    plans = {tuple(int(extent) for extent in shape): tuple(sizes)
+             for shape, sizes in (plan_work_bytes or {}).items()}
+
     def draw_peak(shape) -> int:
         points = math.prod(shape)
         if cfg.fft_host:
             return width * points
         spectrum = shape[0] * shape[1] * (shape[2] // 2 + 1)
-        return max(width * points + 5 * width * spectrum,
-                   2 * width * points + 5 * width * spectrum,
+        forward, inverse = plans.get(tuple(shape), (0, 0))
+        return max(width * points + 2 * width * spectrum + int(forward),
+                   width * points + 5 * width * spectrum,
+                   2 * width * points + 5 * width * spectrum + int(inverse),
                    3 * width * points + 3 * width * spectrum,
                    2 * width * points + 16 * points + 3 * width * spectrum)
 

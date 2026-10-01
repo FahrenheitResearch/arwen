@@ -63,9 +63,21 @@ pub struct ConvertOptions {
     pub field_set: String,
     pub grid_id: i32,
     pub title: String,
+    /// The producing model's name, written as `GPUWM_MODEL_LABEL` for the
+    /// renderer's metadata row.  `None` writes nothing, and the frame's
+    /// plots carry the generic wrfout identity (`WRF`) as before.
+    pub model_label: Option<String>,
     pub format: NcFormat,
     pub clobber: bool,
 }
+
+/// The global attribute the renderer reads the model's name from
+/// (`rustwx_products::shared_context::MODEL_LABEL_ATTRIBUTE`; this crate
+/// does not depend on that one, so the spelling is stated in both and a
+/// test in each pins it).  A frame this converter writes is a mesh
+/// forecast resampled onto a regular grid, imported as `wrf` like any
+/// wrfout, so without it every one of its maps said `WRF`.
+pub const MODEL_LABEL_ATTRIBUTE: &str = "GPUWM_MODEL_LABEL";
 
 impl Default for ConvertOptions {
     fn default() -> Self {
@@ -74,6 +86,7 @@ impl Default for ConvertOptions {
             field_set: "full".to_string(),
             grid_id: 1,
             title: "MPAS-A v8.4.1 CUDA port history resampled for rw_wrfbatch".to_string(),
+            model_label: None,
             format: NcFormat::Offset64,
             clobber: false,
         }
@@ -309,6 +322,9 @@ pub fn convert_frame_composite(
         NcAttr::int("J_PARENT_START", 1),
         NcAttr::int("PARENT_GRID_RATIO", 1),
     ];
+    if let Some(label) = options.model_label.as_deref() {
+        gattrs.push(NcAttr::text(MODEL_LABEL_ATTRIBUTE, label));
+    }
     for (name, value) in &projection {
         gattrs.push(match value {
             ProjAttr::Int(v) => NcAttr::int(name.clone(), *v),
@@ -748,6 +764,15 @@ mod tests {
         let values = vec![0.1f32, 0.2f32];
         let out = restagger_x(&values, 1, 1, 2);
         assert_eq!(out[1].to_bits(), ((0.1f32 + 0.2f32) * 0.5f32).to_bits());
+    }
+
+    /// The renderer reads this exact name (`rustwx_products::shared_context`
+    /// pins the same literal), and a converter that writes nothing unless
+    /// asked keeps every existing frame byte-identical.
+    #[test]
+    fn the_model_label_attribute_is_the_renderers_and_is_off_by_default() {
+        assert_eq!(MODEL_LABEL_ATTRIBUTE, "GPUWM_MODEL_LABEL");
+        assert_eq!(ConvertOptions::default().model_label, None);
     }
 
     #[test]

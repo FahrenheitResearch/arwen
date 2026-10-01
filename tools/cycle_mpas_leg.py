@@ -66,8 +66,8 @@ from gpuwm.cycle.contracts import (CycleRefusal, seconds_to_ticks,
 from gpuwm.cycle.ingestion import verify_ingestion
 from gpuwm.cycle.mpas_port_adapter import (PORT_FORECAST_RELPATH,
                                            PORT_MESH_BINDING_RELPATH,
-                                           PORT_PROOF_RELPATH,
-                                           PORT_SRC_RELDIR,
+                                           PORT_PACKAGES, PORT_PROOF_RELPATH,
+                                           PORT_SRC_RELDIR, port_package,
                                            split_backend_restart)
 
 REPLAY_BANNER = "REPLAY BACKEND: this leg did not integrate a dycore"
@@ -217,8 +217,15 @@ def _bridge_leg(*, root: Path, source: Path, doc: Any, label: str,
               if not Path(candidate).exists()]
     if absent:
         raise BackendUnavailable(
-            "mpas_port (via mpas_cycle_bridge.worker)", looked_in,
+            "the MPAS port (via mpas_cycle_bridge.worker)", looked_in,
             f"missing from the port root: {sorted(absent)}")
+    if port_package(port_root) is None:
+        packages = [str(port_root / PORT_SRC_RELDIR / name)
+                    for name in PORT_PACKAGES]
+        raise BackendUnavailable(
+            "the MPAS port (via mpas_cycle_bridge.worker)", packages,
+            "the port root holds none of the port packages the bridge "
+            "imports")
     if port_config_path is None:
         raise CycleRefusal(
             "the bridge worker takes the port case configuration as a FILE, "

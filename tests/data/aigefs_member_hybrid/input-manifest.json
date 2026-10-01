@@ -2,12 +2,12 @@
   "composition_sha256": "9965904c92f08cd71323e2565d7a663863c8ca061f3e991b813b52ad2a6a5d10",
   "decoders": {
     "gpuwm_mapped_engine": {
-      "bytes": 5887944,
+      "bytes": 5945928,
       "path": "../../tip/tools/rw_wps/target/release/gpuwm_mapped_engine",
-      "sha256": "5ecfaeba806574f61fab39a63b1a5b4da9e58ad4cd9bb823310cdf3f31afa1e1"
+      "sha256": "c1235c932944d4544f1876451eee081f3b5053243ed34f66c0537becf61f3dd2"
     }
   },
-  "mapping_sha256": "c7ede9fa23ca9c9903ffb46be27a36f8a613db8eb3f9d32611fbda0e047d44d7",
+  "mapping_sha256": "d34ff39693af3a6cef6d4f3d83a72c7bff1d710470518d986724eae368bde623",
   "primary_files": [
     {
       "bytes": 79644823,

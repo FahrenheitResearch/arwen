@@ -326,6 +326,85 @@ def test_hierarchy_writer_joins_root_lbc_and_child_without_lbc_atomically(
     assert not tuple(tmp_path.glob(".d-*"))
 
 
+def test_a_childs_timing_and_measured_receipt_leave_its_cache_digest(tmp_path):
+    """A138: two preparations of the same tree that differ only in what
+    they measured (the child's wall time, the card's free bytes and the
+    worker count its receipt carries) publish the same cache for every
+    domain; the wall time stays in the domain's receipt.json."""
+
+    def build(name, *, seconds, free, workers):
+        root_initial, root_met, root_soil, root_static, boundaries, grid = \
+            _inputs()
+        child_initial, child_met, child_soil, child_static, _, child_grid = \
+            _inputs()
+        root_initial.state.lateral_boundaries = boundaries
+        child_initial.state.lateral_boundaries = None
+        root_domain, child_domain = _domain(1, 0), _domain(2, 1)
+        receipt = {
+            "backend": "cuda", "workers": 1,
+            "masked_surface_chain": {"workers": workers, "bridge": None},
+            "selection": {
+                "requested": "auto", "backend": "cuda",
+                "reason": "the card is certified",
+                "device_fit": {"need_bytes": 1, "free_bytes": free,
+                               "total_bytes": 2 * free, "fits": True}},
+            "soil_mapping": {"preprocess_backend": {
+                "backend": "cuda", "selection": {
+                    "requested": "auto", "backend": "cuda",
+                    "device_fit": {"free_bytes": free}}}},
+        }
+        child = SimpleNamespace(
+            domain=child_domain, real=child_initial, grid=child_grid,
+            horizontal=child_met, soil=child_soil,
+            static_fields=child_static, preprocess_receipt=receipt,
+            input_preparation_seconds=seconds)
+        return write_native_hierarchy_artifacts(
+            tmp_path / name, exp=SimpleNamespace(
+                domains=(root_domain, child_domain)),
+            root_grid=grid, root_initial_result=root_initial,
+            root_met=root_met, root_soil=root_soil,
+            root_static_fields=root_static, root_boundaries=boundaries,
+            child_results=(child,), bridge_manifest_sha256="a" * 64,
+            source_manifest_sha256="b" * 64, namelist_sha256="c" * 64,
+            forcing_hours=(0, 1), source_identity={"source": "fixture"},
+            valid_time=datetime(2026, 7, 20))
+
+    first = build("first", seconds=0.25, free=15_000_000_000, workers=24)
+    second = build("second", seconds=9.5, free=11_000_000_000, workers=8)
+
+    def digests(build_result):
+        return [domain["artifacts"]["prepared_cache"]["content_sha256"]
+                for domain in build_result.receipt["domains"]]
+
+    assert digests(first) == digests(second)
+    assert first.receipt["domains"][1]["input_preparation_seconds"] == 0.25
+    assert second.receipt["domains"][1]["input_preparation_seconds"] == 9.5
+    header = json.loads(
+        (tmp_path / "first" / "domains" / "d02" / "prepared-cache"
+         / "header.json").read_text(encoding="utf-8"))
+    user = header["metadata"]["user"]
+    assert "input_preparation_seconds" not in user
+    assert user["preprocess_receipt"]["selection"] == {
+        "requested": "auto", "backend": "cuda"}
+    assert user["preprocess_receipt"]["soil_mapping"]["preprocess_backend"][
+        "selection"] == {"requested": "auto", "backend": "cuda"}
+    # What the child measured stays in its receipt.json, whole.
+    for build_result, free, workers, name in (
+            (first, 15_000_000_000, 24, "first"),
+            (second, 11_000_000_000, 8, "second")):
+        kept = build_result.receipt["domains"][1]["preprocess_receipt"]
+        assert kept["selection"]["device_fit"]["free_bytes"] == free
+        assert kept["selection"]["reason"] == "the card is certified"
+        assert kept["masked_surface_chain"]["workers"] == workers
+        assert kept["soil_mapping"]["preprocess_backend"]["selection"][
+            "device_fit"] == {"free_bytes": free}
+        on_disk = json.loads(
+            (tmp_path / name / "domains" / "d02" / "receipt.json"
+             ).read_text(encoding="utf-8"))
+        assert on_disk["preprocess_receipt"] == kept
+    assert "preprocess_receipt" not in first.receipt["domains"][0]
+
+
 def test_hierarchy_writer_rejects_incomplete_child_without_partial_tree(
         tmp_path):
     initial, met, soil, static, boundaries, grid = _inputs()

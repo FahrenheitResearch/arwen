@@ -1,0 +1,57 @@
+{
+  "schema": "shinhong-workspace-identity-v1",
+  "measured": "2026-09-30",
+  "baseline_engine": "d6929cb8d",
+  "fingerprint": {
+    "nvrtc_build": "13.4.92",
+    "nvrtc_build_id": "CL-38855100",
+    "nvrtc_library_sha256": "d8f82e7019fe990bcd9efe4c5c444c036ddf2d5df95090d3965ae62be2009a2c",
+    "cuda_driver_version": "13030",
+    "device_compute_capability": "120",
+    "cupy_version": "14.2.0",
+    "numpy_version": "2.5.3"
+  },
+  "baseline_max_ulp": {
+    "du": 93207,
+    "dv": 46603,
+    "dtheta": 0,
+    "dqv": 349526,
+    "dqc": 155602,
+    "dqi": 3055548,
+    "exch_h": 8,
+    "tke": 2022,
+    "el": 14,
+    "hpbl": 1,
+    "wstar": 1,
+    "delta": 1
+  },
+  "candidate_max_ulp_process_1": {
+    "du": 93207,
+    "dv": 46603,
+    "dtheta": 0,
+    "dqv": 349526,
+    "dqc": 155602,
+    "dqi": 3055548,
+    "exch_h": 8,
+    "tke": 2022,
+    "el": 14,
+    "hpbl": 1,
+    "wstar": 1,
+    "delta": 1
+  },
+  "candidate_max_ulp_process_2": {
+    "du": 93207,
+    "dv": 46603,
+    "dtheta": 0,
+    "dqv": 349526,
+    "dqc": 155602,
+    "dqi": 3055548,
+    "exch_h": 8,
+    "tke": 2022,
+    "el": 14,
+    "hpbl": 1,
+    "wstar": 1,
+    "delta": 1
+  },
+  "oracle_bitwise_comparison": "IDENTICAL (13 arrays compared)"
+}

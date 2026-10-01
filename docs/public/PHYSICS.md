@@ -30,11 +30,12 @@ substitutions (see the end of this page).
 
 **A rung grades one OPTION, and most of the tree sits on the same
 rung.** `implemented-unverified` is not a mark against any particular
-scheme. It is carried by **23 of the registry's 40 component options**:
+scheme. It is carried by **27 of the registry's 45 component options**:
 YSU, MYJ, MYNN (PBL and surface layer both), Eta similarity, Shin-Hong,
-SASE, Milbrandt-Yau, Morrison, WDM6, P3 one-category, Thompson
+UW moist turbulence, SASE, Milbrandt-Yau, Morrison, WDM6, P3 one-category, Thompson
 aerosol-aware, Noah, Noah-MP, RUC, Grell-Freitas, New Tiedtke, WRF RRTM
-longwave with Dudhia shortwave, and all five turbulence closures. It says
+longwave with Dudhia shortwave, the three urban canopy models
+(single-layer UCM, BEP and BEP+BEM), and all five turbulence closures. It says
 that the option retains the evidence limits described in its own row.
 Some rows report an oracle or an idealized trajectory, while others
 explicitly report no independent oracle. This is separate from whether
@@ -84,7 +85,7 @@ verdict. `docs/public/receipts/physics-composition-walk.json` is that
 record, and `tests/test_physics_composition_walk.py` regenerates it on
 every release cut and compares it byte for byte. As measured:
 
-- **2981 of 9831 admission attempts are accepted**, covering **2973 distinct
+- **3557 of 11431 admission attempts are accepted**, covering **3549 distinct
   accepted suites**, against 29 registered templates. The presets are a
   corner of the space, not the space.
 - **Every accepted run keeps every switch the file set**, checked
@@ -92,9 +93,9 @@ every release cut and compares it byte for byte. As measured:
   admission is never a silent substitution.
 - **Every admitted value of every axis reaches an accepted run**, with
   no exceptions left. `ra_lw_physics = 1` (WRF RRTM longwave) was the
-  last one; 1.9 ports it, and it now reaches 692 distinct accepted suites,
-  including 173 paired with Dudhia shortwave.
-- **6850 refusals fall into 15 distinct rules**, every one of which
+  last one; 1.9 ports it, and it now reaches 836 distinct accepted suites,
+  including 209 paired with Dudhia shortwave.
+- **7874 refusals fall into 17 distinct rules**, every one of which
   names the selector to change, and each of which has a
   demonstrated remedy -- the receipt carries a before/after pair per
   rule showing that doing what the message says reaches an accepted
@@ -134,7 +135,7 @@ In plain words -- and every one of these is a way IN, not a wall:
 | `template` | **a preset exists**: pick it by name and every later stage enforces it switch for switch |
 | `component-override` | **a preset exists** on the routes that declare the override, and everywhere else you **type it in your config** |
 | `expert-template` | an expert preset exists; its acknowledgement records review of the advisory |
-| `unreachable` | no preset and no route names it. Today exactly one option is in this state, and it is **not ported yet**: it declares no selector at all, so it refuses by name |
+| `unreachable` | no preset and no route names it. Today four options are in this state: one is **not ported yet** and declares no selector at all, so it refuses by name; the three urban canopy models are ported and default-off, and a config you write selects them by their key |
 
 Every one of those four states is a statement about the **named**
 routes -- what a menu, a `--physics-profile` choice list or a route
@@ -162,10 +163,13 @@ prints both:
 | registry `unreachable` option | selectors | what a config naming it actually gets |
 |---|---|---|
 | microphysics `sase` | none declared | **not ported yet**: publishes a porting target and declares no selector, so nothing can resolve to it |
+| urban `slucm` | `sf_urban_physics = 1` | **accepted** with Noah or Noah-MP: WRF v4.7.1's single-layer urban canopy model runs on the urban land-use columns; under Noah-MP the city's 2 m temperature is blended as the temperature the UCM computes, where WRF converts it a second time as if it were potential temperature and cools the city by up to 12 K on high ground (a declared divergence, below); no preset selects it yet |
+| urban `bep` | `sf_urban_physics = 2` | **accepted** with Noah or Noah-MP and YSU or MYJ (WRF's own requirement): the multi-layer BEP canopy; under YSU the rural surface drag is applied once, where WRF applies it twice (a declared divergence, below); no preset selects it yet |
+| urban `bep-bem` | `sf_urban_physics = 3` | **accepted** with Noah or Noah-MP and YSU or MYJ: BEP with the BEM building-energy model; the same YSU drag divergence as `bep`; no preset selects it yet |
 
 Three options used to sit in this table -- land surface `off`, surface
 layer `off` and radiation `analytic-clear-sky` -- each published as
-`unreachable` while a hand-written config ran it (785, 113 and 213
+`unreachable` while a hand-written config ran it (929, 113 and 249
 accepted suites in the walk). The state was a menu policy, not a
 property of the model, and a menu policy that every config route
 overrides is a wall with a door beside it. All three are now
@@ -814,10 +818,10 @@ convective case in
 | quantity | with the profile (what a run does today) | with it removed | change |
 |---|---|---|---|
 | initial mean `nwfa` | 6.653e+07 kg-1 | 0 | -- |
-| final interior `nwfa` | 2.174e+07 kg-1 | 4.288e+06 kg-1 | floor where the scheme runs, zero in clear columns |
+| final interior `nwfa` | 2.174e+07 kg-1 | 4.298e+06 kg-1 | floor where the scheme runs, zero in clear columns |
 | peak `nc` over the run | 1.598e+08 kg-1 | 2.945e+07 kg-1 | **5.4x fewer droplets** |
-| domain-total `RAINNC` | 1.957 mm | 3.207 mm | **+63.8%** |
-| peak `RAINNC` | 0.794 mm | 1.029 mm | +29.6% |
+| domain-total `RAINNC` | 1.958 mm | 3.286 mm | **+67.8%** |
+| peak `RAINNC` | 0.793 mm | 1.016 mm | +28.1% |
 
 Both forecasts are re-run and this table rebuilt by
 `tests/test_physics_md_aerosol_claims.py::test_the_published_aerosol_sensitivity_is_a_live_measurement`,
@@ -826,7 +830,7 @@ bit-identical across repeats on the measurement machine, so nothing here
 is a tolerance.
 
 Read that precisely: removing the CCN loading a run starts from raises
-domain-total surface rain by **63.8%** over half an hour, and cuts the peak
+domain-total surface rain by **67.8%** over half an hour, and cuts the peak
 droplet count by a factor of 5.4. That is not a rounding difference; it is a
 different forecast. It is also the magnitude the lateral-boundary deviation
 below converges to, because after `L/U` the whole domain **is** the
@@ -1061,6 +1065,7 @@ Notes with teeth:
 | YSU | 1 | implemented-unverified | 24-column oracle vs unmodified `bl_ysu.F90`: theta tendency 1 ULP, exchange coefficients 7 ULP, PBLH 1 ULP; momentum/moisture tendencies 4.2e-8 m/s2 / 3.1e-11 kg/kg/s (near-total cancellations); part of the model-validated reference suite alongside Thompson |
 | MYJ (Mellor-Yamada-Janjic 2.5) | 2 | implemented-unverified | float32 CPU authority transcribed line by line from the byte-frozen `module_bl_myjpbl.F`, with the CUDA translation unit agreeing with it on land and water columns inside a stated tolerance; column smokes assert finiteness, the `EPSQ2` TKE floor, non-negative mixing length and exchange coefficients, and vapour conservation in a surface-sealed column, each with a mutation control that stubs the ported routine itself. TKE cold-starts at WRF's `epsq2` = 0.2 (`MYJPBLINIT`), not zero -- the seed decides the first-step PBL depth. **Declared divergence:** interface heights are carried above ground rather than above sea level (WRF seeds `ZINT(KTE+1)=HT`), which cancels exactly in real arithmetic and to within 69 ULP in float32 over 4.4 km terrain, with `KPBL` unchanged; gpuwm's column is the better-conditioned one. **No oracle comparison against the WRF Fortran has been run** -- there is no gfortran replay, no fixture of WRF words and no ULP table -- so nothing here claims bit agreement with WRF; that campaign is the declared next stage. Selectable only as the 2/2 pair with the Eta similarity surface layer |
 | MYNN (EDMF) | 5 | implemented-unverified | assembled driver bitwise on the warm step vs unmodified `module_bl_mynn.F`; 300-step coupled forecast gate; composes with every radiation pairing the loader admits and with the MYNN (5), classic MM5 (91) or revised MM5 (1) surface layer -- see the MYNN scope note below |
+| UW moist turbulence (CAM5, Bretherton and Park 2009) | 9 | implemented-unverified | ported from WRF v4.7.1 (`module_bl_camuwpbl_driver.F` and the CAM modules it calls) in binary64, the scheme's own precision; every output word equals a gfortran -O0 build of the byte-unmodified sources (tools/uwpbl_wrf471_oracle) on the card and in the CPU reference, over six regime families (convective day, stable night, stratocumulus, valley cold pool, mixed-phase, shallow cumulus) on 35, 44 and 61 levels plus 48 branch-probe columns; cos and acos are correctly rounded rather than glibc's LGPL code, and float32 subnormal lanes under the loader's flush-to-zero are counted in tests/test_uwpbl_ftz_wrf471_parity.py; no matched forecast or observation score yet. Needs a surface layer that writes UST/HFX/QFX (1, 5 or 91) and `moist = true`; imports natively from a WRF namelist |
 | Shin-Hong (scale-aware) | 11 | implemented-unverified | float32 CPU authority reproduces every output field of both `ctopo` arms at **max ULP 0** against the byte-frozen `module_bl_shinhong.F`, over 30 cases x 6 grid spacings x 40 levels; the CUDA mirror's heat tendency is bitwise (0 ULP through both tridiagonal solves), PBLH/WSTAR/DELTA 1 ULP, `EXCH_H` 8; and its resolved/subgrid partition was scored across a 3200-100 m ladder against pre-registered Honnert (2011) envelope bands -- every gated rung inside, 100 m LES anchor held ([receipts](receipts/grayzone/)) |
 | SASE | none: ArWen-only, `bl_pbl_physics = 900` outside WRF's namespace | implemented-unverified, **permanently** | no WRF v4.6.1 counterpart, so no oracle comparison against WRF Fortran exists or can exist and this ladder cannot rank it; numerics self-checked; physics unvalidated -- 2 of 7 frozen acceptance bars met on a single reference case on a single day ([Selecting an experimental scheme](#selecting-an-experimental-scheme)) |
 
@@ -1120,9 +1125,19 @@ also has Thompson members,
 `thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1` and
 `thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1`: each is
 its WSM6 row with the microphysics moved and nothing else, offered on the
-same routes and sources. The wizard and the Create page offer them; no
-suite is picked by grid spacing, so a sub-km domain gets one by choosing
-it.
+same routes and sources. The wizard and the Create page offer them, and
+the radiation-bearing one is the default below 1 km: a domain whose
+finest grid is finer than 1 km with no `--physics-profile` runs
+`thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1`
+wherever the source's route admits it, because on marine fog days it
+kept the coastal fog and low stratus that YSU or Noah each lost part of.
+A source whose published soil RUC cannot start from (GEM GDPS, one
+0-10 cm layer) keeps its own default at every spacing. A `--source
+hrrr` domain takes it with or without nests: that route's hierarchy
+stage pins the soil column its land surface runs, four layers for Noah
+and nine for RUC. The optional stock-WRF export beside that route's
+preparation records REFUSED for such a tree, as it does for any MYNN or
+RUC tree; the forecast itself is unaffected.
 
 **What is pinned, and it is a real scope limit.** MYNN's *namelist
 option identity* is a single validated combination. 11 knobs --
@@ -1195,7 +1210,7 @@ Naming a composition is not evidence, and none was claimed for it.
 All four run. In plain words: `template` means **a preset exists**, and
 `component-override` means **a preset exists** on the routes that
 declare it and you **type it in your config** anywhere else -- which is
-how the revised MM5 row's 1046 distinct accepted combinations were measured.
+how the revised MM5 row's 1238 distinct accepted combinations were measured.
 Maturity and reachability are separate registry axes, quoted verbatim
 from the registry: `maturity` is the option's evidence tier and
 `reachability.state` is how a NAMED route can offer it. Neither column
@@ -1229,6 +1244,42 @@ before relying on any of these over unusual surfaces):
   WRF's own uninitialized-`ilnb` read on thin snow (a real WRF defect:
   the value depends on grid traversal order) is *not* reproduced; ArWen
   passes the defined one-layer answer and documents the divergence.
+
+Urban canopy models (`sf_urban_physics` 1-3): two declared divergences
+from WRF v4.7.1, each a WRF defect, each proven against a WRF build with
+exactly the one-line change and against stock WRF, so reverting either is
+one line:
+
+- **The UCM's 2 m temperature under Noah-MP** is blended as the absolute
+  temperature the UCM computes. WRF's `module_surface_driver.F:3393`
+  divides it by `(1e5/PSFC)**RCP` as if it were a potential temperature,
+  but `module_sf_urban.F:1686` builds it from `TS` and `TA`, both absolute
+  temperatures (WRF's own comment at :1679 says so). The conversion cools
+  every Noah-MP city cell by FRC x T x (1-(PSFC/1e5)**RCP): about 1 K at
+  250 m and 12 K at 1,900 m. Noah never reads the value, and BEP/BEM
+  convert correctly. Pinned by `tests/test_urban_ucm_noahmp_wrf471_parity.py`
+  (the fixed and the stock fixture).
+- **YSU with BEP or BEP+BEM applies the rural surface drag once.** WRF's
+  `bl_ysu.F90:1313-1314` removes only the urban fraction of YSU's own
+  surface drag and keeps `(1-frc)*fric` on the first-level diagonal, but
+  the BEP couple (`module_sf_noahdrv.F:1708-1711`,
+  `module_sf_noahmpdrv.F:3718-3721`) has already put the same rural drag
+  into `a_u_bep`/`a_v_bep`, which :1359-1368 add to that diagonal. So
+  WRF applies the surface drag twice on every column that is not wholly
+  urban, the ocean included; heat and moisture are counted once, and
+  WRF's MYJ path (`myjurb`) takes the drag only through `a_u`. On the
+  2026-09-29 750 m San Francisco run it slowed the 10 m wind over the sea
+  by 1.25 m/s within two hours. ArWen removes the whole of YSU's own drag
+  (`kernels/ysu.cu`), so the drag enters once, through `a_u_bep`, the way
+  heat enters through `b_t_bep`. On a column with no buildings the surface
+  stress is then the urban-off column's to within 0.2 percent after the
+  two spellings of the drag (`dz8w` against YSU's pressure thickness) are
+  divided out, where stock WRF's is 1.96 to 2.00 times it. Pinned by
+  `tests/test_ysu_bep_rural_drag.py` and graded by
+  `tests/test_ysu_bep_wrf471_parity.py` against WRF built by
+  `tools/urban_wrf471_oracle/build_ysu_bep_fix.sh`. A run with the urban
+  models off is untouched: the plain YSU kernel compiles from unchanged
+  statements.
 
 ## Radiation (`ra_lw_physics` / `ra_sw_physics`)
 
@@ -2169,7 +2220,9 @@ structured substitution report rather than silently rewriting:
 the Shin-Hong port: it now imports natively as 11 and runs the scheme
 itself (registry maturity "implemented-unverified" -- its CPU authority
 is bitwise against WRF v4.6.1, and no matched forecast trajectory
-exists yet), so it is no longer a substitution.
+exists yet), so it is no longer a substitution.  `bl_pbl_physics = 9`
+(the UW moist-turbulence PBL) was never a substitution: it imports
+natively as 9 and runs the WRF v4.7.1 scheme.
 
 Every other unimplemented scheme id is a hard error. Options WRF
 accepts but ArWen has not validated -- moving nests, vertical
@@ -2201,3 +2254,57 @@ keys ArWen pins at a single validated value -- is
 [CONFIGURATION.md](CONFIGURATION.md). The import report itself is
 three-sectioned (translated / fixed-by-ArWen / not-implemented), so a
 translated namelist never hides a knob decision.
+
+Noah supports WRF v4.7.1 `lsm_mosaic` through `sf_surface_mosaic = 1`
+and `mosaic_cat` (default 3). Each land-use tile retains its surface and
+four-layer soil state across checkpoints. Prepared domains apply real.exe's
+LANDUSEF edits; wrfinput uses its already edited fractions. The option requires
+Noah and LANDUSEF. With `sf_urban_physics = 1` the single-layer urban
+canopy model runs inside each urban tile, as WRF's lsm_mosaic does; as in
+WRF, an urban tile in a cell whose dominant category is not urban has zero
+urban fraction and runs as natural vegetation. That is the default,
+`mosaic_urban_canopy = "dominant"`. `mosaic_urban_canopy = "every_tile"`
+(per domain, `[shared]` or `[[domain]]`, also read from `&physics` and
+`gpuwm domain --mosaic-urban-canopy`) gives a mostly rural cell the URBPARM
+urban fraction of its largest urban tile's type. Each urban tile runs the
+canopy and contributes at its own land-use tile weight, so small towns in
+mostly rural cells get the canopy. If a cell contains several urban types,
+their tiles share that largest type's urban fraction. Cells whose dominant
+category is urban, the urban type map and the
+10 m wind override stay WRF's. It is not WRF's rule and is off until it beats
+WRF's against station observations. Urban options 2 and 3 are
+refused, as WRF refuses them (module_check_a_mundo.F:505-518). A nest that
+moves or is spawned mid-run, and a domain that streams through `[tiles]`, are
+refused with mosaic on when the experiment loads or the stream is built: each
+rebuilds the physics without the tiles, which only the initialization doors
+build. Stock-WRF export does not inventory mosaic land state. Off mode retains
+the existing Noah path.
+
+Noah mosaic: three declared divergences from WRF v4.7.1, each a WRF defect,
+each checked against WRF's own output words:
+
+- **The cell soil average reads the wrong layers.** WRF averages the tiles'
+  soil moisture, liquid water and temperature into the cell at index
+  `NS*mosaic_i` of the tile-stacked soil arrays (`module_sf_noahdrv.F:4151-4153`)
+  instead of layer `NS` of tile `mosaic_i`, so from the second tile on it mixes
+  other layers and other tiles, some of them not yet stepped. ArWen averages
+  each tile's own four layers. The tile states themselves are WRF's either way.
+  Pinned by `tests/test_noah_mosaic_oracle_controls.py` (WRF's index
+  reproduces WRF's words, the corrected one differs) and the GPU replay, which
+  fails when WRF's index is put back.
+- **Accumulated amounts count every tile at full weight.** WRF adds each
+  tile's whole increment of surface runoff, underground runoff, potential
+  evaporation, snowmelt and snow phase-change heat to the cell, and adds the
+  accumulated snowfall once per tile, so a cell accumulates the sum over its
+  tiles instead of their area mean, about three times too much with three
+  tiles that agree. ArWen weights each tile's increment by its
+  area and adds snowfall once. Pinned by the single-tile oracle runs in the
+  same controls file.
+- **A land cell with no land fraction divides zero by zero.** Where the
+  land and soil reconciliation turned a water point into land, its land-use
+  fractions are all water; WRF moves the water out of the cell's tiles, keeps
+  every tile weight at zero, and its area averages give a NaN skin
+  temperature and roughness
+  (`module_sf_noahdrv.F:4186, 4195`). ArWen runs such a cell as its own
+  dominant category, one tile at full weight, which is what plain Noah runs
+  there. Pinned by `tests/test_noah_mosaic_init_wrf471.py`.

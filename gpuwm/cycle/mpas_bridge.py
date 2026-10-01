@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import mpas_cycle_bridge
+from mpas_cycle_bridge.portbind import PORT_PACKAGES, PORT_SRC_RELDIR
 
 from gpuwm.cycle.contracts import CycleRefusal
 
@@ -236,6 +237,242 @@ def launch(*, phase: str, port_root: str | os.PathLike[str],
     return manifest
 
 
+# --------------------------------------------------------------------------
+# sizing: does the port's device stack for this mesh fit this card?
+
+
+#: How a model parent's device footprint is priced, one row per parent
+#: kind, so a second engine is a row here rather than a branch.
+#:
+#: The row names WHERE the port keeps its measured capacity model, not a
+#: copy of the model's numbers.  The port states the model in one module,
+#: ``device_admission``, and every one of its own admission decisions
+#: answers from it, because two copies of one footprint model are what let
+#: a card between their answers pass one gate and die on the other.  That
+#: module is stdlib-only by the port's own contract, so it is read by path
+#: here without importing the port.  Its surface is
+#: ``card_profile_from_attributes``, ``model_for_card`` and
+#: ``required_free_bytes``.
+#:
+#: The 2026-08-20 affine fit (5,018 MiB fixed plus 140,916 B per cell, on
+#: the x1.40962 and x4.163842 anchors) is NOT held here: the port retired
+#: that shape on 2026-08-27 for a card-scaled core, tiled physics
+#: workspaces and a margin of two named terms, and priced with it a
+#: 32 GiB card would be refused the port's registered 224,210-cell meshes,
+#: which the port's own model admits.
+PARENT_DEVICE_FOOTPRINT: Mapping[str, Mapping[str, Any]] = {
+    "mpas-cuda": {
+        # One path per port layout, from the bridge's own package rows
+        # in their order; the first that exists is the model.  The worker
+        # imports the port through the same rows, so a leg is priced and
+        # run from one package.
+        "admission_module": tuple(
+            f"{PORT_SRC_RELDIR}/{package}/device_admission.py"
+            for package in PORT_PACKAGES),
+        # The device stack the bridge builds: the global mesh's.
+        "configuration": "global",
+        # The port config's mesh file and the dimension that counts cells.
+        "mesh_file_role": "grid",
+        "cells_dimension": "nCells",
+        # The file whose header carries the vertical level count the
+        # port's tiled workspaces scale with, and that dimension.
+        "levels_file_role": "init",
+        "levels_dimension": "nVertLevels",
+    },
+}
+
+#: The functions a port's admission module must publish to price a leg.
+#: Port trees from 2026-08-25 to 2026-08-27 have a ``device_admission``
+#: with ``required_free_bytes`` only, on the retired affine model.
+ADMISSION_SURFACE = ("card_profile_from_attributes", "model_for_card",
+                     "required_free_bytes")
+
+#: Printed by the card probe: the two numbers the port's model reads off
+#: the card, and the free memory it is compared with, from a process of
+#: its own so this one never holds a CUDA context the leg then cannot use.
+_CARD_PROBE = r"""
+import json
+import cupy as cp
+device = cp.cuda.Device()
+attributes = device.attributes
+free, total = cp.cuda.runtime.memGetInfo()
+name = cp.cuda.runtime.getDeviceProperties(device.id)["name"]
+print(json.dumps({
+    "name": name.decode(errors="replace") if isinstance(name, bytes) else str(name),
+    "MultiProcessorCount": int(attributes["MultiProcessorCount"]),
+    "MaxThreadsPerMultiProcessor": int(attributes["MaxThreadsPerMultiProcessor"]),
+    "free_bytes": int(free), "total_bytes": int(total)}))
+"""
+
+
+def _port_admission(port_root: Path, row: Mapping[str, Any]):
+    import importlib.util
+
+    for relative in row["admission_module"]:
+        path = port_root / relative
+        if path.is_file():
+            # Registered before it runs: the port's dataclasses resolve
+            # their string annotations through sys.modules at class
+            # creation, and an unregistered module fails right there.
+            name = "_mpas_port_device_admission"
+            spec = importlib.util.spec_from_file_location(name, path)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[name] = module
+            try:
+                spec.loader.exec_module(module)
+            except BaseException:
+                sys.modules.pop(name, None)
+                raise
+            return module, path
+    return None, None
+
+
+def probe_card(python: str | None = None) -> dict[str, Any]:
+    """The card the leg will run on, read by a short-lived process."""
+
+    completed = subprocess.run([python or sys.executable, "-c", _CARD_PROBE],
+                               env=child_environment(), capture_output=True,
+                               text=True, timeout=120)
+    if completed.returncode != 0:
+        raise BridgeRefusal(
+            "the card the forecast worker would use could not be read, so "
+            "the leg cannot be sized before it builds the device stack",
+            returncode=completed.returncode,
+            stderr_tail=completed.stderr[-2000:] or "<empty>",
+            remedy="gpuwm doctor names why the card is unreachable")
+    return json.loads(completed.stdout.strip().splitlines()[-1])
+
+
+def _port_file(config: Mapping[str, Any], role: str) -> Path:
+    """A file the port config names, found where the worker finds it.
+
+    The worker runs with the bridge root as its working directory
+    (:func:`launch`), so a relative path in the port config is relative
+    to that root and not to wherever the spine was started.
+    """
+
+    path = Path(config[role]).expanduser()
+    return path if path.is_absolute() else bridge_root() / path
+
+
+def mesh_cells(port_config: str | os.PathLike[str], *,
+               parent_kind: str = "mpas-cuda") -> tuple[int, str]:
+    """``(cells, mesh name)`` of the mesh a port config binds, off its header."""
+
+    from gpuwm.netcdf_bridge import open_dataset
+
+    row = PARENT_DEVICE_FOOTPRINT[parent_kind]
+    config = json.loads(Path(port_config).expanduser().read_text(encoding="utf-8"))
+    grid = _port_file(config, row["mesh_file_role"])
+    dimensions = open_dataset(grid).dimensions
+    if row["cells_dimension"] not in dimensions:
+        raise BridgeRefusal(
+            "the port config's mesh file has no cell dimension, so the leg "
+            "cannot be sized", mesh_file=str(grid),
+            dimension=row["cells_dimension"], have=sorted(dimensions))
+    return (int(dimensions[row["cells_dimension"]].size),
+            str(config.get("mesh", grid.name)))
+
+
+def mesh_levels(port_config: str | os.PathLike[str], *,
+                parent_kind: str = "mpas-cuda") -> int | None:
+    """The vertical level count of the case a port config binds.
+
+    Read off the header of the file the row names; ``None`` when that
+    file carries no such dimension, and the leg is then priced on the
+    port's own default level count, which the receipt says.
+    """
+
+    from gpuwm.netcdf_bridge import open_dataset
+
+    row = PARENT_DEVICE_FOOTPRINT[parent_kind]
+    config = json.loads(Path(port_config).expanduser().read_text(encoding="utf-8"))
+    dimensions = open_dataset(
+        _port_file(config, row["levels_file_role"])).dimensions
+    if row["levels_dimension"] not in dimensions:
+        return None
+    return int(dimensions[row["levels_dimension"]].size)
+
+
+def admit_parent_device(*, port_root: str | os.PathLike[str], cells: int,
+                        mesh: str, card: Mapping[str, Any],
+                        levels: int | None = None,
+                        parent_kind: str = "mpas-cuda") -> dict[str, Any]:
+    """Refuse, before a leg starts, a mesh the card's free memory cannot hold.
+
+    The concrete breakage: the worker builds the mesh's host state and only
+    then constructs the port's device stack, and nothing between the two
+    asked whether the card could hold it, so a mesh too big for the card
+    died inside the worker's first CuPy allocation, after the host
+    preparation.  The price is the port's own
+    ``required_free_bytes`` for this card (``card`` carries the probe's
+    ``MultiProcessorCount``, ``MaxThreadsPerMultiProcessor``, ``name`` and
+    ``free_bytes``); the comparison is with the card's free memory now.
+
+    ``levels`` is the case's vertical level count (:func:`mesh_levels`);
+    ``None`` prices the leg on the port's default level count.
+
+    A port tree that publishes no admission module, or one without the
+    whole :data:`ADMISSION_SURFACE`, is not refused, since that would stop
+    a run that may fit, and is not sized either: the receipt says
+    ``sized: false`` and why.
+    """
+
+    import inspect
+
+    row = PARENT_DEVICE_FOOTPRINT[parent_kind]
+    root = Path(port_root).expanduser()
+    admission, module_path = _port_admission(root, row)
+    free = int(card["free_bytes"])
+    if admission is None:
+        return {"sized": False, "mesh": mesh, "cells": int(cells),
+                "free_bytes": free,
+                "reason": "the port tree publishes no device admission model; "
+                          "looked in " + ", ".join(
+                              str(root / relative)
+                              for relative in row["admission_module"])}
+    absent = [name for name in ADMISSION_SURFACE
+              if not callable(getattr(admission, name, None))]
+    if absent:
+        return {"sized": False, "mesh": mesh, "cells": int(cells),
+                "free_bytes": free, "model_module": str(module_path),
+                "reason": f"the port's {module_path} has no "
+                          f"{', '.join(absent)}, so it carries no per-card "
+                          "capacity model this spine can price a leg with"}
+    profile = admission.card_profile_from_attributes(str(card["name"]), card)
+    by_levels = (levels is not None and "levels" in inspect.signature(
+        admission.model_for_card).parameters)
+    model = admission.model_for_card(
+        profile, row["configuration"],
+        **({"levels": int(levels)} if by_levels else {}))
+    required = int(admission.required_free_bytes(int(cells), model))
+    mib = 1024 ** 2
+    receipt = {
+        "sized": True, "mesh": mesh, "cells": int(cells),
+        "card": str(card["name"]),
+        "multiprocessors": int(profile.multiprocessors),
+        "required_free_bytes": required, "free_bytes": free,
+        "required_mib": round(required / mib, 1),
+        "free_mib": round(free / mib, 1),
+        "model_measured": bool(getattr(model, "measured", True)),
+        "model_module": str(module_path),
+        "configuration": row["configuration"],
+        "levels": int(levels) if by_levels else None,
+        "levels_basis": ("the case's level count" if by_levels
+                         else "the port's default level count"),
+    }
+    if free < required:
+        raise BridgeRefusal(
+            f"the MPAS port's device stack for {mesh} ({int(cells):,} cells) "
+            f"needs {required / mib:,.0f} MiB free on {card['name']} and "
+            f"{free / mib:,.0f} MiB is free, so the leg would prepare the "
+            "host state and then die inside the worker's first device "
+            "allocation", **receipt,
+            remedy="free the card, run on a card with more memory, or bind "
+                   "a mesh with fewer cells")
+    return receipt
+
+
 def _segment_manifest_path(out_dir: Path, phase: str) -> Path:
     # ``seed`` writes two segments side by side; the caller asks for them
     # with read_segment().  Everything else writes one, in ``out``.
@@ -362,6 +599,9 @@ def stamp_for_segment(manifest: Mapping[str, Any], *,
     }
 
 
-__all__ = ["BridgeRefusal", "CLOSED_KIND", "FRAMES_KIND", "bridge_root",
-           "child_environment", "launch", "read_segment", "segment_arrays",
-           "stamp_for_segment", "verify_bridge_purity", "worker_path"]
+__all__ = ["ADMISSION_SURFACE", "BridgeRefusal", "CLOSED_KIND",
+           "FRAMES_KIND", "PARENT_DEVICE_FOOTPRINT", "admit_parent_device",
+           "bridge_root", "child_environment", "launch", "mesh_cells",
+           "mesh_levels", "probe_card",
+           "read_segment", "segment_arrays", "stamp_for_segment",
+           "verify_bridge_purity", "worker_path"]

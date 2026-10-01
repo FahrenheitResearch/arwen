@@ -130,6 +130,38 @@ def test_hrrr_waits_longer_for_a_window_that_needs_a_later_lead():
     assert long.cycle <= short.cycle
 
 
+@pytest.mark.parametrize("lead,hours,why", [
+    # f001: every hour reaches it; the synoptic rule (0.83 h + 0.0203 h
+    # per lead, 51.0 min) is slower than the off-synoptic one (0.8 h +
+    # 0.0324 h per lead, 49.9 min), so it sets the wait.
+    (1, 0.83 + 0.0203 * 1, "synoptic rule, every hour reaches f001"),
+    # f018: the off-synoptic runs still reach it and their steeper slope
+    # is slower (83.0 min against the synoptic 71.7 min).
+    (18, 0.8 + 0.0324 * 18, "off-synoptic rule, the last lead they reach"),
+    # f019: only the synoptic runs reach it, so their f019-f048 rule
+    # (0.87 h + 0.0183 h per lead, 73.1 min) decides; the off-synoptic
+    # line would have said 84.9 min for a lead those runs never post.
+    (19, 0.87 + 0.0183 * 19, "synoptic f019+ rule, the only hours reaching"),
+    (48, 0.87 + 0.0183 * 48, "synoptic f019+ rule, the only hours reaching"),
+])
+def test_the_hrrr_wait_is_its_row_s_expected_line(lead, hours, why):
+    """The f001 and f018 waits a HRRR plan takes, and why (A136 L1 follow-ups).
+
+    The wait is the route table's hrrr row on its EXPECTED line (the
+    earliest posting seen, what gpuwm.source_posting.expected_at gives),
+    the slowest of the cycle hours whose horizon reaches the lead.  L1 had
+    it on the latest posting seen, over all 24 hours: f001 107 min and
+    f018 140 min, which the late 30 Sep 06Z and 07Z runs set, so every
+    plan rode a background about an hour older than the one that was out.
+    A cycle later than its expected line is waited for by the run's fetch
+    until its row calls it late (tools/da_nowcast.py fetch_cmd), never
+    skipped or failed.  The retired constant was 50 min + 3.06 min/lead.
+    """
+
+    lag = background.BACKGROUND_SOURCES["hrrr"].lag_seconds(lead)
+    assert lag == pytest.approx(hours * 3600.0), why
+
+
 def test_a_window_past_the_cycle_horizon_refuses_rather_than_truncates():
     """HRRR's 18 h (48 h at the synoptic hours) is the source's ceiling."""
 

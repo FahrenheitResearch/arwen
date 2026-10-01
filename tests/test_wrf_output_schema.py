@@ -438,10 +438,28 @@ def test_the_resolver_reports_the_configured_selectors(label):
         assert np.asarray(value).dtype == np.int32, name
     for field, expected in overrides.items():
         assert attrs[field.upper()] == expected, field
-    # The four gpuwm does not implement are off, at both configurations.
-    for name in ("SHCU_PHYSICS", "SF_URBAN_PHYSICS", "SF_SURFACE_MOSAIC",
-                 "SF_OCEAN_PHYSICS"):
+    # The two gpuwm does not implement are off, at both configurations,
+    # and the urban and mosaic selectors are the configuration's (0 at
+    # both).
+    for name in ("SHCU_PHYSICS", "SF_OCEAN_PHYSICS", "SF_URBAN_PHYSICS",
+                 "SF_SURFACE_MOSAIC"):
         assert attrs[name] == 0, name
+
+
+@pytest.mark.parametrize("option", [1, 2, 3])
+def test_an_urban_run_stamps_its_urban_selector(option):
+    """The history of an urban run says which urban model wrote it.
+
+    Found by the observation-verification run: SF_URBAN_PHYSICS was a
+    constant-zero row from before the urban models existed, so every urban
+    arm's wrfout read as urban-off beside its sf_urban_physics = 1 config.
+    """
+    from gpuwm.io.wrfout import wrf_physics_selector_attrs
+
+    attrs = wrf_physics_selector_attrs(_selector_run(
+        sf_urban_physics=option, bl_pbl_physics=1, sf_sfclay_physics=1,
+        sf_surface_physics=2))
+    assert attrs["SF_URBAN_PHYSICS"] == option
 
 
 def test_the_two_configurations_actually_differ():

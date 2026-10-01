@@ -1,0 +1,144 @@
+
+/lib/x86_64-linux-gnu/libm.so.6:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+00000000000a11c0 <f32subf64x@@GLIBC_2.28+0x84a0>:
+   a11c0:	f3 0f 1e fa          	endbr64
+   a11c4:	48 ba 00 00 00 00 00 	movabs $0xc012000000000000,%rdx
+   a11cb:	00 12 c0 
+   a11ce:	c4 e1 f9 7e c0       	vmovq  %xmm0,%rax
+   a11d3:	48 b9 ff ff ff ff ff 	movabs $0x308ffffffffff,%rcx
+   a11da:	08 03 00 
+   a11dd:	48 01 c2             	add    %rax,%rdx
+   a11e0:	48 39 d1             	cmp    %rdx,%rcx
+   a11e3:	0f 83 d7 00 00 00    	jae    a12c0 <f32subf64x@@GLIBC_2.28+0x85a0>
+   a11e9:	48 89 c2             	mov    %rax,%rdx
+   a11ec:	48 c1 ea 30          	shr    $0x30,%rdx
+   a11f0:	8d 4a f0             	lea    -0x10(%rdx),%ecx
+   a11f3:	81 f9 df 7f 00 00    	cmp    $0x7fdf,%ecx
+   a11f9:	0f 87 99 01 00 00    	ja     a1398 <f32subf64x@@GLIBC_2.28+0x8678>
+   a11ff:	48 ba 00 00 00 00 00 	movabs $0xc01a000000000000,%rdx
+   a1206:	00 1a c0 
+   a1209:	48 8d 35 d0 5f 04 00 	lea    0x45fd0(%rip),%rsi        # e71e0 <f32subf64x@@GLIBC_2.28+0x4e4c0>
+   a1210:	c5 f8 57 c0          	vxorps %xmm0,%xmm0,%xmm0
+   a1214:	c5 fb 10 3d 4c ab 01 	vmovsd 0x1ab4c(%rip),%xmm7        # bbd68 <f32subf64x@@GLIBC_2.28+0x23048>
+   a121b:	00 
+   a121c:	48 01 c2             	add    %rax,%rdx
+   a121f:	c5 fb 10 15 b9 5f 04 	vmovsd 0x45fb9(%rip),%xmm2        # e71e0 <f32subf64x@@GLIBC_2.28+0x4e4c0>
+   a1226:	00 
+   a1227:	c5 fb 10 2d d1 5f 04 	vmovsd 0x45fd1(%rip),%xmm5        # e7200 <f32subf64x@@GLIBC_2.28+0x4e4e0>
+   a122e:	00 
+   a122f:	48 89 d1             	mov    %rdx,%rcx
+   a1232:	c5 fb 10 35 ce 5f 04 	vmovsd 0x45fce(%rip),%xmm6        # e7208 <f32subf64x@@GLIBC_2.28+0x4e4e8>
+   a1239:	00 
+   a123a:	48 c1 e9 2d          	shr    $0x2d,%rcx
+   a123e:	83 e1 7f             	and    $0x7f,%ecx
+   a1241:	48 83 c1 08          	add    $0x8,%rcx
+   a1245:	48 c1 e1 04          	shl    $0x4,%rcx
+   a1249:	48 01 f1             	add    %rsi,%rcx
+   a124c:	48 be 00 00 00 00 00 	movabs $0xfff0000000000000,%rsi
+   a1253:	00 f0 ff 
+   a1256:	48 21 d6             	and    %rdx,%rsi
+   a1259:	48 c1 fa 34          	sar    $0x34,%rdx
+   a125d:	48 29 f0             	sub    %rsi,%rax
+   a1260:	c5 fb 2a c2          	vcvtsi2sd %edx,%xmm0,%xmm0
+   a1264:	c4 e2 f9 a9 51 18    	vfmadd213sd 0x18(%rcx),%xmm0,%xmm2
+   a126a:	c4 e1 f9 6e c8       	vmovq  %rax,%xmm1
+   a126f:	c4 e2 c1 99 49 10    	vfmadd132sd 0x10(%rcx),%xmm7,%xmm1
+   a1275:	c4 e2 f1 a9 2d 7a 5f 	vfmadd213sd 0x45f7a(%rip),%xmm1,%xmm5        # e71f8 <f32subf64x@@GLIBC_2.28+0x4e4d8>
+   a127c:	04 00 
+   a127e:	c5 f3 58 e2          	vaddsd %xmm2,%xmm1,%xmm4
+   a1282:	c5 f3 59 d9          	vmulsd %xmm1,%xmm1,%xmm3
+   a1286:	c5 eb 5c d4          	vsubsd %xmm4,%xmm2,%xmm2
+   a128a:	c5 eb 58 d1          	vaddsd %xmm1,%xmm2,%xmm2
+   a128e:	c4 e2 e9 99 05 51 5f 	vfmadd132sd 0x45f51(%rip),%xmm2,%xmm0        # e71e8 <f32subf64x@@GLIBC_2.28+0x4e4c8>
+   a1295:	04 00 
+   a1297:	c5 f3 59 d3          	vmulsd %xmm3,%xmm1,%xmm2
+   a129b:	c4 e2 c9 99 0d 6c 5f 	vfmadd132sd 0x45f6c(%rip),%xmm6,%xmm1        # e7210 <f32subf64x@@GLIBC_2.28+0x4e4f0>
+   a12a2:	04 00 
+   a12a4:	c4 e2 e1 b9 05 43 5f 	vfmadd231sd 0x45f43(%rip),%xmm3,%xmm0        # e71f0 <f32subf64x@@GLIBC_2.28+0x4e4d0>
+   a12ab:	04 00 
+   a12ad:	c4 e2 d1 99 cb       	vfmadd132sd %xmm3,%xmm5,%xmm1
+   a12b2:	c4 e2 e9 b9 c1       	vfmadd231sd %xmm1,%xmm2,%xmm0
+   a12b7:	c5 fb 58 c4          	vaddsd %xmm4,%xmm0,%xmm0
+   a12bb:	c3                   	ret
+   a12bc:	0f 1f 40 00          	nopl   0x0(%rax)
+   a12c0:	48 ba 00 00 00 00 00 	movabs $0x3ff0000000000000,%rdx
+   a12c7:	00 f0 3f 
+   a12ca:	48 39 d0             	cmp    %rdx,%rax
+   a12cd:	0f 84 0d 01 00 00    	je     a13e0 <f32subf64x@@GLIBC_2.28+0x86c0>
+   a12d3:	c5 fb 5c 05 35 a9 01 	vsubsd 0x1a935(%rip),%xmm0,%xmm0        # bbc10 <f32subf64x@@GLIBC_2.28+0x22ef0>
+   a12da:	00 
+   a12db:	c5 fb 10 15 45 5f 04 	vmovsd 0x45f45(%rip),%xmm2        # e7228 <f32subf64x@@GLIBC_2.28+0x4e508>
+   a12e2:	00 
+   a12e3:	c5 fb 10 1d 55 5f 04 	vmovsd 0x45f55(%rip),%xmm3        # e7240 <f32subf64x@@GLIBC_2.28+0x4e520>
+   a12ea:	00 
+   a12eb:	c4 e2 f9 a9 15 2c 5f 	vfmadd213sd 0x45f2c(%rip),%xmm0,%xmm2        # e7220 <f32subf64x@@GLIBC_2.28+0x4e500>
+   a12f2:	04 00 
+   a12f4:	c4 e2 f9 a9 1d 3b 5f 	vfmadd213sd 0x45f3b(%rip),%xmm0,%xmm3        # e7238 <f32subf64x@@GLIBC_2.28+0x4e518>
+   a12fb:	04 00 
+   a12fd:	c5 fb 10 2d 53 5f 04 	vmovsd 0x45f53(%rip),%xmm5        # e7258 <f32subf64x@@GLIBC_2.28+0x4e538>
+   a1304:	00 
+   a1305:	c5 fb 59 c8          	vmulsd %xmm0,%xmm0,%xmm1
+   a1309:	c4 e2 f9 a9 2d 3e 5f 	vfmadd213sd 0x45f3e(%rip),%xmm0,%xmm5        # e7250 <f32subf64x@@GLIBC_2.28+0x4e530>
+   a1310:	04 00 
+   a1312:	c4 e2 f1 b9 15 15 5f 	vfmadd231sd 0x45f15(%rip),%xmm1,%xmm2        # e7230 <f32subf64x@@GLIBC_2.28+0x4e510>
+   a1319:	04 00 
+   a131b:	c4 e2 f1 b9 1d 24 5f 	vfmadd231sd 0x45f24(%rip),%xmm1,%xmm3        # e7248 <f32subf64x@@GLIBC_2.28+0x4e528>
+   a1322:	04 00 
+   a1324:	c5 fb 59 e1          	vmulsd %xmm1,%xmm0,%xmm4
+   a1328:	c4 e2 d1 99 0d 2f 5f 	vfmadd132sd 0x45f2f(%rip),%xmm5,%xmm1        # e7260 <f32subf64x@@GLIBC_2.28+0x4e540>
+   a132f:	04 00 
+   a1331:	c4 e2 d9 b9 0d 2e 5f 	vfmadd231sd 0x45f2e(%rip),%xmm4,%xmm1        # e7268 <f32subf64x@@GLIBC_2.28+0x4e548>
+   a1338:	04 00 
+   a133a:	c4 e2 e1 99 cc       	vfmadd132sd %xmm4,%xmm3,%xmm1
+   a133f:	c5 fb 10 1d 01 ad 01 	vmovsd 0x1ad01(%rip),%xmm3        # bc048 <f32subf64x@@GLIBC_2.28+0x23328>
+   a1346:	00 
+   a1347:	c4 e2 e9 99 cc       	vfmadd132sd %xmm4,%xmm2,%xmm1
+   a134c:	c5 f9 28 d0          	vmovapd %xmm0,%xmm2
+   a1350:	c4 e2 f9 99 d3       	vfmadd132sd %xmm3,%xmm0,%xmm2
+   a1355:	c4 e2 e9 9d d8       	vfnmadd132sd %xmm0,%xmm2,%xmm3
+   a135a:	c5 fb 10 15 b6 5e 04 	vmovsd 0x45eb6(%rip),%xmm2        # e7218 <f32subf64x@@GLIBC_2.28+0x4e4f8>
+   a1361:	00 
+   a1362:	c5 e3 59 eb          	vmulsd %xmm3,%xmm3,%xmm5
+   a1366:	c5 fb 5c fb          	vsubsd %xmm3,%xmm0,%xmm7
+   a136a:	c5 f9 28 f5          	vmovapd %xmm5,%xmm6
+   a136e:	c4 e2 f9 99 f2       	vfmadd132sd %xmm2,%xmm0,%xmm6
+   a1373:	c5 7b 5c c6          	vsubsd %xmm6,%xmm0,%xmm8
+   a1377:	c5 fb 58 c3          	vaddsd %xmm3,%xmm0,%xmm0
+   a137b:	c4 e2 b9 99 ea       	vfmadd132sd %xmm2,%xmm8,%xmm5
+   a1380:	c5 eb 59 d7          	vmulsd %xmm7,%xmm2,%xmm2
+   a1384:	c4 e2 d1 99 d0       	vfmadd132sd %xmm0,%xmm5,%xmm2
+   a1389:	c4 e2 e9 99 cc       	vfmadd132sd %xmm4,%xmm2,%xmm1
+   a138e:	c5 cb 58 c1          	vaddsd %xmm1,%xmm6,%xmm0
+   a1392:	c3                   	ret
+   a1393:	0f 1f 44 00 00       	nopl   0x0(%rax,%rax,1)
+   a1398:	48 89 c7             	mov    %rax,%rdi
+   a139b:	48 01 ff             	add    %rdi,%rdi
+   a139e:	74 50                	je     a13f0 <f32subf64x@@GLIBC_2.28+0x86d0>
+   a13a0:	48 b9 00 00 00 00 00 	movabs $0x7ff0000000000000,%rcx
+   a13a7:	00 f0 7f 
+   a13aa:	48 39 c8             	cmp    %rcx,%rax
+   a13ad:	74 35                	je     a13e4 <f32subf64x@@GLIBC_2.28+0x86c4>
+   a13af:	f6 c6 80             	test   $0x80,%dh
+   a13b2:	75 34                	jne    a13e8 <f32subf64x@@GLIBC_2.28+0x86c8>
+   a13b4:	f7 d2                	not    %edx
+   a13b6:	81 e2 f0 7f 00 00    	and    $0x7ff0,%edx
+   a13bc:	74 2a                	je     a13e8 <f32subf64x@@GLIBC_2.28+0x86c8>
+   a13be:	c5 fb 59 05 42 a8 01 	vmulsd 0x1a842(%rip),%xmm0,%xmm0        # bbc08 <f32subf64x@@GLIBC_2.28+0x22ee8>
+   a13c5:	00 
+   a13c6:	48 b8 00 00 00 00 00 	movabs $0xfcc0000000000000,%rax
+   a13cd:	00 c0 fc 
+   a13d0:	c4 e1 f9 7e c7       	vmovq  %xmm0,%rdi
+   a13d5:	48 01 f8             	add    %rdi,%rax
+   a13d8:	e9 22 fe ff ff       	jmp    a11ff <f32subf64x@@GLIBC_2.28+0x84df>
+   a13dd:	0f 1f 00             	nopl   (%rax)
+   a13e0:	c5 f9 57 c0          	vxorpd %xmm0,%xmm0,%xmm0
+   a13e4:	c3                   	ret
+   a13e5:	0f 1f 00             	nopl   (%rax)
+   a13e8:	e9 e3 2c ff ff       	jmp    940d0 <__iscanonicall@@GLIBC_2.25+0x1940>
+   a13ed:	0f 1f 00             	nopl   (%rax)
+   a13f0:	bf 01 00 00 00       	mov    $0x1,%edi
+   a13f5:	e9 96 2c ff ff       	jmp    94090 <__iscanonicall@@GLIBC_2.25+0x1900>

@@ -194,6 +194,34 @@ export function prepLine(st, words) {
   return out;
 }
 
+// "15:53 UTC" out of an ISO time the engine wrote
+function clockWords(text) {
+  const m = /T(\d{2}):(\d{2})/.exec(String(text || ""));
+  return m ? `${m[1]}:${m[2]} UTC` : "";
+}
+
+// What a running forecast waits on at a seam, as the phrases of its live line: a source hour not posted yet (when
+// it was expected and when it counts as late), or the preparation of a boundary interval, where the model stands,
+// and how long it has waited. st.wait is the page server's reading of the run's heartbeat and events (gui/runs.py
+// wait()); words is the copy's "wait" block. [] when the forecast is not waiting.
+export function waitLine(st, words) {
+  const wt = st && st.wait;
+  if (!wt || !words) return [];
+  const known = (v) => v !== null && v !== undefined;
+  const out = [];
+  if (wt.on === "source") {
+    const lead = known(wt.lead) ? `f${String(wt.lead).padStart(3, "0")}` : "";
+    out.push(fill(words.source, { source: wt.source || "", lead }).replace(/\s+/g, " ").trim());
+    if (wt.expected_at) out.push(fill(words.expected, { time: clockWords(wt.expected_at) }));
+    if (wt.late_at) out.push(fill(words.late, { time: clockWords(wt.late_at) }));
+  } else {
+    out.push(known(wt.interval) ? fill(words.preparation, { interval: wt.interval }) : words.preparation_plain);
+  }
+  if (wt.model_valid_time) out.push(fill(words.model, { time: clockWords(wt.model_valid_time) }));
+  if (known(wt.waited_seconds)) out.push(fill(words.for, { time: sinceWords(wt.waited_seconds) }));
+  return out;
+}
+
 export function spacing(km) {
   if (km === null || km === undefined || Number.isNaN(Number(km))) return "";
   const v = Number(km);

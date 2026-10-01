@@ -52,6 +52,8 @@ from gpuwm.core.noahmp import (
     parse_genparm,
     parse_soilparm,
 )
+from gpuwm.core.noahmp_libm import logf as _glibc_logf
+from gpuwm.core.noahmp_libm import powf as _glibc_powf
 from gpuwm.core.ruc_contract import (
     NUM_SOIL_LAYERS,
     RUC_SOIL_LEVELS_M,
@@ -814,6 +816,12 @@ def _root_count_field(value, shape: tuple[int, ...], *, arrays=None,
     return roots
 
 
+def _constant_array(arrays, values, *, dtype):
+    """Upload a read-only lookup table through the namespace's cache."""
+    upload = getattr(arrays, "ruc_constant_array", arrays.asarray)
+    return upload(values, dtype=dtype)
+
+
 def ruc_surface_parameters(
     isltyp,
     ivgtyp,
@@ -922,12 +930,12 @@ def ruc_surface_parameters(
     # ``tests/test_ruc_batching.py`` and the ``soilvegin`` oracle, not an
     # assumption.
     veg_index = vegetation_flat.astype(np.intp) - 1
-    forest_class = np.asarray(
+    forest_class = _constant_array(np,
         [row.ifor for row in vegetation.rows], dtype=np.int32)[veg_index]
     forest_flat[:] = forest_class
-    table_lai = np.asarray(
+    table_lai = _constant_array(np,
         [row.lai for row in vegetation.rows], dtype=np.float32)[veg_index]
-    table_z0 = np.asarray(
+    table_z0 = _constant_array(np,
         [row.z0 for row in vegetation.rows], dtype=np.float32)[veg_index]
 
     green_range = (shdmax_flat - shdmin_flat).astype(np.float32)
@@ -979,15 +987,15 @@ def ruc_surface_parameters(
         ).astype(np.float32),
     ).astype(np.float32)
 
-    output_flat["emiss"][:] = np.asarray(
+    output_flat["emiss"][:] = _constant_array(np,
         [row.lemi for row in vegetation.rows], dtype=np.float32)[veg_index]
-    output_flat["pc"][:] = np.asarray(
+    output_flat["pc"][:] = _constant_array(np,
         [row.pc for row in vegetation.rows], dtype=np.float32)[veg_index]
 
     # ``isltyp == 14`` is WRF's water soil class: :5652 cycles the column and
     # leaves every soil property at the zero this routine initialised.
     solid = soil_flat != 14
-    soil_table = np.asarray(
+    soil_table = _constant_array(np,
         [row.values for row in bundle.soil.rows], dtype=np.float32)
     # The row is looked up for EVERY column and the water class's row is
     # then discarded by ``where``; the category was already checked to be
@@ -1911,7 +1919,7 @@ def ruc_qsn(tn, table: np.ndarray | None = None, *, arrays=None) -> np.ndarray:
     saturation = (
         _load_ruc_saturation_table()
         if table is None
-        else np.asarray(table, dtype=np.float32)
+        else _constant_array(np, table, dtype=np.float32)
     )
     if saturation.shape != (5001,):
         admission.flush()
@@ -3447,7 +3455,12 @@ def ruc_initialize_cold_start(
         )
         for level in range(nzs):
             soil_temperature = t_flat[level, column]
-            tln = np.float32(np.log(np.float32(soil_temperature / t_freeze)))
+            # LOG and ** on REAL are glibc's logf and powf in WRF's build,
+            # and are taken from their transcriptions here: NumPy's float32
+            # log and power are the host's (NumPy 2.5's AVX-512 loops on an
+            # AVX-512 Linux machine), so SH2O and SMFR3D at cold start moved
+            # with the CPU that constructed the driver.
+            tln = _glibc_logf(np.float32(soil_temperature / t_freeze))
             if tln < np.float32(0.0):
                 base = np.float32(xlmelt * np.float32(soil_temperature - t_freeze))
                 base = np.float32(base / soil_temperature)
@@ -3456,7 +3469,7 @@ def ruc_initialize_cold_start(
                 exponent = np.float32(np.float32(-one) / bb)
                 equilibrium = np.float32(
                     np.float32(dqm + drysmc)
-                    * np.float32(np.power(base, exponent))
+                    * _glibc_powf(base, exponent)
                 )
                 equilibrium = np.float32(max(np.float32(0.0), equilibrium))
                 equilibrium = np.float32(
@@ -9106,7 +9119,7 @@ def ruc_land_surface_step(
     }
 
     tbq = ruc_saturation_table()
-    emissivity_table = np.asarray(
+    emissivity_table = _constant_array(np,
         [row.lemi for row in vegetation.rows], dtype=np.float32
     )
     # ``:779``.  CFACTR_DATA is a per-dataset VEGPARM scalar, not a literal.

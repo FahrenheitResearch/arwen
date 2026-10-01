@@ -471,6 +471,64 @@ def test_nested_held_relaxation_uses_time_t_mass_for_dry_and_scalar(
     assert all(call.get("source_mup") is state.mup0 for call in held)
 
 
+@pytest.mark.parametrize("nested, with_source, recomputed", [
+    (False, True, True),
+    (False, False, False),
+    (True, False, True),
+    (True, True, True),
+])
+def test_a_specified_root_recomputes_a_scalar_at_the_time_t_mass(
+        monkeypatch, nested, with_source, recomputed):
+    """A scalar tendency formed from the RK time-t copy uses the time-t mass.
+
+    The root's specified boundary re-evaluates a scalar's spec+relax
+    tendency on every RK stage from its time-t copy (the analysed
+    hydrometeors hold no carrying slot).  WRF captures that tendency once,
+    at rk_step 1, from the time-t field AND the time-t column mass
+    (solve_em.F:2265-2292), so the copy has to be coupled with ``mup0``:
+    coupled with the live stage mass instead, a later stage relaxes the
+    ring toward a different coupled value than WRF's.  Without a source
+    copy the live field and live mass ARE the time-t pair (the capture
+    stage), and a specified root passes no mass; a nest always passes
+    ``mup0``.
+    """
+    import gpuwm.ingest.lateral_bc as lbc
+
+    nz, ny, nx = 3, 5, 6
+    state = SimpleNamespace(
+        qs=np.zeros((nz, ny, nx), np.float32),
+        qs0=np.ones((nz, ny, nx), np.float32),
+        mup=np.full((ny, nx), 7.0, np.float32),
+        mup0=np.full((ny, nx), 3.0, np.float32),
+        lateral_boundaries=object())
+    side = SimpleNamespace(value=np.zeros((nz, ny, 2), np.float32))
+    interval = SimpleNamespace(fields={"qs": SimpleNamespace(west=side)})
+    monkeypatch.setattr(
+        lbc, "_active_device_interval",
+        lambda *_args, **_kwargs: (interval, 0.0, 12.0, 0.0))
+    monkeypatch.setattr(
+        lbc, "_resident_weights",
+        lambda *_args, **_kwargs: (np.ones(1, np.float32),
+                                   np.ones(1, np.float32)))
+    calls = []
+    monkeypatch.setattr(lbc, "apply_specified_relaxation",
+                        lambda *_args, **kwargs: calls.append(kwargs))
+    cfg = SimpleNamespace(specified=not nested, nested=nested,
+                          spec_zone=1, relax_zone=1)
+
+    lbc.apply_state_scalar_lateral_boundary(
+        state, cfg, "qs", np.zeros_like(state.qs),
+        source_field=(state.qs0 if with_source else None))
+
+    (call,) = calls
+    assert call["field_name"] == "qs"
+    assert call["source_field"] is (state.qs0 if with_source else None)
+    if recomputed:
+        assert call["source_mup"] is state.mup0
+    else:
+        assert call["source_mup"] is None
+
+
 def test_acoustic_rk_finalizes_nested_state_once_after_rk_loop():
     """WRF calls ``spec_bdy_final`` once after ``Runge_Kutta_loop``."""
     import gpuwm.core.dycore as dycore

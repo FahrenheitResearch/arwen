@@ -15,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Sequence as _ABCSequence
+from types import SimpleNamespace
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -52,8 +54,16 @@ from gpuwm.ingest.lateral_bc import (
 )
 from gpuwm.ingest.soil_downscale import (
     declared_soil_texture_downscale, soil_mesh_plan_from_case)
+from gpuwm.ingest.cg_topo import RootTerrainBlend
 from gpuwm.ingest.boundary_stream import (
+    HIERARCHY_HEAD_DIRNAME,
     PreparedTreeWriter,
+    TreeStartStates,
+    as_posted_placeholder,
+    chained_enabled,
+    input_plan,
+    input_plan_sha256,
+    domain_tree_head_fields,
     producer_device_bytes,
     remove_unfinished_tree,
 )
@@ -66,6 +76,7 @@ from gpuwm.ingest.preparation_price import (
     price_forcing_preparation, price_preparation_floor)
 from gpuwm.ingest.preprocess_backend import (
     admit_preparation,
+    preprocess_identity,
     release_backend_memory,
     resolve_preprocess_backend,
 )
@@ -78,7 +89,13 @@ from gpuwm.ingest.water_temperature import (
     announce_water_temperature, assemble_for_route)
 from gpuwm.moisture_floor_receipt import moisture_floor_proof_entry
 from gpuwm.native_domain_artifacts import (
-    _atomic_staging_sibling, published_path_refusal)
+    _atomic_staging_sibling,
+    published_path_refusal,
+    root_domain_artifact_binding,
+    write_child_domain_artifacts,
+    write_domain_static_files,
+)
+from gpuwm.native_hierarchy import hierarchy_moisture_floor_receipts
 from gpuwm.native_wrf_contract import (
     native_geometry_contract,
     require_land_terrain,
@@ -88,6 +105,8 @@ from gpuwm.native_wrf_contract import (
 )
 from gpuwm.source_hierarchy import (
     initialize_and_export_regular_source_hierarchy,
+    prepare_regular_source_hierarchy_head,
+    seal_regular_source_hierarchy,
 )
 from gpuwm.open_files import (
     ensure_descriptor_headroom,
@@ -932,6 +951,404 @@ def _load_bridge_snapshots(
     return tuple(snapshots)
 
 
+#: An as-posted preparation's manifest roles: every lead's payload is
+#: ``grib-fNNN``, and the series file lists every lead's object, so its
+#: digest follows the lead rows (``boundary_stream.input_plan``).
+_AS_POSTED_LEAD_ROLE_PREFIX = "grib-f"
+_AS_POSTED_DERIVED_ROLES = ("series",)
+#: The proof keys that read every lead, so an as-posted head leaves them
+#: out and its seal writes them: the manifest's digest and rows, each
+#: lead's source coverage, and the decoder's report on the whole series.
+_AS_POSTED_SEAL_KEYS = ("decoder_stdout", "input_manifest_sha256",
+                        "source_coverage", "source_inputs")
+#: The same keys of a domain tree's proof, which carries no source_inputs.
+_AS_POSTED_TREE_SEAL_KEYS = ("decoder_stdout", "input_manifest_sha256",
+                             "source_coverage")
+
+
+def _series_row(hour: int, name: str) -> str:
+    """One series line, as the fetch writes it (fetch.py publish_manifest)."""
+
+    return f"{hour}\t{name}\t{81 if hour == 0 else 96}\n"
+
+
+def _as_posted_plan(*, posting: Path, series: Path, cycle_time: datetime,
+                    roles: Mapping[str, Path]):
+    """The input plan of an as-posted GFS preparation, from its first lead.
+
+    ``posting`` is the as-posted fetch's ``posting/`` folder beside
+    ``series`` (``<out>/gfs-series.tsv``, which grows with the fetch).  The
+    schedule names every lead of the window.  A lead's object is named
+    as the first lead's is, with its own lead in place of the first
+    lead's (the fetch names a lead's object from its lead alone); the
+    seal holds every lead's posted object to this plan and refuses one
+    that differs.  Returns ``(posted, records, manifest)``: the lead wait,
+    the series records the preparation reads, and the manifest the seal
+    will write with every lead's payload digest (and the series digest,
+    which follows them) not yet known.
+    """
+
+    from gpuwm.ingest.boundary_stream import (
+        POSTING_SCHEDULE_NAME, PostedLeads, read_replaced_json,
+    )
+
+    out = Path(series).parent
+    schedule_path = Path(posting) / POSTING_SCHEDULE_NAME
+    try:
+        # The fetch replaces the schedule as leads move, and on Windows a
+        # read that meets the replace fails for a moment.
+        schedule = read_replaced_json(schedule_path)
+    except (OSError, ValueError) as error:
+        raise ValueError(
+            f"an as-posted GFS preparation reads the fetch's posting "
+            f"schedule, and {schedule_path} is not readable: {error}") from None
+    cycle_label = cycle_time.strftime("%Y-%m-%dT%H")
+    if (schedule.get("source") != "gfs"
+            or str(schedule.get("cycle", ""))[:13] != cycle_label):
+        raise ValueError(
+            f"{schedule_path} schedules {schedule.get('source')} "
+            f"{schedule.get('cycle')}, not the gfs {cycle_label} cycle this "
+            "preparation reads")
+    hours = [int(row["lead"]) for row in schedule.get("leads") or ()]
+    if len(hours) < 2:
+        raise ForcingSeriesRefusal("GFS series must have at least two times")
+    posted = PostedLeads(Path(posting), source="gfs",
+                         cycle=str(schedule["cycle"]))
+    first = posted.wait(hours[0])
+    objects = [item for item in first.get("objects") or ()
+               if str(item.get("role", "")).startswith("gfs-")]
+    if len(objects) != 1:
+        raise ValueError(
+            f"the posted marker of f{hours[0]:03d} names {len(objects)} GFS "
+            "payload objects; a GFS lead is one object")
+    token = f"f{hours[0]:03d}"
+    first_name = str(objects[0]["name"])
+    if first_name.count(token) != 1:
+        raise ValueError(
+            f"the posted GFS object {first_name} does not name its lead "
+            f"{token} once, so the other leads' objects cannot be planned")
+    records = tuple(
+        (hour, (out / first_name.replace(token, f"f{hour:03d}")).resolve())
+        for hour in hours)
+    # Republished by the fetch with each verified prefix: read through
+    # the replace, as the schedule is.
+    fetched = read_replaced_json(out / "fetch-manifest.json")
+    identity = {
+        "model": "GFS",
+        "product": "pgrb2.0p25",
+        "cycle": cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    levels = fetched.get("pressure_levels_hpa")
+    if isinstance(levels, list) and levels and all(
+            isinstance(level, (int, float)) for level in levels):
+        identity["pressure_levels_hpa"] = [float(level) for level in levels]
+        identity["top_pressure_pa"] = float(min(levels)) * 100.0
+    files = {
+        role: {"name": path.name,
+               "sha256": None if role in _AS_POSTED_DERIVED_ROLES
+               else _sha256(path)}
+        for role, path in roles.items()
+    }
+    for hour, path in records:
+        files[f"{_AS_POSTED_LEAD_ROLE_PREFIX}{hour:03d}"] = {
+            "name": path.name, "sha256": None}
+    manifest = {"schema": INPUT_MANIFEST_SCHEMA, "source": identity,
+                "files": files}
+    return posted, records, manifest
+
+
+class _PostedGfsSeries:
+    """A GFS series decoded lead batch by lead batch as its leads post.
+
+    Indexing a lead waits for its marker (``PostedLeads``), then decodes
+    every lead whose marker is there and is not decoded yet in one bridge
+    run (``--lead-batch``, on all cores), so a late launch or a past cycle
+    decodes its backlog at once.  Each lead's payload is held to its
+    marker's digest by the bridge's own source digests.  At the seal
+    :meth:`merge` writes the whole series' decoder receipts from the
+    batches (``--merge-batches``), byte for byte the one decode's.
+    """
+
+    def __init__(self, *, posted, records, cycle_time, bridge, scratch,
+                 levels_pa_csv, environment, orient):
+        self.posted = posted
+        self.records = tuple(records)
+        self.cycle_time = cycle_time
+        self.bridge = Path(bridge)
+        self.scratch = Path(scratch)
+        self.levels_pa_csv = levels_pa_csv
+        self.environment = environment
+        self.orient = orient
+        self.snapshots: dict[int, Era5Snapshot] = {}
+        self.markers: dict[int, dict] = {}
+        self.batches: list[Path] = []
+        self.batch_leads: list[tuple[int, ...]] = []
+        self.decode_seconds = 0.0
+        self._next = 0
+        self._first_grid = None
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def marker_objects(self, hour: int) -> dict:
+        objects = [item for item in self.markers[hour].get("objects") or ()
+                   if str(item.get("role", "")).startswith("gfs-")]
+        return {str(item["name"]): str(item["sha256"]) for item in objects}
+
+    def _decode_batch(self, start: int, end: int) -> None:
+        batch = self.records[start:end + 1]
+        expected = {}
+        for hour, path in batch:
+            objects = self.marker_objects(hour)
+            if list(objects) != [path.name]:
+                raise ValueError(
+                    f"the posted object of f{hour:03d} is "
+                    f"{', '.join(objects) or 'nothing'}, not the planned "
+                    f"{path.name}; the input plan this preparation's head "
+                    "bound names every lead's object")
+            expected[hour] = objects[path.name]
+        started = time.perf_counter()
+        index = len(self.batches)
+        table = self.scratch / f"batch-{index:03d}.tsv"
+        table.write_text("".join(
+            f"{hour}\t{path}\t{81 if hour == 0 else 96}\n"
+            for hour, path in batch), encoding="utf-8")
+        decoded = self.scratch / f"batch-{index:03d}"
+        command = [str(self.bridge), "--series", str(table), str(decoded),
+                   self.cycle_time.strftime("%Y-%m-%d %H:%M:%S")]
+        if self.levels_pa_csv is not None:
+            command += ["--pressure-levels-pa", self.levels_pa_csv]
+        command.append("--lead-batch")
+        completed = subprocess.run(command, check=False, text=True,
+                                   capture_output=True, env=self.environment)
+        if completed.returncode != 0:
+            raise GfsRouteError(decode_failure_message(
+                "GFS Rust bridge", completed.stderr))
+        levels = None
+        if self.levels_pa_csv is not None:
+            levels = tuple(float(value) / 100.0
+                           for value in self.levels_pa_csv.split(","))
+        loaded = _load_bridge_snapshots(
+            decoded, self.cycle_time, batch, expected,
+            expected_levels_hpa=levels)
+        if self.levels_pa_csv is None:
+            # Every later batch decodes on the first batch's ladder, as the
+            # one decode of the series derives its ladder from its first
+            # hour; the merge holds every batch's ladder equal.
+            self.levels_pa_csv = _parse_gate(decoded / "gate.tsv")[
+                "pressure_levels_pa"]
+        for (hour, _), snapshot in zip(batch, loaded):
+            oriented = self.orient(snapshot)
+            self._require_first_grid(hour, oriented)
+            self.snapshots[hour] = oriented
+        self.batches.append(decoded)
+        self.batch_leads.append(tuple(hour for hour, _ in batch))
+        self.decode_seconds += time.perf_counter() - started
+
+    def _require_first_grid(self, hour: int, snapshot) -> None:
+        """Hold a later lead to the first decoded lead's source grid.
+
+        A domain tree's head certifies its donor coverage
+        (``source_hierarchy._spatial_coverage_receipt``) before its later
+        leads are posted, on the planned series (every lead the same
+        product and crop, :meth:`_PostedGfsView.snapshot_metadata`).  The
+        breakage this prevents: a lead decoded on another grid would be
+        interpolated under a coverage receipt that was never true of it.
+        The words are the one-shot receipt's own.
+        """
+
+        if self._first_grid is None:
+            self._first_grid = snapshot
+            return
+        first = self._first_grid
+        if (not np.array_equal(
+                    np.asarray(getattr(snapshot, "latitude", ())),
+                    np.asarray(getattr(first, "latitude", ())))
+                or not np.array_equal(
+                    np.asarray(getattr(snapshot, "longitude", ())),
+                    np.asarray(getattr(first, "longitude", ())))
+                or getattr(snapshot, "projection", None)
+                != getattr(first, "projection", None)):
+            raise ValueError(
+                f"GFS hierarchy source grid changes between forcing times "
+                f"(f{hour:03d})")
+
+    def through(self, position: int) -> None:
+        """Decode every lead through ``records[position]``, waiting as they post."""
+
+        while self._next <= position:
+            hour = self.records[self._next][0]
+            self.markers[hour] = self.posted.wait(hour)
+            end = self._next
+            while end + 1 < len(self.records):
+                later = self.records[end + 1][0]
+                record = self.posted.marker(later)
+                if record is None:
+                    break
+                self.markers[later] = record
+                end += 1
+            self._decode_batch(self._next, end)
+            self._next = end + 1
+
+    def snapshot(self, position: int) -> Era5Snapshot:
+        self.through(position)
+        return self.snapshots[self.records[position][0]]
+
+    def view(self, first: int) -> "_PostedGfsView":
+        return _PostedGfsView(self, first)
+
+    def merge(self, output: Path) -> str:
+        """Write the whole series' decoder receipts; the bridge's report line."""
+
+        self.through(len(self.records) - 1)
+        command = [str(self.bridge), "--merge-batches", str(output),
+                   self.cycle_time.strftime("%Y-%m-%d %H:%M:%S"),
+                   *(str(path) for path in self.batches)]
+        completed = subprocess.run(command, check=False, text=True,
+                                   capture_output=True, env=self.environment)
+        if completed.returncode != 0:
+            raise GfsRouteError(decode_failure_message(
+                "GFS Rust bridge", completed.stderr))
+        return completed.stdout.strip()
+
+
+class _PostedGfsView(_ABCSequence):
+    """The run's forcing times of a :class:`_PostedGfsSeries`, from its start lead.
+
+    A sequence: ``len`` is the planned count and indexing a time waits for
+    its lead, so the build of forcing time k is where the preparation
+    waits for lead k (DESIGN A136 2.4 item 2).  The preparation price
+    reads only the first time and the count.
+
+    A domain tree's head validates the whole series and prepares each
+    child from the snapshot at its start time before the later leads are
+    posted, so the view also declares what the plan fixes without waiting:
+    ``valid_times`` (the cycle plus each planned lead, the valid time the
+    bridge holds each decoded lead to) and :meth:`snapshot_metadata`.  A
+    delayed nest's start lead is then the only later lead its head waits
+    for (DESIGN A136 section 1).
+    """
+
+    def __init__(self, series: _PostedGfsSeries, first: int):
+        self.series = series
+        self.first = int(first)
+
+    @property
+    def valid_times(self) -> tuple:
+        cycle = self.series.cycle_time
+        return tuple(cycle + timedelta(hours=hour)
+                     for hour, _ in self.series.records[self.first:])
+
+    def snapshot_metadata(self, index: int):
+        """A time's source grid, without waiting for a lead not posted yet.
+
+        A decoded lead answers for itself; a lead not decoded yet answers
+        with the first decoded lead's grid, which every lead of the plan
+        shares (one product, one crop) and which each lead is held to as
+        it is decoded (:meth:`_PostedGfsSeries._require_first_grid`).
+        """
+
+        from gpuwm.ingest.source_metadata import SourceSnapshotMetadata
+
+        index = int(index)
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        hour = self.series.records[self.first + index][0]
+        snapshot = self.series.snapshots.get(hour)
+        if snapshot is None:
+            if self.series._first_grid is None:
+                self.series.through(self.first)
+            snapshot = self.series._first_grid
+        return SourceSnapshotMetadata(
+            type(snapshot), getattr(snapshot, "latitude", ()),
+            getattr(snapshot, "longitude", ()),
+            getattr(snapshot, "projection", None))
+
+    def __len__(self) -> int:
+        return len(self.series) - self.first
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        index = int(index)
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError(index)
+        return self.series.snapshot(self.first + index)
+
+    def __iter__(self):
+        for index in range(len(self)):
+            yield self[index]
+
+
+def _seal_as_posted_inputs(series_decode, *, plan, series: Path, bridge: Path,
+                           wps_namelist: Path, experiment_config: Path,
+                           static_input, static_receipt,
+                           input_manifest: Path, tree: Path, merged: Path,
+                           portable: str) -> dict:
+    """What an as-posted GFS seal writes from the lead markers (DESIGN A136 2.4 item 6).
+
+    The whole series' decoder receipts from the lead batches, and the
+    input manifest through the one function the one-shot manifest stage
+    uses (``fetch.author_gfs_front_door_manifest``), so both are the
+    one-shot bytes.  The manifest is refused unless it is the plan the
+    head bound, every lead row is the object its posted marker named,
+    and the series it binds lists exactly those rows.
+    """
+
+    from gpuwm import fetch as fetch_module
+    from gpuwm.ingest.boundary_stream import input_plan
+
+    decoder_stdout = series_decode.merge(merged)
+    for name, target in (("gate.tsv", "decoder-gate.tsv"),
+                         ("inventory.tsv", "decoder-inventory.tsv"),
+                         ("decoded-sha256.tsv", "decoder-sha256.tsv")):
+        shutil.copy2(merged / name, Path(tree) / target)
+    path, digest = fetch_module.author_gfs_front_door_manifest(
+        out=Path(series).parent, bridge=bridge, wps_namelist=wps_namelist,
+        experiment_config=experiment_config, static_input=static_input,
+        static_receipt=static_receipt, manifest_out=input_manifest,
+        progress=lambda line: None)
+    manifest_bytes = Path(path).read_bytes()
+    if hashlib.sha256(manifest_bytes).hexdigest() != digest:
+        raise ValueError(
+            f"the input manifest at {path} changed as the seal wrote it")
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
+    # Re-read at the seal: leads fetched under another route table than
+    # the one the head planned with are another plan.
+    route_table_sha256 = series_decode.posted.route_table_sha256()
+    if input_plan(manifest, lead_role_prefix=_AS_POSTED_LEAD_ROLE_PREFIX,
+                  route_table_sha256=route_table_sha256,
+                  derived_roles=_AS_POSTED_DERIVED_ROLES) != plan:
+        raise ValueError(
+            "the input manifest the seal wrote is not the input plan the "
+            "head bound: a lead, an object name, another input or the "
+            "fetch's route table differs")
+    rows = []
+    for hour, planned in series_decode.records:
+        spec = manifest["files"][f"{_AS_POSTED_LEAD_ROLE_PREFIX}{hour:03d}"]
+        objects = series_decode.marker_objects(hour)
+        if objects.get(spec["name"]) != spec["sha256"]:
+            raise ValueError(
+                f"the input manifest binds {spec['name']} ({spec['sha256']}) "
+                f"for f{hour:03d}, not the object its posted marker named")
+        rows.append(_series_row(hour, spec["name"]))
+    written = Path(series).read_bytes()
+    if (written != "".join(rows).encode("utf-8")
+            or hashlib.sha256(written).hexdigest()
+            != manifest["files"]["series"]["sha256"]):
+        raise ValueError(
+            f"{series} does not list exactly the posted leads the input "
+            "manifest binds")
+    Path(tree, portable).write_bytes(manifest_bytes)
+    return {"manifest": manifest, "manifest_sha256": digest,
+            "decoder_stdout": decoder_stdout,
+            "route_table_sha256": route_table_sha256}
+
+
 def prepare_progress_path(output_root) -> Path:
     """Where this stage publishes what it is doing, while it does it.
 
@@ -1091,31 +1508,6 @@ def front_door_physics_selection(
     return selection
 
 
-def _prepared_initial_perturbation(exp) -> dict[str, object] | None:
-    """Declare the tree runner's deferred mutation without changing prep arrays.
-
-    GFS prepares the source analysis/forecast, including boundary times, as
-    before. Only the domain-tree forecast runner applies the configured
-    bubble to restored initial states; the single-domain runner cannot.
-    """
-    from gpuwm.experiment import refuse_unrouted_perturbation
-
-    if len(exp.domains) < 2:
-        refuse_unrouted_perturbation(exp, "GFS-direct prepared-cache")
-    if exp.perturbation is None:
-        return None
-    return {
-        "schema": "gpuwm-gfs-initial-perturbation-deferred-v1",
-        "status": "DEFERRED_TO_FORECAST_INITIALIZATION",
-        "prepared_arrays": "unperturbed source initial and boundary states",
-        "application_route": "gpuwm.prepared_domain_tree_forecast",
-        "application_point": "restored states at experiment start time",
-        "applied_on_restart": False,
-        "applied_to_delayed_domains": False,
-        "config": exp.perturbation.receipt(),
-    }
-
-
 def _announce_adaptation(sentence: str) -> None:
     """Say, once, that the run is not on the configured vertical coordinate."""
 
@@ -1129,7 +1521,7 @@ def _announce_adaptation(sentence: str) -> None:
          "all carry the same coordinate.  p_top is untouched.")
 
 
-def _survey_static_catalog(exp, wps_namelist, geog_root):
+def _survey_static_catalog(exp, wps_namelist, geog_root, static_highres=None):
     """The WPS_GEOG catalog the terrain survey needs, or None.
 
     A single-domain run surveys only the root terrain the caller already
@@ -1141,10 +1533,12 @@ def _survey_static_catalog(exp, wps_namelist, geog_root):
     if geog_root is None or len(exp.domains) < 2:
         return None
     from gpuwm.hrrr_native_static import verified_static_catalog
+    from gpuwm.static.terrain_smoothing import selection_carrier_kwargs
 
     catalog, _ = verified_static_catalog(
         Path(wps_namelist), Path(geog_root),
-        [domain.grid_id for domain in exp.domains])
+        [domain.grid_id for domain in exp.domains],
+        **selection_carrier_kwargs(static_highres))
     return catalog
 
 
@@ -1158,7 +1552,7 @@ def prepare_gfs_wrf(
     static_receipt: Path | None,
     experiment_config: Path,
     input_manifest: Path,
-    input_manifest_sha256: str,
+    input_manifest_sha256: str | None,
     output_root: Path,
     preprocess_backend: str = "auto",
     preprocess_workers: int | None = None,
@@ -1170,8 +1564,19 @@ def prepare_gfs_wrf(
     stock_wrf_export: bool = True,
     statics_corridor=None,
     preprocess_backend_reason: str | None = None,
+    as_posted: Path | None = None,
 ) -> dict[str, object]:
     """Build native GFS initial/boundary files and return the proof receipt.
+
+    ``as_posted`` is an as-posted fetch's ``posting/`` folder (DESIGN A136
+    2.4): the preparation starts once the window's first lead is posted,
+    decodes each lead batch as its markers appear, publishes its head from
+    the start time binding the INPUT PLAN (every lead, every object name,
+    every other input) instead of the input manifest, which does not
+    exist yet, and at its seal writes the input manifest at
+    ``input_manifest`` (``input_manifest_sha256`` is then ``None``), the
+    decoder receipts and the one-shot identity, byte for byte what a
+    preparation of the same bytes after the whole window writes.
 
     ``geog_root`` activates the internal multi-domain route when the
     experiment declares children.  The existing public single-domain CLI is
@@ -1204,7 +1609,6 @@ def prepare_gfs_wrf(
     if (cycle_time.hour not in {0, 6, 12, 18}
             or cycle_time.minute != 0 or cycle_time.second != 0):
         raise ValueError("GFS cycle must be an exact 00/06/12/18 UTC cycle")
-    records = _read_series(Path(series))
     base_roles = {
         "series": Path(series),
         "bridge": Path(bridge),
@@ -1221,9 +1625,26 @@ def prepare_gfs_wrf(
     elif geog_root is None:
         raise ValueError(
             "GFS requires either static-input/static-receipt or geog-root")
+    posted = None
+    if as_posted is not None:
+        if input_manifest_sha256 is not None:
+            raise ValueError(
+                "an as-posted GFS preparation writes its input manifest at "
+                "its seal, so it is given no manifest digest to verify")
+        for role, path in base_roles.items():
+            if role != "series" and not path.is_file():
+                raise FileNotFoundError(
+                    f"missing GFS adapter input {role}: {path}")
+        posted, records, posted_manifest = _as_posted_plan(
+            posting=Path(as_posted), series=Path(series),
+            cycle_time=cycle_time, roles=base_roles)
+    else:
+        records = _read_series(Path(series))
     grib_roles = {f"grib-f{hour:03d}": path for hour, path in records}
     roles = {**base_roles, **grib_roles}
     for role, path in roles.items():
+        if posted is not None and (role in grib_roles or role == "series"):
+            continue
         if not path.is_file():
             raise FileNotFoundError(f"missing GFS adapter input {role}: {path}")
     if not os.access(Path(bridge), os.X_OK):
@@ -1256,9 +1677,22 @@ def prepare_gfs_wrf(
     progress = _PreparePhases(prepare_progress_path(output_root))
     progress.enter("verify_inputs", files=len(roles))
     verify_started = time.perf_counter()
-    manifest = _verify_input_manifest(
-        Path(input_manifest), input_manifest_sha256, roles)
-    manifest_digest = input_manifest_sha256.lower()
+    if posted is None:
+        manifest = _verify_input_manifest(
+            Path(input_manifest), input_manifest_sha256, roles)
+        manifest_digest = input_manifest_sha256.lower()
+        plan = plan_sha256 = None
+    else:
+        manifest = posted_manifest
+        plan = input_plan(manifest,
+                          lead_role_prefix=_AS_POSTED_LEAD_ROLE_PREFIX,
+                          route_table_sha256=posted.route_table_sha256(),
+                          derived_roles=_AS_POSTED_DERIVED_ROLES)
+        plan_sha256 = input_plan_sha256(plan)
+        # Where the one-shot identity binds the manifest's digest, the
+        # head binds this placeholder of the plan; the seal writes the
+        # digest (boundary_stream.check_as_posted_identity).
+        manifest_digest = as_posted_placeholder(plan_sha256)
     source_identity = manifest.get("source")
     expected_source_identity = {
         "model": "GFS",
@@ -1307,17 +1741,12 @@ def prepare_gfs_wrf(
         load_bound_water_overlay, overlay_snapshot_sequence, verify_overlay_sequence)
     water_overlay, water_overlay_binding = load_bound_water_overlay(
         None if case_data is None else case_data.water_temperature_overlay)
-    from gpuwm.experiment import refuse_unrouted_spawn
+    from gpuwm.experiment import (
+        deferred_initial_perturbation, refuse_unrouted_spawn,
+    )
     refuse_unrouted_spawn(exp, "GFS-direct prepared-cache")
-    initial_perturbation = _prepared_initial_perturbation(exp)
-    if initial_perturbation is not None:
-        warn(
-            "initial perturbation is deferred to prepared-tree forecast initialization",
-            "Prepared initial and boundary arrays remain unperturbed. The "
-            "original configuration stays bound to the bundle; its bubbles "
-            "are applied once to restored states at experiment start, never "
-            "on restart or to a nest born later. Companion stock-WRF export "
-            "cannot represent this deferred mutation.")
+    initial_perturbation = deferred_initial_perturbation(
+        exp, "GFS-direct prepared-cache")
     physics_selection = front_door_physics_selection(
         exp, physics_profile=physics_profile,
         expert_acknowledgements=expert_acknowledgements)
@@ -1416,7 +1845,8 @@ def prepare_gfs_wrf(
                    source=("geog" if static_input is None else "prebuilt"))
     if static_input is None:
         static, root_static_receipt, landuse_attrs = _static_from_geog(
-            Path(wps_namelist), Path(geog_root), grid, cfg)
+            Path(wps_namelist), Path(geog_root), grid, cfg,
+            static_highres=static_highres)
         root_static_provider = "native-wps-geog"
     else:
         root_static_receipt = _verify_static_receipt(
@@ -1428,9 +1858,12 @@ def prepare_gfs_wrf(
             # table has to come from the GEOG index beside it.
             from gpuwm.hrrr_native_static import verified_static_catalog
             from gpuwm.static.build import geog_selection_from_catalog
+            from gpuwm.static.terrain_smoothing import (
+                selection_carrier_kwargs)
 
             catalog, _ = verified_static_catalog(
-                Path(wps_namelist), Path(geog_root), (1,))
+                Path(wps_namelist), Path(geog_root), (1,),
+                **selection_carrier_kwargs(static_highres))
             landuse_attrs = geog_selection_from_catalog(
                 catalog, 1).landuse_global_attrs()
     static, root_static_receipt = apply_prepared_highres(
@@ -1456,7 +1889,8 @@ def prepare_gfs_wrf(
     # chosen here.
     exp, vertical_adaptation = adapt_experiment_for_statics(
         exp, grids, root_terrain=static["HGT_M"],
-        static_catalog=_survey_static_catalog(exp, wps_namelist, geog_root),
+        static_catalog=_survey_static_catalog(
+            exp, wps_namelist, geog_root, static_highres),
         static_highres=static_highres, announce=_announce_adaptation)
     cfg = exp.root.run
 
@@ -1487,6 +1921,25 @@ def prepare_gfs_wrf(
             prefix="gpuwm-gfs-bridge-", dir=Path(output_root).parent,
             ignore_cleanup_errors=True) as temporary:
         decoded = Path(temporary) / "decoded"
+        target_longitudes = tuple(
+            pair[1] for pair in (grid.latlon_mass(), grid.latlon_u(),
+                                 grid.latlon_v()))
+        bridge_environment = None
+        if preprocess_workers is not None:
+            bridge_environment = {
+                **os.environ,
+                "GPUWM_GFS_BRIDGE_THREADS": str(int(preprocess_workers))}
+        posted_series = None
+        if posted is not None:
+            posted_series = _PostedGfsSeries(
+                posted=posted, records=records, cycle_time=cycle_time,
+                bridge=Path(bridge), scratch=Path(temporary),
+                levels_pa_csv=(None if expected_levels_hpa is None
+                               else ",".join(format(level * 100.0, "g")
+                                             for level in expected_levels_hpa)),
+                environment=bridge_environment,
+                orient=lambda snapshot: orient_global_source_longitudes(
+                    snapshot, *target_longitudes))
         bridge_command = [
             str(Path(bridge)), "--series", str(Path(series)), str(decoded),
             cycle_time.strftime("%Y-%m-%d %H:%M:%S")]
@@ -1501,11 +1954,26 @@ def prepare_gfs_wrf(
             # bridge's own report of what it decoded.
             bridge_command += ["--pressure-levels-pa", ",".join(
                 format(level * 100.0, "g") for level in expected_levels_hpa)]
-        completed = subprocess.run(
+        # The bridge reads and decodes the forecast hours concurrently on
+        # every core it may run on; an explicit --preprocess-workers is the
+        # count every host step takes, this one included.
+        completed = (None if posted_series is not None else subprocess.run(
             bridge_command,
             check=False, text=True, capture_output=True,
-        )
-        if completed.returncode != 0:
+            env=bridge_environment,
+        ))
+        if posted_series is not None:
+            # As posted, the decode reads the leads posted so far: through
+            # the start time here (one batch), then each lead as the build
+            # of its forcing time asks for it.  A declared water overlay
+            # binds its proof over the whole sequence, so it is decoded
+            # whole first.
+            posted_series.through(
+                len(records) - 1 if water_overlay is not None
+                else initial_index)
+            decoded_snapshots = posted_series.view(0)
+            head_decode_seconds = posted_series.decode_seconds
+        elif completed.returncode != 0:
             # The bridge already fails closed and says why, including for
             # a GRIB whose valid time is not the one requested.  Raising
             # a bare RuntimeError meant that careful, content-based
@@ -1514,31 +1982,34 @@ def prepare_gfs_wrf(
             # was right and only the delivery was wrong.
             raise GfsRouteError(decode_failure_message(
                 "GFS Rust bridge", completed.stderr))
-        expected_source_sha256 = {
-            hour: manifest["files"][f"grib-f{hour:03d}"]["sha256"]
-            for hour, _ in records
-        }
-        decoded_snapshots = _load_bridge_snapshots(
-            decoded, cycle_time, records, expected_source_sha256,
-            expected_levels_hpa=expected_levels_hpa)
+        if posted_series is None:
+            expected_source_sha256 = {
+                hour: manifest["files"][f"grib-f{hour:03d}"]["sha256"]
+                for hour, _ in records
+            }
+            decoded_snapshots = _load_bridge_snapshots(
+                decoded, cycle_time, records, expected_source_sha256,
+                expected_levels_hpa=expected_levels_hpa)
         # A NOMADS box that crosses the source's own 0/360 origin cannot be
         # asked for as one subregion, so `Area.as_nomads` widens it to the
         # whole band (fetch.py:348-362) and the decode returns a ring stored
         # with an arbitrary cut at longitude 0.  Re-cut it opposite the
         # target before anything indexes it; a regional crop is untouched.
-        target_longitudes = tuple(
-            pair[1] for pair in (grid.latlon_mass(), grid.latlon_u(),
-                                 grid.latlon_v()))
-        decoded_snapshots = tuple(
-            orient_global_source_longitudes(snapshot, *target_longitudes)
-            for snapshot in decoded_snapshots)
+        if posted_series is None:
+            decoded_snapshots = tuple(
+                orient_global_source_longitudes(snapshot, *target_longitudes)
+                for snapshot in decoded_snapshots)
         # From here on the run sees only the window that starts at the
         # experiment's lead.  Each snapshot still carries the SOURCE
         # valid time the bridge decoded (cycle + its own lead), which is
         # exactly start_time + the model offset.
-        snapshots = overlay_snapshot_sequence(decoded_snapshots[initial_index:], water_overlay,
-                                              binding=water_overlay_binding,
-                                              workers=host_step_workers(preprocess))
+        if posted_series is not None and water_overlay is None:
+            snapshots = posted_series.view(initial_index)
+        else:
+            snapshots = overlay_snapshot_sequence(
+                decoded_snapshots[initial_index:], water_overlay,
+                binding=water_overlay_binding,
+                workers=host_step_workers(preprocess))
         decode_seconds = time.perf_counter() - decode_started
         # The land-use table's own ISLAKE, never a hard-coded 21: the
         # category number is a property of the selected table, and a table
@@ -1574,10 +2045,20 @@ def prepare_gfs_wrf(
             lake_mask = static["LU_INDEX"] == MODIS_LAKE_CATEGORY
         else:
             lake_mask = water_statics.lake
-        coverage_receipt = {
-            f"f{hour:03d}": _source_coverage_receipt(snapshot, grid, lake_mask)
-            for hour, snapshot in zip(source_hours, snapshots)
-        }
+        def coverage_of(hours_and_snapshots):
+            return {
+                f"f{hour:03d}": _source_coverage_receipt(
+                    snapshot, grid, lake_mask)
+                for hour, snapshot in hours_and_snapshots
+            }
+
+        if posted_series is None:
+            coverage_receipt = coverage_of(zip(source_hours, snapshots))
+        else:
+            # The leads decoded so far; the seal writes every lead's.
+            coverage_receipt = coverage_of(
+                (hour, posted_series.snapshots[hour])
+                for hour in source_hours if hour in posted_series.snapshots)
 
         from gpuwm.core.grid import make_vertical_coord
 
@@ -1595,12 +2076,25 @@ def prepare_gfs_wrf(
         initialize_started = time.perf_counter()
         progress.enter("initialize_all_times",
                        forcing_times=len(records))
+        # CHAINED TREES.  A tree's children need only the start time and
+        # the root's start state, so a tree is chained exactly like a
+        # single domain, on either backend: the start time first, the
+        # children into the head, one root interval per segment, the
+        # one-shot tree at the seal (_prepare_chained_gfs_tree).
+        # An as-posted tree takes the same head and seal whether or not its
+        # head is published early: its children bind the input plan at the
+        # head and its seal writes the one-shot tree, which the start-last
+        # hierarchy (every time before any artifact) cannot do.
+        chain_tree = len(exp.domains) > 1 and (
+            chained_enabled() or posted_series is not None)
         # ONE forcing time is ever resident.  A single domain builds the
         # start time FIRST, publishes it in the prepared head and releases
         # it, then writes each boundary interval as soon as its two times
-        # exist (gpuwm.ingest.boundary_stream).  A hierarchy builds the
-        # start time LAST (start_last_forcing_order) and retains only that
-        # met/state; every other time contributes its perimeter frames
+        # exist (gpuwm.ingest.boundary_stream).  A chained tree does the
+        # same, and its seal re-reads every start state from the head
+        # (boundary_stream.TreeStartStates).  An unchained hierarchy builds
+        # the start time LAST (start_last_forcing_order) and retains only
+        # that met/state; every other time contributes its perimeter frames
         # against its own position and is released before the next one is
         # interpolated.  Walking the times in order instead meant holding
         # the start time -- which nothing reads until the boundaries are
@@ -1621,10 +2115,16 @@ def prepare_gfs_wrf(
         # their atmospheric/soil source as land here, then apply the existing
         # explicit nearest-source-water lake initialization below.
         interpolation_landmask[lake_mask] = True
+        # WRF's smooth_cg_topo (gpuwm.ingest.cg_topo): the root terrain is
+        # blended toward GFS's once, before the first initialization reads
+        # it.  Off, this does nothing.
+        terrain_blend = RootTerrainBlend(exp, static, route="gfs")
+
         def build_forcing_time(index):
-            # One forcing time's build, unchanged.  A single domain calls
-            # it start first (gpuwm.ingest.boundary_stream); a hierarchy
-            # keeps the start time last until its children are chained.
+            # One forcing time's build, unchanged.  A single domain and a
+            # chained tree call it start first
+            # (gpuwm.ingest.boundary_stream); an unchained hierarchy keeps
+            # the start time last.
             source = snapshots[index]
             met = interpolate_era5_to_lambert(
                 source, grid,
@@ -1632,6 +2132,8 @@ def prepare_gfs_wrf(
                 relative_humidity_convention="water",
                 backend=preprocess,
             )
+            terrain_blend.before_initialize(
+                met.fields.get("SOURCE_OROGRAPHY"))
             coord = make_vertical_coord(
                 cfg.nz, hybrid_opt=cfg.hybrid_opt, etac=cfg.etac,
                 eta_levels=exp.vertical.eta_levels)
@@ -1647,8 +2149,13 @@ def prepare_gfs_wrf(
                 cosa=static["COSALPHA"])
             return met, initialized
 
-        times = tuple(snapshot.valid_time for snapshot in snapshots)
-        if len(exp.domains) > 1:
+        # The plan's times as posted (each snapshot's valid time is the
+        # cycle plus its lead, gfs_direct._load_bridge_snapshots).
+        times = (tuple(snapshot.valid_time for snapshot in snapshots)
+                 if posted_series is None else
+                 tuple(cycle_time + timedelta(hours=hour)
+                       for hour in source_hours))
+        if len(exp.domains) > 1 and not chain_tree:
             for index in start_last_forcing_order(len(snapshots)):
                 met, initialized = build_forcing_time(index)
                 forcing.add_state(initialized.state, index=index)
@@ -1662,7 +2169,8 @@ def prepare_gfs_wrf(
             attach_lateral_boundaries(initial_result.state, boundaries)
         else:
             # START FIRST: the start time makes the head, the later times
-            # are built after it is published, one resident at a time.
+            # are built after it is published, one resident at a time
+            # (a single domain, or a chained tree).
             initial_met, initial_result = build_forcing_time(0)
             forcing.add_state(initial_result.state, index=0)
             boundaries = None
@@ -1744,9 +2252,9 @@ def prepare_gfs_wrf(
             soil_mesh=soil_mesh_plan_from_case(
                 snapshots[0], grid, experiment_config),
             route=_WATER_ROUTE)
-        if len(exp.domains) > 1:
-            # Every forcing time has been consumed; a single domain proves
-            # this after its remaining times, below.
+        if len(exp.domains) > 1 and not chain_tree:
+            # Every forcing time has been consumed; a single domain and a
+            # chained tree prove this after their remaining times, below.
             verify_overlay_sequence(snapshots)
         initialize_seconds = time.perf_counter() - initialize_started
 
@@ -1775,7 +2283,9 @@ def prepare_gfs_wrf(
                 "explicit zero (WRF Vtable.GFS parity)"),
             "implementation_sha256": implementation_sha256,
             "git_source_identity": git_source_identity,
-            "preprocessing": preprocess_receipt,
+            # What ran, without what was measured (A138): the proof keeps
+            # the whole receipt.
+            "preprocessing": preprocess_identity(preprocess_receipt),
             **({"initial_perturbation": initial_perturbation}
                if initial_perturbation is not None else {}),
         }
@@ -1786,18 +2296,22 @@ def prepare_gfs_wrf(
         staging.mkdir(parents=True)
         writer = None
         try:
-            shutil.copy2(decoded / "gate.tsv", staging / "decoder-gate.tsv")
-            shutil.copy2(
-                decoded / "inventory.tsv", staging / "decoder-inventory.tsv")
-            shutil.copy2(
-                decoded / "decoded-sha256.tsv",
-                staging / "decoder-sha256.tsv")
+            if posted_series is None:
+                # As posted, the seal writes these three from the batches
+                # and the input manifest the seal authors.
+                shutil.copy2(decoded / "gate.tsv",
+                             staging / "decoder-gate.tsv")
+                shutil.copy2(decoded / "inventory.tsv",
+                             staging / "decoder-inventory.tsv")
+                shutil.copy2(decoded / "decoded-sha256.tsv",
+                             staging / "decoder-sha256.tsv")
             static_cache = staging / "native-static.npz"
             geometry_receipt = staging / "geometry-receipt.json"
             portable_source_manifest = staging / "source-input-manifest.json"
             prepared_cache = staging / "prepared-cache"
             wrf_output = staging / "wrf-native-input"
-            shutil.copy2(Path(input_manifest), portable_source_manifest)
+            if posted_series is None:
+                shutil.copy2(Path(input_manifest), portable_source_manifest)
             _write_static_cache(static_cache, static)
             _write_geometry_receipt(geometry_receipt, grid, cfg, static_cache)
             if statics_corridor is not None and len(exp.domains) < 2:
@@ -1812,6 +2326,160 @@ def prepare_gfs_wrf(
                 if selected_workers is None:
                     selected_workers = (
                         8 if preprocess_receipt["backend"] == "cpu" else 1)
+                hierarchy_inputs = {
+                    "input_manifest_sha256": manifest_digest,
+                    "decoder_sha256": decoder_digest,
+                    "preprocessing": preprocess_receipt,
+                }
+                stock_wrf_export_mode = (
+                    "optional" if stock_wrf_export else "off")
+
+                def tree_proof_head(*, static_catalog, source_coverage,
+                                    topology, moisture_floors,
+                                    statics_corridor=None):
+                    # The tree's proof without its seal-only keys
+                    # (boundary_stream.SEAL_ONLY_PROOF_KEYS): the whole
+                    # proof of a chained tree's head, and the one-shot
+                    # tree's proof less its artifact records, export and
+                    # wall times, so the two arms cannot drift apart.
+                    return {
+                        "schema": HIERARCHY_PROOF_SCHEMA,
+                        "status": "READY_NOT_YET_STOCK_WRF_GATED",
+                        "domain_count": len(exp.domains),
+                        "physics": physics_selection,
+                        "initial_condition": provenance,
+                        # The coordinate this bundle was built on and why,
+                        # on every run: the forecast adopts it from these
+                        # artifacts, so a reader must be able to see it
+                        # here without the configuration in hand.
+                        "vertical_coordinate": _vertical_coordinate_receipt(
+                            exp, vertical_adaptation),
+                        "source_forecast_hours": list(source_hours),
+                        "forcing_times": [
+                            value.isoformat() for value in times],
+                        "forcing_hours": hours,
+                        "boundary_interval_seconds": (
+                            boundary_interval_seconds),
+                        "input_manifest_sha256": manifest_digest,
+                        "decoder_sha256": decoder_digest,
+                        "implementation_sha256": implementation_sha256,
+                        "git_source_identity": git_source_identity,
+                        "preprocessing": preprocess_receipt,
+                        "root_static_provider": root_static_provider,
+                        "root_static_receipt": root_static_receipt,
+                        "hierarchy_workers": selected_workers,
+                        "source_coverage": coverage_receipt,
+                        # The soil-state SOURCE resolution, on every run: a
+                        # reader of this forecast must be able to answer
+                        # "how coarse was the soil I started from" without
+                        # the config, and whether the sub-source-cell
+                        # reconstitution ran on it.
+                        "soil_texture_downscale": dict(
+                            getattr(soil, "soil_texture_downscale", {})
+                            or {}),
+                        "decoder_stdout": (None if completed is None
+                                           else completed.stdout.strip()),
+                        "static_catalog": dict(static_catalog),
+                        "hierarchy_source_coverage": dict(source_coverage),
+                        "hierarchy_topology": dict(topology),
+                        # WHETHER EACH DOMAIN'S INITIALIZATION MODIFIED
+                        # VAPOUR ON THE WAY IN, root and children alike.
+                        # Unconditional, and stated even when no floor
+                        # fired: an absent key would read as "prepared
+                        # before the receipt existed", a different claim
+                        # and one no reader of the bundle could check.
+                        **dict(moisture_floors),
+                        **({"initial_perturbation": initial_perturbation}
+                           if initial_perturbation is not None else {}),
+                        # Present only when the preparation opted in: the
+                        # statics-corridor set, digest-bound here the way
+                        # every other sealed artifact is.  Absent, the
+                        # bundle is byte-for-byte what it always was.  A
+                        # chained tree builds it into its head, so a
+                        # moving nest's forecast starts there.
+                        **({"statics_corridor": dict(statics_corridor)}
+                           if statics_corridor is not None else {}),
+                    }
+
+                def inputs_unchanged(sealed_inputs=None):
+                    # As posted, the manifest the seal wrote.
+                    bound, digest = (
+                        (manifest, manifest_digest) if sealed_inputs is None
+                        else (sealed_inputs["manifest"],
+                              sealed_inputs["manifest_sha256"]))
+                    final_manifest = _verify_input_manifest(
+                        Path(input_manifest), digest, roles)
+                    if final_manifest != bound:
+                        raise ValueError(
+                            "GFS input manifest content changed during "
+                            "preparation")
+                    if _implementation_sha256() != implementation_sha256:
+                        raise ValueError(
+                            "GFS adapter implementation changed during "
+                            "preparation")
+
+                if chain_tree:
+                    posted_tree = None
+                    if posted_series is not None:
+                        def seal_posted_inputs(tree_root):
+                            return _seal_as_posted_inputs(
+                                posted_series, plan=plan,
+                                series=Path(series), bridge=Path(bridge),
+                                wps_namelist=Path(wps_namelist),
+                                experiment_config=Path(experiment_config),
+                                static_input=static_input,
+                                static_receipt=static_receipt,
+                                input_manifest=Path(input_manifest),
+                                tree=tree_root,
+                                merged=Path(temporary) / "decoded",
+                                portable=portable_source_manifest.name)
+
+                        posted_tree = SimpleNamespace(
+                            posted=posted, series=posted_series, plan=plan,
+                            source_hours=tuple(source_hours),
+                            coverage_of=coverage_of,
+                            head_decode_seconds=head_decode_seconds,
+                            seal_inputs=seal_posted_inputs,
+                            manifest_path=portable_source_manifest.name)
+                    chained_tree = SimpleNamespace(
+                        posted_tree=posted_tree,
+                        exp=exp, grids=grids, cfg=cfg, snapshots=snapshots,
+                        times=times, hours=hours,
+                        build_forcing_time=build_forcing_time,
+                        forcing=forcing, preprocess=preprocess,
+                        preprocess_receipt=preprocess_receipt,
+                        initial_result=initial_result,
+                        initial_met=initial_met, soil=soil, static=static,
+                        static_highres=static_highres,
+                        statics_corridor=statics_corridor,
+                        case_policy=case_policy,
+                        experiment_config=experiment_config,
+                        wps_namelist=wps_namelist, geog_root=geog_root,
+                        cpu_bridge=cpu_preprocess_bridge,
+                        selected_workers=selected_workers,
+                        manifest_digest=manifest_digest,
+                        namelist_sha256=experiment_config_digest,
+                        source_identity=native_source_identity,
+                        input_provenance=hierarchy_inputs,
+                        stock_wrf_export=stock_wrf_export_mode,
+                        staging=staging, output_root=Path(output_root),
+                        progress=progress,
+                        tree_proof_head=tree_proof_head,
+                        verify_overlay_sequence=verify_overlay_sequence,
+                        inputs_unchanged=inputs_unchanged,
+                        timings={
+                            "verify_inputs": verify_inputs_seconds,
+                            "static_build": static_build_seconds,
+                            "decode": decode_seconds,
+                        },
+                        initialize_seconds=initialize_seconds,
+                        total_started=total_started,
+                    )
+                    # The chained tree owns the start state from here and
+                    # releases it at its head; these names would keep it
+                    # resident.
+                    del initial_result, initial_met
+                    return _prepare_chained_gfs_tree(chained_tree)
                 hierarchy_started = time.perf_counter()
                 hierarchy = initialize_and_export_regular_source_hierarchy(
                     exp=exp, grids=grids, snapshots=snapshots,
@@ -1831,15 +2499,10 @@ def prepare_gfs_wrf(
                     workers=selected_workers,
                     preprocess_backend=preprocess_receipt["backend"],
                     cpu_bridge=cpu_preprocess_bridge,
-                    input_provenance={
-                        "input_manifest_sha256": manifest_digest,
-                        "decoder_sha256": decoder_digest,
-                        "preprocessing": preprocess_receipt,
-                    },
+                    input_provenance=hierarchy_inputs,
                     artifact_manifest_reference=(
                         "../hierarchy-artifacts/domain-artifacts.json"),
-                    stock_wrf_export=(
-                        "optional" if stock_wrf_export else "off"),
+                    stock_wrf_export=stock_wrf_export_mode,
                     statics_corridor=statics_corridor,
                     static_highres=static_highres,
                     sfcp_to_sfcp=case_policy["sfcp_to_sfcp"],
@@ -1853,74 +2516,19 @@ def prepare_gfs_wrf(
                 )
                 hierarchy_seconds = time.perf_counter() - hierarchy_started
                 verify_overlay_sequence(snapshots)
-                final_manifest = _verify_input_manifest(
-                    Path(input_manifest), manifest_digest, roles)
-                if final_manifest != manifest:
-                    raise ValueError(
-                        "GFS input manifest content changed during preparation")
-                if _implementation_sha256() != implementation_sha256:
-                    raise ValueError(
-                        "GFS adapter implementation changed during preparation")
+                inputs_unchanged()
                 proof = {
-                    "schema": HIERARCHY_PROOF_SCHEMA,
-                    "status": "READY_NOT_YET_STOCK_WRF_GATED",
-                    "domain_count": len(exp.domains),
-                    "physics": physics_selection,
-                    "initial_condition": provenance,
-                    # The coordinate this bundle was built on and why, on
-                    # every run: the forecast adopts it from these
-                    # artifacts, so a reader must be able to see it here
-                    # without the configuration in hand.
-                    "vertical_coordinate": _vertical_coordinate_receipt(
-                        exp, vertical_adaptation),
-                    "source_forecast_hours": list(source_hours),
-                    "forcing_times": [value.isoformat() for value in times],
-                    "forcing_hours": hours,
-                    "boundary_interval_seconds": boundary_interval_seconds,
-                    "input_manifest_sha256": manifest_digest,
-                    "decoder_sha256": decoder_digest,
-                    "implementation_sha256": implementation_sha256,
-                    "git_source_identity": git_source_identity,
-                    "preprocessing": preprocess_receipt,
-                    "root_static_provider": root_static_provider,
-                    "root_static_receipt": root_static_receipt,
-                    "hierarchy_workers": selected_workers,
-                    "source_coverage": coverage_receipt,
-                    # The soil-state SOURCE resolution, on every run: a reader of
-                    # this forecast must be able to answer "how coarse was the
-                    # soil I started from" without the config, and whether the
-                    # sub-source-cell reconstitution ran on it.
-                    "soil_texture_downscale": dict(
-                        getattr(soil, "soil_texture_downscale", {}) or {}),
-                    "decoder_stdout": completed.stdout.strip(),
-                    "static_catalog": dict(
-                        hierarchy.static_catalog_receipt),
-                    "hierarchy_source_coverage": dict(
-                        hierarchy.source_coverage_receipt),
-                    "hierarchy_topology": dict(
-                        hierarchy.topology_receipt),
+                    **tree_proof_head(
+                        static_catalog=hierarchy.static_catalog_receipt,
+                        source_coverage=hierarchy.source_coverage_receipt,
+                        topology=hierarchy.topology_receipt,
+                        moisture_floors=(
+                            hierarchy.hierarchy.moisture_floor_receipts),
+                        statics_corridor=hierarchy.statics_corridor_receipt),
                     "artifact_receipt": dict(
                         hierarchy.hierarchy.artifacts.receipt),
-                    # WHETHER EACH DOMAIN'S INITIALIZATION MODIFIED VAPOUR
-                    # ON THE WAY IN, root and children alike.
-                    # Unconditional, and stated even when no floor fired:
-                    # an absent key would read as "prepared before the
-                    # receipt existed", a different claim and one no reader
-                    # of the bundle could check.
-                    **dict(hierarchy.hierarchy.moisture_floor_receipts),
-                    **({"initial_perturbation": initial_perturbation}
-                       if initial_perturbation is not None else {}),
                     "wrf_manifest": dict(
                         hierarchy.hierarchy.wrf_manifest),
-                    # Present only when the preparation opted in: the
-                    # sealed statics-corridor set, digest-bound here the
-                    # way every other sealed artifact is.  Absent, the
-                    # bundle is byte-for-byte what it always was.
-                    **(
-                        {"statics_corridor": dict(
-                            hierarchy.statics_corridor_receipt)}
-                        if hierarchy.statics_corridor_receipt is not None
-                        else {}),
                     "timing_seconds": {
                         "verify_inputs": verify_inputs_seconds,
                         "static_build": static_build_seconds,
@@ -1936,10 +2544,11 @@ def prepare_gfs_wrf(
                     encoding="utf-8")
                 os.replace(staging, Path(output_root))
                 return proof
+            static_cache_sha256 = _sha256(static_cache)
             identity = prepared_cache_identity(
                 bridge_manifest_sha256=manifest_digest,
                 source_manifest_sha256=manifest_digest,
-                static_cache_sha256=_sha256(static_cache),
+                static_cache_sha256=static_cache_sha256,
                 namelist_sha256=experiment_config_digest,
                 domain_config=exp.root,
                 forcing_hours=hours,
@@ -2002,7 +2611,8 @@ def prepare_gfs_wrf(
                 # sub-source-cell reconstitution ran on it.
                 "soil_texture_downscale": dict(
                     getattr(soil, "soil_texture_downscale", {}) or {}),
-                "decoder_stdout": completed.stdout.strip(),
+                "decoder_stdout": (None if completed is None
+                                   else completed.stdout.strip()),
                 "physics": physics_selection,
                 # Whether the unchanged-WRF files were asked for: the
                 # forecast reads this beside the export slot, which says
@@ -2011,6 +2621,28 @@ def prepare_gfs_wrf(
                 "stock_wrf_export": ("optional" if stock_wrf_export
                                      else "off"),
             }
+            as_posted_head = None
+            if posted_series is not None:
+                # The keys that read every lead are the seal's; the head
+                # binds the plan and the markers of the leads its own
+                # decode read, and each segment the markers of its two
+                # times (source_hours from the start lead).
+                for key in _AS_POSTED_SEAL_KEYS:
+                    proof_head.pop(key, None)
+                as_posted_head = {
+                    "input_plan": plan,
+                    "start_markers": {
+                        hour: posted_series.markers[hour]
+                        for hour in posted_series.snapshots},
+                    "forcing_leads": list(source_hours),
+                    "seal_authored_proof_keys": _AS_POSTED_SEAL_KEYS,
+                    "manifest_path": portable_source_manifest.name,
+                    "lead_role_prefix": _AS_POSTED_LEAD_ROLE_PREFIX,
+                    "derived_roles": _AS_POSTED_DERIVED_ROLES,
+                    "manifest_bound_identity_keys": (
+                        "bridge_manifest_sha256", "source_manifest_sha256",
+                        "input_manifest_sha256"),
+                }
             # One machine, one card: the forecast may start beside this
             # producer only when both fit (boundary_stream.chained_admission).
             writer.admit(
@@ -2027,7 +2659,7 @@ def prepare_gfs_wrf(
                     "last_valid_time": times[-1].isoformat(),
                     "forcing_hours": hours,
                     "boundary_interval_seconds": boundary_interval_seconds,
-                    "preprocessing": preprocess_receipt,
+                    "preprocessing": preprocess_identity(preprocess_receipt),
                 },
                 lbc={
                     "spec_bdy_width": cfg.spec_bdy_width,
@@ -2039,9 +2671,18 @@ def prepare_gfs_wrf(
                     "fields": forcing.inventory,
                 },
                 proof_head=proof_head,
-                input_manifest_sha256=manifest_digest,
+                input_manifest_sha256=(None if posted_series is not None
+                                       else manifest_digest),
                 forcing=forcing,
+                as_posted=as_posted_head,
             )
+            if posted is not None:
+                # The lead waits from here on say so on the producer
+                # heartbeat, so a forecast at a seam says it waits on the
+                # source (PostedLeads.wait), and each segment binds the
+                # markers its two times were decoded from.
+                posted.writer = writer
+                writer.bind_posted_leads(posted_series.markers)
             cache_seconds = time.perf_counter() - cache_started
             # The start state has done its work: it is in the head.
             del initial_result, initial_met
@@ -2057,7 +2698,46 @@ def prepare_gfs_wrf(
             initialize_seconds += time.perf_counter() - boundaries_started
             progress.enter("write_prepared_cache")
             cache_started = time.perf_counter()
-            cache_receipt = writer.seal_cache()
+            sealed = None
+            if posted_series is not None:
+                # Every lead is decoded now (the last build read it), so
+                # the decode time spent inside the builds moves back to
+                # the decode.
+                later_decode = posted_series.decode_seconds - head_decode_seconds
+                decode_seconds += later_decode
+                initialize_seconds -= later_decode
+                sealed = _seal_as_posted_inputs(
+                    posted_series, plan=plan, series=Path(series),
+                    bridge=Path(bridge), wps_namelist=Path(wps_namelist),
+                    experiment_config=Path(experiment_config),
+                    static_input=static_input, static_receipt=static_receipt,
+                    input_manifest=Path(input_manifest), tree=writer.root,
+                    merged=Path(temporary) / "decoded",
+                    portable=portable_source_manifest.name)
+                manifest = sealed["manifest"]
+                manifest_digest = sealed["manifest_sha256"]
+                native_source_identity = {
+                    **native_source_identity,
+                    "input_manifest_sha256": manifest_digest}
+                coverage_receipt = coverage_of(
+                    (hour, posted_series.snapshots[hour])
+                    for hour in source_hours)
+                writer.write_posted_leads(
+                    posted_series.markers,
+                    route_table_sha256=sealed["route_table_sha256"])
+                cache_receipt = writer.seal_cache(
+                    manifest_sha256=manifest_digest,
+                    identity=prepared_cache_identity(
+                        bridge_manifest_sha256=manifest_digest,
+                        source_manifest_sha256=manifest_digest,
+                        static_cache_sha256=static_cache_sha256,
+                        namelist_sha256=experiment_config_digest,
+                        domain_config=exp.root,
+                        forcing_hours=hours,
+                        source_identity=native_source_identity,
+                    ))
+            else:
+                cache_receipt = writer.seal_cache()
             cache_seconds += time.perf_counter() - cache_started
             portable_cache_receipt = dict(cache_receipt)
             portable_cache_receipt["path"] = prepared_cache.name
@@ -2117,6 +2797,25 @@ def prepare_gfs_wrf(
                         export_receipt.get("files") or {}).items()
                 },
             }
+            if sealed is not None:
+                # The keys the head left to the seal, as the one-shot
+                # proof carries them, and the record of the waits.
+                proof_head = {
+                    **proof_head,
+                    "input_manifest_sha256": manifest_digest,
+                    "source_inputs": {
+                        "manifest_schema": manifest["schema"],
+                        "manifest_sha256": manifest_digest,
+                        "files": manifest["files"],
+                    },
+                    "source_coverage": coverage_receipt,
+                    "decoder_stdout": sealed["decoder_stdout"],
+                    "posting": {
+                        "as_posted": True,
+                        "waits": list(posted.waits),
+                        "leads_late": [],
+                    },
+                }
             proof = {
                 **proof_head,
                 "initialization_artifacts": initialization_artifacts,
@@ -2148,6 +2847,331 @@ def prepare_gfs_wrf(
                 # preparation of this output root rebuilds it.
                 writer.fail(error)
             raise
+
+
+def _prepare_chained_gfs_tree(c) -> dict[str, object]:
+    """A GFS domain tree, chained: head, one root interval per segment, seal.
+
+    The head holds the root's static files and start state (streamed cache
+    under ``hierarchy-head/domains/d01/prepared-cache``, its header written
+    at the seal) and every child's complete artifact set under
+    ``hierarchy-head/domains/dNN``: a child, a delayed one included, needs
+    only its start-time snapshot and the root's start state
+    (:func:`gpuwm.native_hierarchy.initialize_native_hierarchy_children`).
+    A tree whose nest moves has its statics corridor built into
+    ``hierarchy-head/statics-corridor`` and bound by the head's proof: it
+    needs no boundary time, and a forecast started on the head moves the
+    nest over it.  Segment k is the root's boundary interval k.  No start state stays
+    resident between head and seal, on either backend: the seal re-reads
+    the root (with its whole boundary set) and every child from the head
+    (:class:`gpuwm.ingest.boundary_stream.TreeStartStates`) and writes the
+    one-shot ``hierarchy-artifacts/`` tree from them, through the same
+    writer and the same arguments as the unchained tree, then the
+    companion WRF files and the corridor (copied from the head), then
+    ``proof.json``.  The top-level static cache, geometry receipt, source manifest and decoder receipts
+    were staged before the head and are published with it.
+
+    As posted (``c.posted_tree``, DESIGN A136 2.4 and the L3 design
+    ruling), the head is written from the start lead (and a delayed
+    nest's start lead, which its child's preparation waits for) before
+    the input manifest exists: the root's and every child's identity bind
+    the input plan's placeholder where the manifest digest goes, the head
+    binds the plan and the markers its own decode read, and each segment
+    the markers of its two times.  The seal writes the input manifest and
+    the decoder receipts from the lead batches, seals the root cache under
+    the one-shot identity, writes the one-shot ``hierarchy-artifacts/``
+    tree with the manifest's digest, holds every sealed child to its head
+    twin (:func:`gpuwm.ingest.boundary_stream.verify_as_posted_tree_children`)
+    and adds the proof keys that read every lead.  A moving or cyclone
+    nest adds no start need and no lead: its corridor needs no boundary
+    time and is built into the head as before.
+    """
+
+    exp = c.exp
+    cfg = c.cfg
+    backend = str(c.preprocess_receipt["backend"])
+    manifest_digest = c.manifest_digest
+    initialize_seconds = c.initialize_seconds
+    posted = c.posted_tree
+    writer = None
+    try:
+        c.progress.enter("write_prepared_cache")
+        hierarchy_started = time.perf_counter()
+        # The same head arguments the one-shot tree hands
+        # initialize_and_export_regular_source_hierarchy.
+        tree_head = prepare_regular_source_hierarchy_head(
+            exp=exp, grids=c.grids, snapshots=c.snapshots,
+            forcing_hours=c.hours,
+            wps_namelist=Path(c.wps_namelist), geog_root=Path(c.geog_root),
+            source_name="GFS", root_initial_result=c.initial_result,
+            source_inventory=tuple(c.snapshots[0].fields),
+            workers=c.selected_workers, preprocess_backend=backend,
+            cpu_bridge=c.cpu_bridge,
+            preprocess_selection=c.preprocess_receipt.get("selection"),
+            source_manifest_sha256=manifest_digest,
+            statics_corridor=c.statics_corridor,
+            static_highres=c.static_highres,
+            sfcp_to_sfcp=c.case_policy["sfcp_to_sfcp"],
+            water_temperature_policy=c.case_policy[
+                "water_temperature_policy"],
+            # A child sees the catalog, not the config.
+            soil_texture_downscale=declared_soil_texture_downscale(
+                c.experiment_config),
+            # The statics corridor goes into the head, so a nest that
+            # moves from the first step has its ground there.
+            head_artifacts=c.staging / HIERARCHY_HEAD_DIRNAME,
+        )
+        bound_identity = tree_head.bound_source_identity(c.source_identity)
+        head_domains = c.staging / HIERARCHY_HEAD_DIRNAME / "domains"
+        root_directory = head_domains / "d01"
+        root_directory.mkdir(parents=True)
+        root_static_receipt, _root_geometry = write_domain_static_files(
+            root_directory, domain=exp.domains[0], grid=c.grids[0],
+            static_fields=c.static)
+        child_builds = write_child_domain_artifacts(
+            head_domains, exp=exp, child_results=tree_head.child_results,
+            bridge_manifest_sha256=manifest_digest,
+            source_manifest_sha256=manifest_digest,
+            namelist_sha256=c.namelist_sha256, **tree_head.forcing_identity,
+            source_identity=bound_identity, valid_time=exp.start_time)
+        binding = root_domain_artifact_binding(
+            exp=exp, static_cache_sha256=root_static_receipt["sha256"],
+            bridge_manifest_sha256=manifest_digest,
+            source_manifest_sha256=manifest_digest,
+            namelist_sha256=c.namelist_sha256, **tree_head.forcing_identity,
+            source_identity=bound_identity, valid_time=exp.start_time)
+        head_hierarchy_seconds = time.perf_counter() - hierarchy_started
+        cache_name = f"{HIERARCHY_HEAD_DIRNAME}/domains/d01/prepared-cache"
+        writer = PreparedTreeWriter(
+            staging=c.staging, output_root=c.output_root,
+            identity=binding.identity, cache_name=cache_name)
+        head_moisture_floor_receipts = hierarchy_moisture_floor_receipts(
+            exp, c.initial_result, tree_head.child_results)
+        proof_head = c.tree_proof_head(
+            static_catalog=tree_head.static_receipt,
+            source_coverage=tree_head.source_coverage_receipt,
+            topology=tree_head.topology_receipt,
+            moisture_floors=head_moisture_floor_receipts,
+            statics_corridor=tree_head.statics_corridor_receipt)
+        as_posted_head = None
+        if posted is not None:
+            # The keys that read every lead are the seal's; the head binds
+            # the plan and the markers of the leads its own decode read
+            # (the start lead, and a delayed nest's), and each segment the
+            # markers of its two times.
+            for key in _AS_POSTED_TREE_SEAL_KEYS:
+                proof_head.pop(key, None)
+            as_posted_head = {
+                "input_plan": posted.plan,
+                "start_markers": {
+                    hour: posted.series.markers[hour]
+                    for hour in posted.series.snapshots},
+                "forcing_leads": list(posted.source_hours),
+                "seal_authored_proof_keys": _AS_POSTED_TREE_SEAL_KEYS,
+                "manifest_path": posted.manifest_path,
+                "lead_role_prefix": _AS_POSTED_LEAD_ROLE_PREFIX,
+                "derived_roles": _AS_POSTED_DERIVED_ROLES,
+                "manifest_bound_identity_keys": (
+                    "bridge_manifest_sha256", "source_manifest_sha256",
+                    "input_manifest_sha256"),
+            }
+        # One machine, one card: the forecast may start beside this
+        # producer only when both fit (boundary_stream.chained_admission).
+        writer.admit(
+            experiment=exp, backend=backend,
+            device_bytes=producer_device_bytes(backend))
+        head_started = time.perf_counter()
+        writer.write_head(
+            initial_result=c.initial_result, met=c.initial_met,
+            surface=_canonical_surface(c.soil),
+            metadata=dict(binding.metadata),
+            lbc={
+                "spec_bdy_width": cfg.spec_bdy_width,
+                "spec_zone": cfg.spec_zone,
+                "relax_zone": cfg.relax_zone,
+                "schedule": [
+                    [float(earlier * 3600), float(later * 3600)]
+                    for earlier, later in zip(c.hours, c.hours[1:])],
+                "fields": c.forcing.inventory,
+            },
+            proof_head=proof_head,
+            input_manifest_sha256=(None if posted is not None
+                                   else manifest_digest),
+            forcing=c.forcing,
+            as_posted=as_posted_head,
+            tree=domain_tree_head_fields(
+                [f"d{int(domain.grid_id):02d}" for domain in exp.domains],
+                root_cache=cache_name,
+                children_receipts={
+                    f"d{int(build.receipt['grid_id']):02d}": _sha256(
+                        head_domains
+                        / f"d{int(build.receipt['grid_id']):02d}"
+                        / "receipt.json")
+                    for build in child_builds}),
+            extra_head_payload_bytes=sum(
+                int(build.receipt["artifacts"]["prepared_cache"][
+                    "payload_bytes"]) for build in child_builds),
+        )
+        head_seconds = time.perf_counter() - head_started
+        if posted is not None:
+            # The lead waits from here on say so on the producer heartbeat,
+            # and each segment binds the markers its two times were decoded
+            # from.
+            posted.posted.writer = writer
+            writer.bind_posted_leads(posted.series.markers)
+        # Every start state is in the head now: the root's in its streamed
+        # cache, each child's in hierarchy-head/domains/dNN.  None stays
+        # resident while the later times are built (on the card that is the
+        # residency start_last_forcing_order avoids); the seal re-reads them.
+        start_states = TreeStartStates.release(
+            root_result=c.initial_result, root_met=c.initial_met,
+            child_results=tree_head.child_results,
+            child_content_sha256={
+                f"d{int(build.receipt['grid_id']):02d}": build.receipt[
+                    "artifacts"]["prepared_cache"]["content_sha256"]
+                for build in child_builds})
+        c.initial_result = c.initial_met = None
+        tree_head.child_results = ()
+        release_backend_memory(c.preprocess)
+        c.progress.enter("initialize_all_times",
+                         forcing_times=len(c.snapshots))
+        boundaries_started = time.perf_counter()
+        writer.stream_forcing_times(
+            count=len(c.snapshots), build_forcing_time=c.build_forcing_time,
+            forcing=c.forcing, times=c.times,
+            release=lambda: release_backend_memory(c.preprocess))
+        # Every forcing time has been consumed.
+        c.verify_overlay_sequence(c.snapshots)
+        initialize_seconds += time.perf_counter() - boundaries_started
+        c.progress.enter("write_prepared_cache")
+        timings = dict(c.timings)
+        source_identity = c.source_identity
+        input_provenance = c.input_provenance
+        root_identity = binding.identity
+        sealed = None
+        if posted is None:
+            root_content_sha256 = str(writer.seal_cache()["content_sha256"])
+        else:
+            # Every lead is decoded now (the last build read it), so the
+            # decode time spent inside the builds moves back to the decode.
+            later_decode = (posted.series.decode_seconds
+                            - posted.head_decode_seconds)
+            timings["decode"] = timings["decode"] + later_decode
+            initialize_seconds -= later_decode
+            sealed = posted.seal_inputs(writer.root)
+            manifest_digest = sealed["manifest_sha256"]
+            source_identity = {**c.source_identity,
+                               "input_manifest_sha256": manifest_digest}
+            input_provenance = {**c.input_provenance,
+                                "input_manifest_sha256": manifest_digest}
+            writer.write_posted_leads(
+                posted.series.markers,
+                route_table_sha256=sealed["route_table_sha256"])
+            # The root's one-shot identity: the head's binding with the
+            # manifest's digest where the plan's placeholder stood.
+            root_identity = root_domain_artifact_binding(
+                exp=exp, static_cache_sha256=root_static_receipt["sha256"],
+                bridge_manifest_sha256=manifest_digest,
+                source_manifest_sha256=manifest_digest,
+                namelist_sha256=c.namelist_sha256,
+                **tree_head.forcing_identity,
+                source_identity=tree_head.bound_source_identity(
+                    source_identity),
+                valid_time=exp.start_time).identity
+            root_content_sha256 = str(writer.seal_cache(
+                identity=root_identity,
+                manifest_sha256=manifest_digest)["content_sha256"])
+        c.progress.enter("direct_wrf_export")
+        hierarchy_seal_started = time.perf_counter()
+        (root_result, root_met, boundaries,
+         tree_head.child_results) = start_states.reread(
+            writer.root, exp=exp, grids=c.grids,
+            root_identity=root_identity,
+            root_content_sha256=root_content_sha256)
+        hierarchy_result = seal_regular_source_hierarchy(
+            tree_head,
+            artifact_output=writer.root / "hierarchy-artifacts",
+            wrf_output=writer.root / "wrf-native-input",
+            root_initial_result=root_result, root_met=root_met,
+            root_soil=c.soil, root_static_fields=c.static,
+            root_boundaries=boundaries,
+            bridge_manifest_sha256=manifest_digest,
+            source_manifest_sha256=manifest_digest,
+            namelist_sha256=c.namelist_sha256,
+            source_identity=source_identity,
+            input_provenance=input_provenance,
+            artifact_manifest_reference=(
+                "../hierarchy-artifacts/domain-artifacts.json"),
+            stock_wrf_export=c.stock_wrf_export,
+            head_artifacts=writer.root / HIERARCHY_HEAD_DIRNAME,
+        )
+        hierarchy_seconds = (head_hierarchy_seconds
+                             + time.perf_counter() - hierarchy_seal_started)
+        if dict(hierarchy_result.hierarchy.moisture_floor_receipts) \
+                != head_moisture_floor_receipts:
+            raise RuntimeError(
+                "the sealed tree's moisture-floor receipts differ from the "
+                "head's, which were computed from the same initial states")
+        # Named only as posted, so every other tree seals with the call it
+        # always made.
+        start_states.require_sealed_is_head(
+            hierarchy_result.hierarchy.artifacts.receipt,
+            root_content_sha256=root_content_sha256,
+            **({} if posted is None else {"as_posted": {
+                "root": writer.root, "head": writer.head,
+                "manifest_sha256": manifest_digest}}))
+        c.verify_overlay_sequence(c.snapshots)
+        c.inputs_unchanged(sealed)
+        if sealed is not None:
+            # The keys the head left to the seal, as the one-shot proof
+            # carries them, and the record of the waits.
+            proof_head = {
+                **proof_head,
+                "input_manifest_sha256": manifest_digest,
+                "source_coverage": posted.coverage_of(
+                    (hour, posted.series.snapshots[hour])
+                    for hour in posted.source_hours),
+                "decoder_stdout": sealed["decoder_stdout"],
+                "posting": {
+                    "as_posted": True,
+                    "waits": list(posted.posted.waits),
+                    "leads_late": [],
+                },
+            }
+        proof = {
+            **proof_head,
+            "artifact_receipt": dict(
+                hierarchy_result.hierarchy.artifacts.receipt),
+            "wrf_manifest": dict(hierarchy_result.hierarchy.wrf_manifest),
+            # Present only when the preparation opted in, as in the
+            # unchained tree; the head's copy, which publish holds equal
+            # to the one the head's proof binds.
+            **({"statics_corridor": dict(
+                hierarchy_result.statics_corridor_receipt)}
+               if hierarchy_result.statics_corridor_receipt is not None
+               else {}),
+            "boundary_stream": writer.boundary_stream_proof(),
+            "timing_seconds": {
+                **timings,
+                "initialize_all_root_times": initialize_seconds,
+                **dict(hierarchy_result.hierarchy.timings_seconds),
+                "hierarchy_call_wall": hierarchy_seconds,
+                "prepared_head": head_seconds,
+                "head_published_after": writer.head_seconds,
+                "total": time.perf_counter() - c.total_started,
+            },
+        }
+        c.progress.enter("publish")
+        writer.publish(proof)
+    except BaseException as error:
+        if writer is not None:
+            # A head already published stays, marked failed, so a waiting
+            # forecast ends with this reason and the next preparation of
+            # this output root rebuilds it.  The caller removes a staging
+            # tree that was never published.
+            writer.fail(error)
+        raise
+    return proof
 
 
 #: The export receipt schema of the single-domain route.
@@ -2402,7 +3426,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--static-receipt", type=Path)
     parser.add_argument("--experiment-config", type=Path, required=True)
     parser.add_argument("--input-manifest", type=Path, required=True)
-    parser.add_argument("--input-manifest-sha256", required=True)
+    parser.add_argument("--input-manifest-sha256")
+    parser.add_argument(
+        "--as-posted", type=Path, default=None, metavar="POSTING_DIR",
+        help="prepare as an as-posted fetch publishes the window's leads: "
+             "POSTING_DIR is its posting/ folder; the seal writes "
+             "--input-manifest, which then takes no digest")
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument(
         "--preprocess-backend", choices=("cuda", "cpu", "auto"),
@@ -2449,6 +3478,11 @@ def _parser() -> argparse.ArgumentParser:
 @owns_source_coverage_refusal
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if (args.as_posted is None) == (args.input_manifest_sha256 is None):
+        print("rw-wps --source gfs: pass --input-manifest-sha256 for a "
+              "fetched window, or --as-posted POSTING_DIR for one the seal "
+              "binds, not both and not neither.", file=sys.stderr)
+        return 2
     statics_corridor = args.statics_corridor
     if statics_corridor is not None and statics_corridor != "all":
         try:
@@ -2478,6 +3512,7 @@ def main(argv: list[str] | None = None) -> int:
             expert_acknowledgements=tuple(args.ack),
             stock_wrf_export=args.stock_wrf_export,
             statics_corridor=statics_corridor,
+            as_posted=args.as_posted,
         )
     except PreparationRefusal:
         # The decorator on this main owns the whole refusal family: two

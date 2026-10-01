@@ -148,3 +148,90 @@ fn named_import_avoids_unused_diagnostics_and_preserves_every_named_picture() {
     );
     assert_eq!(actual, expected);
 }
+
+/// The renderable named products of one frame, read off a full listing.
+fn renderable_named(root: &Path, input: &Path) -> Vec<String> {
+    render_inputs(root, "reference", "var:wrf_t2", &[input.to_path_buf()], true)
+        .lines()
+        .filter_map(|line| line.strip_prefix("PRODUCT\t"))
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split('\t').collect();
+            (fields.len() >= 3 && fields[1] == "direct" && fields[2] == "renderable")
+                .then(|| fields[0].to_string())
+        })
+        .collect()
+}
+
+fn imported(stdout: &str) -> bool {
+    stdout.lines().any(|line| line.starts_with("PROCESS Opening WRF "))
+}
+
+fn reused(stdout: &str) -> bool {
+    stdout
+        .lines()
+        .any(|line| line.starts_with("PROCESS Reusing the imported WRF run "))
+}
+
+/// `gpuwm render` lists what the frames can draw and then draws it, two
+/// launches into one store.  Each used to import every frame, and the
+/// listing imported in full: nine long windows over four 750 m frames cost
+/// 219 CPU-s through the door against 11 CPU-s in the renderer alone.  A
+/// listing of named products now imports them as their render does, and
+/// the render finds that run in the store and imports nothing.
+#[test]
+fn a_render_after_a_named_listing_imports_nothing_and_draws_the_same_pictures() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let scratch =
+        Scratch(std::env::temp_dir().join(format!("reused-import-{}-{nonce}", std::process::id())));
+    std::fs::create_dir_all(&scratch.0).unwrap();
+    let input = stored_plane_fixture::write(&scratch.0);
+    let named = renderable_named(&scratch.0, &input);
+    assert!(named.len() >= 3, "the fixture must draw several named charts");
+    let products = named[..3].join(",");
+    let inputs = [input.clone()];
+
+    let listing = render_inputs(&scratch.0, "door", &products, &inputs, true);
+    assert!(imported(&listing), "the listing is the one import");
+    assert!(
+        !listing.contains(": stp_effective"),
+        "a listing of named products must import them as their render does"
+    );
+    let door = render_inputs(&scratch.0, "door", &products, &inputs, false);
+    assert!(reused(&door), "{door}");
+    assert!(!imported(&door), "the render imported the frames again: {door}");
+
+    let fresh = render_inputs(&scratch.0, "fresh", &products, &inputs, false);
+    assert!(imported(&fresh) && !reused(&fresh));
+    let drawn = pictures(&door);
+    assert_eq!(drawn.len(), 3);
+    assert_eq!(drawn, pictures(&fresh));
+
+    // A run the record says another executable wrote is imported again:
+    // the run name keys the sources and the plan, not the code.
+    let runs = scratch.0.join("store-door").join("wrf");
+    let run = std::fs::read_dir(&runs).unwrap().next().unwrap().unwrap().path();
+    let record_path = run.join("import-record.json");
+    let mut record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+    record["writer"] = serde_json::Value::String("another build".into());
+    std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+    let again = render_inputs(&scratch.0, "door", &products, &inputs, false);
+    assert!(imported(&again) && !reused(&again), "{again}");
+    assert_eq!(pictures(&again), drawn);
+
+    // A damaged hour file in a store kept across renders is imported again
+    // rather than answered from: the reuse makes the checks a publish makes
+    // of its staged run.
+    let hour = std::fs::read_dir(&run)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "rws"))
+        .expect("the run stores an hour file");
+    std::fs::write(&hour, b"not an hour file").unwrap();
+    let repaired = render_inputs(&scratch.0, "door", &products, &inputs, false);
+    assert!(imported(&repaired) && !reused(&repaired), "{repaired}");
+    assert_eq!(pictures(&repaired), drawn);
+}

@@ -16,7 +16,9 @@ projected without them wrote nearly twice its projection.  A preparation
 that composes through the mapped engine also stages its decoded frame
 stream in a scratch folder while it runs, sized by the SOURCE grid
 (:func:`gpuwm.download_budget.compose_scratch_estimate`): a GDPS 48 hour
-window stages about 82 GB whatever the domain.  The stream is gone before
+window stages about 82 GB for any domain that reaches the globe's stored
+longitude cut, and about 5 GB elsewhere, where the atmospheric window
+crops its pressure levels.  The stream is gone before
 the forecast writes its history, so the peak is the download and the
 preparation plus the larger of the stream and what the forecast writes.
 
@@ -504,7 +506,8 @@ def disk_refusal(projection: dict[str, Any], free: int | None, *,
     the refusing door's own words.
 
     The frame stream is refused on the part of it that does not depend on
-    the atmospheric window (the whole stream for a global source): that
+    the atmospheric window (the whole stream for a global source whose
+    target reaches its stored longitude cut, where no window is taken): that
     much is certain, and the engine would refuse it itself after the whole
     download and the first valid time's decode.
     """

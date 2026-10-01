@@ -158,6 +158,116 @@ def test_hybrid_opt2_matches_wrf_closed_form():
     assert np.array_equal(hy["c2f"], (1.0 - hy["c1f"]) * (c.P0 - pt))
 
 
+# ---- (b2) the hybrid coefficients are the same bits on every host (A130) -----
+#
+# Breakage prevented: hybrid_b_poly solved its 4x4 system through
+# np.linalg.solve, whose last bits follow the CPU kernel OpenBLAS picks, and
+# the cube was ``znw ** 3``, NumPy's pow, whose AVX-512 loop and C library
+# round differently.  So the default coordinate (hybrid_opt = 2), and every
+# base state built on it, came out with different bits on different hosts:
+# over the ladders below node-4 (glibc 2.43, no AVX-512) and WSL Ubuntu 24.04
+# (glibc 2.39, NumPy 2.5.3) with AVX-512 dispatch on and off gave three
+# answers at integrate/2.8 5f6007af9 and one after the change.
+
+#: WRF's B1..B5 for etac 0.2 (nest_init_utils.F:1076-1080) in float64.
+WRF_B_ETAC_02 = ("0x1.0624dd2f1a9fdp-4", "-0x1.5b573eab367a1p-1",
+                 "0x1.fbe76c8b43958p+0", "-0x1.eb851eb851eb8p-1",
+                 "0x1.a36e2eb1c4330p-2")
+
+
+def test_hybrid_closed_form_is_wrfs_b1_to_b5():
+    from gpuwm.core.grid import hybrid_b_closed_form
+    got = hybrid_b_closed_form(0.2)
+    assert tuple(float(v).hex() for v in got) == WRF_B_ETAC_02
+    # the same four constraints the normalized cubic meets, on WRF's form
+    b1, b2, b3, b4, b5 = got
+    e = 0.2
+    assert abs((b1 + b2 + b3 + b4) / b5 - 1.0) < 1e-14          # B(1) = 1
+    assert abs((b2 + 2.0 * b3 + 3.0 * b4) / b5 - 1.0) < 1e-14   # B'(1) = 1
+    assert abs((b1 + b2 * e + b3 * e * e + b4 * e * e * e) / b5) < 1e-14
+    assert abs((b2 + 2.0 * b3 * e + 3.0 * b4 * e * e) / b5) < 1e-14
+
+
+def test_hybrid_opt2_is_wrfs_expression_word_for_word():
+    """c3f is (B1 + B2*z + B3*z*z + B4*z*z*z) / B5 in WRF's order, element by
+    element in IEEE float64 scalars: no pow, no fused or reordered terms."""
+    from gpuwm.core.grid import hybrid_b_closed_form
+    etac = 0.2
+    znw = np.concatenate([np.linspace(1.0, 0.0, 97),
+                          1.0 - np.linspace(0.0, 1.0, 61) ** 2])
+    znw = np.unique(znw)[::-1].copy()
+    hy = compute_hybrid_coeffs(znw, hybrid_opt=2, etac=etac, p0=c.P0,
+                               pt=5000.0)
+    b1, b2, b3, b4, b5 = hybrid_b_closed_form(etac)
+    for k, z in enumerate(znw.tolist()):
+        if k == 0 or k == znw.size - 1:
+            continue
+        want = 0.0 if z < etac else (
+            (b1 + b2 * z + b3 * (z * z) + b4 * (z * z * z)) / b5)
+        assert hy["c3f"][k] == want, (k, z)
+
+
+def test_hybrid_coefficients_take_no_linear_solve(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise AssertionError("np.linalg.solve follows the host's BLAS kernel")
+    monkeypatch.setattr(np.linalg, "solve", refuse)
+    hy = compute_hybrid_coeffs(np.linspace(1.0, 0.0, 41), hybrid_opt=2,
+                               etac=0.2, p0=c.P0, pt=5000.0)
+    assert hy["c3f"][0] == 1.0
+    assert hybrid_b_poly(0.2).shape == (4,)
+
+
+def _ladder_digest(*arrays) -> str:
+    import hashlib
+    digest = hashlib.sha256()
+    for array in arrays:
+        array = np.ascontiguousarray(array)
+        digest.update(str(array.dtype).encode())
+        digest.update(str(array.shape).encode())
+        digest.update(array.tobytes())
+    return digest.hexdigest()[:24]
+
+
+def _host_free_ladders():
+    """213 eta ladders (17,613 levels) built without a transcendental."""
+    out = [np.linspace(1.0, 0.0, n + 1) for n in range(8, 161)]
+    for n in (30, 40, 45, 50, 60, 75, 80, 100, 128, 150):
+        s = np.linspace(0.0, 1.0, n + 1)
+        for a in (0.35, 0.5, 0.7):
+            for z in (1.0 - (a * s + (1.0 - a) * s * s),
+                      1.0 - (a * s + (1.0 - a) * s * s * s)):
+                z[0], z[-1] = 1.0, 0.0
+                out.append(z)
+    return out
+
+
+#: sha256[:24] of every compute_hybrid_coeffs array (c1f..c4h) over
+#: :func:`_host_free_ladders` and p_top 1000, 2000 and 5000 Pa, per etac.
+#: Measured identical on node-4 and on WSL with AVX-512 dispatch on and off.
+HYBRID_COEFF_PINS = {
+    0.1: "993a29712fae5568b97944f9",
+    0.15: "fac10de3827acf599343a4cd",
+    0.2: "24f1205ff4818185ac2c6c90",
+    0.22: "e25f9fb0e507903fffa08d5e",
+    0.25: "24a602a6284e0cc9cdfded4d",
+    0.3: "d317f0934d453d5aef121068",
+    0.35: "4fe20aa48f142a14e0445fbc",
+}
+
+
+@pytest.mark.parametrize("etac", sorted(HYBRID_COEFF_PINS))
+def test_hybrid_coefficients_are_pinned_across_hosts(etac):
+    ladders = _host_free_ladders()
+    assert sum(z.size for z in ladders) == 17_613
+    keys = ("c1f", "c2f", "c3f", "c4f", "c1h", "c2h", "c3h", "c4h")
+    arrays = []
+    for pt in (1000.0, 2000.0, 5000.0):
+        for znw in ladders:
+            hy = compute_hybrid_coeffs(znw, 2, etac, c.P0, pt)
+            arrays.extend(hy[k] for k in keys)
+    assert _ladder_digest(*arrays) == HYBRID_COEFF_PINS[etac]
+
+
 def test_hybrid_opt2_flat_base_state_recurrence():
     vc = make_vertical_coord(48, hybrid_opt=2, etac=0.2)
     b = make_base_state(vc, theta_const, p_surf=1.0e5, ztop=16000.0)

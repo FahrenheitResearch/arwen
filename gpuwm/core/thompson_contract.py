@@ -16,6 +16,8 @@ coefficient set.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import contextlib
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
@@ -207,6 +209,42 @@ def validate_table_assets(
     return assets
 
 
+def read_validated_table_asset(path: str | Path, asset: TableAsset) -> bytes:
+    """One asset's bytes, read once and held to validate_table_assets' checks.
+
+    The loader parses these immutable bytes in place, where it used to hash
+    the file and then read it a second time to parse it.
+    """
+    current = Path(path) / asset.filename
+    if not current.is_file():
+        raise FileNotFoundError(
+            f"missing Thompson table asset {current}")
+    data = current.read_bytes()
+    if len(data) != asset.bytes:
+        raise ValueError(
+            f"Thompson table asset {current} has {len(data)} bytes; "
+            f"expected {asset.bytes}")
+    actual_sha256 = hashlib.sha256(data).hexdigest()
+    if actual_sha256 != asset.sha256:
+        raise ValueError(
+            f"Thompson table asset {current} SHA-256 {actual_sha256}; "
+            f"expected {asset.sha256}")
+    return data
+
+
+class _BufferReader:
+    """``read(count)`` over immutable bytes, returning views, never copies."""
+
+    def __init__(self, data: bytes):
+        self._view = memoryview(data)
+        self._offset = 0
+
+    def read(self, count: int) -> memoryview:
+        chunk = self._view[self._offset:self._offset + count]
+        self._offset += len(chunk)
+        return chunk
+
+
 def sequential_file_bytes(records: tuple[TableRecord, ...], *,
                           marker_bytes: int = 4) -> int:
     """Exact file size with one leading/trailing marker per record."""
@@ -218,14 +256,21 @@ def sequential_file_bytes(records: tuple[TableRecord, ...], *,
 def read_sequential_records(
         path: str | Path, records: tuple[TableRecord, ...], *,
         marker_bytes: int = 4, byteorder: str = "little",
+        data: bytes | None = None,
         ) -> dict[str, np.ndarray]:
     """Read and strictly validate WRF/gfortran sequential records.
 
     Arrays are returned in native-endian float64 with their documented
     Fortran shapes.  ``order='F'`` is essential: WRF's first index is the
     contiguous dimension, while NumPy otherwise assumes the last one is.
+
+    ``data``, when given, is the file's content already in memory (``path``
+    then only names it in messages); its native-endian records come back
+    as read-only views of those bytes instead of copies.
     """
     source = Path(path)
+    if data is not None and not isinstance(data, bytes):
+        raise TypeError("sequential record data must be immutable bytes")
     if marker_bytes not in (4, 8):
         raise ValueError("Fortran record markers must be 4 or 8 bytes")
     if byteorder not in ("little", "big"):
@@ -234,7 +279,9 @@ def read_sequential_records(
         "i" if marker_bytes == 4 else "q")
     dtype = np.dtype("<f8" if byteorder == "little" else ">f8")
     result: dict[str, np.ndarray] = {}
-    with source.open("rb") as stream:
+    opened = (source.open("rb") if data is None
+              else contextlib.nullcontext(_BufferReader(data)))
+    with opened as stream:
         for record in records:
             head = stream.read(marker_bytes)
             if len(head) != marker_bytes:
@@ -257,9 +304,12 @@ def read_sequential_records(
                     f"{source}: mismatched trailing marker for "
                     f"{record.name}")
             values = np.frombuffer(payload, dtype=dtype, count=record.values)
-            result[record.name] = np.array(
-                values.reshape(record.shape, order="F"),
-                dtype=np.float64, order="F", copy=True)
+            shaped = values.reshape(record.shape, order="F")
+            if data is not None and dtype.isnative:
+                result[record.name] = shaped
+            else:
+                result[record.name] = np.array(
+                    shaped, dtype=np.float64, order="F", copy=True)
         extra = stream.read(1)
         if extra:
             raise ValueError(f"{source}: unexpected bytes after final record")
@@ -293,14 +343,38 @@ def read_classic_table_directory(path: str | Path) -> dict[str, np.ndarray]:
 
 
 def load_validated_classic_tables(path: str | Path) -> ClassicTableSet:
-    """Verify canonical bytes, parse every record, and freeze host arrays."""
+    """Verify canonical bytes, parse every record, and freeze host arrays.
+
+    Each asset is read once, checked against its pinned size and SHA-256 and
+    parsed from those same bytes, the four assets on parallel threads (the
+    hashing and the finite checks release the GIL).  The records are
+    exactly the ones :func:`read_classic_table_directory` returns.
+    """
     root = Path(path).resolve()
-    assets = validate_table_assets(root)
-    arrays = read_classic_table_directory(root)
-    for name, array in arrays.items():
-        if not np.isfinite(array).all():
-            raise ValueError(f"Thompson table {name} contains non-finite values")
-        array.flags.writeable = False
+    assets = CLASSIC_TABLE_ASSETS
+
+    def parse(asset: TableAsset) -> dict[str, np.ndarray]:
+        data = read_validated_table_asset(root, asset)
+        records = (AUXILIARY_TABLE_RECORDS
+                   if asset.filename == AUXILIARY_TABLE_FILE
+                   else GENERATED_TABLE_FILES[asset.filename])
+        current = read_sequential_records(
+            root / asset.filename, records, data=data)
+        for name, array in current.items():
+            if not np.isfinite(array).all():
+                raise ValueError(
+                    f"Thompson table {name} contains non-finite values")
+            array.flags.writeable = False
+        return current
+
+    with ThreadPoolExecutor(max_workers=len(assets)) as pool:
+        groups = list(pool.map(parse, assets))
+    arrays: dict[str, np.ndarray] = {}
+    for current in groups:
+        overlap = arrays.keys() & current.keys()
+        if overlap:
+            raise RuntimeError(f"duplicate Thompson table names: {overlap}")
+        arrays.update(current)
     frozen = MappingProxyType(dict(arrays))
     result = ClassicTableSet(root=root, arrays=frozen, assets=assets)
     expected_payload = sum(
@@ -336,6 +410,7 @@ __all__ = [
     "read_generated_table_directory",
     "read_classic_table_directory",
     "read_sequential_records",
+    "read_validated_table_asset",
     "sequential_file_bytes",
     "validate_table_assets",
 ]

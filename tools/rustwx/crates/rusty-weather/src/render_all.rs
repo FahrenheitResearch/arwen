@@ -382,7 +382,7 @@ fn hour_presentation(
             valid.2,
             valid.3,
             valid.4,
-            config.model.to_string().to_ascii_uppercase()
+            rustwx_products::shared_context::model_token(config.model)
         )),
     })
 }
@@ -648,6 +648,7 @@ pub fn render_windowed_products(
         .into_iter()
         .map(|grid| StoreWindowedGrid {
             slug: grid.slug,
+            title: grid.title,
             units: grid.units,
             values: grid.values,
             hours_used: grid.hours_used,

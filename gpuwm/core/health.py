@@ -82,8 +82,15 @@ _MIN_CHUNK_ELEMENTS = 4096
 # Every other non-float32 field fails descriptor construction unless it has an
 # explicit range policy below.
 GPU_INTEGER_EXCLUSIONS = frozenset({
+    # WRF tile categories are integer indices, not physical bounds.
+    "surface.mosaic_cat_index",
     "surface.ivgtyp",
     "surface.isltyp",
+    # The urban type map (sf_urban_physics > 0): urban_var_init derives it
+    # once from IVGTYP and the VEGPARM urban categories (0, or 1..11), no
+    # step writes it, and its legal range depends on the URBPARM table the
+    # run selected -- the same treatment as the category maps above.
+    "surface.utype_urb2d",
     # SINT geometry index maps (T10/F16 device tables): built FP64-on-host,
     # range-validated against the REAL parent extents by nest_interp's
     # _check_table at registration, stored int32, and immutable thereafter
@@ -132,6 +139,13 @@ _GPU_RANGE_CHECKED_INT32 = frozenset({
     # module_sf_noahmpdrv.F:1397 writes the unchanged INOUT back.  So [0, 8]
     # bounds both the crop and the no-crop case.
     "surface.pgsxy",
+    # WRF's terrain shadow mask (topo_shading = 1, gpuwm.core.topo_radiation).
+    # toposhad_init and toposhad (module_radiation_driver.F:4505, :4661) zero
+    # it and the four quadrant searches set 1 (:4694, :4712, :4730, :4748);
+    # the ``= -1`` alternatives beside them are commented out in v4.7.1.  So
+    # [0, 1], not nz-dependent.  Without a policy every topo_shading forecast
+    # refused at initialization (seen on the first real run of the port).
+    "surface.shadowmask",
 })
 
 #: ``NSNOW``, WRF's fixed snow-layer count (``module_sf_noahmpdrv.F:628``), and
@@ -421,6 +435,8 @@ def rule_for_field(name: str, *, p_top: float | None = None) -> FieldRule:
         if leaf == "pgsxy":
             return FieldRule("surface", 0.0,
                              float(NOAHMP_MAX_GROWTH_STAGE))
+        if leaf == "shadowmask":
+            return FieldRule("surface", 0.0, 1.0)
         return FieldRule("surface")
     return _FINITE
 

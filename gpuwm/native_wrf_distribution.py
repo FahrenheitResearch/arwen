@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import argparse
 import base64
+import csv
 from dataclasses import dataclass
 import hashlib
 import importlib
 from importlib import metadata
+import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
@@ -155,6 +157,7 @@ HRRR_HELPERS = (
 CUDA_KERNEL_SOURCES = (
     "common.cuh",
     "diagnostics.cu",
+    "face_mass.cu",
     "lbc_flow.cu",
     "lbc_state.cu",
     "spec_bdy.cu",
@@ -899,6 +902,47 @@ def _cpu_water_blend_self_test(backend: Any) -> dict[str, Any]:
     }
 
 
+def _record_rows(dist: metadata.Distribution) -> list[tuple[str, str]]:
+    """Every hashed RECORD row as ``(path, digest)``, read from RECORD.
+
+    Not ``dist.files``: from Python 3.12 it drops each row whose file is
+    missing at the row's literal path, so a deleted file passed this
+    check unseen there, while Python 3.11 lists every row.
+    """
+
+    text = dist.read_text("RECORD")
+    if text is None:
+        raise FileNotFoundError(
+            f"installed {PYTHON_DISTRIBUTION} distribution has no RECORD")
+    return [(row[0], row[1]) for row in csv.reader(io.StringIO(text))
+            if len(row) > 1 and row[1]]
+
+
+def _installed_record_path(root: Path, recorded: str) -> Path:
+    """Where the file one RECORD row names is on disk.
+
+    ``pip install --target`` (install_gpuwm_native_wrf.sh and its Windows
+    twin) installs into a temporary home whose library is ``lib/python``,
+    two levels down, then moves the library's contents and the home's
+    ``bin`` into the target.  RECORD paths are relative to that library,
+    so its console scripts are recorded as ``../../bin/<name>`` and sit
+    in ``<target>/bin``.  Read literally, they point two levels above
+    the target, and on Python 3.11 every clean install of the
+    standalone package failed its runtime check with "installed wheel
+    file is missing: <target>/../../bin/gpuwm-mapped-inspect".  A row of
+    that shape is looked for in the target first; any other row, and a
+    ``--home`` install whose scripts stay above the library, at its
+    literal path.
+    """
+
+    parts = PurePosixPath(recorded).parts
+    if len(parts) > 2 and parts[:2] == ("..", "..") and ".." not in parts[2:]:
+        moved = root.joinpath(*parts[2:])
+        if moved.is_file():
+            return moved
+    return root / recorded
+
+
 def _installed_record_receipt() -> dict[str, Any]:
     dist = metadata.distribution(PYTHON_DISTRIBUTION)
     observed_version = dist.version
@@ -907,22 +951,21 @@ def _installed_record_receipt() -> dict[str, Any]:
             f"{PYTHON_DISTRIBUTION} version mismatch: "
             f"metadata={observed_version}, "
             f"module={__version__}")
+    root = Path(dist.locate_file(""))
     checked: list[tuple[str, str]] = []
-    for item in dist.files or ():
-        expected = item.hash
-        if expected is None:
-            continue
-        if expected.mode != "sha256":
+    for recorded, expected in _record_rows(dist):
+        mode, _, value = expected.partition("=")
+        if mode != "sha256":
             raise RuntimeError(
-                f"unsupported wheel RECORD digest {expected.mode!r} for {item}")
-        path = Path(dist.locate_file(item))
+                f"unsupported wheel RECORD digest {mode!r} for {recorded}")
+        path = _installed_record_path(root, recorded)
         if not path.is_file():
             raise FileNotFoundError(f"installed wheel file is missing: {path}")
         actual = _sha256(path)
         encoded = base64.urlsafe_b64encode(bytes.fromhex(actual)).decode().rstrip("=")
-        if encoded != expected.value:
-            raise RuntimeError(f"installed wheel RECORD mismatch for {item}")
-        checked.append((str(item).replace("\\", "/"), actual))
+        if encoded != value:
+            raise RuntimeError(f"installed wheel RECORD mismatch for {recorded}")
+        checked.append((recorded.replace("\\", "/"), actual))
     if not checked:
         raise RuntimeError(
             f"installed {PYTHON_DISTRIBUTION} distribution has no hashed "

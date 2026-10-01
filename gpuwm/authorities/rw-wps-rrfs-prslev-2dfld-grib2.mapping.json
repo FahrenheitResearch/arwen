@@ -889,6 +889,7 @@
   "target_vertical_levels": 49,
   "soil_layer_count": 9,
   "boundary_interval_seconds": 3600,
+  "accept_boundary_interval_multiples": true,
   "required_fields": [
    {
     "name": "air_temperature",

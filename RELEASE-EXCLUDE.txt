@@ -30,6 +30,13 @@ MP28_PORT_SPEC.md
 HANDOFF.md
 MP28_HANDOFF.md
 
+# The Noah mosaic column oracle's run receipts: per-.bin SHA-256 lists, GPU
+# replay dumps and mutation transcripts, development evidence behind
+# gpuwm/data/noah_mosaic/oracle/PROVENANCE.md.  The fixtures, the harness
+# sources and SOURCES.sha256 ship; these do not, and the fixture family named
+# "ftz" would otherwise put nine thousand hash lines into the FTZ claim census.
+tools/noah_mosaic_wrf471_oracle/receipts/*
+
 # The project's binding agent instructions.  Tracked so every worktree and
 # agent reads one law file, but it is a development-process document -- it
 # names this machine's Downloads directory and program ledger -- and means
@@ -259,3 +266,8 @@ docs/dev/RELEASE-CUT.md
 # tree, where branches exist to strand.
 docs/branch-dispositions.md
 tests/test_branch_dispositions.py
+
+# The urban Noah hand-over oracle's gfortran build log: compiler diagnostics
+# that quote the build machine's WRF checkout path line by line.  The
+# harness sources and their hashes (oracle-sha256sums.txt beside it) ship.
+tools/urban_wrf471_oracle/evidence/noah_hook/build.log

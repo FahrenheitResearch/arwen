@@ -77,16 +77,16 @@
 __device__ __forceinline__
 real flux5(real qm3, real qm2, real qm1, real q0, real qp1, real qp2, real vel)
 {
-    return (vel * (37.0f * (q0 + qm1) - 8.0f * (qp1 + qm2) + (qp2 + qm3))
+    return __fdiv_rn((vel * (37.0f * (q0 + qm1) - 8.0f * (qp1 + qm2) + (qp2 + qm3))
             - fabsf(vel) * (10.0f * (q0 - qm1) - 5.0f * (qp1 - qm2)
-                            + (qp2 - qm3))) / 60.0f;
+                            + (qp2 - qm3))), 60.0f);
 }
 
 __device__ __forceinline__
 real flux3(real qm2, real qm1, real q0, real qp1, real vel)
 {
-    return (vel * (7.0f * (q0 + qm1) - (qp1 + qm2))
-            + fabsf(vel) * (3.0f * (q0 - qm1) - (qp1 - qm2))) / 12.0f;
+    return __fdiv_rn((vel * (7.0f * (q0 + qm1) - (qp1 + qm2))
+            + fabsf(vel) * (3.0f * (q0 - qm1) - (qp1 - qm2))), 12.0f);
 }
 
 // Horizontal 3rd-order face flux (WRF flux3 with the flux5 upwinding
@@ -95,8 +95,8 @@ real flux3(real qm2, real qm1, real q0, real qp1, real vel)
 __device__ __forceinline__
 real flux3h(real qm2, real qm1, real q0, real qp1, real vel)
 {
-    return (vel * (7.0f * (q0 + qm1) - (qp1 + qm2))
-            - fabsf(vel) * (3.0f * (q0 - qm1) - (qp1 - qm2))) / 12.0f;
+    return __fdiv_rn((vel * (7.0f * (q0 + qm1) - (qp1 + qm2))
+            - fabsf(vel) * (3.0f * (q0 - qm1) - (qp1 - qm2))), 12.0f);
 }
 
 __device__ __forceinline__

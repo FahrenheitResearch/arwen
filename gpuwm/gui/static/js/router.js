@@ -5,16 +5,6 @@ export const SCREENS = new Map();
 // The pages of one open forecast, listed under its name in the sidebar: its article, its map, its files.
 export const RUN_PAGES = ["run", "results", "explore"];
 
-// Routes that moved keep answering: an address whose first part is an old name forwards to the new
-// name, the rest of the address kept. The main page's route took the page's name, the Weather Library.
-export const MOVED_ROUTES = new Map([["wiki", "library"]]);
-
-// The route an old address forwards to (wiki/x to library/x), or null when the address has not moved.
-export function forwardedRoute(raw) {
-  const [name, ...rest] = String(raw || "").split("/");
-  return MOVED_ROUTES.has(name) ? [MOVED_ROUTES.get(name), ...rest].join("/") : null;
-}
-
 // register(name, render, {title, side, crumb, bleed}). render(body, args, page) draws into body and may return a
 // cleanup function. page.setTitle(text) and page.setData(text) fill the page head; page.right holds its actions;
 // page.setCrumbs([[label, href], ...]) sets the path in the header; page.setContext({title, items}) adds a group of

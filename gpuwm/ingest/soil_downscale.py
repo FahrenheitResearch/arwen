@@ -278,9 +278,11 @@ class SoilMeshPlan:
         def spacing(lat0, lon0, lat1, lon1):
             dlat = np.deg2rad(lat1 - lat0)
             dlon = np.deg2rad((lon1 - lon0 + 180.0) % 360.0 - 180.0)
-            hav = (np.sin(dlat / 2.0) ** 2 + np.cos(np.deg2rad(lat0))
-                   * np.cos(np.deg2rad(lat1)) * np.sin(dlon / 2.0) ** 2)
-            return float(np.rad2deg(np.arcsin(np.sqrt(np.clip(hav, 0, 1)))))
+            from gpuwm.core import portable_math as pm
+
+            hav = (pm.sin(dlat / 2.0) ** 2 + pm.cos(np.deg2rad(lat0))
+                   * pm.cos(np.deg2rad(lat1)) * pm.sin(dlon / 2.0) ** 2)
+            return float(np.rad2deg(pm.arcsin(np.sqrt(np.clip(hav, 0, 1)))))
 
         return cls(
             source_spacing_deg_lat=spacing(source_lat[2], source_lon[2],

@@ -72,6 +72,11 @@ class FakeRunner(Runner):
                     "profiles": [{"profile_id": "p1", "summary": "p1: words"}]}
         return {"devices": []}
 
+    def answer(self, argv, *, cwd=None, codes=(0,), timeout=0):
+        # The readiness question New forecast asks once the engine answers it (gui/posting.py): this stand-in has
+        # no source to ask, and a real engine here would ask the hosts. The page says the schedule was not read.
+        raise Refused("this stand-in engine has no posting schedule")
+
     def launch(self, rundir, argv, owner_file=None):
         self.launched.append(list(argv))
         self.owner_files.append(owner_file)

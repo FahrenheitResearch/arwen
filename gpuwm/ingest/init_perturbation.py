@@ -56,6 +56,7 @@ from typing import NamedTuple
 import numpy as np
 
 from gpuwm.core import constants as c
+from gpuwm.core import portable_math as pm
 from gpuwm.static.projection import EARTH_RADIUS_M
 
 APPLICATION_SCHEMA = "gpuwm-initial-perturbation-apply-v1"
@@ -125,9 +126,9 @@ def _great_circle_km(lat, lon, center_lat, center_lon) -> np.ndarray:
     lon0 = float(center_lon) * (np.pi / 180.0)
     half_dlat = 0.5 * (lat - lat0)
     half_dlon = 0.5 * (lon - lon0)
-    h = (np.sin(half_dlat) ** 2
-         + np.cos(lat) * np.cos(lat0) * np.sin(half_dlon) ** 2)
-    return (2.0 * EARTH_RADIUS_M / 1000.0) * np.arcsin(np.sqrt(h))
+    h = (pm.sin(half_dlat) ** 2
+         + pm.cos(lat) * pm.cos(lat0) * pm.sin(half_dlon) ** 2)
+    return (2.0 * EARTH_RADIUS_M / 1000.0) * pm.arcsin(np.sqrt(h))
 
 
 @dataclass(frozen=True)
@@ -233,7 +234,7 @@ class InitialStatePerturbation:
                     "bubble or drop it.")
             delta = np.zeros_like(theta[mask])
             delta[...] = (spec.amplitude_k
-                          * np.cos(0.5 * np.pi * radial[mask]) ** 2)
+                          * pm.cos(0.5 * np.pi * radial[mask]) ** 2)
             row = {
                 "bubble": placed.index,
                 "applied": True,
@@ -286,7 +287,7 @@ class InitialStatePerturbation:
             return
         p_cells = np.asarray(pressure, dtype=np.float64)[touched]
         temperature = (np.asarray(theta, dtype=np.float64)[touched]
-                       * (p_cells / c.P0) ** c.RCP)
+                       * pm.power(p_cells / c.P0, c.RCP))
         hottest = int(np.argmax(temperature))
         if temperature[hottest] <= ceiling:
             return

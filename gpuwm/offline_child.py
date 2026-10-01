@@ -31,9 +31,11 @@ import numpy as np
 
 from gpuwm.explain import warn
 from gpuwm.core import microphysics_transition as _mt
+from gpuwm.core import portable_math as pm
 from gpuwm.core.grid import (BaseState, compute_hybrid_coeffs,
                              finalize_vertical_coord, make_vertical_coord)
 from gpuwm.core.nest_interp import register_nest, sint
+from gpuwm.core.noahmp_libm import log1pf_array
 from gpuwm.core.state import mu_at_u_faces, mu_at_v_faces
 from gpuwm.core import constants as c
 from gpuwm.vertical_remap import (
@@ -51,6 +53,7 @@ from gpuwm.ingest.lateral_bc import (
     SideBoundary,
     build_lateral_interval_from_sides,
     extract_lateral_side,
+    record_built_end_frame,
 )
 # The SINT positive-definite fix-up, imported rather than re-spelled: the
 # online nest lane owns the tolerance policy and the moment membership, and
@@ -1754,7 +1757,8 @@ def _parent_alt(phi_total, mu, coeffs, znw, *, p_top: float,
                          dtype=np.float32)
         phm = np.asarray(c3h * mu + c4h + top, dtype=np.float32)
         alt = np.asarray(
-            dphi / phm / np.log1p(np.asarray(dpf / pfu, dtype=np.float32)),
+            dphi / phm / log1pf_array(np.asarray(dpf / pfu,
+                                                 dtype=np.float32)),
             dtype=np.float32)
     else:
         znw = np.asarray(znw, dtype=np.float32).reshape(-1)
@@ -1956,6 +1960,31 @@ def child_surface_requirement(cfg) -> str | None:
         f"{cfg.sf_sfclay_physics}, bl_pbl_physics={cfg.bl_pbl_physics}) "
         "but no child-grid surface source was given; "
         + CHILD_SURFACE_SOURCE_REMEDY)
+
+
+def child_mosaic_refusal(cfg) -> str | None:
+    """Why this child config cannot run here, for Noah mosaic, or ``None``.
+
+    Noah mosaic's tiles are built from LANDUSEF by an initialisation door
+    (gpuwm/core/noah_mosaic_door.py), and this route builds its child's
+    physics driver (gpuwm.offline_child_run._initialize_child_physics)
+    from a child-grid surface file or from the parent's own history, with
+    no such door: a mosaic child was accepted, paid for the parent
+    interpolation, and then stopped on its first land-surface step ("this
+    initialisation door built no tile state").  A derived child copies
+    the parent's physics, so a mosaic parent's child arrives here too.
+    """
+    if int(getattr(cfg, "sf_surface_mosaic", 0) or 0) != 1:
+        return None
+    return (
+        "child config sets sf_surface_mosaic = 1 (Noah mosaic), which the "
+        "offline child cannot run: it builds the child's land surface from "
+        "a child-grid surface file or from the parent's history, and "
+        "neither path builds the land-use tiles mosaic integrates, so its "
+        "first land-surface step would stop.  Pass --child-config with "
+        "sf_surface_mosaic = 0 (the parent keeps its mosaic), or run the "
+        "nest in the same tree as its parent, where the nest door builds "
+        "the tiles.")
 
 
 @dataclass(frozen=True)
@@ -3078,7 +3107,7 @@ def _base_from_interpolated_initial(initial: InterpolatedInitialState,
                + coord.c4f[:-1, None, None] + p_top)
         phm = (coord.c3h[:, None, None] * mub[None]
                + coord.c4h[:, None, None] + p_top)
-        denominator = phm * np.log(pfd / pfu)
+        denominator = phm * pm.log(pfd / pfu)
     else:
         raise OfflineChildContractError(
             f"unsupported hypsometric_opt={cfg.hypsometric_opt}")
@@ -3090,7 +3119,7 @@ def _base_from_interpolated_initial(initial: InterpolatedInitialState,
         raise OfflineChildContractError(
             "interpolated parent PHB/PB imply invalid base inverse density")
     from gpuwm.core import constants as c
-    thb = alb * pb / (c.RD * (pb / c.P0) ** c.RCP)
+    thb = alb * pb / (c.RD * pm.power(pb / c.P0, c.RCP))
     if not np.isfinite(thb).all() or np.any(thb <= 0.0):
         raise OfflineChildContractError(
             "interpolated parent base implies invalid base potential temperature")
@@ -3522,8 +3551,11 @@ def _single_precision_interval(interval: BoundaryInterval) -> BoundaryInterval:
                 np.asarray(side.value, dtype=np.float32),
                 np.asarray(side.tendency, dtype=np.float32))
         fields[name] = FieldBoundary(**sides)
-    return BoundaryInterval(interval.start_seconds, interval.end_seconds,
-                            fields)
+    # Rounding the tables does not move the frame the tendency was built
+    # toward, and the next interval's FP32 start frame is that frame's bytes.
+    return record_built_end_frame(
+        BoundaryInterval(interval.start_seconds, interval.end_seconds,
+                         fields), interval.end_frame_sha256)
 
 
 def build_offline_lateral_boundaries(

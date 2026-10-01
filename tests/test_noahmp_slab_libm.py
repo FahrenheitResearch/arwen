@@ -480,3 +480,57 @@ def test_cupy_minimum_fails_the_signed_zero_comparison():
     assert bool(differing[1]), (
         f"expected _mn(-0.0, +0.0) = {want[1]!r} to differ from "
         f"cupy.minimum's {naive[1]!r}")
+
+
+@requires_gpu
+@pytest.mark.parametrize("n", [0, 1, 17, 257])
+def test_slot_copies_preserve_all_bits_and_strides(n):
+    import cupy as cp
+    from gpuwm.core.noahmp_slab_libm import copy_slab_slots, split_slab_slots
+
+    bits = np.array([0, 0x80000000, 1, 0x007fffff, 0x7fc12345,
+                     0xff800000, 0x3f800000], dtype=np.uint32)
+    source = cp.asarray(np.resize(bits, (max(n, 1), 7))).view(cp.float32)
+    source = source[:n]
+    scalar = cp.broadcast_to(cp.asarray(np.uint32(0x80000000)).view(cp.float32),
+                             (n,))
+    out = cp.zeros((n, 8), dtype=cp.float32)
+    expected = cp.zeros_like(out)
+    blocks = [(0, source[:, ::-2]), (4, scalar), (5, source[:, 1:4])]
+    for start, value in blocks:
+        width = 1 if value.ndim == 1 else value.shape[1]
+        if width == 1:
+            expected[:, start] = value
+        else:
+            expected[:, start:start+width] = value
+    copy_slab_slots(out, blocks)
+    np.testing.assert_array_equal(cp.asnumpy(out).view(np.uint32),
+                                  cp.asnumpy(expected).view(np.uint32))
+    specs = {"vector": (0, 4), "scalar": (4, 1), "tail": (5, 3)}
+    result = split_slab_slots(out, specs)
+    for name, (start, width) in specs.items():
+        wanted = out[:, start] if width == 1 else out[:, start:start+width]
+        assert result[name].flags.c_contiguous
+        np.testing.assert_array_equal(cp.asnumpy(result[name]).view(np.uint32),
+                                      cp.asnumpy(wanted).view(np.uint32))
+
+
+@requires_gpu
+def test_scattered_bit_copies_handle_strided_indices_and_layers():
+    import cupy as cp
+    from gpuwm.core.noahmp_slab_libm import scatter_slab_fields
+
+    indices = cp.asarray([[0, 1], [2, 4], [3, 0]], dtype=cp.int64)
+    j, i = indices[:, 0], indices[:, 1]
+    bits = cp.asarray([[1, 0x80000000, 0x7fc12345],
+                       [0xff800000, 2, 0x007fffff],
+                       [0x3f800000, 0, 0x80000001]], dtype=cp.uint32).view(cp.float32)
+    targets = [cp.zeros((4, 5), cp.float32), cp.zeros((2, 4, 5), cp.float32)]
+    expected = [array.copy() for array in targets]
+    scalar, layers = bits[:, 0], bits[:, 1:]
+    expected[0][j, i] = scalar
+    expected[1][:, j, i] = layers.T
+    scatter_slab_fields(j, i, [(targets[0], scalar), (targets[1], layers)])
+    for actual, wanted in zip(targets, expected):
+        np.testing.assert_array_equal(cp.asnumpy(actual).view(np.uint32),
+                                      cp.asnumpy(wanted).view(np.uint32))

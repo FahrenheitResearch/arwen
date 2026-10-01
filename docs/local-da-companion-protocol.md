@@ -40,7 +40,8 @@ Send UTF-8 JSON to stdin of `gpuwm local-da --request-json - --dry-run`:
 
 Use `region: [west,south,east,north]` instead of `point`; never send both.
 `free_gib` may be omitted. Optional `source` and `profile` are resolved by
-the engine's authoring authorities. `cadence_seconds` is an explicit cadence
+the engine's authoring authorities; with no `profile`, the rung's grid
+spacing picks the default suite, as it does for every other forecast door. `cadence_seconds` is an explicit cadence
 request, not an independently guessed value. Unknown top-level request and
 card fields are refused. Do not combine JSON input with field-setting CLI
 arguments; the JSON document is the field authority.

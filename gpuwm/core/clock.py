@@ -245,6 +245,33 @@ class DomainTicks:
     stepbl: int | None
     lbc_interval_ticks: int | None = None
     start_ticks: int = 0
+    #: WRF's history_begin, in ticks after ``start_ticks``, already rounded
+    #: up to this domain's step lattice (the alarm rings at the first step
+    #: at or after its RingTime, external/esmf_time_f90/ESMF_Clock.F90).
+    #: 0 writes the start frame, which is every experiment without one.
+    history_begin_ticks: int = 0
+    #: WRF's history_end, in ticks after ``start_ticks``: no history frame
+    #: after it (the alarm stops once the clock passes its StopTime).
+    history_end_ticks: int | None = None
+
+    def history_offset_due(self, elapsed: int) -> bool:
+        """Whether a frame is due ``elapsed`` ticks after this domain's
+        start: on the interval lattice anchored at the begin offset, and
+        inside the begin/end window."""
+        if elapsed < self.history_begin_ticks:
+            return False
+        if (self.history_end_ticks is not None
+                and elapsed > self.history_end_ticks):
+            return False
+        return (elapsed - self.history_begin_ticks) % self.history_ticks == 0
+
+    def first_history_ticks(self) -> int:
+        """Ticks (absolute) of this domain's first history frame after
+        its start frame -- or of its first frame at all when a begin
+        offset suppresses the start frame."""
+        if self.history_begin_ticks:
+            return self.start_ticks + self.history_begin_ticks
+        return self.start_ticks + self.history_ticks
 
 
 @dataclass(frozen=True)
@@ -444,8 +471,8 @@ class DomainClock:
         t = 0 (WRF writes the initial frame) and at every interval
         boundary on this domain's own clock."""
         return (self.ticks >= self.spec.start_ticks
-                and (self.ticks - self.spec.start_ticks)
-                % self.spec.history_ticks == 0)
+                and self.spec.history_offset_due(
+                    self.ticks - self.spec.start_ticks))
 
     def history_rings_within_step(self) -> bool:
         """WRF ``Is_alarm_tstep`` for the step NOW being solved
@@ -456,9 +483,8 @@ class DomainClock:
         Integer arithmetic only; advisory helper for T14 so the stash
         predicate is not re-derived per consumer."""
         return (self.ticks >= self.spec.start_ticks
-                and (self.ticks + self.step_ticks
-                     - self.spec.start_ticks)
-                % self.spec.history_ticks == 0)
+                and self.spec.history_offset_due(
+                    self.ticks + self.step_ticks - self.spec.start_ticks))
 
     def restart_due(self) -> bool:
         """Restart alarm predicate: d01 clock only (children carry
@@ -646,6 +672,8 @@ def resolve_clock(exp: ExperimentConfig, *,
         history_ticks = _cadence_ticks(
             "history_interval_s", Fraction(dc.history_interval_s),
             step_ticks, tick_den, dc.grid_id)
+        history_begin_ticks, history_end_ticks = _history_window_ticks(
+            dc, step_ticks, tick_den)
 
         # Restart alarms evaluate on the d01 clock ONLY (section B/C).
         restart_ticks = None
@@ -671,7 +699,9 @@ def resolve_clock(exp: ExperimentConfig, *,
             cudt_ticks=cudt_ticks, stepcu=stepcu,
             bldt_ticks=bldt_ticks, stepbl=stepbl,
             lbc_interval_ticks=lbc_interval_ticks,
-            start_ticks=start_ticks))
+            start_ticks=start_ticks,
+            history_begin_ticks=history_begin_ticks,
+            history_end_ticks=history_end_ticks))
         step_by_id[dc.grid_id] = step_ticks
         fp32_by_id[dc.grid_id] = dt_fp32
 
@@ -684,6 +714,31 @@ def resolve_clock(exp: ExperimentConfig, *,
 
     return TickClock(tick_den=tick_den, run_ticks=run_ticks,
                      start_time=exp.start_time, domains=tuple(specs))
+
+
+def _history_window_ticks(dc, step_ticks: int,
+                          tick_den: int) -> tuple[int, int | None]:
+    """A domain's history begin/end offsets in ticks.
+
+    The begin rounds UP to the domain's step lattice: WRF's alarm rings
+    once at the first step whose time is at or after start + begin
+    (external/esmf_time_f90/ESMF_Clock.F90, the RingTime test in
+    ESMF_ClockAdvance) and then every interval from that step.  The end
+    is a bound, not a ring time, so it is not rounded.
+    """
+    begin = Fraction(str(dc.history_begin_s or 0.0))
+    begin_ticks = begin * tick_den
+    if begin_ticks.denominator != 1:
+        raise ValueError(
+            f"history_begin_s = {float(begin):g} on grid_id={dc.grid_id} is "
+            f"not a whole number of ticks (tick = 1/{tick_den} s).")
+    begin_ticks = -(-int(begin_ticks) // step_ticks) * step_ticks
+    end = dc.history_end_s
+    end_ticks = None
+    if end is not None:
+        end_f = Fraction(str(end)) * tick_den
+        end_ticks = int(end_f)  # a bound: floor keeps "not after" exact
+    return begin_ticks, end_ticks
 
 
 def _physics_calendar(label: str, minutes: float, dt_ex: Fraction,

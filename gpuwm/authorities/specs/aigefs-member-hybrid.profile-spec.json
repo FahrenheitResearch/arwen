@@ -146,7 +146,8 @@
         {"op": "set", "path": ["fields", "surface_pressure"], "value": {"$const": "SURFACE_PRESSURE_DERIVED"}},
         {"op": "set", "path": ["fields", "air_pressure_at_mean_sea_level"], "value": {"$const": "SEA_LEVEL_PRESSURE"}},
         {"op": "set", "path": ["derivations"], "value": {"$const": "DERIVATIONS"}},
-        {"op": "append_variants", "path": ["fields", "*", "?selectors"], "overlay": {"$const": "MIRROR_REWRITE_WITHOUT_ENSEMBLE_OCTETS"}}
+        {"op": "append_variants", "path": ["fields", "*", "?selectors"], "overlay": {"$const": "MIRROR_REWRITE_WITHOUT_ENSEMBLE_OCTETS"}},
+        {"op": "set", "path": ["target", "accept_boundary_interval_multiples"], "value": true}
       ]
     },
     {

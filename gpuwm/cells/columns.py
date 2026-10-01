@@ -161,38 +161,62 @@ def _parse_wrf_stamp(text: str) -> dt.datetime | None:
 
 
 def _valid_times(dataset, path: Path, count: int) -> list[dt.datetime]:
-    """The frame instants: ``SIMULATION_START_DATE`` + ``XTIME`` minutes.
+    """The frame instants: ``XTIME`` on the origin it states.
 
-    ``Times`` is a character variable, and the bridge decodes numerics
-    only; the numeric spelling of the same instant is ``XTIME`` (minutes
-    since the simulation start, a global attribute).  A file without
-    either falls back to the stamp in its own name, which WRF writes as
-    the first frame's valid time.
+    The numeric spelling of a frame's instant is ``XTIME``, minutes since
+    the origin its own ``units`` name (``minutes since <stamp>``), decoded
+    by the Rust bridge.  That origin is not always
+    ``SIMULATION_START_DATE``: gpuwm's writer counts ``XTIME`` from the
+    domain's own ``START_DATE``, which on a nest that starts after the
+    forecast is later than the simulation's, so adding it to
+    ``SIMULATION_START_DATE`` dated every frame of a delayed nest early by
+    the delay (A137).  A file whose ``XTIME`` states no origin adds it to
+    the start stamp only when the two stamps agree.  Otherwise the frame
+    falls back to the stamp in its own name, which WRF writes as the
+    first frame's valid time.
     """
 
-    start = None
-    attrs = dataset.global_attributes
-    for name in ("SIMULATION_START_DATE", "START_DATE"):
-        if name in attrs:
-            start = _parse_wrf_stamp(attrs[name])
-            if start is not None:
-                break
+    why = "it has no XTIME"
     xtime = dataset.variables.get("XTIME")
-    if start is not None and xtime is not None:
-        minutes = np.asarray(xtime[:], dtype=np.float64).reshape(-1)
-        if minutes.size == count:
-            return [start + dt.timedelta(minutes=float(m)) for m in minutes]
+    if xtime is not None:
+        try:
+            stated = [instant.replace(tzinfo=dt.timezone.utc)
+                      for instant in xtime.times()]
+        except netcdf_bridge.NetcdfDecodeError:
+            stated = []
+        if len(stated) == count:
+            return stated
+        attrs = dataset.global_attributes
+        stamps = {_parse_wrf_stamp(attrs[name])
+                  for name in ("SIMULATION_START_DATE", "START_DATE")
+                  if name in attrs}
+        stamps.discard(None)
+        if len(stamps) == 1:
+            (start,) = stamps
+            minutes = np.asarray(xtime[:], dtype=np.float64).reshape(-1)
+            if minutes.size == count:
+                return [start + dt.timedelta(minutes=float(m)) for m in minutes]
+            why = (f"its XTIME holds {minutes.size} values for {count} "
+                   f"frames")
+        elif stamps:
+            # Which stamp an XTIME with no stated origin counts from is
+            # unknown when they differ, and the wrong one moves every frame
+            # by the nest's delay, so titan would track across a false clock.
+            why = ("its XTIME states no origin and its START_DATE and "
+                   "SIMULATION_START_DATE differ, so which one XTIME counts "
+                   "from is unknown")
+        else:
+            why = "its XTIME states no origin and it has no start stamp"
     _domain, named = stamp_from_name(path)
     if named is None:
         raise ColumnsError(
-            f"{path}: no valid time can be read -- it has no "
-            f"SIMULATION_START_DATE+XTIME pair and its name carries no "
-            f"wrfout_dNN_YYYY-MM-DD_HH:MM:SS stamp; titan needs a "
-            f"timestamp per frame to order and track them")
+            f"{path}: no valid time can be read -- {why}, and its name "
+            f"carries no wrfout_dNN_YYYY-MM-DD_HH:MM:SS stamp; titan needs "
+            f"a timestamp per frame to order and track them")
     if count != 1:
         raise ColumnsError(
             f"{path}: holds {count} frames but only its filename stamp is "
-            f"readable, which dates the first frame alone")
+            f"readable ({why}), which dates the first frame alone")
     return [named]
 
 

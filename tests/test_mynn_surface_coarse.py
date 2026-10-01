@@ -40,6 +40,7 @@ import numpy as np
 import pytest
 
 from conftest import requires_gpu
+from _toolchain_rows import toolchain_row
 
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
 from gpuwm.core.mynn_surface import mynn_surface_layer_default
@@ -697,6 +698,98 @@ def _stage(dx: float, itimestep: int, isfflx: int = 1):
     }
 
 
+#: ``GPU_ULP`` per compiler where a compiler reads it differently, keyed
+#: on (compute capability, NVRTC major.minor), the pair measured.
+#: A146 re-recorded this table: NVRTC had compiled every float division
+#: by a compile-time constant as a multiply by the rounded reciprocal on
+#: Blackwell, and the kernels now spell those divisions ``__fdiv_rn``, the
+#: IEEE quotient.  On sm_120 41 rows read more than ``GPU_ULP``, by 1 to 2 ULP, all on
+#: qgh, qsfc, qstar, lh and qfx at the last two columns, zol/rmol/psim/psih and
+#: the exchange coefficients at a few; every other row reads at or below it,
+#: most of the thin_land_log10_wind column's 36 to 118 ULP now 0 to 3.
+#: MEASURED 2026-09-30 on the RTX 5070 Ti (sm_120, NVRTC 13.4.92) at the
+#: A146 review repair, every output of every stage compared.
+GPU_ULP_BY_TOOLCHAIN = {
+    ("120", (13, 4)): {
+        **GPU_ULP,
+        (3000.0, 1): {
+            **GPU_ULP[(3000.0, 1)],
+            "lh": (1, 0, 0, 0, 0, 0, 4, 3, 0, 2),
+            "qfx": (1, 0, 0, 0, 0, 0, 3, 2, 0, 4),
+            "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+            "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "qstar": (0, 0, 0, 0, 0, 0, 0, 0, 0, 4),
+        },
+        (3000.0, 2): {
+            **GPU_ULP[(3000.0, 2)],
+            "lh": (0, 0, 0, 0, 0, 0, 0, 0, 0, 2),
+            "qfx": (0, 0, 0, 0, 0, 0, 0, 0, 0, 2),
+            "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+            "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "qstar": (0, 0, 0, 0, 0, 0, 0, 0, 0, 4),
+        },
+        (5001.0, 1): {
+            **GPU_ULP[(5001.0, 1)],
+            "lh": (0, 0, 0, 0, 0, 0, 2, 0, 0, 2),
+            "qfx": (0, 0, 0, 0, 0, 0, 2, 0, 0, 4),
+            "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+            "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "qstar": (0, 0, 0, 0, 0, 2, 0, 0, 0, 3),
+        },
+        (5001.0, 2): {
+            **GPU_ULP[(5001.0, 2)],
+            "lh": (0, 0, 0, 0, 0, 0, 1, 0, 0, 3),
+            "psim": (0, 0, 3, 0, 1, 2, 3, 1, 0, 3),
+            "qfx": (0, 0, 0, 0, 0, 0, 1, 0, 0, 3),
+            "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+            "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "qstar": (0, 0, 0, 0, 0, 2, 0, 0, 0, 3),
+        },
+        (12000.0, 1): {
+            **GPU_ULP[(12000.0, 1)],
+            "lh": (2, 0, 0, 0, 0, 0, 0, 2, 0, 2),
+            "qfx": (2, 0, 0, 0, 0, 0, 0, 2, 0, 4),
+            "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+            "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "qstar": (0, 0, 0, 0, 0, 0, 0, 0, 0, 4),
+        },
+        (12000.0, 2): {
+            **GPU_ULP[(12000.0, 2)],
+            "lh": (2, 0, 0, 0, 0, 1, 1, 0, 0, 4),
+            "qfx": (2, 0, 0, 0, 0, 1, 1, 0, 0, 3),
+            "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+            "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "qstar": (0, 0, 0, 0, 0, 0, 0, 0, 0, 4),
+        },
+        (27000.0, 1): {
+            **GPU_ULP[(27000.0, 1)],
+            "lh": (1, 0, 0, 0, 0, 2, 0, 2, 0, 3),
+            "qfx": (1, 0, 0, 0, 0, 1, 0, 1, 0, 4),
+            "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+            "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "qstar": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+        },
+        (27000.0, 2): {
+            **GPU_ULP[(27000.0, 2)],
+            "lh": (1, 0, 0, 0, 0, 0, 0, 0, 0, 4),
+            "qfx": (1, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+            "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "qstar": (0, 0, 0, 0, 0, 0, 0, 0, 0, 4),
+        },
+    },
+}
+#: A167: NVRTC 12.9.86, the compiler of the default gpuwm[gpu] extra
+#: (cupy-cuda12x), reads the sm_120 row A146 re-recorded under 13.4: every
+#: reading this file's tests take, and the device result behind each, is
+#: bit-identical under the two compilers.  Before this row 12.9.86 failed
+#: here by name (tests/_toolchain_rows.py).  MEASURED 2026-10-01 on node-4's
+#: RTX 5070 Ti and node-2's RTX 5090, two processes per compiler, at
+#: integrate/2.8 9dbb4a2db.
+GPU_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
+    GPU_ULP_BY_TOOLCHAIN[("120", (13, 4))])
+
+
 def _inputs(fields):
     return {name: fields[INPUT_ALIASES.get(name, name)] for name in INPUT_NAMES}
 
@@ -974,7 +1067,13 @@ def test_cuda_kernel_matches_the_coarse_wrf_oracle(dx, itimestep, isfflx):
         ustm=cp.asarray(fields["ustm_input"].copy().reshape(2, 5)),
     )
     cp.cuda.get_current_stream().synchronize()
-    table = _table(GPU_ULP, dx, itimestep)
+    # The compiler pair is read here, not in a helper: a module-level
+    # function importing cupy would mark every CPU test in this file gpu.
+    toolchain = (cp.cuda.Device().compute_capability,
+                 tuple(cp.cuda.nvrtc.getVersion()))
+    table = _table(toolchain_row(GPU_ULP_BY_TOOLCHAIN, GPU_ULP,
+                                 "GPU_ULP_BY_TOOLCHAIN", toolchain), dx,
+                   itimestep)
     zeroed = ISFFLX0_ZEROED if isfflx == 0 else ()
     np.testing.assert_array_equal(
         cp.asnumpy(actual.regime).ravel(), fields["regime"]
@@ -1037,7 +1136,8 @@ def test_every_table_row_is_the_right_width_and_carries_a_measurement():
         for dx in DX_SWEEP if dx not in DX_TABLE_ALIAS
         for itimestep in (1, 2)
     }
-    for tables in (CPU_ULP, GPU_ULP):
+    for tables in (CPU_ULP, GPU_ULP,
+                   *GPU_ULP_BY_TOOLCHAIN.values()):
         assert set(tables) == expected
         for key, table in tables.items():
             assert table, key

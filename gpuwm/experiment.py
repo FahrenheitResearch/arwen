@@ -51,6 +51,7 @@ from gpuwm.io import history_selection as history_selection_module
 from gpuwm.config_keys import KeyRow, key_rows
 from gpuwm.config import (DEFAULT_COLUMN_CHUNK,
                           EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT,
+                          EPSSM_AUTO,
                           GRELL_FAMILY_DEFAULTS, GRELL_FREITAS_CU_PHYSICS,
                           MIX_ISOTROPIC_AUTO, SASE_FAIL_CLOSED_DEFAULTS,
                           SASE_PBL_SCHEME, RunConfig,
@@ -166,7 +167,7 @@ _SHARED_KEY_ROWS = key_rows(
 
 _EXPERIMENT_KEYS = frozenset({
     "name", "start_time", "run_seconds", "feedback", "smooth_option",
-    "blend_width", "spec_bdy_width", "restart_interval_s",
+    "blend_width", "spec_bdy_width", "restart_interval_s", "smooth_cg_topo",
     "column_chunk", "acknowledgements", "constant_glw_wm2",
     # The physics-fidelity axis (gpuwm/physics_mode.py).  Experiment-scope
     # because a tree whose domains ran different ledger entries could not be
@@ -359,6 +360,18 @@ _DOMAIN_RUN_OVERRIDES = (
     # Per domain for the reason the steep-terrain rules set it: one
     # domain's ground needs six substeps and its neighbour's does not.
     "min_time_step_sound",
+    # WRF declares slope_rad and topo_shading max_domains
+    # (Registry.EM_COMMON), and a namelist commonly shades only the nests
+    # fine enough to resolve the ridges (topo_shading = 0, 1, 1).  shadlen
+    # is scope 1 in WRF and stays [shared].
+    "slope_rad", "topo_shading",
+    # Where Noah mosaic runs the urban canopy (gpuwm/config.py
+    # MOSAIC_URBAN_CANOPY_RULES): a gpuwm key with no WRF spelling, per
+    # domain so a tree can run the town rule on the nest fine enough to
+    # see its towns while the parent keeps WRF's.  sf_surface_mosaic and
+    # sf_urban_physics stay [shared]; every domain's RunConfig still passes
+    # validate_noah_mosaic_config with them.
+    "mosaic_urban_canopy",
 )
 
 #: Per-domain vertical keys are REJECTED outright (F1 amendment: the
@@ -370,6 +383,7 @@ _DOMAIN_VERTICAL_KEYS = ("nz", "e_vert", "eta_levels", "p_top", "ztop",
 #: Rows for the [[domain]] keys no typed field declares
 #: (:mod:`gpuwm.config_keys`).
 _DOMAIN_KEY_ROWS = key_rows(
+    KeyRow("static", "table", None, "per-domain terrain smooth_option, smooth_passes and smooth_precision"),
     KeyRow("start_time", "datetime", None,
            "when this nest starts, an offset-free TOML date-time inside "
            "the run; absent starts it with [experiment].start_time"),
@@ -382,7 +396,12 @@ _DOMAIN_KEY_ROWS = key_rows(
 _DOMAIN_KEYS = frozenset({
     "grid_id", "parent_id", "i_parent_start", "j_parent_start",
     "parent_grid_ratio", "parent_time_step_ratio", "history_interval_s",
-    "start_time",
+    # WRF's history_begin_* / history_end_* (share/set_timekeeping_alarms
+    # .m4), as seconds from this domain's start: the first history frame
+    # is written at start + history_begin_s, then every
+    # history_interval_s, and none after start + history_end_s.
+    "history_begin_s", "history_end_s",
+    "start_time", "static",
     "e_we", "e_sn", "nx", "ny", "dx", "dy", "dt",
     "time_step", "time_step_fract_num", "time_step_fract_den",
     "specified", "nested",
@@ -693,9 +712,11 @@ class PerturbationConfig:
     Absent block = ``ExperimentConfig.perturbation is None`` = zero
     behavior change, byte-identical prepared state (the
     inflow_perturbation OFF discipline).  Present, the block is either
-    honored on the experiment runtime path or refused by name on routes
-    that do not thread it (:func:`refuse_unrouted_perturbation`); it is
-    never dropped.
+    honored on the experiment runtime path, deferred by a domain-tree
+    preparation to the tree runner that applies it
+    (:func:`deferred_initial_perturbation`), or refused by name on
+    routes that do not thread it (:func:`refuse_unrouted_perturbation`);
+    it is never dropped.
     """
 
     bubbles: tuple[BubbleConfig, ...]
@@ -790,6 +811,88 @@ def refuse_unrouted_perturbation(exp, route: str) -> None:
         "gpuwm.prepared_domain_tree_forecast)."))
 
 
+#: The receipt a preparation writes when it prepares a domain tree whose
+#: experiment carries a [perturbation] block.  One spelling for every
+#: source: the deferral is the same fact whichever source prepared the
+#: tree, because the runner that applies the bubbles restores every
+#: source's tree the same way.
+DEFERRED_PERTURBATION_SCHEMA = "gpuwm-initial-perturbation-deferred-v1"
+
+
+def deferred_initial_perturbation(exp, route: str, *,
+                                  announce: bool = True) -> dict | None:
+    """What a preparation does with the experiment's [perturbation] block.
+
+    No preparation writes a bubble into the arrays it prepares.  The
+    prepared domain-tree forecast runner applies the configured bubbles
+    to the restored states at experiment start
+    (:mod:`gpuwm.prepared_domain_tree_forecast`), whatever source
+    prepared the tree, so a tree preparation keeps its initial and
+    boundary arrays unperturbed and returns this receipt for its proof.
+    Every source route calls this one function; none has its own path.
+
+    A single-domain preparation still refuses the block, by the route's
+    name (:func:`refuse_unrouted_perturbation`): the prepared
+    single-domain forecast runner applies no bubble, so the bundle would
+    run the unperturbed state under the bubbles' name.  An absent block
+    returns ``None`` on either shape and says nothing.
+
+    ``announce`` says the deferral once on stderr.  A stage that only
+    needs the early refusal passes False, so a preparation that reads
+    its configuration in two processes says it once.
+    """
+
+    if len(exp.domains) < 2:
+        refuse_unrouted_perturbation(exp, f"single-domain {route}")
+    perturbation = getattr(exp, "perturbation", None)
+    if perturbation is None:
+        return None
+    if announce:
+        warn(
+            "initial perturbation is deferred to prepared-tree forecast "
+            "initialization",
+            "Prepared initial and boundary arrays remain unperturbed, and "
+            "the preparation receipt records the configured bubbles as "
+            "deferred. The domain-tree forecast runner applies them once to "
+            "the restored states at experiment start, never on restart or "
+            "to a nest born later. Companion stock-WRF export cannot "
+            "represent this deferred mutation.")
+    return {
+        "schema": DEFERRED_PERTURBATION_SCHEMA,
+        "status": "DEFERRED_TO_FORECAST_INITIALIZATION",
+        "prepared_arrays": "unperturbed source initial and boundary states",
+        "application_route": "gpuwm.prepared_domain_tree_forecast",
+        "application_point": "restored states at experiment start time",
+        "applied_on_restart": False,
+        "applied_to_delayed_domains": False,
+        "config": perturbation.receipt(),
+    }
+
+
+def deferred_perturbation_config(receipt) -> PerturbationConfig:
+    """The [perturbation] block a deferral receipt recorded, revalidated.
+
+    For a stage that builds its experiment without the configuration
+    (the native HRRR hierarchy builds its children from namelists, which
+    spell no such block) and must still know the tree carries bubbles,
+    so that the companion stock-WRF export refuses a state it cannot
+    hold instead of writing the unperturbed one under the tree's name.
+    Rebuilt through :func:`_build_perturbation`, the one validator; a
+    receipt's own annotations (``warning``) are not configuration.
+    """
+
+    if (not isinstance(receipt, dict)
+            or receipt.get("schema") != DEFERRED_PERTURBATION_SCHEMA):
+        raise ValueError(
+            "a [perturbation] deferral must be a "
+            f"{DEFERRED_PERTURBATION_SCHEMA} receipt, got {receipt!r}")
+    bubbles = [{key: value for key, value in bubble.items()
+                if key in _BUBBLE_KEYS}
+               for bubble in receipt["config"]["bubbles"]]
+    return _build_perturbation(
+        {"bubbles": bubbles}, f"a {DEFERRED_PERTURBATION_SCHEMA} receipt")
+
+
 @dataclass(frozen=True)
 class DomainConfig:
     """One domain of a nested experiment (architecture section A).
@@ -819,6 +922,14 @@ class DomainConfig:
     history_interval_s: float
     run: RunConfig
     time_step: int | None = None
+    #: WRF's history_begin: seconds after this domain's start before its
+    #: first history frame (0 writes the start frame, WRF's default).
+    #: Output-only, so a restart may change it (RESTART_TOLERATED_DOMAIN
+    #: _FIELDS in gpuwm/core/model.py).
+    history_begin_s: float = 0.0
+    #: WRF's history_end: no history frame after start + this many
+    #: seconds; ``None`` writes to the end of the run.
+    history_end_s: float | None = None
     time_step_fract_num: int = 0
     time_step_fract_den: int = 1
     start_time: datetime | None = None
@@ -1265,6 +1376,18 @@ class ExperimentConfig:
     #: frozen verify fixtures) on explicit semantics: what its author
     #: set is what runs.
     auto_mix_isotropic: tuple[int, ...] = ()
+    #: grid_ids whose ``epssm`` is the MODEL'S CHOICE: the config left it
+    #: unset or wrote the ``"auto"`` sentinel, which is also what
+    #: ``gpuwm import-namelist`` writes where WRF's Registry default fills
+    #: a domain the namelist did not assign.  Such a domain is raised to
+    #: the measured off-centering floor over steep ground
+    #: (:func:`gpuwm.acoustic_adaptation.adapt_experiment_acoustics`); a
+    #: written value below the floor is refused instead.  A provenance
+    #: LABEL like ``auto_mix_isotropic``: the value that runs sits on
+    #: ``run.epssm`` and binds there, so this field leaves the restart and
+    #: sealed-extension identities.  The empty default keeps every
+    #: code-constructed experiment on explicit semantics.
+    auto_epssm: tuple[int, ...] = ()
     #: The validated [spectral_numerics] block
     #: (:class:`gpuwm.spectral_ops.config.SpectralNumericsConfig`), or
     #: ``None`` when the config does not carry one.  ``None`` is the OFF
@@ -1278,6 +1401,13 @@ class ExperimentConfig:
     #: integrating loop refuses an active block
     #: (:func:`refuse_unrouted_spectral_numerics`).
     spectral_numerics: object | None = None
+    #: WRF's &domains smooth_cg_topo (Registry.EM_COMMON:2301, scope 1,
+    #: default .false.): domain 1's outer rows take the input model's
+    #: terrain and ramp back to the high-resolution terrain over
+    #: blend_width rows (gpuwm.ingest.cg_topo).  False, the default, builds
+    #: every root terrain exactly as before and drops out of the restart
+    #: identity; True binds it, because the terrain is part of the run.
+    smooth_cg_topo: bool = False
 
     def __post_init__(self):
         if self.feedback not in FEEDBACK_OPTIONS:
@@ -2231,6 +2361,106 @@ def _refuse_unservable_track(relocation, domains, source, *, root_dt,
                     "prognostic column and is valid at every boundary.")
 
 
+def _refuse_moving_slope_radiation(domains, relocation, source) -> None:
+    """slope_rad on a nest that moves: refused until the move carries it.
+
+    A relocation rebuilds the nest cold at its new placement and carries
+    only the radiation carriers the land-surface consumer matrix names
+    (gpuwm.core.physics_continuation.relocatable_carriers).  The held
+    slope-radiation state (the diffuse fraction, the radiation-time solar
+    geometry and the shadow of gpuwm.core.topo_radiation) is not among
+    them, so after every move the land surface would take the flat flux
+    until the next radiation call instead of the one WRF gives it.
+    """
+    moving = set()
+    if relocation is not None and getattr(relocation, "enabled", False)             and (getattr(relocation, "moves", ())
+                 or getattr(relocation, "follow", None) is not None):
+        moving.add(int(relocation.grid_id))
+    moving.update(int(dc.grid_id) for dc in domains
+                  if getattr(dc, "follow", None) is not None)
+    for dc in domains:
+        if int(dc.grid_id) in moving and int(dc.run.slope_rad) == 1:
+            raise ValueError(
+                f"[[domain]] grid_id = {int(dc.grid_id)} of {source} moves "
+                "and sets slope_rad = 1: a move rebuilds the nest and "
+                "carries only the land-surface radiation carriers "
+                "(gpuwm.core.physics_continuation), not the held slope "
+                "radiation state, so after every move its land surface "
+                "would take the flat shortwave until the next radiation "
+                "call.  Set slope_rad = 0 on the moving nest.")
+
+
+def _refuse_rebuilt_nest_noah_mosaic(domains, relocation, source) -> None:
+    """Noah mosaic on a nest whose physics is rebuilt mid-run: refused.
+
+    A move and a spawn both rebuild the nest's physics driver from a land
+    state (gpuwm.runtime.rebuild_child_driver_from_land_state), and that
+    rebuild does not build the land-use tiles: only the initialization
+    doors do (gpuwm/core/noah_mosaic_door.py).  WRF carries them through a
+    move by re-deriving them with interp_mask_land_field on lu_index
+    (Registry.EM_COMMON:1873-1913).  Accepted, the nest would run until the
+    move or the spawn and then stop on its first Noah step with no tile
+    state, hours into the run; refused here, before anything is prepared.
+    """
+    rebuilt = {}
+    if relocation is not None and getattr(relocation, "enabled", False) \
+            and (getattr(relocation, "moves", ())
+                 or getattr(relocation, "follow", None) is not None):
+        rebuilt[int(relocation.grid_id)] = "moves"
+    for dc in domains:
+        if getattr(dc, "follow", None) is not None:
+            rebuilt[int(dc.grid_id)] = "moves"
+        elif getattr(dc, "spawn", None) is not None:
+            rebuilt.setdefault(int(dc.grid_id), "is spawned mid-run")
+    for dc in domains:
+        how = rebuilt.get(int(dc.grid_id))
+        if how is not None and int(getattr(dc.run, "sf_surface_mosaic", 0)) == 1:
+            raise ValueError(
+                f"[[domain]] grid_id = {int(dc.grid_id)} of {source} {how} "
+                "and runs Noah mosaic (sf_surface_mosaic = 1): a move or a "
+                "spawn rebuilds the nest's physics from its land state and "
+                "that rebuild does not build the land-use tiles (WRF "
+                "re-derives them with interp_mask_land_field, "
+                "Registry.EM_COMMON:1873-1913), so the nest would stop at "
+                "its first Noah step after the event with no tile state.  "
+                "Keep this nest still and present from the start, or set "
+                "sf_surface_mosaic = 0.")
+
+
+def _refuse_windowed_stash_watch(domains, source) -> None:
+    """A spawn or retire watch cannot read a parent with a history window.
+
+    The reflectivity and UH planes a lifecycle trigger reads are stashed
+    at the watched parent's HISTORY times (gpuwm.core.refl); a parent that
+    sets history_begin_s / history_end_s has no stash outside that window,
+    so the watch would read a plane that was never written and the run
+    would refuse mid-flight.
+    """
+    from gpuwm.core.storm_tracking import STASH_BACKED_FIELDS
+
+    by_id = {int(dc.grid_id): dc for dc in domains}
+    for dc in domains:
+        for name in ("spawn", "retire"):
+            policy = getattr(dc, name, None)
+            trigger = getattr(policy, "trigger", None)
+            if trigger not in STASH_BACKED_FIELDS:
+                continue
+            parent = by_id.get(int(dc.parent_id))
+            if parent is None:
+                continue
+            if (float(getattr(parent, "history_begin_s", 0.0) or 0.0),
+                    getattr(parent, "history_end_s", None)) == (0.0, None):
+                continue
+            raise ValueError(
+                f"[[domain]] grid_id = {int(dc.grid_id)} of {source} "
+                f"watches {trigger} on its parent grid_id = "
+                f"{int(parent.grid_id)} for its {name}, and the parent sets "
+                "history_begin_s / history_end_s: the watched plane is "
+                "stashed only at the parent's history times, so outside "
+                "that window the watch has nothing to read and the run "
+                "refuses mid-flight.  Remove the offsets from the parent.")
+
+
 def _refuse_unservable_follow_cadence(relocation, domains, source,
                                       *, root_dt,
                                       table: str = "[relocation]",
@@ -2297,6 +2527,20 @@ def _refuse_unservable_follow_cadence(relocation, domains, source,
         return
     if not math.isfinite(stash) or stash <= 0.0:
         return
+    window = (float(getattr(parent, "history_begin_s", 0.0) or 0.0),
+              getattr(parent, "history_end_s", None))
+    if window != (0.0, None):
+        raise ValueError(
+            f"{table} of {source} configures a {follow_table} tracker "
+            f"watching [[domain]] grid_id = {int(parent.grid_id)}, which "
+            f"sets history_begin_s = {window[0]:g}"
+            + ("" if window[1] is None
+               else f" / history_end_s = {float(window[1]):g}")
+            + ": the tracker's reflectivity signal is stashed only at that "
+            "domain's history times (gpuwm.core.refl), so outside the "
+            "window it has no plane to read and the run refuses "
+            "mid-flight.  Remove the begin/end offsets from the watched "
+            "domain.")
     where = (f"history_interval_s = {stash} s on the domain the tracker "
              f"watches ([[domain]] grid_id = {int(parent.grid_id)}, the "
              f"parent of the relocating grid_id = "
@@ -2544,6 +2788,21 @@ def _bad_mix_isotropic_sentinel(value, where: str, source: str) -> str:
         f"anisotropic form otherwise.")
 
 
+def _bad_epssm_sentinel(value, where: str, source: str) -> str:
+    """The refusal for an ``epssm`` string that is not ``"auto"``.
+
+    A string reaching RunConfig would fail its number check with no word
+    about the sentinel the string was probably meant to be.
+    """
+
+    return (
+        f"epssm = {value!r} in {where} of {source} must be a number in "
+        f"(0, 1] or the string \"{EPSSM_AUTO}\" -- the same meaning as "
+        f"leaving the key unset: WRF's default 0.1, raised to the measured "
+        f"off-centering floor over ground 0.1 was not measured stable on "
+        f"(gpuwm/acoustic_adaptation.py).")
+
+
 def _cross_check(kind: str, grid_id, supplied: float, derived: Fraction,
                  chain: str, source: str) -> None:
     """Hand-typed child dx/dt cross-check: the namelist chain is
@@ -2559,6 +2818,46 @@ def _cross_check(kind: str, grid_id, supplied: float, derived: Fraction,
             f"{derived} ({chain}): child {kind} is never hand-typed -- "
             "the namelist chain is authoritative; remove the key or fix "
             "the chain.")
+
+
+def _history_window(dom: dict, *, grid_id: int, source: str,
+                    run_seconds: float) -> tuple[float, float | None]:
+    """``[[domain]] history_begin_s`` / ``history_end_s``, validated.
+
+    Whole seconds, as WRF states them (the D/H/M/S integers of
+    history_begin_* / history_end_*).  A begin that is not on the domain's
+    step lattice rings at the first step after it, as WRF's alarm does
+    (ESMF_ClockAdvance rings once RingTime <= CurrTime); gpuwm.core.clock
+    rounds it the same way.
+    """
+
+    def seconds(key: str) -> float | None:
+        if key not in dom:
+            return None
+        value = dom[key]
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(float(value)) or float(value) < 0.0
+                or float(value) != int(float(value))):
+            raise ValueError(
+                f"{key} = {value!r} on [[domain]] grid_id = {grid_id} of "
+                f"{source} must be a whole, non-negative number of seconds "
+                "(WRF states it in whole days, hours, minutes and seconds).")
+        return float(value)
+
+    begin = seconds("history_begin_s") or 0.0
+    end = seconds("history_end_s")
+    if begin >= run_seconds:
+        raise ValueError(
+            f"history_begin_s = {begin:g} on [[domain]] grid_id = {grid_id} "
+            f"of {source} is at or past the run's end ({run_seconds:g} s): "
+            "the domain would write no history, and every product drawn "
+            "from its frames would be missing.")
+    if end is not None and end <= begin:
+        raise ValueError(
+            f"history_end_s = {end:g} on [[domain]] grid_id = {grid_id} of "
+            f"{source} is not after history_begin_s = {begin:g}: the domain "
+            "would write no history.")
+    return begin, end
 
 
 def _check_cadence(label: str, seconds: Fraction, dt: Fraction, grid_id,
@@ -2874,6 +3173,11 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                                 exp.get("blend_width", 5), source, 0)
     spec_bdy_width = _positive_int("experiment", "spec_bdy_width",
                                    exp.get("spec_bdy_width", 5), source, 1)
+    smooth_cg_topo = exp.get("smooth_cg_topo", False)
+    if not isinstance(smooth_cg_topo, bool):
+        raise ValueError(
+            f"smooth_cg_topo = {smooth_cg_topo!r} in [experiment] of {source} "
+            "must be true or false (WRF's &domains logical).")
     restart_interval_s = float(exp["restart_interval_s"])
     if not math.isfinite(restart_interval_s) or restart_interval_s < 0.0:
         raise ValueError(
@@ -3046,6 +3350,13 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             raise ValueError(_bad_mix_isotropic_sentinel(
                 shared["mix_isotropic"], "[shared]", source))
         del shared["mix_isotropic"]
+    # epssm's "auto" sentinel, on the same rule: the model chooses, so it
+    # is stripped here and the domain loop reads its absence.
+    if isinstance(shared.get("epssm"), str):
+        if shared["epssm"] != EPSSM_AUTO:
+            raise ValueError(_bad_epssm_sentinel(
+                shared["epssm"], "[shared]", source))
+        del shared["epssm"]
 
     # Compared with the one implemented value, not checked against the
     # row's type.  Every other value is refused just below with the reason
@@ -3192,6 +3503,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     domain_tables = _parent_before_child(domain_tables, source)
     domains: list[DomainConfig] = []
     auto_mix_ids: list[int] = []
+    auto_epssm_ids: list[int] = []
     by_id: dict[int, DomainConfig] = {}
     dt_by_id: dict[int, Fraction] = {}
     dx_by_id: dict[int, Fraction] = {}
@@ -3240,6 +3552,9 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             dom, physics_mode, source)
         _require_keys(f"domain #{index + 1}", dom, _DOMAIN_REQUIRED, source)
         grid_id = _positive_int("domain", "grid_id", dom["grid_id"], source)
+        if "static" in dom:
+            from gpuwm.static.terrain_smoothing import parse_domain_static
+            parse_domain_static(dom["static"], source=source, grid_id=grid_id)
         if grid_id in by_id:
             raise ValueError(
                 f"duplicate grid_id = {grid_id} in [[domain]] tables of "
@@ -3259,6 +3574,17 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         else:
             mix_isotropic_auto = ("mix_isotropic" not in dom
                                   and "mix_isotropic" not in shared)
+        # epssm's provenance, on the same rule: the model's choice when
+        # neither this table nor [shared] writes a number for it.
+        if isinstance(dom.get("epssm"), str):
+            if dom["epssm"] != EPSSM_AUTO:
+                raise ValueError(_bad_epssm_sentinel(
+                    dom["epssm"], f"[[domain]] grid_id={grid_id}", source))
+            dom = dict(dom)
+            del dom["epssm"]
+            epssm_auto = True
+        else:
+            epssm_auto = "epssm" not in dom and "epssm" not in shared
         parent_id = dom["parent_id"]
         is_root = parent_id == 0
         if index == 0 and not is_root:
@@ -3664,6 +3990,9 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                 f"history_interval_s = {dom['history_interval_s']!r} on "
                 f"domain grid_id = {grid_id} of {source} must be a "
                 "finite positive interval in seconds.")
+        history_begin_s, history_end_s = _history_window(
+            dom, grid_id=grid_id, source=source,
+            run_seconds=run_seconds)
         kw = dict(shared)
         kw.update(
             nx=nx, ny=ny, nz=nz, dx=float(dx_ex), dy=float(dx_ex),
@@ -3731,6 +4060,13 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         if mix_isotropic_auto:
             kw.pop("mix_isotropic", None)
             auto_mix_ids.append(grid_id)
+        # An AUTO epssm starts on the RunConfig default (WRF's 0.1); the
+        # floor that raises it over steep ground needs the terrain, so it
+        # is applied where the terrain is read
+        # (gpuwm.acoustic_adaptation.adapt_experiment_acoustics).
+        if epssm_auto:
+            kw.pop("epssm", None)
+            auto_epssm_ids.append(grid_id)
         # The full legacy invariant battery applies to every per-domain
         # RunConfig (p5t1 review F1): same checks, same messages as
         # load_config.
@@ -3807,6 +4143,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
             history_interval_s=history_interval_s, run=run,
             time_step=time_step, time_step_fract_num=fract_num,
             time_step_fract_den=fract_den, start_time=domain_start,
+            history_begin_s=history_begin_s, history_end_s=history_end_s,
             spawn=spawn_cfg, retire=retire_cfg, rearm=rearm_cfg,
             follow=follow_cfg, tiles=domain_tiles, output=domain_output)
         domains.append(dc)
@@ -3911,6 +4248,9 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     relocation = _build_relocation(raw, source, domains, run_seconds)
     from gpuwm.core.nest_lifecycle import validate_follow_tracks
     domains = validate_follow_tracks(domains, relocation, source)
+    _refuse_windowed_stash_watch(domains, source)
+    _refuse_moving_slope_radiation(domains, relocation, source)
+    _refuse_rebuilt_nest_noah_mosaic(domains, relocation, source)
     from gpuwm.core.attribute_tracking import validate_attribute_domains
     validate_attribute_domains(domains, relocation)
     experiment = ExperimentConfig(
@@ -3918,6 +4258,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         vertical=vertical, projection=projection,
         feedback=feedback, smooth_option=smooth_option,
         blend_width=blend_width, spec_bdy_width=spec_bdy_width,
+        smooth_cg_topo=smooth_cg_topo,
         restart_interval_s=restart_interval_s, domains=tuple(domains),
         column_chunk=column_chunk,
         acknowledgements=tuple(acknowledgements),
@@ -3926,7 +4267,10 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         physics_mode=physics_mode,
         perturbation=perturbation,
         tiles=tiles, output=output,
-        spectral_numerics=spectral_numerics)
+        spectral_numerics=spectral_numerics,
+        auto_epssm=tuple(sorted(auto_epssm_ids)))
+    from gpuwm.static.terrain_smoothing import refuse_moving_reach
+    refuse_moving_reach(domain_tables, experiment, source=source)
     # The mixing-length auto-switch runs HERE, at the one load every
     # front door shares, so run/go/check, both prepared runners and the
     # wizard's candidate loop all execute (and announce) the same
@@ -3962,6 +4306,12 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     # its predecessors left, and steppers_for_tree refuses a both-streamed
     # edge at decision time, before anything is built.
     streaming_module.refuse_streamed_nests(experiment, source=source)
+    # The UCM's first-level fatal (module_sf_urban.F:825), refused from the
+    # config text at the one load every front door shares instead of at
+    # step 1 after a fetch and a preparation.
+    ucm_refusal = ucm_first_level_refusal(experiment, source=source)
+    if ucm_refusal is not None:
+        raise ValueError(ucm_refusal)
     from gpuwm.physics_compat import (
         constant_longwave_refusal,
         nocturnal_radiation_refusal,
@@ -4137,6 +4487,117 @@ def anisotropic_w_mixing_exposure(experiment: ExperimentConfig
         return ExposedMixing(0.0, (), "")
     dz_max, ladder = _mixing_layer_depths(experiment)
     return ExposedMixing(dz_max, exposed, ladder)
+
+
+#: The warmest lowest-layer mean temperature the UCM plan check allows a
+#: column.  A layer's depth scales with its temperature, so the first mass
+#: level can sit higher than the base state puts it; the plan refuses only
+#: when even a lowest layer this warm leaves it inside the canopy.
+UCM_PLAN_WARMEST_LAYER_K = 320.0
+
+#: What each URBPARM.TBL class is (URBPARM.TBL's header); an LCZ table
+#: class k is Local Climate Zone k.
+_URBPARM_CLASS_NAMES = {1: "low-density residential",
+                        2: "high-density residential",
+                        3: "commercial and industrial"}
+_LCZ_CLASS_NAMES = {1: "compact high-rise", 2: "compact mid-rise",
+                    3: "compact low-rise", 4: "open high-rise",
+                    5: "open mid-rise", 6: "open low-rise",
+                    7: "lightweight low-rise", 8: "large low-rise",
+                    9: "sparsely built", 10: "heavy industry",
+                    11: "bare rock or paved"}
+
+
+def _first_layer_depth(eta2: float, vertical, base_temp: float) -> float:
+    """The base-state depth (m) of a lowest layer ending at ``eta2``."""
+    from gpuwm.core.grid import base_layer_depths
+    znw = np.asarray((1.0, float(eta2), 0.0), dtype=np.float64)
+    return float(base_layer_depths(znw, vertical.hybrid_opt, vertical.etac,
+                                   vertical.p_top, base_temp)[0])
+
+
+def ucm_first_level_refusal(experiment: ExperimentConfig, *,
+                            source: str = "experiment") -> str | None:
+    """Refuse, before anything is fetched or prepared, a UCM run whose
+    table classes' canopy reaches the first model level.
+
+    THE BREAKAGE IT PREVENTS.  ``module_sf_urban.F:825`` is a WRF
+    ``FATAL_ERROR``: on any urban cell where ``ZDC + Z0C + 2 m`` reaches
+    the first mass level (``0.5 * DZ8W(1)``) the UCM's log profile is
+    undefined and the model stops.  gpuwm's UCM kernel carries the same
+    stop, so such a run used to spend its fetch, its preparation and its
+    card warm-up and then die at step 1 (the 750 m San Francisco and Los
+    Angeles grids with Local Climate Zone land cover did exactly that on
+    2026-09-30: their first level is about 25 m, and LCZ 1 and LCZ 4 need
+    about 34 and 31 m).
+
+    The canopy per class is the table row's (:func:`gpuwm.core.
+    urban_tables.ucm_canopy_heights`), and the first level's height is
+    the configured eta ladder's lowest layer in WRF's base state
+    (:func:`gpuwm.core.grid.base_layer_depths`), let rise to what a
+    :data:`UCM_PLAN_WARMEST_LAYER_K` lowest layer would give, so a grid
+    that is only marginal is left to the exact step-1 check.  The plan
+    cannot see which classes the land cover will put in the domain; it
+    refuses on the classes the selected table carries.
+    """
+    vertical = experiment.vertical
+    for domain in experiment.domains:
+        run = domain.run
+        if int(getattr(run, "sf_urban_physics", 0) or 0) != 1:
+            continue
+        eta = getattr(run, "eta_levels", None) or vertical.eta_levels
+        if not eta:
+            continue  # idealized: no real-data ladder; the step-1 check stands
+        from gpuwm.core.urban_tables import ucm_canopy_heights
+        lcz = int(run.use_wudapt_lcz)
+        base_temp = float(run.base_temp)
+        za_base = 0.5 * _first_layer_depth(float(eta[1]), vertical, base_temp)
+        za_warm = za_base * UCM_PLAN_WARMEST_LAYER_K / base_temp
+        heights = ucm_canopy_heights(lcz)
+        over = {k: h for k, h in heights.items() if h >= za_warm}
+        if not over:
+            continue
+        names = _LCZ_CLASS_NAMES if lcz else _URBPARM_CLASS_NAMES
+        label = "LCZ " if lcz else "URBPARM class "
+        listed = ", ".join(f"{label}{k} ({names.get(k, 'urban')}, "
+                           f"{h:.1f} m)" for k, h in sorted(over.items()))
+        tallest = max(heights.values())
+        # A first level above the tallest canopy even in a column 10
+        # percent colder than the base state: the eta that gives it.
+        target = 2.0 * tallest / 0.9
+        lo, hi = 0.5, float(eta[0])
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            if _first_layer_depth(mid, vertical, base_temp) >= target:
+                lo = mid
+            else:
+                hi = mid
+        tallest_urbparm = max(ucm_canopy_heights(0).values())
+        remedies = [
+            (f"land cover whose urban classes stay below the level: NLCD "
+             f"with use_wudapt_lcz = 0 (the three URBPARM classes, the "
+             f"tallest canopy {tallest_urbparm:.1f} m)") if lcz else None,
+            (f"a first model level above the canopy: a lowest layer at "
+             f"least {target:.0f} m deep, which on this grid is "
+             f"eta_levels[1] = {lo:.4f} or lower (now {float(eta[1]):.4f})"),
+            ("sf_urban_physics = 2 or 3 (BEP, BEP+BEM), which spread the "
+             "buildings over the model levels and have no such limit"),
+        ]
+        remedy = "; ".join(r for r in remedies if r)
+        return (
+            f"{source}: d{domain.grid_id:02d} runs the single-layer urban "
+            f"canopy model (sf_urban_physics = 1) with use_wudapt_lcz = "
+            f"{lcz}, and WRF stops the model at its first step on any urban "
+            f"cell whose canopy, ZDC + Z0C + 2 m, reaches the first model "
+            f"level (module_sf_urban.F:825, a FATAL_ERROR).  On this "
+            f"vertical grid the first level is {za_base:.1f} m above the "
+            f"ground in the base state and no higher than {za_warm:.1f} m "
+            f"even under a {UCM_PLAN_WARMEST_LAYER_K:.0f} K lowest layer, "
+            f"and the table's {listed} reach it.  The land cover is not "
+            f"read until preparation, so the plan refuses on the table's "
+            f"classes rather than spend the fetch, the preparation and the "
+            f"card on a run that stops at step 1.  Remedies: {remedy}.")
+    return None
 
 
 def _mixing_layer_depths(experiment: ExperimentConfig) -> tuple[float, str]:

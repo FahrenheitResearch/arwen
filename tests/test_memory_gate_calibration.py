@@ -98,7 +98,13 @@ def _walk_machine(monkeypatch, *, free_bytes=WALK_FREE_BYTES,
     # or absent one) BEFORE the memGetInfo stub lands in sys.modules,
     # or the stub is what the whole model imports.
     import gpuwm.core.state  # noqa: F401
-    monkeypatch.setattr(pf.sys, "platform", "win32")
+    # The platform is faked at preflight's own seam, not on sys.platform:
+    # the global name reaches every library the check imports afterwards,
+    # and on Linux `_run_check`'s first `import unittest.mock` then pulled
+    # in asyncio.windows_events and died on `_overlapped`, so both walk
+    # tests failed whenever no earlier test in the process had imported
+    # unittest.mock.
+    monkeypatch.setattr(pf, "host_platform", lambda: "win32")
     total = int(total_gib * GIB)
     stub = types.SimpleNamespace(cuda=types.SimpleNamespace(
         Device=lambda: types.SimpleNamespace(pci_bus_id="fixture-card"),
@@ -157,7 +163,7 @@ def test_windows_envelope_is_the_measured_affine_model(monkeypatch,
     follows the radiation lane rather than the driver model, so only the
     legacy-RRTMG emission pays it.
     """
-    monkeypatch.setattr(pf.sys, "platform", "win32")
+    monkeypatch.setattr(pf, "host_platform", lambda: "win32")
     config = _emit(tmp_path, 110, 88)
     exp = dw.experiment_from_text(
         config.read_text(encoding="utf-8"), source=str(config))
@@ -176,8 +182,12 @@ def test_windows_envelope_is_the_measured_affine_model(monkeypatch,
                 + est.non_pool_device_bytes
                 + pf.ENVELOPE_UNMODELLED_BYTES)
     assert est.peak_envelope_bytes == expected
-    # ...and the legacy-RRTMG lane still pays the measured slack, in the
-    # same affine form.
+    # ...and the legacy-RRTMG lane is priced in the same affine form.  It
+    # paid 20% of the estimate on top until A163 (2026-09-30) retired
+    # that term: the estimate's own margin already prices the pool
+    # headroom the slack priced a second time, and the measured margin
+    # bounds the legacy battery rows on its own
+    # (tests/test_memory_gate_a163.py).
     legacy_config = _emit(tmp_path, 110, 88,
                           profile="thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1")
     legacy_exp = dw.experiment_from_text(
@@ -187,9 +197,7 @@ def test_windows_envelope_is_the_measured_affine_model(monkeypatch,
     assert legacy.peak_envelope_bytes == (
         legacy.alloc_estimate_bytes
         + legacy.non_pool_device_bytes
-        + pf.ENVELOPE_UNMODELLED_BYTES
-        + math.ceil(pf.WDDM_POOL_SLACK_FRACTION
-                    * legacy.alloc_estimate_bytes))
+        + pf.ENVELOPE_UNMODELLED_BYTES)
     # The 5090 zero-step probe constant and the pool-retention constant
     # are display projections, never envelope intercept terms.
     assert est.envelope_intercept_bytes == est.non_pool_device_bytes
@@ -213,14 +221,12 @@ def test_windows_envelope_is_the_measured_affine_model(monkeypatch,
     assert est.peak_envelope_bytes < int(1.75 * measured), (
         "the envelope must bound the measured peak without the "
         "multiplicative slop class this gate was burned by")
-    # And nothing multiplicative survives on the terms line; the slack
-    # term is named on the lane that pays it and absent from the one
-    # that does not.
+    # And nothing multiplicative survives on the terms line, and no lane
+    # is charged a slack term since A163.
     for terms in (est.peak_envelope_terms(), legacy.peak_envelope_terms()):
         assert "1.75" not in terms
         assert "WDDM floor" not in terms
-    assert "pool slack" not in est.peak_envelope_terms()
-    assert "pool slack" in legacy.peak_envelope_terms()
+        assert "pool slack" not in terms
 
 
 def test_wizard_and_check_price_one_envelope_for_one_machine(monkeypatch,
@@ -231,7 +237,7 @@ def test_wizard_and_check_price_one_envelope_for_one_machine(monkeypatch,
     (``vram_gib``); check prices with no declaration at all.  Any split
     between those two numbers is the #162 defect resurfacing.
     """
-    monkeypatch.setattr(pf.sys, "platform", "win32")
+    monkeypatch.setattr(pf, "host_platform", lambda: "win32")
     for vram, (nx, ny) in ((9.99951, (110, 88)), (12.0, (110, 88)),
                            (16.0, (170, 136)), (24.0, (240, 192))):
         config = _emit(tmp_path, nx, ny)
@@ -244,7 +250,7 @@ def test_wizard_and_check_price_one_envelope_for_one_machine(monkeypatch,
                                        profile=profile)
         assert wizard.peak_envelope_bytes == check.peak_envelope_bytes, (
             vram, nx, ny)
-        assert wizard.envelope_family == check.envelope_family
+        assert wizard.envelope_family == check.envelope_family == "windows"
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +270,9 @@ def test_walk_config_passes_check_on_the_walk_machine(monkeypatch,
     config = _emit(tmp_path, 110, 88)
     rc = _run_check(["check", str(config)])
     out = capsys.readouterr().out
+    # The check priced the Windows family the walk measured, so the
+    # platform fake reached the envelope and this is not a Linux pass.
+    assert "Windows/WDDM desktop measured" in out, out
     assert "WDDM floor" not in out
     assert "x 1.75" not in out and "1.75x" not in out
     assert rc == 0, out
@@ -279,7 +288,8 @@ def test_check_still_refuses_what_genuinely_does_not_fit(monkeypatch,
     _walk_machine(monkeypatch, free_bytes=2 * GIB)
     config = _emit(tmp_path, 110, 88)
     rc = _run_check(["check", str(config)])
-    capsys.readouterr()
+    out = capsys.readouterr().out
+    assert "Windows/WDDM desktop measured" in out, out
     assert rc != 0
 
 
@@ -297,7 +307,7 @@ def test_no_layout_refusal_ranks_profiles_by_priced_envelope(monkeypatch):
     legacy call-peak envelope; the refusal must rank by that price and
     drop any candidate it cannot price cheaper.
     """
-    monkeypatch.setattr(pf.sys, "platform", "win32")
+    monkeypatch.setattr(pf, "host_platform", lambda: "win32")
     # 3.0 GiB free, not the walk's 4.5 (moved 2026-08-30): task 206
     # (a490e0ff1) stopped charging WDDM pool slack on the rte-rrtmgp
     # default and stopped double-counting the non-pool term, and the

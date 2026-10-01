@@ -309,7 +309,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if not self.server.streams.acquire(blocking=False):
             self._json(503, {"ok": False, "message": "Too many live views are open.",
-                             "fix": "Close a few Weather Library tabs and reload."}, {"Retry-After": "5"})
+                             "fix": "Close a few ArWen tabs and reload."}, {"Retry-After": "5"})
             return
         try:
             since = parse_event_id(headers.get("last-event-id") or (query.get("since") or [""])[0])
@@ -438,7 +438,7 @@ def register_cli(subparsers: argparse._SubParsersAction) -> None:
 
     command = subparsers.add_parser(
         "gui",
-        help=f"open the Weather Library in your browser (a local page on port {DEFAULT_PORT}); "
+        help=f"open ArWen in your browser (a local page on port {DEFAULT_PORT}); "
              "closing it never stops a forecast")
     command.add_argument("--root", type=Path, default=None,
                          help="the folder that holds your forecasts (default: $GPUWM_RUNS_ROOT, else ~/arwen-runs)")
@@ -474,10 +474,10 @@ def gui_main(arguments: argparse.Namespace) -> int:
         return 2
     except OSError as error:
         print(f"gpuwm gui: could not listen on port {port} ({error}).\n"
-              "Pass --port with another number, or close the other Weather Library page server.", file=sys.stderr)
+              "Pass --port with another number, or close the other ArWen page server.", file=sys.stderr)
         return 2
     lines = [
-        "The Weather Library is ready. Open this link in your browser:",
+        "ArWen is ready. Open this link in your browser:",
         f"  {server.url}",
         f"Forecasts folder: {server.root}",
     ]

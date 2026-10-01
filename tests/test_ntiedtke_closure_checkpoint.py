@@ -98,7 +98,9 @@ _POST_NTIEDTKE_CHILD_DIGEST = \
 # unwind, not reasons to move either historical digest.
 _KEYS_APPENDED_SINCE: tuple[str, ...] = (
     ADAPTIVE_TIMESTEP_RUN_FIELDS
-    + ("eta_levels", "relax_timescale_s", "relax_w"))
+    + ("eta_levels", "relax_timescale_s", "relax_w",
+       # the urban canopy keys (lane/urban-infra)
+       "sf_urban_physics", "use_wudapt_lcz", "num_urban_hi"))
 
 
 def _write(monkeypatch, tmp_path):

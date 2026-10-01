@@ -213,7 +213,7 @@ def test_staged_chain_verifies_and_consumes_the_selected_member_tree(tmp_path, m
     monkeypatch.setattr(forcing_member, "verify_handoff", verify)
     class Prepared(Exception):
         pass
-    def prepared(receipt, root, prepare):
+    def prepared(receipt, root, prepare, **_notes):
         assert receipt["input_list"] == str(selected)
         return prepare()
     def stop(arguments):

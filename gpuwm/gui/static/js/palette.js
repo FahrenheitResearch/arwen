@@ -27,7 +27,7 @@ export function openPalette(words) {
   input.focus();
 
   const pages = [
-    { label: words.wiki.nav.wiki, href: "#/library" },
+    { label: words.wiki.nav.wiki, href: "#/wiki" },
     { label: words.wiki.nav.browse, href: "#/browse" },
     { label: words.wiki.nav.places, href: "#/places" },
     { label: words.wiki.nav.changes, href: "#/changes" },
@@ -109,7 +109,7 @@ export function openPalette(words) {
     if (q.length < 2) { found = []; paint(); return; }
     const mine = ++asked;
     try {
-      const data = await api.get(`/api/library/search?q=${encodeURIComponent(q)}&sort=score`);
+      const data = await api.get(`/api/wiki/search?q=${encodeURIComponent(q)}&sort=score`);
       if (mine !== asked) return;
       found = data.results || [];
     } catch (_) {

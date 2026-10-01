@@ -187,6 +187,36 @@ __device__ __forceinline__ void thompson_aa_cloud_sediment_impl(
     const int j = column / nx;
     const int i = column - j * nx;
 
+#ifndef THOMPSON_NO_EXACT_SHORTCUTS
+    // Diagnostic entry points retain the full working-column outputs.
+    bool empty = out_mass_velocity == nullptr && out_number_velocity == nullptr
+        && out_cloud_mass == nullptr && out_cloud_number == nullptr
+        && dt >= 0.0f && dt <= 100000.0f;
+    for (int k = 0; empty && k < nz; ++k) {
+        const size_t idx = IDX3(k, j, i);
+        empty = qc[idx] >= -1.0f && qc[idx] <= THOMPSON_AA_R1
+            && isfinite(cloud_number_entry[idx])
+            && isfinite(cloud_number_tendency[idx])
+            && reference_density[idx] >= 0.00001f
+            && reference_density[idx] <= 100.0f
+            && temperature[idx] >= 100.0f && temperature[idx] <= 400.0f
+            && pressure[idx] >= 1.0f && pressure[idx] <= 120000.0f
+            && qv[idx] >= -1.0f && qv[idx] <= 1.0f
+            && dz[idx] >= 1.0f && dz[idx] <= 100000.0f;
+    }
+    if (empty) {
+        // Only the bottom level receives the zero divergence at sediment_top=0.
+        const size_t bottom = IDX3(0, j, i);
+        cloud_number_tendency[bottom] = thompson_aa_add(
+            cloud_number_tendency[bottom], 0.0f);
+        for (int k = 0; k < nz; ++k) {
+            const size_t idx = IDX3(k, j, i);
+            qc[idx] = thompson_aa_add(qc[idx], thompson_aa_mul(0.0f, dt));
+        }
+        return;
+    }
+#endif  // THOMPSON_NO_EXACT_SHORTCUTS
+
     float density[KMAX];
     float cloud_mass[KMAX];
     float cloud_number[KMAX];
@@ -660,3 +690,146 @@ extern "C" __global__ void thompson_aa_final_phase_cleanup(
             999.0e3 / (double)rho);
     }
 }
+
+// Level-parallel cloud fallout for columns of at most 64 levels, eight
+// columns per block and one level per thread.  It keeps the column
+// kernel's separate-rounding helpers, number floor, masks and serial
+// height sum; the diagnostic entry points keep the column kernel.
+
+// Device only: a block barrier has no meaning in the serial host
+// build (tools/thompson_real_column_parity), which runs the column
+// kernels instead (gpuwm/core/thompson.py LEVEL_PARALLEL_FALLOUT).
+#ifdef __CUDACC_RTC__
+extern "C" __global__ void thompson_aa_cloud_sediment_levels_64_with_masks(
+    float* __restrict__ qc,
+    const float* __restrict__ cloud_number_entry,
+    float* __restrict__ cloud_number_tendency,
+    const float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    const float* __restrict__ reference_density,
+    const float* __restrict__ rain_active_columns,
+    const float* __restrict__ cloud_active_columns,
+    const float* __restrict__ vertical_velocity,
+    const float* __restrict__ dz,
+    float dt, int nz, int ny, int nx)
+{
+    const int c = threadIdx.x;
+    const int column = blockIdx.x * 8 + c;
+    const int j = column / nx;
+    const int i = column - j * nx;
+    const int k = threadIdx.y;
+    const bool live = column < ny * nx
+        && (cloud_active_columns == nullptr || cloud_active_columns[column] != 0.0f);
+    __shared__ float depth[64][8], mass[64][8], mass_flux[64][8], number_flux[64][8];
+    __shared__ int top[8];
+    float density, cloud_mass, cloud_number, mass_velocity, number_velocity;
+    float qc_tendency, qc_initial;
+    const float rho_not = 101325.0f / (287.05f * 298.0f);
+    const bool rain_refreshes_rhof = live && rain_active_columns != nullptr
+        && rain_active_columns[column] != 0.0f;
+
+    if (live && k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        const float qvk = fmaxf(1.0e-10f, qv[idx]);
+        density = 0.622f * pressure[idx]
+            / (287.04f * temperature[idx] * (qvk + 0.622f));
+        qc_initial = qc[idx];
+        qc_tendency = 0.0f;
+        const float held = reference_density[idx];
+        cloud_mass = qc[idx] > THOMPSON_AA_R1
+            ? qc[idx] * held : THOMPSON_AA_R1;
+        cloud_number = thompson_aa_clamp_nc(
+            thompson_aa_mul(
+                thompson_aa_add(
+                    cloud_number_entry[idx],
+                    thompson_aa_mul(cloud_number_tendency[idx], dt)),
+                held));
+        mass_velocity = 0.0f;
+        number_velocity = 0.0f;
+        depth[k][c] = dz[idx];
+        mass[k][c] = cloud_mass;
+    }
+    __syncthreads();
+    if (k == 0) {
+        int sediment_top = 0;
+        float height_agl = 0.0f;
+        if (live) for (int level = 0; level < nz - 1; ++level) {
+            if (mass[level][c] > THOMPSON_AA_R2) sediment_top = level;
+            height_agl += depth[level][c];
+            if (height_agl > THOMPSON_AA_SED_HGT_AGL) break;
+        }
+        top[c] = sediment_top;
+    }
+    __syncthreads();
+    const int sediment_top = top[c];
+    if (live && k <= sediment_top) {
+        const size_t idx = IDX3(k, j, i);
+        if (cloud_mass > THOMPSON_AA_R1
+                && vertical_velocity[idx] < THOMPSON_AA_SED_W_LIMIT) {
+            const int nu_c = thompson_aa_nu_c(cloud_number);
+            const float lambda_arg = thompson_aa_div(
+                thompson_aa_mul(
+                    thompson_aa_mul(
+                        thompson_aa_mul(cloud_number, THOMPSON_AA_AM_R),
+                        THOMPSON_AA_CCG2[nu_c]),
+                    THOMPSON_AA_OCG1[nu_c]),
+                cloud_mass);
+            const double lambda =
+                (double)thompson_aa_powf_cr(lambda_arg, THOMPSON_AA_OBMR);
+            const double inverse_lambda = 1.0 / lambda;
+
+            const float velocity_density = rain_refreshes_rhof
+                ? density : reference_density[idx];
+            const float rhof = sqrtf(rho_not / velocity_density);
+            const float mass_prefix = thompson_aa_mul(
+                thompson_aa_mul(
+                    thompson_aa_mul(rhof, THOMPSON_AA_AV_C),
+                    THOMPSON_AA_CCG5[nu_c]),
+                THOMPSON_AA_OCG2[nu_c]);
+            const float number_prefix = thompson_aa_mul(
+                thompson_aa_mul(
+                    thompson_aa_mul(rhof, THOMPSON_AA_AV_C),
+                    THOMPSON_AA_CCG4[nu_c]),
+                THOMPSON_AA_OCG1[nu_c]);
+            mass_velocity = (float)((double)mass_prefix
+                * inverse_lambda * inverse_lambda);
+            number_velocity = (float)((double)number_prefix
+                * inverse_lambda * inverse_lambda);
+        }
+    }
+    if (live && k < nz) {
+        mass_flux[k][c] = mass_velocity * cloud_mass;
+        number_flux[k][c] = number_velocity * cloud_number;
+    }
+    __syncthreads();
+    if (live && k <= sediment_top) {
+        const size_t idx = IDX3(k, j, i);
+        const float odzq = 1.0f / dz[idx];
+        const float orho = 1.0f / density;
+        const float mass_divergence = mass_flux[k + 1][c] - mass_flux[k][c];
+        const float number_divergence = number_flux[k + 1][c] - number_flux[k][c];
+        qc_tendency = thompson_aa_add(
+            qc_tendency,
+            thompson_aa_mul(thompson_aa_mul(mass_divergence, odzq), orho));
+        cloud_number_tendency[idx] = thompson_aa_add(
+            cloud_number_tendency[idx],
+            thompson_aa_mul(thompson_aa_mul(number_divergence, odzq), orho));
+        cloud_mass = fmaxf(
+            THOMPSON_AA_R1,
+            thompson_aa_add(
+                cloud_mass,
+                thompson_aa_mul(thompson_aa_mul(mass_divergence, odzq), dt)));
+        cloud_number = fmaxf(
+            THOMPSON_AA_NC_SED_FLOOR,
+            thompson_aa_add(
+                cloud_number,
+                thompson_aa_mul(thompson_aa_mul(number_divergence, odzq),
+                                dt)));
+    }
+    if (live && k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        qc[idx] = thompson_aa_add(qc_initial, thompson_aa_mul(qc_tendency, dt));
+    }
+}
+#endif  // __CUDACC_RTC__

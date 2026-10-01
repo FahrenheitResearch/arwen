@@ -20,6 +20,10 @@ from gpuwm.ingest.prepared_cache import (
     prepared_cache_identity,
     write_prepared_cache,
 )
+from gpuwm.ingest.preprocess_backend import (
+    preprocess_identity,
+    preprocess_reports_identity,
+)
 from gpuwm.native_wrf_contract import (
     canonical_noah_surface,
     native_static_export_fields,
@@ -77,6 +81,25 @@ def _digest(value: str, name: str) -> str:
     return normalized
 
 
+def _manifest_digest(value: str, name: str) -> str:
+    """A manifest digest, or an as-posted head's placeholder for one.
+
+    An as-posted tree's head prepares its children before the input
+    manifest exists, so their identities bind the input plan's
+    placeholder where the manifest digest goes
+    (:func:`gpuwm.ingest.boundary_stream.as_posted_placeholder`); the seal
+    writes the digest and refuses any placeholder left in a sealed
+    identity (``check_as_posted_identity``).  Anything else is held to a
+    SHA-256 digest as before.
+    """
+
+    from gpuwm.ingest.boundary_stream import is_as_posted_placeholder
+
+    if is_as_posted_placeholder(value):
+        return str(value)
+    return _digest(value, name)
+
+
 def _atomic_staging_sibling(
         output: Path, *, nonce: str | None = None) -> Path:
     """Return a compact, target-independent atomic directory sibling.
@@ -116,6 +139,17 @@ def deepest_published_hierarchy_path(
         candidates.extend(_domain_files(
             output / "domains" / f"d{int(grid_id):02d}"))
     return _longest(candidates)
+
+
+def _receipt_json(value):
+    """``value`` in plain JSON types: a preparation's receipt may hold
+    read-only mappings, which ``json`` does not serialize."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _receipt_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_receipt_json(item) for item in value]
+    return value
 
 
 def _domain_files(domain: Path) -> tuple[Path, ...]:
@@ -327,6 +361,106 @@ def _validate_domain_boundary_mode(domain, boundaries) -> None:
                 "from its declared parent")
 
 
+@dataclass(frozen=True)
+class DomainArtifactBinding:
+    """What a domain's prepared cache is bound to, before any array exists.
+
+    The identity and the user metadata :func:`write_native_domain_artifacts`
+    writes into that domain's ``prepared-cache/header.json``, computed by
+    one function (:func:`domain_artifact_binding`) so a streamed root cache
+    in a chained tree's head and the one-shot root cache the seal writes
+    carry the same header for the same inputs.
+    """
+
+    identity: Mapping[str, object]
+    metadata: Mapping[str, object]
+    forcing_identity: Mapping[str, object]
+
+
+def write_domain_static_files(
+        directory: Path, *, domain, grid,
+        static_fields: Mapping[str, object]) -> tuple[dict, dict]:
+    """Write ``native-static.npz`` and ``geometry-receipt.json`` for a domain.
+
+    Returns ``(static_receipt, geometry_receipt)``; the same two writes every
+    domain artifact set starts with.
+    """
+
+    directory = Path(directory)
+    static_path = directory / "native-static.npz"
+    geometry_path = directory / "geometry-receipt.json"
+    export_static = native_static_export_fields(static_fields, grid)
+    static_receipt = write_native_static_cache(static_path, export_static)
+    geometry_receipt = write_native_geometry_receipt(
+        geometry_path, grid, domain.run, static_path)
+    return static_receipt, geometry_receipt
+
+
+def domain_artifact_binding(
+        *, domain, static_cache_sha256: str,
+        bridge_manifest_sha256: str, source_manifest_sha256: str,
+        namelist_sha256: str, forcing_hours: Sequence[int] | None = None,
+        forcing_offsets_seconds: Sequence[int] | None = None,
+        source_identity: Mapping[str, object], valid_time: datetime,
+        forcing_origin_time: datetime | None = None,
+        metadata: Mapping[str, object] | None = None,
+) -> DomainArtifactBinding:
+    """The prepared-cache identity and metadata of one domain artifact set."""
+
+    if not isinstance(valid_time, datetime):
+        raise TypeError("valid_time must be a datetime")
+    offsets = _forcing_offsets(
+        forcing_hours=forcing_hours,
+        forcing_offsets_seconds=forcing_offsets_seconds)
+    legacy_hours = (
+        _forcing_hours(forcing_hours)
+        if forcing_hours is not None else None)
+    forcing_identity = (
+        {"forcing_hours": legacy_hours}
+        if legacy_hours is not None else
+        {"forcing_offsets_seconds": offsets})
+    if forcing_origin_time is None:
+        forcing_origin_time = valid_time
+    if not isinstance(forcing_origin_time, datetime):
+        raise TypeError("forcing_origin_time must be a datetime")
+    digests = {
+        "bridge_manifest_sha256": _manifest_digest(
+            bridge_manifest_sha256, "bridge_manifest_sha256"),
+        "source_manifest_sha256": _manifest_digest(
+            source_manifest_sha256, "source_manifest_sha256"),
+        "namelist_sha256": _digest(namelist_sha256, "namelist_sha256"),
+    }
+    identity = prepared_cache_identity(
+        bridge_manifest_sha256=digests["bridge_manifest_sha256"],
+        source_manifest_sha256=digests["source_manifest_sha256"],
+        static_cache_sha256=static_cache_sha256,
+        namelist_sha256=digests["namelist_sha256"],
+        domain_config=domain, **forcing_identity,
+        source_identity=dict(source_identity),
+    )
+    user_metadata = dict(metadata or {})
+    reserved = {
+        "initial_valid_time", "last_valid_time", "forcing_hours",
+        "forcing_offsets_seconds"}
+    conflict = reserved & set(user_metadata)
+    if conflict:
+        raise ValueError(
+            f"domain artifact metadata overrides reserved keys {sorted(conflict)}")
+    user_metadata.update({
+        "initial_valid_time": valid_time.isoformat(),
+        "last_valid_time": (
+            forcing_origin_time
+            + timedelta(seconds=offsets[-1])).isoformat(),
+        **{
+            key: list(values)
+            for key, values in forcing_identity.items()
+        },
+    })
+    return DomainArtifactBinding(
+        identity=identity, metadata=user_metadata,
+        forcing_identity=forcing_identity)
+
+
 def write_native_domain_artifacts(
         output: Path, *, domain, grid, initial_result, met, soil,
         static_fields: Mapping[str, object], boundaries,
@@ -336,6 +470,8 @@ def write_native_domain_artifacts(
         source_identity: Mapping[str, object], valid_time: datetime,
         forcing_origin_time: datetime | None = None,
         metadata: Mapping[str, object] | None = None,
+        input_preparation_seconds: float | None = None,
+        preprocess_receipt: Mapping[str, object] | None = None,
 ) -> NativeDomainArtifactBuild:
     """Build one root/child artifact set in an atomic directory.
 
@@ -344,6 +480,14 @@ def write_native_domain_artifacts(
     it from its parent.  Every set contains a prepared cache, a regenerated
     static cache, and the geometry/static receipt consumed by the M1 hierarchy
     exporter.
+
+    ``input_preparation_seconds``, the wall time the domain's inputs took,
+    is recorded in ``receipt.json`` beside the cache, never in the cache's
+    hashed metadata: a timing there made two preparations of the same
+    inputs differ in content digest (A138).  ``preprocess_receipt``, the
+    domain's whole preprocessing receipt with what its preparation
+    measured, is recorded there too, for a child whose cache binds only
+    its identity.
     """
 
     output = Path(output)
@@ -367,65 +511,34 @@ def write_native_domain_artifacts(
         raise ValueError(
             "root state carries different external LBCs than the artifact "
             "writer received")
-    offsets = _forcing_offsets(
-        forcing_hours=forcing_hours,
-        forcing_offsets_seconds=forcing_offsets_seconds)
-    legacy_hours = (
-        _forcing_hours(forcing_hours)
-        if forcing_hours is not None else None)
-    forcing_identity = (
-        {"forcing_hours": legacy_hours}
-        if legacy_hours is not None else
-        {"forcing_offsets_seconds": offsets})
-    if forcing_origin_time is None:
-        forcing_origin_time = valid_time
-    if not isinstance(forcing_origin_time, datetime):
-        raise TypeError("forcing_origin_time must be a datetime")
-    digests = {
-        "bridge_manifest_sha256": _digest(
-            bridge_manifest_sha256, "bridge_manifest_sha256"),
-        "source_manifest_sha256": _digest(
-            source_manifest_sha256, "source_manifest_sha256"),
-        "namelist_sha256": _digest(namelist_sha256, "namelist_sha256"),
-    }
+    # Refused before any file is written, exactly as before the binding
+    # was factored out: a bad digest or forcing axis creates nothing.
+    _forcing_offsets(forcing_hours=forcing_hours,
+                     forcing_offsets_seconds=forcing_offsets_seconds)
+    for value, name in ((bridge_manifest_sha256, "bridge_manifest_sha256"),
+                        (source_manifest_sha256, "source_manifest_sha256")):
+        _manifest_digest(value, name)
+    _digest(namelist_sha256, "namelist_sha256")
 
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = _atomic_staging_sibling(output)
     staging.mkdir()
     try:
-        static_path = staging / "native-static.npz"
         geometry_path = staging / "geometry-receipt.json"
         prepared_path = staging / "prepared-cache"
-        export_static = native_static_export_fields(static_fields, grid)
-        static_receipt = write_native_static_cache(static_path, export_static)
-        geometry_receipt = write_native_geometry_receipt(
-            geometry_path, grid, domain.run, static_path)
-        identity = prepared_cache_identity(
-            bridge_manifest_sha256=digests["bridge_manifest_sha256"],
-            source_manifest_sha256=digests["source_manifest_sha256"],
-            static_cache_sha256=static_receipt["sha256"],
-            namelist_sha256=digests["namelist_sha256"],
-            domain_config=domain, **forcing_identity,
-            source_identity=dict(source_identity),
-        )
-        user_metadata = dict(metadata or {})
-        reserved = {
-            "initial_valid_time", "last_valid_time", "forcing_hours",
-            "forcing_offsets_seconds"}
-        conflict = reserved & set(user_metadata)
-        if conflict:
-            raise ValueError(
-                f"domain artifact metadata overrides reserved keys {sorted(conflict)}")
-        user_metadata.update({
-            "initial_valid_time": valid_time.isoformat(),
-            "last_valid_time": (
-                forcing_origin_time
-                + timedelta(seconds=offsets[-1])).isoformat(),
-            **{
-                key: list(values)
-                for key, values in forcing_identity.items()
-            },
-        })
+        static_receipt, geometry_receipt = write_domain_static_files(
+            staging, domain=domain, grid=grid, static_fields=static_fields)
+        binding = domain_artifact_binding(
+            domain=domain, static_cache_sha256=static_receipt["sha256"],
+            bridge_manifest_sha256=bridge_manifest_sha256,
+            source_manifest_sha256=source_manifest_sha256,
+            namelist_sha256=namelist_sha256, forcing_hours=forcing_hours,
+            forcing_offsets_seconds=forcing_offsets_seconds,
+            source_identity=source_identity, valid_time=valid_time,
+            forcing_origin_time=forcing_origin_time, metadata=metadata)
+        identity = dict(binding.identity)
+        user_metadata = dict(binding.metadata)
+        forcing_identity = dict(binding.forcing_identity)
         prepared_receipt = write_prepared_cache(
             prepared_path, identity=identity,
             initial_result=initial_result, met=met,
@@ -466,6 +579,11 @@ def write_native_domain_artifacts(
                 },
             },
             "verification": verified,
+            **({} if input_preparation_seconds is None else {
+                "input_preparation_seconds": float(
+                    input_preparation_seconds)}),
+            **({} if preprocess_receipt is None else {
+                "preprocess_receipt": _receipt_json(preprocess_receipt)}),
         }
         (staging / "receipt.json").write_text(
             json.dumps(receipt, indent=2, sort_keys=True, allow_nan=False)
@@ -484,6 +602,96 @@ def write_native_domain_artifacts(
         ),
         receipt=receipt,
     )
+
+
+def _require_complete_children(exp, child_results) -> tuple:
+    domains = tuple(exp.domains)
+    children = tuple(child_results)
+    if len(children) != len(domains) - 1:
+        raise ValueError(
+            "child result count does not match the experiment hierarchy")
+    for domain, result in zip(domains[1:], children):
+        if getattr(result, "domain", None) != domain:
+            raise ValueError(
+                f"child result identity does not match d{domain.grid_id:02d}")
+        if result.real is None or result.static_fields is None \
+                or result.horizontal is None or result.soil is None:
+            raise ValueError(
+                f"d{domain.grid_id:02d} is not a complete real-data child")
+        prepared_domain = getattr(result.real.state, "lateral_boundaries", None)
+        if prepared_domain is not None:
+            raise ValueError(
+                f"d{domain.grid_id:02d} unexpectedly carries external LBCs")
+    return children
+
+
+def write_child_domain_artifacts(
+        domain_root: Path, *, exp, child_results: Sequence[object],
+        bridge_manifest_sha256: str, source_manifest_sha256: str,
+        namelist_sha256: str, forcing_hours: Sequence[int] | None = None,
+        forcing_offsets_seconds: Sequence[int] | None = None,
+        source_identity: Mapping[str, object], valid_time: datetime,
+) -> list[NativeDomainArtifactBuild]:
+    """Write every child's artifact set under ``domain_root/dNN``.
+
+    The one writer of a child's artifacts, for the one-shot tree and for a
+    chained tree's head (``hierarchy-head/domains/dNN``): a child needs
+    only the start time, so its set is complete before any root boundary
+    interval exists.
+    """
+
+    children = _require_complete_children(exp, child_results)
+    builds: list[NativeDomainArtifactBuild] = []
+    for domain, result in zip(tuple(exp.domains)[1:], children):
+        # What the child's preparation ran, without what it measured
+        # (A138): the root's device fit rides in its selection and a
+        # native HRRR child's soil mapping carries its backend's
+        # receipt.  The child's receipt.json keeps the whole receipt,
+        # since a child resolves its own backend and worker count.
+        metadata = {
+            "preprocess_receipt": preprocess_reports_identity(
+                preprocess_identity(
+                    dict(result.preprocess_receipt or {}))),
+        }
+        builds.append(write_native_domain_artifacts(
+            Path(domain_root) / f"d{int(domain.grid_id):02d}",
+            domain=domain, grid=result.grid,
+            initial_result=result.real, met=result.horizontal,
+            soil=result.soil, static_fields=result.static_fields,
+            boundaries=None,
+            bridge_manifest_sha256=bridge_manifest_sha256,
+            source_manifest_sha256=source_manifest_sha256,
+            namelist_sha256=namelist_sha256,
+            forcing_hours=forcing_hours,
+            forcing_offsets_seconds=forcing_offsets_seconds,
+            source_identity={
+                **dict(source_identity), "grid_id": int(domain.grid_id)},
+            valid_time=_domain_valid_time(exp, domain, valid_time),
+            forcing_origin_time=valid_time, metadata=metadata,
+            input_preparation_seconds=result.input_preparation_seconds,
+            preprocess_receipt=result.preprocess_receipt))
+    return builds
+
+
+def root_domain_artifact_binding(
+        *, exp, static_cache_sha256: str, bridge_manifest_sha256: str,
+        source_manifest_sha256: str, namelist_sha256: str,
+        forcing_hours: Sequence[int] | None = None,
+        forcing_offsets_seconds: Sequence[int] | None = None,
+        source_identity: Mapping[str, object], valid_time: datetime,
+        root_metadata: Mapping[str, object] | None = None,
+) -> DomainArtifactBinding:
+    """d01's binding exactly as :func:`write_native_hierarchy_artifacts` makes it."""
+
+    return domain_artifact_binding(
+        domain=tuple(exp.domains)[0], static_cache_sha256=static_cache_sha256,
+        bridge_manifest_sha256=bridge_manifest_sha256,
+        source_manifest_sha256=source_manifest_sha256,
+        namelist_sha256=namelist_sha256, forcing_hours=forcing_hours,
+        forcing_offsets_seconds=forcing_offsets_seconds,
+        source_identity={**dict(source_identity), "grid_id": 1},
+        valid_time=valid_time, forcing_origin_time=valid_time,
+        metadata=root_metadata)
 
 
 def write_native_hierarchy_artifacts(
@@ -509,24 +717,9 @@ def write_native_hierarchy_artifacts(
         raise FileExistsError(
             f"refusing to overwrite native hierarchy artifacts {output}")
     domains = tuple(exp.domains)
-    children = tuple(child_results)
     if not domains or int(domains[0].parent_id) != 0:
         raise ValueError("experiment must begin with exactly one root domain")
-    if len(children) != len(domains) - 1:
-        raise ValueError(
-            "child result count does not match the experiment hierarchy")
-    for domain, result in zip(domains[1:], children):
-        if getattr(result, "domain", None) != domain:
-            raise ValueError(
-                f"child result identity does not match d{domain.grid_id:02d}")
-        if result.real is None or result.static_fields is None \
-                or result.horizontal is None or result.soil is None:
-            raise ValueError(
-                f"d{domain.grid_id:02d} is not a complete real-data child")
-        prepared_domain = getattr(result.real.state, "lateral_boundaries", None)
-        if prepared_domain is not None:
-            raise ValueError(
-                f"d{domain.grid_id:02d} unexpectedly carries external LBCs")
+    children = _require_complete_children(exp, child_results)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = _atomic_staging_sibling(output)
@@ -546,26 +739,13 @@ def write_native_hierarchy_artifacts(
             source_identity={**dict(source_identity), "grid_id": 1},
             valid_time=valid_time, forcing_origin_time=valid_time,
             metadata=root_metadata))
-        for domain, result in zip(domains[1:], children):
-            metadata = {
-                "input_preparation_seconds": result.input_preparation_seconds,
-                "preprocess_receipt": dict(result.preprocess_receipt or {}),
-            }
-            builds.append(write_native_domain_artifacts(
-                domain_root / f"d{int(domain.grid_id):02d}",
-                domain=domain, grid=result.grid,
-                initial_result=result.real, met=result.horizontal,
-                soil=result.soil, static_fields=result.static_fields,
-                boundaries=None,
-                bridge_manifest_sha256=bridge_manifest_sha256,
-                source_manifest_sha256=source_manifest_sha256,
-                namelist_sha256=namelist_sha256,
-                forcing_hours=forcing_hours,
-                forcing_offsets_seconds=forcing_offsets_seconds,
-                source_identity={
-                    **dict(source_identity), "grid_id": int(domain.grid_id)},
-                valid_time=_domain_valid_time(exp, domain, valid_time),
-                forcing_origin_time=valid_time, metadata=metadata))
+        builds.extend(write_child_domain_artifacts(
+            domain_root, exp=exp, child_results=children,
+            bridge_manifest_sha256=bridge_manifest_sha256,
+            source_manifest_sha256=source_manifest_sha256,
+            namelist_sha256=namelist_sha256, forcing_hours=forcing_hours,
+            forcing_offsets_seconds=forcing_offsets_seconds,
+            source_identity=source_identity, valid_time=valid_time))
         manifest = staging / "domain-artifacts.json"
         write_domain_artifacts_manifest(
             manifest, tuple(build.artifacts for build in builds))
@@ -611,13 +791,18 @@ def write_native_hierarchy_artifacts(
 
 
 __all__ = [
+    "DomainArtifactBinding",
     "NativeDomainArtifactBuild",
     "NativeHierarchyArtifactBuild",
     "HIERARCHY_ARTIFACTS_DIRNAME",
     "WRF_EXPORT_DIRNAME",
     "deepest_published_hierarchy_path",
+    "domain_artifact_binding",
     "hierarchy_bundle_write_paths",
     "published_path_refusal",
+    "root_domain_artifact_binding",
+    "write_child_domain_artifacts",
+    "write_domain_static_files",
     "write_native_domain_artifacts",
     "write_native_hierarchy_artifacts",
 ]

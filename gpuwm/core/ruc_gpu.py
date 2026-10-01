@@ -227,7 +227,38 @@ def _default_device_tables(
     mminlu: str,
 ) -> tuple[_RucDeviceTables, int, int, int]:
     with cp.cuda.Device(device_id):
-        return _upload_tables(load_ruc_parameters(), mminlu)
+        return _upload_tables(_default_parameter_bundle(), mminlu)
+
+
+@lru_cache(maxsize=1)
+def _default_parameter_bundle():
+    """The canonical bundle used to build the cached default device tables."""
+    return load_ruc_parameters()
+
+
+_BUNDLE_DEVICE_TABLES = {}
+
+
+def _bundle_device_tables(bundle, mminlu):
+    """Cache uploads by device and the values the upload consumes.
+
+    A value key also detects replacement rows in a caller's mapping.  Object
+    identity alone would retain stale tables after such a replacement.
+    """
+    vegetation = bundle.vegetation_for(mminlu)
+    key = (int(cp.cuda.runtime.getDevice()), mminlu, vegetation.name,
+           vegetation.rows, float(vegetation.scalars["RSMAX_DATA"]),
+           bundle.soil.rows)
+    if key not in _BUNDLE_DEVICE_TABLES:
+        _BUNDLE_DEVICE_TABLES[key] = _upload_tables(bundle, mminlu)
+    return _BUNDLE_DEVICE_TABLES[key]
+
+
+@lru_cache(maxsize=None)
+def _device_soil_half_levels(device_id, nzs):
+    with cp.cuda.Device(device_id):
+        zs, _ = ruc_soil_geometry(nzs)
+        return cp.asarray(ruc_zshalf(zs))
 
 
 @lru_cache(maxsize=None)
@@ -525,7 +556,7 @@ def ruc_surface_parameters_cuda(
             device_id, mminlu
         )
     else:
-        tables, nvegetation, nsoil, default_water = _upload_tables(
+        tables, nvegetation, nsoil, default_water = _bundle_device_tables(
             parameters, mminlu
         )
     # The bound is tested on the card and the offending CATEGORY is read
@@ -702,7 +733,7 @@ def ruc_transpiration_cuda(
         device_id = int(cp.cuda.runtime.getDevice())
         tables, nvegetation, _, _ = _default_device_tables(device_id, mminlu)
     else:
-        tables, nvegetation, _, _ = _upload_tables(parameters, mminlu)
+        tables, nvegetation, _, _ = _bundle_device_tables(parameters, mminlu)
     def _bad_land():
         low = int(cp.min(land_type))
         bad = low if low < 1 else int(cp.max(land_type))
@@ -713,8 +744,7 @@ def ruc_transpiration_cuda(
                         "RUC ref must exceed wilt")
     batch.flush()
 
-    zs, _ = ruc_soil_geometry(nzs)
-    zshalf = cp.asarray(ruc_zshalf(zs))
+    zshalf = _device_soil_half_levels(int(cp.cuda.runtime.getDevice()), nzs)
     weights = cp.empty_like(liquid)
     totals = cp.empty(horizontal_shape, dtype=DTYPE)
     ncolumn = int(np.prod(horizontal_shape))
@@ -1438,7 +1468,7 @@ def _snow_preparation_tables(
     """
 
     with cp.cuda.Device(device_id):
-        vegetation = load_ruc_parameters().vegetation_for(mminlu)
+        vegetation = _default_parameter_bundle().vegetation_for(mminlu)
         roughness = cp.asarray(
             [row.z0 for row in vegetation.rows], dtype=DTYPE
         )
@@ -2480,7 +2510,7 @@ def _host_facing_snow_prep():
              mminlu="MODIFIED_IGBP_MODIS_NOAH", bundle=None):
         if bundle is not None:
             supplied = bundle.vegetation_for(mminlu)
-            default = load_ruc_parameters().vegetation_for(mminlu)
+            default = _default_parameter_bundle().vegetation_for(mminlu)
             same = (
                 [row.z0 for row in supplied.rows]
                 == [row.z0 for row in default.rows]
@@ -2598,6 +2628,32 @@ def _dtype_normalising(function):
     return call
 
 
+_RUC_CONSTANT_CACHE = {}
+
+
+def _constant_array(values, *, dtype):
+    """Cache lookup uploads by exact contents, retaining at most 32 arrays."""
+    dtype = np.dtype(dtype)
+    if isinstance(values, cp.ndarray):
+        return cp.asarray(values, dtype=dtype)
+    host = np.ascontiguousarray(np.asarray(values, dtype=dtype))
+    key = (int(cp.cuda.runtime.getDevice()), host.dtype.str,
+           host.shape, host.tobytes())
+    stream = cp.cuda.get_current_stream()
+    cached = _RUC_CONSTANT_CACHE.get(key)
+    if cached is not None:
+        if stream.ptr != cached[2]:
+            stream.wait_event(cached[1])
+        return cached[0]
+    array = cp.asarray(host)
+    ready = cp.cuda.Event(disable_timing=True)
+    ready.record()
+    if len(_RUC_CONSTANT_CACHE) >= 32:
+        _RUC_CONSTANT_CACHE.pop(next(iter(_RUC_CONSTANT_CACHE)))
+    _RUC_CONSTANT_CACHE[key] = (array, ready, stream.ptr)
+    return array
+
+
 #: CuPy behind the numpy surface :mod:`gpuwm.core.ruc`'s drivers use.
 #:
 #: Passed as ``arrays=`` to :func:`gpuwm.core.ruc.ruc_land_surface_step` it
@@ -2646,6 +2702,7 @@ RUC_DEVICE_ARRAYS = SimpleNamespace(
     zeros=_dtype_normalising(cp.zeros),
     ruc_tanhf_glibc=ruc_tanhf_glibc,
     ruc_validate_batch=_ruc_validate_batch,
+    ruc_constant_array=_constant_array,
 )
 
 
@@ -2681,7 +2738,7 @@ def _resident_snow_prep():
              mminlu="MODIFIED_IGBP_MODIS_NOAH", bundle=None):
         if bundle is not None:
             supplied = bundle.vegetation_for(mminlu)
-            default = load_ruc_parameters().vegetation_for(mminlu)
+            default = _default_parameter_bundle().vegetation_for(mminlu)
             same = (
                 [row.z0 for row in supplied.rows]
                 == [row.z0 for row in default.rows]
@@ -2723,3 +2780,333 @@ __all__ += [
     "RUC_SFCTMP_DEVICE_STAGES_RESIDENT",
     "ruc_tanhf_glibc",
 ]
+
+
+# ---------------------------------------------------------------------------
+# The full-width sfctmp contract the fused RUC path is built against.
+# ---------------------------------------------------------------------------
+
+def ruc_sfctmp_full_width_reference(
+    values: Mapping[str, object],
+    *,
+    run,
+    delt: float,
+    conflx,
+    ivgtyp,
+    iland,
+    nroot,
+    ilnb,
+    isice: int,
+    c1sn: float,
+    c2sn: float,
+    isncovr_opt: int,
+    mminlu: str,
+    parameters: RucParameterBundle | None,
+) -> dict[str, cp.ndarray]:
+    """``sfctmp`` on the columns ``run`` selects, returned at FULL width.
+
+    ``values`` holds full-width device arrays under the names
+    :func:`gpuwm.core.ruc.ruc_land_surface_step` hands its ``sfctmp``
+    dispatch: ``(nzs, n)`` soil profiles and ``(n,)`` columns.  ``conflx``,
+    ``ivgtyp``, ``iland``, ``nroot`` and ``ilnb`` are ``(n,)`` device arrays
+    and ``run`` is an ``(n,)`` boolean device mask.
+
+    This is the reference: it gathers the ``run`` columns, calls the resident
+    device ``sfctmp`` exactly as the driver does, and scatters every returned
+    field into a zero-filled full-width array.  The column is column-local,
+    so a gather changes no bit; a fused implementation of the same contract
+    is graded against this one on the ``run`` columns only.
+    """
+
+    from gpuwm.core.ruc import (RucSurfaceTemperatureStep,
+                                ruc_surface_temperature_step)
+
+    index = cp.nonzero(run)[0]
+    ncolumn = int(run.shape[0])
+    take = {
+        name: (array[:, index] if array.ndim == 2 else array[index])
+        for name, array in values.items()
+    }
+    step = ruc_surface_temperature_step(
+        take, delt=float(delt), conflx=conflx[index],
+        ivgtyp=ivgtyp[index], iland=iland[index], nroot=nroot[index],
+        ilnb=ilnb[index], isice=int(isice), c1sn=c1sn, c2sn=c2sn,
+        myj=False, isncovr_opt=int(isncovr_opt), mminlu=mminlu,
+        parameters=parameters, leaves=RUC_SFCTMP_DEVICE_LEAVES_RESIDENT,
+        stages=RUC_SFCTMP_DEVICE_STAGES_RESIDENT, arrays=RUC_DEVICE_ARRAYS)
+    out: dict[str, cp.ndarray] = {}
+    for name in RucSurfaceTemperatureStep.__dataclass_fields__:
+        part = cp.asarray(getattr(step, name))
+        full = cp.zeros(part.shape[:-1] + (ncolumn,), dtype=part.dtype)
+        full[..., index] = part
+        out[name] = full
+    return out
+
+
+__all__ += ["ruc_sfctmp_full_width_reference"]
+
+# The fused sfctmp layout is generated with its kernel source by
+# tools/ruc_fused/gen_sfctmp.py.
+from gpuwm.core.ruc_sfctmp_layout import (  # noqa: E402
+    _SFCTMP_ARRAYS, _SFCTMP_CHECKS, _SFCTMP_CPU_CHECKS, _SFCTMP_OUTPUTS,
+    _SFCTMP_SLOTS)
+
+_SFCTMP_FLAG_WORDS = (len(_SFCTMP_CHECKS) + 63) // 64
+RUC_SFCTMP_FLAGS_SIZE = _SFCTMP_FLAG_WORDS + len(_SFCTMP_CHECKS)
+_SFCTMP_SCRATCH = {}
+_SFCTMP_FLAG_CONTEXT = {}
+_SFCTMP_TABLE_CACHE = {}
+_SFCTMP_UPLOADS = {}
+
+
+def _sfctmp_tables(parameters, mminlu, nzs):
+    """Device tables for the fused sfctmp, cached by the values they hold.
+
+    The key carries the rows the uploads read, so a caller's bundle with a
+    replaced row gets its own tables; object identity alone could hand a
+    new bundle at a recycled address the old one's tables.
+    """
+    device = int(cp.cuda.runtime.getDevice())
+    default = _default_parameter_bundle()
+    bundle = default if parameters is None else parameters
+    supplied = bundle.vegetation_for(mminlu)
+    key = (device, mminlu, nzs, parameters is None, supplied.name,
+           supplied.rows, float(supplied.scalars['RSMAX_DATA']),
+           int(supplied.scalars['URBAN']), bundle.soil.rows)
+    cached = _SFCTMP_TABLE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    original = default.vegetation_for(mminlu)
+    if ([row.z0 for row in supplied.rows] != [row.z0 for row in original.rows]
+            or [row.lemi for row in supplied.rows] != [row.lemi for row in original.rows]
+            or supplied.scalars['URBAN'] != original.scalars['URBAN']):
+        raise ValueError(
+            'the RUC CUDA snow-preparation stage indexes device '
+            'tables built from the default parameter bundle; the '
+            'supplied bundle differs in z0tbl, lemitbl or URBAN')
+    table, ncategory, _, _ = (_default_device_tables(device, mminlu)
+                             if parameters is None
+                             else _bundle_device_tables(bundle, mminlu))
+    bound = dict(rstbl=table.rstbl, rgltbl=table.rgltbl,
+                 z0tbl=table.z0tbl, lemitbl=table.lemitbl,
+                 tbq=_device_tbq(device),
+                 zshalf=_device_soil_half_levels(device, nzs))
+    cached = (bundle, bound, ncategory, int(supplied.scalars['URBAN']),
+              np.float32(table.rsmax_data))
+    _SFCTMP_TABLE_CACHE[key] = cached
+    return cached
+
+
+def _sfctmp_scratch(n, nzs):
+    stream = cp.cuda.get_current_stream()
+    key = (int(cp.cuda.runtime.getDevice()), stream.ptr, n, nzs)
+    result = _SFCTMP_SCRATCH.get(key)
+    if result is None:
+        offsets = []
+        units = 0
+        for size in _SFCTMP_SLOTS:
+            offsets.append(units * n)
+            units += nzs if size == 9 else 1
+        scratch = cp.empty(units * n, dtype=cp.float32)
+        pointers = cp.empty(len(_SFCTMP_ARRAYS), dtype=cp.uint64)
+        host_memory = cp.cuda.alloc_pinned_memory(pointers.nbytes)
+        host_pointers = np.frombuffer(host_memory, dtype=np.uint64, count=len(_SFCTMP_ARRAYS))
+        reset_memory = cp.cuda.alloc_pinned_memory(RUC_SFCTMP_FLAGS_SIZE * 8)
+        reset = np.frombuffer(reset_memory, dtype=np.uint64, count=RUC_SFCTMP_FLAGS_SIZE)
+        reset[:_SFCTMP_FLAG_WORDS] = 0
+        reset[_SFCTMP_FLAG_WORDS:] = np.iinfo(np.uint64).max
+        private_flags = cp.empty(RUC_SFCTMP_FLAGS_SIZE, dtype=cp.uint64)
+        alive = cp.empty(n, dtype=cp.bool_)
+        result = (scratch, offsets, pointers, host_memory, host_pointers,
+                  reset_memory, reset, private_flags, alive)
+        _SFCTMP_SCRATCH[key] = result
+    return result
+
+
+def ruc_sfctmp_raise_from_flags(flags):
+    """Read one flag buffer and raise the first retained admission failure."""
+    _sfctmp_raise_from_words(
+        cp.asnumpy(flags), (int(cp.cuda.runtime.getDevice()), flags.data.ptr))
+
+
+def _sfctmp_raise_from_words(words, context_key):
+    """Raise the first failure recorded in host copies of the flag words.
+
+    ``words`` is the whole ``RUC_SFCTMP_FLAGS_SIZE`` buffer read to the host;
+    ``context_key`` is ``(device, device pointer)`` of the buffer the fused
+    call wrote, which names the geometry and category count it ran with.
+    """
+    context = _SFCTMP_FLAG_CONTEXT.get(context_key,
+                                      (9, 30, 'MODIFIED_IGBP_MODIS_NOAH', {}))
+    nzs, ncategory, mminlu, overrides = context
+    for word_index in range(_SFCTMP_FLAG_WORDS):
+        word = int(words[word_index])
+        if not word:
+            continue
+        bit = (word & -word).bit_length() - 1
+        index = word_index * 64 + bit
+        if index in overrides:
+            exception, message = overrides[index]
+            raise exception(message)
+        message = _SFCTMP_CHECKS[index]
+        if isinstance(message, dict):
+            value = int(words[_SFCTMP_FLAG_WORDS + index])
+            if message['kind'] == 'root':
+                count = int(np.asarray(value & 0xffffffff, dtype=np.uint32).view(np.int32))
+                message = f'RUC nroot {count} is outside 1..{nzs - 1}'
+            else:
+                encoded = value & 0xffffffff
+                if value >> 32:
+                    encoded = 0xffffffff - encoded
+                category = encoded - 2147483648
+                message = f'RUC iland {category} is outside 1..{ncategory} for {mminlu}'
+        else:
+            message = message.replace('1..30', f'1..{ncategory}')
+        raise ValueError(message)
+
+
+def ruc_sfctmp_full_width_fused(
+    values: Mapping[str, object], *, run, delt: float, conflx, ivgtyp,
+    iland, nroot, ilnb, isice: int, c1sn: float, c2sn: float,
+    isncovr_opt: int, mminlu: str, parameters: RucParameterBundle | None,
+    flags=None,
+) -> dict[str, cp.ndarray]:
+    """Execute full-width sfctmp in three stages with deferred device flags.
+
+    A supplied flags buffer is uint64 with RUC_SFCTMP_FLAGS_SIZE entries.
+    The function resets it asynchronously. Call ruc_sfctmp_raise_from_flags
+    before publishing outputs. Every returned field owns its allocation.
+    """
+    from gpuwm.core.ruc import RUC_SFCTMP_PROFILE_INPUTS, RUC_SFCTMP_COLUMN_INPUTS
+    from gpuwm.core.ruc_tier import ruc_fused_kernel
+
+    errors = {}
+    def refuse(label, error):
+        errors[_SFCTMP_CPU_CHECKS[label]] = error
+
+    timestep = np.float32(delt)
+    if not np.isfinite(timestep) or timestep <= np.float32(0):
+        refuse('delt', ValueError('RUC sfctmp delt must be finite and positive'))
+    if isncovr_opt not in (1, 2, 3):
+        refuse('isncovr_opt', ValueError('RUC isncovr_opt must be 1, 2, or 3'))
+    elif isncovr_opt != 2:
+        raise ValueError('RUC fused sfctmp supports isncovr_opt=2 only')
+    missing = [name for name in RUC_SFCTMP_PROFILE_INPUTS + RUC_SFCTMP_COLUMN_INPUTS
+               if name not in values]
+    if missing:
+        refuse('missing', TypeError(f"missing RUC sfctmp inputs: {', '.join(missing)}"))
+    n = int(run.shape[0])
+    run = cp.ascontiguousarray(run, dtype=cp.bool_)
+    first_name = RUC_SFCTMP_PROFILE_INPUTS[0]
+    first = cp.asarray(values[first_name]) if first_name in values else cp.empty((9, n), dtype=cp.float32)
+    try:
+        nzs = _resolved_soil_levels(first, 'RUC sfctmp profiles')
+    except (ValueError, TypeError) as error:
+        refuse('profile:' + first_name, error)
+        nzs = 9
+    profile_shape = (nzs, n)
+    inputs = {}
+    for name in RUC_SFCTMP_PROFILE_INPUTS:
+        array = cp.asarray(values[name], dtype=cp.float32) if name in values else cp.empty(profile_shape, dtype=cp.float32)
+        if array.shape != profile_shape:
+            refuse('profile:' + name, ValueError(f'{name} shape {array.shape}; expected shared profile shape {profile_shape}'))
+            array = cp.empty(profile_shape, dtype=cp.float32)
+        inputs['value:' + name] = cp.ascontiguousarray(array)
+    for name in RUC_SFCTMP_COLUMN_INPUTS:
+        if name not in values:
+            inputs['value:' + name] = cp.empty(n, dtype=cp.float32)
+            continue
+        raw = cp.asarray(values[name], dtype=cp.float32)
+        try:
+            inputs['value:' + name] = cp.ascontiguousarray(cp.broadcast_to(raw, (n,)))
+        except ValueError:
+            refuse('column:' + name, ValueError(f'{name} shape {raw.shape} is not broadcastable to {(n,)}'))
+            inputs['value:' + name] = cp.empty(n, dtype=cp.float32)
+    for name, raw in (('ivgtyp', ivgtyp), ('iland', iland), ('nroot', nroot), ('ilnb', ilnb)):
+        raw = cp.asarray(raw)
+        if raw.dtype.kind not in 'iu':
+            if name == 'nroot':
+                error = TypeError('nroot must contain integer root-zone level counts')
+            elif name == 'ilnb':
+                error = TypeError('RUC sfctmp ilnb must be an integer layer count')
+            else:
+                error = TypeError(f'{name} must contain integer WRF categories')
+            refuse(name if name != 'iland' else 'prep_iland', error)
+            raw = cp.empty(n, dtype=cp.int32)
+        inputs[name] = cp.ascontiguousarray(cp.broadcast_to(raw, (n,)), dtype=cp.int32)
+    depth = cp.asarray(conflx, dtype=cp.float32)
+    if depth.ndim > 1:
+        refuse('conflx', ValueError('RUC sfctmp conflx must be scalar or 1-D'))
+        depth = cp.empty(n, dtype=cp.float32)
+    inputs['conflx'] = cp.ascontiguousarray(cp.broadcast_to(depth, (n,)))
+    try:
+        bundle, tables, ncategory, urban, rsmax = _sfctmp_tables(parameters, mminlu, nzs)
+    except ValueError as error:
+        refuse('prep_bundle', error)
+        bundle, tables, ncategory, urban, rsmax = _sfctmp_tables(None, mminlu, nzs)
+    except KeyError as error:
+        refuse('bundle', error)
+        bundle, tables, ncategory, urban, rsmax = _sfctmp_tables(None, 'MODIFIED_IGBP_MODIS_NOAH', nzs)
+    inputs.update(tables)
+    ice = int(isice)
+    if not 1 <= ice <= ncategory:
+        index = _SFCTMP_CHECKS.index('RUC isice is outside 1..30')
+        errors[index] = ValueError(f'RUC isice is outside 1..{ncategory}')
+        ice = 1
+    if not np.isfinite(np.float32(c1sn)) or not np.isfinite(np.float32(c2sn)):
+        refuse('snow_density_scalars', ValueError('RUC CUDA snow preparation c1sn/c2sn must be finite'))
+    scratch, offsets, pointers, host_memory, host_pointers, reset_memory, reset, private_flags, alive = _sfctmp_scratch(n, nzs)
+    if flags is None:
+        active_flags = private_flags
+    else:
+        if flags.dtype != cp.uint64 or flags.shape != (RUC_SFCTMP_FLAGS_SIZE,):
+            raise ValueError(f'RUC sfctmp flags must be uint64 shape ({RUC_SFCTMP_FLAGS_SIZE},)')
+        active_flags = flags
+    out = {name: cp.empty(profile_shape if _SFCTMP_ARRAYS[index][2] else (n,),
+                          dtype=_SFCTMP_ARRAYS[index][1])
+           for name, index in _SFCTMP_OUTPUTS.items()}
+    output_pointers = {index: out[name].data.ptr for name, index in _SFCTMP_OUTPUTS.items()}
+    for index, (binding, dt, profile, location) in enumerate(_SFCTMP_ARRAYS):
+        host_pointers[index] = (inputs[binding].data.ptr if binding else
+                                output_pointers[index] if index in output_pointers else
+                                scratch.data.ptr + offsets[location] * 4)
+    stream = cp.cuda.get_current_stream()
+    upload_key = (int(cp.cuda.runtime.getDevice()), stream.ptr)
+    pending = _SFCTMP_UPLOADS.setdefault(upload_key, [])
+    pending[:] = [entry for entry in pending if not cp.cuda.runtime.eventQuery(entry[0].ptr)]
+    # Keep the pinned source alive and immutable until its transfer ends.
+    upload_memory = cp.cuda.alloc_pinned_memory(pointers.nbytes)
+    upload = np.frombuffer(upload_memory, dtype=np.uint64, count=len(_SFCTMP_ARRAYS))
+    upload[:] = host_pointers
+    pointers.set(upload, stream=stream)
+    uploaded = cp.cuda.Event(disable_timing=True)
+    uploaded.record(stream)
+    pending.append((uploaded, upload_memory, upload))
+    if errors:
+        error_memory = cp.cuda.alloc_pinned_memory(reset.nbytes)
+        error_reset = np.frombuffer(error_memory, dtype=np.uint64, count=RUC_SFCTMP_FLAGS_SIZE)
+        error_reset[:] = reset
+        for index in errors:
+            error_reset[index // 64] |= np.uint64(1) << np.uint64(index % 64)
+        active_flags.set(error_reset, stream=stream)
+        reset_done = cp.cuda.Event(disable_timing=True)
+        reset_done.record(stream)
+        pending.append((reset_done, error_memory, error_reset))
+    else:
+        active_flags.set(reset, stream=stream)
+    _SFCTMP_FLAG_CONTEXT[(int(cp.cuda.runtime.getDevice()), active_flags.data.ptr)] = (
+        nzs, ncategory, mminlu, {index: (type(error), str(error)) for index, error in errors.items()})
+    if n:
+        scalars = (timestep, np.float32(c1sn), np.float32(c2sn),
+                   rsmax, np.int32(ice), np.int32(urban), np.int32(ncategory),
+                   np.int32(min(errors, default=len(_SFCTMP_CHECKS))), np.int32(n))
+        for stage in range(3):
+            ruc_fused_kernel(f'ruc_sfctmp_stage{stage}', nzs)(
+                ((n + 127) // 128,), (128,), (pointers, run, active_flags, alive, *scalars))
+    if flags is None:
+        ruc_sfctmp_raise_from_flags(active_flags)
+    return out
+
+
+__all__ += ['ruc_sfctmp_full_width_fused', 'ruc_sfctmp_raise_from_flags',
+            'RUC_SFCTMP_FLAGS_SIZE']

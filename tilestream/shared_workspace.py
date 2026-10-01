@@ -30,9 +30,10 @@ above the width.  The measurement below was taken while that width was
 MYNN's.  A second buffer therefore costs another 818 MiB of fixed workspace
 before it holds a single cell of weather, and on a 12 GB card that is 6.7% of
 the whole device per buffer, for a scheme that is running on exactly one
-buffer at a time.  Since the 2026-09-15 sweeps the width ships at 8,192
-columns and that item is 409.0 MiB, which halves the number without changing
-what it is: the largest single one, and paid per buffer.
+buffer at a time.  The 2026-09-15 sweeps shipped 8,192 columns (409.0 MiB);
+since the 2026-09-30 level-major kernels the width is the widest 1/16 of the
+card admits, from 8,192 up to 98,304 columns, which moves the number
+without changing what it is: the largest single one, and paid per buffer.
 
 WHAT THIS MODULE DOES
 ---------------------
@@ -339,8 +340,8 @@ def mynn_column_chunk() -> int:
     The published width: ``mynn_pbl_scratch`` settles it once per process
     and writes it into all three bindings, and a pin from
     :func:`set_mynn_column_chunk` replaces it.  Before either has happened
-    this is the shipped default -- 8,192 columns since the 2026-09-15
-    sweeps -- which is also what a process that never reaches a card uses.
+    this is the cap, 98,304 columns, which is also what a process that
+    never reaches a card uses.
     """
     from gpuwm.core import mynn_pbl_runtime
 
@@ -377,9 +378,10 @@ def set_mynn_column_chunk(chunk: int | None) -> int:
     ``16,384 = 1.4929 us/column`` ahead of ``8,192 = 1.5609`` by 4.6%, with
     ``4,096 = 2.5064`` 68% behind; it was taken on a card with fewer SMs than
     the chunk had blocks, and the 2026-09-15 sweeps through the forecast door
-    at ``nz = 59`` reversed its top two, which is why 8,192 is the width that
-    ships.  What that table still bounds is what a TILE can afford BELOW the
-    shipped width, not what a card can fill.
+    at ``nz = 59`` reversed its top two, which is why 8,192 shipped until the
+    2026-09-30 level-major kernels made every wider chunk faster.  What that
+    table still bounds is what a TILE can afford BELOW the width a run
+    walks, not what a card can fill.
     """
     import importlib
 

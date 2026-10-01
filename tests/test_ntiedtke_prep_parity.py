@@ -1374,3 +1374,42 @@ def test_the_kernel_leaves_deep_only_slots_alone_on_other_columns(
                   "ztau"):
             assert float(outs[f][c]) == 0.0, (
                 f"{key} ktype={kt} had {f} written outside the deep branch")
+
+
+def test_cutypen_launch_widths_preserve_outputs_and_final_scratch(
+        fixture, slice3, monkeypatch):
+    """Trial pruning must preserve all parcel fields and its final scratch."""
+    cp = pytest.importorskip("cupy")
+    from gpuwm.core import ntiedtke
+
+    launch = ntiedtke.NtStages.launch
+    scratch = []
+
+    def capture(stages, name, args):
+        result = launch(stages, name, args)
+        if name == "ntiedtke_cutypen":
+            scratch.append(tuple(cp.asnumpy(a).view(np.uint32)
+                                 for a in args[15:17]))
+        return result
+
+    monkeypatch.setattr(ntiedtke.NtStages, "launch", capture)
+    reference = None
+    reference_scratch = None
+    for width in (32, 64, 128):
+        monkeypatch.setattr(ntiedtke, "NT_TPB", width)
+        monkeypatch.setattr(ntiedtke.NtLaunchGeometry.__init__,
+                            "__defaults__", (width,))
+        result = cuda_cutypen.__wrapped__(fixture, slice3)
+        fields = [a.view(np.uint32) for a in result[1].values()]
+        fields += [result[2].view(np.uint32)]
+        fields += [a.view(np.uint32) for a in result[3].values()]
+        fields += [result[4].view(np.uint32)]
+        if reference is None:
+            reference = fields
+            reference_scratch = scratch[-1]
+        else:
+            for actual, expected in zip(fields, reference, strict=True):
+                np.testing.assert_array_equal(actual, expected)
+            for actual, expected in zip(scratch[-1], reference_scratch,
+                                        strict=True):
+                np.testing.assert_array_equal(actual, expected)

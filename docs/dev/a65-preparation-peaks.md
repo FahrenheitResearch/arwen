@@ -78,3 +78,83 @@ in GB.
 
 The 6 km and nest CUDA runs shared the host's cores with the 3 km CPU run, so
 their walls carry that overlap; their card and pool peaks are their own.
+
+## The other routes, one card run each (A101)
+
+The fit above is the mapped route's. The other rows of `PREPARATION_ROUTES`
+carry the same residual and headroom unmeasured, so the routes with a term
+the mapped runs never exercised were each run once on a card at a reference
+shape. `MEASURED_ROUTE_PEAKS` holds the results, and
+`tests/test_preparation_price.py` re-prices each row and holds the price at
+or above its peak.
+
+- Engine: integrate/2.8 at `cc3cb0ad6`. Every door that takes the flag ran
+  with `--preprocess-backend cuda`; `gpuwm run` has no such flag, and its
+  receipt shows `auto` choosing the card.
+- Card: one RTX 5070 Ti 16 GB (Linux), held through the card lock for each
+  run, so no other process was on it.
+- Predicted: the price the door decided on, `selection.device_fit.need_bytes`
+  in the receipt (the run route logs the same record).
+- Actual: the preparation's own card memory from nvidia-smi compute-apps
+  every 0.2 s, with every process it spawned (the native HRRR boundary
+  workers) summed into it, up to the end of the preparation. On the two
+  routes that go on to a forecast in the same process, the end was stamped
+  by an instrument line: the downscale child just before its state is built
+  (after the parent interpolation and the boundaries), and `gpuwm run` just
+  before the physics attach. What follows is the forecast's and is priced
+  there.
+
+| Route | Shape | Predicted | Actual | Pool reserved at the end | Margin |
+|---|---|---|---|---|---|
+| hrrr-native (`gpuwm prep --source hrrr`, `--prepare-workers 2`) | 3 km 556 x 444 x 49, f00 to f02 | 6.947 | 4.496 | not read | +54.5% |
+| downscale-child | 3 km parent 408 x 420 x 49 (16 fields) to a 1 km child 450 x 450 x 49 | 3.898 | 1.791 | 1.520 | +118% |
+| experiment (`gpuwm run`, ERA5 from ARCO) | 12 km 500 x 400 x 49, mp 10, two forcing times | 4.656 | 4.261 | 3.907 | +9.3% |
+
+GB are 1e9 bytes.
+
+- hrrr-native: the price binds on the boundary-worker phase (the kept f00
+  state, two analyses and two workers at a full context each, 6.95 GB); the
+  card peaked at 4.50 GB while building the f00 state, which the price puts
+  at 5.70 GB. Each spawned worker held 0.26 to 0.31 GB on the card, context
+  included, against the 0.80 GB context plus strip the price gives it, and
+  the main process held 3.1 to 3.3 GB beside them.
+- downscale-child: the price counts every parent field twice on the parent's
+  extent and levels plus the child's fields at both ladders. The card never
+  held that much at once: the interpolation peaked at 1.79 GB, less than
+  half the price. The price is safe and loose; the route decides `auto` on
+  the CPU earlier than it needs to.
+- experiment: the whole card peak is 9.3% under the price, but only because
+  this card's context (0.35 GB) is under the 0.80 GB the price charges for
+  it. The pool reserved 3.907 GB against a pooled price of 3.853 GB: 1.217
+  times the itemized arrays, past the 1.20 headroom the mapped route
+  measured (live was 2.70 GB, under the 3.21 GB itemized, so the residual
+  is not what ran short). The experiment row now carries its own pool
+  headroom of 1.25, which prices this run at 4.817 GB (pooled 4.014 GB,
+  13.0% over the card peak).
+
+Not measured here, with the reason:
+
+- era5 (`gpuwm prep --source era5`, the FP64 `source_transform`): that door
+  reads the CDS combined GRIB1, which needs a CDS key. The keyless ARCO
+  download is NetCDF with specific humidity, and it feeds `gpuwm run` (the
+  experiment row above), where no humidity conversion runs.
+- gfs: already anchored by the 24 GB failure (1.17 times its itemization
+  reserved).
+- met_em: missing input. The measuring node holds no WPS metgrid set this
+  line's met_em door accepts: the five sets there were made for another
+  line of work, and the door's namelist importer refuses each one before
+  it prepares anything (all five carry five namelist keys this line does
+  not map, one pairs a 221 x 221 namelist with 101 x 101 met_em files, and
+  all five write several assignments on one namelist line, whose later
+  keys the importer reports missing). A measurement needs a WPS run
+  (geogrid, ungrib, metgrid) of its own, at a reference shape.
+- experiment-host-store: missing input. The route runs only when a
+  `gpuwm run` case's streaming plan puts its state in a host store; the
+  ERA5 case the experiment row was measured on was not kept on the node,
+  so a measurement needs that case fetched again and run with a streamed
+  `[tiles]` configuration.
+
+`gpuwm check` prices a config whose forcing is its own `[case_data]` on the
+experiment row's pool headroom (`preflight.config_preparation_route`), the
+same 1.25 the `gpuwm run` door decides on; every other config keeps the
+1.20 the other rows carry.

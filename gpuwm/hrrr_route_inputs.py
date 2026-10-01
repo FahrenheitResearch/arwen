@@ -32,7 +32,8 @@ from fractions import Fraction
 import json
 from pathlib import Path
 
-from gpuwm.config import GRELL_FREITAS_CU_PHYSICS, effective_radt_minutes
+from gpuwm.config import (GRELL_FREITAS_CU_PHYSICS, effective_radt_minutes,
+                          radiation_scheme_ids)
 from gpuwm.core.microphysics_transition import PORTED_MP_PHYSICS
 from gpuwm.ingest.hrrr_target import TARGET_DOMAIN_SCHEMA
 
@@ -571,8 +572,17 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
     # other radiation selection unchanged, so under the (4, 4) RRTMG
     # pair the longwave delta collapses and the two arms are identical
     # here.
-    native_lw = [int(r.ra_lw_physics) for r in runs]
-    shortwave = [int(r.ra_sw_physics) for r in runs]
+    #
+    # The RESOLVED pair, not the split fields raw.  A configuration may
+    # state its radiation in the aggregate spelling -- ``ra_physics = 4``
+    # with the split pair left at -1, which is what
+    # ``gpuwm import-namelist`` writes -- and the raw fields then
+    # rendered ``ra_lw_physics = -1``, which the route's own importer
+    # refuses as a scheme with no mapping, so an imported configuration
+    # could not be given the namelists this route runs from.
+    pairs = [radiation_scheme_ids(r) for r in runs]
+    native_lw = [int(longwave) for longwave, _ in pairs]
+    shortwave = [int(shortwave) for _, shortwave in pairs]
     longwave = ([1 if value == 0 else value for value in native_lw]
                 if stock else native_lw)
     theta_m = 1 if stock else 0
@@ -1122,6 +1132,115 @@ def write_hrrr_route_inputs(config_path: Path, exp, *, wps_text: str,
             paths["namelist_input"], paths["stock_namelist_input"]]
 
 
+def configuration_reading_sources(source) -> tuple[str, ...]:
+    """Sources of ``source``'s model whose route reads the configuration itself.
+
+    Derived from the source table, never listed: every runnable row that
+    names the same ``upstream_model_id`` and dispatches to a chain other
+    than this route's.  It is the way out a refusal of this route can
+    name for a configuration its namelists cannot carry, and it is empty
+    for a model this route is the only way to run.
+    """
+
+    from gpuwm.source_adapters import get_source_adapter, source_adapters
+    from gpuwm.source_drivability import candidate_route_chain, drivability_for
+
+    try:
+        adapter = get_source_adapter(str(source or ""))
+    except ValueError:
+        return ()
+    model = adapter.upstream_model_id
+    if model is None:
+        return ()
+    found = []
+    for row in source_adapters():
+        if row.upstream_model_id != model or row.source_id == adapter.source_id:
+            continue
+        verdict = drivability_for(row.source_id) or {}
+        if verdict.get("refusal") is not None or not verdict.get("chain"):
+            continue
+        if candidate_route_chain(row.source_id) == "prepared:hrrr":
+            continue
+        found.append(row.source_id)
+    return tuple(found)
+
+
+def run_route_inputs(config_path, exp, *, raw, into=None):
+    """The four files one run of ``config_path`` hands this route.
+
+    The set beside the configuration when it is COMPLETE: that is what a
+    door wrote, and it is what the route has always read.  Otherwise the
+    run writes the set itself, from the configuration, through
+    :func:`write_hrrr_route_inputs` and therefore through
+    :func:`verify_round_trip` -- into ``into``, never beside the user's
+    file.  A WPS namelist that is present is kept, because its geography
+    choices are the user's and the round trip holds its geometry to the
+    configuration; an absent one is rendered from the experiment by the
+    doors' own renderer (:func:`gpuwm.companion_domains.candidate_wps_text`).
+    ``raw`` is the configuration's parsed TOML, whose ``[fetch]`` source
+    and cadence that renderer and the refusal read.
+
+    Before this, a configuration nobody's door had saved -- one written
+    by a program, by hand, or by ``gpuwm import-namelist`` -- passed
+    ``gpuwm go --dry-run`` and was refused three seconds into the real
+    run, because the missing files were found only by the chain.
+
+    ``into=None`` is the door's question: the set is rendered into a
+    scratch folder and discarded, and ``None`` comes back.  The dry run
+    and plan review ask it, so a configuration the chain would refuse is
+    refused before anything is fetched or a run folder is claimed.
+
+    Raises :class:`HrrrRouteInputError` naming the missing files, what
+    the writer refused, and the sources of the same model whose route
+    reads the configuration itself.
+    """
+
+    import tempfile
+
+    config_path = Path(config_path)
+    beside = route_input_paths(config_path)
+    if all(path.is_file() for path in beside.values()):
+        return beside
+    missing = sorted(role for role, path in beside.items()
+                     if not path.is_file())
+
+    def render(folder: Path) -> Path:
+        target = folder / config_path.name
+        try:
+            if beside["wps_namelist"].is_file():
+                wps_text = beside["wps_namelist"].read_text(encoding="utf-8")
+            else:
+                from gpuwm.companion_domains import candidate_wps_text
+
+                wps_text = candidate_wps_text(raw, exp, exp, config_path)
+            write_hrrr_route_inputs(
+                target, exp, wps_text=wps_text,
+                writer=lambda path, content: path.write_text(
+                    content, encoding="utf-8"))
+        except ValueError as error:
+            siblings = configuration_reading_sources(
+                (raw.get("fetch") or {}).get("source"))
+            raise HrrrRouteInputError(
+                f"the HRRR route runs WRF namelists rather than the TOML, "
+                f"{config_path.name} has none beside it ({', '.join(missing)} "
+                "missing), and they cannot be written from it without "
+                "changing the forecast it describes: " + str(error).rstrip(".")
+                + (". A source of the same model whose route reads the "
+                   "configuration itself: "
+                   + ", ".join(f'[fetch] source = "{name}"' for name in siblings)
+                   if siblings else ""),
+                namelist_values=getattr(error, "namelist_values", None)) from None
+        return target
+
+    if into is None:
+        with tempfile.TemporaryDirectory(prefix="arwen-route-inputs-") as staging:
+            render(Path(staging))
+        return None
+    into = Path(into)
+    into.mkdir(parents=True, exist_ok=True)
+    return route_input_paths(render(into))
+
+
 def candidate_companions(config_path, exp, *, wps_text: str, source):
     """Every file a candidate configuration must carry beside it.
 
@@ -1134,10 +1253,12 @@ def candidate_companions(config_path, exp, *, wps_text: str, source):
     answered wrong: the domain editor wrote the configuration and its
     WPS namelist and nothing else, so EVERY edit it made to a
     native-route configuration -- any action, any grid -- produced a
-    candidate that :func:`gpuwm.runplan._hrrr_chain` refuses at its
-    ``route_input_paths`` precheck, above the fetch stage, before
-    anything is downloaded or started.  The fit and tile doors published
-    the same short set for the same reason.
+    candidate without the namelists the route runs from.  The fit and
+    tile doors published the same short set for the same reason.  A run
+    of an incomplete set no longer stops for it
+    (:func:`run_route_inputs` writes the set into the run folder), but
+    the set a door writes is still the one a user sees and edits beside
+    the configuration, and a complete set is the one the route reads.
 
     ``source`` is the candidate's own ``[fetch].source`` -- the very key
     the dispatcher reads to choose the chain -- or ``None`` when it has
@@ -1183,6 +1304,7 @@ __all__ = [
     "FORCING_INTERVAL_SECONDS",
     "HrrrRouteInputError",
     "candidate_companions",
+    "configuration_reading_sources",
     "ROUTE_DEFAULT_PHYSICS_PROFILE",
     "ROUTE_IMPLICIT_SWITCHES",
     "ROUTE_SHARED_DOMAIN_KEYS",
@@ -1194,6 +1316,7 @@ __all__ = [
     "route_input_paths",
     "route_physics_blocker",
     "route_physics_problems",
+    "run_route_inputs",
     "validate_route_physics",
     "verify_axis_authored_keys",
     "verify_round_trip",

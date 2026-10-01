@@ -753,6 +753,54 @@ def test_a_failed_forecast_leaves_its_producer_to_seal(tmp_path):
     assert not (tmp_path / "run" / "boundary-stream" / "stop.json").exists()
 
 
+def test_a_failed_forecast_holding_for_the_seal_says_so_on_the_heartbeat(
+        tmp_path):
+    # The run reports the failure only after the preparation ends; until
+    # then its heartbeat says waiting:preparation instead of keeping the
+    # failed forecast's last step, and the hold is said before it ends.
+    from gpuwm.supervisor import RuntimeHeartbeat, read_heartbeat, utc_now
+
+    heartbeat = RuntimeHeartbeat(tmp_path / "run-progress.json",
+                                 run_id="hold", config_sha256="0" * 64,
+                                 started_at_utc=utc_now())
+    held = threading.Event()
+    seen = {}
+
+    class Observer:
+        def waiting(self, on, **record):
+            heartbeat.waiting(on, **record)
+            if not held.is_set():
+                seen["during"] = read_heartbeat(heartbeat.path)
+                seen["sealed_during"] = (
+                    tmp_path / "run" / "proof.json").exists()
+                held.set()
+
+        def waited(self):
+            heartbeat.waited()
+
+    prepare, outcome = _producer(tmp_path, _snapshots(4), gate=held)
+
+    def forecast(head):
+        heartbeat(model_elapsed_seconds=60.0, outer_step=3,
+                  last_durable_wrfout=None, last_checkpoint=None)
+        raise FloatingPointError("the model went unstable")
+
+    with pytest.raises(FloatingPointError, match="unstable"):
+        boundary_stream.run_chained(
+            prepared_root=tmp_path / "run", prepare=prepare,
+            forecast=forecast, poll_seconds=0.01, observer=Observer())
+    during = seen["during"]
+    assert seen["sealed_during"] is False
+    assert during.status == "waiting:preparation"
+    assert during.outer_step == 3 and during.model_elapsed_seconds == 60.0
+    assert {key: value for key, value in during.wait.items()
+            if key != "since_utc"} == {"on": "preparation", "lead": None,
+                                       "expected_at": None, "late_at": None}
+    assert outcome.get("sealed") is True
+    after = read_heartbeat(heartbeat.path)
+    assert after.status == "integrating" and after.wait is None
+
+
 def test_an_interrupted_forecast_stops_its_producer(tmp_path):
     gate = threading.Event()
     prepare, outcome = _producer(tmp_path, _snapshots(4), gate=gate)
@@ -979,13 +1027,22 @@ def test_every_route_that_prepares_sealed_says_so_where_it_builds_forcing():
     # preparation says why, as a declined chained route does.
     root = Path(__file__).resolve().parents[1]
     sayers = {
-        "domain_tree": ("gpuwm/go_cli.py", "gpuwm/runplan.py"),
+        # No tree row: a mapped tree chains on either backend (its seal
+        # re-reads the start states from the head, so the CUDA row is
+        # retired) and its forecast starts on its head (A136 L6 retired the
+        # domain_tree_forecast row), a GFS-series tree (go) chains the same
+        # way (A136 L7b retired the gfs_domain_tree row), and a native HRRR
+        # tree chains on its root preparation's head (A136 L7c retired the
+        # domain_tree row).
         "met_em": ("gpuwm/metem_forecast.py",),
-        "native_hrrr": ("tools/hrrr_single_domain_benchmark.py",),
         "experiment_run": ("gpuwm/runtime.py",),
+        # A single native HRRR domain chains (A136 L7c retired the
+        # native_hrrr row); with a water overlay it declines by the
+        # overlay's row, as the ERA5 route does.
+        "water_overlay": ("tools/hrrr_single_domain_benchmark.py",),
     }
-    assert set(sayers) | {"water_overlay"} \
-        == set(boundary_stream.SEALED_REASONS)
+    assert set(sayers) == set(boundary_stream.SEALED_REASONS)
+    assert "native_hrrr" not in boundary_stream.SEALED_REASONS
     for kind, paths in sayers.items():
         for path in paths:
             source = (root / path).read_text(encoding="utf-8")
@@ -1124,8 +1181,8 @@ def _forecast_of(monkeypatch):
     def set_bytes(value):
         monkeypatch.setattr(
             preflight, "admission_estimate",
-            lambda experiment, machine=None: SimpleNamespace(
-                alloc_estimate_bytes=value))
+            lambda experiment, machine=None, source=None: SimpleNamespace(
+                peak_envelope_bytes=value))
     return set_bytes
 
 
@@ -1147,9 +1204,12 @@ def test_a_gpu_producer_is_admitted_only_when_both_fit(_forecast_of,
         experiment=object(), backend="cuda", device_bytes=8 * gib,
         card=(12 * gib, 4 * gib))
     assert not refused["admitted"]
+    # The card less the other-process margin every memory door keeps
+    # (A163: the 10% share stood in for non-pool residency the forecast's
+    # envelope now carries itself): 12 + 4 - 0.5.
     assert refused["reason"] == (
         "chained preparation not admitted: forecast 10.00 GiB + "
-        "preparation 8.00 GiB > 14.40 GiB on the GPU")
+        "preparation 8.00 GiB > 15.50 GiB on the GPU")
     staging = tmp_path / ".tmp"
     staging.mkdir()
     writer = PreparedTreeWriter(staging=staging, output_root=tmp_path / "t",

@@ -659,7 +659,7 @@ def _launch_morrison_sedimentation(host, dt):
               else "morrison_sediment_256")
     blocks = (ny * nx + morr._COLUMN_TPB - 1) // morr._COLUMN_TPB
     get_kernel("morrison", kernel)(
-        (blocks,), (morr._COLUMN_TPB,),
+        (blocks,), (morr._SEDIMENT_TPB,),
         (dev["qc"], dev["qr"], dev["qi"], dev["qs"], dev["qg"],
          dev["nc"], dev["nr"], dev["ni"], dev["ns"], dev["ng"],
          dev["nc"], dev["theta"], dev["pii"], dev["pressure"],

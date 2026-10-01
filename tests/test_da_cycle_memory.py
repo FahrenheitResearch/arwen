@@ -60,7 +60,7 @@ def _fake_cupy():
 
 
 def _drive(monkeypatch, tmp_path, *, free_bytes=1 << 50, members=2,
-           legs=2):
+           legs=2, extra_argv=()):
     """Run ``cycle`` over ``legs`` free legs with host fakes.
 
     Returns ``(events, report_path)``.  ``events`` records, in order, the
@@ -159,6 +159,9 @@ def _drive(monkeypatch, tmp_path, *, free_bytes=1 << 50, members=2,
                             validate=lambda phase: SimpleNamespace(ok=True)))
     monkeypatch.setattr(perturb_module, "apply_perturbations",
                         lambda state, seed, cfg: {})
+    # The admission asks the fake module whether it can transform; the
+    # remembered answer must not outlive this test.
+    monkeypatch.setattr(perturb_module, "_DEVICE_FFT_AVAILABLE", None)
     monkeypatch.setattr(member_module, "refresh_diagnostics",
                         lambda state, **_: None)
     monkeypatch.setattr(obsop_module, "simulated_reflectivity",
@@ -190,7 +193,7 @@ def _drive(monkeypatch, tmp_path, *, free_bytes=1 << 50, members=2,
         "--physics-profile", "test", "--run-seconds", "900",
         "--history-interval-seconds", "900", "--members", str(members),
         "--free-legs", str(legs), "--leg-seconds", "60",
-        "--out", str(out)])
+        "--out", str(out), *extra_argv])
     events.append(("cycle-exit", driver.main()))
     return events, out / "cycle-report.json"
 
@@ -309,3 +312,243 @@ def test_the_draw_census_holds_the_spectrum_multiply():
         "fields": [{"name": "theta", "amplitude": 1.0,
                     "length_scale_km": 20.0}]})
     assert perturb.device_working_bytes(host, (nz, ny, nx)) < working
+
+
+def _plan_config():
+    from gpuwm.da import perturb
+
+    return perturb.PerturbationConfig.from_mapping({
+        "dx_km": 1.0, "dy_km": 1.0, "rim_width": 5,
+        "fields": [{"name": "u", "amplitude": 1.0,
+                    "length_scale_km": 20.0}]})
+
+
+def test_each_plan_work_area_is_priced_in_its_own_transform():
+    from gpuwm.da import perturb
+
+    config = _plan_config()
+    nz, ny, nx = 55, 1024, 1792
+    shape = (nz, ny, nx + 1)            # the u face the draw transforms
+    points = nz * ny * (nx + 1)
+    spectrum = nz * ny * ((nx + 1) // 2 + 1)
+    bare = perturb.device_working_bytes(config, (nz, ny, nx))
+    # A forward work area larger than the inverse stage's margin becomes
+    # the peak at the forward transform, beside the input and spectrum.
+    forward = 4 * bare
+    assert perturb.device_working_bytes(
+        config, (nz, ny, nx), plan_work_bytes={shape: (forward, 0)}
+    ) == 8 * points + 2 * 8 * spectrum + forward
+    # The inverse plan adds to the inverse transform's own stage.
+    inverse = 4 * bare
+    assert perturb.device_working_bytes(
+        config, (nz, ny, nx), plan_work_bytes={shape: (0, inverse)}
+    ) == 2 * 8 * points + 5 * 8 * spectrum + inverse
+    # A plan for a shape the configuration never draws prices nothing.
+    assert perturb.device_working_bytes(
+        config, (nz, ny, nx),
+        plan_work_bytes={(nz, ny, nx): (forward, inverse)}) == bare
+
+
+def test_the_plan_sizes_reach_the_cycle_admission(monkeypatch, tmp_path):
+    import json
+
+    from gpuwm.da import perturb
+
+    measured = {}
+
+    def plans(cfg, mass_shape, xp=None):
+        sizes = {shape: (3 << 30, 5 << 30)
+                 for shape in perturb._draw_shapes(cfg, mass_shape)}
+        measured.update(cfg=cfg, shape=tuple(mass_shape), sizes=sizes)
+        return sizes
+
+    monkeypatch.setattr(perturb, "fft_plan_work_bytes", plans)
+    _events, report = _drive(monkeypatch, tmp_path)
+    admission = json.loads(report.read_text(encoding="utf-8"))[
+        "memory_admission"]
+    assert admission["perturbation_bytes"] == perturb.device_working_bytes(
+        measured["cfg"], measured["shape"],
+        plan_work_bytes=measured["sizes"])
+    assert admission["perturbation_bytes"] > perturb.device_working_bytes(
+        measured["cfg"], measured["shape"])
+    assert admission["analysis_route"] is None
+    assert admission["analysis_routes"] == []
+
+
+def _analysis(**overrides):
+    from gpuwm.da.letkf import AnalysisDevicePrice
+
+    fields = dict(setup_bytes=0, finish_bytes=0, solve_bytes_per_point=1000,
+                  stencil_slots=100, chunk_points=512,
+                  scratch_bytes=512_000, staged_row_bytes=4_000,
+                  budget_bytes=1 << 20)
+    fields.update(overrides)
+    return AnalysisDevicePrice(**fields)
+
+
+def test_the_analysis_routes_are_admitted_in_the_order_the_solve_takes():
+    from gpuwm.core.preflight import EXTERNAL_MARGIN_BYTES
+    from gpuwm.da.cycle_admission import admit_cycle, price_cycle
+
+    exp = _nowcast_experiment()
+    bare = price_cycle(exp, forcing_intervals=1, observation_points=0,
+                       perturbation_bytes=0)
+    trajectory = bare.forecast_resident_bytes + bare.forecast_step_bytes
+    # An analysis whose whole-domain arrays outweigh the trajectory, with
+    # a scratch that separates the configured chunk from the smallest.
+    analysis = _analysis(setup_bytes=2 * trajectory,
+                         scratch_bytes=trajectory // 2)
+    price = price_cycle(exp, forcing_intervals=1, observation_points=0,
+                        perturbation_bytes=0, analysis=analysis)
+    routes = {route: (nbytes, required)
+              for route, nbytes, required in price.analysis_routes}
+    assert list(routes) == ["resident", "reduced-chunk", "host-staged"]
+    assert routes["resident"][0] == analysis.resident_bytes
+    assert routes["reduced-chunk"][0] == analysis.reduced_bytes
+    assert routes["host-staged"][0] == analysis.staged_bytes
+    resident = routes["resident"][1]
+    reduced = routes["reduced-chunk"][1]
+    staged = routes["host-staged"][1]
+    assert resident > reduced > bare.required_bytes
+    # The staged fallback's row is far below the trajectory, so its
+    # envelope is the forecast's own.
+    assert staged == bare.required_bytes
+    margin = int(EXTERNAL_MARGIN_BYTES)
+
+    fitted = admit_cycle(price, free_bytes=resident + margin)
+    assert (fitted.analysis_route, fitted.required_bytes) == (
+        "resident", resident)
+    shrunk = admit_cycle(price, free_bytes=resident + margin - 1)
+    assert (shrunk.analysis_route, shrunk.required_bytes) == (
+        "reduced-chunk", reduced)
+    staged_run = admit_cycle(price, free_bytes=reduced + margin - 1)
+    assert (staged_run.analysis_route, staged_run.required_bytes) == (
+        "host-staged", staged)
+    assert staged_run.receipt()["analysis_route"] == "host-staged"
+
+
+def test_a_card_one_byte_short_of_the_analysis_envelope_is_refused():
+    from gpuwm.core.preflight import EXTERNAL_MARGIN_BYTES
+    from gpuwm.da.cycle_admission import (CycleMemoryRefused, admit_cycle,
+                                          price_cycle)
+
+    exp = _nowcast_experiment()
+    bare = price_cycle(exp, forcing_intervals=1, observation_points=0,
+                       perturbation_bytes=0)
+    trajectory = bare.forecast_resident_bytes + bare.forecast_step_bytes
+    # A fallback row bigger than the trajectory: the smallest route the
+    # analysis has still needs more card than the forecast does.
+    row = 2 * trajectory
+    analysis = _analysis(setup_bytes=4 * trajectory, staged_row_bytes=row,
+                         budget_bytes=4 * row)
+    price = price_cycle(exp, forcing_intervals=1, observation_points=0,
+                        perturbation_bytes=0, analysis=analysis)
+    envelope = price.analysis_routes[-1][2]
+    assert price.analysis_routes[-1][0] == "host-staged"
+    assert envelope > bare.required_bytes
+    margin = int(EXTERNAL_MARGIN_BYTES)
+    # The forecast alone fits this card; the analysis does not.
+    assert admit_cycle(bare, free_bytes=envelope + margin - 1).fits
+    with pytest.raises(CycleMemoryRefused) as refusal:
+        admit_cycle(price, free_bytes=envelope + margin - 1)
+    refused = refusal.value.admission
+    assert refused.required_bytes == envelope
+    assert refused.analysis_route == "host-staged"
+    assert not refused.fits
+    message = str(refusal.value)
+    assert f"{envelope:,} bytes" in message
+    assert f"{refused.analysis_bytes:,} bytes" in message
+    assert "before the first upload" in message
+    admitted = admit_cycle(price, free_bytes=envelope + margin)
+    assert admitted.fits
+    assert admitted.analysis_route == "host-staged"
+    assert admitted.required_bytes == envelope
+
+
+def test_an_analysis_no_card_can_run_is_named():
+    from gpuwm.da.cycle_admission import unsolvable_analysis_message
+
+    assert unsolvable_analysis_message(_analysis()) is None
+    assert unsolvable_analysis_message(None) is None
+    too_wide = (1 << 20) + 1
+    starved = _analysis(chunk_points=0, staged_row_bytes=too_wide)
+    assert starved.resident_bytes is None
+    assert starved.staged_bytes is None
+    message = unsolvable_analysis_message(starved)
+    assert "--memory-budget-mib" in message
+    assert f"{too_wide:,} bytes" in message
+
+
+def test_the_worst_leg_covers_every_leg():
+    from gpuwm.da.cycle_admission import worst_analysis
+
+    small = _analysis(setup_bytes=10, chunk_points=512)
+    large = _analysis(setup_bytes=1000, chunk_points=64,
+                      staged_row_bytes=8_000)
+    worst = worst_analysis([small, None, large])
+    assert worst.setup_bytes == 1000
+    assert worst.chunk_points == 64
+    assert worst.staged_row_bytes == 8_000
+    for leg in (small, large):
+        assert worst.resident_bytes >= leg.resident_bytes
+        assert worst.reduced_bytes >= leg.reduced_bytes
+        assert worst.staged_bytes >= leg.staged_bytes
+    assert worst_analysis([None]) is None
+
+
+def test_an_observed_leg_the_card_cannot_analyse_is_refused_before_upload(
+        monkeypatch, tmp_path):
+    """The driver prices each observed leg's analysis and admits on it.
+
+    The leg's observation file and grid are stood in; the analysis price
+    is one whose smallest route outweighs the forecast, on a card the
+    forecast alone fits.  The refusal comes before the first restore,
+    with the analysis route and its bytes in the receipt.
+    """
+    import json
+
+    from gpuwm.core.preflight import EXTERNAL_MARGIN_BYTES
+    from gpuwm.da import cycle_admission
+    from gpuwm.da import obs_radar
+    from gpuwm.da import radar_assimilation
+    from gpuwm.obs import target_grid
+
+    exp = _nowcast_experiment()
+    bare = cycle_admission.price_cycle(exp, forcing_intervals=1,
+                                       observation_points=0,
+                                       perturbation_bytes=0)
+    trajectory = bare.forecast_resident_bytes + bare.forecast_step_bytes
+    priced = []
+
+    def price(cfg, *, members, grid, document=None,
+              extra_localizations=()):
+        priced.append((cfg, members, grid, document))
+        return _analysis(setup_bytes=40 * trajectory,
+                         staged_row_bytes=20 * trajectory,
+                         budget_bytes=40 * trajectory)
+
+    monkeypatch.setattr(target_grid.TargetGrid, "from_wrfout",
+                        staticmethod(lambda path: ("grid", str(path))))
+    monkeypatch.setattr(obs_radar, "read_document",
+                        lambda path, *, expected_grid: {"from": str(path)})
+    monkeypatch.setattr(radar_assimilation, "analysis_device_price", price)
+    obs = tmp_path / "leg0-obs.nc"
+    obs.write_bytes(b"obs")
+    wrfout = tmp_path / "leg0-wrfout"
+    free = 2 * bare.required_bytes + int(EXTERNAL_MARGIN_BYTES)
+    with pytest.raises(SystemExit) as refusal:
+        _drive(monkeypatch, tmp_path, free_bytes=free, legs=1,
+               extra_argv=["--obs", str(obs), "--grid-wrfout", str(wrfout)])
+    assert len(priced) == 1
+    _cfg, members, grid, document = priced[0]
+    assert members == 2
+    assert grid == ("grid", str(wrfout))
+    assert document == {"from": str(obs)}
+    report = json.loads((tmp_path / "out" / "cycle-report.json").read_text(
+        encoding="utf-8"))["memory_admission"]
+    assert report["fits"] is False
+    assert report["analysis_route"] == "host-staged"
+    assert report["required_bytes"] > 2 * bare.required_bytes
+    message = str(refusal.value)
+    assert f"{report['analysis_bytes']:,} bytes" in message
+    assert "before the first upload" in message

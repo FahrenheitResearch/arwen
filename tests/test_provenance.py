@@ -228,8 +228,8 @@ def _build_borrowed(tmp: Path) -> Provenance:
     """Measured live on this box.
 
     No distribution provides the running code, yet ``gpuwm.__version__``
-    still returns a number, because it asks metadata BY NAME and some
-    other ``.dist-info`` answered.  The number describes a different
+    still returns a number, because with no owner it falls back to
+    asking metadata BY NAME and some other ``.dist-info`` answered.  The number describes a different
     tree.  It is at its most dangerous when it happens to match, which
     is why the resolver judges provenance and not just digits.
     """
@@ -905,3 +905,183 @@ def test_a_child_with_only_the_curated_environment_resolves_identity():
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
     assert payload["commit"], payload
+
+
+# ---------------------------------------------------------------------------
+# which install gpuwm.__version__ is read from
+# ---------------------------------------------------------------------------
+# ``__version__`` read the first distribution NAMED gpuwm on the path.  A
+# staged rw-wps package, or a gpuwm run beside a second gpuwm install (a
+# venv's and a --user one), then reported the other install's number, and
+# the rw-wps runtime check refused it ("rw-wps version mismatch").  The
+# version now comes from the distribution whose own files install the
+# running gpuwm/__init__.py, and from the first by name only when none does.
+
+def _record_row(site: Path, path: Path) -> str:
+    import base64
+    import hashlib
+
+    digest = base64.urlsafe_b64encode(
+        hashlib.sha256(path.read_bytes()).digest()).decode().rstrip("=")
+    return (f"{path.relative_to(site).as_posix()},sha256={digest},"
+            f"{path.stat().st_size}")
+
+
+def _pip_install(site: Path, *, name: str = "gpuwm", version: str,
+                 files: dict[str, bytes] | None = None,
+                 records_package: bool = True) -> PathDistribution:
+    """What pip leaves in ``site``: the package files and a .dist-info.
+
+    ``files`` maps package-relative names to bytes (default: an empty
+    ``__init__.py``; ``{}`` writes none, the metadata left behind by an
+    install whose package is gone).  RECORD lists every package file
+    written, or ``gpuwm/__init__.py`` unhashed when none was, unless
+    ``records_package`` is False: a .dist-info that installed no package
+    file, like an editable install's redirect.
+    """
+
+    site.mkdir(parents=True, exist_ok=True)
+    info = site / f"{name.replace('-', '_')}-{version}.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        encoding="utf-8")
+    written = []
+    for relative, payload in ({"__init__.py": b""} if files is None
+                              else files).items():
+        path = site / "gpuwm" / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        written.append(path)
+    rows: list[str] = []
+    if records_package:
+        rows = ([_record_row(site, path) for path in written]
+                or ["gpuwm/__init__.py,,"])
+    rows += [f"{info.name}/METADATA,,", f"{info.name}/RECORD,,"]
+    (info / "RECORD").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return PathDistribution(info)
+
+
+def _version_of(distribution) -> str | None:
+    return None if distribution is None else distribution.version
+
+
+def test_the_version_is_the_install_that_owns_the_package_not_the_first_named(
+        tmp_path):
+    """A staged rw-wps package beside an installed gpuwm, and two gpuwm
+    installs on one path: each package reads the install whose RECORD
+    put its own ``__init__.py`` there, in either candidate order."""
+
+    import gpuwm
+
+    user = _pip_install(tmp_path / "user-site", version="1.2.3")
+    venv = _pip_install(tmp_path / "venv-site", version="9.8.7")
+    staged = _pip_install(tmp_path / "staged", name="rw-wps", version="2.8.1")
+    for order in ([user, venv, staged], [staged, venv, user]):
+        for site, version in (("venv-site", "9.8.7"), ("user-site", "1.2.3"),
+                              ("staged", "2.8.1")):
+            owner = gpuwm.owning_distribution(tmp_path / site / "gpuwm",
+                                              candidates=order)
+            assert _version_of(owner) == version, (site, order)
+
+
+def test_metadata_that_installed_no_package_file_owns_nothing(tmp_path):
+    """Located beside the package is not installing it.
+
+    A gpuwm .dist-info in the staged directory whose RECORD names no
+    gpuwm/__init__.py locates the staged file exactly as the rw-wps one
+    does; only RECORD tells them apart.  Metadata with no RECORD at all
+    (an .egg-info beside its source) still owns the package it sits
+    beside.
+    """
+
+    import gpuwm
+
+    stray = _pip_install(tmp_path / "staged", version="1.2.3", files={},
+                         records_package=False)
+    staged = _pip_install(tmp_path / "staged", name="rw-wps",
+                          version="2.8.1")
+    package = tmp_path / "staged" / "gpuwm"
+    init = (package / "__init__.py").resolve()
+    assert Path(stray.locate_file("gpuwm/__init__.py")).resolve() == init
+    assert not gpuwm.installs_package(stray, init)
+    assert gpuwm.installs_package(staged, init)
+    assert gpuwm.owning_distribution(
+        package, candidates=[stray, staged]) is staged
+
+    source = tmp_path / "source"
+    _package(source)
+    egg = source / "gpuwm.egg-info"
+    egg.mkdir()
+    (egg / "PKG-INFO").write_text(
+        "Metadata-Version: 2.1\nName: gpuwm\nVersion: 1.8.7\n",
+        encoding="utf-8")
+    owner = gpuwm.owning_distribution(
+        source / "gpuwm", candidates=[stray, PathDistribution(egg)])
+    assert _version_of(owner) == "1.8.7"
+
+
+def test_an_editable_install_owns_its_tree_after_every_recorded_install(
+        tmp_path):
+    """An editable RECORD lists only its redirect, so its source root is
+    its claim; it is asked only after every RECORD, because a venv made
+    inside the checkout puts a wheel's package inside that root too."""
+
+    import gpuwm
+
+    checkout = tmp_path / "checkout"
+    _package(checkout)
+    wheel = _pip_install(tmp_path / "user-site", version="1.2.3")
+    editable = _dist_info(tmp_path / "site-packages", version="9.8.7",
+                          editable_at=checkout)
+    assert gpuwm.owning_distribution(
+        checkout / "gpuwm", candidates=[wheel, editable]) is editable
+
+    nested = _pip_install(checkout / ".venv" / "site", version="2.8.1")
+    assert gpuwm.owning_distribution(
+        checkout / ".venv" / "site" / "gpuwm",
+        candidates=[editable, nested]) is nested
+
+
+def test_a_tree_no_install_provides_has_no_owner(tmp_path):
+    import gpuwm
+
+    tree = tmp_path / "tree"
+    _package(tree)
+    others = [_pip_install(tmp_path / "user-site", version="1.2.3"),
+              _pip_install(tmp_path / "staged", name="rw-wps",
+                           version="2.8.1")]
+    assert gpuwm.owning_distribution(tree / "gpuwm",
+                                     candidates=others) is None
+
+
+@pytest.mark.parametrize("stranger", ["first", "last"])
+def test_a_second_gpuwm_on_the_path_does_not_lend_its_version(
+        tmp_path, stranger):
+    """The artifact: a real interpreter imports an installed gpuwm while
+    another gpuwm .dist-info (its package gone) stands on the path, first
+    or last.  ``-S`` keeps this machine's own installs out of the child.
+    """
+
+    site = tmp_path / "venv-site"
+    _pip_install(site, version="9.8.7", files={
+        name: (WORKTREE / "gpuwm" / name).read_bytes()
+        for name in ("__init__.py", "cupy_windows_warning.py")})
+    _pip_install(tmp_path / "user-site", version="1.2.3", files={})
+    sites = [str(site), str(tmp_path / "user-site")]
+    if stranger == "first":
+        sites.reverse()
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(sites)
+    program = ("import json, gpuwm;"
+               "d = gpuwm.version_distribution();"
+               "print(json.dumps({'version': gpuwm.__version__,"
+               " 'file': gpuwm.__file__, 'from': str(d.locate_file(''))}))")
+    completed = subprocess.run(
+        [sys.executable, "-S", "-P", "-c", program], capture_output=True,
+        text=True, cwd=str(tmp_path), env=environment, timeout=120)
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert Path(payload["file"]).resolve().is_relative_to(site.resolve())
+    assert payload["version"] == "9.8.7"
+    assert Path(payload["from"]).resolve() == site.resolve()

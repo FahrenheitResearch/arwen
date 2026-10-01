@@ -162,35 +162,9 @@ _RING_SURFACE_SLOTS = (
 _RING_VOLUME_SLOTS = ("refl_10cm",)
 
 
-def spec_zone_ring_slices(ny: int, nx: int, sz: int):
-    """Non-overlapping index tuples covering exactly the ring WRF's
-    clipped microphysics tiles exclude.
-
-    WRF (1-based, ide/jde staggered ends): tiles run
-    ``its = ids+sz .. ide-1-sz``, ``jts = jds+sz .. jde-1-sz``
-    (solve_em.F:3631-3639, :4040-4048;
-    module_microphysics_driver.F:870-879).  On gpuwm's 0-based (ny, nx)
-    mass grid the surviving tile is ``sz .. nx-1-sz`` x ``sz .. ny-1-sz``
-    and the excluded ring is ``i < sz or i > nx-1-sz or j < sz or
-    j > ny-1-sz``.  The leading Ellipsis makes each tuple apply to
-    (ny, nx) and (nz, ny, nx) arrays alike.  Degenerate domains
-    (``2*sz >= ny`` or ``nx`` -- WRF's clip leaves an empty tile) are
-    covered without overlap.
-    """
-    n_lo = min(sz, ny)
-    n_hi = max(ny - sz, n_lo)
-    e_lo = min(sz, nx)
-    e_hi = max(nx - sz, e_lo)
-    return (
-        (Ellipsis, slice(0, n_lo), slice(None)),          # south rows
-        (Ellipsis, slice(n_hi, ny), slice(None)),         # north rows
-        (Ellipsis, slice(n_lo, n_hi), slice(0, e_lo)),    # west columns
-        (Ellipsis, slice(n_lo, n_hi), slice(e_hi, nx)),   # east columns
-    )
-
-
 from gpuwm.core.physics_inventory import (  # noqa: F401,E402
     spec_zone_ring_save_slots,  # one home; re-exported here
+    spec_zone_ring_slices,  # one home (cupy-free); re-exported here
 )
 
 
@@ -211,6 +185,68 @@ def _ring_guard_slices(state: DomainState, cfg: RunConfig):
     return spec_zone_ring_slices(ny, nx, sz)
 
 
+#: One launch moves every ring section (kernels/microphysics_validation.cu,
+#: ``mp_ring_copy``).
+_RING_TPB = 256
+_RING_MAX_X_BLOCKS = 64
+#: Device descriptor tables by their exact contents.  A table is a pure
+#: function of its key (addresses and extents), so a hit is always the
+#: right table; persistent state and scratch keep their addresses from
+#: call to call, so a run uploads each of its two tables once.  Entries are
+#: never evicted: a CUDA graph that captured a ring launch (the tiled
+#: runner's --graph path) replays with the table's address baked in, so a
+#: table must outlive every graph that may hold it.  A table is 72 bytes
+#: per ring section, a few kilobytes per domain.
+_RING_TABLES: dict[tuple, cp.ndarray] = {}
+
+
+def _ring_row(arr, slc, buf):
+    """The ``mp_ring_copy`` descriptor of one ring section, or ``None``
+    where the section keeps the plain slice copy (not float32, not
+    C-contiguous, or not a 2-D/3-D mass-grid array).  ``buf=None`` asks for
+    a zero fill."""
+    if (arr.dtype != DTYPE or not arr.flags.c_contiguous
+            or arr.ndim not in (2, 3) or slc[0] is not Ellipsis):
+        return None
+    ny, nx = arr.shape[-2:]
+    j0, j1, js = slc[1].indices(ny)
+    i0, i1, is_ = slc[2].indices(nx)
+    nj, ni = j1 - j0, i1 - i0
+    if js != 1 or is_ != 1 or nj <= 0 or ni <= 0:
+        return None
+    nlev = arr.size // (ny * nx)
+    if buf is not None and (buf.dtype != DTYPE or not buf.flags.c_contiguous
+                            or buf.size != nlev * nj * ni):
+        return None
+    return (int(arr.data.ptr), 0 if buf is None else int(buf.data.ptr),
+            nlev, j0, nj, i0, ni, nx, ny * nx)
+
+
+def _launch_ring_rows(rows, *, direction: int) -> bool:
+    """Gather (0) or scatter/zero (1) every described section in one launch.
+
+    Returns False, launching nothing, when the table is not resident yet and
+    the current stream is capturing a CUDA graph: uploading it would be a
+    host transfer inside the capture, which fails it.  The caller then does
+    those sections with slice copies, exactly as before this kernel existed.
+    """
+    if not rows:
+        return True
+    key = tuple(rows)
+    table = _RING_TABLES.get(key)
+    if table is None:
+        if cp.cuda.get_current_stream().is_capturing():
+            return False
+        table = cp.asarray(np.asarray(rows, dtype=np.int64).reshape(-1))
+        _RING_TABLES[key] = table
+    count = max(r[2] * r[4] * r[6] for r in rows)
+    blocks_x = min((count + _RING_TPB - 1) // _RING_TPB, _RING_MAX_X_BLOCKS)
+    get_kernel("microphysics_validation", "mp_ring_copy")(
+        (blocks_x, len(rows)), (_RING_TPB,),
+        (table, np.int32(len(rows)), np.int32(direction)))
+    return True
+
+
 def _capture_spec_zone_ring(state: DomainState, slices):
     """Snapshot every ring section the microphysics call could touch.
 
@@ -223,6 +259,8 @@ def _capture_spec_zone_ring(state: DomainState, slices):
     """
     saved = []
     captured_slots = set()
+    fused = []
+    deferred = []
 
     def snap(arr, key):
         for index, slc in enumerate(slices):
@@ -230,7 +268,12 @@ def _capture_spec_zone_ring(state: DomainState, slices):
             if part.size == 0:
                 continue
             buf = state.scratch(part.shape, f"mp_ring_save_{key}_{index}")
-            buf[...] = part
+            row = _ring_row(arr, slc, buf)
+            if row is None:
+                buf[...] = part
+            else:
+                fused.append(row)
+                deferred.append((buf, part))
             saved.append((arr, slc, buf))
 
     for name in _RING_STATE_FIELDS:
@@ -242,6 +285,9 @@ def _capture_spec_zone_ring(state: DomainState, slices):
         if arr is not None:
             snap(arr, slot)
             captured_slots.add(slot)
+    if not _launch_ring_rows(fused, direction=0):
+        for buf, part in deferred:
+            buf[...] = part
     return saved, captured_slots
 
 
@@ -259,8 +305,29 @@ def _restore_spec_zone_ring(state: DomainState, slices, saved,
     restored stale rate -- is what the next step's rk_addtend_dry slot
     must see.
     """
+    # Every write below targets a ring section; the three families (the
+    # captured sections, the ring of a slot created during the call, and
+    # h_diabatic) are disjoint arrays, so one launch doing all of them
+    # writes exactly what the sequence of slice assignments wrote.
+    fused = []
+    deferred = []
+
+    def plain(arr, slc, buf):
+        if buf is None:
+            arr[slc] = 0
+        else:
+            arr[slc] = buf
+
+    def put(arr, slc, buf):
+        row = _ring_row(arr, slc, buf)
+        if row is not None:
+            fused.append(row)
+            deferred.append((arr, slc, buf))
+        else:
+            plain(arr, slc, buf)
+
     for arr, slc, buf in saved:
-        arr[slc] = buf
+        put(arr, slc, buf)
     for slot in _RING_SURFACE_SLOTS + _RING_VOLUME_SLOTS:
         if slot in captured_slots:
             continue
@@ -268,10 +335,13 @@ def _restore_spec_zone_ring(state: DomainState, slices, saved,
         if arr is None:
             continue
         for slc in slices:
-            arr[slc] = 0
+            put(arr, slc, None)
     if state.h_diabatic is not None:
         for slc in slices:
-            state.h_diabatic[slc] = 0
+            put(state.h_diabatic, slc, None)
+    if not _launch_ring_rows(fused, direction=1):
+        for arr, slc, buf in deferred:
+            plain(arr, slc, buf)
 
 
 @dataclass(frozen=True)
@@ -445,18 +515,19 @@ def _apply_thompson(
             "Thompson mp=8 state lacks " + ", ".join(missing))
 
     from gpuwm.core.thompson import (
+        launch_adapter_entry,
+        launch_adapter_finish,
+        launch_adapter_masks,
+        launch_adapter_prepare,
         launch_cloud_sedimentation,
         launch_cloud_saturation_adjust,
         launch_classic_graupel_number_finalize,
-        launch_classic_graupel_number_init,
         launch_effective_radius,
         launch_final_phase_cleanup,
         launch_frozen_vapor_network_from_owner,
-        launch_graupel_fallout_column_mask,
         launch_graupel_sedimentation,
         launch_hydrometeor_column_mask,
         launch_ice_sedimentation,
-        launch_microphysics_columns,
         launch_rain_evaporation,
         launch_rain_sedimentation,
         launch_snow_sedimentation,
@@ -465,8 +536,6 @@ def _apply_thompson(
     from gpuwm.core.thompson_runtime import load_classic_device_tables
 
     nz, ny, nx = state.p.shape
-    thb = state.thb if state.thb.ndim == 3 else state.thb[:, None, None]
-    phb = state.phb if state.phb.ndim == 3 else state.phb[:, None, None]
     th = state.scratch((nz, ny, nx), "mp_th")
     pii = state.scratch((nz, ny, nx), "mp_pii")
     temperature = state.scratch((nz, ny, nx), "mp_thompson_temperature")
@@ -483,12 +552,10 @@ def _apply_thompson(
         (nz, ny, nx), "mp_thompson_graupel_melt_marker")
     snow_velocity_boost = state.scratch(
         (nz, ny, nx), "mp_thompson_snow_velocity_boost")
-    z8w = state.scratch((nz + 1, ny, nx), "mp_z8w")
-    th[...] = thb + state.thp
-    pii[...] = cp.power(state.p / DTYPE(c.P0), DTYPE(c.RCP))
-    temperature[...] = th * pii
-    z8w[...] = (phb + state.php) / DTYPE(c.G)
-    dz[...] = z8w[1:] - z8w[:-1]
+    # mp_z8w stays drawn so the mp=8 scratch arena keeps its frozen layout
+    # (tests/test_mp8_frozen.py); the layer depths below no longer pass
+    # through it and nothing reads it after this adapter.
+    state.scratch((nz + 1, ny, nx), "mp_z8w")
 
     surface_shape = (ny, nx)
     rainnc = state.scratch(surface_shape, "mp_rainnc")
@@ -505,25 +572,29 @@ def _apply_thompson(
     graupel_number_shadow = state.scratch(
         (nz, ny, nx), "mp_thompson_graupel_number_shadow")
 
-    # Lifetime-alias the zero/one entry marker with the held-temperature
-    # buffer: the column mask consumes it before cloud adjustment overwrites
-    # every element with the reference temperature needed by snow fallout.
-    cp.greater(
-        state.qg, DTYPE(1.0e-12), out=frozen_reference_temperature)
-    # The cold source writes its latent heating in-place.  Preserve WRF's
-    # entry-temperature branch decision so a cold cell heated across 0 C
-    # cannot execute the warm source path again in this same call.  The warm
-    # source consumes this mask and overwrites the same dedicated buffer with
-    # its held prr_gml > 0 marker.  It writes prr_sml > 0 separately: neither
-    # marker may alias the later RHOF output.
-    cp.greater_equal(
-        temperature, DTYPE(273.15), out=graupel_melt_marker)
-    # GRAUPELNCV is a current-call diagnostic.  Unlike RAINNCV/SNOWNCV it
-    # has no earlier species kernel that resets it before the graupel slice.
-    graupelncv.fill(DTYPE(0.0))
-    save_pre_mp_theta(state)
-    # WRF's entry rewrite (:1844-1845, :1871-1872, :1900-1901, :1911,
-    # :1941-1942): cloud, ice, rain, snow and graupel whose entry mixing
+    # The Exner function stays CuPy's divide and power: the fused launches
+    # below reproduce every other operation of this adapter bit for bit on
+    # every card, but the same p / P0 and powf compiled into the fused
+    # kernel came out one ULP apart in 9 percent of cells on an RTX 5090.
+    pii[...] = cp.power(state.p / DTYPE(c.P0), DTYPE(c.RCP))
+    # One launch before any process (launch_adapter_prepare): theta,
+    # temperature and the layer depths; the pre-microphysics full theta
+    # parked in h_diabatic (save_pre_mp_theta); GRAUPELNCV reset (a
+    # current-call diagnostic with no earlier species kernel to reset it
+    # before the graupel slice); and two entry markers.  The zero/one entry
+    # graupel marker is lifetime-aliased with the held-temperature buffer:
+    # the column mask consumes it before cloud adjustment overwrites every
+    # element with the reference temperature needed by snow fallout.  The
+    # cold source writes its latent heating in-place, so WRF's
+    # entry-temperature branch decision (T >= 273.15 K) is kept in
+    # graupel_melt_marker and a cold cell heated across 0 C cannot execute
+    # the warm source path again in this same call; the warm source consumes
+    # that mask and overwrites the buffer with its held prr_gml > 0 marker
+    # (it writes prr_sml > 0 separately: neither marker may alias the later
+    # RHOF output).
+    # The same launch makes WRF's entry rewrite (:1844-1845, :1871-1872,
+    # :1900-1901, :1911, :1941-1942): cloud, ice, rain, snow and graupel
+    # whose entry mixing
     # ratio is at or below R1 are ZEROED, mass and number, before any
     # process runs, and in every column, because mp_gt_driver copies the
     # rewritten 1-D arrays back whether or not the column had microphysics.
@@ -537,27 +608,27 @@ def _apply_thompson(
     # differed from WRF v4.6.1's own Fortran beyond 1e-2, unexplained by
     # rounding, at 3,154 levels of two saved real-data analysis states and
     # the echo by up to 43.9 dB in 3,394 cells of one
-    # (tools/thompson_real_column_parity --mp 8).  The mask is taken before
-    # either array is written; ``cp.where`` writes a +0.0, as WRF does.
-    for mass, number in ((state.qc, None), (state.qi, state.ni),
-                         (state.qr, state.nr), (state.qs, None),
-                         (state.qg, None)):
-        present = mass > DTYPE(1.0e-12)
-        if number is not None:
-            number[...] = cp.where(present, number, DTYPE(0.0))
-        mass[...] = cp.where(present, mass, DTYPE(0.0))
-    # WRF's column exit (:1646, :1827-1990, :2020): a column whose entry
-    # condensate is all at or below R1 and which is nowhere supersaturated
-    # over ice leaves mp_thompson before the source loop, and its vapour is
-    # not floored at 1.E-10 by the terminal apply (:3974).  Taken on the
-    # entry state; read by the phase cleanup, which carries the floor.
+    # (tools/thompson_real_column_parity --mp 8).  Each cell's presence is
+    # read before its mass or number is written, and the zero is a +0.0,
+    # as WRF writes.
     micro_columns = state.scratch(surface_shape, "mp_thompson_micro_columns")
-    launch_microphysics_columns(
+    launch_adapter_prepare(
+        state.thb, state.thp, state.phb, state.php,
+        th, pii, temperature, dz, state.h_diabatic,
+        state.qc, state.qi, state.ni, state.qr, state.nr, state.qs,
+        state.qg, frozen_reference_temperature, graupel_melt_marker,
+        graupelncv, micro_columns)
+    # On the rewritten entry state (launch_adapter_entry): the private
+    # graupel number, and WRF's column exit (:1646, :1827-1990, :2020): a
+    # column whose entry condensate is all at or below R1 and which is
+    # nowhere supersaturated over ice leaves mp_thompson before the source
+    # loop, and its vapour is not floored at 1.E-10 by the terminal apply
+    # (:3974).  The flag is read by the phase cleanup, which carries the
+    # floor.
+    launch_adapter_entry(
         state.qc, state.qi, state.qr, state.qs, state.qg,
-        temperature, state.p, state.qv, micro_columns)
-    launch_classic_graupel_number_init(
-        state.qg, temperature, state.p, state.qv,
-        graupel_number_shadow)
+        temperature, state.p, state.qv, graupel_number_shadow,
+        micro_columns)
     launch_frozen_vapor_network_from_owner(
         state.qi, state.ni, state.qs, state.qg, state.qr, state.nr,
         temperature, state.p, state.qv, table_owner, dt, qc=state.qc,
@@ -571,11 +642,11 @@ def _apply_thompson(
     # WRF's rain velocity pass refreshes RHOF for every level only when the
     # post-source column contains rain.  RAINNCV is not populated until the
     # later ice fallout launch, so it safely carries this held column mask.
-    launch_hydrometeor_column_mask(state.qr, rainncv)
     # SR is refreshed only after all fallout, so its 2-D buffer safely carries
-    # the zero/one column guard until the graupel launch consumes it.
-    launch_graupel_fallout_column_mask(
-        frozen_reference_temperature, state.qg, sr)
+    # the graupel fallout's zero/one column guard until the graupel launch
+    # consumes it.  Both masks come from one launch.
+    launch_adapter_masks(
+        state.qr, state.qg, frozen_reference_temperature, rainncv, sr)
     # The adjustment writes WRF's L_qc(k) into ``cloud_presence``: set from
     # the post-source cloud (:3215-3223) and cleared where the adjustment
     # leaves rc(k) at R1 (:3485), never set by it.  The buffer is the rain
@@ -668,12 +739,10 @@ def _apply_thompson(
         temperature, state.p, state.qv, state.qc,
         state.qi, state.ni, state.qs,
         state.effc, state.effi, state.effs)
-    th[...] = temperature / pii
-    moist_physics_finish(state, cfg, th, dt)
-    frozen = snowncv + graupelncv
-    sr[...] = cp.where(
-        rainncv > DTYPE(1.0e-12),
-        cp.minimum(DTYPE(1.0), frozen / rainncv), DTYPE(0.0))
+    # Theta from temperature, moist_physics_finish and SR in one launch.
+    launch_adapter_finish(
+        temperature, pii, th, state.thp, state.h_diabatic,
+        rainncv, snowncv, graupelncv, sr, cfg, dt)
     return MicrophysicsDiagnostics(
         rainnc=rainnc, rainncv=rainncv, sr=sr,
         snownc=snownc, snowncv=snowncv,

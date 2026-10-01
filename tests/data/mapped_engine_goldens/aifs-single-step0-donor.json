@@ -1,0 +1,412 @@
+{
+  "decode": {
+    "mapping": {
+      "name": "rw-wps-aifs-single-step0-donor.mapping.json",
+      "sha256": "99adc3a8894c2d19ba37d6da6d53418a95dcf32c2b1094b86e8ccd1feecb7b02"
+    },
+    "refusal": {
+      "message": "mapped lateral-boundary forcing requires at least two times",
+      "type": "ForcingSeriesRefusal"
+    },
+    "schema": "gpuwm-mapped-parity-digest-v2",
+    "source": "aifs-single-step0-donor",
+    "verdict": "REFUSED"
+  },
+  "inspect": {
+    "inspection": {
+      "frames": [
+        {
+          "decoded_direct_fields": [
+            "air_temperature",
+            "air_temperature_2m",
+            "dewpoint_temperature_2m",
+            "eastward_wind",
+            "eastward_wind_10m",
+            "geopotential_height",
+            "land_fraction",
+            "northward_wind",
+            "northward_wind_10m",
+            "skin_temperature",
+            "soil_temperature",
+            "specific_humidity",
+            "surface_pressure",
+            "terrain_height",
+            "volumetric_soil_moisture"
+          ],
+          "fields": {
+            "air_temperature": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 318.5259552001953,
+              "minimum": 181.23822021484375,
+              "missing": 0,
+              "sha256": "f3adf7576fa1ca9f7d845259f2f13e16f9a1fb7f63db3e06fe702117ade08bd2",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:4",
+                "20260817000000-0h-oper-fc.grib2:18",
+                "20260817000000-0h-oper-fc.grib2:23",
+                "20260817000000-0h-oper-fc.grib2:27",
+                "20260817000000-0h-oper-fc.grib2:54",
+                "20260817000000-0h-oper-fc.grib2:63",
+                "20260817000000-0h-oper-fc.grib2:67",
+                "20260817000000-0h-oper-fc.grib2:70",
+                "20260817000000-0h-oper-fc.grib2:83",
+                "20260817000000-0h-oper-fc.grib2:99",
+                "20260817000000-0h-oper-fc.grib2:105",
+                "20260817000000-0h-oper-fc.grib2:108",
+                "20260817000000-0h-oper-fc.grib2:110"
+              ]
+            },
+            "air_temperature_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 317.5610656738281,
+              "minimum": 205.49856567382812,
+              "missing": 0,
+              "sha256": "4f35b3f559ba7360bc86f750dee0bdf7ba1ebb78fea1d0c4fbb18604504644b7",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:12"
+              ]
+            },
+            "dewpoint_temperature_2m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 305.0435485839844,
+              "minimum": 202.23104858398438,
+              "missing": 0,
+              "sha256": "b48d620056ed24ff7320b7f21dbd929e22c8cf251e1e042d7215dd877add5301",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:21"
+              ]
+            },
+            "eastward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 87.44289779663086,
+              "minimum": -47.485267639160156,
+              "missing": 0,
+              "sha256": "d0e2cf5ad583c73ea4e32ee8d7170cfd687d2c5a0f39044ffdc2c739c5a88372",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:13",
+                "20260817000000-0h-oper-fc.grib2:25",
+                "20260817000000-0h-oper-fc.grib2:32",
+                "20260817000000-0h-oper-fc.grib2:37",
+                "20260817000000-0h-oper-fc.grib2:61",
+                "20260817000000-0h-oper-fc.grib2:71",
+                "20260817000000-0h-oper-fc.grib2:73",
+                "20260817000000-0h-oper-fc.grib2:77",
+                "20260817000000-0h-oper-fc.grib2:90",
+                "20260817000000-0h-oper-fc.grib2:104",
+                "20260817000000-0h-oper-fc.grib2:111",
+                "20260817000000-0h-oper-fc.grib2:114",
+                "20260817000000-0h-oper-fc.grib2:118"
+              ]
+            },
+            "eastward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 22.65352439880371,
+              "minimum": -26.01835060119629,
+              "missing": 0,
+              "sha256": "f75b0db70f44d4552a904fbc56fdfea1142c232e589cf7904ec9ff86c5642e76",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:125"
+              ]
+            },
+            "geopotential_height": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 21133.41796875,
+              "minimum": -407.1369323730469,
+              "missing": 0,
+              "sha256": "390d5549c656222b056049ae9abf3cde63a10764dc212a269fa97f4c101e80fb",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:2",
+                "20260817000000-0h-oper-fc.grib2:10",
+                "20260817000000-0h-oper-fc.grib2:20",
+                "20260817000000-0h-oper-fc.grib2:42",
+                "20260817000000-0h-oper-fc.grib2:53",
+                "20260817000000-0h-oper-fc.grib2:56",
+                "20260817000000-0h-oper-fc.grib2:64",
+                "20260817000000-0h-oper-fc.grib2:72",
+                "20260817000000-0h-oper-fc.grib2:87",
+                "20260817000000-0h-oper-fc.grib2:97",
+                "20260817000000-0h-oper-fc.grib2:101",
+                "20260817000000-0h-oper-fc.grib2:102",
+                "20260817000000-0h-oper-fc.grib2:112"
+              ]
+            },
+            "land_fraction": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "missing": 0,
+              "sha256": "cec1b08bb05717bed5906c98a91ec524bfc74858d143841def57e28ded8c1b8f",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:31"
+              ]
+            },
+            "northward_wind": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 75.16287231445312,
+              "minimum": -76.66045379638672,
+              "missing": 0,
+              "sha256": "7d4080263d51d7bcf3ad86b7cc132aa13057d952460a805147c6e41c5fa2cd56",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:22",
+                "20260817000000-0h-oper-fc.grib2:33",
+                "20260817000000-0h-oper-fc.grib2:40",
+                "20260817000000-0h-oper-fc.grib2:44",
+                "20260817000000-0h-oper-fc.grib2:69",
+                "20260817000000-0h-oper-fc.grib2:78",
+                "20260817000000-0h-oper-fc.grib2:81",
+                "20260817000000-0h-oper-fc.grib2:84",
+                "20260817000000-0h-oper-fc.grib2:98",
+                "20260817000000-0h-oper-fc.grib2:109",
+                "20260817000000-0h-oper-fc.grib2:119",
+                "20260817000000-0h-oper-fc.grib2:122",
+                "20260817000000-0h-oper-fc.grib2:123"
+              ]
+            },
+            "northward_wind_10m": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 23.536964416503906,
+              "minimum": -20.572410583496094,
+              "missing": 0,
+              "sha256": "31fe5e4d7048a0af2d25c2cc0d3ce9b614f64b93bf67f72787a530b4e00578a5",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:6"
+              ]
+            },
+            "skin_temperature": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 325.70184326171875,
+              "minimum": 201.73309326171875,
+              "missing": 0,
+              "sha256": "f8573ef9a758460d5dce6ad361fdd3f1bf439fccb4233530bf46bb8c94bfcd87",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:74"
+              ]
+            },
+            "soil_temperature": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 326.13543701171875,
+              "minimum": 216.23309326171875,
+              "missing": 0,
+              "sha256": "a123020ed241d8a72d462069d685344b2fa1733896e6a074ea2101ee28394c53",
+              "shape": [
+                2,
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:8",
+                "20260817000000-0h-oper-fc.grib2:66"
+              ]
+            },
+            "specific_humidity": {
+              "axes": [
+                "vertical",
+                "y",
+                "x"
+              ],
+              "maximum": 0.028386457845954283,
+              "minimum": 2.282538424935865e-08,
+              "missing": 0,
+              "sha256": "b4a4d7601e7910c9b6e8fa347d4fe2f228feea5ce75d683444d5d7fe57cc3417",
+              "shape": [
+                13,
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:3",
+                "20260817000000-0h-oper-fc.grib2:5",
+                "20260817000000-0h-oper-fc.grib2:29",
+                "20260817000000-0h-oper-fc.grib2:39",
+                "20260817000000-0h-oper-fc.grib2:47",
+                "20260817000000-0h-oper-fc.grib2:50",
+                "20260817000000-0h-oper-fc.grib2:75",
+                "20260817000000-0h-oper-fc.grib2:85",
+                "20260817000000-0h-oper-fc.grib2:88",
+                "20260817000000-0h-oper-fc.grib2:94",
+                "20260817000000-0h-oper-fc.grib2:103",
+                "20260817000000-0h-oper-fc.grib2:116",
+                "20260817000000-0h-oper-fc.grib2:124"
+              ]
+            },
+            "surface_pressure": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 104270.890625,
+              "minimum": 49230.890625,
+              "missing": 0,
+              "sha256": "5d732fe46ae954bc4fd64bc57e8765f4d10da2589c2afa75862ad8d3cd3da405",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:24"
+              ]
+            },
+            "terrain_height": {
+              "axes": [
+                "y",
+                "x"
+              ],
+              "maximum": 5995.987620844338,
+              "minimum": -271.3921673606048,
+              "missing": 0,
+              "sha256": "c405ccbb581be0b2b2c7aafa6b0f3c0cde019290ea9c4821ee43c56b31db9acd",
+              "shape": [
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:17"
+              ]
+            },
+            "volumetric_soil_moisture": {
+              "axes": [
+                "soil",
+                "y",
+                "x"
+              ],
+              "maximum": 0.76007080078125,
+              "minimum": 0.0,
+              "missing": 1327980,
+              "sha256": "30aee6abbe15e88706780f454b812d5e64838c98e9446d953c92a4eee38bec74",
+              "shape": [
+                2,
+                721,
+                1440
+              ],
+              "source_references": [
+                "20260817000000-0h-oper-fc.grib2:1",
+                "20260817000000-0h-oper-fc.grib2:62"
+              ]
+            }
+          },
+          "member": null,
+          "source_cycle": "2026-08-17T00:00:00",
+          "unresolved_direct_fields": [],
+          "valid_time": "2026-08-17T00:00:00"
+        }
+      ],
+      "grid": {
+        "fingerprint": "a2f9620a8ff98506bf256cf3975020a6910f029562813ea49879cc1c3f5b9b2d",
+        "nx": 1440,
+        "ny": 721,
+        "vertical_count": 13
+      },
+      "inputs": [
+        {
+          "bytes": 91296873,
+          "name": "20260817000000-0h-oper-fc.grib2",
+          "sha256": "fad78858de3a24b69997ff42fe95feddd917c46758d03c573477663f9a25e01e"
+        }
+      ],
+      "mapping": {
+        "name": "rw-wps-aifs-single-step0-donor.mapping.json",
+        "sha256": "99adc3a8894c2d19ba37d6da6d53418a95dcf32c2b1094b86e8ccd1feecb7b02"
+      },
+      "materialization": {
+        "error": "mapped lateral-boundary forcing requires at least two times",
+        "error_type": "ForcingSeriesRefusal",
+        "verdict": "INCOMPLETE"
+      },
+      "schema": "gpuwm-mapped-source-inspection-v1",
+      "source_format": "grib2",
+      "status": "DECODED_INCOMPLETE_NOT_STOCK_WRF_CERTIFIED",
+      "stock_wrf_certified": false
+    },
+    "schema": "gpuwm-mapped-parity-digest-v2",
+    "source": "aifs-single-step0-donor",
+    "verdict": "INSPECTED"
+  },
+  "measured_on": {
+    "machine": "x86_64",
+    "system": "Linux"
+  },
+  "schema": "gpuwm-mapped-parity-digest-v2",
+  "source": "aifs-single-step0-donor"
+}

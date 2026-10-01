@@ -1,0 +1,4 @@
+# Extra WRF v4.7.1 sources the BEP lane's drivers link (pinned in
+# SOURCES.sha256): YSU's flag_bep arm for run_ysu_bep.F90.
+phys/ccpp_kind_types.F
+phys/physics_mmm/bl_ysu.F90

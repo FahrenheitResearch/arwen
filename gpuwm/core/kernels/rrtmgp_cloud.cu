@@ -129,3 +129,174 @@ extern "C" __global__ void rrtmgp_finalize_cloud_sw(
   ssa[idx] = (total_ssa - wf) / fmaxf(floor, 1.0f - wf);
   asym[idx] = (total_g - f) / fmaxf(floor, 1.0f - f);
 }
+
+// Pure copy and positive-zero fill for the five clear upper-layer fields.
+extern "C" __global__ void rrtmgp_clear_upper_layers(
+    const float* a, const float* b, const float* c, const float* d,
+    const float* e, float* oa, float* ob, float* oc, float* od, float* oe,
+    int ncol, int model_nlay, int nlay) {
+  const int index = blockDim.x * blockIdx.x + threadIdx.x;
+  if (index >= ncol * nlay) return;
+  const int col = index / nlay;
+  const int lay = index % nlay;
+  if (lay < model_nlay) {
+    const int src = col * model_nlay + lay;
+    oa[index] = a[src]; ob[index] = b[src]; oc[index] = c[src];
+    od[index] = d[src]; oe[index] = e[src];
+  } else {
+    oa[index] = 0.0f; ob[index] = 0.0f; oc[index] = 0.0f;
+    od[index] = 0.0f; oe[index] = 0.0f;
+  }
+}
+
+// Copy the two model-interface flux fields, optionally applying daylight.
+extern "C" __global__ void rrtmgp_store_model_flux_pair(
+    const float* up, const float* dn, const unsigned char* daylight,
+    float* out_up, float* out_dn, int ncol, int source_nlev,
+    int model_nlev, int apply_daylight) {
+  const int index = blockDim.x * blockIdx.x + threadIdx.x;
+  if (index >= ncol * model_nlev) return;
+  const int col = index / model_nlev;
+  const int lev = index % model_nlev;
+  if (!apply_daylight || daylight[col]) {
+    out_up[index] = up[col * source_nlev + lev];
+    out_dn[index] = dn[col * source_nlev + lev];
+  } else {
+    out_up[index] = 0.0f;
+    out_dn[index] = 0.0f;
+  }
+}
+
+// Three independent broadcasts, with exactly one store for each element.
+extern "C" __global__ void rrtmgp_prepare_sw_inputs(
+    const float* albedo, const float* solar, const float* mu,
+    float* albedo_gpt, float* inc_gpt, float* mu0,
+    int ncol, int ngpt, int nlay) {
+  const int index = blockDim.x * blockIdx.x + threadIdx.x;
+  if (index < ncol * ngpt) {
+    albedo_gpt[index] = albedo[index / ngpt];
+    inc_gpt[index] = solar[index % ngpt];
+  }
+  if (index < ncol * nlay) mu0[index] = mu[index / nlay];
+}
+
+extern "C" __global__ void rrtmgp_prepare_sw_inputs_fp64(
+    const float* albedo, const float* solar, const double* mu,
+    float* albedo_gpt, float* inc_gpt, float* mu0,
+    int ncol, int ngpt, int nlay) {
+  const int index = blockDim.x * blockIdx.x + threadIdx.x;
+  if (index < ncol * ngpt) {
+    albedo_gpt[index] = albedo[index / ngpt];
+    inc_gpt[index] = solar[index % ngpt];
+  }
+  if (index < ncol * nlay) mu0[index] = __double2float_rn(mu[index / nlay]);
+}
+
+
+// Preserve concatenate dtype promotion, including float64 cap temperatures.
+template <typename T, bool DERIVE_TEMPERATURE = false>
+__device__ __forceinline__ void rrtmgp_append_profile_impl(
+    const float* play, const float* plev, const float* tlay,
+    const float* tlev, const float* qv,
+    const float* up_play, const float* up_plev, const T* up_tlay,
+    const T* up_tlev, const float* up_qv,
+    float* out_play, float* out_plev, T* out_tlay, T* out_tlev, float* out_qv,
+    int ncol, int model_nlay, int upper_nlay,
+    int spc, int spl, int sec, int sel, int stc, int stl,
+    int sic, int sil, int sqc, int sql) {
+  const int nlay = model_nlay + upper_nlay;
+  const int index = blockDim.x * blockIdx.x + threadIdx.x;
+  if (index >= ncol * (nlay + 1)) return;
+  const int col = index / (nlay + 1);
+  const int lev = index % (nlay + 1);
+  if (lev <= model_nlay) {
+    const int src = col * (model_nlay + 1) + lev;
+    out_plev[index] = plev[src]; out_tlev[index] = (T)tlev[src];
+  } else {
+    const int j = lev - model_nlay - 1;
+    out_plev[index] = up_plev[col * sec + j * sel];
+    if constexpr (DERIVE_TEMPERATURE) {
+      const double top = (double)tlev[col * (model_nlay + 1) + model_nlay];
+      const double offset = __dsub_rn(top, up_tlay[col * stc]);
+      out_tlev[index] = __dadd_rn(up_tlev[col * sic + j * sil], offset);
+    } else {
+      out_tlev[index] = up_tlev[col * sic + j * sil];
+    }
+  }
+  if (lev < nlay) {
+    const int target = col * nlay + lev;
+    if (lev < model_nlay) {
+      const int src = col * model_nlay + lev;
+      out_play[target] = play[src]; out_tlay[target] = (T)tlay[src];
+      out_qv[target] = qv[src];
+    } else {
+      const int j = lev - model_nlay;
+      out_play[target] = up_play[col * spc + j * spl];
+      if constexpr (DERIVE_TEMPERATURE) {
+        const double top = (double)tlev[col * (model_nlay + 1) + model_nlay];
+        const double offset = __dsub_rn(top, up_tlay[col * stc]);
+        const double next = __dadd_rn(up_tlev[col * sic + j * sil], offset);
+        const double previous = j == 0 ? top :
+            __dadd_rn(up_tlev[col * sic + (j - 1) * sil], offset);
+        out_tlay[target] = __dmul_rn(0.5, __dadd_rn(previous, next));
+      } else {
+        out_tlay[target] = up_tlay[col * stc + j * stl];
+      }
+      out_qv[target] = up_qv[col * sqc + j * sql];
+    }
+  }
+}
+
+extern "C" __global__ void rrtmgp_append_profile_fp32(
+    const float* play, const float* plev, const float* tlay,
+    const float* tlev, const float* qv,
+    const float* up_play, const float* up_plev, const float* up_tlay,
+    const float* up_tlev, const float* up_qv,
+    float* out_play, float* out_plev, float* out_tlay, float* out_tlev, float* out_qv,
+    int ncol, int model_nlay, int upper_nlay,
+    int spc, int spl, int sec, int sel, int stc, int stl,
+    int sic, int sil, int sqc, int sql) {
+  rrtmgp_append_profile_impl<float>(
+      play, plev, tlay, tlev, qv, up_play, up_plev, up_tlay, up_tlev, up_qv,
+      out_play, out_plev, out_tlay, out_tlev, out_qv, ncol, model_nlay, upper_nlay,
+      spc, spl, sec, sel, stc, stl, sic, sil, sqc, sql);
+}
+
+extern "C" __global__ void rrtmgp_append_profile_fp64(
+    const float* play, const float* plev, const float* tlay,
+    const float* tlev, const float* qv,
+    const float* up_play, const float* up_plev, const double* up_tlay,
+    const double* up_tlev, const float* up_qv,
+    float* out_play, float* out_plev, double* out_tlay, double* out_tlev, float* out_qv,
+    int ncol, int model_nlay, int upper_nlay,
+    int spc, int spl, int sec, int sel, int stc, int stl,
+    int sic, int sil, int sqc, int sql) {
+  rrtmgp_append_profile_impl<double>(
+      play, plev, tlay, tlev, qv, up_play, up_plev, up_tlay, up_tlev, up_qv,
+      out_play, out_plev, out_tlay, out_tlev, out_qv, ncol, model_nlay, upper_nlay,
+      spc, spl, sec, sel, stc, stl, sic, sil, sqc, sql);
+}
+
+extern "C" __global__ void rrtmgp_append_lw_profile(
+    const float* play, const float* plev, const float* tlay,
+    const float* tlev, const float* qv,
+    const float* up_play, const float* up_plev, const double* up_tlay,
+    const double* up_tlev, const float* up_qv,
+    float* out_play, float* out_plev, double* out_tlay, double* out_tlev, float* out_qv,
+    int ncol, int model_nlay, int upper_nlay,
+    int spc, int spl, int sec, int sel, int stc, int stl,
+    int sic, int sil, int sqc, int sql) {
+  rrtmgp_append_profile_impl<double, true>(
+      play, plev, tlay, tlev, qv, up_play, up_plev, up_tlay, up_tlev, up_qv,
+      out_play, out_plev, out_tlay, out_tlev, out_qv, ncol, model_nlay, upper_nlay,
+      spc, spl, sec, sel, stc, stl, sic, sil, sqc, sql);
+}
+
+// Narrow both retained float64 temperature fields once for all consumers.
+extern "C" __global__ void rrtmgp_solver_temperatures(
+    const double* tlay, const double* tlev, float* out_tlay, float* out_tlev,
+    int ncol, int nlay) {
+  const int index = blockDim.x * blockIdx.x + threadIdx.x;
+  if (index < ncol * nlay) out_tlay[index] = __double2float_rn(tlay[index]);
+  if (index < ncol * (nlay + 1)) out_tlev[index] = __double2float_rn(tlev[index]);
+}

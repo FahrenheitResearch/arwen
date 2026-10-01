@@ -82,11 +82,21 @@ _YSU_OUTPUTS = _YSU_3D_FLOAT_OUTPUTS + _YSU_2D_OUTPUTS
 _YSU_2D_FLOAT_OUTPUTS = tuple(
     name for name in _YSU_2D_OUTPUTS if name not in ("kpbl", "cloudflg"))
 
+#: The BEP/BEP+BEM source terms WRF's flag_bep arm reads (bl_ysu.F90:450-497),
+#: in ``ysu_column_bep`` argument order.  ``sf_bep`` may carry nz+1 levels
+#: (the UrbanState array does); only the first nz are read, as
+#: module_bl_ysu.F:360-375 copies kts:kte.  a_e/b_e/dlg/dl_u are part of the
+#: handoff but YSU never reads them.
+YSU_BEP_TERMS = ("a_u_bep", "a_v_bep", "a_t_bep", "a_q_bep", "b_u_bep",
+                 "b_v_bep", "b_t_bep", "b_q_bep", "sf_bep", "vl_bep")
+
 
 def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                rthraten=None, *,
                psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland,
-               u10, v10, dt: float, ysu_topdown_pblmix: int = 1):
+               u10, v10, dt: float, ysu_topdown_pblmix: int = 1,
+               bep: Mapping[str, cp.ndarray] | None = None,
+               frc_urb2d: cp.ndarray | None = None):
     """Launch YSU for a batch of device columns and return device outputs.
 
     Three-dimensional inputs have shape ``(nz, ny, nx)`` except
@@ -94,6 +104,15 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
     ``(ny, nx)``.  All are C-contiguous float32 CuPy arrays.  The returned
     dict contains 3-D ``du/dv/dtheta/dqv/dqc/dqi/exch_h/exch_m``, 2-D
     ``hpbl/wstar/delta`` float32 arrays, and 2-D one-based ``kpbl`` int32.
+
+    ``bep`` (sf_urban_physics 2/3) is ``UrbanState.pbl_terms``: WRF's
+    flag_bep arm then runs (``ysu_column_bep``).  ``frc_urb2d`` is still
+    required and shape-checked, but the kernel no longer reads it: WRF
+    removes only the urban fraction of YSU's own surface drag while the BEP
+    couple already carries the rural drag in ``a_u_bep``, so gpuwm removes
+    all of it (a declared divergence, ``kernels/ysu.cu`` and
+    ``tests/test_ysu_bep_rural_drag.py``).  ``bep=None`` launches
+    ``ysu_column`` exactly as before.
     """
     columns = {"u": u, "v": v, "theta": theta, "qv": qv, "qc": qc,
                "qi": qi, "p": p, "exner": exner, "dz": dz}
@@ -139,6 +158,31 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
     if ysu_topdown_pblmix not in (0, 1, False, True):
         raise ValueError("ysu_topdown_pblmix must be 0 or 1")
 
+    bep_args = ()
+    if bep is not None:
+        missing = [name for name in YSU_BEP_TERMS if name not in bep]
+        if missing:
+            raise ValueError(f"bep is missing {missing}")
+        for name in YSU_BEP_TERMS:
+            arr = bep[name]
+            want = (nz + 1, ny, nx) if name == "sf_bep" else shape
+            if (not isinstance(arr, cp.ndarray) or arr.dtype != DTYPE
+                    or not arr.flags.c_contiguous
+                    or arr.shape not in (shape, want)):
+                raise ValueError(
+                    f"bep[{name!r}] must be C-contiguous float32 with shape "
+                    f"{want}")
+        if (not isinstance(frc_urb2d, cp.ndarray)
+                or frc_urb2d.shape != (ny, nx) or frc_urb2d.dtype != DTYPE
+                or not frc_urb2d.flags.c_contiguous):
+            raise ValueError(
+                "bep needs frc_urb2d, C-contiguous float32 with shape "
+                f"{(ny, nx)}: bl_ysu.F90:1313 removes the urban fraction of "
+                "the surface drag, and without it that drag is counted twice")
+        bep_args = tuple(bep[name] for name in YSU_BEP_TERMS) + (frc_urb2d,)
+    elif frc_urb2d is not None:
+        raise ValueError("frc_urb2d is only read with bep")
+
     out = {name: cp.empty_like(theta) for name in _YSU_3D_FLOAT_OUTPUTS}
     out.update(hpbl=cp.empty((ny, nx), dtype=DTYPE),
                kpbl=cp.empty((ny, nx), dtype=cp.int32),
@@ -148,7 +192,7 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                wstar3_2=cp.empty((ny, nx), dtype=DTYPE),
                cloudflg=cp.empty((ny, nx), dtype=cp.int32))
     ncol = ny * nx
-    kernel = get_kernel("ysu", "ysu_column")
+    kernel = get_kernel("ysu", "ysu_column_bep" if bep_args else "ysu_column")
     # The column arrays live in a global workspace sized to the threads in
     # flight, not in the per-thread local frame (which CUDA prices at the
     # card's whole resident-thread capacity).  Columns therefore go in
@@ -176,7 +220,7 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                     out["cloudflg"],
                     np.int32(int(ysu_topdown_pblmix)),
                     np.int32(nz), np.int32(ny), np.int32(nx),
-                    ws, np.int32(wskp), np.int32(lo)))
+                    ws, np.int32(wskp), np.int32(lo)) + bep_args)
     finally:
         del ws
     return out

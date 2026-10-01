@@ -152,6 +152,87 @@ seconds cap, a state clip, a forecast-skill result or a complete WRF oracle.
 The v3 checkpoint identity distinguishes this schedule from the interim
 v2 conservative transfer with initial-speed substeps.
 
+## 6. Rain with no number no longer evaporates through the condensation cap -- REAL, and it is WRF's
+
+`module_mp_wdm6.F:1240-1256` computes the rain evaporation/condensation rate as
+`prevp = (rh-1)*nr*(...)/work1`. A negative rate takes the evaporation branch,
+bounded by the rain present (`max(prevp,-qr/dtcld)`, :1243) and by half the
+saturation deficit. Any other rate takes the condensation branch,
+`prevp = min(prevp, satdt/2)` (:1255), written for supersaturated air.
+
+Rain that carries mass but no number (`nr = 0`, `qr > 0`) makes the rate
+`-0` in subsaturated air. `-0 < 0` is false, so WRF takes the condensation
+branch, and `min(-0, satdt/2)` with `satdt < 0` becomes an evaporation of half
+the saturation deficit. Nothing bounds it by the rain: on the captured cell it
+was 1.18e-5 kg/kg of evaporation from 1.3e-13 kg/kg of rain. `pidep`, `psdep`,
+`pgdep` and `pigen` subtract `prevp` from `satdt` in their `supice` limits
+(:1527 on), so ice deposits against that vapour. The rain limiter (:1670-1680)
+then scales `prevp` back to the rain there is and never revisits the
+deposition. Vapour goes negative.
+
+Numberless rain reaches the process block from advection (mass and number are
+transported separately), from melting snow or graupel below `qcrmin`, which
+adds mass without number (:917-920, :940-943), and from freezing that consumes
+the number before the mass.
+
+WRF v4.6.1's own Fortran (the pinned source, driver and radar code removed,
+`gfortran -O0 -ffp-contract=off`) was run on the two columns where both WDM6
+convective cases failed the vapour check at step 4 (HRRR 2026-06-14 19Z,
+West Texas, 3 km, 49 levels, dt 15 s; retained as
+`tests/data/wdm6_numberless_rain_columns.npz`):
+
+| column | WRF v4.6.1 | port before | port now = WRF with this rule |
+|---|---|---|---|
+| Grell-Freitas, cell (38,1,64) | qv -4.9046e-9; 9 levels negative, down to -9.88e-7 | the same bits | qv 1.0327e-6; minimum 1.30e-8 |
+| no cumulus, cell (40,47,215) | 2 levels negative, down to -7.82e-7 | 8 levels negative, down to -8.74e-7 | qv 2.5168e-7; minimum 5.8e-17 |
+
+The second column differs from WRF before the fix because WRF's lossy rain
+transport (section 5) drops the tiny rain at that cell and the conservative
+transfer keeps it; with the rule below both are nonnegative, and they agree
+at the failing cell.
+
+**The defined behaviour.** The condensation cap keeps its meaning and never
+changes the rate's sign: `prevp = max(min(prevp, satdt/2), 0)`. It differs
+from WRF only where the rate is exactly zero in subsaturated air; the
+condensation branch gives the same bits wherever the rate is positive, since
+a positive rate means `rh > 1` and so `satdt > 0`. Numberless rain then
+neither evaporates through `prevp` nor feeds deposition. It is still removed
+within the call: at `nr <= nrmin` the rain slope takes its maximum `lamdar`,
+the mean diameter is below `di82`, and the rain joins the cloud water in the
+collapse at :1938, where `pcond` evaporates it within its own `qc` bound.
+
+What changes, per call, where it applies: vapour, cloud ice, snow, graupel and
+theta in the cells where WRF would have deposited against the fictitious
+evaporation (on the Grell-Freitas column above: levels 32 to 46, qv and qi up
+to 5.5e-6 kg/kg, theta up to 0.024 K), and the tiny rain mass itself.
+
+Measured in forecasts (the same case, 220 x 176 x 49, 1 h, RTX 5070 Ti; every
+WDM6 call also ran the previous kernel on a copy of its inputs, a check that
+found zero differences when both sides ran the shipped source): the first call
+carries numberless rain in every column, because WDM6's cold start seeds no
+rain number (as real.exe does not), and every later call carries it in all
+3,860 columns of the 5-cell lateral boundary zone, where the hydrometeor edges
+bring rain mass without number, plus about 160 interior columns. There the
+previous kernel moved theta by up to 0.81 K and vapour, ice, snow and graupel
+by up to 2.2e-4 kg/kg in one call, and left vapour negative in every one of
+the 240 calls; the shipped kernel's smallest vapour over the hour was 5.5e-7.
+A 1 h WDM6 forecast that passed before (Pacific Northwest, same date) still
+passes; its 15-minute frames differ everywhere, up to 0.64 K in T and 6.7e-4
+kg/kg in QVAPOR, the largest mostly along the domain edges.
+`tests/test_wdm6_numberless_rain.py` compiles the kernel with WRF's statement
+restored beside the shipped one: the captured and synthetic numberless
+columns go negative with WRF's and stay nonnegative with the shipped one, and
+rain that carries number gives identical bytes from both.
+
+The same `-0` pattern exists in the ice deposition branches (`pidep`, `psdep`,
+`pgdep`): their rates carry no number factor, so they are exactly zero only at
+`rh = 1`, where `satdt` is zero up to rounding, or when a vanishing ice mass
+underflows the product. A sign flip there is sublimation, which moves vapour
+upward and is bounded afterwards by the ice limiter; it never takes vapour
+below zero. They are left as WRF has them.
+
+The checkpoint algorithm identity advances to v4.
+
 ## What an oracle campaign for this scheme still has to build
 
 A `tools/wdm6_wrf461_oracle` harness driving the byte-frozen Fortran at

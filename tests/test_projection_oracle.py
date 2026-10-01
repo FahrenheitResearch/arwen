@@ -11,9 +11,11 @@ stereographic (NH, SH, pole-anchored).  See
 ``tools/llxy_wrf461_oracle/build_llxy.py``.
 
 Gate policy: every quantity is compared in binary64 ULPs and pinned at
-the original measured ceiling. Two inverse rows additionally accept their measured setup/transcendental
-signatures: a one-ULP atan or exp difference is amplified by subtracting
-90 degrees. These are Lambert and Mercator library-rounding differences.
+the original measured ceiling. One inverse row additionally accepts its measured setup/transcendental
+signature: a one-ULP atan difference is amplified by subtracting
+90 degrees. It is a Lambert library-rounding difference. (A Mercator row
+accepted a one-ULP-low exp until the transcriptions took exp from the C
+library; that exp was NumPy 2.5's AVX-512 loop, and the row now matches.)
 An independent Decimal series and arithmetic mutations test that exception;
 the fixture and every general ceiling remain unchanged. For Lambert map
 factor, the product ships the ARW tech-note form referenced to truelat1 while geogrid's authority uses
@@ -34,6 +36,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from gpuwm.core import host_libm
 from gpuwm.static.lambert import LambertGrid
 from gpuwm.static.projection import (MercatorGrid, PolarStereoGrid,
                                      ProjectedGrid, projection_class)
@@ -151,27 +154,20 @@ _LAMBERT_SIGNATURE = (
     (("arctan", "0x1.5c71ad4b712b6p-1", "0x1.31f2d9b937d79p-1"),),
 )
 
-# Mercator setup matches WRF exactly. Linux NumPy exp is one ULP below
-# Windows NumPy / Linux math / the independently rounded Decimal value;
-# atan is correctly rounded at both of those distinct inputs. Eight x
-# positions share this one y row, whose latitude does not depend on x.
-_MERCATOR_SIGNATURE = (
-    ("0x1.edf6451cd5ab0p-10", "0x1.81595ed4bceddp+3", "0x1.6400000000000p+5"),
-    (("exp", "0x1.b466b5ff36583p-4", "0x1.1cc7f434ab8cdp+0"),
-     ("arctan", "0x1.1cc7f434ab8cdp+0", "0x1.ad58f46ab6c36p-1")),
-)
-
-
 def _inverse_with_signature(grid, i, j, monkeypatch):
-    """Observe the actual inverse call without reproducing its arithmetic."""
+    """Observe the actual inverse call without reproducing its arithmetic.
+
+    The transcriptions take exp and atan from gpuwm.core.host_libm (the C
+    library element by element), so that is where the calls are observed.
+    """
     calls = []
     with monkeypatch.context() as patch:
         for name in ("exp", "arctan"):
-            def record(value, name=name, original=getattr(np, name)):
+            def record(value, name=name, original=getattr(host_libm, name)):
                 result = original(value)
                 calls.append((name, float(value).hex(), float(result).hex()))
                 return result
-            patch.setattr(np, name, record)
+            patch.setattr(host_libm, name, record)
         lat, lon = grid.ij_to_latlon(i, j)
     fields = (("hemi", "cone", "rebydx", "rsw", "polei", "polej")
               if isinstance(grid, LambertGrid) else ("dlon", "rsw", "known_y"))
@@ -188,14 +184,6 @@ def _gate(cls_name, tag, slot, got, want, context, *, signature=None):
         and want.hex() == "-0x1.5866f3a590adcp+4"
         and got.hex() == "-0x1.5866f3a590ad4p+4"
         and signature == _LAMBERT_SIGNATURE)
-    measured_rounding |= (
-        (cls_name, tag, slot) == ("MercatorGrid", "IJLL", "lat")
-        and isinstance(context, tuple) and len(context) == 3
-        and context[0] == "merc_trop" and context[2] == 89.0
-        and context[1] in (-9.5, 1.0, 27.75, 55.5, 56.0, 83.25, 111.0, 121.5)
-        and want.hex() == "0x1.85f31af494350p+2"
-        and got.hex() == "0x1.85f31af494340p+2"
-        and signature == _MERCATOR_SIGNATURE)
     assert d <= ceiling or measured_rounding, (
         f"{cls_name} {tag} {slot}: {d} ULP > ceiling {ceiling} at "
         f"{context}: got {got!r} ({got.hex() if got == got else 'nan'}), "
@@ -236,21 +224,25 @@ def test_inverse_atan_rounding_has_an_independent_series_witness(argument, round
 
 
 def test_mercator_exp_rounding_has_an_independent_decimal_witness():
+    # merc_trop's inverse row (y = 89) takes exp at this one argument.  The
+    # C library's answer, which the transcription now takes, is the
+    # correctly rounded word; NumPy 2.5's AVX-512 exp returned the word one
+    # ULP below it, which put the row 16 ULP off the WRF latitude.
+    argument = float.fromhex("0x1.b466b5ff36583p-4")
     with localcontext() as context:
         context.prec = 110
-        exponent = Decimal.from_float(float.fromhex("0x1.b466b5ff36583p-4"))
-        value = exponent.exp()
+        value = Decimal.from_float(argument).exp()
         error = Decimal("1e-100")
         assert (float(value - error) == float(value + error)
                 == float.fromhex("0x1.1cc7f434ab8cep+0"))
-        assert ulp_diff(float(value), float.fromhex(_MERCATOR_SIGNATURE[1][0][2])) == 1
+        assert ulp_diff(float(value),
+                        float.fromhex("0x1.1cc7f434ab8cdp+0")) == 1
+    assert float(host_libm.exp(argument)).hex() == "0x1.1cc7f434ab8cep+0"
 
 
 @pytest.mark.parametrize("projection,context,got,want,signature", [
     ("LambertGrid", ("lc_sh_sec", 1.0, 97.5), "-0x1.5866f3a590ad4p+4",
      "-0x1.5866f3a590adcp+4", _LAMBERT_SIGNATURE),
-    ("MercatorGrid", ("merc_trop", 1.0, 89.0), "0x1.85f31af494340p+2",
-     "0x1.85f31af494350p+2", _MERCATOR_SIGNATURE),
 ])
 @pytest.mark.parametrize("mutation", ["output", "argument", "context"])
 def test_rounding_is_an_exact_signature_not_a_wider_tolerance(
@@ -280,8 +272,9 @@ def test_actual_arithmetic_mutations_cannot_use_rounding_exception(
     if mutation == "coefficient":
         setattr(grid, coefficient, getattr(grid, coefficient) + 1e-6)
     else:
-        original_atan = np.arctan
-        monkeypatch.setattr(np, "arctan", lambda value: original_atan(value) * 1.000001)
+        original_atan = host_libm.arctan
+        monkeypatch.setattr(host_libm, "arctan",
+                            lambda value: original_atan(value) * 1.000001)
     lat, _, signature = _inverse_with_signature(grid, 1.0, j, monkeypatch)
     with pytest.raises(AssertionError, match="ULP"):
         _gate(type(grid).__name__, "IJLL", "lat", float(lat),
@@ -289,9 +282,11 @@ def test_actual_arithmetic_mutations_cannot_use_rounding_exception(
 
 
 def test_mercator_library_counterfactual_recovers_the_wrf_fixture(grids, monkeypatch):
-    import math
-    # Only exp changes library; the product inverse and setup stay intact.
-    monkeypatch.setattr(np, "exp", math.exp)
+    # The counterfactual this used to stage (exp from the C library instead
+    # of NumPy's) is now the product's own path: the one-ULP-low exp the
+    # retired Mercator signature carried was NumPy 2.5's AVX-512 loop, and
+    # host_libm takes exp from the C library on every host, so the
+    # unpatched inverse lands on the WRF word.
     lat, _ = grids["merc_trop"][1].ij_to_latlon(1.0, 89.0)
     assert float(lat).hex() == "0x1.85f31af494350p+2"
 

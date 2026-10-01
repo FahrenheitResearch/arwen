@@ -1,0 +1,17 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0
+rootdir: <tree>
+configfile: pyproject.toml
+plugins: xdist-3.8.0
+collected 79 items
+
+tests/test_noah_mosaic_wrf471_parity.py ..                               [  2%]
+tests/test_noah_mosaic_ucm_wrf471_parity.py .                            [  3%]
+tests/test_urban_ucm_driver.py .                                         [  5%]
+tests/test_urban_ucm_noahmp_wrf471_parity.py ...                         [  8%]
+tests/test_urban_ucm_noah_wrf471_parity.py .....                         [ 15%]
+tests/test_urban_ucm_ref.py ..................................           [ 58%]
+tests/test_urban_ucm_wrf471_parity.py ............................       [ 93%]
+tests/test_noah_mosaic_driver.py .....                                   [100%]
+
+======================== 79 passed in 76.21s (0:01:16) =========================

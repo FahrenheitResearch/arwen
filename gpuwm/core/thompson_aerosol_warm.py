@@ -211,7 +211,8 @@ def launch_aerosol_warm_source_network(
         rain_snow_tables, rain_graupel_tables)
     _validate_dt(dt)
 
-    grid, block = launch_grid(size)
+    # Smaller blocks admit more resident warps without changing cell arithmetic.
+    grid, block = launch_grid(size, threads=64)
     get_kernel(WARM_MODULE, "thompson_aa_warm_source_network")(
         grid, block,
         (qc, qr, nr, qs, qg, graupel_number_shadow,

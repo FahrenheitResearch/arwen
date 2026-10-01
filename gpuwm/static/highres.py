@@ -39,10 +39,10 @@ from .build import (
     dominant_category,
     landmask_from_landusef,
     lu_index_from_landusef,
-    smth_desmth_special,
 )
 from .lambert import EARTH_RADIUS_M
 from .projection import ProjectedGrid
+from .terrain_smoothing import WPS_DEFAULT, smooth_terrain
 
 
 # ---------------------------------------------------------------------------
@@ -231,8 +231,8 @@ NLCD_TO_MODIS21_INLAND = {
 #: bare rock or paved), which WRF numbers 51-61 since 4.4.2 (31-41 before)
 #: and reads as the ``LCZ_1``..``LCZ_11`` keys of VEGPARM.TBL.
 #: With no urban canopy scheme running, WRF's Noah and Noah-MP drivers
-#: treat LCZ_1..LCZ_11 as ISURBAN.  The engine runs no urban canopy
-#: scheme, so the collapse is made here, before the area fractions: the
+#: treat LCZ_1..LCZ_11 as ISURBAN.  The default legend makes that
+#: collapse here, before the area fractions: the
 #: land-use category count stays 21, and every table and reader keyed on
 #: it (LANDUSE/VEGPARM/SOILPARM, Noah, Noah-MP, RUC, the wrfout
 #: attributes) is unchanged.
@@ -240,6 +240,49 @@ CGLC_MODIS_LCZ_TO_MODIS21 = {
     **{category: category for category in range(1, 22)},
     **{lcz: MODIS21_ISURBAN for lcz in range(51, 62)},
 }
+
+# NLCD developed intensity to urban types is a data choice WRF does not define.
+NLCD_URBAN_TYPES = {21: 1, 22: 1, 23: 2, 24: 3}
+
+
+def landcover_legend(source_id, *, sf_urban_physics=0, use_wudapt_lcz=0):
+    """Crosswalk and NUM_LAND_CAT selected by the run's urban canopy."""
+    mapping = (CGLC_MODIS_LCZ_TO_MODIS21 if source_id == "cglc-modis-lcz"
+               else NLCD_TO_MODIS21_INLAND if source_id == "annual-nlcd"
+               else None)
+    if mapping is None:
+        raise ValueError(f"unknown land-cover legend source {source_id!r}")
+    if sf_urban_physics <= 0:
+        return mapping, MODIS21_CATEGORY_COUNT
+    from gpuwm.core.urban_tables import urban_category_set
+    categories = urban_category_set(isurban=MODIS21_ISURBAN)
+    if source_id == "cglc-modis-lcz":
+        if use_wudapt_lcz != 1:
+            raise ValueError("USING 10 WUDAPT LCZ WITHOUT URBPARM_LCZ.TBL: "
+                             "LCZ types 4-11 have no URBPARM.TBL row; "
+                             "CGLC-MODIS-LCZ requires use_wudapt_lcz=1")
+        mapping = {**mapping, **{n: n for n in categories.lcz}}
+    else:
+        if use_wudapt_lcz != 0:
+            raise ValueError("Annual NLCD requires use_wudapt_lcz=0: its "
+                             "three developed types use URBPARM.TBL; "
+                             "URBPARM_LCZ.TBL would assign different urban parameters")
+        mapping = {**mapping, **{raw: categories.lcz[k - 1]
+                                for raw, k in NLCD_URBAN_TYPES.items()}}
+    from gpuwm.core.landuse import load_landuse_table
+    return mapping, load_landuse_table().lucats
+
+
+def expand_landuse_baseline(baseline, category_count):
+    """Pad category fractions with zero without changing existing values."""
+    if baseline is None or baseline["LANDUSEF"].shape[0] == category_count:
+        return baseline
+    luf = np.asarray(baseline["LANDUSEF"])
+    if luf.shape[0] > category_count:
+        raise ValueError("baseline LANDUSEF exceeds selected legend category count")
+    return {**baseline, "LANDUSEF": np.pad(
+        luf, ((0, category_count - luf.shape[0]), (0, 0), (0, 0)))}
+
 
 SOILGRIDS_DEPTH_WEIGHTS = {
     "top_0_30cm": {"0-5cm": 5.0, "5-15cm": 10.0, "15-30cm": 15.0},
@@ -926,7 +969,8 @@ def _baseline_where_uncovered(label: str, name: str, baseline,
 
 def _terrain_on_coverage(terrain_extended: np.ndarray | None, grid, *,
                          halo: int, baseline, source_id: str | None,
-                         latlon) -> tuple[np.ndarray, dict[str, object]]:
+                         latlon, terrain_smoothing=WPS_DEFAULT,
+                         ) -> tuple[np.ndarray, dict[str, object]]:
     """High-resolution terrain where the source covers, baseline elsewhere.
 
     ``terrain_extended`` is the area-averaged source on the halo-extended
@@ -945,7 +989,7 @@ def _terrain_on_coverage(terrain_extended: np.ndarray | None, grid, *,
     else:
         covered_ext = np.isfinite(terrain_extended)
     if covered_ext.all():
-        smoothed = smth_desmth_special(terrain_extended, passes=1)
+        smoothed = smooth_terrain(terrain_extended, terrain_smoothing)
         hgt = smoothed[crop]
         return hgt, _coverage_record(source_id, np.ones((ny, nx)), latlon)
     weight = _coverage_weight(covered_ext)[crop]
@@ -955,7 +999,7 @@ def _terrain_on_coverage(terrain_extended: np.ndarray | None, grid, *,
     if covered_ext.any():
         padded = np.pad(base, halo, mode="edge")
         filled = np.where(covered_ext, terrain_extended, padded)
-        high = smth_desmth_special(filled, passes=1)[crop]
+        high = smooth_terrain(filled, terrain_smoothing)[crop]
         hgt = weight * high + (1.0 - weight) * base
     else:
         hgt = np.array(base, copy=True)
@@ -1094,8 +1138,10 @@ def build_highres_overrides(
         soil_fallback: Mapping[str, np.ndarray] | None = None,
         landcover_mapping: Mapping[int, int] = NLCD_TO_MODIS21_INLAND,
         halo: int = HALO,
+        terrain_smoothing=WPS_DEFAULT,
         baseline: Mapping[str, np.ndarray] | None = None,
         landcover_water: str = WATER_SPLIT_BY_BASELINE,
+        category_count: int = MODIS21_CATEGORY_COUNT,
         ) -> tuple[dict[str, np.ndarray], dict[str, object]]:
     """Build terrain, land-use, and soil fields for one projected domain.
 
@@ -1129,6 +1175,7 @@ def build_highres_overrides(
     per-field counts and bounds are in ``audit["coverage"]``.
     """
 
+    baseline = expand_landuse_baseline(baseline, category_count)
     extended = _extended_grid(grid, halo)
     ny, nx = grid.e_sn - 1, grid.e_we - 1
     crop = (slice(halo, halo + ny), slice(halo, halo + nx))
@@ -1143,7 +1190,8 @@ def build_highres_overrides(
         else resample_continuous(terrain, extended, method="average"))
     hgt, terrain_coverage = _terrain_on_coverage(
         terrain_extended, grid, halo=halo, baseline=baseline,
-        source_id=_source_id(terrain), latlon=latlon)
+        source_id=_source_id(terrain), latlon=latlon,
+        terrain_smoothing=terrain_smoothing)
 
     if landcover_water not in WATER_RULES:
         raise ValueError(
@@ -1152,11 +1200,11 @@ def build_highres_overrides(
     landcover_id = _source_id(landcover)
     if landcover is None:
         covered_ext = np.zeros((ny + 2 * halo, nx + 2 * halo), dtype=bool)
-        luf = np.zeros((MODIS21_CATEGORY_COUNT, ny, nx))
+        luf = np.zeros((category_count, ny, nx))
     else:
         luf_extended = resample_mapped_categories(
             landcover, extended, landcover_mapping,
-            category_count=MODIS21_CATEGORY_COUNT)
+            category_count=category_count)
         covered_ext = np.all(np.isfinite(luf_extended), axis=0)
         luf = np.array(luf_extended[(slice(None),) + crop], copy=True)
     covered = covered_ext[crop]
@@ -1278,6 +1326,9 @@ def build_highres_overrides(
             *[source.receipt() for _, source in sorted(soil_sources.items())],
         ],
     }
+    if not terrain_smoothing.is_default:
+        audit["method"] = audit["method"].replace("one WPS smooth-desmooth terrain pass",
+            f"WPS terrain smoothing {terrain_smoothing.label()}")
     return fields, audit
 
 
@@ -1302,6 +1353,7 @@ def _coverage_audit(fields: Mapping[str, Mapping]) -> dict[str, object]:
 def build_terrain_override(grid: ProjectedGrid, *,
                            terrain: BoundRaster | None,
                            halo: int = HALO,
+                           terrain_smoothing=WPS_DEFAULT,
                            baseline: Mapping[str, np.ndarray] | None = None,
                            ) -> tuple[dict[str, np.ndarray], dict[str, object]]:
     """Build ONLY the terrain field for one domain, from one bound raster.
@@ -1327,7 +1379,8 @@ def build_terrain_override(grid: ProjectedGrid, *,
         else resample_continuous(terrain, extended, method="average"))
     hgt, terrain_coverage = _terrain_on_coverage(
         terrain_extended, grid, halo=halo, baseline=baseline,
-        source_id=_source_id(terrain), latlon=latlon)
+        source_id=_source_id(terrain), latlon=latlon,
+        terrain_smoothing=terrain_smoothing)
     audit = {
         "method": (
             "hash-bound GeoTIFF reprojection to the WRF spherical "
@@ -1341,6 +1394,9 @@ def build_terrain_override(grid: ProjectedGrid, *,
             {"terrain": {"field": "terrain", **terrain_coverage}}),
         "sources": [] if terrain is None else [terrain.receipt()],
     }
+    if not terrain_smoothing.is_default:
+        audit["method"] = audit["method"].replace("one WPS smooth-desmooth terrain pass",
+            f"WPS terrain smoothing {terrain_smoothing.label()}")
     return {"HGT_M": hgt}, audit
 
 

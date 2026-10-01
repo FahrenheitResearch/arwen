@@ -1,10 +1,10 @@
 """The DMP sibling preserves its historical source and tagged exports.
 
 The ordinary mixing-length entry point now calls the rounded shared helper.
-The sibling is still used only for its DMP exports. Its historical stripped
-source digest remains fixed, and every byte outside that one entry point
-must agree with the active source. Numerical DMP controls cover the actual
-default and scalar-mixing paths.
+The sibling is still used only for its DMP exports. Its stripped source
+digest is re-pinned for the level-major layout, and every byte outside that
+one entry point must agree with the active source. Numerical DMP controls
+cover the actual default and scalar-mixing paths.
 """
 
 from __future__ import annotations
@@ -15,9 +15,14 @@ from pathlib import Path
 _KDIR = Path(__file__).resolve().parents[1] / "gpuwm" / "core" / "kernels"
 _MARKER = "// MF-EXPORT"
 
-#: Historical source identity retained independently of the active unit.
+#: Re-pinned for the level-major MYNN layout (speed lane, 2.8.1): the same
+#: addressing-only edit as mynn_pbl.cu, whose FROZEN_MODULE_DIGESTS entry in
+#: tests/test_mp8_frozen.py records the identity evidence.  The scalar-mixing
+#: path it serves replayed bitwise identical on the RTX 4090 and RTX 5090.
+#: Re-pinned for A146 (a98f2482e): the constant-divisor float divisions both
+#: siblings share are spelled __fdiv_rn.  Previously 9c5c9543.
 _FROZEN_SHA256 = (
-    "b53ab90e634e61367afadfaa77667c8f2eb2430fc061ce9976509fe0e2f4490e"
+    "06cada42b47a4f7874641216e491917eabb53185abd7cd0465e946978ba56c76"
 )
 
 

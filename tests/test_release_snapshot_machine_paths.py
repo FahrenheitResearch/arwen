@@ -204,6 +204,55 @@ def test_the_scan_reads_text_by_content_not_by_suffix(tmp_path, name):
         (name, 1)], f"{name} was not read, so its machine path ships unseen"
 
 
+def _netcdf_classic(attributes: dict) -> bytes:
+    """A minimal NetCDF classic file (CDF-1): no dimensions, no variables, these global text attributes."""
+
+    import struct
+
+    def padded(data: bytes) -> bytes:
+        return data + b"\x00" * (-len(data) % 4)
+
+    body = b"CDF\x01" + struct.pack(">i", 0) + b"\x00" * 8
+    body += struct.pack(">ii", 12, len(attributes))  # NC_ATTRIBUTE
+    for name, value in attributes.items():
+        encoded = value.encode("ascii")
+        body += struct.pack(">i", len(name)) + padded(name.encode("ascii"))
+        body += struct.pack(">ii", 2, len(encoded)) + padded(encoded)  # NC_CHAR
+    return body + b"\x00" * 8
+
+
+@requires_builder
+def test_the_scan_reads_netcdf_attributes(tmp_path):
+    """2.8.0 shipped a home folder inside three renderer fixtures.
+
+    ncks writes its command line, output path included, into the global
+    ``history`` attribute, and ``.nc`` was on the never-text suffix skip,
+    so the scan never read those files.  NetCDF-4 keeps the same text in
+    HDF5 object headers, which is why a container is read by its printable
+    runs rather than by one layout's parser.
+    """
+
+    snap = _snap()
+    history = "Tue Sep 29 00:11:21 2026: ncks -O -4 -d Time,1 in.nc " + POSIX_HOME + "/cut.nc"
+    fixtures = tmp_path / "crate" / "tests" / "fixtures"
+    fixtures.mkdir(parents=True)
+    (fixtures / "classic.nc").write_bytes(
+        _netcdf_classic({"START_DATE": "2025-03-15_12:00:00", "history": history}))
+    hdf5_like = (b"\x89HDF\r\n\x1a\n" + b"\x00" * 64 + b"history\x00\x00"
+                 + history.encode("ascii") + b"\x00" * 64)
+    (fixtures / "netcdf4.nc").write_bytes(hdf5_like)
+    # The suffix skip still holds for binaries that are not containers.
+    (fixtures / "capture.bin").write_bytes(hdf5_like)
+    (fixtures / "clean.nc").write_bytes(
+        _netcdf_classic({"START_DATE": "2025-03-15_12:00:00", "title": "time axis fixture"}))
+
+    hits = snap.machine_path_hits(str(tmp_path))
+    assert sorted((rel, kind) for rel, _where, kind, _ in hits) == [
+        ("crate/tests/fixtures/classic.nc", "POSIX home directory"),
+        ("crate/tests/fixtures/netcdf4.nc", "POSIX home directory")]
+    assert all(where.startswith("byte ") and POSIX_HOME in text for _rel, where, _k, text in hits)
+
+
 @requires_builder
 def test_the_scan_is_wired_into_the_snapshot_verdict():
     """A finding must FAIL the build, not merely print."""
@@ -249,7 +298,7 @@ def test_the_staged_release_tree_carries_no_machine_paths():
             for index in range(1, len(parts) + 1))
 
     offenders = []
-    scanned = 0
+    scanned = containers = 0
     for rel in _release_tree_files():
         if not rel or not kept(rel) or not snap.in_scan_scope(rel):
             continue
@@ -258,19 +307,24 @@ def test_the_staged_release_tree_carries_no_machine_paths():
             raw = path.read_bytes()
         except OSError:
             continue
-        if not snap.reads_as_text(raw):
+        container = Path(rel).suffix.lower() in snap.METADATA_CONTAINER_SUFFIXES
+        if not container and not snap.reads_as_text(raw):
             continue
         scanned += 1
-        text = raw.decode("utf-8", "replace")
-        for number, kind, line in snap.machine_path_violations(text):
-            offenders.append(f"{rel}:{number} ({kind}) {line}")
+        containers += container
+        for where, kind, line in snap.file_violations(rel, raw):
+            offenders.append(f"{rel}:{where} ({kind}) {line}")
 
     assert scanned > 500, "the scan found almost nothing to read"
+    assert containers > 0, "the scan read no NetCDF file, so their attributes ship unread"
     assert offenders == [], (
-        f"{len(offenders)} developer-absolute path(s) would ship:\n  "
+        f"{len(offenders)} developer-absolute path(s) or private machine "
+        f"name(s) would ship:\n  "
         + "\n  ".join(offenders)
         + "\nParameterize/relativize the path if the file is useful to "
-          "the public, else add it to RELEASE-EXCLUDE.txt.")
+          "the public, else add it to RELEASE-EXCLUDE.txt; a data file a "
+          "wheel carries names the measurement, not the machine it ran on "
+          "(tools/release_exclusions.py holds that rule).")
 
 
 @requires_builder
@@ -373,3 +427,132 @@ def test_nothing_shipped_imports_the_excluded_campaign_harness():
             importers.append(rel)
     assert importers == [], (
         f"these ship but import the excluded harness: {importers}")
+
+
+# ---------------------------------------------------------------------
+# Private machine names in the data files a wheel carries (A154)
+# ---------------------------------------------------------------------
+# 2.8.1's fetch route table named the lab host that watched the posting
+# times in 20 measured rows: a private machine's name published in a
+# wheel.  Built from fragments, like the paths above.
+HOST = "no" + "de-4"
+WEATHER_HOST = "weather-" + "no" + "de-1"
+LAN = "192." + "168.68.50"
+
+
+@requires_builder
+def test_private_machine_names_are_refused_in_shipped_data_files(tmp_path):
+    snap = _snap()
+    files = {
+        # Shipped data: refused.
+        "gpuwm/authorities/routes.json":
+            '{"measured": "2026-09-30 posting watch, ' + HOST + ' (x)"}\n',
+        "configs/demo.toml": "# Linux (" + WEATHER_HOST + ")\n",
+        "gpuwm/data/oracle/PROVENANCE.md": "recorded on " + HOST + "\n",
+        "tools/release/identities.json": '{"box": "' + LAN + '"}\n',
+        # Code, a document outside every wheel, and words that are not a
+        # host: read for machine paths only.
+        "gpuwm/core/timing.py": "# measured on " + WEATHER_HOST + "\n",
+        "docs/public/receipts/run.json": '{"host": "' + HOST + '"}\n',
+        "tools/battery/list.txt": HOST + "\n",
+        "gpuwm/data/governor.json": '{"note": "the node-wide governor, node_4"}\n',
+    }
+    for rel, text in files.items():
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    hdf5_like = (b"\x89HDF\r\n\x1a\n" + b"\x00" * 64 + b"source\x00\x00"
+                 + ("met_em on " + WEATHER_HOST + " (" + LAN + ")").encode("ascii")
+                 + b"\x00" * 64)
+    (tmp_path / "configs" / "real").mkdir(parents=True)
+    (tmp_path / "configs" / "real" / "terrain.nc").write_bytes(hdf5_like)
+
+    hits = snap.machine_path_hits(str(tmp_path))
+    assert sorted((rel, kind) for rel, _where, kind, _ in hits) == [
+        ("configs/demo.toml", "private machine name"),
+        ("configs/real/terrain.nc", "private machine name"),
+        ("gpuwm/authorities/routes.json", "private machine name"),
+        ("gpuwm/data/oracle/PROVENANCE.md", "private machine name"),
+        ("tools/release/identities.json", "private network address")]
+
+
+@requires_builder
+def test_the_host_rule_covers_every_package_data_declaration():
+    """The rule's scope is the wheels' data, so it has to follow them.
+
+    Each package-data pattern of both pyprojects, instantiated as a tree
+    path, is either code or in the rule's scope: a new declaration that
+    ships data from somewhere else fails here instead of shipping unread.
+    """
+
+    import tomllib
+
+    from tools.release_exclusions import CODE_SUFFIXES, ships_as_wheel_data
+
+    declared = []
+    for project, root in ((REPO, ""), (REPO / "gpuwm-data", "gpuwm-data/")):
+        pyproject = project / "pyproject.toml"
+        if not pyproject.is_file():
+            continue
+        with pyproject.open("rb") as stream:
+            package_data = tomllib.load(stream)["tool"]["setuptools"][
+                "package-data"]
+        for package, patterns in package_data.items():
+            for pattern in patterns:
+                example = pattern.replace("**/", "sub/").replace("*", "x")
+                declared.append(root + package.replace(".", "/") + "/" + example)
+    assert len(declared) > 15, declared
+    outside = [rel for rel in declared
+               if Path(rel).suffix.lower() not in CODE_SUFFIXES
+               and not ships_as_wheel_data(rel)]
+    assert outside == [], (
+        "package-data ships these data files and the private-machine rule "
+        f"does not read them: {outside}")
+
+
+@requires_builder
+def test_the_host_rule_forgives_only_the_exact_bytes_a_reference_pins(
+        tmp_path, monkeypatch):
+    """The rule's one allowance is by digest, so an edit ends it."""
+
+    import hashlib
+
+    snap = _snap()
+    record = ("# the reference's own met_em, retained on " + WEATHER_HOST
+              + "\n").encode("utf-8")
+    monkeypatch.setattr(snap, "_PINNED_RECORD_DIGESTS",
+                        [frozenset({hashlib.sha256(record).hexdigest()})])
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "reference.toml").write_bytes(record)
+    (tmp_path / "configs" / "edited.toml").write_bytes(record + b"# edited\n")
+
+    hits = snap.machine_path_hits(str(tmp_path))
+    assert [(rel, kind) for rel, _where, kind, _ in hits] == [
+        ("configs/edited.toml", "private machine name")]
+
+
+@requires_builder
+def test_the_host_rule_allowance_is_live_and_names_one_shipped_config():
+    """An allowance that forgives nothing is an unused escape hatch.
+
+    The committed WRF reference manifests pin the config each reference was
+    built for; each pinned digest is the digest of exactly one shipped
+    config, which is the file the allowance exists for.
+    """
+
+    import hashlib
+
+    from tools.release_exclusions import pinned_record_digests
+
+    digests = pinned_record_digests(REPO)
+    if not (REPO / "docs" / "public" / "wrf-reference").is_dir():
+        pytest.skip("the WRF reference records are not in this tree")
+    assert digests, "no committed WRF reference manifest pins a config"
+    shipped = {}
+    for path in sorted((REPO / "configs").rglob("*.toml")):
+        shipped.setdefault(hashlib.sha256(path.read_bytes()).hexdigest(),
+                           []).append(path.relative_to(REPO).as_posix())
+    for digest in digests:
+        assert len(shipped.get(digest, [])) == 1, (
+            f"the WRF reference pinned at {digest} names no single shipped "
+            f"config: {shipped.get(digest)}")

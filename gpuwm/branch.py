@@ -104,6 +104,8 @@ _EXPERIMENT_FIELD_PATH: dict[str, tuple[str, ...]] = {
 #: experiment-scope, reachable through the map above.
 _DOMAIN_FIELD_SPELLING: dict[str, str] = {
     "history_interval_s": "history_interval_s",
+    "history_begin_s": "history_begin_s",
+    "history_end_s": "history_end_s",
     "tiles": "tiles",
     "output": "output",
 }
@@ -137,6 +139,7 @@ if _unspelled:
 CHANGEABLE_SETTINGS = (
     "run_seconds, restart_interval_s, acknowledgements, relocation.*, "
     "tiles.*, output.*, domain.<grid_id>.history_interval_s, "
+    "domain.<grid_id>.history_begin_s, domain.<grid_id>.history_end_s, "
     "domain.<grid_id>.tiles.*, domain.<grid_id>.output.*")
 
 #: Tables an experiment TOML knows about.  A head that is not one of

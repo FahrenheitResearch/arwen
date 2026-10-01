@@ -31,7 +31,8 @@ from gpuwm.domain_wizard import (_CHILD_SPAN_FRACTION, _CLEARANCE_ROWS,
                                  DomainFitError, _child_span_fraction,
                                  _diff6_factor, _dims_for_scale,
                                  _domain_tables, _min_hosting_scale,
-                                 experiment_from_text)
+                                 experiment_from_text, nest_diff6_factors,
+                                 profile_switches)
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +95,40 @@ def test_domain_tables_survive_four_five_and_six_nests(nests):
     assert all(a >= b for a, b in zip(factors, factors[1:]))
     assert factors[len(_DIFF6_FACTORS):] == (
         [_DIFF6_FACTORS[-1]] * (len(factors) - len(_DIFF6_FACTORS)))
+
+
+def test_nest_damping_never_exceeds_its_parents():
+    """A root weaker than the ladder's second rung caps every nest below it.
+
+    The certified ladder falls with depth, so a 0.12 root keeps it
+    exactly.  A suite that pins 0.08 at the root (the sub-km default is
+    one) used to get 0.10 on its first nest: a child damped harder than
+    the parent driving it.
+    """
+
+    assert nest_diff6_factors(_DIFF6_FACTORS[0], 6) == (
+        [_diff6_factor(depth) for depth in range(6)])
+    assert nest_diff6_factors(0.08, 5) == [0.08, 0.08, 0.08, 0.06, 0.06]
+    assert nest_diff6_factors(0.05, 3) == [0.05, 0.05, 0.05]
+    assert nest_diff6_factors(0.08, 1) == [0.08]
+
+
+@pytest.mark.parametrize("nests", [1, 2, 3, 4])
+def test_domain_tables_on_a_weak_root_suite_never_increase_inward(nests):
+    """The emission reads the same rule for a suite that pins 0.08."""
+
+    from gpuwm.physics_compat import THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+
+    profile = THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+    root = float(profile_switches(profile)["diff_6th_factor"])
+    assert root < _DIFF6_FACTORS[1]
+    ratios = tuple([2] * nests)
+    dims = _dims_for_scale(6.0, ratios)
+    tables = _domain_tables(dims, ratios, profile=profile, root_dx_m=3000.0)
+    factors = [t["diff_6th_factor"] for t in tables]
+    assert factors == nest_diff6_factors(root, nests + 1)
+    assert factors[0] == root
+    assert all(a >= b for a, b in zip(factors, factors[1:]))
 
 
 def test_the_les_ladder_12km_to_250m_builds():

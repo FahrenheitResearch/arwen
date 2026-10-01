@@ -1,0 +1,587 @@
+{
+  "sub35": {
+    "file": "cases-sub35.bin",
+    "nk": 35,
+    "dt": 20.0,
+    "nsteps": 2,
+    "seed": 9301735,
+    "columns": [
+      {
+        "column_1based": 1,
+        "probe": "control, no subnormal inputs",
+        "inputs": {},
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 2,
+        "probe": "control, no subnormal inputs",
+        "inputs": {},
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 3,
+        "probe": "control, no subnormal inputs",
+        "inputs": {},
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 4,
+        "probe": "widen qc",
+        "inputs": {
+          "qc": {
+            "levels_1based": [
+              1,
+              3,
+              5
+            ],
+            "words_hex": [
+              "00000001",
+              "000116c2",
+              "007fffff"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 5,
+        "probe": "widen qi",
+        "inputs": {
+          "qi": {
+            "levels_1based": [
+              1,
+              3,
+              5
+            ],
+            "words_hex": [
+              "00000001",
+              "000116c2",
+              "007fffff"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 6,
+        "probe": "widen qnc",
+        "inputs": {
+          "qnc": {
+            "levels_1based": [
+              1,
+              3,
+              5
+            ],
+            "words_hex": [
+              "00000001",
+              "000116c2",
+              "007fffff"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 7,
+        "probe": "widen qni",
+        "inputs": {
+          "qni": {
+            "levels_1based": [
+              1,
+              3,
+              5
+            ],
+            "words_hex": [
+              "00000001",
+              "000116c2",
+              "007fffff"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 8,
+        "probe": "widen qv",
+        "inputs": {
+          "qv": {
+            "levels_1based": [
+              1,
+              3,
+              5,
+              7,
+              9,
+              11
+            ],
+            "words_hex": [
+              "00000001",
+              "000116c2",
+              "007fffff",
+              "0da2425f",
+              "0da24260",
+              "0da24261"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 9,
+        "probe": "widen cldfra",
+        "inputs": {
+          "cldfra": {
+            "levels_1based": [
+              1,
+              3,
+              5
+            ],
+            "words_hex": [
+              "00000001",
+              "000116c2",
+              "007fffff"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 10,
+        "probe": "widen rthratenlw",
+        "inputs": {
+          "rthratenlw": {
+            "levels_1based": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ],
+            "words_hex": [
+              "00000001",
+              "000116c2",
+              "007fffff",
+              "80000001",
+              "800116c2",
+              "807fffff"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 11,
+        "probe": "widen wsedl3d",
+        "inputs": {
+          "wsedl3d": {
+            "levels_1based": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ],
+            "words_hex": [
+              "00000001",
+              "000116c2",
+              "007fffff",
+              "80000001",
+              "800116c2",
+              "807fffff"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 12,
+        "probe": "signed surface flux magnitude 0",
+        "inputs": {
+          "hfx": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "00000001"
+            ]
+          },
+          "qfx": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "80000001"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 13,
+        "probe": "opposite surface flux signs magnitude 0",
+        "inputs": {
+          "hfx": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "80000001"
+            ]
+          },
+          "qfx": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "00000001"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 14,
+        "probe": "signed surface flux magnitude 1",
+        "inputs": {
+          "hfx": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "000116c2"
+            ]
+          },
+          "qfx": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "800116c2"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 15,
+        "probe": "opposite surface flux signs magnitude 1",
+        "inputs": {
+          "hfx": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "800116c2"
+            ]
+          },
+          "qfx": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "000116c2"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 16,
+        "probe": "signed surface flux magnitude 2",
+        "inputs": {
+          "hfx": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "007fffff"
+            ]
+          },
+          "qfx": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "807fffff"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 17,
+        "probe": "opposite surface flux signs magnitude 2",
+        "inputs": {
+          "hfx": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "807fffff"
+            ]
+          },
+          "qfx": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "007fffff"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 18,
+        "probe": "step 2 widen kvm3d",
+        "inputs": {},
+        "step2_carried": {
+          "kvm3d": {
+            "levels_1based": [
+              2,
+              4,
+              6
+            ],
+            "words_hex": [
+              "00000001",
+              "000116c2",
+              "007fffff"
+            ]
+          }
+        }
+      },
+      {
+        "column_1based": 19,
+        "probe": "step 2 widen kvh3d",
+        "inputs": {},
+        "step2_carried": {
+          "kvh3d": {
+            "levels_1based": [
+              2,
+              4,
+              6
+            ],
+            "words_hex": [
+              "00000001",
+              "000116c2",
+              "007fffff"
+            ]
+          }
+        }
+      },
+      {
+        "column_1based": 20,
+        "probe": "step 2 signed carried stresses magnitude 0",
+        "inputs": {},
+        "step2_carried": {
+          "tauresx2d": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "80000001"
+            ]
+          },
+          "tauresy2d": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "00000001"
+            ]
+          }
+        }
+      },
+      {
+        "column_1based": 21,
+        "probe": "step 2 signed carried stresses magnitude 1",
+        "inputs": {},
+        "step2_carried": {
+          "tauresx2d": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "000116c2"
+            ]
+          },
+          "tauresy2d": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "800116c2"
+            ]
+          }
+        }
+      },
+      {
+        "column_1based": 22,
+        "probe": "step 2 signed carried stresses magnitude 2",
+        "inputs": {},
+        "step2_carried": {
+          "tauresx2d": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "807fffff"
+            ]
+          },
+          "tauresy2d": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "007fffff"
+            ]
+          }
+        }
+      },
+      {
+        "column_1based": 23,
+        "probe": "normal input, subnormal output qc",
+        "inputs": {
+          "qc": {
+            "levels_1based": [
+              1,
+              3,
+              5,
+              19,
+              21,
+              23
+            ],
+            "words_hex": [
+              "02081cea",
+              "02081cea",
+              "02081cea",
+              "08a6274c",
+              "08a6274c",
+              "08a6274c"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 24,
+        "probe": "normal input, subnormal output qi",
+        "inputs": {
+          "qi": {
+            "levels_1based": [
+              1,
+              3,
+              5,
+              19,
+              21,
+              23
+            ],
+            "words_hex": [
+              "02081cea",
+              "02081cea",
+              "02081cea",
+              "08a6274c",
+              "08a6274c",
+              "08a6274c"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 25,
+        "probe": "normal input, subnormal output qni",
+        "inputs": {
+          "qni": {
+            "levels_1based": [
+              1,
+              3,
+              5,
+              19,
+              21,
+              23
+            ],
+            "words_hex": [
+              "02081cea",
+              "02081cea",
+              "02081cea",
+              "08a6274c",
+              "08a6274c",
+              "08a6274c"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 26,
+        "probe": "signed wind widen and float32 multiply operands",
+        "inputs": {
+          "u": {
+            "levels_1based": [
+              1,
+              3,
+              5
+            ],
+            "words_hex": [
+              "80000001",
+              "000116c2",
+              "807fffff"
+            ]
+          },
+          "v": {
+            "levels_1based": [
+              7,
+              9,
+              11
+            ],
+            "words_hex": [
+              "00000001",
+              "800116c2",
+              "007fffff"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 27,
+        "probe": "float32 stress multiply operands",
+        "inputs": {
+          "ust": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "000116c2"
+            ]
+          }
+        },
+        "step2_carried": {}
+      },
+      {
+        "column_1based": 28,
+        "probe": "height widen and float32 subtraction operand",
+        "inputs": {
+          "ht": {
+            "levels_1based": [
+              1
+            ],
+            "words_hex": [
+              "807fffff"
+            ]
+          }
+        },
+        "step2_carried": {}
+      }
+    ],
+    "subnormal_words_hex": [
+      "00000001",
+      "000116c2",
+      "007fffff"
+    ],
+    "sidecar": "cases-sub35.bin.step2",
+    "note": "Sidecar injects four carried fields before step 2; NaN retains previous output."
+  }
+}

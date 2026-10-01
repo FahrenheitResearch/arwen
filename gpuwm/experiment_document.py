@@ -43,7 +43,12 @@ _HEADER = (
 #: Emission order.  ``[[domain]]`` last, matching every shipped config,
 #: because ``[shared]`` defaults have to be in scope when they are read.
 _TABLE_ORDER = ("experiment", "projection", "shared")
-_COMPANION_TABLES = ("case_data", "static", "ingest")
+#: ``perturbation`` rides with the document because the native HRRR root
+#: of a perturbed tree publishes its d01 slice of the configuration: a
+#: document that dropped the block would run that root unperturbed under
+#: the bubbles' name, and one that could not be written stopped the
+#: root preparation of every perturbed tree.
+_COMPANION_TABLES = ("case_data", "static", "ingest", "perturbation")
 
 #: Long numeric arrays (eta ladders) wrap at this many values per line.
 _ARRAY_WRAP = 5

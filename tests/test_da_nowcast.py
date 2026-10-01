@@ -153,13 +153,26 @@ class TestBackgroundSelection:
         plan = plan_window(utc(2026, 8, 5, 5, 30), cycles=2,
                            cycle_seconds=900, free_legs=6,
                            now=utc(2026, 8, 5, 5, 45), source="hrrr")
-        # 05Z is only 45 min old -- not yet published for the whole
-        # window, so the fail-closed walk lands on 04Z at f001.
+        # 05Z is only 45 min old -- its window's last lead (f003) is not
+        # due yet, so the fail-closed walk lands on 04Z at f001.  HRRR's
+        # wait is its route-table row's EXPECTED line (A136 L1
+        # follow-ups): f003 is due 53.8 min after the cycle, the slowest
+        # of the cycle hours (off-synoptic, 0.8 h + 0.0324 h per lead).
+        # L1 had moved these clocks 15 to 30 min later when the wait read
+        # the latest posting seen; a cycle later than its expected line
+        # is waited for by the fetch instead (fetch_cmd's --wait-for).
         assert plan.background_source == "hrrr"
         assert plan.background_cycle == utc(2026, 8, 5, 4)
         assert plan.forecast_start_hour == 1
         # the compatibility shim answers with the same cycle
         assert plan.gfs_cycle == plan.background_cycle
+        # The line itself: 05Z is taken the minute its f003 is due.
+        for minute, cycle in ((53, utc(2026, 8, 5, 4)),
+                              (54, utc(2026, 8, 5, 5))):
+            assert plan_window(utc(2026, 8, 5, 5, 30), cycles=2,
+                               cycle_seconds=900, free_legs=6,
+                               now=utc(2026, 8, 5, 5, minute),
+                               source="hrrr").background_cycle == cycle
 
     def test_a_shortened_window_lands_init_on_the_cycle_itself(self):
         # window-end HH:30 with 2 cycles of 15 min: init HH:00, and on
@@ -401,6 +414,37 @@ class TestCommands:
         argv = fetch_cmd(hints={**hints, "cadence": 3}, data_dir=Path("d"),
                          source="gfs")
         assert argv[argv.index("--forecast-start-hour") + 1] == "0"
+
+    def test_fetch_cmd_waits_for_a_background_still_posting(self):
+        """A late background is waited for, never refused (A136 L1 follow-ups).
+
+        The plan takes a cycle once its window's last lead is due on the
+        row's EXPECTED line, so that cycle can still be posting when the
+        fetch starts.  The fetch then waits for each lead, saying which,
+        until the last lead is late on its row: 05Z f004 is expected
+        55.8 min after the cycle (off-synoptic, 0.8 h + 0.0324 h per
+        lead), late 90 min after that (the row's late_after_minutes, at
+        least its 57 min measured late spread), so at 06:30 the fetch
+        waits up to 56 min.  Past that late time nothing is waited for,
+        and the fetch's own publication check refuses a missing lead at
+        once.
+        """
+
+        hints = {"cycle": "2026-08-05T05", "hours": 4, "area": "1,2,3,4"}
+        argv = fetch_cmd(hints=hints, data_dir=Path("d"), source="hrrr",
+                         now=utc(2026, 8, 5, 6, 30))
+        assert "--wait-for" in argv
+        assert argv[argv.index("--wait-timeout-minutes") + 1] == "56"
+        late = fetch_cmd(hints=hints, data_dir=Path("d"), source="hrrr",
+                         now=utc(2026, 8, 5, 7, 26))
+        assert "--wait-for" not in late
+        assert "--wait-timeout-minutes" not in late
+        # GFS's plan is its shipped fixed wait, not a posting row, and
+        # `gpuwm fetch --source gfs` takes no --wait-for.
+        gfs = fetch_cmd(hints={**hints, "cycle": "2026-08-05T00",
+                               "cadence": 1}, data_dir=Path("d"),
+                        source="gfs", now=utc(2026, 8, 5, 4, 30))
+        assert "--wait-for" not in gfs
 
     def test_cycle_cmd_forwards_the_reflectivity_analysis_trio(self):
         """The one-seam wire-through for the Z-DA arm (2026-08-06).

@@ -302,6 +302,295 @@ def test_the_startup_build_is_released_before_the_activation_build(
         120, 180, 240, 300]
 
 
+class _StandInTiles:
+    """The TiledRun surface a StreamedDomain steps, closes and rebinds."""
+
+    def __init__(self, cfg):
+        from gpuwm.core.streaming import REFL_STORE_KEY
+
+        self.cfg = cfg
+        self._home = {REFL_STORE_KEY: np.zeros((1,), dtype=np.float32),
+                      "qv": np.zeros((1,), dtype=np.float32)}
+        self._closed = False
+        self.sweeps = 0
+
+    @property
+    def store(self):
+        return self._home
+
+    @property
+    def closed(self):
+        return self._closed
+
+    def close(self):
+        # As TiledRun.close does, the run drops its own store reference.
+        self._home = None
+        self._closed = True
+
+    def drain(self):
+        pass
+
+    def sweep(self, count, **_kwargs):
+        if self._closed:
+            raise AssertionError("a closed tile owner was swept")
+        self.sweeps += count
+
+
+def _stand_in_stepper(state, cfg, decision=None):
+    """A real StreamedDomain over stand-in tiles: its own state check."""
+    from gpuwm.core.streaming import StreamedDomain, StreamingDecision
+
+    decision = decision or StreamingDecision(True, "stand-in", 8, 8, 2, 4)
+    return StreamedDomain(_StandInTiles(cfg), decision, state=state,
+                          scalars={})
+
+
+def test_a_streamed_delayed_child_steps_its_activation_build(monkeypatch):
+    """``gpuwm run``: a streamed delayed child is re-attached at activation.
+
+    Activation replaces the child's state with a build from the analysis at
+    its start time, and the executor keeps one stepper per grid.  That
+    stepper stayed bound to the startup state, so the child's first step
+    after activation refused ("the state object handed to the streamed
+    stepper is not the one it was attached to") and the run stopped there.
+    Red on the head.  The outgoing tiles are closed before the rebuild
+    allocates, the startup state's arrays and the store it still publishes
+    are released with them, and the same stepper steps the rebuilt state to
+    the end of the run.
+    """
+    import weakref
+
+    from gpuwm.core.streaming import (REFL_STORE_KEY, STREAMED_SCRATCH_ATTR,
+                                      domain_store, publish_store)
+
+    _activate_in_place(monkeypatch)
+    _exp, model = _tree(delay_s=DELAY_SECONDS)
+    child = model.node(2)
+    startup = child.state
+    startup_qv = weakref.ref(startup.qv)
+    owner = _stand_in_stepper(startup, child.cfg.run)
+    startup_tiles = owner.tiled_run
+    # As attach leaves it: the startup state publishes the store and its
+    # scratch carriers, and the stepper holds that state until the rebind.
+    publish_store(startup, owner)
+    setattr(startup, STREAMED_SCRATCH_ATTR,
+            {"refl_10cm": owner.store[REFL_STORE_KEY]})
+    startup_store = [weakref.ref(array) for array in owner.store.values()]
+    attached = []
+
+    def builder(node, **_kwargs):
+        assert node is child
+
+        def build(state, cfg, decision):
+            assert startup_tiles.closed, (
+                "the outgoing tiles must close before the replacement")
+            assert startup_qv() is None, (
+                "the startup build must be released before the rebuild")
+            assert [ref() for ref in startup_store] == [None, None], (
+                "the outgoing store must be released before the "
+                "replacement allocates its own")
+            attached.append(state)
+            return _stand_in_stepper(state, cfg, decision)
+        return build
+
+    monkeypatch.setattr("gpuwm.core.streaming.prepared_domain_builder",
+                        builder)
+    writers = _Writers()
+    model._io_manager = writers
+    monkeypatch.setattr("gpuwm.core.dycore.step", _stashing_step)
+    from gpuwm.runtime import _submit_tree_history_frame
+    execute_experiment(
+        model, validate_state=False, steppers={2: owner},
+        history_handler=lambda _tree, node, ticks: _submit_tree_history_frame(
+            writers, node, ticks))
+
+    rebuilt = model.node(2).state
+    assert rebuilt is not startup
+    assert attached == [rebuilt]
+    assert owner.state is rebuilt and rebuilt._streamed_domain is owner
+    assert domain_store(rebuilt) is owner.store
+    assert owner.tiled_run is not startup_tiles
+    assert owner.steps == owner.tiled_run.sweeps > 0
+    assert [ticks for gid, ticks, _refl in writers.frames if gid == 2] == [
+        120, 180, 240, 300]
+
+
+def test_a_waiting_nest_lets_its_parents_outgoing_radiation_go():
+    """A waiting child drops its ozone link when its delayed parent starts.
+
+    Legacy RRTMG hands a nest's radiation its parent's adapter as its ozone
+    provider.  A child of a delayed nest, still waiting for its own start,
+    held the parent's STARTUP adapter through that link after the parent
+    activated, so the outgoing adapter stayed alive until the child
+    activated too.  Red on the head.  The child's startup build never
+    radiates before it starts, and a call through the released link says so.
+    A child whose radiation composes two spectra holds the link on its
+    legacy spectrum and releases it the same way.
+    """
+    import gc
+    import weakref
+
+    from gpuwm.core.model import _release_startup_build
+    from gpuwm.core.rrtmg_legacy import ParentOzoneProvider
+
+    class _Radiation:
+        def __init__(self, provider=None):
+            self._ozone_provider = provider
+            self._o33d_grid = np.zeros((2, 2, 2), dtype=np.float32)
+
+    parent_radiation = _Radiation()
+    outgoing = weakref.ref(parent_radiation)
+    provider = ParentOzoneProvider(parent_radiation, registration=None)
+    waiting = SimpleNamespace(
+        _started=False, children=[],
+        state=SimpleNamespace(physics=SimpleNamespace(
+            radiation_callable=_Radiation(provider))))
+    composed_provider = ParentOzoneProvider(parent_radiation,
+                                            registration=None)
+    composed = SimpleNamespace(
+        _started=False, children=[],
+        state=SimpleNamespace(physics=SimpleNamespace(
+            radiation_callable=SimpleNamespace(spectrum_adapters=(
+                _Radiation(), _Radiation(composed_provider))))))
+    running = SimpleNamespace(
+        _started=True, children=[],
+        state=SimpleNamespace(physics=SimpleNamespace(
+            radiation_callable=_Radiation(
+                ParentOzoneProvider(_Radiation(), registration=None)))))
+    node = SimpleNamespace(
+        cfg=SimpleNamespace(grid_id=2),
+        children=[waiting, composed, running],
+        coupler=object(),
+        state=SimpleNamespace(
+            qv=np.ones((1,), dtype=np.float32),
+            physics=SimpleNamespace(radiation_callable=parent_radiation,
+                                    cumulus_callable=None)))
+    del parent_radiation
+    _release_startup_build(SimpleNamespace(_prepared_by_grid_id={}), node, {})
+    gc.collect()
+
+    assert outgoing() is None
+    with pytest.raises(RuntimeError, match="released"):
+        provider()
+    with pytest.raises(RuntimeError, match="released"):
+        composed_provider()
+    running_provider = running.state.physics.radiation_callable._ozone_provider
+    assert running_provider.parent is not None
+
+
+def _catalog_at(valid_time, *, levels=37, ny=40, nx=40):
+    """A decoded catalog holding one analysis, at ``valid_time``."""
+    snapshot = SimpleNamespace(fields={
+        name: np.zeros((levels, ny, nx), dtype=np.float32)
+        for name in ("T", "U", "V", "SPFH", "Z")} | {
+        name: np.zeros((ny, nx), dtype=np.float32)
+        for name in ("PSFC", "SKINTEMP", "T2")})
+    return SimpleNamespace(snapshots=(snapshot,), valid_times=(valid_time,))
+
+
+def test_a_delayed_nest_is_priced_at_its_activation_door(monkeypatch,
+                                                         capsys):
+    """``gpuwm run`` prices a delayed nest's rebuild before it allocates.
+
+    The nest is initialized again at its start from the analysis at that
+    time, and nothing priced that rebuild: a tree that fitted its steady
+    state could stop in a CUDA out-of-memory at the nest's start.  Priced
+    from the decoded analysis against what the card has free after the
+    startup build is released.  Red on the head: the rebuild is reached on
+    a card with 1 MiB free.  Under ``--no-memory-gate`` it proceeds.
+    """
+    import gpuwm.core.resident_admission as resident_admission
+    from gpuwm.core.resident_admission import MEMORY_GATE_OVERRIDE_ENV
+
+    monkeypatch.delenv(MEMORY_GATE_OVERRIDE_ENV, raising=False)
+    _activate_in_place(monkeypatch)
+    reached = []
+
+    def initialize_child(cfg, parent, *args, **kwargs):
+        reached.append(int(cfg.grid_id))
+        return SimpleNamespace(grid=parent.grid, state=_HistoryState())
+
+    monkeypatch.setattr("gpuwm.ingest.nest_init.initialize_child",
+                        initialize_child)
+    exp, model = _tree(delay_s=DELAY_SECONDS)
+    model._input_catalog = _catalog_at(exp.domain_start_time(2))
+    monkeypatch.setattr(resident_admission, "device_free_bytes",
+                        lambda: 1024 ** 2)
+    with pytest.raises(MemoryError, match="refused before anything was "
+                                          "allocated") as refused:
+        _run(model, monkeypatch)
+    assert reached == []
+    text = str(refused.value)
+    assert "nest d02 starting at" in text
+    assert "forcing analysis on the nest's grid" in text
+    assert "start the nest with the forecast" in text
+    assert refused.value.terms["physics"] > 0
+    assert refused.value.terms["model state"] > 0
+
+    exp, model = _tree(delay_s=DELAY_SECONDS)
+    model._input_catalog = _catalog_at(exp.domain_start_time(2))
+    monkeypatch.setenv(MEMORY_GATE_OVERRIDE_ENV, "1")
+    writers = _run(model, monkeypatch)
+    assert reached == [2]
+    assert "nest d02 starting at" in capsys.readouterr().err
+    assert [ticks for gid, ticks, _refl in writers.frames if gid == 2] == [
+        120, 180, 240, 300]
+
+
+def test_a_streamed_nest_is_priced_with_its_reattached_tiles(monkeypatch):
+    """The activation door counts a streamed nest's replacement tile owner.
+
+    Re-attaching a streamed nest builds a new tile owner inside the same
+    activation, from bytes the free figure counts because closing the old
+    owner handed its buffers back.  Priced on the rebuild alone, the door
+    admitted an activation whose re-attachment then needed that claim too:
+    on a card measurement the rebuild peaked 0.23 GiB and the re-attachment
+    0.85 GiB against a 0.48 GiB price.  Red on the previous commit: the card
+    below holds the rebuild but not the claim, and the door admitted it.
+    """
+    import gpuwm.core.resident_admission as resident_admission
+    from gpuwm.core.resident_admission import MEMORY_GATE_OVERRIDE_ENV
+    from gpuwm.core.streaming import StreamingDecision
+
+    monkeypatch.delenv(MEMORY_GATE_OVERRIDE_ENV, raising=False)
+    _activate_in_place(monkeypatch)
+    reached = []
+
+    def initialize_child(cfg, parent, *args, **kwargs):
+        reached.append(int(cfg.grid_id))
+        return SimpleNamespace(grid=parent.grid, state=_HistoryState())
+
+    monkeypatch.setattr("gpuwm.ingest.nest_init.initialize_child",
+                        initialize_child)
+    exp, model = _tree(delay_s=DELAY_SECONDS)
+    model._input_catalog = _catalog_at(exp.domain_start_time(2))
+    child = model.node(2)
+    claim, corridor = 64 * 1024 ** 3, 1024 ** 2
+    decision = StreamingDecision(
+        True, "stand-in", 8, 8, 2, 4,
+        detail={"claim_bytes": claim, "corridor_claim_bytes": corridor})
+    owner = _stand_in_stepper(child.state, child.cfg.run, decision)
+    monkeypatch.setattr(
+        "gpuwm.core.streaming.prepared_domain_builder",
+        lambda node, **_kwargs: _stand_in_stepper)
+    monkeypatch.setattr(resident_admission, "device_free_bytes",
+                        lambda: 8 * 1024 ** 3)
+    writers = _Writers()
+    model._io_manager = writers
+    monkeypatch.setattr("gpuwm.core.dycore.step", _stashing_step)
+    from gpuwm.runtime import _submit_tree_history_frame
+    with pytest.raises(MemoryError, match="refused before anything was "
+                                          "allocated") as refused:
+        execute_experiment(
+            model, validate_state=False, steppers={2: owner},
+            history_handler=lambda _tree, node, ticks: (
+                _submit_tree_history_frame(writers, node, ticks)))
+    assert reached == []
+    assert refused.value.terms["streamed tile buffers"] == claim
+    assert refused.value.terms["nest coupling corridor"] == corridor
+    assert "streamed tile buffers" in str(refused.value)
+
+
 def test_all_domains_at_the_experiment_start_are_untouched(monkeypatch):
     """The non-delayed path is the one that must not move: both domains
     publish a stashless tick-0 frame and a stashed frame at every later

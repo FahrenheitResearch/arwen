@@ -1,0 +1,202 @@
+{
+  "extra35": {
+    "file": "cases-extra35.bin",
+    "nk": 35,
+    "dt": 20.0,
+    "nsteps": 2,
+    "columns": [
+      {
+        "family": "surface_stl",
+        "member": 0
+      },
+      {
+        "family": "surface_stl",
+        "member": 1
+      },
+      {
+        "family": "surface_stl",
+        "member": 2
+      },
+      {
+        "family": "surface_stl",
+        "member": 3
+      },
+      {
+        "family": "surface_stl",
+        "member": 4
+      },
+      {
+        "family": "surface_stl",
+        "member": 5
+      },
+      {
+        "family": "surface_stl",
+        "member": 6
+      },
+      {
+        "family": "surface_stl",
+        "member": 7
+      },
+      {
+        "family": "surface_stl",
+        "member": 8
+      },
+      {
+        "family": "surface_stl",
+        "member": 9
+      },
+      {
+        "family": "surface_stl",
+        "member": 10
+      },
+      {
+        "family": "surface_stl",
+        "member": 11
+      },
+      {
+        "family": "surface_srcl",
+        "member": 0
+      },
+      {
+        "family": "surface_srcl",
+        "member": 1
+      },
+      {
+        "family": "surface_srcl",
+        "member": 2
+      },
+      {
+        "family": "surface_srcl",
+        "member": 3
+      },
+      {
+        "family": "surface_srcl",
+        "member": 4
+      },
+      {
+        "family": "surface_srcl",
+        "member": 5
+      },
+      {
+        "family": "surface_srcl",
+        "member": 6
+      },
+      {
+        "family": "surface_srcl",
+        "member": 7
+      },
+      {
+        "family": "surface_srcl",
+        "member": 8
+      },
+      {
+        "family": "surface_srcl",
+        "member": 9
+      },
+      {
+        "family": "surface_srcl",
+        "member": 10
+      },
+      {
+        "family": "surface_srcl",
+        "member": 11
+      },
+      {
+        "family": "weak_cl",
+        "member": 0
+      },
+      {
+        "family": "weak_cl",
+        "member": 1
+      },
+      {
+        "family": "weak_cl",
+        "member": 2
+      },
+      {
+        "family": "weak_cl",
+        "member": 3
+      },
+      {
+        "family": "weak_cl",
+        "member": 4
+      },
+      {
+        "family": "weak_cl",
+        "member": 5
+      },
+      {
+        "family": "weak_cl",
+        "member": 6
+      },
+      {
+        "family": "weak_cl",
+        "member": 7
+      },
+      {
+        "family": "weak_cl",
+        "member": 8
+      },
+      {
+        "family": "weak_cl",
+        "member": 9
+      },
+      {
+        "family": "weak_cl",
+        "member": 10
+      },
+      {
+        "family": "weak_cl",
+        "member": 11
+      },
+      {
+        "family": "elevated_cl",
+        "member": 0
+      },
+      {
+        "family": "elevated_cl",
+        "member": 1
+      },
+      {
+        "family": "elevated_cl",
+        "member": 2
+      },
+      {
+        "family": "elevated_cl",
+        "member": 3
+      },
+      {
+        "family": "elevated_cl",
+        "member": 4
+      },
+      {
+        "family": "elevated_cl",
+        "member": 5
+      },
+      {
+        "family": "elevated_cl",
+        "member": 6
+      },
+      {
+        "family": "elevated_cl",
+        "member": 7
+      },
+      {
+        "family": "elevated_cl",
+        "member": 8
+      },
+      {
+        "family": "elevated_cl",
+        "member": 9
+      },
+      {
+        "family": "elevated_cl",
+        "member": 10
+      },
+      {
+        "family": "elevated_cl",
+        "member": 11
+      }
+    ]
+  }
+}

@@ -1,0 +1,596 @@
+FFFFFFFFFFFFFFFF..                                                       [100%]
+=================================== FAILURES ===================================
+_____________________ test_init_oracle[n21_m1_f0-fixture0] _____________________
+
+name = 'n21_m1_f0'
+fixture = {'nlcat': np.int32(21), 'mosaic_cat': np.int32(1), 'fractional_seaice': np.int32(0), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n21_m1_f0', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1065353216, 1065353216, 1065353216, 1065353216, 1065353216,\n         1065353216, 1065353216, 1065353216, 1065...       0,          0,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32), array([[[1065353216, 1065353216, 1065353216, 1065353216, 1065353216,\n         1065353216, 1065353216, 1065353216, 1065...       0,          0,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1065353216, 1065353216, 1065353216, 1065353216, 1065353216,\n         1065353216, 1065353216, 1065353216, 1065...       0,          0,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78bab117a5b0>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78bab117a5b0> = array([[[1.0000000e+00, 1.0000000e+00, 1.0000000e+00, 1.0000000e+00,\n         1.0000000e+00, 1.0000000e+00, 1.0000000e...   0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 0.0000000e+00,\n         0.0000000e+00, 0.0000000e+00]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1065353216, 1065353216, 1065353216, 1065353216, 1065353216,\n         1065353216, 1065353216, 1065353216, 1065...       0,          0,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78bab117acd0>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78bab117acd0> = array([[[1.0000000e+00, 1.0000000e+00, 1.0000000e+00, 1.0000000e+00,\n         1.0000000e+00, 1.0000000e+00, 1.0000000e...   0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 0.0000000e+00,\n         0.0000000e+00, 0.0000000e+00]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+_____________________ test_init_oracle[n21_m1_f1-fixture1] _____________________
+
+name = 'n21_m1_f1'
+fixture = {'nlcat': np.int32(21), 'mosaic_cat': np.int32(1), 'fractional_seaice': np.int32(1), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n21_m1_f1', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1065353216, 1065353216, 1065353216, 1065353216, 1065353216,\n         1065353216, 1065353216, 1065353216, 1065...       0,          0,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32), array([[[1065353216, 1065353216, 1065353216, 1065353216, 1065353216,\n         1065353216, 1065353216, 1065353216, 1065...       0,          0,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1065353216, 1065353216, 1065353216, 1065353216, 1065353216,\n         1065353216, 1065353216, 1065353216, 1065...       0,          0,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f442d0>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f442d0> = array([[[1.0000000e+00, 1.0000000e+00, 1.0000000e+00, 1.0000000e+00,\n         1.0000000e+00, 1.0000000e+00, 1.0000000e...   0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 0.0000000e+00,\n         0.0000000e+00, 0.0000000e+00]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1065353216, 1065353216, 1065353216, 1065353216, 1065353216,\n         1065353216, 1065353216, 1065353216, 1065...       0,          0,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f449f0>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f449f0> = array([[[1.0000000e+00, 1.0000000e+00, 1.0000000e+00, 1.0000000e+00,\n         1.0000000e+00, 1.0000000e+00, 1.0000000e...   0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 0.0000000e+00,\n         0.0000000e+00, 0.0000000e+00]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+_____________________ test_init_oracle[n21_m3_f0-fixture2] _____________________
+
+name = 'n21_m3_f0'
+fixture = {'nlcat': np.int32(21), 'mosaic_cat': np.int32(3), 'fractional_seaice': np.int32(0), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n21_m3_f0', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1055977713, 1051372203, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1059...       0, 1050253722,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32), array([[[1055977712, 1051372203, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1059...       0, 1050253722,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1055977713, 1051372203, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1059...       0, 1050253722,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f45a10>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f45a10> = array([[[0.47058824, 0.33333334, 0.5       , 0.33333334, 1.        ,\n         1.        , 0.77777773, 0.4       , 0.63...       , 0.3       , 0.        , 0.        , 0.        ,\n         0.        , 0.        , 0.        ]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1055977712, 1051372203, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1059...       0, 1050253722,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f46970>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f46970> = array([[[0.4705882 , 0.33333334, 0.5       , 0.33333334, 1.        ,\n         1.        , 0.77777773, 0.4       , 0.63...       , 0.3       , 0.        , 0.        , 0.        ,\n         0.        , 0.        , 0.        ]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+_____________________ test_init_oracle[n21_m3_f1-fixture3] _____________________
+
+name = 'n21_m3_f1'
+fixture = {'nlcat': np.int32(21), 'mosaic_cat': np.int32(3), 'fractional_seaice': np.int32(1), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n21_m3_f1', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1055977713, 1051372203, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1059...       0, 1050253722,          0,          0, 1050253722,\n                  0,          0,          0]]], dtype=uint32), array([[[1055977712, 1051372203, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1059...       0, 1050253722,          0,          0, 1050253722,\n                  0,          0,          0]]], dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1055977713, 1051372203, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1059...       0, 1050253722,          0,          0, 1050253722,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f46f70>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f46f70> = array([[[0.47058824, 0.33333334, 0.5       , 0.33333334, 1.        ,\n         1.        , 0.77777773, 0.4       , 0.63...       , 0.3       , 0.        , 0.        , 0.3       ,\n         0.        , 0.        , 0.        ]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1055977712, 1051372203, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1059...       0, 1050253722,          0,          0, 1050253722,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f44f30>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f44f30> = array([[[0.4705882 , 0.33333334, 0.5       , 0.33333334, 1.        ,\n         1.        , 0.77777773, 0.4       , 0.63...       , 0.3       , 0.        , 0.        , 0.3       ,\n         0.        , 0.        , 0.        ]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+_____________________ test_init_oracle[n21_m5_f0-fixture4] _____________________
+
+name = 'n21_m5_f0'
+fixture = {'nlcat': np.int32(21), 'mosaic_cat': np.int32(5), 'fractional_seaice': np.int32(0), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n21_m5_f0', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32), array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f44810>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f44810> = array([[[0.4       , 0.25      , 0.5       , 0.33333334, 1.        ,\n         1.        , 0.77777773, 0.4       , 0.58...       , 0.3       , 0.        , 0.        , 0.        ,\n         0.        , 0.        , 0.        ]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f447b0>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f447b0> = array([[[0.4       , 0.25      , 0.5       , 0.33333334, 1.        ,\n         1.        , 0.77777773, 0.4       , 0.58...       , 0.3       , 0.        , 0.        , 0.        ,\n         0.        , 0.        , 0.        ]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+_____________________ test_init_oracle[n21_m5_f1-fixture5] _____________________
+
+name = 'n21_m5_f1'
+fixture = {'nlcat': np.int32(21), 'mosaic_cat': np.int32(5), 'fractional_seaice': np.int32(1), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n21_m5_f1', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0, 1050253722,\n                  0,          0,          0]]], dtype=uint32), array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0, 1050253722,\n                  0,          0,          0]]], dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0, 1050253722,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f3cd50>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f3cd50> = array([[[0.4       , 0.25      , 0.5       , 0.33333334, 1.        ,\n         1.        , 0.77777773, 0.4       , 0.58...       , 0.3       , 0.        , 0.        , 0.3       ,\n         0.        , 0.        , 0.        ]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0, 1050253722,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f3dcb0>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f3dcb0> = array([[[0.4       , 0.25      , 0.5       , 0.33333334, 1.        ,\n         1.        , 0.77777773, 0.4       , 0.58...       , 0.3       , 0.        , 0.        , 0.3       ,\n         0.        , 0.        , 0.        ]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+_____________________ test_init_oracle[n21_m8_f0-fixture6] _____________________
+
+name = 'n21_m8_f0'
+fixture = {'nlcat': np.int32(21), 'mosaic_cat': np.int32(8), 'fractional_seaice': np.int32(0), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n21_m8_f0', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32), array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f44e70>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f44e70> = array([[[0.4       , 0.25      , 0.5       , 0.33333334, 1.        ,\n         1.        , 0.77777773, 0.4       , 0.58...       , 0.3       , 0.        , 0.        , 0.        ,\n         0.        , 0.        , 0.        ]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0,          0,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f450b0>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f450b0> = array([[[0.4       , 0.25      , 0.5       , 0.33333334, 1.        ,\n         1.        , 0.77777773, 0.4       , 0.58...       , 0.3       , 0.        , 0.        , 0.        ,\n         0.        , 0.        , 0.        ]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+_____________________ test_init_oracle[n21_m8_f1-fixture7] _____________________
+
+name = 'n21_m8_f1'
+fixture = {'nlcat': np.int32(21), 'mosaic_cat': np.int32(8), 'fractional_seaice': np.int32(1), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n21_m8_f1', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0, 1050253722,\n                  0,          0,          0]]], dtype=uint32), array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0, 1050253722,\n                  0,          0,          0]]], dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0, 1050253722,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f470f0>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f470f0> = array([[[0.4       , 0.25      , 0.5       , 0.33333334, 1.        ,\n         1.        , 0.77777773, 0.4       , 0.58...       , 0.3       , 0.        , 0.        , 0.3       ,\n         0.        , 0.        , 0.        ]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1053609165, 1048576000, 1056964608, 1051372203, 1065353216,\n         1065353216, 1061624945, 1053609165, 1058...       0, 1050253722,          0,          0, 1050253722,\n                  0,          0,          0]]], dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f46610>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f46610> = array([[[0.4       , 0.25      , 0.5       , 0.33333334, 1.        ,\n         1.        , 0.77777773, 0.4       , 0.58...       , 0.3       , 0.        , 0.        , 0.3       ,\n         0.        , 0.        , 0.        ]]], dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+_____________________ test_init_oracle[n61_m1_f0-fixture8] _____________________
+
+name = 'n61_m1_f0'
+fixture = {'nlcat': np.int32(61), 'mosaic_cat': np.int32(1), 'fractional_seaice': np.int32(0), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n61_m1_f0', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1065353216, 1065353216, 1065353216, ..., 1065353216,\n         1065353216,          0],\n        [1065353216, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32), array([[[1065353216, 1065353216, 1065353216, ..., 1065353216,\n         1065353216,          0],\n        [1065353216, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1065353216, 1065353216, 1065353216, ..., 1065353216,\n         1065353216,          0],\n        [1065353216, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f45fb0>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f45fb0> = array([[[1.  , 1.  , 1.  , ..., 1.  , 1.  , 0.  ],\n        [1.  , 1.  , 1.  , ..., 1.  , 1.  , 0.  ]],\n\n       [[0.3 ,... , ..., 0.  , 0.  , 0.  ],\n        [0.  , 0.  , 0.  , ..., 0.  , 0.  , 0.  ]]],\n      shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1065353216, 1065353216, 1065353216, ..., 1065353216,\n         1065353216,          0],\n        [1065353216, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f45530>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f45530> = array([[[1.  , 1.  , 1.  , ..., 1.  , 1.  , 0.  ],\n        [1.  , 1.  , 1.  , ..., 1.  , 1.  , 0.  ]],\n\n       [[0.3 ,... , ..., 0.  , 0.  , 0.  ],\n        [0.  , 0.  , 0.  , ..., 0.  , 0.  , 0.  ]]],\n      shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+_____________________ test_init_oracle[n61_m1_f1-fixture9] _____________________
+
+name = 'n61_m1_f1'
+fixture = {'nlcat': np.int32(61), 'mosaic_cat': np.int32(1), 'fractional_seaice': np.int32(1), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n61_m1_f1', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1065353216, 1065353216, 1065353216, ..., 1065353216,\n         1065353216,          0],\n        [1065353216, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32), array([[[1065353216, 1065353216, 1065353216, ..., 1065353216,\n         1065353216,          0],\n        [1065353216, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1065353216, 1065353216, 1065353216, ..., 1065353216,\n         1065353216,          0],\n        [1065353216, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f44570>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f44570> = array([[[1.  , 1.  , 1.  , ..., 1.  , 1.  , 0.  ],\n        [1.  , 1.  , 1.  , ..., 1.  , 1.  , 0.  ]],\n\n       [[0.3 ,... , ..., 0.  , 0.  , 0.  ],\n        [0.  , 0.  , 0.  , ..., 0.  , 0.  , 0.  ]]],\n      shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1065353216, 1065353216, 1065353216, ..., 1065353216,\n         1065353216,          0],\n        [1065353216, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f3d890>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f3d890> = array([[[1.  , 1.  , 1.  , ..., 1.  , 1.  , 0.  ],\n        [1.  , 1.  , 1.  , ..., 1.  , 1.  , 0.  ]],\n\n       [[0.3 ,... , ..., 0.  , 0.  , 0.  ],\n        [0.  , 0.  , 0.  , ..., 0.  , 0.  , 0.  ]]],\n      shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+____________________ test_init_oracle[n61_m3_f0-fixture10] _____________________
+
+name = 'n61_m3_f0'
+fixture = {'nlcat': np.int32(61), 'mosaic_cat': np.int32(3), 'fractional_seaice': np.int32(0), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n61_m3_f0', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1055977713, 1051372203, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1055977713, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32), array([[[1055977712, 1051372203, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1055977712, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1055977713, 1051372203, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1055977713, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f3d3b0>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f3d3b0> = array([[[0.47058824, 0.33333334, 0.5       , ..., 0.7       ,\n         0.5       , 0.        ],\n        [0.47058824, 0...       , 0.        , 0.        , ..., 0.        ,\n         0.        , 0.        ]]], shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1055977712, 1051372203, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1055977712, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f3e2b0>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f3e2b0> = array([[[0.4705882 , 0.33333334, 0.5       , ..., 0.7       ,\n         0.5       , 0.        ],\n        [0.4705882 , 0...       , 0.        , 0.        , ..., 0.        ,\n         0.        , 0.        ]]], shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+____________________ test_init_oracle[n61_m3_f1-fixture11] _____________________
+
+name = 'n61_m3_f1'
+fixture = {'nlcat': np.int32(61), 'mosaic_cat': np.int32(3), 'fractional_seaice': np.int32(1), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n61_m3_f1', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1055977713, 1051372203, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1055977713, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32), array([[[1055977712, 1051372203, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1055977712, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1055977713, 1051372203, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1055977713, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f3ec10>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f3ec10> = array([[[0.47058824, 0.33333334, 0.5       , ..., 0.7       ,\n         0.5       , 0.        ],\n        [0.47058824, 0...       , 0.        , 0.        , ..., 0.        ,\n         0.        , 0.        ]]], shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1055977712, 1051372203, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1055977712, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f3f570>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f3f570> = array([[[0.4705882 , 0.33333334, 0.5       , ..., 0.7       ,\n         0.5       , 0.        ],\n        [0.4705882 , 0...       , 0.        , 0.        , ..., 0.        ,\n         0.        , 0.        ]]], shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+____________________ test_init_oracle[n61_m5_f0-fixture12] _____________________
+
+name = 'n61_m5_f0'
+fixture = {'nlcat': np.int32(61), 'mosaic_cat': np.int32(5), 'fractional_seaice': np.int32(0), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n61_m5_f0', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32), array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f3fe70>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f3fe70> = array([[[0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ],\n        [0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ]],\n\n       [[0.3 ,... , ..., 0.  , 0.  , 0.  ],\n        [0.  , 0.  , 0.  , ..., 0.  , 0.  , 0.  ]]],\n      shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f31110>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f31110> = array([[[0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ],\n        [0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ]],\n\n       [[0.3 ,... , ..., 0.  , 0.  , 0.  ],\n        [0.  , 0.  , 0.  , ..., 0.  , 0.  , 0.  ]]],\n      shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+____________________ test_init_oracle[n61_m5_f1-fixture13] _____________________
+
+name = 'n61_m5_f1'
+fixture = {'nlcat': np.int32(61), 'mosaic_cat': np.int32(5), 'fractional_seaice': np.int32(1), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n61_m5_f1', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32), array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f31710>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f31710> = array([[[0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ],\n        [0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ]],\n\n       [[0.3 ,... , ..., 0.  , 0.  , 0.  ],\n        [0.  , 0.  , 0.  , ..., 0.  , 0.  , 0.  ]]],\n      shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f32670>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f32670> = array([[[0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ],\n        [0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ]],\n\n       [[0.3 ,... , ..., 0.  , 0.  , 0.  ],\n        [0.  , 0.  , 0.  , ..., 0.  , 0.  , 0.  ]]],\n      shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+____________________ test_init_oracle[n61_m8_f0-fixture14] _____________________
+
+name = 'n61_m8_f0'
+fixture = {'nlcat': np.int32(61), 'mosaic_cat': np.int32(8), 'fractional_seaice': np.int32(0), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n61_m8_f0', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32), array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f32f70>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f32f70> = array([[[0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ],\n        [0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ]],\n\n       [[0.3 ,... , ..., 0.  , 0.  , 0.  ],\n        [0.  , 0.  , 0.  , ..., 0.  , 0.  , 0.  ]]],\n      shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f336f0>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f336f0> = array([[[0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ],\n        [0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ]],\n\n       [[0.3 ,... , ..., 0.  , 0.  , 0.  ],\n        [0.  , 0.  , 0.  , ..., 0.  , 0.  , 0.  ]]],\n      shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+____________________ test_init_oracle[n61_m8_f1-fixture15] _____________________
+
+name = 'n61_m8_f1'
+fixture = {'nlcat': np.int32(61), 'mosaic_cat': np.int32(8), 'fractional_seaice': np.int32(1), 'ivgtyp': array([[ 7,  7],
+      ...     [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7],
+       [ 7,  7]], dtype=int32), ...}
+
+    @pytest.mark.parametrize("name,fixture", list(load(ROOT).items()))
+    def test_init_oracle(name, fixture):
+        inputs = {n: wrf_to_gpuwm(fixture[n]) for n in INPUTS}
+        result = lsm_mosaic_init(wrf_to_gpuwm(fixture["landusef"]), **inputs,
+                                 mosaic_cat=int(fixture["mosaic_cat"]),
+                                 fractional_seaice=bool(fixture["fractional_seaice"]),
+                                 iswater=17, isice=15, full=True)
+        outputs = {n for n in fixture if n.endswith("_mosaic") or n.endswith("_full")}
+        assert outputs <= result.keys()
+        for field in sorted(outputs):
+            actual, expected = result[field], wrf_to_gpuwm(fixture[field])
+            assert actual.shape == expected.shape
+>           assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32)), (name, field)
+E           AssertionError: ('n61_m8_f1', 'landusef2_full')
+E           assert False
+E            +  where False = <function array_equal at 0x78bab395e4f0>(array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32), array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32))
+E            +    where <function array_equal at 0x78bab395e4f0> = np.array_equal
+E            +    and   array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f58810>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f58810> = array([[[0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ],\n        [0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ]],\n\n       [[0.3 ,... , ..., 0.  , 0.  , 0.  ],\n        [0.  , 0.  , 0.  , ..., 0.  , 0.  , 0.  ]]],\n      shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+E            +    and   array([[[1053609165, 1048576000, 1056964608, ..., 1060320051,\n         1056964608,          0],\n        [1053609165, 1...       0,          0,          0, ...,          0,\n                  0,          0]]], shape=(61, 2, 18), dtype=uint32) = <built-in method view of numpy.ndarray object at 0x78ba41f59770>(<class 'numpy.uint32'>)
+E            +      where <built-in method view of numpy.ndarray object at 0x78ba41f59770> = array([[[0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ],\n        [0.4 , 0.25, 0.5 , ..., 0.7 , 0.5 , 0.  ]],\n\n       [[0.3 ,... , ..., 0.  , 0.  , 0.  ],\n        [0.  , 0.  , 0.  , ..., 0.  , 0.  , 0.  ]]],\n      shape=(61, 2, 18), dtype=float32).view
+E            +      and   <class 'numpy.uint32'> = np.uint32
+
+tests/test_noah_mosaic_init_wrf471.py:29: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n21_m1_f0-fixture0]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n21_m1_f1-fixture1]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n21_m3_f0-fixture2]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n21_m3_f1-fixture3]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n21_m5_f0-fixture4]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n21_m5_f1-fixture5]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n21_m8_f0-fixture6]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n21_m8_f1-fixture7]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n61_m1_f0-fixture8]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n61_m1_f1-fixture9]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n61_m3_f0-fixture10]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n61_m3_f1-fixture11]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n61_m5_f0-fixture12]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n61_m5_f1-fixture13]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n61_m8_f0-fixture14]
+FAILED tests/test_noah_mosaic_init_wrf471.py::test_init_oracle[n61_m8_f1-fixture15]
+16 failed, 2 passed in 0.67s

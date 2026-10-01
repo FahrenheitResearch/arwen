@@ -122,7 +122,7 @@ extern "C" __global__ void nssl2_driver_gather_initialize(
 
         if (ice_number <= cxmin && ice > qxmin_init) {
             const float xims = 4.7123910329460728e-10f;
-            ice_number = rho * ice / xims;
+            ice_number = __fdiv_rn(rho * ice, xims);
         } else if (ice <= qxmin_cloud
                    || (ice_number <= cxmin && ice <= qxmin_init)) {
             vapor += ice;
@@ -162,7 +162,7 @@ extern "C" __global__ void nssl2_driver_gather_initialize(
             if (graupel_volume <= 0.0f) {
                 // Historical WRF quirk: this assignment follows denscale and
                 // therefore is intentionally not multiplied by air density.
-                graupel_volume = graupel / 700.0f;
+                graupel_volume = __fdiv_rn(graupel, 700.0f);
             }
             const float zhfac = 2.2736419413860176e-9f;
             const float xgms = 9.8960235561662557e-9f;
@@ -189,7 +189,7 @@ extern "C" __global__ void nssl2_driver_gather_initialize(
 
         if (hail_number <= 0.1f * cxmin && hail > qxmin_init) {
             if (hail_volume <= 0.0f) {
-                hail_volume = hail / 900.0f;
+                hail_volume = __fdiv_rn(hail, 900.0f);
             }
             const float zhlfac = 8.8419414012719244e-9f;
             const double lambda_inverse = pow(
@@ -302,7 +302,7 @@ __device__ __forceinline__ void nssl2_cloud_sediment_impl(
             const float effective_number = positive_number > 1.0e-8f
                 ? positive_number
                 : fmaxf(1.0e-8f,
-                        rho[k] * positive_cloud / maximum_mass);
+                        __fdiv_rn(rho[k] * positive_cloud, maximum_mass));
             const float particle_mass = fminf(
                 maximum_mass,
                 fmaxf(minimum_mass,
@@ -313,7 +313,7 @@ __device__ __forceinline__ void nssl2_cloud_sediment_impl(
             const float temperature = temperature_k[idx];
             const float viscosity = 1.832e-5f
                 * (416.16f / (temperature + 120.0f))
-                * powf(temperature / 296.0f, 1.5f);
+                * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
             if (viscosity > 0.0f) {
                 velocity[k] = fminf(
                     70.0f,
@@ -335,7 +335,7 @@ __device__ __forceinline__ void nssl2_cloud_sediment_impl(
         substeps = 1;
     } else if (dt > 20.0f) {
         substeps = max(2,
-            (int)(dt * maximum_courant_rate / 0.7f) + 1);
+            (int)(__fdiv_rn(dt * maximum_courant_rate, 0.7f)) + 1);
     } else {
         substeps = 1 + (int)(dt * maximum_courant_rate + 0.301f);
     }
@@ -371,6 +371,138 @@ __device__ __forceinline__ void nssl2_cloud_sediment_impl(
     cloud_surface_export[column] = dt * rho[0] * surface_mean_flux;
 }
 
+// One category runs in each block, so every row can reuse this storage.
+__device__ __forceinline__ float* nssl2_sediment_shared_storage()
+{
+    __shared__ float storage[389];
+    return storage;
+}
+
+__device__ __forceinline__ void nssl2_cloud_sediment_parallel_impl(
+    const float* __restrict__ air_density,
+    const float* __restrict__ temperature_k,
+    float* __restrict__ qc,
+    float* __restrict__ qndrop,
+    const float* __restrict__ dz,
+    float* __restrict__ cloud_surface_export,
+    float dt, int nz, int ny, int nx)
+{
+    const int column = blockIdx.x;
+    const int k = threadIdx.x;
+    if (column >= ny * nx) return;
+    const int j = column / nx;
+    const int i = column - j * nx;
+
+    float rho = 0.0f;
+    float cloud = 0.0f;
+    float number = 0.0f;
+    float velocity = 0.0f;
+    float* shared_sediment = nssl2_sediment_shared_storage();
+    float* mass_flux = shared_sediment + 0;
+    float* number_flux = shared_sediment + 65;
+
+    const float pi = 3.14159265358979323846f;
+    const float minimum_mass = 1000.0f * 0.523599f
+        * (4.0e-6f * 4.0e-6f * 4.0e-6f);
+    const float maximum_mass = 1000.0f * 0.523599f
+        * (120.0e-6f * 120.0e-6f * 120.0e-6f);
+    const float mass_to_diameter = 6.0f / (pi * 1000.0f);
+    float maximum_courant_rate = 0.0f;
+
+    if (k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        rho = air_density[idx];
+        cloud = qc[idx];
+        number = qndrop[idx];
+        velocity = 0.0f;
+
+        const float positive_cloud = fmaxf(cloud, 0.0f);
+        if (positive_cloud > 1.0e-13f) {
+            const float positive_number = fmaxf(number, 0.0f);
+            const float effective_number = positive_number > 1.0e-8f
+                ? positive_number
+                : fmaxf(1.0e-8f,
+                        __fdiv_rn(rho * positive_cloud, maximum_mass));
+            const float particle_mass = fminf(
+                maximum_mass,
+                fmaxf(minimum_mass,
+                      positive_cloud * rho / effective_number));
+            const float diameter = powf(
+                particle_mass * mass_to_diameter, 1.0f / 3.0f);
+            const float radius = 0.5f * diameter;
+            const float temperature = temperature_k[idx];
+            const float viscosity = 1.832e-5f
+                * (416.16f / (temperature + 120.0f))
+                * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
+            if (viscosity > 0.0f) {
+                velocity = fminf(
+                    70.0f,
+                    2.0f * 9.8f * 1000.0f * radius * radius
+                        / (9.0f * viscosity));
+            }
+        }
+        maximum_courant_rate = fmaxf(
+            maximum_courant_rate, velocity / dz[idx]);
+    }
+
+    float* rates = shared_sediment + 325;
+    rates[k] = maximum_courant_rate;
+    __syncthreads();
+    for (int stride = 32; stride > 0; stride >>= 1) {
+        if (k < stride) rates[k] = fmaxf(rates[k], rates[k + stride]);
+        __syncthreads();
+    }
+    maximum_courant_rate = rates[0];
+    if (maximum_courant_rate == 0.0f) {
+        if (k == 0) cloud_surface_export[column] = 0.0f;
+        return;
+    }
+
+    int substeps;
+    if (dt * maximum_courant_rate < 0.7f) {
+        substeps = 1;
+    } else if (dt > 20.0f) {
+        substeps = max(2,
+            (int)(__fdiv_rn(dt * maximum_courant_rate, 0.7f)) + 1);
+    } else {
+        substeps = 1 + (int)(dt * maximum_courant_rate + 0.301f);
+    }
+    const float dt_substep = dt / (float)substeps;
+    const float dt_fraction = dt_substep / dt;
+    float surface_mean_flux = 0.0f;
+
+    for (int step = 0; step < substeps; ++step) {
+        if (k < nz) {
+            mass_flux[k] = cloud * velocity * rho;
+            number_flux[k] = number * velocity;
+        }
+        if (k == 0) {
+            mass_flux[nz] = 0.0f;
+            number_flux[nz] = 0.0f;
+        }
+        __syncthreads();
+
+        if (k == 0) surface_mean_flux += cloud * velocity * dt_fraction;
+
+        if (k < nz) {
+            const size_t idx = IDX3(k, j, i);
+            const float inverse_dz = 1.0f / dz[idx];
+            cloud += dt_substep * inverse_dz / rho
+                * (mass_flux[k + 1] - mass_flux[k]);
+            number += dt_substep * inverse_dz
+                * (number_flux[k + 1] - number_flux[k]);
+        }
+        __syncthreads();
+    }
+
+    if (k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        qc[idx] = cloud;
+        qndrop[idx] = number;
+    }
+    if (k == 0) cloud_surface_export[column] = dt * rho * surface_mean_flux;
+}
+
 #define NSSL2_CLOUD_SEDIMENT_PARAMETERS                                 \
     const float* __restrict__ air_density,                              \
     const float* __restrict__ temperature_k, float* __restrict__ qc,    \
@@ -393,6 +525,7 @@ extern "C" __global__ void nssl2_cloud_sediment_256(
         air_density, temperature_k, qc, qndrop, dz,
         cloud_surface_export, dt, nz, ny, nx);
 }
+
 
 __device__ __forceinline__ float nssl2_rain_z(
     float q, float number, float rho)
@@ -475,7 +608,7 @@ __device__ __forceinline__ void nssl2_rain_sediment_impl(
             }
 
             const float diameter = powf(
-                (6.0f / pi) * mean_volume / (3.0f * 2.0f * 1.0f),
+                __fdiv_rn((6.0f / pi) * mean_volume, (3.0f * 2.0f * 1.0f)),
                 1.0f / 3.0f);
             const float density_factor = sqrtf(
                 1.225f * fminf(20.0f, 1.0f / rho[k]));
@@ -513,7 +646,7 @@ __device__ __forceinline__ void nssl2_rain_sediment_impl(
         substeps = 1;
     } else if (dt > 20.0f) {
         substeps = max(2,
-            (int)(dt * maximum_courant_rate / 0.7f) + 1);
+            (int)(__fdiv_rn(dt * maximum_courant_rate, 0.7f)) + 1);
     } else {
         substeps = 1 + (int)(dt * maximum_courant_rate + 0.301f);
     }
@@ -592,6 +725,198 @@ __device__ __forceinline__ void nssl2_rain_sediment_impl(
     rainnc[column] += exported;
 }
 
+template <bool ACCUMULATE = true>
+__device__ __forceinline__ void nssl2_rain_sediment_parallel_impl(
+    const float* __restrict__ air_density,
+    float* __restrict__ qr,
+    float* __restrict__ qnr,
+    const float* __restrict__ dz,
+    float* __restrict__ rainnc,
+    float* __restrict__ rainncv,
+    float dt, int nz, int ny, int nx)
+{
+    const int column = blockIdx.x;
+    const int k = threadIdx.x;
+    if (column >= ny * nx) return;
+    const int j = column / nx;
+    const int i = column - j * nx;
+
+    float rho = 0.0f;
+    float rain = 0.0f;
+    float number = 0.0f;
+    float mass_velocity = 0.0f;
+    float number_velocity = 0.0f;
+    float z_velocity = 0.0f;
+    float* shared_sediment = nssl2_sediment_shared_storage();
+    float* mass_flux = shared_sediment + 0;
+    float* number_flux = shared_sediment + 65;
+    float* z_flux = shared_sediment + 130;
+    float* mass_number_flux = shared_sediment + 195;
+    float z_initial = 0.0f;
+    float z_advected = 0.0f;
+    float number_mass_weighted = 0.0f;
+
+    const float pi = 3.14159265358979323846f;
+    const float minimum_volume =
+        0.523599f * (80.0e-6f * 80.0e-6f * 80.0e-6f);
+    const float configured_maximum_volume =
+        0.523599f * (6.0e-3f * 6.0e-3f * 6.0e-3f);
+    const float maximum_speed_volume =
+        configured_maximum_volume / (64.0f / 6.0f);
+    float maximum_courant_rate = 0.0f;
+
+    if (k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        rho = air_density[idx];
+        rain = qr[idx];
+        number = qnr[idx];
+        mass_velocity = 0.0f;
+        number_velocity = 0.0f;
+        z_velocity = 0.0f;
+
+        const float positive_rain = fmaxf(rain, 0.0f);
+        if (positive_rain > 1.0e-12f) {
+            const float local_number = fmaxf(number, 0.0f);
+            float mean_volume = rho * positive_rain
+                / (1000.0f * fmaxf(1.0e-11f, local_number));
+            if (mean_volume > maximum_speed_volume) {
+                mean_volume = maximum_speed_volume;
+            } else if (mean_volume < minimum_volume) {
+                mean_volume = minimum_volume;
+            }
+
+            const float diameter = powf(
+                __fdiv_rn((6.0f / pi) * mean_volume, (3.0f * 2.0f * 1.0f)),
+                1.0f / 3.0f);
+            const float density_factor = sqrtf(
+                1.225f * fminf(20.0f, 1.0f / rho));
+            const float speed_base = 1.0f + 516.575f * diameter;
+            float vm = density_factor * 10.0f
+                * (1.0f - powf(speed_base, -4.0f));
+            float vn = density_factor * 10.0f
+                * (1.0f - powf(speed_base, -1.0f));
+            float vz = density_factor * 10.0f
+                * (1.0f - powf(speed_base, -7.0f));
+            if (vn > vm || (vm > vz && vz > 0.0f)) {
+                vm = fmaxf(vm, vn);
+                vz = fmaxf(vz, vm);
+            }
+            mass_velocity = fminf(70.0f, fminf(150.0f, vm));
+            number_velocity = fminf(70.0f, fminf(150.0f, vn));
+            z_velocity = fminf(70.0f, fminf(150.0f, vz));
+        }
+        const float inverse_dz = 1.0f / dz[idx];
+        maximum_courant_rate = fmaxf(
+            maximum_courant_rate, mass_velocity * inverse_dz);
+        maximum_courant_rate = fmaxf(
+            maximum_courant_rate, number_velocity * inverse_dz);
+        maximum_courant_rate = fmaxf(
+            maximum_courant_rate, z_velocity * inverse_dz);
+    }
+
+    float* rates = shared_sediment + 325;
+    rates[k] = maximum_courant_rate;
+    __syncthreads();
+    for (int stride = 32; stride > 0; stride >>= 1) {
+        if (k < stride) rates[k] = fmaxf(rates[k], rates[k + stride]);
+        __syncthreads();
+    }
+    maximum_courant_rate = rates[0];
+    if (maximum_courant_rate == 0.0f) {
+        if (k == 0) rainncv[column] = 0.0f;
+        return;
+    }
+
+    int substeps;
+    if (dt * maximum_courant_rate < 0.7f) {
+        substeps = 1;
+    } else if (dt > 20.0f) {
+        substeps = max(2,
+            (int)(__fdiv_rn(dt * maximum_courant_rate, 0.7f)) + 1);
+    } else {
+        substeps = 1 + (int)(dt * maximum_courant_rate + 0.301f);
+    }
+    const float dt_substep = dt / (float)substeps;
+    const float dt_fraction = dt_substep / dt;
+    float surface_mean_flux = 0.0f;
+
+    for (int step = 0; step < substeps; ++step) {
+        // Diagnose the pre-fallout reflectivity moment and preserve the
+        // pre-fallout number for the parallel mass-weighted correction.
+        if (k < nz) {
+            z_initial = nssl2_rain_z(rain, number, rho);
+            z_advected = z_initial;
+            number_mass_weighted = number;
+            mass_flux[k] = rain * mass_velocity * rho;
+            number_flux[k] = number * number_velocity;
+            z_flux[k] = z_initial * z_velocity;
+            mass_number_flux[k] = number * mass_velocity;
+        }
+        if (k == 0) {
+            mass_flux[nz] = 0.0f;
+            number_flux[nz] = 0.0f;
+            z_flux[nz] = 0.0f;
+            mass_number_flux[nz] = 0.0f;
+        }
+        __syncthreads();
+
+        if (k == 0) surface_mean_flux +=
+            rain * mass_velocity * dt_fraction;
+
+        // fallout1d computes every flux first, then updates every level.
+        if (k < nz) {
+            const size_t idx = IDX3(k, j, i);
+            const float inverse_dz = 1.0f / dz[idx];
+            rain += dt_substep * inverse_dz / rho
+                * (mass_flux[k + 1] - mass_flux[k]);
+            number += dt_substep * inverse_dz
+                * (number_flux[k + 1] - number_flux[k]);
+            z_advected += dt_substep * inverse_dz
+                * (z_flux[k + 1] - z_flux[k]);
+            number_mass_weighted += dt_substep * inverse_dz
+                * (mass_number_flux[k + 1] - mass_number_flux[k]);
+        }
+
+        // calcnfromz1d uses double temporaries for the inverse-Z number
+        // reconstruction, but stores REAL(Nz) before its max/min correction.
+        if (k < nz) {
+            if (z_advected > 0.0f) {
+                const float diagnosed =
+                    nssl2_rain_z(rain, number, rho);
+                if (diagnosed > z_advected
+                        && z_advected > z_initial) {
+                    const double z_factor =
+                        (double)(6.0f / (pi * 1000.0f))
+                        * (double)(6.0f / (pi * 1000.0f));
+                    const double reconstructed =
+                        120.0 * (double)rho * (double)rho
+                        * (double)rain * (double)rain
+                        / ((double)z_advected / z_factor);
+                    const float reconstructed_real = (float)reconstructed;
+                    number = fmaxf(
+                        fminf(reconstructed_real,
+                              number_mass_weighted),
+                        number);
+                } else {
+                    number = fmaxf(number_mass_weighted, number);
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    if (k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        qr[idx] = rain;
+        qnr[idx] = number;
+    }
+    if (k == 0) {
+        const float exported = dt * rho * surface_mean_flux;
+        rainncv[column] = exported;
+        if constexpr (ACCUMULATE) rainnc[column] += exported;
+    }
+}
+
 #define NSSL2_RAIN_SEDIMENT_PARAMETERS                                  \
     const float* __restrict__ air_density, float* __restrict__ qr,       \
     float* __restrict__ qnr, const float* __restrict__ dz,               \
@@ -611,6 +936,7 @@ extern "C" __global__ void nssl2_rain_sediment_256(
     nssl2_rain_sediment_impl<NSSL2_KMAX_GENERIC>(
         air_density, qr, qnr, dz, rainnc, rainncv, dt, nz, ny, nx);
 }
+
 
 // WRF v4.6.1 module_mp_nssl_2mom.F:4242-4734 (sediment1d) and
 // :6625-6798/:7038-7118 (default two-moment snow distribution and Ferrier
@@ -694,7 +1020,7 @@ __device__ __forceinline__ void nssl2_snow_sediment_impl(
         substeps = 1;
     } else if (dt > 20.0f) {
         substeps = max(2,
-            (int)(dt * maximum_courant_rate / 0.7f) + 1);
+            (int)(__fdiv_rn(dt * maximum_courant_rate, 0.7f)) + 1);
     } else {
         substeps = 1 + (int)(dt * maximum_courant_rate + 0.301f);
     }
@@ -742,6 +1068,147 @@ __device__ __forceinline__ void nssl2_snow_sediment_impl(
     snownc[column] += exported;
 }
 
+template <bool ACCUMULATE = true>
+__device__ __forceinline__ void nssl2_snow_sediment_parallel_impl(
+    const float* __restrict__ air_density,
+    float* __restrict__ qs,
+    float* __restrict__ qns,
+    const float* __restrict__ dz,
+    float* __restrict__ snownc,
+    float* __restrict__ snowncv,
+    float dt, int nz, int ny, int nx)
+{
+    const int column = blockIdx.x;
+    const int k = threadIdx.x;
+    if (column >= ny * nx) return;
+    const int j = column / nx;
+    const int i = column - j * nx;
+
+    float rho = 0.0f;
+    float snow = 0.0f;
+    float number = 0.0f;
+    float mass_velocity = 0.0f;
+    float number_velocity = 0.0f;
+    float z_velocity = 0.0f;
+    float* shared_sediment = nssl2_sediment_shared_storage();
+    float* mass_flux = shared_sediment + 0;
+    float* number_flux = shared_sediment + 65;
+    float* mass_number_flux = shared_sediment + 130;
+    float number_mass_weighted = 0.0f;
+
+    const float minimum_volume =
+        0.523599f * (0.01e-3f * 0.01e-3f * 0.01e-3f);
+    const float maximum_volume =
+        0.523599f * (10.0e-3f * 10.0e-3f * 10.0e-3f);
+    float maximum_courant_rate = 0.0f;
+
+    if (k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        rho = air_density[idx];
+        snow = qs[idx];
+        number = qns[idx];
+        mass_velocity = 0.0f;
+        number_velocity = 0.0f;
+        z_velocity = 0.0f;
+
+        const float positive_snow = fmaxf(snow, 0.0f);
+        if (positive_snow > 1.0e-13f) {
+            const float local_number = fmaxf(number, 0.0f);
+            float mean_volume = rho * positive_snow
+                / (100.0f * fmaxf(1.0e-9f, local_number));
+            mean_volume = fminf(
+                maximum_volume, fmaxf(minimum_volume, mean_volume));
+            const float density_factor = sqrtf(
+                1.225f * fminf(20.0f, 1.0f / rho));
+            const float size_factor = powf(mean_volume, 0.14f);
+            mass_velocity = fminf(
+                70.0f, 11.9495f * density_factor * size_factor);
+            number_velocity = fminf(
+                70.0f, 7.02909f * density_factor * size_factor);
+            z_velocity = fminf(
+                70.0f, 13.3436f * density_factor * size_factor);
+        }
+        const float inverse_dz = 1.0f / dz[idx];
+        maximum_courant_rate = fmaxf(
+            maximum_courant_rate, mass_velocity * inverse_dz);
+        maximum_courant_rate = fmaxf(
+            maximum_courant_rate, number_velocity * inverse_dz);
+        maximum_courant_rate = fmaxf(
+            maximum_courant_rate, z_velocity * inverse_dz);
+    }
+
+    float* rates = shared_sediment + 325;
+    rates[k] = maximum_courant_rate;
+    __syncthreads();
+    for (int stride = 32; stride > 0; stride >>= 1) {
+        if (k < stride) rates[k] = fmaxf(rates[k], rates[k + stride]);
+        __syncthreads();
+    }
+    maximum_courant_rate = rates[0];
+    if (maximum_courant_rate == 0.0f) {
+        if (k == 0) snowncv[column] = 0.0f;
+        return;
+    }
+
+    int substeps;
+    if (dt * maximum_courant_rate < 0.7f) {
+        substeps = 1;
+    } else if (dt > 20.0f) {
+        substeps = max(2,
+            (int)(__fdiv_rn(dt * maximum_courant_rate, 0.7f)) + 1);
+    } else {
+        substeps = 1 + (int)(dt * maximum_courant_rate + 0.301f);
+    }
+    const float dt_substep = dt / (float)substeps;
+    const float dt_fraction = dt_substep / dt;
+    float surface_mean_flux = 0.0f;
+
+    for (int step = 0; step < substeps; ++step) {
+        if (k < nz) {
+            mass_flux[k] = snow * mass_velocity * rho;
+            number_flux[k] = number * number_velocity;
+            mass_number_flux[k] = number * mass_velocity;
+            number_mass_weighted = number;
+        }
+        if (k == 0) {
+            mass_flux[nz] = 0.0f;
+            number_flux[nz] = 0.0f;
+            mass_number_flux[nz] = 0.0f;
+        }
+        __syncthreads();
+
+        if (k == 0) surface_mean_flux +=
+            snow * mass_velocity * dt_fraction;
+
+        if (k < nz) {
+            const size_t idx = IDX3(k, j, i);
+            const float inverse_dz = 1.0f / dz[idx];
+            snow += dt_substep * inverse_dz / rho
+                * (mass_flux[k + 1] - mass_flux[k]);
+            number += dt_substep * inverse_dz
+                * (number_flux[k + 1] - number_flux[k]);
+            number_mass_weighted += dt_substep * inverse_dz
+                * (mass_number_flux[k + 1] - mass_number_flux[k]);
+        }
+
+        if (k < nz) {
+            number = fmaxf(number, number_mass_weighted);
+        }
+        __syncthreads();
+    }
+
+    if (k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        qs[idx] = snow;
+        qns[idx] = number;
+    }
+    if (k == 0) {
+        const float exported = dt * rho * surface_mean_flux;
+        snowncv[column] = exported;
+        if constexpr (ACCUMULATE) snownc[column] += exported;
+    }
+}
+
 #define NSSL2_SNOW_SEDIMENT_PARAMETERS                                  \
     const float* __restrict__ air_density, float* __restrict__ qs,       \
     float* __restrict__ qns, const float* __restrict__ dz,               \
@@ -761,6 +1228,7 @@ extern "C" __global__ void nssl2_snow_sediment_256(
     nssl2_snow_sediment_impl<NSSL2_KMAX_GENERIC>(
         air_density, qs, qns, dz, snownc, snowncv, dt, nz, ny, nx);
 }
+
 
 // WRF v4.6.1 module_mp_nssl_2mom.F:4242-4734 and :6515-6632.
 // Default option 18 uses predicted column-ice number, icefallopt=3's
@@ -809,12 +1277,12 @@ __device__ __forceinline__ void nssl2_ice_sediment_impl(
         if (positive_ice > 1.0e-13f) {
             float local_number = fmaxf(number[k], 0.0f);
             local_number = fmaxf(
-                local_number, rho[k] * positive_ice / maximum_mass);
+                local_number, __fdiv_rn(rho[k] * positive_ice, maximum_mass));
             local_number = fminf(
-                local_number, rho[k] * positive_ice / minimum_mass);
+                local_number, __fdiv_rn(rho[k] * positive_ice, minimum_mass));
             const float particle_mass = fmaxf(
                 rho[k] * positive_ice / local_number, minimum_mass);
-            const float mean_volume = particle_mass / 900.0f;
+            const float mean_volume = __fdiv_rn(particle_mass, 900.0f);
             const float density_factor = sqrtf(
                 1.225f * fminf(20.0f, 1.0f / rho[k]));
             const float tmp = 47.6273f * density_factor
@@ -839,7 +1307,7 @@ __device__ __forceinline__ void nssl2_ice_sediment_impl(
         substeps = 1;
     } else if (dt > 20.0f) {
         substeps = max(2,
-            (int)(dt * maximum_courant_rate / 0.7f) + 1);
+            (int)(__fdiv_rn(dt * maximum_courant_rate, 0.7f)) + 1);
     } else {
         substeps = 1 + (int)(dt * maximum_courant_rate + 0.301f);
     }
@@ -886,6 +1354,142 @@ __device__ __forceinline__ void nssl2_ice_sediment_impl(
     icenc[column] += exported;
 }
 
+template <bool ACCUMULATE = true>
+__device__ __forceinline__ void nssl2_ice_sediment_parallel_impl(
+    const float* __restrict__ air_density,
+    float* __restrict__ qi,
+    float* __restrict__ qni,
+    const float* __restrict__ dz,
+    float* __restrict__ icenc,
+    float* __restrict__ icencv,
+    float dt, int nz, int ny, int nx)
+{
+    const int column = blockIdx.x;
+    const int k = threadIdx.x;
+    if (column >= ny * nx) return;
+    const int j = column / nx;
+    const int i = column - j * nx;
+
+    float rho = 0.0f;
+    float ice = 0.0f;
+    float number = 0.0f;
+    float mass_velocity = 0.0f;
+    float number_velocity = 0.0f;
+    float* shared_sediment = nssl2_sediment_shared_storage();
+    float* mass_flux = shared_sediment + 0;
+    float* number_flux = shared_sediment + 65;
+    float* mass_number_flux = shared_sediment + 130;
+    float number_mass_weighted = 0.0f;
+
+    const float minimum_mass = 6.88e-13f;
+    const float maximum_mass = 1.0e-8f;
+    const float gamma_1p18 = 0.922766923904419f;
+    const float gamma_2p18 = 1.091937899589539f;
+    float maximum_courant_rate = 0.0f;
+
+    if (k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        rho = air_density[idx];
+        ice = qi[idx];
+        number = qni[idx];
+        mass_velocity = 0.0f;
+        number_velocity = 0.0f;
+
+        const float positive_ice = fmaxf(ice, 0.0f);
+        if (positive_ice > 1.0e-13f) {
+            float local_number = fmaxf(number, 0.0f);
+            local_number = fmaxf(
+                local_number, __fdiv_rn(rho * positive_ice, maximum_mass));
+            local_number = fminf(
+                local_number, __fdiv_rn(rho * positive_ice, minimum_mass));
+            const float particle_mass = fmaxf(
+                rho * positive_ice / local_number, minimum_mass);
+            const float mean_volume = __fdiv_rn(particle_mass, 900.0f);
+            const float density_factor = sqrtf(
+                1.225f * fminf(20.0f, 1.0f / rho));
+            const float tmp = 47.6273f * density_factor
+                / powf(1.0f / mean_volume, 0.18333f);
+            number_velocity = fminf(70.0f, tmp * gamma_1p18);
+            mass_velocity = fminf(70.0f, tmp * gamma_2p18);
+        }
+        const float inverse_dz = 1.0f / dz[idx];
+        maximum_courant_rate = fmaxf(
+            maximum_courant_rate, mass_velocity * inverse_dz);
+        maximum_courant_rate = fmaxf(
+            maximum_courant_rate, number_velocity * inverse_dz);
+    }
+
+    float* rates = shared_sediment + 325;
+    rates[k] = maximum_courant_rate;
+    __syncthreads();
+    for (int stride = 32; stride > 0; stride >>= 1) {
+        if (k < stride) rates[k] = fmaxf(rates[k], rates[k + stride]);
+        __syncthreads();
+    }
+    maximum_courant_rate = rates[0];
+    if (maximum_courant_rate == 0.0f) {
+        if (k == 0) icencv[column] = 0.0f;
+        return;
+    }
+
+    int substeps;
+    if (dt * maximum_courant_rate < 0.7f) {
+        substeps = 1;
+    } else if (dt > 20.0f) {
+        substeps = max(2,
+            (int)(__fdiv_rn(dt * maximum_courant_rate, 0.7f)) + 1);
+    } else {
+        substeps = 1 + (int)(dt * maximum_courant_rate + 0.301f);
+    }
+    const float dt_substep = dt / (float)substeps;
+    const float dt_fraction = dt_substep / dt;
+    float surface_mean_flux = 0.0f;
+
+    for (int step = 0; step < substeps; ++step) {
+        if (k < nz) {
+            mass_flux[k] = ice * mass_velocity * rho;
+            number_flux[k] = number * number_velocity;
+            mass_number_flux[k] = number * mass_velocity;
+            number_mass_weighted = number;
+        }
+        if (k == 0) {
+            mass_flux[nz] = 0.0f;
+            number_flux[nz] = 0.0f;
+            mass_number_flux[nz] = 0.0f;
+        }
+        __syncthreads();
+
+        if (k == 0) surface_mean_flux += ice * mass_velocity * dt_fraction;
+
+        if (k < nz) {
+            const size_t idx = IDX3(k, j, i);
+            const float inverse_dz = 1.0f / dz[idx];
+            ice += dt_substep * inverse_dz / rho
+                * (mass_flux[k + 1] - mass_flux[k]);
+            number += dt_substep * inverse_dz
+                * (number_flux[k + 1] - number_flux[k]);
+            number_mass_weighted += dt_substep * inverse_dz
+                * (mass_number_flux[k + 1] - mass_number_flux[k]);
+        }
+
+        if (k < nz) {
+            number = fmaxf(number, number_mass_weighted);
+        }
+        __syncthreads();
+    }
+
+    if (k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        qi[idx] = ice;
+        qni[idx] = number;
+    }
+    if (k == 0) {
+        const float exported = dt * rho * surface_mean_flux;
+        icencv[column] = exported;
+        if constexpr (ACCUMULATE) icenc[column] += exported;
+    }
+}
+
 #define NSSL2_ICE_SEDIMENT_PARAMETERS                                  \
     const float* __restrict__ air_density, float* __restrict__ qi,       \
     float* __restrict__ qni, const float* __restrict__ dz,               \
@@ -906,6 +1510,7 @@ extern "C" __global__ void nssl2_ice_sediment_256(
         air_density, qi, qni, dz, icenc, icencv, dt, nz, ny, nx);
 }
 
+
 // WRF v4.6.1 module_mp_nssl_2mom.F:4242-5163 and :6799-7554.
 // Default option 18 uses predicted graupel number and volume, variable
 // 170--900-kg/m3 particle density, Milbrandt--Morrison (2013) terminal
@@ -923,6 +1528,33 @@ __device__ __forceinline__ float nssl2_gamma_lookup(float argument)
     const double upper_gamma = tgamma(lower + 0.01);
     return (float)(lower_gamma
         + (upper_gamma - lower_gamma) * fraction * 100.0);
+}
+
+// Each block reuses the exact device gamma values for the velocity indices.
+__device__ __forceinline__ float nssl2_gamma_lookup_shared(
+    float argument, const double* table, int shape)
+{
+    const double scaled = 100.0 * (double)argument;
+    const int lower_index = (int)scaled;
+    const double lower = 0.01 * (double)lower_index;
+    const double fraction = (double)argument - lower;
+    const int group = (lower_index - 150 - 100 * shape) / 300;
+    const int slot = group * 20 + lower_index - (150 + 100 * shape + group * 300);
+    const double lower_gamma = table[2 * slot];
+    const double upper_gamma = table[2 * slot + 1];
+    return (float)(lower_gamma
+        + (upper_gamma - lower_gamma) * fraction * 100.0);
+}
+
+template <bool CACHED>
+__device__ __forceinline__ float nssl2_velocity_gamma_lookup(
+    float argument, const double* table, int shape)
+{
+    if constexpr (CACHED) {
+        return nssl2_gamma_lookup_shared(argument, table, shape);
+    } else {
+        return nssl2_gamma_lookup(argument);
+    }
 }
 
 __device__ __forceinline__ float nssl2_dense_frozen_z(
@@ -968,7 +1600,7 @@ __device__ __forceinline__ void nssl2_graupel_mm_coefficients(
         0.67819f, 0.63789f, 0.62197f, 0.61240f, 0.60572f,
         0.60066f, 0.59663f, 0.59330f, 0.59048f};
 
-    int index = (int)((particle_density - 50.0f) / 100.0f);
+    int index = (int)(__fdiv_rn((particle_density - 50.0f), 100.0f));
     index = max(0, min(8, index));
     if (index < 8) {
         const float fraction = fmaxf(
@@ -985,7 +1617,7 @@ __device__ __forceinline__ void nssl2_graupel_mm_coefficients(
     }
 }
 
-template <int KMAX, bool HAIL>
+template <int KMAX, bool HAIL, bool CACHED = false>
 __device__ __forceinline__ void nssl2_dense_frozen_sediment_impl(
     const float* __restrict__ air_density,
     float* __restrict__ qx,
@@ -994,7 +1626,7 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_impl(
     const float* __restrict__ dz,
     float* __restrict__ frozennc,
     float* __restrict__ frozenncv,
-    float dt, int nz, int ny, int nx)
+    float dt, int nz, int ny, int nx, const double* cached_gamma = nullptr)
 {
     const int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ny * nx) return;
@@ -1052,7 +1684,7 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_impl(
                 / (particle_density * fmaxf(1.0e-9f, number[k]));
             mean_volume = fminf(
                 maximum_volume, fmaxf(minimum_volume, mean_volume));
-            const float mass_diameter = powf(6.0f * mean_volume / pi,
+            const float mass_diameter = powf(__fdiv_rn(6.0f * mean_volume, pi),
                                              1.0f / 3.0f);
             const float characteristic_diameter =
                 characteristic_factor * mass_diameter;
@@ -1065,13 +1697,13 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_impl(
             const float base_speed = density_factor * coefficient
                 * powf(characteristic_diameter, exponent);
             mass_velocity[k] = base_speed
-                * nssl2_gamma_lookup(4.0f + shape + exponent)
+                * nssl2_velocity_gamma_lookup<CACHED>(4.0f + shape + exponent, cached_gamma, HAIL ? 1 : 0)
                 / nssl2_gamma_lookup(4.0f + shape);
             number_velocity[k] = base_speed
-                * nssl2_gamma_lookup(1.0f + shape + exponent)
+                * nssl2_velocity_gamma_lookup<CACHED>(1.0f + shape + exponent, cached_gamma, HAIL ? 1 : 0)
                 / nssl2_gamma_lookup(1.0f + shape);
             z_velocity[k] = base_speed
-                * nssl2_gamma_lookup(7.0f + shape + exponent)
+                * nssl2_velocity_gamma_lookup<CACHED>(7.0f + shape + exponent, cached_gamma, HAIL ? 1 : 0)
                 / nssl2_gamma_lookup(7.0f + shape);
             if (number_velocity[k] > mass_velocity[k]
                     || (mass_velocity[k] > z_velocity[k]
@@ -1104,7 +1736,7 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_impl(
         substeps = 1;
     } else if (dt > 20.0f) {
         substeps = max(
-            2, (int)(dt * maximum_courant_rate / 0.7f) + 1);
+            2, (int)(__fdiv_rn(dt * maximum_courant_rate, 0.7f)) + 1);
     } else {
         substeps = 1 + (int)(dt * maximum_courant_rate + 0.301f);
     }
@@ -1187,6 +1819,224 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_impl(
     frozennc[column] += exported;
 }
 
+template <bool HAIL, bool ACCUMULATE = true>
+__device__ __forceinline__ void nssl2_dense_frozen_sediment_parallel_cached(
+    const float* __restrict__ air_density,
+    float* __restrict__ qx,
+    float* __restrict__ qnx,
+    float* __restrict__ qvolx,
+    const float* __restrict__ dz,
+    float* __restrict__ frozennc,
+    float* __restrict__ frozenncv,
+    float dt, int nz, int ny, int nx, const double* cached_gamma)
+{
+    const int column = blockIdx.x;
+    const int k = threadIdx.x;
+    if (column >= ny * nx) return;
+    const int j = column / nx;
+    const int i = column - j * nx;
+
+    float rho = 0.0f;
+    float graupel = 0.0f;
+    float number = 0.0f;
+    float volume = 0.0f;
+    float mass_velocity = 0.0f;
+    float number_velocity = 0.0f;
+    float z_velocity = 0.0f;
+    float* shared_sediment = nssl2_sediment_shared_storage();
+    float* mass_flux = shared_sediment + 0;
+    float* number_flux = shared_sediment + 65;
+    float* volume_flux = shared_sediment + 130;
+    float* z_flux = shared_sediment + 195;
+    float* mass_number_flux = shared_sediment + 260;
+    float z_initial = 0.0f;
+    float z_advected = 0.0f;
+    float number_mass_weighted = 0.0f;
+
+    const float pi = 3.14159265358979323846f;
+    const float minimum_volume =
+        0.523599f * (0.3e-3f * 0.3e-3f * 0.3e-3f);
+    const float maximum_diameter = HAIL ? 40.0e-3f : 20.0e-3f;
+    const float maximum_volume = 0.523599f * maximum_diameter
+        * maximum_diameter * maximum_diameter;
+    const float shape = HAIL ? 1.0f : 0.0f;
+    const float characteristic_factor = powf(
+        HAIL ? 24.0f : 6.0f, -1.0f / 3.0f);
+    float maximum_courant_rate = 0.0f;
+
+    if (k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        rho = air_density[idx];
+        graupel = qx[idx];
+        number = qnx[idx];
+        volume = qvolx[idx];
+        mass_velocity = 0.0f;
+        number_velocity = 0.0f;
+        z_velocity = 0.0f;
+
+        const float positive_graupel = fmaxf(graupel, 0.0f);
+        if (positive_graupel > 1.0e-12f) {
+            const float minimum_density = HAIL ? 500.0f : 170.0f;
+            float particle_density = HAIL ? 800.0f : 500.0f;
+            if (volume > rho * 1.0e-15f) {
+                particle_density = fminf(
+                    900.0f,
+                    fmaxf(minimum_density,
+                          rho * positive_graupel / volume));
+            }
+            float mean_volume = rho * positive_graupel
+                / (particle_density * fmaxf(1.0e-9f, number));
+            mean_volume = fminf(
+                maximum_volume, fmaxf(minimum_volume, mean_volume));
+            const float mass_diameter = powf(__fdiv_rn(6.0f * mean_volume, pi),
+                                             1.0f / 3.0f);
+            const float characteristic_diameter =
+                characteristic_factor * mass_diameter;
+            float coefficient;
+            float exponent;
+            nssl2_graupel_mm_coefficients(
+                particle_density, &coefficient, &exponent);
+            const float density_factor = sqrtf(
+                1.225f * fminf(20.0f, 1.0f / rho));
+            const float base_speed = density_factor * coefficient
+                * powf(characteristic_diameter, exponent);
+            mass_velocity = base_speed
+                * nssl2_gamma_lookup_shared(4.0f + shape + exponent, cached_gamma, HAIL ? 1 : 0)
+                / nssl2_gamma_lookup(4.0f + shape);
+            number_velocity = base_speed
+                * nssl2_gamma_lookup_shared(1.0f + shape + exponent, cached_gamma, HAIL ? 1 : 0)
+                / nssl2_gamma_lookup(1.0f + shape);
+            z_velocity = base_speed
+                * nssl2_gamma_lookup_shared(7.0f + shape + exponent, cached_gamma, HAIL ? 1 : 0)
+                / nssl2_gamma_lookup(7.0f + shape);
+            if (number_velocity > mass_velocity
+                    || (mass_velocity > z_velocity
+                        && z_velocity > 0.0f)) {
+                mass_velocity = fmaxf(
+                    mass_velocity, number_velocity);
+                z_velocity = fmaxf(z_velocity, mass_velocity);
+            }
+            mass_velocity = fminf(70.0f, fminf(150.0f, mass_velocity));
+            number_velocity = fminf(
+                70.0f, fminf(150.0f, number_velocity));
+            z_velocity = fminf(70.0f, fminf(150.0f, z_velocity));
+        }
+        const float inverse_dz = 1.0f / dz[idx];
+        maximum_courant_rate = fmaxf(
+            maximum_courant_rate, mass_velocity * inverse_dz);
+        maximum_courant_rate = fmaxf(
+            maximum_courant_rate, number_velocity * inverse_dz);
+        maximum_courant_rate = fmaxf(
+            maximum_courant_rate, z_velocity * inverse_dz);
+    }
+
+    float* rates = shared_sediment + 325;
+    rates[k] = maximum_courant_rate;
+    __syncthreads();
+    for (int stride = 32; stride > 0; stride >>= 1) {
+        if (k < stride) rates[k] = fmaxf(rates[k], rates[k + stride]);
+        __syncthreads();
+    }
+    maximum_courant_rate = rates[0];
+    if (maximum_courant_rate == 0.0f) {
+        if (k == 0) frozenncv[column] = 0.0f;
+        return;
+    }
+
+    int substeps;
+    if (dt * maximum_courant_rate < 0.7f) {
+        substeps = 1;
+    } else if (dt > 20.0f) {
+        substeps = max(
+            2, (int)(__fdiv_rn(dt * maximum_courant_rate, 0.7f)) + 1);
+    } else {
+        substeps = 1 + (int)(dt * maximum_courant_rate + 0.301f);
+    }
+    const float dt_substep = dt / (float)substeps;
+    const float dt_fraction = dt_substep / dt;
+    float surface_mean_flux = 0.0f;
+
+    for (int step = 0; step < substeps; ++step) {
+        if (k < nz) {
+            z_initial = nssl2_dense_frozen_z(
+                graupel, number, volume, rho, HAIL);
+            z_advected = z_initial;
+            number_mass_weighted = number;
+            mass_flux[k] = graupel * mass_velocity * rho;
+            number_flux[k] = number * number_velocity;
+            volume_flux[k] = volume * mass_velocity;
+            z_flux[k] = z_initial * z_velocity;
+            mass_number_flux[k] = number * mass_velocity;
+        }
+        if (k == 0) {
+            mass_flux[nz] = 0.0f;
+            number_flux[nz] = 0.0f;
+            volume_flux[nz] = 0.0f;
+            z_flux[nz] = 0.0f;
+            mass_number_flux[nz] = 0.0f;
+        }
+        __syncthreads();
+
+        if (k == 0) surface_mean_flux +=
+            graupel * mass_velocity * dt_fraction;
+
+        if (k < nz) {
+            const size_t idx = IDX3(k, j, i);
+            const float inverse_dz = 1.0f / dz[idx];
+            graupel += dt_substep * inverse_dz / rho
+                * (mass_flux[k + 1] - mass_flux[k]);
+            volume += dt_substep * inverse_dz
+                * (volume_flux[k + 1] - volume_flux[k]);
+            number += dt_substep * inverse_dz
+                * (number_flux[k + 1] - number_flux[k]);
+            z_advected += dt_substep * inverse_dz
+                * (z_flux[k + 1] - z_flux[k]);
+            number_mass_weighted += dt_substep * inverse_dz
+                * (mass_number_flux[k + 1] - mass_number_flux[k]);
+        }
+
+        if (k < nz) {
+            if (z_advected > 0.0f) {
+                const float diagnosed = nssl2_dense_frozen_z(
+                    graupel, number, volume, rho, HAIL);
+                if (diagnosed > z_advected
+                        && diagnosed > 0.0f
+                        && z_advected > z_initial) {
+                    const double z_factor =
+                        (double)(6.0f / (pi * 1000.0f))
+                        * (double)(6.0f / (pi * 1000.0f));
+                    const double moment_ratio = HAIL ? 8.75 : 20.0;
+                    const double reconstructed =
+                        moment_ratio * (double)rho * (double)rho
+                        * (double)graupel * (double)graupel
+                        / ((double)z_advected / z_factor);
+                    const float reconstructed_real = (float)reconstructed;
+                    number = fmaxf(
+                        fminf(reconstructed_real,
+                              number_mass_weighted),
+                        number);
+                } else {
+                    number = fmaxf(
+                        number_mass_weighted, number);
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    if (k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        qx[idx] = graupel;
+        qnx[idx] = number;
+        qvolx[idx] = volume;
+    }
+    if (k == 0) {
+        const float exported = dt * rho * surface_mean_flux;
+        frozenncv[column] = exported;
+        if constexpr (ACCUMULATE) frozennc[column] += exported;
+    }
+}
+
 #define NSSL2_GRAUPEL_SEDIMENT_PARAMETERS                              \
     const float* __restrict__ air_density, float* __restrict__ qg,      \
     float* __restrict__ qng, float* __restrict__ qvolg,                 \
@@ -1229,6 +2079,75 @@ extern "C" __global__ void nssl2_hail_sediment_256(
     nssl2_dense_frozen_sediment_impl<NSSL2_KMAX_GENERIC, true>(
         air_density, qh, qnh, qvolh, dz, hailnc, hailncv,
         dt, nz, ny, nx);
+}
+
+extern "C" __global__ void nssl2_fill_velocity_gamma(double* table)
+{
+    const int shape = blockIdx.x;
+    const int slot = threadIdx.x;
+    if (slot >= 60) return;
+    const int index = 150 + 100 * shape + (slot / 20) * 300 + slot % 20;
+    const double lower = 0.01 * (double)index;
+    table[shape * 120 + 2 * slot] = tgamma(lower);
+    table[shape * 120 + 2 * slot + 1] = tgamma(lower + 0.01);
+}
+
+
+extern "C" __global__ void nssl2_graupel_sediment_cached_256(
+    NSSL2_GRAUPEL_SEDIMENT_PARAMETERS, const double* cached_gamma)
+{
+    nssl2_dense_frozen_sediment_impl<NSSL2_KMAX_GENERIC, false, true>(
+        air_density, qg, qng, qvolg, dz, graupelnc, graupelncv,
+        dt, nz, ny, nx, cached_gamma);
+}
+
+
+extern "C" __global__ void nssl2_hail_sediment_cached_256(
+    NSSL2_HAIL_SEDIMENT_PARAMETERS, const double* cached_gamma)
+{
+    nssl2_dense_frozen_sediment_impl<NSSL2_KMAX_GENERIC, true, true>(
+        air_density, qh, qnh, qvolh, dz, hailnc, hailncv,
+        dt, nz, ny, nx, cached_gamma);
+}
+
+// Category rows own disjoint moments and exports. Cloud writes the final
+// ignored export, so the other rows omit its unused intermediate additions.
+extern "C" __global__ void nssl2_sediment_all_parallel_64(
+    const float* air_density, const float* temperature_k,
+    float* state, const float* dz, float* ignored_accumulator,
+    float* category_export, const double* cached_gamma,
+    float dt, int nz, int ny, int nx)
+{
+    const size_t n = (size_t)nz * ny * nx;
+    const size_t ncol = (size_t)ny * nx;
+    const int category = blockIdx.y;
+    if (category == 0) {
+        nssl2_rain_sediment_parallel_impl<false>(
+            air_density, state + NSSL2_QR * n, state + NSSL2_NR * n,
+            dz, ignored_accumulator, category_export, dt, nz, ny, nx);
+    } else if (category == 1) {
+        nssl2_ice_sediment_parallel_impl<false>(
+            air_density, state + NSSL2_QI * n, state + NSSL2_NI * n,
+            dz, ignored_accumulator, category_export + ncol, dt, nz, ny, nx);
+    } else if (category == 2) {
+        nssl2_snow_sediment_parallel_impl<false>(
+            air_density, state + NSSL2_QS * n, state + NSSL2_NS * n,
+            dz, ignored_accumulator, category_export + 2 * ncol, dt, nz, ny, nx);
+    } else if (category == 3) {
+        nssl2_dense_frozen_sediment_parallel_cached<false, false>(
+            air_density, state + NSSL2_QG * n, state + NSSL2_NG * n,
+            state + NSSL2_VG * n, dz, ignored_accumulator,
+            category_export + 3 * ncol, dt, nz, ny, nx, cached_gamma);
+    } else if (category == 4) {
+        nssl2_dense_frozen_sediment_parallel_cached<true, false>(
+            air_density, state + NSSL2_QH * n, state + NSSL2_NH * n,
+            state + NSSL2_VH * n, dz, ignored_accumulator,
+            category_export + 4 * ncol, dt, nz, ny, nx, cached_gamma + 120);
+    } else {
+        nssl2_cloud_sediment_parallel_impl(
+            air_density, temperature_k, state + NSSL2_QC * n,
+            state + NSSL2_NC * n, dz, ignored_accumulator, dt, nz, ny, nx);
+    }
 }
 
 extern "C" __global__ void nssl2_driver_reduce_precipitation(

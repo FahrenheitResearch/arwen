@@ -55,6 +55,9 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import lru_cache
 
 import numpy as np
 
@@ -102,7 +105,45 @@ from gpuwm.core.state import DTYPE
 #: until that second sweep; they are two now, and this one does not move.
 MYNN_PBL_COLUMN_CHUNK_FLOOR = 16384
 
-#: The width that SHIPS.  Measured on a card, not derived from one.
+#: The widest column chunk a run walks; the width itself is the widest the
+#: card's memory admits up to this cap (:func:`choose_mynn_column_chunk`).
+#:
+#: THE 2026-09-30 SWEEP, on the level-major layout (every MYNN column kernel
+#: addresses level k of column c at k * ncol + c, so a warp's loads
+#: coalesce).  That layout reversed the finding below: the old kernels
+#: addressed c * nz + k, lived on L1 reuse along k, and got slower as more
+#: columns shared an SM, which is why narrow chunks won.  Measured on a
+#: captured real MYNN call (288x288x59 at 2.25 km, 82,944 columns, midday),
+#: node-2 RTX 5090 sole tenant, persistent workspace, median of five calls,
+#: all arms one digest:
+#:
+#:   ==========  ======================  ==============
+#:   columns     ms per MYNN call        workspace MiB
+#:   ==========  ======================  ==============
+#:    8,192                      36.59              492
+#:   16,384                      23.12              984
+#:   24,576                      19.26            1,475
+#:   32,768                      16.38            1,967
+#:   41,472                      14.45            2,490
+#:   82,944                      13.65            4,980
+#:   ==========  ======================  ==============
+#:
+#: Wider is faster all the way to one chunk per domain.  49,152 and 65,536
+#: columns measured 15.52 and 15.82 ms because they leave a short last
+#: chunk; walked as equal chunks (the runtime does) they are the 41,472
+#: arm.  Threads per block 64 against 128 moved no arm by more than 4 per
+#: cent.  In a real 1 h forecast of the same grid (Thompson, MYNN, RUC,
+#: legacy RRTMG) the median step went from 132.1 ms on the old kernels to
+#: 93.3 ms at 8,192 columns and 71.4 ms at 82,944, every history file's
+#: data bitwise identical.
+#:
+#: The cap is 98,304 columns (5,901 MiB at nz = 59): one chunk for every
+#: domain up to 313 x 313, taken only where 1/16 of the card holds it
+#: (:data:`MYNN_PBL_RUN_WIDTH_TOTAL_VRAM_FRACTION`), so a 96 GB card runs
+#: it, a 32 GB card is bounded at 32,768 columns and a 24 GB card at
+#: 24,576.
+#:
+#: HISTORY: the 2026-09-15 sweeps on the old layout, which shipped 8,192.
 #:
 #: Swept through the real forecast door on an RTX 5090 at nz = 59 on
 #: 2026-09-15 -- 200 root steps of the 299x299x59 + 282x129 pair's prepared
@@ -175,16 +216,30 @@ MYNN_PBL_COLUMN_CHUNK_FLOOR = 16384
 #: sweep's own arms (164.5 s against 148.3 s per 200 cycles); the rest is
 #: this release's land-surface and shortwave work.
 #:
-#: :data:`MYNN_PBL_COLUMN_CHUNK_FLOOR` stays at 16,384 and does not follow
-#: this number down: it bounds the derivation that rides the receipt, and
-#: lowering it would throw away the one thing a card with no room has.
-MYNN_PBL_COLUMN_CHUNK_DEFAULT = 8192
+#: :data:`MYNN_PBL_COLUMN_CHUNK_FLOOR` stays at 16,384: it bounds the
+#: derivation that rides the receipt.  The narrowest width a run walks is
+#: :data:`MYNN_PBL_COLUMN_CHUNK_MINIMUM`, the old shipped width.
+MYNN_PBL_COLUMN_CHUNK_DEFAULT = 98304
+
+#: The narrowest width the memory bound may give: the width that shipped
+#: before the level-major layout, so a card with little room runs what it
+#: ran before and never less.
+#:
+#: It is also the width a STREAMED TILE BUFFER walks
+#: (:func:`resolve_mynn_tile_column_chunk`).  Every buffer holds its own
+#: workspace, so ``nbuffers`` buffers at the run's width hold ``nbuffers``
+#: times what the resident domain holds.  MEASURED at 51693ec76 on the
+#: 572x524x49 icon-eu MYNN forecast of tests/test_streamed_pricing_window.py
+#: (two 286x286 buffers, no card, so the 98,304-column cap): 4.96 GiB of
+#: scratch per buffer, a streamed envelope of 22.80 GiB against 20.14 GiB
+#: resident; at this width 14.54 against 15.09.  Streaming exists to shrink
+#: the device footprint, so its buffers keep the width they walked in 2.8.0.
+MYNN_PBL_COLUMN_CHUNK_MINIMUM = 8192
 
 #: The width this process will actually use, published once by
 #: :func:`resolve_mynn_column_chunk` and read by anything that reports the
 #: knob (``tilestream.shared_workspace.mynn_column_chunk``).  It starts at
-#: the shipped default, which is what a process that never reaches a card
-#: uses as well.
+#: the cap, which is what a process that never reaches a card uses as well.
 MYNN_PBL_COLUMN_CHUNK = MYNN_PBL_COLUMN_CHUNK_DEFAULT
 
 #: Threads per block every MYNN column kernel launches with
@@ -226,6 +281,15 @@ MYNN_PBL_COLUMN_CHUNK_ENV = "GPUWM_MYNN_COLUMN_CHUNK"
 #: than spent.
 MYNN_PBL_CHUNK_TOTAL_VRAM_FRACTION = 0.125
 MYNN_PBL_CHUNK_FREE_VRAM_FRACTION = 0.5
+
+#: The share of the card the width a run WALKS may take (the receipt's
+#: derivation above keeps its own 1/8).  Half the derivation's share,
+#: because this width is priced into every forecast's memory check: on a
+#: 24 GB card 1/16 is 1.5 GiB of workspace, 1.0 GiB more than the 8,192
+#: columns that shipped before, which a run that fitted with a few GiB to
+#: spare still fits; a larger share would move near-capacity runs onto
+#: tiles.  The free-memory clamp is the derivation's.
+MYNN_PBL_RUN_WIDTH_TOTAL_VRAM_FRACTION = 0.0625
 
 #: The VRAM-derived ceiling is rounded down to a multiple of this many
 #: columns (246 MiB of workspace at nz = 59).  Without it a few hundred MiB
@@ -502,8 +566,9 @@ def mynn_pbl_card_chunk_ceiling(
     return max(1, sm_count * blocks_per_sm) * tpb
 
 
-def mynn_pbl_vram_chunk_ceiling(nz: int, *, free_bytes: int,
-                                total_bytes: int) -> int:
+def mynn_pbl_vram_chunk_ceiling(
+        nz: int, *, free_bytes: int, total_bytes: int,
+        total_fraction: float = MYNN_PBL_CHUNK_TOTAL_VRAM_FRACTION) -> int:
     """The widest chunk the card's memory admits, quantised for stability.
 
     The budget is the smaller of a share of the card and a share of what is
@@ -513,7 +578,7 @@ def mynn_pbl_vram_chunk_ceiling(nz: int, *, free_bytes: int,
     drift in what else is resident does not move the derived width.
     """
     per_column = mynn_pbl_column_bytes(nz)
-    budget = min(int(total_bytes) * MYNN_PBL_CHUNK_TOTAL_VRAM_FRACTION,
+    budget = min(int(total_bytes) * float(total_fraction),
                  max(0, int(free_bytes)) * MYNN_PBL_CHUNK_FREE_VRAM_FRACTION)
     columns = int(budget // per_column)
     quantum = int(MYNN_PBL_CHUNK_VRAM_QUANTUM)
@@ -667,7 +732,7 @@ def derive_mynn_column_chunk(nz: int, *, card: Mapping | None = None,
     the card in one wave, clipped by what the card's memory admits, never
     below :data:`MYNN_PBL_COLUMN_CHUNK_FLOOR`.  That floor bounds THIS
     function and nothing else; the width a run walks is settled by
-    :func:`choose_mynn_column_chunk` and is narrower than the floor.
+    :func:`choose_mynn_column_chunk`.
 
     **This is a receipt term, not the shipped width.**  The 2026-09-15
     sweeps (see :data:`MYNN_PBL_COLUMN_CHUNK_DEFAULT`) measured the card
@@ -675,8 +740,9 @@ def derive_mynn_column_chunk(nz: int, *, card: Mapping | None = None,
     cycle than 16,384 columns, monotonically, with no plateau anywhere in
     that range -- and then measured 8,192 columns 15.5 per cent cheaper
     again, which is what ships.  So :func:`choose_mynn_column_chunk` --
-    which is what the run actually calls -- ships the measured width and
-    hangs this whole derivation off it as ``would_have_derived``.  Keeping
+    which is what the run actually calls -- ships a measured policy and
+    hangs this whole derivation off it as ``would_have_derived``.  (Those
+    sweeps predate the level-major layout; see the 2026-09-30 sweep.)  Keeping
     it costs one device-attribute read and gives the next card's sweep a
     claim to test; using it cost 18.8 per cent and 2.9 GiB against the
     width it was compared with, and more against the one that ships.
@@ -724,32 +790,134 @@ def derive_mynn_column_chunk(nz: int, *, card: Mapping | None = None,
         device_name=card.get("device_name"))
 
 
+@lru_cache(maxsize=1)
+def _pricing_card_memory_rows() -> dict[float, int]:
+    import json
+    from importlib.resources import files
+
+    table = json.loads((files("gpuwm") / "authorities" /
+                        "mynn-card-memory.v1.json").read_text(encoding="utf-8"))
+    return {float(row["capacity_gib"]): int(row["cuda_total_bytes"])
+            for row in table["rows"]}
+
+
+def mynn_pricing_total_bytes(vram_gib: float, *, measured: bool = False) -> int:
+    """CUDA-usable total for a capacity tier, or the exact measured total.
+
+    Nameplate capacity is not CUDA's total. At 49 levels, the measured
+    16 and 32 GiB reference cards fall one width quantum below nameplate
+    pricing. No host probe substitutes its card for the forecast target.
+    Tiers with no sample retain their stated total; hardware snapshots
+    always retain their own measurement.
+    """
+    total = int(float(vram_gib) * 1024 ** 3)
+    if measured:
+        return total
+    return _pricing_card_memory_rows().get(float(vram_gib), total)
+
+
+def mynn_column_chunk_for_memory(nz: int, *, total_bytes: int,
+                                 free_bytes: int,
+                                 environ: Mapping[str, str] | None = None
+                                 ) -> "MynnColumnChunk":
+    """The run's memory policy, shared by live cards and target-card fits."""
+    override = mynn_column_chunk_override(environ)
+    if override is not None:
+        return _chunk_choice(override, "override", nz)
+    vram_ceiling = mynn_pbl_vram_chunk_ceiling(
+        nz, free_bytes=free_bytes, total_bytes=total_bytes,
+        total_fraction=MYNN_PBL_RUN_WIDTH_TOTAL_VRAM_FRACTION)
+    if vram_ceiling >= MYNN_PBL_COLUMN_CHUNK_DEFAULT:
+        chunk, source = MYNN_PBL_COLUMN_CHUNK_DEFAULT, "measured"
+    elif vram_ceiling > MYNN_PBL_COLUMN_CHUNK_MINIMUM:
+        chunk, source = vram_ceiling, "measured-vram-bounded"
+    else:
+        chunk, source = MYNN_PBL_COLUMN_CHUNK_MINIMUM, "measured-minimum"
+    return _chunk_choice(chunk, source, nz, vram_ceiling=vram_ceiling,
+                         free_bytes=int(free_bytes),
+                         total_bytes=int(total_bytes))
+
+
+_PRICING_MEMORY: ContextVar[tuple[int, int] | None] = ContextVar(
+    "mynn_pricing_memory", default=None)
+
+
+@contextmanager
+def mynn_pricing_memory(*, total_bytes: int, free_bytes: int):
+    """Price a forecast target without changing this process's run width.
+
+    Context-local so concurrent fits for different cards cannot share a
+    width. Every nested resident or streamed estimate uses this same
+    target, and leaving the fit restores the runtime resolution.
+    """
+    token = _PRICING_MEMORY.set((int(total_bytes), int(free_bytes)))
+    try:
+        yield
+    finally:
+        _PRICING_MEMORY.reset(token)
+
+
 def choose_mynn_column_chunk(nz: int, *, card: Mapping | None = None,
                              environ: Mapping[str, str] | None = None
                              ) -> "MynnColumnChunk":
     """The width this process runs at, and the derivation it did not use.
 
-    The shipped width is :data:`MYNN_PBL_COLUMN_CHUNK_DEFAULT`, which is the
-    fastest arm of the sweeps of record -- an interior minimum with a
-    slower arm on each side -- rather than anything read off the card.  An
-    operator override replaces it verbatim and says so.  Either way the
-    card is still asked what it would have derived, and the answer
-    rides in the receipt as ``would_have_derived``: the width that ships is
-    then reconstructible on a card nobody has swept, and a future sweep that
-    disagrees with this one has the terms it is disagreeing with.
+    The 2026-09-30 sweep (see :data:`MYNN_PBL_COLUMN_CHUNK_DEFAULT`) found
+    the level-major kernels faster at every wider chunk up to one chunk per
+    domain, so the width is the widest the card's memory admits
+    (:func:`mynn_pbl_vram_chunk_ceiling` at
+    :data:`MYNN_PBL_RUN_WIDTH_TOTAL_VRAM_FRACTION` of the card and 1/2 of
+    what is free, quantised so a neighbour's drift does not move it), capped at
+    :data:`MYNN_PBL_COLUMN_CHUNK_DEFAULT` and never below
+    :data:`MYNN_PBL_COLUMN_CHUNK_MINIMUM`. Off a card without a target
+    memory sample the cap is priced, the widest any card runs. A fit with
+    a target sample uses :func:`mynn_column_chunk_for_memory` instead.
+    An operator override replaces it
+    verbatim and says so.  The card-ceiling derivation still rides the
+    receipt as ``would_have_derived``.
 
-    Source is ``pinned-measured`` for the default and ``override`` for the
-    environment variable.  Neither is ``card-ceiling`` or ``vram-ceiling``:
-    those two names now appear only inside ``would_have_derived``, so a
-    receipt cannot be misread as saying the card picked the width.
+    The width never changes a bit: every MYNN column kernel gives one thread
+    one whole column and reads no neighbour, which
+    ``tests/test_mynn_pbl_scratch.py::test_the_column_chunk_is_not_a_seam``
+    asserts rather than assumes.
+
+    Source is ``measured`` when the cap binds, ``measured-vram-bounded``
+    when the card's memory does, ``measured-minimum`` when the minimum
+    does, ``measured-no-card`` off a card and ``override`` for the
+    environment variable.
     """
+    if card is None:
+        card = probe_mynn_card()
     derived = derive_mynn_column_chunk(nz, card=card, environ={})
     override = mynn_column_chunk_override(environ)
     if override is not None:
         return _chunk_choice(override, "override", nz,
                              would_have_derived=derived)
-    return _chunk_choice(MYNN_PBL_COLUMN_CHUNK_DEFAULT, "pinned-measured", nz,
-                         would_have_derived=derived)
+    if card is None:
+        return _chunk_choice(MYNN_PBL_COLUMN_CHUNK_DEFAULT,
+                             "measured-no-card", nz,
+                             would_have_derived=derived)
+    choice = mynn_column_chunk_for_memory(
+        nz, free_bytes=card["free_bytes"], total_bytes=card["total_bytes"],
+        environ=environ)
+    return dataclasses.replace(choice, device_name=card.get("device_name"),
+                               would_have_derived=derived)
+
+
+def mynn_column_pieces(ncol: int, width: int) -> int:
+    """Columns per call when ``ncol`` columns are walked at most ``width``
+    at a time, in equal pieces.
+
+    ``ceil(ncol / ceil(ncol / width))``: the fewest calls the width allows,
+    as equal as the column count allows, so no call is a short remainder.
+    82,944 columns at a 65,536 width walk as two calls of 41,472 (14.45 ms
+    on the 2026-09-30 sweep) instead of 65,536 and 17,408 (15.82 ms).
+    """
+    ncol, width = int(ncol), int(width)
+    if ncol < 1 or width < 1:
+        raise ValueError("MYNN column pieces need positive column counts")
+    calls = -(-ncol // width)
+    return -(-ncol // calls)
 
 
 #: The chosen width, once per process per ``nz``.  Memoised because the
@@ -758,6 +926,8 @@ def choose_mynn_column_chunk(nz: int, *, card: Mapping | None = None,
 #: answer, and ``DomainState.scratch`` refuses a slot that changes shape.
 _RESOLVED: dict[int, "MynnColumnChunk"] = {}
 _PINNED: int | None = None
+#: The width streamed tile buffers walked, per ``nz``, for the receipt.
+_TILE_WALKED: dict[int, int] = {}
 
 #: Every module that binds ``MYNN_PBL_COLUMN_CHUNK``.  The resolved width is
 #: published into the ones already imported so the knob reports what the run
@@ -786,12 +956,50 @@ def resolve_mynn_column_chunk(nz: int) -> int:
     nz = int(nz)
     if _PINNED is not None:
         return int(_PINNED)
+    memory = _PRICING_MEMORY.get()
+    if memory is not None:
+        total_bytes, free_bytes = memory
+        return mynn_column_chunk_for_memory(
+            nz, total_bytes=total_bytes, free_bytes=free_bytes).chunk
     choice = _RESOLVED.get(nz)
     if choice is None:
         choice = choose_mynn_column_chunk(nz)
         _RESOLVED[nz] = choice
         _publish_column_chunk(choice.chunk)
     return int(choice.chunk)
+
+
+def resolve_mynn_tile_column_chunk(nz: int, *, walking: bool = False) -> int:
+    """The MYNN column width a streamed tile buffer walks and is priced at.
+
+    :data:`MYNN_PBL_COLUMN_CHUNK_MINIMUM`, the width buffers walked in
+    2.8.0, whatever this process's own width is: every buffer allocates
+    its own workspace, and at the run's width ``nbuffers`` of them priced a
+    streamed forecast above the resident one (the measurement is at
+    :data:`MYNN_PBL_COLUMN_CHUNK_MINIMUM`).  A pin or an operator override
+    is honoured verbatim, as it is for the run's width, so a capacity
+    measurement that narrows the width still walks what it asked for.
+
+    The width never changes a bit (see :func:`choose_mynn_column_chunk`).
+    ``walking=True`` is the solver's call, recorded for the receipt;
+    pricing leaves it off, so a plan that is never run writes nothing.
+    """
+    nz = int(nz)
+    chunk = resolve_mynn_column_chunk(nz)
+    choice = _RESOLVED.get(nz)
+    if _PRICING_MEMORY.get() is not None:
+        # A target fit does not read the host's memo, including its
+        # override provenance. The same operator override still applies.
+        choice = None
+        override = mynn_column_chunk_override()
+        if override is not None:
+            return int(chunk)
+    if _PINNED is None and not (choice is not None
+                                and choice.source == "override"):
+        chunk = min(chunk, MYNN_PBL_COLUMN_CHUNK_MINIMUM)
+    if walking:
+        _TILE_WALKED[nz] = int(chunk)
+    return int(chunk)
 
 
 def pin_mynn_column_chunk(chunk: int | None) -> int:
@@ -807,12 +1015,14 @@ def pin_mynn_column_chunk(chunk: int | None) -> int:
     if chunk is None:
         _PINNED = None
         _RESOLVED.clear()
+        _TILE_WALKED.clear()
         return previous
     chunk = int(chunk)
     if chunk < 1:
         raise ValueError("MYNN column chunk must be a positive column count")
     _PINNED = chunk
     _RESOLVED.clear()
+    _TILE_WALKED.clear()
     _publish_column_chunk(chunk)
     return previous
 
@@ -856,6 +1066,11 @@ def mynn_column_chunk_receipt() -> dict | None:
     observed = observe_dmp_registers_per_thread()
     if observed is not None:
         entry["registers_per_thread_observed"] = observed
+    if _TILE_WALKED:
+        # A streamed run's buffers walk their own width
+        # (:func:`resolve_mynn_tile_column_chunk`), so the receipt names it
+        # rather than leave ``chunk`` standing for a width no buffer walked.
+        entry["tile_buffer_chunk"] = max(_TILE_WALKED.values())
     return entry
 
 
@@ -957,6 +1172,15 @@ class MynnPblScratch:
                             f"requested {np.dtype(dtype)}")
         return buf
 
+    @staticmethod
+    def _view(buf, shape):
+        # Keep the public column shape while storing each level contiguously.
+        # Product stacks retain their leading vector axis.
+        if len(shape) >= 2:
+            physical = (*shape[:-2], shape[-1], shape[-2])
+            return buf.reshape(physical).swapaxes(-1, -2)
+        return buf.reshape(shape)
+
     def group(self, slot: str, names: Iterable[str], shape) -> dict:
         """One contiguous sub-array of ``shape`` per name, in order."""
         names = tuple(names)
@@ -965,7 +1189,7 @@ class MynnPblScratch:
         for extent in shape:
             unit *= extent
         buf = self._backing(slot, len(names) * unit, DTYPE)
-        return {name: buf[index * unit:(index + 1) * unit].reshape(shape)
+        return {name: self._view(buf[index * unit:(index + 1) * unit], shape)
                 for index, name in enumerate(names)}
 
     def one(self, slot: str, shape) -> cp.ndarray:
@@ -974,7 +1198,7 @@ class MynnPblScratch:
         unit = 1
         for extent in shape:
             unit *= extent
-        return self._backing(slot, unit, DTYPE)[:unit].reshape(shape)
+        return self._view(self._backing(slot, unit, DTYPE)[:unit], shape)
 
     def index(self, slot: str, shape) -> cp.ndarray:
         """An int32 array from an index slot."""
@@ -1017,6 +1241,8 @@ __all__ = [
     "MYNN_PBL_COLUMN_CHUNK",
     "MYNN_PBL_COLUMN_CHUNK_ENV",
     "MYNN_PBL_COLUMN_CHUNK_FLOOR",
+    "MYNN_PBL_COLUMN_CHUNK_MINIMUM",
+    "MYNN_PBL_RUN_WIDTH_TOTAL_VRAM_FRACTION",
     "MYNN_PBL_COLUMN_TPB",
     "MYNN_DMP_REGISTERS_PER_THREAD",
     "MynnColumnChunk",
@@ -1061,8 +1287,12 @@ __all__ = [
     "SLOT_ZERO_FACE",
     "SLOT_ZERO_LAYER",
     "derive_mynn_column_chunk",
+    "mynn_column_chunk_for_memory",
+    "mynn_pricing_memory",
+    "mynn_pricing_total_bytes",
     "mynn_column_chunk_override",
     "mynn_column_chunk_receipt",
+    "mynn_column_pieces",
     "mynn_pbl_card_chunk_ceiling",
     "mynn_pbl_column_bytes",
     "mynn_pbl_vram_chunk_ceiling",
@@ -1070,6 +1300,7 @@ __all__ = [
     "pin_mynn_column_chunk",
     "probe_mynn_card",
     "resolve_mynn_column_chunk",
+    "resolve_mynn_tile_column_chunk",
     "mynn_pbl_flag_shapes",
     "mynn_pbl_index_shapes",
     "mynn_pbl_scratch_bytes",

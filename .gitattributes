@@ -82,3 +82,17 @@ tools/rustwx/patches/rdps-f000-components.patch -whitespace
 # 4 Hz nvidia-smi samples end in an empty procs field (a trailing tab) when no
 # process held the card; B4-SPEED-ANCHORS.json pins their sha256, so the bytes stay.
 docs/public/receipts/obsbattery/*.tsv -whitespace
+
+# Bytes kept as their upstream or a recorded digest has them. The public export's
+# `git diff --check` refused their trailing blanks at the 2.8.1 cut battery:
+# WRF v4.7.1's urban tables (gpuwm/data/urban/oracle/bep/oracle-sha256sums.txt pins both),
+# the generated glibc trig header (tools/glibc_trig_flt32_proof/final-hashes.txt pins it),
+# the WRF driver excerpts the urban oracle compiles, and the UW PBL oracle's retained
+# glibc sources (libm64/upstream-sha256.json pins them) and captured disassembly.
+gpuwm/data/urban/URBPARM.TBL -whitespace
+gpuwm/data/urban/URBPARM_LCZ.TBL -whitespace
+gpuwm/core/kernels/glibc_trig_flt32.cuh -whitespace
+tools/urban_wrf471_oracle/couple_noahdrv_1679_1776.inc -whitespace
+tools/urban_wrf471_oracle/couple_noahmpdrv_3363_3372_3689_3776.inc -whitespace
+tools/uwpbl_wrf471_oracle/libm64/*.objdump.txt -whitespace
+tools/uwpbl_wrf471_oracle/libm64/upstream/*.c -whitespace

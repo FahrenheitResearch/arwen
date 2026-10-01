@@ -43,6 +43,31 @@ def test_all_fetchable_sources_author_valid_configuration(source):
     assert {k: v for k, v in table["domain"][1]["follow"].items() if k != "track"} == VORTEX_PRESET
 
 
+@pytest.mark.parametrize("source", routes.all_fetchable_sources())
+def test_the_plan_route_is_the_one_the_authored_configuration_belongs_to(source):
+    """A152: a storm-following plan names the route its configuration runs on.
+
+    The config-driven route decodes a configuration only through its
+    [case_data] table and refuses one that carries [fetch] alone as
+    belonging to the prepared route, which is what `gpuwm run-plan` said
+    of every GFS storm-following plan the desktop wrote with the
+    config-driven route.  The route is the source row's, so it is the one
+    the setup's own configuration needs.
+    """
+
+    if refused_for_its_window(source):
+        return
+    text, _exp = tc.configuration_text(cycle="2026090900", point=center(source),
+                                       forcing_source=source)
+    table = tomllib.loads(text)
+    assert cs.plan_route(source) == (
+        "experiment" if "case_data" in table else "prepared")
+
+
+def test_gfs_storms_run_on_the_prepared_route():
+    assert cs.plan_route("gfs") == "prepared"
+
+
 @pytest.mark.parametrize("source,member", [("gefs", "p03"), ("aigefs", "mem017")])
 def test_member_survives_config_and_acquisition_identity(source, member, tmp_path):
     text, _ = tc.configuration_text(cycle="2026090900", point=(18., -65.),

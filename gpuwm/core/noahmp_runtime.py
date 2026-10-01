@@ -194,6 +194,31 @@ SLAB_TRANSIENT_BYTES_PER_COLUMN = 4096
 #: growth minus the chunk term's 172.0 MiB = 407 B per grid column.
 SLAB_GRID_TRANSIENT_BYTES_PER_COLUMN = 512
 
+#: The surface-layout cache ``NoahmpRuntimeParameters.surface_layout`` keeps
+#: between calls, in bytes per nx*ny column, as a bound: byte snapshots of
+#: xland, xice, ivgtyp and isltyp (4 + 4 + 8 + 8, the integer grids priced
+#: at int64), the int32 vegetation and soil grids (8), the sea-ice and
+#: glacier masks (2) and the int64 land-column coordinates (16, every column
+#: priced as land).
+SLAB_LAYOUT_CACHE_BYTES_PER_COLUMN = 50
+
+
+def slab_cache_bytes_per_column() -> int:
+    """Device bytes the slab caches hold between calls, per nx*ny column.
+
+    The layout cache above plus the parameter slabs
+    ``NoahmpRuntimeParameters.slab_parameter_chunks`` keeps for every
+    ordinary land column (4 bytes for each field of
+    ``noahmp_column_slab.PARAMETER_WIDTHS`` and ``PARAMETER_INTS``: 472 B),
+    every column priced as land.  Unlike the per-call transients above they
+    stay allocated for the domain's life, so ``gpuwm/core/preflight.py``
+    prices them as resident physics.
+    """
+    from gpuwm.core.noahmp_column_slab import PARAMETER_INTS, PARAMETER_WIDTHS
+
+    return (SLAB_LAYOUT_CACHE_BYTES_PER_COLUMN
+            + 4 * (sum(PARAMETER_WIDTHS.values()) + len(PARAMETER_INTS)))
+
 
 def _resolve_leaf_evaluator():
     if os.environ.get(HOST_LEAVES_ENV, "") == "1":
@@ -744,6 +769,38 @@ def guard_noahmp_glacier_columns(fields, params: "NoahmpRuntimeParameters"):
         "(glacier_path=False) and NOAHMP_SFLX is not a substitute for it.")
 
 
+_SURFACE_IDENTITY_KERNEL = None
+_SURFACE_IDENTITY_REDUCTION = None
+
+
+def _surface_identity_changed(cp, current, previous, sizes):
+    """Compare the four identity buffers in one integer-only pass."""
+    global _SURFACE_IDENTITY_KERNEL, _SURFACE_IDENTITY_REDUCTION
+    if len(set(sizes)) == 1:
+        if _SURFACE_IDENTITY_REDUCTION is None:
+            _SURFACE_IDENTITY_REDUCTION = cp.ReductionKernel(
+                "uint8 v0, uint8 v1, uint8 v2, uint8 v3, "
+                "uint8 p0, uint8 p1, uint8 p2, uint8 p3", "bool out",
+                "(v0 != p0) || (v1 != p1) || (v2 != p2) || (v3 != p3)",
+                "a || b", "out = a", "false", "noahmp_identity_equal_bytes",
+                options=("-std=c++17",))
+        return _SURFACE_IDENTITY_REDUCTION(*current, *previous)
+    if _SURFACE_IDENTITY_KERNEL is None:
+        _SURFACE_IDENTITY_KERNEL = cp.ElementwiseKernel(
+            "raw uint8 a, raw uint8 b, raw uint8 c, raw uint8 d, "
+            "raw uint8 pa, raw uint8 pb, raw uint8 pc, raw uint8 pd, "
+            "int64 na, int64 nb, int64 nc, int64 nd",
+            "bool changed",
+            "changed = (i < na && a[i] != pa[i]) || "
+            "(i < nb && b[i] != pb[i]) || "
+            "(i < nc && c[i] != pc[i]) || "
+            "(i < nd && d[i] != pd[i]);",
+            "noahmp_surface_identity_bytes", options=("-std=c++17",))
+    return _SURFACE_IDENTITY_KERNEL(*current, *previous,
+                                    *(np.int64(size) for size in sizes),
+                                    size=max(sizes)).any()
+
+
 class NoahmpRuntimeParameters:
     """The Noah-MP parameter bundle plus its per-column transfer cache.
 
@@ -848,6 +905,93 @@ class NoahmpRuntimeParameters:
                 soilcolor=key[3], nsoil=key[4]))
             cache[key] = row
         return row
+
+    def surface_layout(self, fields, *, nsoil, chunk_width,
+                       sf_urban_physics: int = 0):
+        """Reuse classification only after comparing every identity input byte.
+
+        ``sf_urban_physics > 0`` maps urban and LCZ columns to NATURAL_TABLE
+        (noahmpdrv.F:916-925's other arm) and is part of the cache key; at 0
+        they map to ISURBAN_TABLE exactly as before the urban models.
+        """
+        import cupy as cp
+
+        names = ("xland", "xice", "ivgtyp", "isltyp")
+        arrays = tuple(cp.ascontiguousarray(fields[name]) for name in names)
+        identity = self.land_use
+        urban_on = bool(int(sf_urban_physics))
+        key = (cp.cuda.runtime.getDevice(), nsoil, chunk_width,
+               np.float32(self.xice_threshold).tobytes(), identity.isice,
+               identity.isurban, identity.lcz,
+               tuple((array.shape, array.dtype.str) for array in arrays),
+               urban_on)
+        cached = self.__dict__.get("_surface_layout_cache")
+        if cached is not None and cached[0] == key:
+            current = tuple(array.view(cp.uint8).reshape(-1) for array in arrays)
+            previous = cached[1]
+            sizes = tuple(array.size for array in current)
+            changed = _surface_identity_changed(cp, current, previous, sizes)
+            if not bool(cp.asnumpy(changed)):
+                return cached[2]
+        # Old coordinates and masks are discarded before constructing replacements.
+        self.__dict__.pop("_surface_layout_cache", None)
+        del cached
+        xland, xice, ivgtyp, isltyp = arrays
+        sea_ice = xice >= np.float32(self.xice_threshold)
+        open_water = ((xland - np.float32(1.5)) >= np.float32(0.0)) & ~sea_ice
+        is_land = ~(sea_ice | open_water)
+        soiltyp = cp.where((isltyp == 14) & (xice == np.float32(0.0)),
+                           7, isltyp).astype(cp.int32)
+        urban = cp.asarray(np.asarray((identity.isurban, *identity.lcz),
+                                      dtype=np.int64))
+        vegtyp = cp.where(cp.isin(ivgtyp.astype(cp.int64), urban),
+                          identity.natural if urban_on else identity.isurban,
+                          ivgtyp).astype(cp.int32)
+        glacier = is_land & (vegtyp == identity.isice)
+        census = {"land": int(is_land.sum()), "water": int(open_water.sum()),
+                  "sea_ice": int(sea_ice.sum()), "glacier": int(glacier.sum())}
+        census["land"] -= census["glacier"]
+        land_j, land_i = cp.nonzero(is_land & ~glacier)
+        land_j = cp.ascontiguousarray(land_j)
+        land_i = cp.ascontiguousarray(land_i)
+        veg_land = cp.asnumpy(vegtyp[land_j, land_i]).astype(np.int64)
+        soil_land = cp.asnumpy(soiltyp[land_j, land_i]).astype(np.int64)
+        keys, inverse = np.unique(veg_land * 1000 + soil_land, return_inverse=True)
+        layout = dict(sea_ice=sea_ice, glacier=glacier, vegtyp=vegtyp,
+                      soiltyp=soiltyp, land_j=land_j, land_i=land_i,
+                      census=census, keys=keys, inverse=inverse)
+        copies = tuple(array.view(cp.uint8).reshape(-1).copy() for array in arrays)
+        self._surface_layout_cache = (key, copies, layout)
+        return layout
+
+    def slab_parameter_chunks(self, keys, inverse, *, nsoil, chunk_width):
+        """Reuse read-only parameter slabs for the current ordered identities.
+
+        Surface identity inputs are byte-checked every step. Their complete
+        ordered mapping is checked here, so changed land, ice, vegetation or soil
+        cannot reuse parameters for a different column. Parameter tables have
+        the same lifetime and read-only contract as the memoised handles.
+        """
+        import cupy as cp
+        from gpuwm.core.noahmp_column_slab import parameter_fields
+
+        signature = (cp.cuda.runtime.getDevice(), int(nsoil), int(chunk_width),
+                     keys.dtype.str, keys.tobytes(), inverse.dtype.str,
+                     inverse.tobytes())
+        cached = self.__dict__.get("_slab_parameter_cache")
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        # Keep only one mapping, including when a nest changes its land mask.
+        self.__dict__.pop("_slab_parameter_cache", None)
+        del cached
+        rows = [self.slab_row(vegtyp=int(key // 1000),
+                              soiltyp=(int(key % 1000),) * nsoil,
+                              slopetype=1, soilcolor=4, nsoil=nsoil)
+                for key in keys]
+        chunks = [parameter_fields(rows, inverse[start:start + chunk_width])
+                  for start in range(0, len(inverse), chunk_width)]
+        self._slab_parameter_cache = (signature, chunks)
+        return chunks
 
     def table(self, group: str, name: str):
         return self.bundle.mptable[group].scalar(name)
@@ -1062,8 +1206,24 @@ def _resolve_cold_start():
     return COLD_START_EVALUATOR
 
 
+def _column_sla(params, identity, vegtyp: int) -> float:
+    """``SLA_TABLE(IVGTYP)`` for the one branch of NOAHMP_INIT that reads it.
+
+    An urban point never reads its own row (module_sf_noahmpdrv.F:2163-2185:
+    with sf_urban_physics = 0 it takes the bare branch, otherwise
+    SLA_TABLE(NATURAL_TABLE)).  The Local Climate Zone classes 51-61 the urban
+    land-cover legend keeps have no row at all in a 20-class table, so asking
+    for one refused every urban run that used them at the cold start; NaN
+    makes a port that read it anyway fail loudly.  ISURBAN keeps its table
+    read, so an urban-off run is byte-identical.
+    """
+    if int(vegtyp) in tuple(int(n) for n in identity.lcz):
+        return float("nan")
+    return params.veg_value("SLA", int(vegtyp))
+
+
 def noahmp_cold_start(fields, *, params: NoahmpRuntimeParameters,
-                      dzs) -> None:
+                      dzs, sf_urban_physics: int = 0) -> None:
     """``NOAHMP_INIT`` + ``SNOW_INIT`` over the whole slab.
 
     Runs once, at driver construction, exactly where WRF runs it
@@ -1094,14 +1254,20 @@ def noahmp_cold_start(fields, *, params: NoahmpRuntimeParameters,
         raise ValueError(
             f"Noah-MP cold start is four-layer only, got nsoil={nsoil}")
 
-    _resolve_cold_start()(slab, params=params, dzs=dzs)
+    # sf_urban_physics > 0 sends urban and LCZ columns down NOAHMP_INIT's
+    # vegetated branch with SLA_TABLE(NATURAL_TABLE) (module_sf_noahmpdrv.F
+    # 2164-2187).  Passed only when set, so an evaluator bound for the
+    # admitted sf_urban_physics = 0 identity is called exactly as before.
+    _resolve_cold_start()(slab, params=params, dzs=dzs,
+                          **({"sf_urban_physics": int(sf_urban_physics)}
+                             if int(sf_urban_physics) else {}))
 
     for name, array in slab.items():
         fields[name][...] = cp.asarray(array)
 
 
 def cold_start_on_device(slab, *, params: NoahmpRuntimeParameters,
-                         dzs) -> None:
+                         dzs, sf_urban_physics: int = 0) -> None:
     """``NOAHMP_INIT`` + ``SNOW_INIT`` for the whole slab, on the GPU.
 
     One thread per column through ``noahmp_driver_noahmp_init``, whose
@@ -1170,7 +1336,7 @@ def cold_start_on_device(slab, *, params: NoahmpRuntimeParameters,
         psisat[rows] = params.soil_value("SATPSI", int(category))
     sla = np.empty(ncol, dtype=np.float32)
     for category in np.unique(vegtyp):
-        sla[vegtyp == category] = params.veg_value("SLA", int(category))
+        sla[vegtyp == category] = _column_sla(params, identity, int(category))
 
     def flat(name, layer=None):
         """One carrier as a flat ``ncol`` view, in the grid's row-major order.
@@ -1199,7 +1365,7 @@ def cold_start_on_device(slab, *, params: NoahmpRuntimeParameters,
         ix[:, NI_IX["fndsnowh"]] = 1
         ix[:, NI_IX["vegtyp"]] = vegtyp[span]
         ix[:, NI_IX["cropcat"]] = 0
-        ix[:, NI_IX["sf_urban_physics"]] = 0
+        ix[:, NI_IX["sf_urban_physics"]] = int(sf_urban_physics)
         ix[:, NI_IX["isice"]] = identity.isice
         ix[:, NI_IX["isurban"]] = identity.isurban
         ix[:, NI_IX["iswater"]] = identity.iswater
@@ -1219,7 +1385,9 @@ def cold_start_on_device(slab, *, params: NoahmpRuntimeParameters,
         # and LCZ column takes the bare branch at 2164-2178, so the slot is
         # never read; NaN makes a port that read it anyway fail loudly rather
         # than agree with whatever was in the buffer.
-        x[:, NI_IN["sla_natural"]] = np.float32("nan")
+        x[:, NI_IN["sla_natural"]] = (
+            np.float32(params.veg_value("SLA", int(identity.natural)))
+            if int(sf_urban_physics) else np.float32("nan"))
         x[:, NI_IN["snow"]] = flat("snow")[span]
         x[:, NI_IN["snowh"]] = flat("snowh")[span]
         for k in range(nsoil):
@@ -1261,7 +1429,7 @@ def cold_start_on_device(slab, *, params: NoahmpRuntimeParameters,
 
 
 def cold_start_on_host(slab, *, params: NoahmpRuntimeParameters,
-                       dzs) -> None:
+                       dzs, sf_urban_physics: int = 0) -> None:
     """The same cold start, column by column, on the unmodified CPython port.
 
     This is the paired scalar authority: the routine
@@ -1293,7 +1461,7 @@ def cold_start_on_host(slab, *, params: NoahmpRuntimeParameters,
                 bexp=params.soil_value("BB", soiltyp),
                 smcmax=params.soil_value("MAXSMC", soiltyp),
                 psisat=params.soil_value("SATPSI", soiltyp),
-                sla=params.veg_value("SLA", vegtyp),
+                sla=_column_sla(params, identity, vegtyp),
                 snow=slab["snow"][j, i], snowh=slab["snowh"][j, i],
                 tslb=slab["tslb"][:, j, i], smois=slab["smois"][:, j, i],
                 zsnsoxy=slab["zsnsoxy"][:, j, i],
@@ -1301,7 +1469,10 @@ def cold_start_on_host(slab, *, params: NoahmpRuntimeParameters,
                 snicexy=slab["snicexy"][:, j, i],
                 snliqxy=slab["snliqxy"][:, j, i],
                 cropcat=0, nsnow=NSNOW, iopt_run=3, iopt_crop=0,
-                iopt_irr=0, iopt_irrm=0, sf_urban_physics=0)
+                iopt_irr=0, iopt_irrm=0,
+                sf_urban_physics=int(sf_urban_physics),
+                sla_natural=(params.veg_value("SLA", int(identity.natural))
+                             if int(sf_urban_physics) else None))
             slab["snow"][j, i] = cold.snow
             slab["snowh"][j, i] = cold.snowh
             slab["canwat"][j, i] = cold.canwat
@@ -1360,8 +1531,13 @@ def noahmp_lsm_step(
     opt_irr: int,
     opt_tdrn: int,
     opt_soil: int,
+    sf_urban_physics: int = 0,
 ) -> dict[str, int]:
     """One ``noahmplsm`` call.  Mutates ``fields`` in place.
+
+    ``sf_urban_physics > 0`` is noahmpdrv.F:916-925's other arm: urban and
+    LCZ columns run as ``NATURAL_TABLE`` with ``FVGMAX = 0.96`` so the urban
+    model can blend the rural solve with its own.
 
     Returns a small census -- how many columns ran, were skipped as water,
     and were skipped as sea ice -- because "the LSM ran" and "the LSM ran on
@@ -1403,7 +1579,9 @@ def noahmp_lsm_step(
             fields, atmosphere, params=params, geometry=geometry,
             precipitation=precipitation, coszen=coszen,
             dt=dt, dx=dx, dzs=dzs, itimestep=itimestep,
-            elapsed_seconds=elapsed_seconds)
+            elapsed_seconds=elapsed_seconds,
+            **({"sf_urban_physics": int(sf_urban_physics)}
+               if int(sf_urban_physics) else {}))
         _noahmp_post_lsm_diagnostics(fields, params=params)
         return census
 
@@ -1523,9 +1701,15 @@ def noahmp_lsm_step(
         7, host["isltyp"]).astype(np.int32)
     urban_categories = np.asarray(
         (identity.isurban, *identity.lcz), dtype=np.int64)
-    vegtyp_2d = np.where(np.isin(host["ivgtyp"].astype(np.int64),
-                                 urban_categories),
-                         identity.isurban, host["ivgtyp"]).astype(np.int32)
+    urban_2d = np.isin(host["ivgtyp"].astype(np.int64), urban_categories)
+    urban_vegtyp = (identity.natural if int(sf_urban_physics)
+                    else identity.isurban)
+    vegtyp_2d = np.where(urban_2d, urban_vegtyp,
+                         host["ivgtyp"]).astype(np.int32)
+    if int(sf_urban_physics):
+        # :924 FVGMAX = 0.96 on the natural fraction of a city cell.
+        fvgmax_2d = np.where(urban_2d, np.float32(0.96),
+                             fvgmax_2d).astype(np.float32)
     # :1036-1042.  PLAI is overwritten by PHENOLOGY, but the statement is
     # transcribed because the identity is an argument here, not an assumption.
     plai_2d = np.where(np.isin(vegtyp_2d, (25, 26, 27)),
@@ -1774,6 +1958,7 @@ def _lsm_step_slab(
     dzs,
     itimestep: int,
     elapsed_seconds: float,
+    sf_urban_physics: int = 0,
 ) -> dict[str, int]:
     """One ``noahmplsm`` call through the whole-slab orchestration.
 
@@ -1797,9 +1982,9 @@ def _lsm_step_slab(
     bitwise over every carried array.
     """
     import cupy as cp
+    from gpuwm.core.noahmp_slab_libm import gather_slab_fields
 
-    from gpuwm.core.noahmp_column_slab import (evaluate_sflx_slab,
-                                               parameter_fields)
+    from gpuwm.core.noahmp_column_slab import evaluate_sflx_slab
 
     ny, nx = fields["tsk"].shape
     nsoil = fields["tslb"].shape[0]
@@ -1858,14 +2043,13 @@ def _lsm_step_slab(
         fields["smois"][...] = cp.where(seaice1[None], one, fields["smois"])
 
     # ---- :715-725, the two CYCLE ILOOP skips -------------------------------
-    sea_ice = xice >= np.float32(params.xice_threshold)
-    open_water = ((xland - np.float32(1.5)) >= zero32f) & ~sea_ice
-    is_land = ~(sea_ice | open_water)
+    layout = params.surface_layout(fields, nsoil=nsoil,
+                                   chunk_width=SLAB_COLUMN_CHUNK,
+                                   sf_urban_physics=int(sf_urban_physics))
+    sea_ice = layout["sea_ice"]
     fields["sh2o"][...] = cp.where(sea_ice[None], one, fields["sh2o"])
     fields["lai"][...] = cp.where(sea_ice, np.float32(0.01), fields["lai"])
-    census = {"land": int(is_land.sum()),
-              "water": int(open_water.sum()),
-              "sea_ice": int(sea_ice.sum())}
+    census = layout["census"].copy()
 
     # ---- :729-796, 2-D to 1-D, evaluated once for the slab -----------------
     q_ml = qv / (one + qv)
@@ -1877,13 +2061,19 @@ def _lsm_step_slab(
     co2air = co2_fraction * p_ml
     o2air = o2_fraction * p_ml
 
-    soiltyp = cp.where((fields["isltyp"] == 14) & (xice == zero32f),
-                       7, fields["isltyp"]).astype(cp.int32)
-    urban_categories = cp.asarray(
-        np.asarray((identity.isurban, *identity.lcz), dtype=np.int64))
-    vegtyp = cp.where(cp.isin(fields["ivgtyp"].astype(cp.int64),
-                              urban_categories),
-                      identity.isurban, fields["ivgtyp"]).astype(cp.int32)
+    soiltyp = layout["soiltyp"]
+    vegtyp = layout["vegtyp"]
+    if int(sf_urban_physics):
+        # noahmpdrv.F:916-925: with an urban model blending the cell, its
+        # natural part runs as NATURAL_TABLE (the layout's vegtyp, keyed on
+        # sf_urban_physics) with FVGMAX = 0.96.  At sf_urban_physics = 0 the
+        # layout maps urban and LCZ categories to ISURBAN_TABLE and FVGMAX is
+        # the field's, exactly as before the urban models.
+        urban_categories = cp.asarray(
+            np.asarray((identity.isurban, *identity.lcz), dtype=np.int64))
+        urban = cp.isin(fields["ivgtyp"].astype(cp.int64), urban_categories)
+        fvgmax = cp.where(urban, np.float32(0.96),
+                          fvgmax).astype(cp.float32)
 
     # ---- :1026-1029, FICEOLD ------------------------------------------------
     snow_slot = cp.arange(NSNOW, dtype=cp.int32)[:, None, None]
@@ -1896,10 +2086,8 @@ def _lsm_step_slab(
     # Glacier columns dispatch to the ported NOAHMP_GLACIER path; the
     # ordinary slab below answers only ``is_land & ~glacier``.  The two
     # column sets are disjoint, so the order between them cannot matter.
-    glacier = is_land & (vegtyp == identity.isice)
-    n_glacier = int(glacier.sum())
-    census["land"] -= n_glacier
-    census["glacier"] = n_glacier
+    glacier = layout["glacier"]
+    n_glacier = census["glacier"]
     if n_glacier:
         if not params.glacier_path:
             gj, gi = (int(w[0]) for w in np.nonzero(cp.asnumpy(glacier)))
@@ -1916,20 +2104,13 @@ def _lsm_step_slab(
         census["glacier_path"] = _glacier_execution_provenance(
             glacier_evaluator)
 
-    land_j, land_i = cp.nonzero(is_land & ~glacier)
+    land_j, land_i = layout["land_j"], layout["land_i"]
     n_land = int(land_j.size)
     if n_land == 0:
         return census
-
-    # ---- one parameter row per distinct (vegetation, soil) identity --------
-    veg_land = cp.asnumpy(vegtyp[land_j, land_i]).astype(np.int64)
-    soil_land = cp.asnumpy(soiltyp[land_j, land_i]).astype(np.int64)
-    keys, inverse = np.unique(veg_land * 1000 + soil_land,
-                              return_inverse=True)
-    rows = [params.slab_row(vegtyp=int(key // 1000),
-                            soiltyp=(int(key % 1000),) * nsoil,
-                            slopetype=1, soilcolor=4, nsoil=nsoil)
-            for key in keys]
+    parameter_chunks = params.slab_parameter_chunks(
+        layout["keys"], layout["inverse"], nsoil=nsoil,
+        chunk_width=SLAB_COLUMN_CHUNK)
 
     gather_2d = {
         "canliq": "canliqxy", "canice": "canicexy", "sneqv": "snow",
@@ -1964,18 +2145,17 @@ def _lsm_step_slab(
         m = stop - start
         at = (jc, ic)
 
-        chunk = {name: fields[carrier][at]
-                 for name, carrier in gather_2d.items()}
-        chunk.update({name: array[at]
-                      for name, array in gather_local.items()})
-        chunk.update({name: array[:, jc, ic].T
-                      for name, array in gather_3d.items()})
-        chunk["stc"] = cp.concatenate(
-            (fields["tsnoxy"][:, jc, ic], fields["tslb"][:, jc, ic]),
-            axis=0).T
+        sources = {name: fields[carrier] for name, carrier in gather_2d.items()}
+        sources.update(gather_local)
+        sources.update(gather_3d)
+        sources.update({"_snow_temperature": fields["tsnoxy"],
+                        "_soil_temperature": fields["tslb"],
+                        "isnow": fields["isnowxy"], "vegtyp": vegtyp})
+        chunk = gather_slab_fields(jc, ic, sources, (ny, nx))
+        chunk["stc"] = cp.concatenate((chunk.pop("_snow_temperature"),
+                                       chunk.pop("_soil_temperature")), axis=1)
         chunk["zsoil"] = cp.broadcast_to(zsoil_row[None, :], (m, nsoil))
-        chunk["isnow"] = fields["isnowxy"][at].astype(cp.int32)
-        chunk["vegtyp"] = vegtyp[at]
+        chunk["isnow"] = chunk["isnow"].astype(cp.int32)
 
         zeros = cp.zeros(m, dtype=cp.float32)
         chunk.update({
@@ -1990,7 +2170,7 @@ def _lsm_step_slab(
             "ice": cp.zeros(m, dtype=cp.int32),
             "croptype": cp.zeros(m, dtype=cp.int32),
         })
-        chunk.update(parameter_fields(rows, inverse[start:stop]))
+        chunk.update(parameter_chunks[start // SLAB_COLUMN_CHUNK])
 
         out = evaluate_sflx_slab(chunk, m)
         _write_back_slab(fields, jc, ic, out, nsoil=nsoil, dt=dt32f)
@@ -2012,13 +2192,27 @@ def _write_back_slab(fields, j, i, r, *, nsoil, dt) -> None:
     contribution is the identity.
     """
     import cupy as cp
+    from gpuwm.core.noahmp_slab_libm import scatter_slab_fields, write_slab_arithmetic
 
     at = (j, i)
     zero = np.float32(0.0)
     one = np.float32(1.0)
 
-    for carrier, name in _WRITE_BACK_DIRECT:
-        fields[carrier][at] = r[name]
+    scatter_slab_fields(j, i, [(fields[carrier], r[name])
+                               for carrier, name in _WRITE_BACK_DIRECT])
+
+    # ---- the column itself -------------------------------------------------
+    scatter_slab_fields(j, i, [
+        (fields["smois"], r["smc"]), (fields["sh2o"], r["sh2o"]),
+        (fields["tslb"], r["stc"][:, NSNOW:]),
+        (fields["tsnoxy"], r["stc"][:, :NSNOW]),
+        (fields["zsnsoxy"], r["zsnso"]), (fields["snicexy"], r["snice"]),
+        (fields["snliqxy"], r["snliq"]), (fields["snow"], r["sneqv"]),
+        (fields["snowh"], r["snowh"]), (fields["isnowxy"], r["isnow"]),
+    ])
+
+    if write_slab_arithmetic(fields, j, i, r, nsoil=nsoil, dt=dt):
+        return
 
     fields["qfx"][at] = (r["ecan"] + r["edir"]) + r["etran"]           # :1206
     fields["lh"][at] = (r["fcev"] + r["fgev"]) + r["fctr"]             # :1207
@@ -2039,18 +2233,6 @@ def _write_back_slab(fields, j, i, r, *, nsoil, dt) -> None:
     # :1285-1286, specific humidity back to mixing ratio.
     fields["q2mvxy"][at] = r["q2v"] / (one - r["q2v"])
     fields["q2mbxy"][at] = r["q2b"] / (one - r["q2b"])
-
-    # ---- the column itself -------------------------------------------------
-    fields["smois"][:, j, i] = r["smc"].T
-    fields["sh2o"][:, j, i] = r["sh2o"].T
-    fields["tslb"][:, j, i] = r["stc"][:, NSNOW:].T
-    fields["tsnoxy"][:, j, i] = r["stc"][:, :NSNOW].T
-    fields["zsnsoxy"][:, j, i] = r["zsnso"].T
-    fields["snicexy"][:, j, i] = r["snice"].T
-    fields["snliqxy"][:, j, i] = r["snliq"].T
-    fields["snow"][at] = r["sneqv"]
-    fields["snowh"][at] = r["snowh"]
-    fields["isnowxy"][at] = r["isnow"]
 
     # ---- :1305-1314, the canopy conductance inverse --------------------------
     laisun = cp.where(zero > r["laisun"], zero, r["laisun"])

@@ -1,0 +1,155 @@
+{
+  "outputs": {
+    "albbck_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "albedo_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "canwat_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "embck_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "emiss_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "g_urb2d_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "landusef2_full": {
+      "max_ulp": 0,
+      "n": 23616,
+      "n_nonzero": 0
+    },
+    "lh_urb2d_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "mosaic_cat_index_full": {
+      "max_ulp": 0,
+      "n": 23616,
+      "n_nonzero": 0
+    },
+    "qc_urb2d_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "rn_urb2d_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "sh2o_mosaic": {
+      "max_ulp": 0,
+      "n": 9792,
+      "n_nonzero": 0
+    },
+    "sh_urb2d_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "smois_mosaic": {
+      "max_ulp": 0,
+      "n": 9792,
+      "n_nonzero": 0
+    },
+    "snow_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "snowc_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "snowh_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "tb_urb2d_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "tbl_urb3d_mosaic": {
+      "max_ulp": 0,
+      "n": 9792,
+      "n_nonzero": 0
+    },
+    "tc_urb2d_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "tg_urb2d_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "tgl_urb3d_mosaic": {
+      "max_ulp": 0,
+      "n": 9792,
+      "n_nonzero": 0
+    },
+    "tr_urb2d_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "trl_urb3d_mosaic": {
+      "max_ulp": 0,
+      "n": 9792,
+      "n_nonzero": 0
+    },
+    "ts_rul_urb2d_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "ts_urb2d_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "tsk_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "tslb_mosaic": {
+      "max_ulp": 0,
+      "n": 9792,
+      "n_nonzero": 0
+    },
+    "z0_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    },
+    "znt_mosaic": {
+      "max_ulp": 0,
+      "n": 2448,
+      "n_nonzero": 0
+    }
+  },
+  "words": 159840
+}

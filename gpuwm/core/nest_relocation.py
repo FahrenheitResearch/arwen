@@ -1232,7 +1232,7 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
                    segment: RelocationSegment | None = None,
                    bounds=None, initializer=None, on_child_built=None,
                    scratch_arena=None, dycore_state_workspace=None,
-                   state_digest=None, staging: str = "device",
+                   state_digest=None, staging: str = "host",
                    on_before_release=None,
                    static_provenance: str | None = None,
                    reground_descendant=None,
@@ -1278,6 +1278,15 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
     tests/test_nest_relocation_staging.py, not assumed.  The receipt's
     ``staging`` block carries live-pool samples around each phase so the
     peak claim is measured, never architectural.
+
+    Host staging is the DEFAULT.  With ``"device"`` as the default, every
+    caller that did not name a staging (the relocation verification case
+    among them) held the outgoing and the incoming child on the card at
+    once, with nothing pricing the second one, while the production
+    runner passed ``"host"`` explicitly; a card that fit the tree could
+    run out of memory at a move only such a caller made.  ``"device"``
+    stays available by name, for the equivalence tests that compare the
+    two stagings.
 
     ATOMICITY UNDER HOST STAGING, STATED ACCURATELY.  The in-device path
     leaves the tree untouched on any refusal.  The host path releases the
@@ -1504,7 +1513,8 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
         staging_receipt["note"] = (
             "in-device transplant: the incoming child is allocated while "
             "the outgoing one is resident, so peak child residency is "
-            "transiently doubled; staging='host' is the production path")
+            "transiently doubled; staging='host' is the production path "
+            "and the default")
     # WRF's start_domain seeds the RK time-t copies from the interpolated
     # state; after the stamp the current fields have changed, so the seeds
     # must be taken again or the first substep would read the cold-start

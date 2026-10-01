@@ -732,3 +732,31 @@ def test_native_static_cache_refuses_a_cache_from_another_domain(tmp_path):
         static_path, native_static_export_fields(mutated, grid))
     with pytest.raises(ValueError, match="does not bind the supplied cache"):
         verify_native_static_receipt(receipt_path, static_path, grid, cfg)
+
+
+def test_native_static_contract_admits_the_urban_legend_and_nothing_else():
+    """The urban legend's static (categories 51-61 kept, the full 61-row
+    MODIFIED_IGBP_MODIS_NOAH table) is the same table, and the forecast took
+    it; before this every urban run's LCZ static was refused at the forecast
+    with "LANDUSEF has shape (61, ...), expected (21, ...)".  Any other count
+    still fails, and a 21-category static still tops out at category 21."""
+    grid = _grid()
+    fields = _complete_native_static(grid)
+    fields["MAPFAC_M"] = grid.mapfac_m()
+    urban = dict(fields)
+    urban["LANDUSEF"] = np.zeros((61, 3, 4))
+    urban["LANDUSEF"][55] = 1.0
+    urban["LU_INDEX"] = np.full((3, 4), 56.0)
+    actual = validate_native_static_fields(urban, grid, 3, 4)
+    assert actual["LANDUSEF"].shape == (61, 3, 4)
+    assert actual["LU_INDEX"].max() == 56.0
+
+    other = dict(fields)
+    other["LANDUSEF"] = np.zeros((40, 3, 4))
+    other["LANDUSEF"][0] = 1.0
+    with pytest.raises(ValueError, match="LANDUSEF has shape"):
+        validate_native_static_fields(other, grid, 3, 4)
+    wrong_class = dict(fields)
+    wrong_class["LU_INDEX"] = np.full((3, 4), 56.0)
+    with pytest.raises(ValueError, match="LU_INDEX is outside the exact 1..21"):
+        validate_native_static_fields(wrong_class, grid, 3, 4)

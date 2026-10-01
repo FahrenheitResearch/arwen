@@ -544,7 +544,100 @@ def cold_planning_machine(exp):
     return Machine.detect(host_bytes=options.host_budget_bytes)
 
 
-def cold_tree_streaming_decision(exp, nodes, *, machine=None, decisions=None):
+def cold_admission_machine(planning_machine=None, *, options=None):
+    """The card a door admits a resident or a pinned road on, read first.
+
+    :func:`cold_planning_machine` reads the card only for the roads the tile
+    planner decides, so a resident domain (``mode = 'off'``, or no
+    ``[tiles]`` block) and a pinned tiling reached their constructors with
+    no card read at all -- and a case too big for the card stopped in a CUDA
+    out-of-memory instead of being refused by name.  This is that reading
+    for those two roads: the planning machine when the door already holds
+    one, otherwise the card's free memory and device profile read now,
+    before the door's first allocation.
+
+    Neither road consults a host store, so the host figure is the declared
+    ``host_budget_bytes`` or whatever this box reports (zero when nothing
+    can be read) and never refuses anything.  ``None`` when no card
+    answers: an unread card never refuses, and the door proceeds as it
+    always did.
+    """
+    if planning_machine is not None:
+        return planning_machine
+    host = getattr(options, "host_budget_bytes", None)
+    if host is None:
+        host = _host_total_bytes() or 0
+    try:
+        from tilestream.autoplan import Machine
+
+        return Machine.detect(host_bytes=int(host))
+    except Exception:                       # noqa: BLE001 - an unread card
+        return None
+
+
+def admit_resident_road(exp, decision=None, *, machine=None, estimate=None,
+                        forcing_intervals=None, source=None,
+                        what="this forecast, held resident on the card"):
+    """``off`` means resident: admitted, or refused by name, before the build.
+
+    Separates the ADMISSION from the decision to stream.  ``decide`` admits
+    every road it decides -- ``auto``'s resident answer against its budget,
+    a streamed tiling against the planner's -- but ``mode = 'off'`` (and no
+    ``[tiles]`` block at all, which is the default) decides nothing and so
+    admitted nothing, and the door went straight to the constructor.  A
+    decision that carries a budget, or streams, was admitted and is left
+    alone; ``None`` or an ``off`` decision is admitted here.
+
+    The price is the forecast the door is about to hold -- model state,
+    physics, lateral boundary tables, workspaces, step transients and the
+    CUDA context -- because the physics attach follows the state onto the
+    card, and a preparation price that admitted the state alone let the
+    physics driver (7.8 GiB at 1792x1024x55 mp=8) fail after it.
+    ``estimate`` is one the door already holds; otherwise it is the shared
+    admission estimate (:func:`gpuwm.core.preflight.admission_estimate`, the
+    one every review prices), or, where the door knows the retained forcing
+    interval count of a prepared cache, the same estimate at that count.
+    ``source`` is the forcing source the door runs from: the root's tables
+    carry the analysed hydrometeors its table row publishes
+    (:func:`gpuwm.boundary_fields.source_boundary_species`), and a
+    HRRR-forced forecast admitted without them was priced short by those
+    tables.  A prepared door passes the masses the cache it is about to
+    restore carries instead.  ``machine`` is the door's cold card
+    (:func:`cold_admission_machine`); ``None`` admits.
+
+    The figure is the peak ENVELOPE, the measured upper bound of the peak
+    and not bytes about to be allocated, so ``--no-memory-gate`` at the
+    door skips this refusal exactly as it skips ``gpuwm go``'s own gate
+    (:func:`gpuwm.core.resident_admission.memory_gate_overridden`), and a
+    forecast the envelope over-prices still runs.  The loaders' constructor
+    floors below it are exact and are never skipped.
+    """
+    if decision is not None and (decision.stream
+                                 or decision.budget_bytes is not None):
+        return None
+    if machine is None:
+        return None
+    from gpuwm.core import preflight
+    from gpuwm.core.resident_admission import admit, resident_forecast_terms
+
+    if estimate is None:
+        from gpuwm.boundary_fields import source_boundary_species
+        estimate = (preflight.admission_estimate(exp, machine=machine,
+                                                 source=source)
+                    if forcing_intervals is None else
+                    preflight.estimate_experiment(
+                        exp, column_chunk=exp.column_chunk,
+                        forcing_intervals=max(1, int(forcing_intervals)),
+                        profile=getattr(machine, "device_profile", None),
+                        boundary_species=source_boundary_species(source)))
+    return admit(what, resident_forecast_terms(estimate),
+                 free_bytes=int(machine.vram_bytes),
+                 stage="while building the domain state or attaching its "
+                       "physics", envelope=True)
+
+
+def cold_tree_streaming_decision(exp, nodes, *, machine=None, decisions=None,
+                                 source=None):
     """THE ``[tiles]`` admission a RUN DOOR takes, as one callable question.
 
     Every run door asks it here: the prepared domain-tree forecast
@@ -573,7 +666,9 @@ def cold_tree_streaming_decision(exp, nodes, *, machine=None, decisions=None):
 
     ``None`` when nothing in the tree configures streaming: an
     unconfigured tree consults no planner and touches no card, exactly as
-    before.
+    before.  ``source`` is the run's forcing source, whose published
+    hydrometeors the root's tables carry
+    (:func:`gpuwm.core.preflight.admission_estimate`).
     """
     from gpuwm.core.preflight import admission_estimate
     from types import SimpleNamespace
@@ -584,7 +679,9 @@ def cold_tree_streaming_decision(exp, nodes, *, machine=None, decisions=None):
     mark_reconstruction_nodes(nodes, exp)
     return decide_tree(
         nodes, exp.tiles, machine=machine, decisions=decisions,
-        resident_estimate=admission_estimate(exp, machine=machine))
+        resident_estimate=admission_estimate(exp, machine=machine,
+                                             source=source),
+        source=source)
 
 
 _WARNED_COLD_MAP_FACTOR = False
@@ -679,7 +776,8 @@ def cold_tree_admission_nodes(exp):
         exp, _config_tree_nodes(getattr(exp, "domains", ()) or ()))
 
 
-def cold_single_domain_admission(exp, *, machine=None, options=None):
+def cold_single_domain_admission(exp, *, machine=None, options=None,
+                                 source=None):
     """THE estimate a SINGLE-domain ``[tiles]`` admission is judged from.
 
     The one-domain sibling of the tree's
@@ -704,16 +802,20 @@ def cold_single_domain_admission(exp, *, machine=None, options=None):
     condition for themselves is how the run door came to guard it one
     way while this seam guarded it another and priced the same estimate
     twice on the route that uses it.
+
+    ``source`` is the run's forcing source, whose published hydrometeors
+    the domain's tables carry
+    (:func:`gpuwm.core.preflight.admission_estimate`).
     """
     if options is not None and (options.mode == "off"
                                 or options.tile_nx is not None):
         return None
     from gpuwm.core.preflight import admission_estimate
-    return admission_estimate(exp, machine=machine)
+    return admission_estimate(exp, machine=machine, source=source)
 
 
 def cold_single_domain_decision(exp, *, machine=None, cfg=None, options=None,
-                                estimate=None):
+                                estimate=None, source=None):
     """THE ``[tiles]`` admission for an experiment of ONE domain.
 
     Every surface that asks whether a single domain may stay resident
@@ -754,7 +856,8 @@ def cold_single_domain_decision(exp, *, machine=None, cfg=None, options=None,
         options = options_for_domain(domain, getattr(exp, "tiles", None) or OFF)
     if estimate is None:
         estimate = cold_single_domain_admission(exp, machine=machine,
-                                                options=options)
+                                                options=options,
+                                                source=source)
     return decide(cfg, options, machine=machine, resident_estimate=estimate)
 
 
@@ -769,19 +872,25 @@ def _redundancy_limit_kwargs(options) -> dict:
 def tiling_shape(cfg, tile_nx, tile_ny, halo) -> tuple[int, float]:
     """``(tile count, redundancy)`` of one tiling of ``cfg``'s domain.
 
-    The planner's own arithmetic (:func:`tilestream.autoplan.redundancy`):
-    every tile carries the same ``tile + 2*halo`` compute window, so the
-    work done is the window count times the window area.  Used for pinned
-    tilings too, which never reach the planner, so every streamed decision
-    can state the two numbers a reader needs to judge its pace.
+    The tile geometry's arithmetic (:func:`tilestream.spec.redundancy`,
+    which the planner prices with too): every tile carries the same
+    ``tile + 2*halo`` compute window, so the work done is the window count
+    times the window area.  Used for pinned tilings too, which never reach
+    the planner, so every streamed decision can state the two numbers a
+    reader needs to judge its pace.
+
+    It reads the geometry module and never ``tilestream.autoplan``.  It
+    used to import the planner, so :func:`decide`'s pinned road, which
+    promises to consult no planner, imported it whenever no earlier code in
+    the process had, and a test of that promise passed or failed by import
+    order (A177).
     """
-    from tilestream import autoplan
+    from tilestream.spec import redundancy
 
     nx, ny = int(cfg.nx), int(cfg.ny)
     tile_nx, tile_ny = max(1, int(tile_nx)), max(1, int(tile_ny))
     ntiles = (-(-nx // tile_nx)) * (-(-ny // tile_ny))
-    return ntiles, float(autoplan.redundancy(nx, ny, tile_nx, tile_ny,
-                                             int(halo)))
+    return ntiles, float(redundancy(nx, ny, tile_nx, tile_ny, int(halo)))
 
 
 def _gib(value) -> str:
@@ -978,6 +1087,139 @@ def _acoustic_detail(cfg, options) -> dict:
     }}
 
 
+def _largest_tile_that_fits(cfg, fp, *, nbuffers, budget, halo):
+    """The tile the planner's own search would take at ``nbuffers`` buffers.
+
+    ``None`` when no legal tile fits ``budget`` at that buffer count.  The
+    same inversion and the same search ``autoplan.plan`` runs, so the tile a
+    pinned refusal names is one the planner would admit.
+    """
+    from tilestream import autoplan
+
+    cells = autoplan._max_window_cells(fp, int(nbuffers), int(budget))
+    if cells <= 0:
+        return None
+    periodic_x, periodic_y = _periodic_axes(cfg)
+    best = autoplan._best_tile(int(cfg.nx), int(cfg.ny), int(cfg.nz),
+                               int(halo), cells, periodic_x, periodic_y, True,
+                               True, band=autoplan.edge_band(cfg))
+    if best is None or best.get("ragged_only"):
+        return None
+    return int(best["tile_nx"]), int(best["tile_ny"])
+
+
+def _pinned_admission(cfg, options, *, halo, ntiles, machine,
+                      resident_estimate=None) -> dict:
+    """Price a pinned tiling on the card it will run on, or refuse it.
+
+    THE BREAKAGE THIS PREVENTS.  A pinned tiling consulted no planner and no
+    card, so its buffers were never weighed against anything:
+    ``tile_nx = 896, tile_ny = 992, nbuffers = 2`` on a 1792x1024x55 domain
+    was accepted against a declared 24 GiB budget although its two 928x1024
+    compute windows need 28.5 GiB, and the run stopped in a CUDA
+    out-of-memory building its tile buffers.
+
+    Priced with the auto road's own inventory -- the same footprint
+    (:func:`radiation_footprint`), the same budget (``autoplan.budget_for``
+    on the card, or on a declared ``vram_budget_bytes`` taken whole), each
+    buffer at its compute window's own shape, and the buffer count the
+    driver actually builds (never more buffers than tiles).
+
+    That budget keeps the planner's first-use headroom and radiation
+    reserve back from the card, so it is a priced limit rather than the
+    last byte: ``--no-memory-gate`` skips this refusal as it skips the
+    resident envelope (:func:`admit_resident_road`), with one warning line.
+    """
+    import dataclasses
+    import math
+    import sys
+
+    from gpuwm.core.resident_admission import (MEMORY_GATE_OVERRIDE_HINT,
+                                               memory_gate_overridden)
+    from tilestream import autoplan
+
+    measured = int(machine.vram_bytes)
+    declared = options.vram_budget_bytes is not None
+    if declared:
+        machine = dataclasses.replace(
+            machine, vram_bytes=int(options.vram_budget_bytes),
+            vram_headroom=0.0)
+    if resident_estimate is None and options.resident_context is not None:
+        from gpuwm.core import preflight
+        resident_estimate = preflight.estimate_experiment(
+            options.resident_context.experiment,
+            profile=getattr(machine, "device_profile", None))
+    fp = radiation_footprint(cfg, options, resident_estimate=resident_estimate,
+                             machine=machine)
+    budget = int(autoplan.budget_for(machine, fp))
+    nbuffers = max(1, min(int(options.nbuffers or 2), int(ntiles)))
+    shape = (int(options.tile_nx) + 2 * int(halo),
+             int(options.tile_ny) + 2 * int(halo))
+    cells = shape[0] * shape[1] * int(cfg.nz)
+    need = int(math.ceil(fp.vram_bytes(cells, nbuffers, shape)))
+    admission = {"need_bytes": need, "budget_bytes": budget,
+                 "nbuffers": nbuffers, "window": list(shape),
+                 "card_bytes": measured, "rung": fp.rung}
+    if declared:
+        admission["configured_vram_budget_bytes"] = int(
+            options.vram_budget_bytes)
+    if need <= budget:
+        return admission
+    where = (f"the declared [tiles] vram_budget_bytes of {_gib(budget)} "
+             f"(the card measured {_gib(measured)} free)" if declared else
+             f"the {_gib(budget)} this card allows ({_gib(measured)} free, "
+             "less the planner's first-use headroom and radiation reserve)")
+    tiling = (f"[tiles] pins a {int(options.tile_nx)}x{int(options.tile_ny)} "
+              f"tiling (halo {int(halo)}, {int(ntiles):,} tiles) with "
+              f"{nbuffers} buffer(s), whose {shape[0]}x{shape[1]}x"
+              f"{int(cfg.nz)} compute windows need {_gib(need)} on the card "
+              f"against {where}")
+    if memory_gate_overridden():
+        print(f"warning: {tiling}; --no-memory-gate skips that check, so "
+              "the run proceeds and the card's own allocation decides",
+              file=sys.stderr, flush=True)
+        return dict(admission, overridden=True)
+    largest = _largest_tile_that_fits(cfg, fp, nbuffers=nbuffers,
+                                      budget=budget, halo=halo)
+    fix = (f"The largest tile that fits with {nbuffers} buffer(s) is "
+           f"{largest[0]}x{largest[1]}: pin that" if largest is not None else
+           f"No tile fits with {nbuffers} buffer(s): pin fewer buffers")
+    raise autoplan.CannotPlan(
+        f"{tiling}.  Started, it is expected to stop with a CUDA "
+        f"out-of-memory while building its tile buffers.  {fix}, or delete "
+        "tile_nx and tile_ny so [tiles] chooses the tiling itself; or, when "
+        f"you know the buffers fit: {MEMORY_GATE_OVERRIDE_HINT}.",
+        "vram", dict(admission, largest_tile=(None if largest is None
+                                              else list(largest))))
+
+
+def admit_pinned_road(cfg, options, decision, *, machine,
+                      resident_estimate=None):
+    """A pinned tiling, priced on the card a run door will build it on.
+
+    :func:`decide` answers a pinned tiling from the configuration alone, on
+    purpose: the plan review prices its streamed envelope itself, and the
+    bit-exactness proofs pin tilings on no card at all.  A RUN DOOR holding
+    the card it is about to build the buffers on asks here, before the
+    first allocation, and a tiling whose buffers cannot fit is refused by
+    name with the largest tile that does (:func:`_pinned_admission`).
+
+    Returns the admission record, or ``None`` when there is nothing to
+    price: a road that is not a pinned stream, or no card to price it on
+    (an unread card never refuses).
+    """
+    if (decision is None or not decision.stream or machine is None
+            or options is None or options.tile_nx is None):
+        return None
+    ntiles = decision.ntiles
+    if ntiles is None:
+        ntiles = tiling_shape(cfg, decision.tile_nx, decision.tile_ny,
+                              decision.halo)[0]
+    return _pinned_admission(cfg, options, halo=int(decision.halo),
+                             ntiles=int(ntiles), machine=machine,
+                             resident_estimate=resident_estimate)
+
+
 def decide(cfg, options: StreamingOptions | None = None, *, machine=None,
            resident_estimate=None, allow_resident=None
            ) -> StreamingDecision:
@@ -1009,7 +1251,9 @@ def decide(cfg, options: StreamingOptions | None = None, *, machine=None,
         # A pinned tiling asks no question, so it consults no planner and
         # needs no card: the configuration IS the decision.  This is the
         # path a bit-exactness proof runs on, where the tiling is chosen to
-        # make the halo and the seams do work rather than to be fast.
+        # make the halo and the seams do work rather than to be fast.  A run
+        # door holding a card prices its buffers on it before building them
+        # (:func:`admit_pinned_road`).
         ntiles, redundancy = tiling_shape(cfg, options.tile_nx,
                                           options.tile_ny, halo)
         return StreamingDecision(
@@ -1408,7 +1652,8 @@ def streamed_envelope(cfg, options: "StreamingOptions | None" = None, *,
                       machine=None, decision: StreamingDecision | None = None,
                       resident_estimate=None,
                       forcing_interval_seconds: float | None = None,
-                      forcing_intervals: int | None = None
+                      forcing_intervals: int | None = None,
+                      source=None,
                       ) -> StreamedEnvelope | None:
     """Price ``cfg`` as the streamed run ``options`` would actually attach.
 
@@ -1433,6 +1678,8 @@ def streamed_envelope(cfg, options: "StreamingOptions | None" = None, *,
     device tables (:func:`gpuwm.core.preflight.lbc_intervals`); a caller
     that knows the schedule passes it, and one that does not gets the
     estimator's default cadence rather than a series priced at nothing.
+    ``source`` is the forcing source, whose published hydrometeors ride
+    that series (:func:`gpuwm.core.preflight.lbc_host_series_bytes`).
     """
     from tilestream import autoplan
 
@@ -1476,7 +1723,7 @@ def streamed_envelope(cfg, options: "StreamingOptions | None" = None, *,
     terms["host/arena_bytes"] = int(arena)
     terms["host/pinned_bytes"] = int(store + arena)
     boundary = _boundary_series_host_bytes(
-        cfg, forcing_interval_seconds, forcing_intervals)
+        cfg, forcing_interval_seconds, forcing_intervals, source=source)
     terms["host/boundary_table_bytes"] = int(boundary)
     # A caller pricing another forecast host supplies that host's measured
     # Machine. Keep this budget report on the same host as the tile decision.
@@ -1501,8 +1748,9 @@ def streamed_envelope(cfg, options: "StreamingOptions | None" = None, *,
 
 
 def _boundary_series_host_bytes(cfg, forcing_interval_seconds=None,
-                                forcing_intervals=None) -> int:
-    """The domain's lateral forcing series on the host, for one envelope."""
+                                forcing_intervals=None, *, source=None) -> int:
+    """The domain's lateral forcing series on the host, for one envelope,
+    with the hydrometeors ``source`` publishes riding it."""
     from gpuwm.core import preflight
 
     interval = (preflight.DEFAULT_FORCING_INTERVAL_SECONDS
@@ -1510,7 +1758,7 @@ def _boundary_series_host_bytes(cfg, forcing_interval_seconds=None,
                 else float(forcing_interval_seconds))
     count = preflight.lbc_intervals(float(cfg.run_seconds), interval,
                                     retained_intervals=forcing_intervals)
-    return preflight.lbc_host_series_bytes(cfg, count)
+    return preflight.lbc_host_series_bytes(cfg, count, source=source)
 
 
 def _host_total_bytes() -> int | None:
@@ -3912,6 +4160,32 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
     step without one -- windows once with :func:`tile_boundary_tables` and
     passes the result both ways, rather than windowing twice.
     """
+    if int(getattr(cfg, "slope_rad", 0) or 0) == 1:
+        # Named breakage: the slope radiation (gpuwm.core.topo_radiation)
+        # derives the slope from its neighbours and searches up to shadlen
+        # of terrain toward the sun, and a tile holds neither; its held
+        # radiation-time state is not among the carriers a tile streams.
+        raise StreamingRefused(
+            f"grid_id = {int(getattr(cfg, 'grid_id', 0))} sets slope_rad = "
+            "1, which reads the whole domain's terrain (the slope from its "
+            "neighbours, the shadow search up to shadlen toward the sun) and "
+            "holds radiation-time state no tile carries, so it cannot run "
+            "streamed.  Run this domain resident ([tiles] mode = 'off'), or "
+            "set slope_rad = 0.")
+    if int(getattr(cfg, "sf_surface_mosaic", 0) or 0) == 1:
+        # Named breakage: a tile buffer is built by initialize_physics on
+        # neutral geography (prepared_tile_state_factory) and no door runs
+        # on it, so it holds no land-use tiles (gpuwm/core/
+        # noah_mosaic_door.py builds them only at the initialization
+        # doors); its first Noah step would stop with no tile state, or the
+        # carrier inventory would refuse the store's tile arrays first.
+        raise StreamingRefused(
+            f"grid_id = {int(getattr(cfg, 'grid_id', 0))} sets "
+            "sf_surface_mosaic = 1, and a tile buffer is built without the "
+            "domain's land-use tiles (only the initialization doors build "
+            "them from LANDUSEF), so Noah mosaic cannot run streamed.  Run "
+            "this domain resident ([tiles] mode = 'off'), or set "
+            "sf_surface_mosaic = 0.")
     from tilestream import driver as _driver
     from tilestream import gather as _gather
     from tilestream import physics_inventory as _physics
@@ -4615,6 +4889,12 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
         tile, _drv = _harness.make_physics_state(
             tile_cfg, seed, geography=geo, start_time=start_time,
             coord=coord, **extra)
+        # Before any step: a buffer walks MYNN at the tile width
+        # (mynn_pbl_scratch.resolve_mynn_tile_column_chunk), the width
+        # prepared_tile_memory prices it at, and a scratch slot keeps the
+        # shape it was first requested with.  gpuwm/io/restart.py
+        # STATE_INFRA_ATTRS classifies the marker.
+        tile._tile_buffer = True
         if driver is not None and getattr(driver, "cam_ozone", None) is not None:
             from gpuwm.core.cam_ozone import CamOzoneState, attach_cam_ozone
             owner = driver.cam_ozone
@@ -5020,6 +5300,128 @@ def builders_for_tree(model, options: StreamingOptions | None = None, **kwargs
     return {int(node.cfg.grid_id): prepared_domain_builder(node, **kwargs)
             for node in model.walk_parent_first()
             if options_for_domain(node.cfg, options).enabled}
+
+
+def release_outgoing_store(owner) -> None:
+    """Let a closed streamed owner's store go before its replacement allocates.
+
+    :meth:`tilestream.driver.TiledRun.close` drops the run's own reference
+    to its store, but the state the owner was attached to still publishes
+    that store (:func:`publish_store`) and its scratch carriers
+    (``STREAMED_SCRATCH_ATTR``), and the owner holds that state until
+    :meth:`StreamedDomain.rebind_after_reconstruction` replaces it.  So an
+    activation that re-attached a streamed nest kept the outgoing store
+    alive beside the new one for the whole rebuild: one extra pinned host
+    copy of the nest's carriers, and under ``store = "device"`` one extra
+    device copy that no activation price counts.  Both activation roads
+    call this once the owner is closed and before the replacement
+    allocates.  Nothing reads the outgoing store after that: its run is
+    closed, and the rebind hands the stepper the rebuilt state.
+
+    On the prepared domain-tree forecast that state is a
+    :class:`gpuwm.core.streamed_state.CanonicalStoreState`, which is a view
+    of the store itself: it holds the store and geography maps, every
+    canonical array by identity, the scratch carriers and the views it has
+    handed out, and the node and the owner keep it until the nest's
+    initializer returns.  Deleting the published names alone left every
+    outgoing store array alive through the restore that allocates the new
+    one, so its references are dropped here too, the way
+    :meth:`gpuwm.core.streamed_relocation.StreamedChildReconstruction
+    .release_outgoing` drops them for a relocation.  The store and
+    geography maps are replaced rather than emptied, because the prepared
+    bundle they came from owns them.  The owner's own outgoing geography,
+    slab template and store frame go as well: the rebind replaces each of
+    them, and the template is a slab state with its physics driver, which
+    that route allocates inside the nest's reconstruction reservation, the
+    one its restore allocates in next.  Calling this twice releases
+    nothing more.
+    """
+    from gpuwm.core.streamed_state import CanonicalStoreState
+
+    if not owner.tiled_run.closed:
+        raise StreamingRefused(
+            "the outgoing tile owner is still open, so its store is still "
+            "the one it sweeps; close it before releasing the store")
+    state = owner.state
+    for name in (_STORE_ATTR, STREAMED_SCRATCH_ATTR):
+        try:
+            delattr(state, name)
+        except AttributeError:
+            pass
+    if isinstance(state, CanonicalStoreState):
+        state._canonical_store = {}
+        state._canonical_geography = {}
+        state._canonical_arrays.clear()
+        state._scratch.clear()
+        state._view_cache.clear()
+        state._template_metadata = None
+        state._scratch_allocator = None
+    owner._geography = None
+    owner._template = None
+    owner._frame = owner._setup = owner._statics_setup = None
+
+
+def reattach_claim_terms(owner, node) -> dict:
+    """What re-attaching ``owner`` to a rebuilt state claims, as price terms.
+
+    :func:`reattach_rebuilt_domain` builds a replacement tile owner, and it
+    claims what the tree walk priced for this domain when it decided to
+    stream it: the tile buffers and their step workspace (``claim_bytes``)
+    and, for a nest, its coupling corridor.  The closed owner's buffers went
+    back to the pool, so a free figure read after the close counts them as
+    free, and a price without these terms admitted an activation whose
+    re-attachment then needed those bytes again.  MEASURED on an RTX 5070
+    Ti (a 3 km 168 x 132 x 49 nest starting 6 h into a 9 km ERA5 root, 3
+    buffers of 84 x 66 tiles, host store): the rebuild peaked 0.23 GiB over
+    the released state and the re-attachment 0.85 GiB, 0.61 GiB of it the
+    replacement's buffers, against a claim of 1.12 GiB plus a 0.06 GiB
+    corridor.  An owner holding a reconstruction reservation rebuilds
+    inside bytes that reservation already holds, so it adds nothing.
+    """
+    if getattr(owner, "_reconstruction_reservation", None) is not None:
+        return {}
+    decision = owner.decision
+    detail = decision.detail or {}
+    claim = detail.get("claim_bytes")
+    if claim is None:
+        claim = _decision_claim_bytes(node, decision)
+    return {"streamed tile buffers": int(claim),
+            "nest coupling corridor": int(
+                detail.get("corridor_claim_bytes") or 0)}
+
+
+def reattach_rebuilt_domain(owner, node, *, build=None):
+    """Bind a streamed domain's stepper to the state a rebuild replaced.
+
+    A streamed stepper refuses any state but the one it was attached to
+    (:meth:`StreamedDomain.__call__`), and the executor keeps ONE stepper
+    per grid for the whole run.  So a route that rebuilds a streamed
+    domain's state in place -- ``gpuwm run`` activating a delayed child,
+    which re-initializes it from the analysis at its start time -- has to
+    re-attach that same stepper to the new state, or the child's first
+    step after activation refuses and the run stops there.
+
+    The outgoing tile owner is closed and its store released first (the
+    release before the rebuild usually has done both already), the
+    replacement is attached from ``node.state``
+    through the builder the route attached it with at startup
+    (:func:`prepared_domain_builder` on the live node, as
+    :func:`builders_for_tree` wires it), inside the stepper's own
+    reconstruction reservation, and its tiles and store are transferred into
+    the stable stepper identity by
+    :meth:`StreamedDomain.rebind_after_reconstruction`, the same transfer
+    the prepared route makes for its store-restored child.
+    """
+    if not owner.tiled_run.closed:
+        owner.tiled_run.close()
+    release_outgoing_store(owner)
+    build = prepared_domain_builder(node) if build is None else build
+    state = node.state
+    with owner.allocation_scope():
+        replacement = build(state, node.cfg.run, owner.decision)
+    owner.rebind_after_reconstruction(replacement, state=state)
+    publish_store(state, owner)
+    return owner
 
 
 def _periodic_axes(cfg) -> tuple[bool, bool]:
@@ -5863,13 +6265,15 @@ def _resident_subset_envelope(estimate, nodes, resident_ids):
 
 
 def decide_tree(nodes, options=None, *, machine=None, decisions=None,
-                resident_estimate=None) -> TreeDecision:
+                resident_estimate=None, source=None) -> TreeDecision:
     """Resident first when the whole tree fits; then the tile planner.
 
     ``auto`` means the same thing on a tree as it does on one domain: the
     configured resident envelope is weighed against the admission budget
     FIRST, and the planner is asked only where that answer is no.  Keep
     the ordered road when admitted; revise only auto preferences.
+    ``source`` is the forcing source a single streamed root's host
+    boundary series is priced with (:func:`streamed_envelope`).
     """
     from dataclasses import replace
     from itertools import combinations
@@ -5887,7 +6291,8 @@ def decide_tree(nodes, options=None, *, machine=None, decisions=None,
             decision = decide(node.cfg.run, choice, machine=machine,
                               resident_estimate=resident_estimate)
             env = streamed_envelope(node.cfg.run, choice, machine=machine,
-                                    resident_estimate=resident_estimate, decision=decision)
+                                    resident_estimate=resident_estimate, decision=decision,
+                                    source=source)
             peak = (resident_estimate.peak_envelope_bytes if env is None
                     else env.peak_vram_bytes)
             host = 0 if env is None else env.host_bytes
@@ -7119,7 +7524,8 @@ def _plan_rows(decisions: dict) -> tuple:
 
 def tree_road_plan(exp, *, machine=None, resident_estimate=None,
                    forcing_interval_seconds: float | None = None,
-                   forcing_intervals: int | None = None) -> TreeRoadPlan | None:
+                   forcing_intervals: int | None = None,
+                   source=None) -> TreeRoadPlan | None:
     """Price the road :func:`steppers_for_tree` would take, for a report.
 
     ``None`` when the question does not arise: a single-domain config
@@ -7134,7 +7540,8 @@ def tree_road_plan(exp, *, machine=None, resident_estimate=None,
     ``forcing_interval_seconds`` / ``forcing_intervals`` size a streamed
     root's lateral forcing series (:attr:`TreeRoadPlan.boundary_table_bytes`)
     as :func:`streamed_envelope` sizes it; omitted, the estimator's default
-    cadence stands in.
+    cadence stands in.  ``source`` is the forcing source whose published
+    hydrometeors ride that series.
     """
     domains = tuple(getattr(exp, "domains", ()) or ())
     if len(domains) < 2:
@@ -7160,7 +7567,8 @@ def tree_road_plan(exp, *, machine=None, resident_estimate=None,
     admission: dict = {}
     try:
         outcome = decide_tree(nodes, options, machine=machine,
-                              decisions=decisions, resident_estimate=resident_estimate)
+                              decisions=decisions, resident_estimate=resident_estimate,
+                              source=source)
     except StreamingRefused as error:
         refusal = str(error)
         refusal_resource = error.resource
@@ -7201,7 +7609,7 @@ def tree_road_plan(exp, *, machine=None, resident_estimate=None,
                 nodes[0].cfg.run, options_for_domain(nodes[0].cfg, options),
                 machine=machine, decision=root_decision,
                 forcing_interval_seconds=forcing_interval_seconds,
-                forcing_intervals=forcing_intervals)
+                forcing_intervals=forcing_intervals, source=source)
         except Exception:            # a report never dies on its estimate
             root_envelope = None
         # The streamed root's forcing series stays on the host for the whole
@@ -7212,7 +7620,7 @@ def tree_road_plan(exp, *, machine=None, resident_estimate=None,
                         if root_envelope is not None else
                         _boundary_series_host_bytes(
                             nodes[0].cfg.run, forcing_interval_seconds,
-                            forcing_intervals))
+                            forcing_intervals, source=source))
         except Exception:            # a report never dies on its estimate
             boundary = 0
     if outcome is None:

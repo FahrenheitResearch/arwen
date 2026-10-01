@@ -113,7 +113,12 @@ def test_stale_owned_preparation_preserves_old_files_and_rebuilds_before_members
     monkeypatch.setattr(preparation, 'validate_saved_background', lambda *args: selected)
     # A real v3 physics receipt from another registry reaches the ordinary
     # reader's compatibility refusal. No input-reader arithmetic is replaced.
+    # The receipt names a registry document whose physics this build cannot
+    # establish: since A153 a document digest alone (a citation edit) is
+    # not a physics difference, so the receipt drops the physics parts that
+    # would resolve it, as a receipt from an unknown registry carries none.
     proof = json.loads(fixture.proof.read_text())
+    proof['physics'].pop('registry_physics')
     proof['physics']['registry_sha256'] = '0' * 64
     fixture.proof.write_text(json.dumps(proof))
     stale_bytes = fixture.proof.read_bytes()

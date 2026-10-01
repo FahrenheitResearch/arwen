@@ -731,12 +731,12 @@ def create_workspace(args) -> dict:
         raise ValueError("This research recipe requires a real existing scenario state. Open the "
                          "existing configuration for review; research create cannot substitute "
                          "an ordinary GFS analysis for the required state.")
-    source = wizard.resolve_source(args.source)
-    if recipe["method"] == "controlled_scenario" and source != "gfs":
-        raise ValueError(f"Controlled-scenario creation for --source {source} is not admitted "
-                         "by this research workflow. Use --source gfs for the supported fresh "
-                         "prepared-tree warm-bubble path; other sources need their own explicit "
-                         "preparation/initialization route acceptance. No perturbation was dropped.")
+    # An unknown source is refused here, before any probe.  No known one
+    # is refused for a controlled scenario: the recipe is always a domain
+    # tree (validate_recipe), and every source's tree preparation defers
+    # its bubbles to the tree runner that applies them
+    # (gpuwm.experiment.deferred_initial_perturbation).
+    wizard.resolve_source(args.source)
     destination = args.out.absolute()
     if destination.suffix.lower() != ".toml":
         raise ValueError("Research output must be a new .toml path")

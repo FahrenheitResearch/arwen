@@ -44,15 +44,23 @@ def _recent_cycle(route: fetch_routes.Route, *, lag_hours: int) -> datetime:
     raise AssertionError(f"no cycle hour for {route.source_id}")
 
 
-#: ``source -> publication lag (hours)`` to look back by.  READ from the
-#: route table, which now ships the same measured numbers this suite
-#: used to keep privately: they are what `--cycle latest` resolves
-#: against, so a private copy here would let the shipped resolver drift
-#: from the only place the lags were ever checked against a live host.
-_LAG_HOURS = {
-    source: fetch_routes.route_for(source).publication_lag_hours
-    for source in fetch_routes.route_ids()
-}
+def _table_newest(source_id: str) -> datetime:
+    """The newest cycle the route table says is out through f000.
+
+    READ from the table's per-cycle-hour ``publication_lag`` rows, which
+    this suite used to keep privately as one number a source: they are
+    what `--cycle latest` and every schedule-only answer read, so this
+    test is also the live check that the newest cycle their latest
+    posting seen allows for f000 is really on the host.
+    """
+
+    from gpuwm.source_cycles import route_cycle_grid
+
+    grid = route_cycle_grid(source_id)
+    # The latest posting seen: the earliest one is where the walk starts,
+    # and asked minutes after it a cycle can still be posting.
+    return grid.newest(datetime.now(timezone.utc).replace(tzinfo=None), 0,
+                       settled=True)
 
 
 def _head_bytes(url: str, count: int = 64) -> bytes:
@@ -77,8 +85,7 @@ def test_live_every_route_resolves_to_a_real_object_of_its_own_product(
     DIFFERENT product under identical key names (AIGFS on S3).
     """
 
-    route = fetch_routes.route_for(source_id)
-    cycle = _recent_cycle(route, lag_hours=_LAG_HOURS[source_id])
+    cycle = _table_newest(source_id)
     plan = fetch_routes.resolve_request(source_id, cycle=cycle, hours=0)
     first = plan.objects[0]
     magic = fetch_routes._magic_for(plan, first.role)

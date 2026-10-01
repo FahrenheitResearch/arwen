@@ -56,42 +56,38 @@ extern "C" __global__ void rrtmgp_delta_scale(
 //
 // What is left is trans (both recurrences read it) and src_up (produced by
 // the first pass, read by the second, opposite directions).  592 B.
-// Fold one tile's contribution to one (column, level) WITHOUT a round trip.
-//
-// The launcher gives the folding path ONE BLOCK PER COLUMN with
-// `blockDim.x == gpt_tile`, so this block IS the fold group: `gl` is
-// `threadIdx.x`, the group base is 0, and every thread of the block
-// reaches every barrier below (the only two early returns are on `nlay`
-// and `col`, both block-uniform).  Lane 0 then adds the tile left to
-// right, which is the statement `rrtmgp_*_flux_reduce` makes -- same
-// values, same order, bit-identical.
-//
-// What it removes is the round trip those kernels exist to make, and the
-// cost is the SCATTER rather than the bytes: a warp storing consecutive
-// `gl` touched 32 separate sectors to write 128 bytes, because
-// consecutive `gl` sat `nlev*ncol` floats apart.
-//
-// Shared memory rather than `__shfl_sync` because the fold group is a
-// BLOCK, not a warp: shuffles cap the tile at 32, and the tile the solver
-// actually wants once it stops writing partials is 64 (measured, and it
-// scales with SM count -- see `_rte_gpt_tile`).
+// Buffer independent flux values, then fold each row in ascending g order.
+// Padding rotates row banks while every row retains the reference FMA chain.
+#define RTE_FOLD_ROWS 16
+__device__ __forceinline__ void rte_fold_sync(int gpt_tile) {
+  if (gpt_tile == 16) {
+    const unsigned mask = 0xffffu << (threadIdx.x & 16);
+    __syncwarp(mask);
+  } else if (gpt_tile == 32) __syncwarp();
+  else __syncthreads();
+}
 __device__ __forceinline__ void rte_fold_emit(
     float* flux, int col, int nlev, int lev, float v, float scale,
-    int gl, int gpt_tile, int gpt0, float* s_v) {
-  __syncthreads();          // the previous fold has finished reading s_v
-  s_v[gl] = v;
-  __syncthreads();
-  if (gl == 0) {
-    const int o = col * nlev + lev;
-    float su = gpt0 == 0 ? 0.0f : flux[o];
-    for (int g = 0; g < gpt_tile; ++g) {
-      // PINNED (13.6j): ptxas contracts this into an FFMA in the LW
-      // compilation and, with scale == 1.0f, folds the multiply away in
-      // the SW one -- and __fmaf_rn(1.0f, x, su) is bitwise __fadd_rn.
-      // One stated form covers both and stops depending on pressure.
-      su = __fmaf_rn(scale, s_v[g], su);
+    int gl, int gpt_tile, int gpt0, float* s_v, int& count,
+    bool last = false) {
+  const int stride = gpt_tile + 1;
+  unsigned long long* targets = reinterpret_cast<unsigned long long*>(
+      s_v + RTE_FOLD_ROWS * stride);
+  s_v[count * stride + gl] = v;
+  if (gl == 0) targets[count] = reinterpret_cast<unsigned long long>(
+      flux + col * nlev + lev);
+  ++count;
+  if (count == RTE_FOLD_ROWS || last) {
+    rte_fold_sync(gpt_tile);
+    if (gl < count) {
+      float* target = reinterpret_cast<float*>(targets[gl]);
+      float su = gpt0 == 0 ? 0.0f : *target;
+      for (int g = 0; g < gpt_tile; ++g)
+        su = __fmaf_rn(scale, s_v[gl * stride + g], su);
+      *target = su;
     }
-    flux[o] = su;
+    rte_fold_sync(gpt_tile);
+    count = 0;
   }
 }
 
@@ -131,8 +127,11 @@ extern "C" __global__ void rrtmgp_lw_noscat(
   float trans[RRTMGP_MAX_LAYERS];
   float src_up[RRTMGP_MAX_LAYERS];
   const int base = gl * nlev;
-  // Only read on the folding path, where the block IS the fold group.
+  // Each packed column owns a separate buffer on the folding path.
   extern __shared__ float s_fold[];
+  int fold_count = 0;
+  float* fold_group = s_fold + (threadIdx.x / gpt_tile)
+      * (RTE_FOLD_ROWS * (gpt_tile + 1) + RTE_FOLD_ROWS * 2);
 
   // PLANCK, DERIVED HERE (all FP ops pinned -- see the header and
   // 13.6j).  `rrtmgp_planck_sources` writes lay_source and lev_source
@@ -165,10 +164,10 @@ extern "C" __global__ void rrtmgp_lw_noscat(
   float pk_next = (pk_on && pk_first + 1 < nlay)
       ? PK_AT(pk_first + 1) : 0.0f;
 
-  float dnv = incident_flux[col * ngpt + gpt] / pi;
+  float dnv = __fdiv_rn(incident_flux[col * ngpt + gpt], pi);
   if (warp_fold) {
     rte_fold_emit(part_dn, col, nlev, top, dnv, pi, gl, gpt_tile,
-                  gpt0, s_fold);
+                  gpt0, fold_group, fold_count);
   } else {
     part_dn[(base + top) * ncol + col] = dnv;
   }
@@ -247,7 +246,7 @@ extern "C" __global__ void rrtmgp_lw_noscat(
     const int dlev = top_at_1 ? lay + 1 : lay;
     if (warp_fold) {
       rte_fold_emit(part_dn, col, nlev, dlev, dnv, pi, gl, gpt_tile,
-                    gpt0, s_fold);
+                    gpt0, fold_group, fold_count, dlev == sfc);
     } else {
       part_dn[(base + dlev) * ncol + col] = dnv;
     }
@@ -273,7 +272,7 @@ extern "C" __global__ void rrtmgp_lw_noscat(
                         __fmul_rn(sfc_emis[sg], pk_sfc));
   if (warp_fold) {
     rte_fold_emit(part_up, col, nlev, sfc, upv, pi, gl, gpt_tile,
-                  gpt0, s_fold);
+                  gpt0, fold_group, fold_count);
   } else {
     part_up[(base + sfc) * ncol + col] = upv;
   }
@@ -286,7 +285,7 @@ extern "C" __global__ void rrtmgp_lw_noscat(
     const int ulev = top_at_1 ? lay : lay + 1;
     if (warp_fold) {
       rte_fold_emit(part_up, col, nlev, ulev, upv, pi, gl, gpt_tile,
-                    gpt0, s_fold);
+                    gpt0, fold_group, fold_count, ulev == top);
     } else {
       part_up[(base + ulev) * ncol + col] = upv;
     }
@@ -361,8 +360,11 @@ extern "C" __global__ void rrtmgp_sw_2stream(
 
   const int spec = col * ngpt + gpt;
   const int base = gl * nlev;
-  // Only read on the folding path, where the block IS the fold group.
+  // Each packed column owns a separate buffer on the folding path.
   extern __shared__ float s_fold[];
+  int fold_count = 0;
+  float* fold_group = s_fold + (threadIdx.x / gpt_tile)
+      * (RTE_FOLD_ROWS * (gpt_tile + 1) + RTE_FOLD_ROWS * 2);
   direct[top] = inc_flux[spec] * mu0[col * nlay + top_lay];
   for (int j = 0; j < nlay; ++j) {
     const int lay = top_at_1 ? j : nlay - j - 1;
@@ -458,11 +460,11 @@ extern "C" __global__ void rrtmgp_sw_2stream(
     upv = dnv * albedo[0] + source[0];
     if (warp_fold) {
       rte_fold_emit(part_up, col, nlev, 0, upv, 1.0f,
-                    gl, gpt_tile, gpt0, s_fold);
+                    gl, gpt_tile, gpt0, fold_group, fold_count);
       rte_fold_emit(part_dn, col, nlev, 0, dnv + direct[0], 1.0f,
-                    gl, gpt_tile, gpt0, s_fold);
+                    gl, gpt_tile, gpt0, fold_group, fold_count);
       rte_fold_emit(part_dir, col, nlev, 0, direct[0], 1.0f,
-                    gl, gpt_tile, gpt0, s_fold);
+                    gl, gpt_tile, gpt0, fold_group, fold_count);
     } else {
       part_up[base * ncol + col] = upv;
       part_dn[base * ncol + col] = dnv + direct[0];
@@ -475,11 +477,11 @@ extern "C" __global__ void rrtmgp_sw_2stream(
       upv = dnv * albedo[lev] + source[lev];
       if (warp_fold) {
         rte_fold_emit(part_up, col, nlev, lev, upv, 1.0f,
-                      gl, gpt_tile, gpt0, s_fold);
+                      gl, gpt_tile, gpt0, fold_group, fold_count);
         rte_fold_emit(part_dn, col, nlev, lev, dnv + direct[lev], 1.0f,
-                      gl, gpt_tile, gpt0, s_fold);
+                      gl, gpt_tile, gpt0, fold_group, fold_count);
         rte_fold_emit(part_dir, col, nlev, lev, direct[lev], 1.0f,
-                      gl, gpt_tile, gpt0, s_fold);
+                      gl, gpt_tile, gpt0, fold_group, fold_count, lev == sfc);
       } else {
         part_up[(base + lev) * ncol + col] = upv;
         part_dn[(base + lev) * ncol + col] = dnv + direct[lev];
@@ -499,11 +501,11 @@ extern "C" __global__ void rrtmgp_sw_2stream(
     upv = dnv * albedo[nlay] + source[nlay];
     if (warp_fold) {
       rte_fold_emit(part_up, col, nlev, nlay, upv, 1.0f,
-                    gl, gpt_tile, gpt0, s_fold);
+                    gl, gpt_tile, gpt0, fold_group, fold_count);
       rte_fold_emit(part_dn, col, nlev, nlay, dnv + direct[nlay], 1.0f,
-                    gl, gpt_tile, gpt0, s_fold);
+                    gl, gpt_tile, gpt0, fold_group, fold_count);
       rte_fold_emit(part_dir, col, nlev, nlay, direct[nlay], 1.0f,
-                    gl, gpt_tile, gpt0, s_fold);
+                    gl, gpt_tile, gpt0, fold_group, fold_count);
     } else {
       part_up[(base + nlay) * ncol + col] = upv;
       part_dn[(base + nlay) * ncol + col] = dnv + direct[nlay];
@@ -515,11 +517,11 @@ extern "C" __global__ void rrtmgp_sw_2stream(
       upv = dnv * albedo[lev] + source[lev];
       if (warp_fold) {
         rte_fold_emit(part_up, col, nlev, lev, upv, 1.0f,
-                      gl, gpt_tile, gpt0, s_fold);
+                      gl, gpt_tile, gpt0, fold_group, fold_count);
         rte_fold_emit(part_dn, col, nlev, lev, dnv + direct[lev], 1.0f,
-                      gl, gpt_tile, gpt0, s_fold);
+                      gl, gpt_tile, gpt0, fold_group, fold_count);
         rte_fold_emit(part_dir, col, nlev, lev, direct[lev], 1.0f,
-                      gl, gpt_tile, gpt0, s_fold);
+                      gl, gpt_tile, gpt0, fold_group, fold_count, lev == sfc);
       } else {
         part_up[(base + lev) * ncol + col] = upv;
         part_dn[(base + lev) * ncol + col] = dnv + direct[lev];

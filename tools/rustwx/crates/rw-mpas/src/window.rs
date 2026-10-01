@@ -42,6 +42,9 @@ const DEG: f64 = 180.0 / PI;
 /// factor puts the window edge inside the gradient; a looser one walks out
 /// into the background, and the derived dx stops being the resolution the
 /// mesh actually carries where the window is pointed.
+/// The prefix of an explicit Lambert window spec (see [`Window::lambert_from_spec`]).
+pub const LAMBERT_SPEC_PREFIX: &str = "lambert:";
+
 pub const MESH_FOCUS_REFINEMENT_FACTOR: f64 = 2.0;
 
 /// Margin added to each half-extent of the refined region, as a fraction.
@@ -201,8 +204,11 @@ impl Window {
                  with a fixed box would render a region the mesh may not refine at all"
                     .to_string(),
             )),
+            spec if spec.starts_with(LAMBERT_SPEC_PREFIX) => {
+                Window::lambert_from_spec(&spec[LAMBERT_SPEC_PREFIX.len()..])
+            }
             other => Err(MpasError::Refusal(format!(
-                "unknown render window '{other}' (known: focus, global, mesh)"
+                "unknown render window '{other}' (known: focus, global, mesh, lambert:CLAT,CLON,DX_M,NX,NY,TRUELAT1,TRUELAT2,STAND_LON)"
             ))),
         }
     }
@@ -250,6 +256,89 @@ impl Window {
     /// origin, so the centre would be float noise pointing in an arbitrary
     /// direction, and the extent would be the whole sphere, which no Lambert
     /// cone represents. `--window global` is the window a uniform mesh has.
+    /// An explicit Lambert target grid:
+    /// `lambert:CLAT,CLON,DX_M,NX,NY,TRUELAT1,TRUELAT2,STAND_LON`.
+    ///
+    /// The grid is the one WPS lays down for a domain of that projection,
+    /// centred on the point `((nx+1)/2, (ny+1)/2)` -- the same convention the
+    /// fixed `focus` window uses -- so the spec of another model's own mass
+    /// grid (its `DX`, `TRUELAT1/2`, `STAND_LON`, dimensions and the lat/lon
+    /// of its geometric centre) reproduces that grid point for point.
+    ///
+    /// THE BREAKAGE THIS PREVENTS: every window this converter knew was
+    /// either fixed geometry or derived from the mesh itself, so a mesh
+    /// forecast could never land on the grid of the WRF-type forecast it is
+    /// being compared with.  A side-by-side then showed two different
+    /// footprints and two different pixel grids, and any field difference
+    /// needed a second resample outside the Rust data path.
+    pub fn lambert_from_spec(text: &str) -> MpasResult<Window> {
+        let parts: Vec<&str> = text.split(',').map(str::trim).collect();
+        if parts.len() != 8 {
+            return Err(MpasError::Refusal(format!(
+                "a lambert window takes eight comma-separated values CLAT,CLON,DX_M,NX,NY,TRUELAT1,TRUELAT2,STAND_LON; '{text}' has {}",
+                parts.len()
+            )));
+        }
+        let number = |index: usize, role: &str| -> MpasResult<f64> {
+            let value: f64 = parts[index].parse().map_err(|_| {
+                MpasError::Refusal(format!(
+                    "lambert window {role} '{}' is not a number",
+                    parts[index]
+                ))
+            })?;
+            if !value.is_finite() {
+                return Err(MpasError::Refusal(format!(
+                    "lambert window {role} must be finite"
+                )));
+            }
+            Ok(value)
+        };
+        let count = |index: usize, role: &str| -> MpasResult<usize> {
+            parts[index].parse::<usize>().map_err(|_| {
+                MpasError::Refusal(format!(
+                    "lambert window {role} '{}' is not a whole number",
+                    parts[index]
+                ))
+            })
+        };
+        let centre_lat = number(0, "centre latitude")?;
+        let centre_lon = number(1, "centre longitude")?;
+        let dx_metres = number(2, "dx")?;
+        let nx = count(3, "nx")?;
+        let ny = count(4, "ny")?;
+        let truelat1 = number(5, "truelat1")?;
+        let truelat2 = number(6, "truelat2")?;
+        let stand_lon = number(7, "stand_lon")?;
+        if centre_lat.abs() > 89.0 || truelat1.abs() > 89.0 || truelat2.abs() > 89.0 {
+            return Err(MpasError::Refusal(
+                "lambert window latitudes must lie within 89 degrees of the equator".to_string(),
+            ));
+        }
+        if !(dx_metres > 0.0) {
+            return Err(MpasError::Refusal("lambert window dx must be positive".to_string()));
+        }
+        if nx < 2 || ny < 2 || nx > 10_000 || ny > 10_000 {
+            return Err(MpasError::Refusal(format!(
+                "lambert window {nx} x {ny} is outside 2..=10000 points per side"
+            )));
+        }
+        Ok(Window::Lambert(LambertWindow {
+            centre_lat,
+            centre_lon,
+            dx_metres,
+            nx,
+            ny,
+            truelat1,
+            truelat2,
+            stand_lon,
+            description: format!(
+                "explicit Lambert window {nx} x {ny} at {} m centred {}",
+                json_f64(dx_metres),
+                format_centre(centre_lat, centre_lon)
+            ),
+        }))
+    }
+
     pub fn mesh_focus(
         latitude_degrees: &[f64],
         longitude_degrees: &[f64],
@@ -1728,5 +1817,26 @@ mod tests {
         assert!(error.contains("mesh_focus"), "{error}");
         let unknown = Window::named("atlantic").unwrap_err().to_string();
         assert!(unknown.contains("focus, global, mesh"), "{unknown}");
+    }
+}
+
+#[cfg(test)]
+mod lambert_spec_tests {
+    use super::*;
+
+    #[test]
+    fn explicit_lambert_matches_the_fixed_focus_window() {
+        let named = Window::named("focus").unwrap();
+        let spec = Window::named("lambert:37.0,-96.0,22000,240,150,30,60,-96").unwrap();
+        assert_eq!(named.coordinates().unwrap(), spec.coordinates().unwrap());
+        assert_eq!(named.spec_json(), spec.spec_json());
+    }
+
+    #[test]
+    fn explicit_lambert_refuses_malformed_specs() {
+        assert!(Window::named("lambert:37,-96,22000,240,150,30,60").is_err());
+        assert!(Window::named("lambert:37,-96,-1,240,150,30,60,-96").is_err());
+        assert!(Window::named("lambert:37,-96,22000,1,150,30,60,-96").is_err());
+        assert!(Window::named("lambert:37,-96,22000,240.5,150,30,60,-96").is_err());
     }
 }

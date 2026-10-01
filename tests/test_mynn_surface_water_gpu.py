@@ -34,6 +34,7 @@ import numpy as np
 import pytest
 
 from conftest import requires_gpu
+from _toolchain_rows import toolchain_row
 
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
 from test_mynn_surface_water import (
@@ -321,6 +322,131 @@ WATER_CUDA_ULP = {
     },
 }
 
+#: ``WATER_CUDA_ULP`` per compiler where a compiler reads it differently, keyed
+#: on (compute capability, NVRTC major.minor), the pair measured.
+#: A146 re-recorded this table: NVRTC had compiled every float division
+#: by a compile-time constant as a multiply by the rounded reciprocal on
+#: Blackwell, and the kernels now spell those divisions ``__fdiv_rn``, the
+#: IEEE quotient.  On sm_120 77 rows read more than ``WATER_CUDA_ULP``; the
+#: override the reciprocal-multiply compiler needed (the ISFTCFLX=0 second
+#: step's light_water column) is replaced by this measurement.
+#: MEASURED 2026-09-30 on the RTX 5070 Ti (sm_120, NVRTC 13.4.92) at the
+#: A146 review repair, every output of every stage compared.
+WATER_CUDA_ULP_BY_TOOLCHAIN = {
+    ("120", (13, 4)): {
+        **WATER_CUDA_ULP,
+        (0, 1, 1): {
+            **WATER_CUDA_ULP[(0, 1, 1)],
+            "br": (0, 3, 0, 0, 0, 0, 2, 0, 3, 0, 0, 0),
+            "ck": (0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2),
+            "cka": (0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0),
+            "flqc": (0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 3, 0),
+            "lh": (0, 0, 0, 0, 0, 0, 1, 0, 2, 1, 0, 0),
+            "psih": (0, 1, 0, 0, 0, 0, 3, 1, 2, 1, 2, 1),
+            "psim": (0, 1, 0, 0, 32, 47, 35, 1, 13, 1, 3, 1),
+            "qfx": (0, 1, 0, 0, 0, 0, 2, 0, 2, 1, 0, 0),
+            "qgh": (0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0),
+            "qsfc": (0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 0, 0),
+            "qstar": (0, 1, 0, 2, 0, 1, 2, 0, 6, 0, 0, 0),
+            "rmol": (0, 1, 0, 0, 0, 0, 5, 1, 1, 2, 3, 4),
+            "wspd": (0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0),
+            "zol": (0, 1, 0, 0, 0, 0, 4, 1, 1, 1, 3, 2),
+        },
+        (0, 2, 1): {
+            **WATER_CUDA_ULP[(0, 2, 1)],
+            "lh": (0, 0, 0, 0, 0, 0, 2, 0, 3, 0, 0, 1),
+            "qfx": (0, 0, 0, 0, 0, 0, 2, 0, 3, 0, 0, 3),
+            "qgh": (0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0),
+            "qsfc": (0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 0, 0),
+            "qstar": (0, 1, 0, 1, 0, 1, 2, 0, 7, 0, 0, 0),
+        },
+        (1, 1, 1): {
+            **WATER_CUDA_ULP[(1, 1, 1)],
+            "br": (0, 3, 0, 0, 0, 0, 2, 0, 3, 0, 0, 0),
+            "cd": (0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 2, 2),
+            "ck": (0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 2),
+            "lh": (0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 0, 0),
+            "psih": (0, 0, 0, 1, 1, 2, 3, 0, 2, 0, 2, 1),
+            "psim": (0, 4, 0, 9, 23, 50, 35, 3, 13, 0, 3, 1),
+            "qfx": (0, 1, 0, 0, 0, 0, 2, 0, 2, 0, 0, 0),
+            "qgh": (0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0),
+            "qsfc": (0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 0, 0),
+            "qstar": (0, 1, 0, 0, 0, 1, 2, 0, 6, 0, 0, 0),
+            "rmol": (0, 2, 0, 0, 1, 1, 5, 1, 1, 0, 3, 4),
+            "wspd": (0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0),
+            "znt": (0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0),
+            "zol": (0, 2, 0, 0, 1, 1, 4, 1, 1, 0, 3, 2),
+        },
+        (1, 2, 1): {
+            **WATER_CUDA_ULP[(1, 2, 1)],
+            "lh": (0, 0, 1, 0, 0, 0, 2, 1, 2, 0, 0, 1),
+            "qfx": (0, 0, 1, 0, 0, 0, 2, 2, 2, 0, 0, 3),
+            "qgh": (0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0),
+            "qsfc": (0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 0, 0),
+            "qstar": (0, 0, 0, 1, 0, 1, 2, 0, 7, 0, 0, 0),
+        },
+        (2, 1, 1): {
+            **WATER_CUDA_ULP[(2, 1, 1)],
+            "br": (0, 3, 0, 0, 0, 0, 2, 0, 3, 0, 0, 0),
+            "lh": (0, 0, 0, 0, 0, 0, 2, 0, 3, 0, 0, 0),
+            "psih": (0, 1, 2, 0, 0, 1, 4, 1, 4, 1, 2, 1),
+            "psim": (0, 2, 2, 10, 24, 49, 32, 0, 27, 1, 3, 1),
+            "qfx": (0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 0, 0),
+            "qgh": (0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0),
+            "qsfc": (0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 0, 0),
+            "qstar": (0, 1, 0, 1, 0, 1, 2, 0, 5, 0, 0, 0),
+            "rmol": (0, 2, 1, 0, 0, 1, 5, 1, 2, 0, 3, 4),
+            "wspd": (0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0),
+            "znt": (0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0),
+            "zol": (0, 3, 1, 0, 0, 1, 4, 1, 3, 0, 3, 2),
+        },
+        (2, 2, 1): {
+            **WATER_CUDA_ULP[(2, 2, 1)],
+            "lh": (0, 0, 0, 0, 0, 0, 2, 0, 4, 0, 0, 1),
+            "qfx": (0, 0, 0, 0, 0, 0, 2, 0, 3, 0, 0, 3),
+            "qgh": (0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0),
+            "qsfc": (0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 0, 0),
+            "qstar": (0, 1, 0, 1, 0, 2, 2, 0, 5, 0, 0, 0),
+        },
+        (3, 1, 1): {
+            **WATER_CUDA_ULP[(3, 1, 1)],
+            "br": (0, 3, 0, 0, 0, 0, 2, 0, 3, 0, 0, 0),
+            "lh": (0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 0, 0),
+            "psih": (0, 1, 0, 0, 0, 0, 3, 0, 2, 2, 2, 1),
+            "psim": (0, 0, 0, 1, 29, 51, 35, 0, 13, 2, 3, 1),
+            "qfx": (0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 0, 0),
+            "qgh": (0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0),
+            "qsfc": (0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 0, 0),
+            "qstar": (0, 1, 0, 1, 0, 1, 2, 0, 6, 0, 0, 0),
+            "rmol": (0, 2, 2, 0, 0, 0, 5, 0, 1, 1, 3, 4),
+            "wspd": (0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0),
+            "zol": (0, 2, 1, 0, 0, 0, 4, 0, 1, 1, 3, 2),
+        },
+        (3, 2, 1): {
+            **WATER_CUDA_ULP[(3, 2, 1)],
+            "cda": (0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 3, 5),
+            "chs2": (0, 2, 0, 0, 0, 1, 0, 0, 0, 1, 3, 2),
+            "cqs2": (0, 0, 0, 0, 0, 2, 0, 0, 0, 1, 2, 2),
+            "lh": (0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 0, 1),
+            "qfx": (0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 0, 3),
+            "qgh": (0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0),
+            "qsfc": (0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 0, 0),
+            "qstar": (0, 1, 0, 1, 0, 2, 2, 0, 7, 0, 0, 0),
+            "u10": (0, 1, 0, 0, 2, 1, 0, 1, 0, 2, 1, 0),
+            "ust": (0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1),
+            "znt": (0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0),
+        },
+    },
+}
+#: A167: NVRTC 12.9.86, the compiler of the default gpuwm[gpu] extra
+#: (cupy-cuda12x), reads the sm_120 row A146 re-recorded under 13.4: every
+#: reading this file's tests take, and the device result behind each, is
+#: bit-identical under the two compilers.  Before this row 12.9.86 failed
+#: here by name (tests/_toolchain_rows.py).  MEASURED 2026-10-01 on node-4's
+#: RTX 5070 Ti and node-2's RTX 5090, two processes per compiler, at
+#: integrate/2.8 9dbb4a2db.
+WATER_CUDA_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
+    WATER_CUDA_ULP_BY_TOOLCHAIN[("120", (13, 4))])
 
 
 @requires_gpu
@@ -352,7 +478,10 @@ def test_cuda_matches_the_water_oracle(isftcflx, itimestep, isfflx):
         expected = _f32(rows, name)
         have = cp.asnumpy(getattr(actual, name)).reshape(-1)
         residue = fp32_ulp_distance(have, expected)
-        budget = _budget(WATER_CUDA_ULP, key, name, len(rows))
+        budget = _budget(
+            toolchain_row(WATER_CUDA_ULP_BY_TOOLCHAIN, WATER_CUDA_ULP,
+                          "WATER_CUDA_ULP_BY_TOOLCHAIN"),
+            key, name, len(rows))
         over = np.nonzero(residue > budget)[0]
         assert not over.size, (
             f"{name} at isftcflx={isftcflx} step={itimestep} "

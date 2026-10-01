@@ -53,7 +53,7 @@ import pytest
 from gpuwm import domain_wizard
 from gpuwm.core import preflight as pf
 from gpuwm.experiment import load_experiment
-from test_runplan_tiles import (_config, _estimate,
+from test_runplan_tiles import (_config, _estimate, moist_specified_config,
                                 resident_estimate_on_the_documents_device)
 
 GIB = 1024 ** 3
@@ -70,11 +70,13 @@ def _payload(free_bytes: int, *, total_bytes: int = 10 * GIB,
             "profile": dict(_CARD if profile is None else profile)}
 
 
-def _six_hour_config(tmp_path):
+def _six_hour_config(tmp_path, *, moist=False):
     """The tiles fixture's HRRR configuration, run for six hours, so the
-    boundary cadence the file is priced at moves the LBC term."""
+    boundary cadence the file is priced at moves the LBC term.  ``moist``
+    gives it a moist Thompson root on specified boundaries, whose tables
+    carry the hydrometeors the source publishes."""
 
-    config = _config(tmp_path)
+    config = (moist_specified_config if moist else _config)(tmp_path)
     text = config.read_text(encoding="utf-8")
     assert "run_seconds = 3600.0" in text
     config.write_text(text.replace("run_seconds = 3600.0",
@@ -153,6 +155,7 @@ def test_the_document_prices_the_cadence_the_check_prices(tmp_path, monkeypatch)
     used to read only the declared key and price such a file at the
     21,600 s default."""
 
+    from gpuwm.boundary_fields import source_boundary_species
     from gpuwm.source_adapters import source_forcing_interval_seconds
 
     monkeypatch.setattr(pf, "device_memory_probe_subprocess", lambda **_: None)
@@ -162,8 +165,13 @@ def test_the_document_prices_the_cadence_the_check_prices(tmp_path, monkeypatch)
     assert published != pf.DEFAULT_FORCING_INTERVAL_SECONDS
     assert document["vram"]["forcing_interval_seconds"] == published
     exp = load_experiment(config)
-    at_published = pf.estimate_experiment(exp, forcing_interval_seconds=published)
-    at_default = pf.estimate_experiment(exp)
+    # On the boundary tables the recorded source publishes, which the
+    # document prices as the check does (A92): the cadence is the
+    # question here, and both sides of it carry the same tables.
+    species = source_boundary_species("hrrr")
+    at_published = pf.estimate_experiment(exp, forcing_interval_seconds=published,
+                                          boundary_species=species)
+    at_default = pf.estimate_experiment(exp, boundary_species=species)
     assert at_published.peak_envelope_bytes != at_default.peak_envelope_bytes
     assert document["vram"]["peak_envelope_bytes"] == at_published.peak_envelope_bytes
 
@@ -378,14 +386,74 @@ def test_the_cpu_only_check_route_prices_a_declared_card_that_is_elsewhere_on_th
     assert elsewhere["device_basis"].startswith(
         "conservative reference; local device unmeasured (--vram-gib 48 names "
         f"a card that is not the one read in this machine ({_CARD['name']})")
+    # On the boundary tables the recorded source publishes, which this
+    # route prices as the check's declared and measured routes do (A92).
+    from gpuwm.boundary_fields import source_boundary_species
+
     assert elsewhere["resident_forecast_peak_envelope_bytes"] == pf.estimate_experiment(
         load_experiment(config), vram_gib=48.0,
-        forcing_interval_seconds=document["vram"]["forcing_interval_seconds"]).peak_envelope_bytes
+        forcing_interval_seconds=document["vram"]["forcing_interval_seconds"],
+        boundary_species=source_boundary_species("hrrr")).peak_envelope_bytes
     code, out = _check_cpu_only(capsys, config, "--json", "--vram-gib", "10")
     same = json.loads(out)["required_memory"]
     assert same["device_read"] is True
     assert same["local_memory_profile"] == _CARD["name"]
     assert same["resident_forecast_peak_envelope_bytes"] == document["vram"]["peak_envelope_bytes"]
+
+
+def test_every_check_route_and_the_document_price_the_sources_boundary_tables(
+        tmp_path, monkeypatch, _cpu_check, capsys):
+    """One HRRR-forced file on one card: the estimate document, the
+    check's declared route and its CPU-only route price the hydrometeor
+    boundary tables the recorded source publishes, and read one figure.
+
+    Red before the A92 follow-up: the declared route priced the tables
+    while the CPU-only route and the document priced water vapour alone, so a
+    bare ``gpuwm check`` on a machine whose kernels are not proven read a
+    smaller figure than the ``--free-gib/--vram-gib`` follow-up it
+    suggests for the same file.
+    """
+    from gpuwm.boundary_fields import source_boundary_species
+
+    payload = _payload(8 * GIB)
+    monkeypatch.setattr(pf, "device_memory_probe_subprocess", lambda **_: payload)
+    monkeypatch.setattr(pf, "_warn_unstaged_physics_tables", lambda *_: None)
+    config = _six_hour_config(tmp_path, moist=True)
+    species = source_boundary_species("hrrr")
+    assert species == ("qc", "qr", "qi", "qs", "qg")
+
+    document = _estimate(tmp_path, config)
+    vram = document["vram"]
+    assert vram["boundary_species"] == list(species)
+    profile = pf.profile_from_device_probe(payload)
+    exp = load_experiment(config)
+    priced = {name: pf.estimate_experiment(
+        exp, profile=profile, vram_gib=payload["total_bytes"] / GIB,
+        forcing_interval_seconds=vram["forcing_interval_seconds"],
+        forcing_intervals=vram["retained_forcing_intervals"],
+        boundary_species=tables) for name, tables in
+        (("tables", species), ("vapour", ()))}
+    assert (priced["tables"].peak_envelope_bytes
+            > priced["vapour"].peak_envelope_bytes)
+    assert vram["peak_envelope_bytes"] == priced["tables"].peak_envelope_bytes
+    assert vram["estimate_bytes"] == priced["tables"].alloc_estimate_bytes
+
+    code, declared = _check_json(capsys, config, free_bytes=payload["free_bytes"],
+                                 total_bytes=payload["total_bytes"], profile=profile)
+    assert code in (0, 4), declared.get("memory_verdict")
+    assert declared["observed_peak_envelope_bytes"] == vram["peak_envelope_bytes"]
+    assert declared["alloc_estimate_bytes"] == vram["estimate_bytes"]
+
+    _unmet_readiness(monkeypatch)
+    code, out = _check_cpu_only(capsys, config, "--json")
+    assert code == 1
+    required = json.loads(out)["required_memory"]
+    assert required["device_read"] is True
+    assert (required["resident_forecast_peak_envelope_bytes"]
+            == vram["peak_envelope_bytes"])
+    assert required["alloc_estimate_bytes"] == vram["estimate_bytes"]
+    assert (required["domains"]["d01"]["by_category"]["lbc"]
+            == priced["tables"].domains[0].category_bytes("lbc"))
 
 
 @pytest.mark.parametrize("declared,total,expected", [

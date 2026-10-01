@@ -11,7 +11,7 @@ Source: Deutscher Wetterdienst (CC BY 4.0).
 from __future__ import annotations
 
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -192,7 +192,12 @@ def test_a_domain_inside_the_window_asks_only_for_published_cells(spec):
 def test_latest_and_the_horizon_come_from_the_route_rows():
     grid = cycle_grid_for("icon-d2")
     assert grid.hours == tuple(range(0, 24, 3))
-    assert grid.delay_hours == 2.0
+    # The measured row (A136 L1 posting watch, eight cycles 29 Sep 09Z to
+    # 30 Sep 06Z: f000 at + 44 min, f048 at + 1 h 12 min to 1 h 14 min)
+    # replaced the declared 2 h, which started `latest` more than an hour
+    # after the first lead of a cycle was out.
+    assert grid.delay_hours == 0.73
+    assert grid.delay(CYCLE, 48) == pytest.approx(0.73 + 0.0097 * 48)
     assert grid.search_hours == 24
     assert all(grid.horizon(CYCLE.replace(hour=hour)) == 48 for hour in grid.hours)
 
@@ -336,3 +341,39 @@ def test_every_invariant_height_is_required(spec):
     missing = [p for p in paths if "_66_hhl" not in p.name]
     with pytest.raises(ValueError, match="missing coordinate/invariant"):
         norm.validate_inventory(spec, missing)
+
+
+def test_a_whole_multiple_series_is_the_inventory_the_normalization_accepts(
+        spec, tmp_path):
+    """A159 planned 3 and 6 h icon-d2 windows, and the normalization still
+    refused them ("a contiguous 1-hour series", then "requires WPS
+    interval_seconds=3600") after the download.  A173: a uniform series at
+    a whole multiple of the publisher's hour is accepted, with the
+    namelist's interval equal to its spacing; a gap or the wrong interval
+    is still refused, naming it."""
+
+    for cadence in (2, 3, 6):
+        plan = fetch_routes.resolve_request("icon-d2", cycle=CYCLE,
+                                            hours=2 * cadence, cadence=cadence)
+        objects = norm.validate_inventory(
+            spec, [Path("/not-downloaded") / name for name in plan.primary_files])
+        assert {o.lead for o in objects if o.lead is not None} == {
+            0, cadence, 2 * cadence}
+        namelist = tmp_path / f"namelist-{cadence}.wps"
+        namelist.write_text(
+            "&share\n max_dom = 1,\n"
+            f" start_date = '{CYCLE:%Y-%m-%d_%H}:00:00',\n"
+            f" end_date = '{CYCLE + timedelta(hours=2 * cadence):%Y-%m-%d_%H}:00:00',\n"
+            f" interval_seconds = {cadence * 3600},\n/\n")
+        norm._check_wps_time_coverage(spec, namelist, objects)
+        wrong = tmp_path / f"wrong-{cadence}.wps"
+        wrong.write_text(namelist.read_text().replace(
+            f"interval_seconds = {cadence * 3600}", "interval_seconds = 3600"))
+        with pytest.raises(ValueError, match="interval_seconds"):
+            norm._check_wps_time_coverage(spec, wrong, objects)
+    plan = fetch_routes.resolve_request("icon-d2", cycle=CYCLE, hours=6)
+    uneven = [Path("/not-downloaded") / name for name in plan.primary_files
+              if not any(f"_{lead:03d}_" in Path(name).name
+                         for lead in (1, 4, 5))]
+    with pytest.raises(ValueError, match="one uniform series"):
+        norm.validate_inventory(spec, uneven)

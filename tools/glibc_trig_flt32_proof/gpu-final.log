@@ -1,0 +1,16 @@
+CuPy 14.2.0 NVRTC (13, 4) options ('-std=c++17', '--fmad=false', '--ftz=true')
+header_sha256 23455db61e22e3c57e23bbb878cf33af97609887f11c645c56dae2790c2160e1
+GPU b'NVIDIA GeForce RTX 4090'
+sinf inputs 67109088 mismatches 0 gpu_ms 1.8490240573883057 examples []
+cosf inputs 67109088 mismatches 0 gpu_ms 1.8672640323638916 examples []
+tanf inputs 67109088 mismatches 0 gpu_ms 3.871648073196411 examples []
+asinf inputs 67109088 mismatches 0 gpu_ms 3.2540159225463867 examples []
+acosf inputs 67109088 mismatches 0 gpu_ms 3.159071922302246 examples []
+atanf inputs 67109088 mismatches 0 gpu_ms 4.357728004455566 examples []
+FTZ sinf inputs 67109088 mismatches 0 examples []
+FTZ cosf inputs 67109088 mismatches 0 examples []
+FTZ tanf inputs 67109088 mismatches 0 examples []
+FTZ asinf inputs 67109088 mismatches 0 examples []
+FTZ acosf inputs 67109088 mismatches 0 examples []
+FTZ atanf inputs 67109088 mismatches 0 examples []
+GPU reservation seconds 1.5415403279475868

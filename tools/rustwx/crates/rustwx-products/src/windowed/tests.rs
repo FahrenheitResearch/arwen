@@ -401,6 +401,42 @@ fn from_slug_round_trips_every_supported_windowed_product() {
     assert_eq!(HrrrWindowedProduct::from_slug("not_a_windowed_slug"), None);
 }
 
+/// Every 10 m wind maximum window has a snapshot-fold row, and no row
+/// titles a snapshot as a maximum: the row is what an hourly history with no
+/// stored wind maximum is drawn under.
+#[test]
+fn every_wind_maximum_window_names_its_hourly_snapshot_fold() {
+    for &product in HrrrWindowedProduct::supported_products() {
+        let row = product.snapshot_fold();
+        assert_eq!(row.is_some(), product.is_wind10m(), "{}", product.slug());
+        let Some(row) = row else { continue };
+        assert_eq!(row.product, product);
+        assert_ne!(row.title, product.title(), "{}", product.slug());
+        assert!(row.title.contains("snapshot"), "{}", row.title);
+        assert!(row.fold.contains("top-of-hour"), "{}", row.fold);
+        assert!(row.why.contains("WSPD10MAX") && row.why.contains("not the maximum"));
+        // Only the one-hour window, which folds one frame, cannot be
+        // partly a stored maximum and partly a snapshot.
+        match row.partial_title {
+            None => assert_eq!(product, HrrrWindowedProduct::Wind10m1hMax),
+            Some(partial) => {
+                assert!(partial.contains("partly hourly snapshots"), "{partial}");
+                assert_ne!(partial, row.title);
+                assert_ne!(partial, product.title());
+            }
+        }
+    }
+    assert_eq!(
+        SNAPSHOT_FOLD_ROWS.len(),
+        SNAPSHOT_FOLD_ROWS
+            .iter()
+            .map(|row| row.product)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        "one row per product"
+    );
+}
+
 /// The store-render scale helper reproduces the per-family scales the GRIB
 /// compute kernels attach: QPF/wind/snapshot products get the family's
 /// discrete scale, UH products the Uh weather preset — for every supported

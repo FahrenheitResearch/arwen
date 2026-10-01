@@ -951,12 +951,12 @@ void advance_w_phi(real* __restrict__ w_pp, real* __restrict__ ph_pp,
     // solved w'' against the coupled reference w_t* (advance_w); per-column
     // heights from the t* geopotential, layer depth zdamp below the top.
     if (dampmag > 0.0f) {
-        real htop = (phb[(size_t)nz * bstr + boff]
-                     + php[(size_t)nz * st + c]) / G;
+        real htop = __fdiv_rn((phb[(size_t)nz * bstr + boff]
+                     + php[(size_t)nz * st + c]), G);
         real hbot = htop - zdamp;
         for (int k = 1; k <= nz; ++k) {
-            real hk = (phb[(size_t)k * bstr + boff]
-                       + php[(size_t)k * st + c]) / G;
+            real hk = __fdiv_rn((phb[(size_t)k * bstr + boff]
+                       + php[(size_t)k * st + c]), G);
             if (hk >= hbot) {
                 real sn = sinf(1.5707963f * (hk - hbot) / zdamp);
                 real dw = dampmag * sn * sn;
@@ -1183,12 +1183,12 @@ void advance_w_phi_msf(real* __restrict__ w_pp, real* __restrict__ ph_pp,
 
     // damp_opt=3 implicit w damper (msf-free damp target: WRF literal).
     if (dampmag > 0.0f) {
-        real htop = (phb[(size_t)nz * bstr + boff]
-                     + php[(size_t)nz * st + c]) / G;
+        real htop = __fdiv_rn((phb[(size_t)nz * bstr + boff]
+                     + php[(size_t)nz * st + c]), G);
         real hbot = htop - zdamp;
         for (int k = 1; k <= nz; ++k) {
-            real hk = (phb[(size_t)k * bstr + boff]
-                       + php[(size_t)k * st + c]) / G;
+            real hk = __fdiv_rn((phb[(size_t)k * bstr + boff]
+                       + php[(size_t)k * st + c]), G);
             if (hk >= hbot) {
                 real sn = sinf(1.5707963f * (hk - hbot) / zdamp);
                 real dw = dampmag * sn * sn;

@@ -315,7 +315,7 @@ def test_unfused_named_storage_contains_planck_optics_and_does_not_alias_streams
     assert named["lw/planck_current"] == 3125 * 256 * 150 * 4
     assert named["lw/planck_previous"] == named["lw/planck_current"]
     one, two = fp.vram_bytes(4096 * 49, 1), fp.vram_bytes(4096 * 49, 2)
-    assert two - one >= math.floor(pf.ALLOCATOR_HEADROOM * memory.buffer_bytes(4096 * 49))
+    assert two - one >= math.floor(pf.FORECAST_POOL_HEADROOM * memory.buffer_bytes(4096 * 49))
     # Independently retained unfused arrays cannot be replaced by the much
     # smaller, fused explicit-workspace phase maximum.
     fused = sum(math.prod(s) * size for s, size in
@@ -366,7 +366,7 @@ def test_default_loader_template_and_measured_allocator_peak_are_inside_the_boun
     # workspaces belong there even though the older helper calls them nonpool.
     pool = (2 * fp.buffer_bytes(37 * 37 * 49)
             + terms["template_resident_bytes"] + terms["k_tables_bytes"])
-    assert math.ceil(pf.ALLOCATOR_HEADROOM * pool) > 978856448
+    assert math.ceil(pf.FORECAST_POOL_HEADROOM * pool) > 978856448
     assert fp.vram_bytes(128 * 128 * 49, 1) > 2212101120 + terms["cuda_context_bytes"]
 
 

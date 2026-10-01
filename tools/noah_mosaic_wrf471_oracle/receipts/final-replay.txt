@@ -1,0 +1,390 @@
+GPU MiB used,total: 1 24564
+qgh max_ulp 0 nonzero 0
+glw max_ulp 0 nonzero 0
+swdown max_ulp 0 nonzero 0
+rainbl max_ulp 0 nonzero 0
+sr max_ulp 0 nonzero 0
+chs max_ulp 0 nonzero 0
+cqs2 max_ulp 0 nonzero 0
+chs2 max_ulp 0 nonzero 0
+rib max_ulp 0 nonzero 0
+vegfra max_ulp 0 nonzero 0
+shdmin max_ulp 0 nonzero 0
+shdmax max_ulp 0 nonzero 0
+tmn max_ulp 0 nonzero 0
+xland max_ulp 0 nonzero 0
+xice max_ulp 0 nonzero 0
+snoalb max_ulp 0 nonzero 0
+embck max_ulp 0 nonzero 0
+tsk max_ulp 0 nonzero 0
+hfx max_ulp 0 nonzero 0
+qfx max_ulp 0 nonzero 0
+lh max_ulp 0 nonzero 0
+grdflx max_ulp 0 nonzero 0
+qsfc max_ulp 0 nonzero 0
+canwat max_ulp 0 nonzero 0
+snow max_ulp 0 nonzero 0
+snowc max_ulp 0 nonzero 0
+snowh max_ulp 0 nonzero 0
+albedo max_ulp 0 nonzero 0
+albbck max_ulp 0 nonzero 0
+emiss max_ulp 0 nonzero 0
+znt max_ulp 0 nonzero 0
+z0 max_ulp 0 nonzero 0
+snotime max_ulp 0 nonzero 0
+lai max_ulp 0 nonzero 0
+smstav max_ulp 0 nonzero 0
+smstot max_ulp 0 nonzero 0
+sfcrunoff max_ulp 0 nonzero 0
+udrunoff max_ulp 0 nonzero 0
+acsnow max_ulp 0 nonzero 0
+acsnom max_ulp 0 nonzero 0
+snopcx max_ulp 0 nonzero 0
+potevp max_ulp 0 nonzero 0
+noahres max_ulp 0 nonzero 0
+chklowq max_ulp 0 nonzero 0
+smois max_ulp 0 nonzero 0
+tslb max_ulp 0 nonzero 0
+sh2o max_ulp 0 nonzero 0
+smcrel max_ulp 0 nonzero 0
+tsk_mosaic max_ulp 0 nonzero 0
+qsfc_mosaic max_ulp 0 nonzero 0
+canwat_mosaic max_ulp 0 nonzero 0
+snow_mosaic max_ulp 0 nonzero 0
+snowh_mosaic max_ulp 0 nonzero 0
+snowc_mosaic max_ulp 0 nonzero 0
+albedo_mosaic max_ulp 0 nonzero 0
+albbck_mosaic max_ulp 0 nonzero 0
+emiss_mosaic max_ulp 0 nonzero 0
+embck_mosaic max_ulp 0 nonzero 0
+znt_mosaic max_ulp 0 nonzero 0
+z0_mosaic max_ulp 0 nonzero 0
+hfx_mosaic max_ulp 0 nonzero 0
+qfx_mosaic max_ulp 0 nonzero 0
+lh_mosaic max_ulp 0 nonzero 0
+grdflx_mosaic max_ulp 0 nonzero 0
+snotime_mosaic max_ulp 0 nonzero 0
+tslb_mosaic max_ulp 0 nonzero 0
+smois_mosaic max_ulp 0 nonzero 0
+sh2o_mosaic max_ulp 0 nonzero 0
+ivgtyp max_ulp 0 nonzero 0
+isltyp max_ulp 0 nonzero 0
+mosaic_cat_index max_ulp 0 nonzero 0
+landusef2 max_ulp 0 nonzero 0
+first differences: [
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "tsk",
+    "column": 17,
+    "index": [
+      17,
+      0
+    ],
+    "wrf_word": "0x43932426",
+    "cuda_word": "0x43932ea6"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "hfx",
+    "column": 17,
+    "index": [
+      17,
+      0
+    ],
+    "wrf_word": "0x42b4c424",
+    "cuda_word": "0x42b89b52"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "qfx",
+    "column": 17,
+    "index": [
+      17,
+      0
+    ],
+    "wrf_word": "0x389aea02",
+    "cuda_word": "0x389889c8"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "lh",
+    "column": 17,
+    "index": [
+      17,
+      0
+    ],
+    "wrf_word": "0x4338bef0",
+    "cuda_word": "0x4335e996"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "grdflx",
+    "column": 17,
+    "index": [
+      17,
+      0
+    ],
+    "wrf_word": "0xc1f43db0",
+    "cuda_word": "0xc1f81cc1"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "qsfc",
+    "column": 17,
+    "index": [
+      17,
+      0
+    ],
+    "wrf_word": "0x3c37fbdc",
+    "cuda_word": "0x3c372b75"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "canwat",
+    "column": 17,
+    "index": [
+      17,
+      0
+    ],
+    "wrf_word": "0x3e910ec2",
+    "cuda_word": "0x3e911618"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "smstav",
+    "column": 24,
+    "index": [
+      24,
+      0
+    ],
+    "wrf_word": "0x7fc00000",
+    "cuda_word": "0x3f800000"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "smstot",
+    "column": 24,
+    "index": [
+      24,
+      0
+    ],
+    "wrf_word": "0x7fc00000",
+    "cuda_word": "0x44680000"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "potevp",
+    "column": 17,
+    "index": [
+      17,
+      0
+    ],
+    "wrf_word": "0x36eb98c1",
+    "cuda_word": "0x36e77597"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "noahres",
+    "column": 17,
+    "index": [
+      17,
+      0
+    ],
+    "wrf_word": "0xbf218400",
+    "cuda_word": "0xbf26dc00"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "smois",
+    "column": 17,
+    "index": [
+      17,
+      0,
+      0
+    ],
+    "wrf_word": "0x3e8fa35c",
+    "cuda_word": "0x3e8fa360"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "tslb",
+    "column": 17,
+    "index": [
+      17,
+      0,
+      0
+    ],
+    "wrf_word": "0x43908f12",
+    "cuda_word": "0x43908f17"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "sh2o",
+    "column": 17,
+    "index": [
+      17,
+      0,
+      0
+    ],
+    "wrf_word": "0x3e8fa35c",
+    "cuda_word": "0x3e8fa360"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "smcrel",
+    "column": 17,
+    "index": [
+      17,
+      0,
+      0
+    ],
+    "wrf_word": "0x3eee2117",
+    "cuda_word": "0x3eee211f"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "tsk_mosaic",
+    "column": 17,
+    "index": [
+      17,
+      0,
+      0
+    ],
+    "wrf_word": "0x43932003",
+    "cuda_word": "0x43932a61"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "qsfc_mosaic",
+    "column": 17,
+    "index": [
+      17,
+      0,
+      0
+    ],
+    "wrf_word": "0x3c38c76c",
+    "cuda_word": "0x3c37f9a6"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "canwat_mosaic",
+    "column": 17,
+    "index": [
+      17,
+      0,
+      0
+    ],
+    "wrf_word": "0x3e88a5c2",
+    "cuda_word": "0x3e88acd3"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "hfx_mosaic",
+    "column": 17,
+    "index": [
+      17,
+      0,
+      0
+    ],
+    "wrf_word": "0x42b33155",
+    "cuda_word": "0x42b6fc71"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "qfx_mosaic",
+    "column": 17,
+    "index": [
+      17,
+      0,
+      0
+    ],
+    "wrf_word": "0x389d3c32",
+    "cuda_word": "0x389ae3ae"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "lh_mosaic",
+    "column": 17,
+    "index": [
+      17,
+      0,
+      0
+    ],
+    "wrf_word": "0x433b838d",
+    "cuda_word": "0x4338b765"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "grdflx_mosaic",
+    "column": 17,
+    "index": [
+      17,
+      0,
+      0
+    ],
+    "wrf_word": "0xc1f7a490",
+    "cuda_word": "0xc1fb7698"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "tslb_mosaic",
+    "column": 17,
+    "index": [
+      17,
+      0,
+      0
+    ],
+    "wrf_word": "0x43908102",
+    "cuda_word": "0x43908106"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "smois_mosaic",
+    "column": 17,
+    "index": [
+      17,
+      0,
+      0
+    ],
+    "wrf_word": "0x3e8f5b41",
+    "cuda_word": "0x3e8f5b44"
+  },
+  {
+    "family": "ftz",
+    "fixture": "v11_s1",
+    "field": "sh2o_mosaic",
+    "column": 17,
+    "index": [
+      17,
+      0,
+      0
+    ],
+    "wrf_word": "0x3e8f5b41",
+    "cuda_word": "0x3e8f5b44"
+  }
+]
+local_size_bytes 240

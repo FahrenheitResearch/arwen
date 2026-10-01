@@ -26,10 +26,12 @@ def args(*words):
 @pytest.mark.parametrize("source", fetch_routes.route_ids())
 def test_every_route_rejects_a_partial_final_cadence(source):
     route = fetch_routes.route_for(source)
-    cadence = next((step for step in route.cadences if step > 1), None)
-    if cadence is None:
-        return  # Every integer endpoint is on this route's sole hourly cadence.
     cycle = datetime(2026, 8, 17, route.cycle_hours[0])
+    # A173: the route lists no spacings; take the first coarser than an
+    # hour that its ladder publishes and its preparation takes.
+    cadence = next((step for step in fetch_routes.window_spacings(
+        route, 0, 12, cycle=cycle) if step > 1), None)
+    assert cadence is not None
     with pytest.raises(ValueError, match="multiple"):
         fetch_routes.resolve_leads(route, cycle, cadence + 1, cadence=cadence)
 
@@ -180,7 +182,9 @@ def test_table_cli_resolves_latest_and_keeps_the_resolved_request(source, tmp_pa
     monkeypatch.setattr(fetch_routes, "write_handoff", lambda *a, **kw: None)
     monkeypatch.setattr(fetch, "_fetch_route_donors", lambda *a: {})
     monkeypatch.setattr(fetch_routes, "handoff_lines", lambda *a: ())
-    parsed = args("--source", source, "--cycle", "latest", "--hours", str(route.default_cadence),
+    # The whole-cycle rule (A136 L2: as-posted is the default, so this
+    # names --whole-cycle and keeps every assertion).
+    parsed = args("--whole-cycle", "--source", source, "--cycle", "latest", "--hours", str(route.default_cadence),
                   "--out", str(tmp_path / source))
     assert fetch.fetch_main(parsed) == 0
     assert calls[0][:3] == ("latest", source, route.default_cadence)
@@ -201,7 +205,9 @@ def test_latest_route_checks_its_donor_publication_before_starting_download(tmp_
         raise RuntimeError(f"{name.upper()} cycle {cycle:%Y-%m-%dT%H}Z is not published through f000 yet")
     monkeypatch.setattr(fetch, "require_published_cycle", published)
     monkeypatch.setattr(fetch_routes, "run_plan", lambda *a, **kw: pytest.fail("download before donor publication check"))
-    parsed = args("--source", "aigefs", "--cycle", "latest", "--hours", str(route.default_cadence),
+    # The whole-cycle rule (A136 L2: as-posted is the default, so this
+    # names --whole-cycle and keeps every assertion).
+    parsed = args("--whole-cycle", "--source", "aigefs", "--cycle", "latest", "--hours", str(route.default_cadence),
                   "--out", str(tmp_path))
     with pytest.raises(RuntimeError, match=re.escape(
             "--source aigefs takes part of its start from the GDAS analysis of its own "
@@ -228,7 +234,9 @@ def test_named_route_checks_publication_before_starting_download(tmp_path, monke
         raise RuntimeError("fixture: selected member is not published")
     monkeypatch.setattr(fetch, "require_published_cycle", refused)
     monkeypatch.setattr(fetch_routes, "run_plan", lambda *a, **kw: pytest.fail("download before publication check"))
-    parsed = args("--source", "gefs", "--cycle", "2026-08-17T00", "--hours", "6",
+    # The whole-cycle rule (A136 L2: as-posted is the default, so this
+    # names --whole-cycle and keeps every assertion).
+    parsed = args("--whole-cycle", "--source", "gefs", "--cycle", "2026-08-17T00", "--hours", "6",
                   "--member", "p02", "--forecast-start-hour", "3", "--out", str(tmp_path))
     with pytest.raises(RuntimeError, match="selected member"):
         fetch.fetch_main(parsed)
@@ -247,7 +255,9 @@ def test_named_route_checks_its_donor_publication_before_starting_download(tmp_p
     monkeypatch.setattr(fetch_routes, "run_plan", lambda *a, **kw: pytest.fail("download before donor publication check"))
     route = fetch_routes.route_for("aigfs")
     cycle = datetime(2026, 8, 17, route.cycle_hours[0])
-    parsed = args("--source", "aigfs", "--cycle", f"{cycle:%Y-%m-%dT%H}",
+    # The whole-cycle rule (A136 L2: as-posted is the default, so this
+    # names --whole-cycle and keeps every assertion).
+    parsed = args("--whole-cycle", "--source", "aigfs", "--cycle", f"{cycle:%Y-%m-%dT%H}",
                   "--hours", str(route.default_cadence), "--out", str(tmp_path))
     with pytest.raises(RuntimeError, match="donor analysis"):
         fetch.fetch_main(parsed)
@@ -276,13 +286,17 @@ def test_latest_invalid_request_never_probes_or_creates_output(extra, tmp_path, 
 
 def test_latest_era5_front_door_writes_template_for_the_resolved_start(tmp_path, monkeypatch, capsys):
     selected = datetime(2026, 8, 10, 6)
-    monkeypatch.setattr(fetch, "resolve_latest_cycle", lambda name, end: selected)
+    # The provider rides along, because the keyless ARCO copy trails the CDS (A134).
+    asked = []
+    monkeypatch.setattr(fetch, "resolve_latest_cycle",
+                        lambda name, end, **options: asked.append(options) or selected)
     calls = []
     monkeypatch.setattr(fetch, "write_era5_request", lambda **kw: calls.append(kw))
     assert fetch.fetch_main(args("--source", "era5", "--cycle", "latest", "--hours", "24",
         "--cadence", "12", "--area", "30,-100,40,-90", "--out", str(tmp_path))) == 0
     assert calls[0]["cycle"] == selected
     assert calls[0]["hours"] == 24 and calls[0]["cadence"] == 12
+    assert asked == [{"provider": "cds"}]
     assert "declared" in capsys.readouterr().out.lower()
 
 

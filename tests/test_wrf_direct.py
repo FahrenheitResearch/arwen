@@ -415,22 +415,15 @@ def test_number_moment_wrfinput_contract_writes_arbitrary_vertical_shape(
             assert not np.any(variable[:])
 
 
-@pytest.mark.parametrize("mp_physics, numbers", [
-    (8, {"QNRAIN": "nr", "QNICE": "ni"}),
-    (28, {"QNRAIN": "nr", "QNICE": "ni", "QNCLOUD": "nc"}),
-])
-def test_the_stock_export_writes_the_cold_start_seeded_number_moments(
-        tmp_path, mp_physics, numbers):
-    """A Thompson cold start's seeded numbers reach the exported wrfinput.
+def _export_a_real_prepared_cache(tmp_path, mp_physics, numbers=None,
+                                  **run_overrides):
+    """A real CPU cold start through the prepared cache and the export.
 
-    The cold start seeds rain and ice numbers (and mp=28's droplet
-    number) where the analysed mass has none, as real.exe does with
-    make_RainNumber, make_IceNumber and make_DropletNumber.  The inventory
-    rows named QNRAIN and QNICE by their Registry names qnr and qni, the
-    prepared cache holds them as nr and ni, and the export found no such
-    array and wrote both as zero beside a nonzero QRAIN and QICE.  The
-    whole route runs here on the CPU: initialization, prepared cache,
-    export, and the file read back bit for bit.
+    Initialization, prepared cache and a profile-free
+    ``export_prepared_wrf``, with no physics selection handed to the
+    exporter.  Returns ``(output, cfg, seeded)``: the export folder, the
+    configuration the cache records, and the state's own values of the
+    ``numbers`` named (WRF name to state name), read before the export.
     """
     import dataclasses
 
@@ -446,14 +439,15 @@ def test_the_stock_export_writes_the_cold_start_seeded_number_moments(
     # A specified mp=28 domain otherwise refuses without WRF's WIF
     # climatology file; the aerosol source is not what is under test.
     aerosol = {"mp28_aerosol_source": "synthetic"} if mp_physics == 28 else {}
+    run = dict(bl_pbl_physics=1, sf_sfclay_physics=91, sf_surface_physics=2)
+    run.update(run_overrides)
     result, cfg = _analyzed_hrrr_real_init(
         mp_physics, shape=(ny, nx), map_proj=1, hypsometric_opt=2,
         specified=True, nested=False, spec_bdy_width=5, spec_zone=1,
-        relax_zone=4, bl_pbl_physics=1, sf_sfclay_physics=91,
-        sf_surface_physics=2, **aerosol)
+        relax_zone=4, **run, **aerosol)
     state = result.state
     seeded = {}
-    for wrf_name, state_name in numbers.items():
+    for wrf_name, state_name in (numbers or {}).items():
         value = np.array(_host_array(getattr(state, state_name)),
                          dtype=np.float32)
         assert value.max() > 0.0, state_name
@@ -512,6 +506,28 @@ def test_the_stock_export_writes_the_cold_start_seeded_number_moments(
     export_prepared_wrf(
         cache_path, static_path, geometry_path, output,
         valid_time=valid_time, boundary_interval_seconds=3600)
+    return output, cfg, seeded
+
+
+@pytest.mark.parametrize("mp_physics, numbers", [
+    (8, {"QNRAIN": "nr", "QNICE": "ni"}),
+    (28, {"QNRAIN": "nr", "QNICE": "ni", "QNCLOUD": "nc"}),
+])
+def test_the_stock_export_writes_the_cold_start_seeded_number_moments(
+        tmp_path, mp_physics, numbers):
+    """A Thompson cold start's seeded numbers reach the exported wrfinput.
+
+    The cold start seeds rain and ice numbers (and mp=28's droplet
+    number) where the analysed mass has none, as real.exe does with
+    make_RainNumber, make_IceNumber and make_DropletNumber.  The inventory
+    rows named QNRAIN and QNICE by their Registry names qnr and qni, the
+    prepared cache holds them as nr and ni, and the export found no such
+    array and wrote both as zero beside a nonzero QRAIN and QICE.  The
+    whole route runs here on the CPU: initialization, prepared cache,
+    export, and the file read back bit for bit.
+    """
+    output, _cfg, seeded = _export_a_real_prepared_cache(
+        tmp_path, mp_physics, numbers)
 
     with netCDF4.Dataset(output / "wrfinput_d01") as dataset:
         for wrf_name, value in seeded.items():
@@ -520,6 +536,61 @@ def test_the_stock_export_writes_the_cold_start_seeded_number_moments(
             np.testing.assert_array_equal(
                 written.view(np.uint32), value.view(np.uint32),
                 err_msg=wrf_name)
+
+
+@pytest.mark.parametrize("mp_physics", [8, 10, 28])
+def test_a_profile_free_export_states_the_physics_its_cache_was_prepared_with(
+        tmp_path, mp_physics):
+    """No physics selection, and the file still says what the arrays are.
+
+    ``python -m gpuwm.wrf_direct`` without ``--physics-profile``, the
+    ERA5 door and the tree export hand the exporter no selection, and on
+    2.8.0 it stamped none: the frozen contract's MP_PHYSICS = 6,
+    RA_LW_PHYSICS = 0, RA_SW_PHYSICS = 1 and CU_PHYSICS = 0 went out
+    beside Thompson or Morrison arrays and number moments, and stock WRF
+    reads its schemes from those attributes.  An RTE+RRTMGP 4/4, cumulus
+    on cache is used so every one of the seven that can differ from the
+    frozen file does.
+    """
+    output, cfg, _seeded = _export_a_real_prepared_cache(
+        tmp_path, mp_physics, ra_physics=0, ra_lw_physics=4,
+        ra_sw_physics=4, cu_physics=1)
+    assert (cfg.mp_physics, cfg.ra_lw_physics, cfg.ra_sw_physics,
+            cfg.cu_physics) == (mp_physics, 4, 4, 1)
+    expected = {
+        "MP_PHYSICS": mp_physics, "RA_LW_PHYSICS": 4, "RA_SW_PHYSICS": 4,
+        "SF_SFCLAY_PHYSICS": 91, "SF_SURFACE_PHYSICS": 2,
+        "BL_PBL_PHYSICS": 1, "CU_PHYSICS": 1,
+    }
+    for name in ("wrfinput_d01", "wrfbdy_d01"):
+        with netCDF4.Dataset(output / name) as dataset:
+            stated = {key: int(dataset.getncattr(key)) for key in expected}
+        assert stated == expected, name
+
+
+def test_a_profile_free_export_refuses_a_cache_that_records_no_physics():
+    """Filling a missing selector from the frozen file is what was wrong."""
+
+    from gpuwm.wrf_direct import recorded_physics_selectors
+
+    recorded = {"mp_physics": 8, "ra_physics": 0, "ra_lw_physics": 4,
+                "ra_sw_physics": 4, "sf_sfclay_physics": 91,
+                "sf_surface_physics": 2, "bl_pbl_physics": 1,
+                "cu_physics": 0}
+    assert recorded_physics_selectors(recorded) == {
+        key: recorded[key] for key in (
+            "mp_physics", "ra_lw_physics", "ra_sw_physics",
+            "sf_sfclay_physics", "sf_surface_physics", "bl_pbl_physics",
+            "cu_physics")}
+    # The combined spelling states the pair it runs.
+    combined = {**recorded, "ra_physics": 4, "ra_lw_physics": -1,
+                "ra_sw_physics": -1}
+    assert recorded_physics_selectors(combined)["ra_lw_physics"] == 4
+    assert recorded_physics_selectors(combined)["ra_sw_physics"] == 4
+    without = {key: value for key, value in recorded.items()
+               if key != "cu_physics"}
+    with pytest.raises(ValueError, match=r"records no \['cu_physics'\]"):
+        recorded_physics_selectors(without, label="d02 direct-export")
 
 
 def test_global_updates_keep_stock_wrf_v4_gate_and_geometry():
@@ -975,7 +1046,7 @@ def test_hierarchy_rejects_artifact_misbinding_and_parent_cycle():
 def test_child_global_updates_emit_wrf_nest_identity():
     domain = _domain(2, 1, specified=False, nested=True)
     cfg = {"nx": 60, "ny": 45, "nz": 8,
-           "dx": 4000.0, "dy": 4000.0, "dt": 20.0}
+           "dx": 4000.0, "dy": 4000.0, "dt": 20.0, **_WSM6_STOCK_PHYSICS}
     geometry = {
         "center_lat": 36.0, "center_lon": -97.0,
         "ref_lat": 39.7, "ref_lon": -83.9,
@@ -1096,6 +1167,7 @@ def test_file_validation_checks_real_netcdf_domain_global_attributes(tmp_path):
     child_cfg = {
         "nx": 3, "ny": 2, "nz": 49,
         "dx": 1000.0 / 3.0, "dy": 1000.0 / 3.0, "dt": 5.0 / 3.0,
+        **_WSM6_STOCK_PHYSICS,
     }
     child = _domain(2, 1, specified=False, nested=True)
     child_updates = _hierarchy_global_updates(
@@ -1185,13 +1257,24 @@ def test_interrupted_backup_is_recovered_before_next_overwrite(tmp_path):
     assert not backup.exists()
 
 
+#: The selectors a WSM6 + YSU + MM5 + Noah + Dudhia cache records, the
+#: frozen contract's own physics.
+_WSM6_STOCK_PHYSICS = {
+    "mp_physics": 6, "ra_physics": 0, "ra_lw_physics": 0,
+    "ra_sw_physics": 1, "sf_sfclay_physics": 91, "sf_surface_physics": 2,
+    "bl_pbl_physics": 1, "cu_physics": 0,
+}
+
+
 @pytest.mark.parametrize("max_dom", range(1, 22))
 def test_hierarchy_export_publishes_every_input_and_root_boundary_atomically(
         tmp_path, monkeypatch, max_dom):
     def run(nx, ny, dx, dt, *, specified, nested):
+        # The physics a real cache records (asdict(RunConfig) carries
+        # every selector), which each wrfinput states.
         return SimpleNamespace(
             nx=nx, ny=ny, nz=8, dx=dx, dy=dx, dt=dt,
-            specified=specified, nested=nested, mp_physics=6)
+            specified=specified, nested=nested, **_WSM6_STOCK_PHYSICS)
 
     d01 = _domain(1, 0, specified=True, nested=False)
     d01.run = run(100, 80, 12000.0, 60.0,
@@ -1246,7 +1329,7 @@ def test_hierarchy_export_publishes_every_input_and_root_boundary_atomically(
             "nx": domain.run.nx, "ny": domain.run.ny,
             "nz": domain.run.nz, "dx": domain.run.dx,
             "dy": domain.run.dy, "dt": domain.run.dt,
-            "mp_physics": domain.run.mp_physics,
+            **{key: getattr(domain.run, key) for key in _WSM6_STOCK_PHYSICS},
         }
         geometry = {
             "center_lat": 36.0, "center_lon": -97.0,
@@ -1432,3 +1515,115 @@ def test_the_root_export_stages_where_a_door_measures_it(tmp_path, monkeypatch):
     assert staged in hierarchy_bundle_write_paths(output_root)
     assert len(str(staged)) == max(
         len(str(path)) for path in hierarchy_bundle_write_paths(output_root))
+
+
+def test_the_tree_export_states_each_domains_recorded_physics(
+        tmp_path, monkeypatch):
+    """Every wrfinput of a tree states its OWN domain's recorded physics.
+
+    The tree export handed its nests no selection, so each child wrfinput
+    stated the frozen contract's MP_PHYSICS = 6, RA_LW_PHYSICS = 0,
+    RA_SW_PHYSICS = 1 and CU_PHYSICS = 0 beside Thompson arrays, and its
+    root went through the profile-free single-domain export, which did
+    the same.  Here the root records cumulus on and the nest records it
+    off, so a nest stating its parent's physics would show it too.
+    """
+
+    thompson = {**_WSM6_STOCK_PHYSICS, "mp_physics": 8, "ra_physics": 0,
+                "ra_lw_physics": 4, "ra_sw_physics": 4}
+
+    def run(nx, ny, dx, dt, *, specified, nested, cu_physics):
+        return SimpleNamespace(
+            nx=nx, ny=ny, nz=8, dx=dx, dy=dx, dt=dt, specified=specified,
+            nested=nested, **{**thompson, "cu_physics": cu_physics})
+
+    d01 = _domain(1, 0, specified=True, nested=False)
+    d01.run = run(100, 80, 12000.0, 60.0, specified=True, nested=False,
+                  cu_physics=1)
+    d02 = _domain(2, 1, specified=False, nested=True)
+    d02.run = run(60, 60, 4000.0, 20.0, specified=False, nested=True,
+                  cu_physics=0)
+    exp = SimpleNamespace(
+        domains=(d01, d02), projection=SimpleNamespace(map_proj="lambert"),
+        start_time=datetime(1999, 5, 3, 12),
+        vertical=SimpleNamespace(
+            eta_levels=(1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.2, 0.0),
+            p_top=5000.0, hybrid_opt=2))
+
+    root_kwargs = {}
+
+    def fake_root_export(_prepared, _static, _geometry, output, **kwargs):
+        # The root takes the profile-free export, whose own stamping
+        # test_a_profile_free_export_states_the_physics_its_cache_was_
+        # prepared_with measures on a real cache.
+        root_kwargs.update(kwargs)
+        output.mkdir()
+        for name in ("wrfinput_d01", "wrfbdy_d01"):
+            (output / name).write_bytes(name.encode())
+        return {"files": {name: {"bytes": 1, "sha256": name}
+                          for name in ("wrfinput_d01", "wrfbdy_d01")},
+                "boundary_record_count": 1,
+                "boundary_times": ["1999-05-03_12:00:00"],
+                "next_boundary_times": ["1999-05-03_18:00:00"],
+                "forcing_hours": [0, 6]}
+
+    class Cache:
+        def __init__(self, grid_id):
+            self.header_path = Path(f"header-d{grid_id:02d}.json")
+            self.header = {"content_sha256": f"content-d{grid_id:02d}"}
+
+    def fake_context(artifact, domain, _exp, _expected_grid, _valid_time):
+        cfg = {"nx": domain.run.nx, "ny": domain.run.ny, "nz": domain.run.nz,
+               "dx": domain.run.dx, "dy": domain.run.dy, "dt": domain.run.dt,
+               **{key: getattr(domain.run, key) for key in thompson}}
+        geometry = {"center_lat": 36.0, "center_lon": -97.0,
+                    "ref_lat": 39.7, "ref_lon": -83.9, "truelat1": 30.0,
+                    "truelat2": 60.0, "stand_lon": -83.9}
+        return Cache(domain.grid_id), cfg, geometry, 5000.0, "static"
+
+    class LoadedStatic:
+        def __enter__(self):
+            return {}
+
+        def __exit__(self, *_args):
+            return False
+
+    written = {}
+    validated = {}
+
+    def fake_write(path, _contract, _dimensions, updates, _fields, _stamp,
+                   engine=None):
+        path.write_bytes(b"child-input")
+        written[path.name] = updates
+
+    def fake_validate(path, *_args, expected_global_attributes=None, **_kw):
+        validated[path.name] = expected_global_attributes
+        return {"bytes": path.stat().st_size, "sha256": path.name}
+
+    monkeypatch.setattr(wrf_direct, "export_prepared_wrf", fake_root_export)
+    monkeypatch.setattr(wrf_direct, "grids_from_projection_config",
+                        lambda _exp: (object(), object()))
+    monkeypatch.setattr(wrf_direct, "_prepared_domain_context", fake_context)
+    monkeypatch.setattr(wrf_direct.np, "load", lambda *_a, **_k: LoadedStatic())
+    monkeypatch.setattr(wrf_direct, "_wrfinput_fields", lambda *_a, **_k: {})
+    monkeypatch.setattr(wrf_direct, "_write_wrfinput", fake_write)
+    monkeypatch.setattr(wrf_direct, "_validate_file", fake_validate)
+    monkeypatch.setattr(
+        wrf_direct, "_sha256", lambda path: f"sha-{Path(path).name}")
+
+    export_prepared_wrf_hierarchy(
+        exp, (_artifact(1), _artifact(2)), tmp_path / "wrf-ready",
+        boundary_interval_seconds=21600)
+
+    # The root is exported with no selection, so its file states the
+    # cache's own recorded physics (the real-cache test above).
+    assert "physics_profile" not in root_kwargs
+    assert "experiment_config_suite" not in root_kwargs
+    expected = {"MP_PHYSICS": 8, "RA_LW_PHYSICS": 4, "RA_SW_PHYSICS": 4,
+                "SF_SFCLAY_PHYSICS": 91, "SF_SURFACE_PHYSICS": 2,
+                "BL_PBL_PHYSICS": 1, "CU_PHYSICS": 0}
+    stated = {key: written["wrfinput_d02"].get(key) for key in expected}
+    assert stated == expected
+    # ...and the file check holds the written file to the same values.
+    assert {key: validated["wrfinput_d02"].get(key)
+            for key in expected} == expected

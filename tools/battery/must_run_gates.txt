@@ -139,3 +139,9 @@ tests/test_companion_setups.py  needs the compiled Rust static-fields bridge; bu
 # exFAT derives a file id from its directory entry, which a rename moves,
 # and has no hard links.
 tests/test_exfat_volume.py  needs Windows and GPUWM_EXFAT_TEST_DIR naming a folder on an exFAT volume (FAT32 is accepted too); NTFS and ext4 keep a file id across a rename and have hard links, so no other filesystem reproduces what it checks.
+
+# One of the 2026-09-30 speed lanes' device suites skips the whole module
+# when no card is present; it runs on tools/battery/gpu_shard_files.txt
+# SHARD 1m.  (The megakernel lane's test_physics_fused_block, the other,
+# left the tree with that lane's revert, A147.)
+tests/test_rrtmg_legacy_device_glue.py  needs a CUDA device: it holds the device-resident legacy RRTMG adapter glue equal to the host packing it replaced, launch by launch; nothing in a fresh clone supplies the card.

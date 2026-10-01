@@ -61,6 +61,18 @@ from gpuwm.core.state import DTYPE
 #: registers with cutypen at 91.  Revisiting it is a Phase 4 question.
 NT_TPB = 32
 
+# The cap bounds memory while fitting a medium domain in one column wave.
+NT_TILE_COLUMNS_PER_SM = 512
+
+#: Chunks wider than this run the eleven stages from cuascn through
+#: momentum_rescale as one fused kernel (gpuwm.core.ntiedtke_fused),
+#: narrower ones stage by stage.  MEASURED,
+#: every output word unchanged: on an RTX 4090 a 50,000-column chunk took
+#: 5.842 ms fused against 6.133 staged and a 16,384-column nest gained
+#: nothing; on an RTX PRO 4500 a 350 x 200 call (two 35,000-column chunks)
+#: took 11.01 ms fused against 11.79 staged.
+NT_FUSED_MIN_COLUMNS = 32768
+
 #: Stage ids, mirroring the ``NT_STAGE_*`` defines in ntiedtke.cu.  The
 #: kernel writes its observed geometry into ``geom_report[stage_id]``.
 NT_STAGE_PREP = 0
@@ -223,6 +235,8 @@ class NtStages:
         #: caught.  -1 is "did not run".
         self._order_report = cp.full(NT_STAGE_COUNT, -1, dtype=cp.int32)
         self._ticket = cp.zeros(1, dtype=cp.int32)
+        self._llo3_mask = cp.zeros(1, dtype=cp.int32)
+        self._functions = {}
 
     @property
     def geom_report(self):
@@ -240,14 +254,17 @@ class NtStages:
         """
         import numpy as np
         g = self.geometry
-        return (np.int32(g.tpb), np.int32(g.nblocks), self._geom_report,
+        return (self._llo3_mask, np.int32(g.tpb), np.int32(g.nblocks), self._geom_report,
                 self._order_report, self._ticket)
 
     def launch(self, kernel_name: str, args: tuple):
         """Launch one stage under the descriptor.  No geometry parameter."""
         from gpuwm.core.kernels import load_module
 
-        fn = load_module("ntiedtke").get_function(kernel_name)
+        fn = self._functions.get(kernel_name)
+        if fn is None:
+            fn = load_module("ntiedtke").get_function(kernel_name)
+            self._functions[kernel_name] = fn
         fn(self.geometry.grid, self.geometry.block, tuple(args) + self._tail())
         return self
 
@@ -578,33 +595,22 @@ def nt_resolve(name: str, universe=NT_SLOT_NAMES) -> str:
 
 
 def nt_tile_columns(ncol: int, multiprocessor_count: int) -> int:
-    """Columns held in flight: enough to fill the card, and no more.
+    """The chunk width: the fewest chunks under the cap, split evenly.
 
-    THE SAME COLUMN COUNT GRELL-FREITAS USES, and sourced from GF's own
-    constants rather than restated. Section 26 decided the cap on a
-    measurement -- uncapped the workspace is a 2.1 GiB allocation on the
-    profile domain against a card whose peak is already 10.3 of 15.92;
-    capped it is 351 MiB -- and it decided it as GF's tile, 17,920 columns
-    on this box.
-
-    THE FIRST VERSION OF THIS GOT HALF THAT, and the error is worth
-    keeping. Written as ``SMs * BLOCKS_PER_SM * NT_TPB`` by analogy with
-    GF's formula, it gives 8,960, because NT's block is 32 threads and
-    GF's is 64. The same ARITHMETIC is not the same TILE. Every VRAM
-    figure recorded since section 26 would have halved, and the formula
-    would still have matched the allocator exactly -- so the workspace
-    self-check would have passed and only the recorded decision would
-    have been contradicted.
-
-    A domain smaller than one tile never allocates a whole tile, which is
-    what makes this safe to call from the memory gate on any grid. Takes
-    the SM count rather than querying the device, so preflight's
-    ABSENT-CARD path gets the same answer a live query would.
+    512 columns per SM keeps the cap proportional to the card.  A domain
+    wider than the cap is split into the fewest chunks that fit, all of one
+    width, because the walk pads a short final chunk to the full width and
+    computes the pad: at 50,000 columns on an 82-SM card a 41,984-column cap
+    ran 83,968 columns of work where two chunks of 25,000 run 50,000.
+    Preflight calls this same function, so the allocation is priced before
+    launch.  The per-column layout does not depend on the width.
     """
-    from gpuwm.core.gf import GF_BLOCK, GF_TILE_BLOCKS_PER_SM
-
-    tile = int(multiprocessor_count) * GF_TILE_BLOCKS_PER_SM * GF_BLOCK
-    return int(min(int(ncol), tile))
+    ncol = int(ncol)
+    cap = int(multiprocessor_count) * NT_TILE_COLUMNS_PER_SM
+    if ncol <= cap:
+        return ncol
+    chunks = -(-ncol // cap)
+    return -(-ncol // chunks)
 
 
 def nt_aliased_names() -> frozenset[str]:
@@ -666,6 +672,8 @@ class NtWorkspace:
         rows = self.nz + self.HALO_BELOW + self.HALO_ABOVE
         self._level = {}
         self._surface = {}
+        self._bindings = {}
+        self._stage_args = {}
         # ALIASES ARE NOT ALLOCATED.  ``pten`` and ``ztp1`` are one array
         # under two of the reference's dummy names, so allocating both
         # would be dead memory AND a second storage that bind() never
@@ -721,6 +729,8 @@ class NtWorkspace:
         an earlier one already fired.
         """
         freed = self.bytes_allocated() if self._level or self._surface else 0
+        self._bindings.clear()
+        self._stage_args.clear()
         self._level = {}
         self._surface = {}
         self.scr = None
@@ -752,19 +762,28 @@ class NtWorkspace:
         they have no level axis and cannot be shifted, which is why passing
         the base to every bind is safe rather than merely convenient.
         """
+        key = (name, base)
+        if key in self._bindings:
+            return self._bindings[key]
         target = self.resolve(name)
         if target in self._surface:
-            return self._surface[target]
+            array = self._surface[target]
+            self._bindings[key] = array
+            return array
         if target not in self._level:
             raise KeyError(
                 f"{name!r} resolves to {target!r}, which is not an array in "
                 f"the workspace. Add it to NT_LEVEL_* / NT_SURFACE_*, or "
                 f"declare what it aliases in NT_SEEDS.")
         if base == 1:
-            return self._level[target]
-        if base == 0:
-            return self._level[target][self.HALO_BELOW:]
-        raise ValueError(f"level base must be 0 or 1, got {base!r}")
+            array = self._level[target]
+        elif base == 0:
+            array = self._level[target][self.HALO_BELOW:]
+        else:
+            raise ValueError(f"level base must be 0 or 1, got {base!r}")
+        # Workspace storage is fixed until release, so the view stays valid.
+        self._bindings[key] = array
+        return array
 
     def levels(self, name: str):
         """The nz real levels of an array, 0-based, for comparison."""
@@ -843,7 +862,7 @@ NT_STAGE_SIGNATURE = {
         "pmfu", "pmfuq", "pmful", "pmfd", "pmfds", "pmfdq", "plude",
         "pdmfup", "pdmfdp", "pmfdde_rate", "pmfude_rate", "pmflxr",
         "pmflxs", "prsfc", "pssfc", "ncol", "klev", "ztmst", "cp", "rd",
-        "rv", "xlv", "xlf", "grav", "expect_tpb", "expect_nblocks",
+        "rv", "xlv", "xlf", "grav", "llo3_mask", "expect_tpb", "expect_nblocks",
         "geom_report", "order_report", "ticket"
     ),
     "ntiedtke_closure": (
@@ -854,20 +873,20 @@ NT_STAGE_SIGNATURE = {
         "pmfdq", "pdmfdp", "pmfdde_rate", "zheat", "zcape", "zcape1",
         "zcape2", "ztauc", "ztaubl", "ztau_o", "upbl", "zmfub1",
         "tiedtke_closure", "ncol",
-        "nz", "dt", "cp", "rd", "rv", "xlv", "xlf", "grav", "expect_tpb",
+        "nz", "dt", "cp", "rd", "rv", "xlv", "xlf", "grav", "llo3_mask", "expect_tpb",
         "expect_nblocks", "geom_report", "order_report", "ticket"
     ),
     "ntiedtke_cloud_depth": (
         "ldcum", "kcbot", "kctop", "paph", "pdmfup", "ktype", "ictop0",
         "prfl", "pmfd", "pmfds", "pmfdq", "pdmfdp", "pdpmel", "ncol",
-        "klev", "expect_tpb", "expect_nblocks", "geom_report",
+        "klev", "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report",
         "order_report", "ticket"
     ),
     "ntiedtke_convert": (
         "tf", "qvf", "uf", "vf", "omg", "ghtl", "ghti", "prsl", "qvftenz",
         "thftenz", "ztp1", "zqp1", "zqsat", "pgeo", "pgeoh", "pum1", "pvm1",
         "pverv", "ptte", "pqte", "ncol", "nz", "cp", "rd", "rv", "xlv",
-        "xlf", "grav", "expect_tpb", "expect_nblocks", "geom_report",
+        "xlf", "grav", "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report",
         "order_report", "ticket"
     ),
     "ntiedtke_cuascn": (
@@ -876,14 +895,14 @@ NT_STAGE_SIGNATURE = {
         "pmfu", "pmfus", "pmfuq", "pmful", "plude", "pdmfup", "plglac",
         "pmfude_rate", "klab", "ldcum", "ktype", "kcbot", "kctop", "kctop0",
         "pmfub", "wup", "ncol", "klev", "ztmst", "llo3", "cp", "rd", "rv",
-        "xlv", "xlf", "grav", "expect_tpb", "expect_nblocks", "geom_report",
+        "xlv", "xlf", "grav", "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report",
         "order_report", "ticket"
     ),
     "ntiedtke_cuddrafn": (
         "lddraf", "ptenh", "pqenh", "pgeo", "pgeoh", "paph", "pmfu", "ptd",
         "pqd", "pmfd", "pmfds", "pmfdq", "pdmfdp", "pmfdde_rate", "prfl",
         "ncol", "klev", "cp", "rd", "rv", "xlv", "xlf", "grav",
-        "expect_tpb", "expect_nblocks", "geom_report", "order_report",
+        "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report", "order_report",
         "ticket"
     ),
     "ntiedtke_cudlfsn": (
@@ -891,21 +910,21 @@ NT_STAGE_SIGNATURE = {
         "pgeo", "pgeoh", "paph", "ptu", "pqu", "pmfub", "ptd", "pqd",
         "pmfd", "pmfds", "pmfdq", "pdmfdp", "prfl", "kdtop", "lddraf",
         "ncol", "klev", "cp", "rd", "rv", "xlv", "xlf", "grav",
-        "expect_tpb", "expect_nblocks", "geom_report", "order_report",
+        "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report", "order_report",
         "ticket"
     ),
     "ntiedtke_cudtdqn": (
         "ldcum", "paph", "pten", "plglac", "plude", "pmfus", "pmfds",
         "pmfuq", "pmfdq", "pmful", "pdmfup", "pdmfdp", "pdpmel", "ptent",
         "ptenq", "pcte", "ncol", "klev", "ktopm2", "cp", "rd", "rv", "xlv",
-        "xlf", "grav", "expect_tpb", "expect_nblocks", "geom_report",
+        "xlf", "grav", "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report",
         "order_report", "ticket"
     ),
     "ntiedtke_cududvn": (
         "ldcum", "ktype", "kcbot", "paph", "puen", "pven", "pmfu", "pmfd",
         "puu", "pud", "pvu", "pvd", "ptenu", "ptenv", "zmfuu", "zmfuv",
         "zmfdu", "zmfdv", "ncol", "klev", "ktopm2", "cp", "rd", "rv", "xlv",
-        "xlf", "grav", "expect_tpb", "expect_nblocks", "geom_report",
+        "xlf", "grav", "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report",
         "order_report", "ticket"
     ),
     "ntiedtke_cuflxn": (
@@ -914,14 +933,14 @@ NT_STAGE_SIGNATURE = {
         "pmfus", "pmfds", "pmfuq", "pmfdq", "pmful", "plude", "plglac",
         "pdmfup", "pdmfdp", "pmfdde_rate", "pqsen", "pdpmel", "pmflxr",
         "pmflxs", "prain", "ncol", "klev", "ztmst", "cp", "rd", "rv", "xlv",
-        "xlf", "grav", "expect_tpb", "expect_nblocks", "geom_report",
+        "xlf", "grav", "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report",
         "order_report", "ticket"
     ),
     "ntiedtke_cuinin": (
         "pten", "pqen", "pqsen", "puen", "pven", "pverv", "pgeo", "paph",
         "pgeoh", "ptenh", "pqenh", "pqsenh", "ptu", "pqu", "ptd", "pqd",
         "puu", "pvu", "pud", "pvd", "plu", "klab", "klwmin", "ncol", "nz",
-        "cp", "rd", "rv", "xlv", "xlf", "grav", "expect_tpb",
+        "cp", "rd", "rv", "xlv", "xlf", "grav", "llo3_mask", "expect_tpb",
         "expect_nblocks", "geom_report", "order_report", "ticket"
     ),
     "ntiedtke_cutypen": (
@@ -929,13 +948,13 @@ NT_STAGE_SIGNATURE = {
         "pten", "hfx", "qfx", "cutu", "cuqu", "culu", "culab", "scr",
         "scr_i", "ldcum_o", "ktype_o", "cubot_o", "cutop_o", "kdpl_o",
         "wbase_o", "ncol", "nz", "cp", "rd", "rv", "xlv", "xlf", "grav",
-        "expect_tpb", "expect_nblocks", "geom_report", "order_report",
+        "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report", "order_report",
         "ticket"
     ),
     "ntiedtke_ke_dissipation": (
         "ldcum", "kctop", "paph", "puen", "pven", "ztenu", "ztenv", "pvom",
         "pvol", "ptte", "zuv2", "ncol", "klev", "cp", "rd", "rv", "xlv",
-        "xlf", "grav", "expect_tpb", "expect_nblocks", "geom_report",
+        "xlf", "grav", "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report",
         "order_report", "ticket"
     ),
     "ntiedtke_mfub": (
@@ -943,39 +962,39 @@ NT_STAGE_SIGNATURE = {
         "ztenh", "zqenh", "ktype", "kcbot", "lndj", "ldcum", "zdhpbl",
         "upbl", "zmfub", "tiedtke_closure",
         "ncol", "nz", "dt", "cp", "rd", "rv", "xlv", "xlf",
-        "grav", "expect_tpb", "expect_nblocks", "geom_report",
+        "grav", "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report",
         "order_report", "ticket"
     ),
     "ntiedtke_midlevel": (
         "pten", "pqen", "pqsen", "pverv", "pgeo", "pgeoh", "ldcum", "ktype",
         "kcbot", "klab", "plrain", "pmfu", "pmfub", "ptu", "pqu", "plu",
         "pmfus", "pmfuq", "pmful", "pdmfup", "dmfen", "dmfde", "ncol", "nz",
-        "cp", "rd", "rv", "xlv", "xlf", "grav", "expect_tpb",
+        "cp", "rd", "rv", "xlv", "xlf", "grav", "llo3_mask", "expect_tpb",
         "expect_nblocks", "geom_report", "order_report", "ticket"
     ),
     "ntiedtke_momentum_profile": (
         "ldcum", "ktype", "kcbot", "kctop", "kdpl", "idtop", "puen", "pven",
         "pmfu", "pmfd", "pmfude_rate", "pmfdde_rate", "puu", "pvu", "pud",
-        "pvd", "ncol", "klev", "expect_tpb", "expect_nblocks",
+        "pvd", "ncol", "klev", "llo3_mask", "expect_tpb", "expect_nblocks",
         "geom_report", "order_report", "ticket"
     ),
     "ntiedtke_momentum_rescale": (
         "ldcum", "kctop", "paph", "pmfu", "pmfd", "zmfuus", "zmfdus",
         "ncol", "klev", "ztmst", "cp", "rd", "rv", "xlv", "xlf", "grav",
-        "expect_tpb", "expect_nblocks", "geom_report", "order_report",
+        "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report", "order_report",
         "ticket"
     ),
     "ntiedtke_post_conversion": (
         "pcte", "ztp1", "ptte", "ztt", "pqte", "zqq", "zqp1", "qcf", "qif",
         "uf", "vf", "pvom", "pvol", "prsfc", "pssfc", "pqc", "pqi", "pt",
-        "pqv", "pu", "pv", "zprecc", "ncol", "klev", "delt", "expect_tpb",
+        "pqv", "pu", "pv", "zprecc", "ncol", "klev", "delt", "llo3_mask", "expect_tpb",
         "expect_nblocks", "geom_report", "order_report", "ticket"
     ),
     "ntiedtke_post_run": (
         "exner", "qv", "qc", "qi", "t", "u", "v", "tf", "qvf", "qcf", "qif",
         "uf", "vf", "rn", "rthcuten", "rqvcuten", "rqccuten", "rqicuten",
         "rucuten", "rvcuten", "raincv", "pratec", "ncol", "klev", "stepcu",
-        "dt", "expect_tpb", "expect_nblocks", "geom_report", "order_report",
+        "dt", "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report", "order_report",
         "ticket"
     ),
     "ntiedtke_prep": (
@@ -984,7 +1003,7 @@ NT_STAGE_SIGNATURE = {
         "dx", "prsl", "ghtl", "omg", "tf", "qvf", "qcf", "qif", "uf", "vf",
         "qvftenz", "thftenz", "prsi", "ghti", "slimsk", "scale_fac",
         "scale_fac2", "delt_out", "ncol", "nz", "dt", "stepcu", "itimestep",
-        "grav", "expect_tpb", "expect_nblocks", "geom_report",
+        "grav", "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report",
         "order_report", "ticket"
     ),
     "ntiedtke_updraft_scale": (
@@ -992,16 +1011,16 @@ NT_STAGE_SIGNATURE = {
         "ktype", "idtop", "pmfu", "pmfus", "pmfuq", "pmful", "pdmfup",
         "plude", "pmfude_rate", "pmfd", "pmfds", "pmfdq", "pdmfdp",
         "pmfdde_rate", "ncol", "klev", "ztmst", "cp", "rd", "rv", "xlv",
-        "xlf", "grav", "expect_tpb", "expect_nblocks", "geom_report",
+        "xlf", "grav", "llo3_mask", "expect_tpb", "expect_nblocks", "geom_report",
         "order_report", "ticket"
     ),
 }
 
 
-#: The descriptor arguments NtStages.launch appends. Asserted to be the
-#: last five parameters of every kernel by test_ntiedtke_stage_signature,
+#: The guard and descriptor arguments NtStages.launch appends. Asserted to be the
+#: last six parameters of every kernel by test_ntiedtke_stage_signature,
 #: so args_for can drop them by name without counting.
-_GEOMETRY_TAIL = ("expect_tpb", "expect_nblocks", "geom_report",
+_GEOMETRY_TAIL = ("llo3_mask", "expect_tpb", "expect_nblocks", "geom_report",
                   "order_report", "ticket")
 
 
@@ -1060,6 +1079,9 @@ class NtPipeline:
         self.stages = NtStages(self.geometry)
         self._base = dict(NT_LEVEL_BASE if base is None else base)
         self._delt = float(dt) * int(stepcu)
+        self._llo3_reduce = None
+        self._llo3_or = None
+        self._llo3_pending = None
         self.scalars = {
             "ncol": np.int32(ncol),
             "nz": np.int32(nz),
@@ -1105,7 +1127,10 @@ class NtPipeline:
 
     def run_chunk(self) -> None:
         """The whole scheme, once, over this pipeline's columns."""
-        _nt_walk(self)
+        if self.w.ncol > NT_FUSED_MIN_COLUMNS:
+            _nt_fused_walk(self)
+        else:
+            _nt_walk(self)
 
     # -- one stage -------------------------------------------------------
     def args_for(self, stage: str) -> tuple:
@@ -1117,11 +1142,21 @@ class NtPipeline:
         memory as a float.
         """
         base = self.base(stage)
+        key = (stage, base)
+        cached = self.w._stage_args.get(key)
+        if cached is not None:
+            out, scalar_slots = cached
+            # Scalars can change between chunks or under an adaptive clock.
+            for index, name in scalar_slots:
+                out[index] = self.scalars[name]
+            return tuple(out)
         out = []
+        scalar_slots = []
         for name in NT_STAGE_SIGNATURE[stage]:
             if name in _GEOMETRY_TAIL:
                 continue              # NtStages.launch appends these
             if name in self.scalars:
+                scalar_slots.append((len(out), name))
                 out.append(self.scalars[name])
             elif name == "scr":
                 out.append(self.w.scr)
@@ -1130,6 +1165,8 @@ class NtPipeline:
             else:
                 out.append(self.w.bind(
                     NT_STAGE_ALIASES.get((stage, name), name), base))
+        # The workspace owns cached references so release drops every view.
+        self.w._stage_args[key] = (out, tuple(scalar_slots))
         return tuple(out)
 
     def run_stage(self, stage: str) -> None:
@@ -1163,7 +1200,27 @@ class NtPipeline:
         self.w.bind("ztenu", 1)[...] = self.w.bind("pvom", 1)
         self.w.bind("ztenv", 1)[...] = self.w.bind("pvol", 1)
 
-    def reduce_llo3(self) -> int:
+    def begin_llo3_batch(self) -> None:
+        """Defer validation until the private chunk outputs are complete."""
+        self._llo3_pending = []
+
+    def end_llo3_batch(self) -> None:
+        """Check all masks before any result reaches the physics driver."""
+        import cupy as cp
+        import numpy as np
+
+        pending = self._llo3_pending
+        self._llo3_pending = None
+        try:
+            masks = cp.asnumpy(cp.stack(pending))
+            for mask in masks:
+                first, ever = bool(mask & 1), bool(mask & 2)
+                self._check_llo3(first, ever)
+                self.scalars["llo3"] = np.int32(first)
+        finally:
+            self.stages._llo3_mask.fill(0)
+
+    def reduce_llo3(self) -> int | None:
         """The chunk-wide reduction, with the hoist's soundness CHECKED.
 
         In the reference ``llo3`` is a scalar that latches inside cuascn's
@@ -1181,12 +1238,37 @@ class NtPipeline:
         have reached, or the hoist is unsound for this chunk and the
         pipeline refuses rather than passing a wrong scalar.
         """
-        import cupy as cp
-
         klab = self.w.bind("klab", 1)
         nz = self.w.nz
+        if self._llo3_pending is not None:
+            import cupy as cp
+            import numpy as np
+
+            if self._llo3_reduce is None:
+                # Broadcasting repeats the top row without changing either OR.
+                self._llo3_reduce = cp.ReductionKernel(
+                    "int32 top, int32 label", "int32 mask",
+                    "(top > 0 ? 1 : 0) | (label > 0 ? 2 : 0)",
+                    "a | b", "mask = a", "0", "ntiedtke_llo3_mask")
+                self._llo3_or = cp.ReductionKernel(
+                    "int32 column", "int32 mask", "column", "a | b",
+                    "mask = a", "0", "ntiedtke_llo3_or")
+            columns = self._llo3_reduce(klab[nz], klab[1:nz + 1], axis=0)
+            mask = self._llo3_or(columns)
+            self.stages._llo3_mask[...] = mask
+            self._llo3_pending.append(mask)
+            self.scalars["llo3"] = np.int32(-1)
+            return None
+        # Both boolean reads already wait for their device reductions.
         first = bool((klab[nz] > 0).any())         # klab(:, klev)
         ever = bool((klab[1:nz + 1] > 0).any())    # any level, any column
+        self._check_llo3(first, ever)
+        import numpy as np
+
+        self.scalars["llo3"] = np.int32(1 if first else 0)
+        return int(first)
+
+    def _check_llo3(self, first: bool, ever: bool) -> None:
         if first != ever:
             raise ValueError(
                 "llo3's hoist is unsound for this chunk: klab is zero at "
@@ -1196,11 +1278,6 @@ class NtPipeline:
                 "12's precondition holds on the fixture (48 of 48 triggering "
                 "columns) and "
                 "does not hold here.")
-        cp.cuda.Stream.null.synchronize()
-        import numpy as np
-
-        self.scalars["llo3"] = np.int32(1 if first else 0)
-        return int(first)
 
 
 #: cumastrn's call order.  DECLARED, not derived, for the reason
@@ -1252,6 +1329,31 @@ def _nt_walk(pipeline) -> None:
         if stage == "ntiedtke_cududvn":
             pipeline.snapshot_momentum()
         pipeline.run_stage(stage)
+
+
+def _nt_fused_walk(pipeline) -> None:
+    """``_nt_walk`` with cuascn through momentum_rescale as one launch."""
+    from gpuwm.core.ntiedtke_fused import run_fused, source_plan
+
+    _, _, group = source_plan()
+    # Custom stage bases still need the standalone binding path.
+    if any(pipeline.base(stage) != 1 for stage in group):
+        _nt_walk(pipeline)
+        return
+    pipeline.zero_run_head()
+    pipeline.run_stage("ntiedtke_prep")
+    pipeline.run_stage("ntiedtke_convert")
+    pipeline.snapshot_forcing()
+    for stage in NT_CALL_ORDER[2:]:
+        if stage == group[0]:
+            pipeline.reduce_llo3()
+            run_fused(pipeline)
+        elif stage in group:
+            continue
+        else:
+            if stage == "ntiedtke_cududvn":
+                pipeline.snapshot_momentum()
+            pipeline.run_stage(stage)
 
 
 # ===========================================================================
@@ -1432,10 +1534,11 @@ class NewTiedtke:
         surface = {"xland": fields["xland"], "hfx": fields["hfx"],
                    "qfx": fields["qfx"]}
 
-        out_lev = {n: cp.zeros((nz, ncol), dtype=DTYPE) for n in
+        # Every output column is copied from post_run before it is returned.
+        out_lev = {n: cp.empty((nz, ncol), dtype=DTYPE) for n in
                    ("rthcuten", "rqvcuten", "rqccuten", "rqicuten",
                     "rucuten", "rvcuten")}
-        out_sfc = {n: cp.zeros(ncol, dtype=DTYPE)
+        out_sfc = {n: cp.empty(ncol, dtype=DTYPE)
                    for n in ("raincv", "pratec")}
 
         flat_lev = {k: flat(v) for k, v in driver_lev.items()}
@@ -1443,18 +1546,9 @@ class NewTiedtke:
                       for k, v in driver_iface.items()}
         flat_sfc = {k: cp.ascontiguousarray(v).reshape(ncol)
                     for k, v in surface.items()}
-        dx_col = cp.full(ncol, DTYPE(cfg.dx), dtype=DTYPE)
 
-        # ONE PIPELINE FOR THE WHOLE RUN, with the short last chunk padded.
-        #
-        # The domain is walked in chunks of at most nt_tile_columns, and the
-        # last chunk of a domain is ragged whenever the tile does not divide
-        # the column count -- which it never does here (38,870 and 71,289
-        # against 17,920).  Sizing the pipeline to each chunk therefore
-        # rebuilt a 433.2 MiB workspace twice per domain per step.  Sizing
-        # it to the TILE instead and padding the tail builds it once for the
-        # run, holds exactly the same 433.2 MiB resident, and is measured
-        # bitwise identical.
+        # The workspace is cached at the cap rather than rebuilt for the tail.
+        # Preflight prices the same cap through nt_tile_columns.
         #
         # THE PAD IS A COPY OF THE CHUNK'S FIRST COLUMN, not zeros, and the
         # difference is the soundness argument rather than a preference.
@@ -1469,7 +1563,12 @@ class NewTiedtke:
         # only one of them is an argument.
         width = nt_tile_columns(ncol, _nt_multiprocessor_count())
         p = self._for(width, nz, cfg)
+        # The spacing is constant across chunks, including the padded tail.
+        p.w.bind("dx", 1).fill(DTYPE(cfg.dx))
+        p.begin_llo3_batch()
         for lo in range(0, ncol, width):
+            # A previous invalid chunk must not suppress the next producers.
+            p.stages._llo3_mask.fill(0)
             hi = min(lo + width, ncol)
             n = hi - lo
             for name, a in flat_lev.items():
@@ -1487,15 +1586,12 @@ class NewTiedtke:
                 buf[:n] = a[lo:hi]
                 if n < width:
                     buf[n:] = a[lo]
-            buf = p.w.bind("dx", 1)
-            buf[:n] = dx_col[lo:hi]
-            if n < width:
-                buf[n:] = dx_col[lo]
             p.run_chunk()
             for name, dest in out_lev.items():
                 dest[:, lo:hi] = p.w.bind(name, 0)[:nz, :n]
             for name, dest in out_sfc.items():
                 dest[lo:hi] = p.w.bind(name, 1)[:n]
+        p.end_llo3_batch()
 
         def grid(a):
             return cp.ascontiguousarray(a.reshape(nz, ny, nx))

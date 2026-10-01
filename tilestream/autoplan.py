@@ -1183,20 +1183,11 @@ def ring_arena_fraction(nx: int, ny: int, tile_nx: int, tile_ny: int,
     return 1.0 - (1.0 - fx) * (1.0 - fy)
 
 
-def redundancy(nx: int, ny: int, tile_nx: int, tile_ny: int,
-               halo: int) -> float:
-    """Work done divided by work needed, for this tiling.
-
-    ``plan_tiles`` gives EVERY tile the same ``(tile + 2*halo)`` compute
-    window and lets only the trailing interiors shrink, so a ragged tiling
-    pays for a full window and gets a part-tile of interior out of it.  That
-    is why this counts windows rather than interiors, and why raggedness needs
-    no separate penalty term here.
-    """
-    ntx = -(-int(nx) // int(tile_nx))
-    nty = -(-int(ny) // int(tile_ny))
-    return (ntx * (tile_nx + 2 * halo) * nty * (tile_ny + 2 * halo)
-            / float(nx * ny))
+#: Work done divided by work needed, for a tiling: the tile geometry's own
+#: arithmetic (:func:`tilestream.spec.redundancy`), the one function and not
+#: a copy, so the planner and a pinned tiling that never imports the planner
+#: state the same number (A177).
+redundancy = _spec.redundancy
 
 
 def suggest_friendly_domains(nx: int, want_tile: int, *, span: int = 64,

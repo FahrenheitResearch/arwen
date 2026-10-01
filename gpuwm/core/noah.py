@@ -12,7 +12,9 @@ melt, cover fraction, snow albedo aging), canopy water, the full surface
 energy balance producing TSK/HFX/QFX/LH/GRDFLX, runoff, and the WRF
 driver diagnostics (SMSTAV/SMSTOT/SMCREL/ACSNOM/ACSNOW/SNOPCX/POTEVP/
 NOAHRES).  NOT ported, matching the plan's authority-file scope: UA_PHYS,
-FASDAS, WRF-Hydro, the urban canopy models (the plain ``VEGTYP==ISURBAN``
+FASDAS, WRF-Hydro, the urban canopy models themselves (they run after the
+kernel, :mod:`gpuwm.core.urban_driver`; the kernel carries their hand-over
+through ``launch_noah(urban=...)``, and the plain ``VEGTYP==ISURBAN``
 parameter overrides inside SFLX/HRT ARE ported), ``SFCDIF_off`` (the
 exchange coefficient CH comes from the surface-layer scheme), and
 ``SFLX_GLACIAL`` (module_sf_noahlsm_glacial_only.F): land-ice columns
@@ -461,12 +463,37 @@ def _device_tables(params: NoahParams, dzs):
 #: ``(id(params), dzs) -> (params, device tables)``.  See :func:`_device_tables`.
 _DEVICE_TABLES: dict = {}
 
+def _urban_args(urban, ny: int, nx: int) -> list:
+    """The ten trailing ``noah_column_urban`` arguments for the urban
+    handover.  The default path (``urban is None``) launches
+    ``noah_column``, which takes none of them."""
+    import cupy as cp
+
+    option = int(urban["option"])
+    if option not in (1, 2, 3):
+        raise ValueError(f"urban handover for sf_urban_physics={option}")
+    mask = urban["category_mask"]
+    if mask.dtype != cp.int32 or mask.ndim != 1:
+        raise ValueError("urban category_mask must be a 1-D int32 array")
+    checked = []
+    for name in ("frc_urb2d", "ts_urb2d", "tsk_rural_bep", "rural_q1",
+                 "rural_q2k", "rural_zlvl"):
+        a = urban.get(name)
+        if a is None and name == "tsk_rural_bep" and option == 1:
+            a = urban["ts_urb2d"]          # never read at urban_opt == 1
+        if a is None or a.shape != (ny, nx) or a.dtype != cp.float32:
+            raise ValueError(f"urban {name}: expected ({ny},{nx}) float32")
+        checked.append(a)
+    return [np.int32(option), mask, np.int32(mask.size),
+            np.int32(urban["natural"]), *checked]
+
 
 def launch_noah(dev: dict, params: NoahParams, dt: float, dzs,
                 isurban: int = 13, isice: int = 15,
                 xice_threshold: float = 0.5, frpcpn: bool = False,
                 usemonalb: bool = False, rdlai2d: bool = False,
-                opt_thcnd: int = 1, itimestep: int = 2) -> None:
+                opt_thcnd: int = 1, itimestep: int = 2,
+                urban: dict | None = None) -> None:
     """Run the ``noah_column`` kernel on device arrays (in place).
 
     ``dev`` maps field names to CuPy arrays: every name in ``_F2D`` as
@@ -475,6 +502,14 @@ def launch_noah(dev: dict, params: NoahParams, dt: float, dzs,
     Water (``xland >= 1.5``), sea-ice (``xice >= xice_threshold``) and
     land-ice (``ivgtyp == isice``) columns are skipped exactly as the
     WRF driver skips them.
+
+    ``urban`` is the urban model's handover
+    (:meth:`gpuwm.core.urban_driver.UrbanCoupler.noah_kernel_args`), or
+    None -- the default path, which launches ``noah_column`` (the kernel
+    without the hand-over compiled in) and passes no urban argument.  With it, urban columns run SFLX as WRF's NATURAL
+    category from the rural skin temperature (module_sf_noahdrv.F:964-990),
+    BEP/BEM's ``tsk_rural_bep`` is updated after SFLX (:1243-1247), and
+    ``q1``/``q2k``/``zlvl`` are written for the blend.
     """
     import cupy as cp
 
@@ -508,6 +543,15 @@ def launch_noah(dev: dict, params: NoahParams, dt: float, dzs,
              np.int32(1 if frpcpn else 0), np.int32(1 if usemonalb else 0),
              np.int32(1 if rdlai2d else 0), np.int32(opt_thcnd),
              np.int32(ny), np.int32(nx)]
-    kern = get_kernel("noah", "noah_column")
+    # The default path launches noah_column, the URBAN = false
+    # instantiation, which compiles from exactly the statements it had
+    # before the urban hand-over: compiling the hand-over into the one
+    # kernel behind a runtime flag changed NVRTC's FMA contraction and moved
+    # default forecasts (kernels/noah.cu).
+    if urban is None:
+        kern = get_kernel("noah", "noah_column")
+    else:
+        args += _urban_args(urban, ny, nx)
+        kern = get_kernel("noah", "noah_column_urban")
     blocks = (ny * nx + _TPB - 1) // _TPB
     kern((blocks,), (_TPB,), tuple(args))

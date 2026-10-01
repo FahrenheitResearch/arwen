@@ -1213,6 +1213,15 @@ def test_frozen_collector_sinks_scale_with_the_droplet_number():
 # BITWISE.  If a future edit to the header changes the shared helper even in
 # the last bit, this fails, and the WP-07 oracle agreement above has to be
 # re-measured rather than assumed.
+#
+# One respelling, with its cause: A146 spelled the header's
+# ``(1.0f / 6.0f) * rain_mass / am_r`` as ``__fdiv_rn(..., am_r)``, because
+# NVRTC compiles a float division by a compile-time constant (``am_r`` is
+# THOMPSON_AA_AM_R) as a multiply by the rounded reciprocal on Blackwell
+# (compute_100/120), one ULP off for part of the inputs.  The copy below takes
+# the same spelling, so on sm_89, where both spellings are the same div.rn,
+# it is still the pre-promotion body, and on Blackwell it is that body with
+# the IEEE quotient the header now uses.
 _GOLDEN_PRE_CONSOLIDATION_HELPERS = r"""
 // module_mp_thompson.F:4032-4046, via thompson.cu:2574-2598.
 __device__ __forceinline__ void thompson_aa_bound_rain_number_golden(
@@ -1235,7 +1244,7 @@ __device__ __forceinline__ void thompson_aa_bound_rain_number_golden(
         return;
     }
     lambda = 3.672f / mvd;
-    rain_number = (1.0f / 6.0f) * rain_mass / am_r
+    rain_number = __fdiv_rn((1.0f / 6.0f) * rain_mass, am_r)
         * lambda * lambda * lambda;
     *rain_number_per_kg = rain_number / density;
 }
@@ -1838,8 +1847,8 @@ def test_the_cold_kernel_gate_is_the_literal_complement_of_the_warm_mask():
             / "thompson_aerosol_cold.cu").read_text(encoding="utf-8")
     warm = (root / "gpuwm" / "core" / "kernels"
             / "thompson_aerosol_warm.cu").read_text(encoding="utf-8")
-    adapter = (root / "gpuwm" / "core"
-               / "microphysics.py").read_text(encoding="utf-8")
+    classic = (root / "gpuwm" / "core" / "kernels"
+               / "thompson.cu").read_text(encoding="utf-8")
     # The cold network's gate: above the seam it only applies WRF's ice
     # mass/number balance to the entry ice (:3033-3055) and returns.
     gate = "    if (temperature[idx] >= 273.15f) {\n"
@@ -1853,8 +1862,9 @@ def test_the_cold_kernel_gate_is_the_literal_complement_of_the_warm_mask():
     assert "const bool entry_warm = graupel_melt_marker[idx] != 0.0f;" in warm
     assert "if (!entry_warm) return;" in warm
     # mp=8's adapter, which the mp=28 adapter copies, builds that mask with
-    # the same >= and the same constant, on the ENTRY temperature.
-    assert "cp.greater_equal(\n        temperature, DTYPE(273.15)" in adapter
+    # the same >= and the same constant, on the ENTRY temperature, in its
+    # fused entry launch (thompson_adapter_prepare).
+    assert "warm_entry[idx] = temp >= 273.15f ? 1.0f : 0.0f;" in classic
 
 
 def test_warm_section_number_sinks_are_evaluated_exactly_once_per_level():

@@ -190,7 +190,8 @@ def launch_aa_cold_network(
     if not np.isfinite(dt) or dt <= 0.0:
         raise ValueError(f"dt must be finite and positive, got {dt}")
 
-    grid, block = launch_grid(size)
+    # Use the measured block width; each thread still evaluates one unchanged cell.
+    grid, block = launch_grid(size, threads=32)
     get_kernel(COLD_MODULE, COLD_NETWORK_KERNEL)(
         grid, block,
         (qi, ni, qs, qg, qr, nr, qc, temperature, pressure, qv,

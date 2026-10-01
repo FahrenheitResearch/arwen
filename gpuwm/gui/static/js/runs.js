@@ -3,7 +3,7 @@
 // Forecasts waiting for the card are listed above, in the order they will start, with Move up, Move down and
 // Remove.
 
-import { h, chip, bar, fill, spacing, paceLine, prepLine, button } from "./core.js";
+import { h, chip, bar, fill, spacing, paceLine, prepLine, waitLine, button } from "./core.js";
 import * as api from "./api.js";
 import { register, go, openRoute, runRoute, notice, clearNotice } from "./router.js";
 
@@ -19,7 +19,9 @@ function row(r, w) {
   const thumb = h("div", { class: "thumb" }, c.thumb ? h("img", { src: api.filePath(r.id, c.thumb), alt: "", loading: "lazy" }) : null);
   const running = st.state === "running";
   const known = st.percent !== null && st.percent !== undefined;
-  const pace = running ? paceLine(st, w.mapviewer) : "";
+  // A forecast waiting at a seam says what it waits on in place of its pace.
+  const waiting = running ? waitLine(st, w.wait).join(" · ") : "";
+  const pace = waiting || (running ? paceLine(st, w.mapviewer) : "");
   // A forecast still preparing says its stage and step here, as its map page does, rather than a 0% bar.
   const preparing = running && st.stage && !["forecast", "finalize"].includes(st.stage)
     ? [w.stages[st.stage] || st.stage, ...prepLine(st, w.preparation)].join(" · ") : "";

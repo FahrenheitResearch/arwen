@@ -13,12 +13,19 @@ after the preflight had reported the case sound.
 
 The decision prices the LARGEST trajectory once and every trajectory of
 every leg runs under it: the members are the same forecast, and the loop
-releases each one before the next is wired.  The analysis is not a term
-here: it runs after the leg's trajectories are released, beside the
-observations this decision already holds, and the batched solve sizes its
-own chunks against the card it finds then
-(:func:`gpuwm.da.letkf.chunk_points_for_budget`), so its admission stays
-the solver's.
+releases each one before the next is wired.
+
+The analysis runs after the leg's trajectories are released, beside the
+leg's observations, so it is weighed against the trajectory rather than
+added to it.  It is priced by the solver's own sizing
+(:func:`gpuwm.da.letkf.analysis_device_price`, which calls the
+:func:`gpuwm.da.letkf.chunk_points_for_budget` the solve chooses its chunk
+with) on each route the solve can take, in the order it takes them: the
+resident route at its configured chunk, the resident route at the
+smallest chunk it shrinks to, and the host-staged fallback it retries on
+when the resident route runs out of memory.  The first route whose
+envelope fits the card is the one admitted and recorded; a card that
+holds none of them is refused.
 """
 
 from __future__ import annotations
@@ -32,9 +39,18 @@ from dataclasses import dataclass
 #: start reads, uploaded once per leg and held through it.
 OBSERVATION_BYTES_PER_POINT = 5
 
+#: The analysis routes, in the order the solve takes them.  ``resident``
+#: holds every whole-domain array on the card and solves at the
+#: configured chunk; ``reduced-chunk`` is the same route when the solve
+#: finds less free memory than that chunk needs and shrinks it (the same
+#: analysis to rounding, in more batches); ``host-staged`` is the fallback
+#: that keeps the whole-domain arrays in host memory and moves one bounded
+#: chunk at a time.
+ANALYSIS_ROUTES = ("resident", "reduced-chunk", "host-staged")
+
 
 class CycleMemoryRefused(MemoryError):
-    """The cycle's largest trajectory does not fit on this card.
+    """The cycle's largest trajectory or its analysis does not fit.
 
     Raised before the first upload.  ``admission`` carries every term by
     name, so a caller quoting the refusal states the same numbers.
@@ -47,7 +63,7 @@ class CycleMemoryRefused(MemoryError):
 
 @dataclass(frozen=True)
 class CycleAdmission:
-    """One trajectory's priced device peak, and the card it was judged on."""
+    """The priced device peak of one trajectory and one leg analysis."""
 
     #: The forecast's persistent arrays: state, physics, boundary tables
     #: and per-domain scratch, over every domain the trajectory carries.
@@ -57,17 +73,29 @@ class CycleAdmission:
     forecast_step_bytes: int
     observation_bytes: int
     #: The first leg's member perturbation (:func:`gpuwm.da.perturb.
-    #: device_working_bytes`), held before the first step, so it competes
-    #: with the step working set rather than adding to it.
+    #: device_working_bytes`, cuFFT's plan work areas included), held
+    #: before the first step, so it competes with the step working set
+    #: rather than adding to it.
     perturbation_bytes: int
     #: The envelope the other forecast doors admit against
     #: (:func:`gpuwm.core.preflight.machine_peak_envelope_bytes`): the sum
     #: above with allocator headroom, plus the CUDA context and kernel
-    #: local memory.
+    #: local memory.  With an analysis, the envelope of its first route;
+    #: after :func:`admit_cycle`, of the route admitted.
     required_bytes: int
     domains: int
     forcing_intervals: int
     basis: str
+    #: ``((route, analysis_bytes, required_bytes), ...)`` for every route
+    #: the analysis can take, in :data:`ANALYSIS_ROUTES` order; empty when
+    #: the analysis solves on the host or no leg is observed.
+    analysis_routes: tuple = ()
+    #: The route priced (or admitted), and what it holds beside the
+    #: observations.
+    analysis_route: str | None = None
+    analysis_bytes: int = 0
+    #: The solver's own figures behind the routes, for the receipt.
+    analysis_detail: dict | None = None
     free_bytes: int | None = None
     budget_bytes: int | None = None
 
@@ -77,13 +105,20 @@ class CycleAdmission:
 
     def receipt(self) -> dict:
         return {
-            "scope": ("the largest trajectory, reused for every member "
-                      "and every leg"),
+            "scope": ("the largest trajectory and the leg analysis, "
+                      "reused for every member and every leg"),
             "required_bytes": int(self.required_bytes),
             "forecast_resident_bytes": int(self.forecast_resident_bytes),
             "forecast_step_bytes": int(self.forecast_step_bytes),
             "observation_bytes": int(self.observation_bytes),
             "perturbation_bytes": int(self.perturbation_bytes),
+            "analysis_route": self.analysis_route,
+            "analysis_bytes": int(self.analysis_bytes),
+            "analysis_routes": [
+                {"route": route, "analysis_bytes": int(nbytes),
+                 "required_bytes": int(required)}
+                for route, nbytes, required in self.analysis_routes],
+            "analysis_solver": self.analysis_detail,
             "domains": int(self.domains),
             "forcing_intervals": int(self.forcing_intervals),
             "free_bytes": self.free_bytes,
@@ -97,15 +132,47 @@ def _gib(value: int) -> str:
     return f"{int(value) / 2 ** 30:.2f} GiB ({int(value):,} bytes)"
 
 
+def worst_analysis(prices):
+    """One analysis price that covers every leg's, or None.
+
+    Each observed leg reads its own observation file, so each leg's
+    analysis is priced on its own; the cycle is admitted against the
+    field-by-field worst of them (the largest arrays, scratch and row,
+    the smallest chunk and budget), which no leg's route exceeds.
+    """
+    prices = [price for price in prices if price is not None]
+    if not prices:
+        return None
+    worst = prices[0]
+    for price in prices[1:]:
+        worst = dataclasses.replace(
+            worst,
+            setup_bytes=max(worst.setup_bytes, price.setup_bytes),
+            finish_bytes=max(worst.finish_bytes, price.finish_bytes),
+            solve_bytes_per_point=max(worst.solve_bytes_per_point,
+                                      price.solve_bytes_per_point),
+            stencil_slots=max(worst.stencil_slots, price.stencil_slots),
+            chunk_points=min(worst.chunk_points, price.chunk_points),
+            scratch_bytes=max(worst.scratch_bytes, price.scratch_bytes),
+            staged_row_bytes=max(worst.staged_row_bytes,
+                                 price.staged_row_bytes),
+            budget_bytes=min(worst.budget_bytes, price.budget_bytes),
+            explicit_chunk=worst.explicit_chunk and price.explicit_chunk)
+    return worst
+
+
 def price_cycle(exp_leg, *, forcing_intervals: int, observation_points: int,
-                perturbation_bytes: int, profile=None) -> CycleAdmission:
-    """The device peak of the cycle's largest trajectory.
+                perturbation_bytes: int, profile=None,
+                analysis=None) -> CycleAdmission:
+    """The device peak of the cycle's largest trajectory and its analysis.
 
     ``exp_leg`` is the experiment that trajectory runs: the root alone,
     or the root with its child when the cycle nests.  Every domain keeps
     its own scratch and dycore workspace on this route (the cycle's model
     carries no shared arena), so the shared-arena saving a multi-domain
-    forecast estimate takes is put back.
+    forecast estimate takes is put back.  ``analysis`` is the leg
+    analysis's :class:`gpuwm.da.letkf.AnalysisDevicePrice` (see
+    :func:`worst_analysis`), or None when no analysis runs on the card.
     """
     from gpuwm.core import preflight
 
@@ -129,19 +196,43 @@ def price_cycle(exp_leg, *, forcing_intervals: int, observation_points: int,
                             for domain in estimate.domains
                             if int(domain.grid_id) == root_id)
                         + estimate.k_tables_bytes)
-    subtotal = observations + max(resident + step,
-                                  root_resident + perturbation)
-    required = preflight.machine_peak_envelope_bytes(
-        alloc_estimate_bytes=math.ceil(estimate.headroom * subtotal),
-        non_pool_bytes=estimate.envelope_intercept_bytes,
-        domains=len(estimate.domains), family=estimate.envelope_family,
-        legacy_radiation=estimate.uses_legacy_radiation)
+    trajectory = max(resident + step, root_resident + perturbation)
+
+    def envelope(peak: int) -> int:
+        return int(preflight.machine_peak_envelope_bytes(
+            alloc_estimate_bytes=math.ceil(
+                estimate.headroom * (observations + peak)),
+            non_pool_bytes=estimate.envelope_intercept_bytes,
+            domains=len(estimate.domains), family=estimate.envelope_family,
+            legacy_radiation=estimate.uses_legacy_radiation))
+
+    routes = []
+    detail = None
+    if analysis is not None:
+        tiers = (analysis.resident_bytes, analysis.reduced_bytes,
+                 analysis.staged_bytes)
+        routes = [(route, int(nbytes), envelope(max(trajectory, nbytes)))
+                  for route, nbytes in zip(ANALYSIS_ROUTES, tiers)
+                  if nbytes is not None]
+        detail = {
+            "setup_bytes": int(analysis.setup_bytes),
+            "finish_bytes": int(analysis.finish_bytes),
+            "scratch_bytes": int(analysis.scratch_bytes),
+            "chunk_points": int(analysis.chunk_points),
+            "solve_bytes_per_point": int(analysis.solve_bytes_per_point),
+            "stencil_slots": int(analysis.stencil_slots),
+            "staged_row_bytes": int(analysis.staged_row_bytes),
+            "memory_budget_bytes": int(analysis.budget_bytes),
+        }
+    first = routes[0] if routes else (None, 0, envelope(trajectory))
     return CycleAdmission(
         forecast_resident_bytes=resident, forecast_step_bytes=step,
         observation_bytes=observations, perturbation_bytes=perturbation,
-        required_bytes=int(required), domains=len(estimate.domains),
+        required_bytes=int(first[2]), domains=len(estimate.domains),
         forcing_intervals=int(estimate.retained_forcing_intervals),
-        basis=estimate.envelope_basis)
+        basis=estimate.envelope_basis, analysis_routes=tuple(routes),
+        analysis_route=first[0], analysis_bytes=int(first[1]),
+        analysis_detail=detail)
 
 
 def admit_cycle(price: CycleAdmission, *, free_bytes: int) -> CycleAdmission:
@@ -149,16 +240,30 @@ def admit_cycle(price: CycleAdmission, *, free_bytes: int) -> CycleAdmission:
 
     The budget is the free memory less the external margin, the same
     budget :func:`gpuwm.core.streaming.decide` gives a resident forecast.
-    The refusal is raised before a byte is uploaded: without it the cycle
-    ran out of card memory inside the first restore, physics or member
-    perturbation of a domain it could never have held.
+    The admitted analysis route is the first of ``price.analysis_routes``
+    whose envelope fits.  The refusal is raised before a byte is
+    uploaded: without it the cycle ran out of card memory inside the
+    first restore, physics or member perturbation of a domain it could
+    never have held, or ran a whole leg of forecasts and then ran out at
+    an analysis none of whose routes the card could hold.
     """
     from gpuwm.core.preflight import EXTERNAL_MARGIN_BYTES
 
     budget = max(0, int(free_bytes) - int(EXTERNAL_MARGIN_BYTES))
     decided = dataclasses.replace(price, free_bytes=int(free_bytes),
                                   budget_bytes=budget)
-    if decided.fits:
+    for route, nbytes, required in price.analysis_routes:
+        if required <= budget:
+            return dataclasses.replace(decided, analysis_route=route,
+                                       analysis_bytes=int(nbytes),
+                                       required_bytes=int(required))
+    if price.analysis_routes:
+        # Refused: quote the smallest envelope any route needs.
+        route, nbytes, required = price.analysis_routes[-1]
+        decided = dataclasses.replace(decided, analysis_route=route,
+                                      analysis_bytes=int(nbytes),
+                                      required_bytes=int(required))
+    elif decided.fits:
         return decided
     parts = [f"the forecast's persistent arrays "
              f"{_gib(decided.forecast_resident_bytes)} over "
@@ -174,13 +279,42 @@ def admit_cycle(price: CycleAdmission, *, free_bytes: int) -> CycleAdmission:
                      "held before the first step and before a newborn "
                      "child, so it is weighed against the step working "
                      "set rather than added to it")
+    if decided.analysis_route is not None:
+        parts.append(f"the leg analysis on its smallest route "
+                     f"({decided.analysis_route}) "
+                     f"{_gib(decided.analysis_bytes)}, run after the "
+                     "trajectories are released, so it is weighed against "
+                     "the trajectory rather than added to it")
     raise CycleMemoryRefused(
         f"this DA cycle needs {_gib(decided.required_bytes)} on the card for "
-        f"its largest trajectory ({'; '.join(parts)}; with allocator "
-        f"headroom, the CUDA context and kernel local memory), and the card "
-        f"has {_gib(decided.free_bytes)} free, {_gib(budget)} after the "
-        f"{_gib(EXTERNAL_MARGIN_BYTES)} external margin.  It is refused here, "
-        "before the first upload, because the first trajectory would run "
-        "out of card memory partway through its restore, physics or "
-        "perturbation.  Free the card of other work, or cycle a smaller "
-        "domain or nest", admission=decided)
+        f"its largest trajectory and its analysis ({'; '.join(parts)}; with "
+        f"allocator headroom, the CUDA context and kernel local memory), and "
+        f"the card has {_gib(decided.free_bytes)} free, {_gib(budget)} after "
+        f"the {_gib(EXTERNAL_MARGIN_BYTES)} external margin.  It is refused "
+        "here, before the first upload, because the first trajectory would "
+        "run out of card memory partway through its restore, physics or "
+        "perturbation, or the leg's analysis would, after the leg's whole "
+        "ensemble had run.  Free the card of other work, or cycle a smaller "
+        "domain, nest or ensemble", admission=decided)
+
+
+def unsolvable_analysis_message(analysis) -> str | None:
+    """Why no card can run this analysis, or None when some card can.
+
+    When not one gridpoint fits the configured analysis budget, the
+    resident route refuses, and the host-staged route, which caps its
+    device scratch at the same budget, refuses too: the leg would reach
+    its analysis after its whole ensemble ran and stop there.
+    """
+    if analysis is None or analysis.resident_bytes is not None \
+            or analysis.staged_bytes is not None:
+        return None
+    return (f"the leg analysis cannot run under its memory budget of "
+            f"{_gib(analysis.budget_bytes)}: one packed gridpoint of the "
+            f"host-staged route needs {_gib(analysis.staged_row_bytes)} "
+            f"({analysis.stencil_slots} stencil slots) and one gridpoint of "
+            f"the resident route {_gib(analysis.solve_bytes_per_point)}.  It "
+            "is refused before the first upload because the leg would "
+            "otherwise run its whole ensemble and stop at the analysis.  "
+            "Raise --memory-budget-mib, shrink the localisation radii, or "
+            "cycle fewer members")

@@ -1678,3 +1678,82 @@ def test_default_cuda_residency_and_custom_callback_contract(world, grid, monkey
              for member, state in world.member_states.items()}
     owner.assimilate_radar_grid(paths, world.obs_path, grid, _config(),
                                analysis_runner=None if bounded else solver)
+
+
+def test_the_analysis_price_counts_what_the_resident_solve_receives(
+        world, grid, monkeypatch):
+    """The admission's analysis price and the solve's inputs agree.
+
+    ``analysis_device_price`` is what the DA cycle admits the analysis
+    with before its first upload.  Here the real ``assimilate_radar_grid``
+    runs the resident route with the upload stood in by numpy, and the
+    solver records the prior and batches it is handed: their bytes are
+    the input share of the price, its stencil slots are the ones the
+    solve's own stencils count, and its chunk is the solve's own sizing.
+    """
+    import math
+    import sys
+
+    from gpuwm.da import radar_assimilation as owner
+    from gpuwm.da.letkf import (chunk_points_for_budget,
+                                solve_bytes_per_point, stencil_slots)
+    from gpuwm.da.obs_radar import letkf_grid_geometry, read_document
+
+    class Namespace:
+        asarray = staticmethod(np.asarray)
+        asnumpy = staticmethod(np.asarray)
+
+    monkeypatch.setitem(sys.modules, "cupy", Namespace())
+    monkeypatch.setattr(owner, "resolve_solve_device",
+                        lambda mode: ("cuda", "selected"))
+    seen = {}
+
+    def solver(prior, batches, geometry, config, diagnostics, **options):
+        seen.update(prior=prior, batches=batches, config=config)
+        return {name: np.zeros_like(v) for name, v in prior.items()}
+
+    cfg = _config(solve_device="cuda", memory_budget_mib=1.0)
+    paths = {member: member_background_checkpoint(state["member_dir"])
+             for member, state in world.member_states.items()}
+    owner.assimilate_radar_grid(paths, world.obs_path, grid, cfg,
+                                analysis_runner=solver)
+    price = owner.analysis_device_price(
+        cfg, members=MEMBERS, grid=grid,
+        document=read_document(world.obs_path, expected_grid=grid))
+
+    prior_bytes = sum(v.nbytes for v in seen["prior"].values())
+    batch_bytes = sum(b.values.nbytes + b.errors.nbytes + b.simulated.nbytes
+                      + b.mask.nbytes for b in seen["batches"])
+    assert len(seen["batches"]) == 2
+    npts = NZ * NY * NX
+    fields = len(cfg.analysis_fields)
+    observed = sum(b.mask.size for b in seen["batches"])
+    derived = (observed * ((2 + MEMBERS) * 8 + 1) + observed * 8
+               + fields * npts * 8 * (2 * MEMBERS + 1)
+               + 8 * npts + 2 * 8 * NY * NX)
+    assert price.setup_bytes == prior_bytes + batch_bytes + derived
+    geometry = letkf_grid_geometry(grid)
+    slots = 2 * stencil_slots(cfg.localization, geometry, NX, NY)
+    assert price.stencil_slots == slots
+    budget = int(seen["config"].memory_budget_mib * (1 << 20))
+    assert price.budget_bytes == budget
+    assert price.chunk_points == chunk_points_for_budget(
+        slots, MEMBERS, 8, budget, npts)
+    per_point = solve_bytes_per_point(slots, MEMBERS, 8)
+    assert price.solve_bytes_per_point == per_point
+    # The budget binds on this grid, so the solve fills it.
+    assert 0 < price.chunk_points < npts
+    assert price.scratch_bytes == budget
+    assert price.resident_bytes == price.setup_bytes + max(
+        price.finish_bytes, math.ceil(budget / 0.8))
+    assert price.reduced_bytes == price.setup_bytes + max(
+        price.finish_bytes, math.ceil(per_point / 0.8))
+
+
+def test_a_host_solve_puts_no_analysis_on_the_card(world, grid):
+    from gpuwm.da.obs_radar import read_document
+    from gpuwm.da.radar_assimilation import analysis_device_price
+
+    assert analysis_device_price(
+        _config(solve_device="host"), members=MEMBERS, grid=grid,
+        document=read_document(world.obs_path, expected_grid=grid)) is None

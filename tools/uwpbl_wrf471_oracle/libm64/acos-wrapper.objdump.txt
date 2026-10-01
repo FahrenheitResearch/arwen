@@ -1,0 +1,30 @@
+
+/lib/x86_64-linux-gnu/libm.so.6:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000000017430 <acos@@GLIBC_2.2.5>:
+   17430:	f3 0f 1e fa          	endbr64
+   17434:	66 0f 28 c8          	movapd %xmm0,%xmm1
+   17438:	66 0f 54 0d c0 b4 09 	andpd  0x9b4c0(%rip),%xmm1        # b2900 <f32subf64x@@GLIBC_2.28+0x19be0>
+   1743f:	00 
+   17440:	66 0f 2e 0d c8 47 0a 	ucomisd 0xa47c8(%rip),%xmm1        # bbc10 <f32subf64x@@GLIBC_2.28+0x22ef0>
+   17447:	00 
+   17448:	77 06                	ja     17450 <acos@@GLIBC_2.2.5+0x20>
+   1744a:	e9 71 b0 ff ff       	jmp    124c0 <*ABS*+0x5d810@plt>
+   1744f:	90                   	nop
+   17450:	48 8b 05 69 db 10 00 	mov    0x10db69(%rip),%rax        # 124fc0 <f32subf64x@@GLIBC_2.28+0x8c2a0>
+   17457:	83 38 ff             	cmpl   $0xffffffff,(%rax)
+   1745a:	74 ee                	je     1744a <acos@@GLIBC_2.2.5+0x1a>
+   1745c:	55                   	push   %rbp
+   1745d:	bf 01 00 00 00       	mov    $0x1,%edi
+   17462:	48 89 e5             	mov    %rsp,%rbp
+   17465:	48 83 ec 10          	sub    $0x10,%rsp
+   17469:	f2 0f 11 45 f8       	movsd  %xmm0,-0x8(%rbp)
+   1746e:	e8 0d ba ff ff       	call   12e80 <feraiseexcept@@GLIBC_2.2.5>
+   17473:	f2 0f 10 4d f8       	movsd  -0x8(%rbp),%xmm1
+   17478:	bf 01 00 00 00       	mov    $0x1,%edi
+   1747d:	c9                   	leave
+   1747e:	66 0f 28 c1          	movapd %xmm1,%xmm0
+   17482:	e9 49 d9 ff ff       	jmp    14dd0 <tgammaf64x@@GLIBC_2.27+0x1f0>

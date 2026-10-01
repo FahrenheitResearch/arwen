@@ -449,6 +449,15 @@ class LandcoverSource:
     #: nodata tag of its own.  Such pixels reach no model cell, so the
     #: cells they cover take the 30-arc-second baseline.
     nodata: float | None = None
+    #: The WPS ``geog_data_res`` tokens (GEOGRID.TBL ``rel_path`` keys)
+    #: that select this same collection in WPS.  A namelist.wps naming
+    #: one is honoured through ``[static.highres]`` with this row as its
+    #: ``landcover_source``: ``gpuwm import-namelist`` writes that block,
+    #: and the static builder admits the token where the block selects
+    #: this row (:class:`gpuwm.static.build.GeogSelection`).  Empty for a
+    #: collection WPS has no token for.  Not part of :meth:`echo`: it says
+    #: how a WPS namelist names the collection, not what is built.
+    wps_geog_tokens: tuple[str, ...] = ()
 
     def __post_init__(self):
         if self.fetch not in LANDCOVER_FETCH_KINDS:
@@ -526,7 +535,12 @@ LANDCOVER_SOURCES: dict[str, LandcoverSource] = {
         legend="MODIS IGBP 1-20, 17 sea, 21 inland water, 51-61 Local "
                "Climate Zones LCZ 1-10 and LCZ E, 0 unclassified (the "
                "open sea past the collection's coastal zone)",
-        nodata=0.0),
+        nodata=0.0,
+        # WPS v4.6.0 geogrid/GEOGRID.TBL.ARW_LCZ: a priority-2 LANDUSEF
+        # entry "rel_path = cglc_modis_lcz:CGLC_MODIS_LCZ_global/" (the
+        # same Zenodo 7670653 collection, tiled for geogrid) over the
+        # priority-1 MODIS entry, which fills where it has no data.
+        wps_geog_tokens=("cglc_modis_lcz",)),
     "annual-nlcd": LandcoverSource(
         coverage=SourceCoverage(
             source_id="annual-nlcd", role="landcover",
@@ -562,6 +576,19 @@ def landcover_source(source_id: str) -> LandcoverSource:
         raise CoverageError(
             f"unknown land-cover source {source_id!r}; known sources are "
             f"{sorted(LANDCOVER_SOURCES)}") from None
+
+
+def landcover_source_ids_by_wps_token() -> dict[str, str]:
+    """``{WPS geog_data_res token: landcover_source id}`` for every row of
+    :data:`LANDCOVER_SOURCES` that WPS names (``wps_geog_tokens``).
+
+    Tokens are matched lower-case, the way
+    :meth:`gpuwm.static.build.GeogSelection.from_tokens` normalizes them.
+    A collection reaches this map by its table row, never by a code path.
+    """
+    return {token.lower(): source_id
+            for source_id, row in LANDCOVER_SOURCES.items()
+            for token in row.wps_geog_tokens}
 
 
 def terrain_source_coverage(source_id: str) -> SourceCoverage:
@@ -1901,7 +1928,8 @@ __all__ = [
     "CGLC_MODIS_LCZ_LICENSE", "CGLC_MODIS_LCZ_MD5", "CGLC_MODIS_LCZ_SHA256",
     "CGLC_MODIS_LCZ_SOURCE_URL", "CGLC_MODIS_LCZ_URL", "CGLC_MODIS_LCZ_YEAR",
     "DEFAULT_LANDCOVER_SOURCE", "LANDCOVER_FETCH_KINDS", "LandcoverSource",
-    "fetch_landcover", "landcover_source", "landcover_window_audit",
+    "fetch_landcover", "landcover_source",
+    "landcover_source_ids_by_wps_token", "landcover_window_audit",
     "margin_degrees",
     "COPERNICUS_DEM_ATTRIBUTION", "COPERNICUS_DEM_LAT_STEP_DEG",
     "COPERNICUS_DEM_LICENSE", "COPERNICUS_DEM_SOURCE_URL",

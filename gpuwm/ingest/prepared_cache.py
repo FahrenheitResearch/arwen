@@ -30,7 +30,7 @@ import os
 from pathlib import Path
 import shutil
 from types import MappingProxyType, SimpleNamespace
-from typing import Mapping
+from typing import Mapping, Sequence
 import uuid
 
 import numpy as np
@@ -201,6 +201,17 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # the prepared initial state and boundaries never read it: it sizes
     # the statics corridor, which its own loader checks for coverage.
     "follow.reach_speed_m_s",
+    # WRF's history window (cb8af5ccb), top-level DomainConfig fields
+    # that joined the live document without joining this table, so the
+    # routes that compare a RAW header (the stock-WRF export's walk, the
+    # single-domain runner's equality) refused every bundle prepared
+    # before them, 2.8.0's included.  Not-in-use is the dataclass
+    # default (0.0, None): the start frame and every frame to the end,
+    # which is what every earlier header's forecast wrote.  Preparation
+    # reads neither, so the normalising routes drop them at any value
+    # through NON_TRAJECTORY_IDENTITY_FIELDS below, as "tiles" is
+    # dropped there.
+    "history_begin_s", "history_end_s",
     # This branch's members, NESTED under run.  The walk builds dotted
     # paths, so these have always worked here.  Dropping them when
     # 2.6.1 restructured the table above would have re-refused every
@@ -220,6 +231,14 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # A tree that really did carries the value in its header and is
     # still compared strictly.
     "run.p3_backend",
+    # The urban canopy keys (lane/urban-infra).  Preparation reads them
+    # only when sf_urban_physics > 0 (the urban land-use legend and
+    # FRC_URB2D, gpuwm/static/highres*.py); at the default, 0, it
+    # prepares the legend and tables every pre-urban tree was prepared
+    # with, so "absent" and "default" are the same prepared state.  An
+    # urban run against an older header carries a non-default value and
+    # is still refused, as it must be: that tree has no urban legend.
+    "run.sf_urban_physics", "run.use_wudapt_lcz", "run.num_urban_hi",
     # ---------------------------------------------------------------
     # The 80 other RunConfig fields that joined after the identity
     # header (1c6290410, 2026-07-19, which bound asdict(DomainConfig)
@@ -301,6 +320,15 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # already carries a COMPATIBLE_LEGACY_DEFAULT override for it with
     # model_state_or_physics_changed False:
     "run.nest_microphysics_transition",
+    # WRF zadvect_implicit (A158), argument (c): it selects how the
+    # FORECAST's last RK substep advects in the vertical (gpuwm/core/
+    # ieva.py) and nothing in preparation reads it, so a header written
+    # before the field describes exactly the explicit default.  A tree
+    # prepared with it on carries 1 and is compared strictly.
+    "run.zadvect_implicit",
+    # WRF w_crit_cfl (A165), argument (c): only the FORECAST's w_damp
+    # reads it, so a header written before the field describes its 1.0.
+    "run.w_crit_cfl",
     # The adaptive-timestep surface (gpuwm/core/adaptive_timestep.py,
     # WRF Registry.EM_COMMON:2269-2281).  TWELVE fields joined RunConfig
     # at once, and every one is here in the same commit that added them --
@@ -406,6 +434,33 @@ def _run_config_defaults(*names: str) -> dict[str, object]:
     return out
 
 
+def _domain_config_defaults(*names: str) -> dict[str, object]:
+    """``{"<name>": DomainConfig's default}`` for each top-level name.
+
+    The DomainConfig twin of :func:`_run_config_defaults`, with the same
+    two refusals: a renamed field and a field with no default cannot say
+    what "not in use" means.
+    """
+    import dataclasses
+
+    from gpuwm.experiment import DomainConfig
+
+    fields = {f.name: f for f in dataclasses.fields(DomainConfig)}
+    out: dict[str, object] = {}
+    for name in names:
+        field = fields.get(name)
+        if field is None:
+            raise AttributeError(
+                f"DomainConfig has no field {name!r}, so the tolerance for "
+                f"{name} cannot state what its not-in-use value is.")
+        if field.default is dataclasses.MISSING:
+            raise ValueError(
+                f"DomainConfig.{name} has no default, so 'absent means "
+                f"default' is not a statement that can be made about it.")
+        out[name] = _json_copy(field.default)
+    return out
+
+
 def undelayed_identity_defaults(experiment) -> dict[str, object]:
     """What each tolerable field holds when its feature is NOT in use.
 
@@ -431,6 +486,9 @@ def undelayed_identity_defaults(experiment) -> dict[str, object]:
             "tiles": None, "output": None,
             "retire": None, "rearm": None, "follow": None,
             "follow.reach_speed_m_s": None,
+            # The history window: DomainConfig's own defaults, read from
+            # the dataclass rather than restated (the reason is below).
+            **_domain_config_defaults("history_begin_s", "history_end_s"),
             # READ FROM THE DATACLASS, not restated: two
             # hand-maintained copies of one default is the failure
             # this package has paid for repeatedly.  The NAMES come
@@ -488,6 +546,9 @@ NON_TRAJECTORY_IDENTITY_FIELDS = frozenset({
     "run.output_interval_s",
     "run.restart_interval_s",
     "history_interval_s",
+    # WRF's history_begin / history_end: when the forecast writes, like
+    # the cadence beside them.
+    "history_begin_s", "history_end_s",
 })
 
 #: Output-only diagnostic toggles, on the same footing as the cadences
@@ -552,6 +613,12 @@ PREPARATION_INERT_RUN_FIELDS = frozenset({
     # clock reads it, once per root step of the forecast, and the forecast
     # doors set it after the cache is read.
     "run.min_time_step_sound",
+    # Only the forecast clock reads this; prepared arrays do not change.
+    "run.adaptive_nest_lattice",
+    # WRF's slope_rad / topo_shading / shadlen: read only by the forecast's
+    # radiation and surface calls (gpuwm.core.topo_radiation), from the
+    # prepared terrain; no prepared array depends on them.
+    "run.slope_rad", "run.topo_shading", "run.shadlen",
     # THE SASE CLOSURE'S SELECTORS, out of the tolerant table above for
     # the same reason as the adaptive targets: they have to be forgiven at
     # any value.  No WRF namelist spells them, so an HRRR hierarchy
@@ -575,6 +642,16 @@ PREPARATION_INERT_RUN_FIELDS = frozenset({
     # refused a prepared domain for a key preparation never read.  They
     # stay in the experiment fingerprint and the restart identity.
     "run.clos_choice", "run.ishallow",
+    # NOAH MOSAIC AND WHERE ITS URBAN CANOPY RUNS, on the same argument.
+    # Preparation writes LANDUSEF whatever these say; the forecast's
+    # initialization doors build the tiles from it after the cache is read
+    # (gpuwm/core/noah_mosaic_door.py) and refuse by name a cache without
+    # it, and the canopy rule only fills FRC_URB2D there.  The standing
+    # check holds: no prepare-side module reads any of the three.  A cache
+    # prepared once serves mosaic off, WRF's dominant-urban rule and the
+    # town rule alike; they stay in the experiment fingerprint and the
+    # restart identity when on.
+    "run.sf_surface_mosaic", "run.mosaic_cat", "run.mosaic_urban_canopy",
 })
 
 
@@ -593,9 +670,15 @@ def effective_prepared_domain_config(document):
       the two producers spell the dead value differently (a WRF importer
       that omits the key inherits RunConfig's 5.0; a shipped physics
       profile states 0.0);
-    * ``radt_minutes`` follows a positive ``radt``, which overrides it
-      (gpuwm/config.py) -- the legacy shadow field is not a second
-      radiation cadence.
+    * ``radt`` and ``radt_minutes`` both carry the cadence the domain
+      runs (:func:`gpuwm.config.effective_radt_minutes`): a positive
+      ``radt`` overrides ``radt_minutes``, and ``radt = 0`` means "not
+      stated here", so the domain runs ``radt_minutes``.  The legacy
+      shadow field is not a second radiation cadence.  Resolving only
+      the positive case left ``radt`` raw, and a child domain that never
+      mentions radiation (``radt = 0``, twelve minutes) was reported as
+      differing from the WRF namelist that states ``radt = 12`` for it,
+      which is the same forecast.
 
     A non-document is returned unchanged so callers can hand this
     whatever the header gave them.
@@ -623,6 +706,10 @@ def effective_prepared_domain_config(document):
             run.pop(key, None)
     if run.get("radt", 0.0) > 0.0:
         run["radt_minutes"] = run["radt"]
+    if "radt" in run and "radt_minutes" in run:
+        # Both fields now say the one cadence the integrators run, so a
+        # difference in either is a difference in the forecast.
+        run["radt"] = run["radt_minutes"]
     if run.get("cu_physics") == 0:
         run["cudt_minutes"] = 0.0
     # The historical radiation aggregate is a SPELLING, not a different
@@ -678,7 +765,8 @@ CONDITIONAL_PREPARATION_RECEIPTS = (
 #: Full soil-operation receipt inventory for layouts that bind the texture
 #: treatment into BOTH cache user metadata and proof. Portable adapters that
 #: keep texture treatment in the proof alone retain the conditional tuple.
-#: ``soil_temperature_repair`` (real.exe's TSLB reasonableness rebuild,
+#: ``soil_temperature_repair`` (real.exe's TSLB reasonableness rebuild and
+#: the snow-covered rebuild beside it,
 #: :func:`gpuwm.ingest.soil.soil_temperature_repair_proof`) is bound the
 #: same way on the native HRRR route, and only when a land column was
 #: rebuilt; the mapped routes carry it in their proof alone.
@@ -1456,6 +1544,12 @@ def boundary_schedule(boundaries, *, fields=None):
     }
 
 
+#: A stream head's record of the user metadata keys its seal completes
+#: (:meth:`PreparedCacheStream.write_head` ``seal_completes``), present
+#: only when there are any.
+SEAL_COMPLETES_KEY = "seal_completes_user_metadata"
+
+
 class PreparedCacheStream:
     """The one prepared-cache writer: a head, one segment per interval, a seal.
 
@@ -1484,8 +1578,14 @@ class PreparedCacheStream:
         self._nested = False
         self._intervals: list[dict[str, object]] = []
         self._prefix_rows: list[dict[str, object]] = []
+        #: The same rows in the rebuilt end-frame identity, kept only for a
+        #: sealed-extension cache whose intervals do not all record their
+        #: built end frame (its document is then wholly rebuilt).
+        self._rebuilt_prefix_rows: list[dict[str, object]] = []
+        self._built_end_frames = True
         self._rational = False
         self._sealed = False
+        self._seal_completes: tuple[str, ...] = ()
 
     def move(self, directory) -> None:
         """Follow the directory after its tree was published by rename."""
@@ -1498,8 +1598,20 @@ class PreparedCacheStream:
         return self._writer.payload_bytes
 
     def write_head(self, *, initial_result, met, surface=None, metadata=None,
-                   lbc=None, lateral_from_state: bool = False
+                   lbc=None, lateral_from_state: bool = False,
+                   seal_completes: Sequence[str] = ()
                    ) -> dict[str, object]:
+        """Write every array the start time makes.
+
+        ``seal_completes`` names user ``metadata`` keys whose value is a
+        mapping the start time holds only part of (the native HRRR
+        preparation's per-lead ``mapping_reports``: the start lead's at the
+        head, every boundary lead's once it is mapped).  :meth:`seal` adds
+        the later entries (``completed_metadata``) and refuses any change
+        to an entry the head already wrote, so the sealed header is the
+        one-shot writer's for the same inputs.  Empty for every other
+        route, whose head record is then what it always was.
+        """
         from gpuwm.state_serialization_contract import (
             STATE_SERIALIZED_ATTRS, _lateral_fingerprint_header,
             _update_lateral_fingerprint, _update_setup_core,
@@ -1648,8 +1760,16 @@ class PreparedCacheStream:
                 "forcing_extension_mode": SEALED_PREPARED_EXTENSION_MODE,
                 "setup_core_fingerprint": self._core_fingerprint,
             })
+        completes = sorted({str(key) for key in seal_completes})
+        user = cache_metadata["user"]
+        for key in completes:
+            if not isinstance(user.get(key), Mapping):
+                raise ValueError(
+                    f"the head names user metadata {key!r} for its seal to "
+                    "complete, and holds no mapping under it to extend")
+        self._seal_completes = tuple(completes)
         self._metadata = cache_metadata
-        return {
+        head = {
             "identity": _json_copy(self.identity),
             "metadata": _json_copy(cache_metadata),
             "arrays": _json_copy(writer.manifest),
@@ -1657,11 +1777,16 @@ class PreparedCacheStream:
             "lbc": _json_copy(lbc),
             "setup_core_fingerprint": self._core_fingerprint,
         }
+        # Only when named, so every other head (and its digest) is what it
+        # was before a seal could complete metadata.
+        if completes:
+            head[SEAL_COMPLETES_KEY] = completes
+        return head
 
     def write_segment(self, index: int, interval) -> dict[str, object]:
         from gpuwm.state_serialization_contract import (
-            _lateral_fingerprint_interval, interval_has_time_law,
-            lateral_boundary_prefix_row,
+            _lateral_fingerprint_interval, built_end_frame,
+            interval_has_time_law, lateral_boundary_prefix_row,
         )
 
         if self._metadata is None or self._sealed:
@@ -1700,19 +1825,35 @@ class PreparedCacheStream:
                     for coefficient in ("quadratic", "denominator_rate"):
                         writer.add(f"{prefix}/rational_time_v1/{coefficient}",
                                    getattr(side.time_law, coefficient))
-        self._intervals.append({
+        # The frame this interval's tendency was built toward, as its
+        # builder recorded it (A140b): kept in the interval's row and in its
+        # segment marker, because no array holds it (the last interval's is
+        # a frame no later interval starts from), and a reader restores it
+        # onto the interval so the forcing row it hashes is this one.
+        # Written only when recorded, so a wrfbdy file's cache keeps the
+        # header it always had.
+        built = built_end_frame(interval)
+        interval_row = {
             "start_seconds": bounds[0],
             "end_seconds": bounds[1],
             "fields": field_names,
-        })
+        }
+        if built is not None:
+            interval_row[END_FRAME_KEY] = built
+        self._intervals.append(interval_row)
         if self._digest is not None:
             _lateral_fingerprint_interval(self._digest, interval)
         row = lateral_boundary_prefix_row(interval)
         self._prefix_rows.append(row)
+        self._built_end_frames = self._built_end_frames and built is not None
+        if self.sealed_forcing_extension:
+            self._rebuilt_prefix_rows.append(
+                row if built is None else lateral_boundary_prefix_row(
+                    interval, rebuilt_end_frame=True))
         self._rational = self._rational or interval_has_time_law(interval)
         arrays = {key: _json_copy(spec) for key, spec in writer.manifest.items()
                   if key not in before_keys}
-        return {
+        segment = {
             "index": index,
             "start_seconds": bounds[0],
             "end_seconds": bounds[1],
@@ -1721,8 +1862,35 @@ class PreparedCacheStream:
             "payload_bytes": int(writer.payload_bytes - before_bytes),
             "prefix": _json_copy(row),
         }
+        if built is not None:
+            segment[END_FRAME_KEY] = built
+        return segment
 
-    def seal(self) -> dict[str, object]:
+    def seal(self, *, identity=None,
+             completed_metadata: Mapping[str, object] | None = None,
+             posted_user_metadata: Mapping[str, str] | None = None,
+             ) -> dict[str, object]:
+        """Write ``header.json``; return the one-shot writer's receipt.
+
+        ``identity`` replaces the identity the head was written under: an
+        as-posted head carries placeholders where the input manifest's
+        digest goes (:mod:`gpuwm.ingest.boundary_stream`), and the seal
+        writes the one-shot identity, so ``content_sha256`` is the one-shot
+        writer's for the same inputs.  Which keys may change is the
+        stream's rule, checked before this is called.
+
+        ``completed_metadata`` gives the whole value of each user metadata
+        key the head named in ``seal_completes``.  Refused: a key the head
+        did not name, and a value that drops or changes an entry the head
+        already wrote, because a head-bound forecast checked those entries
+        at the head and the seal must not take back what it checked.
+
+        ``posted_user_metadata`` replaces user metadata strings an
+        as-posted head wrote as its plan's placeholder with the digests
+        its seal learned (the stream checks which keys, and against the
+        sealed identity, before this is called); a value that is not a
+        placeholder is refused.
+        """
         from gpuwm.state_serialization_contract import (
             lateral_boundary_prefix_document,
         )
@@ -1730,7 +1898,43 @@ class PreparedCacheStream:
         if self._metadata is None or self._sealed:
             raise RuntimeError(
                 "the prepared cache is sealed once, after its head")
+        if identity is not None:
+            self.identity = _json_copy(identity)
         cache_metadata = dict(self._metadata)
+        if completed_metadata:
+            user = dict(cache_metadata["user"])
+            for key, value in dict(completed_metadata).items():
+                if key not in self._seal_completes:
+                    raise ValueError(
+                        f"the seal completes user metadata {key!r}, which "
+                        "its head did not name")
+                value = _json_copy(value)
+                if not isinstance(value, Mapping):
+                    raise ValueError(
+                        f"completed user metadata {key!r} is not a mapping")
+                changed = sorted(
+                    name for name, entry in user[key].items()
+                    if value.get(name) != entry)
+                if changed:
+                    raise ValueError(
+                        f"the seal changes or drops {key} entries {changed} "
+                        "the head already wrote")
+                user[key] = value
+            cache_metadata["user"] = user
+        if posted_user_metadata:
+            from gpuwm.ingest.boundary_stream import (
+                AS_POSTED_PLACEHOLDER_PREFIX)
+
+            user = dict(cache_metadata["user"])
+            for key, value in dict(posted_user_metadata).items():
+                held = user.get(key)
+                if (not isinstance(held, str)
+                        or not held.startswith(AS_POSTED_PLACEHOLDER_PREFIX)):
+                    raise ValueError(
+                        f"the seal writes user metadata {key!r}, which its "
+                        "head did not hold as an as-posted placeholder")
+                user[key] = str(value)
+            cache_metadata["user"] = user
         if self._lbc is None:
             lbc_metadata = None
         else:
@@ -1750,6 +1954,10 @@ class PreparedCacheStream:
             self._fingerprint if self._digest is None
             else self._digest.hexdigest())
         if self.sealed_forcing_extension:
+            # One series, one identity: the built end-frame document when
+            # every interval recorded its end frame, else the rebuilt one
+            # (lateral_boundary_prefix_identity makes the same choice).
+            built = bool(self._prefix_rows) and self._built_end_frames
             cache_metadata["lateral_boundary_prefix"] = (
                 self._state_prefix
                 if self._state_prefix is not None or self._nested
@@ -1757,7 +1965,9 @@ class PreparedCacheStream:
                     spec_bdy_width=self._lbc["spec_bdy_width"],
                     spec_zone=self._lbc["spec_zone"],
                     relax_zone=self._lbc["relax_zone"],
-                    rows=self._prefix_rows, rational=self._rational))
+                    rows=(self._prefix_rows if built
+                          else self._rebuilt_prefix_rows),
+                    rational=self._rational, built_end_frames=built))
         writer = self._writer
         basis = {
             "schema": PREPARED_CACHE_SCHEMA,
@@ -1812,9 +2022,31 @@ def _reader_boundary_side(reader, prefix):
                         reader.read_array(f"{prefix}/tendency"), law)
 
 
+#: The key of a prepared cache's LBC interval row (and of a boundary segment
+#: marker) that records the digest of the frame the interval's tendency was
+#: built toward (A140b).  Absent from every cache written before 2.8.1 and
+#: from a series whose builder recorded none; such a cache still reads, and
+#: its intervals hash in the rebuilt end-frame identity, as they always did.
+END_FRAME_KEY = "end_frame_sha256"
+
+
+def interval_built_end_frame(row, *, where: str):
+    """The built end frame one LBC interval row records, or ``None``."""
+
+    digest = row.get(END_FRAME_KEY) if isinstance(row, Mapping) else None
+    if digest is None:
+        return None
+    if (not isinstance(digest, str) or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)):
+        raise PreparedCacheCorruptError(
+            f"{where} records a malformed built end frame {digest!r}")
+    return digest
+
+
 def _reader_boundaries(reader: PreparedCacheReader):
     from gpuwm.ingest.lateral_bc import (
         BoundaryInterval, FieldBoundary, LateralBoundaries, SideBoundary,
+        record_built_end_frame,
     )
 
     lbc = reader.header.get("metadata", {}).get("lbc")
@@ -1823,8 +2055,10 @@ def _reader_boundaries(reader: PreparedCacheReader):
             f"prepared cache {reader.path} has no external LBC inventory")
     intervals = []
     for index, row in enumerate(lbc["intervals"]):
-        if (not isinstance(row, dict) or set(row) != {
-                "start_seconds", "end_seconds", "fields"}
+        if (not isinstance(row, dict)
+                or not {"start_seconds", "end_seconds", "fields"}
+                <= set(row)
+                <= {"start_seconds", "end_seconds", "fields", END_FRAME_KEY}
                 or not isinstance(row["fields"], list)
                 or not row["fields"]):
             raise PreparedCacheCorruptError(
@@ -1836,8 +2070,10 @@ def _reader_boundaries(reader: PreparedCacheReader):
                 prefix = f"lbc/{index}/{name}/{side_name}"
                 sides[side_name] = _reader_boundary_side(reader, prefix)
             fields[name] = FieldBoundary(**sides)
-        intervals.append(BoundaryInterval(
-            float(row["start_seconds"]), float(row["end_seconds"]), fields))
+        intervals.append(record_built_end_frame(BoundaryInterval(
+            float(row["start_seconds"]), float(row["end_seconds"]), fields),
+            interval_built_end_frame(
+                row, where=f"prepared cache LBC interval {index}")))
     return LateralBoundaries(
         tuple(intervals), int(lbc["spec_bdy_width"]),
         int(lbc["spec_zone"]), int(lbc["relax_zone"]))
@@ -1918,7 +2154,10 @@ def extend_prepared_cache(path, *, predecessor, suffix, identity,
     admitted, after its shared FP32 endpoint frame matches cryptographically.
     """
     from gpuwm import __version__
-    from gpuwm.ingest.lateral_bc import BoundaryInterval, LateralBoundaries
+    from gpuwm.ingest.lateral_bc import (
+        BoundaryInterval, LateralBoundaries, record_built_end_frame)
+    from gpuwm.state_serialization_contract import (
+        REBUILT_END_FRAME_PREFIX_SCHEMAS)
 
     path = Path(path)
     predecessor = Path(predecessor)
@@ -2122,24 +2361,42 @@ def extend_prepared_cache(path, *, predecessor, suffix, identity,
             != set(prior_boundaries.intervals[-1].fields)):
         raise PreparedCacheMismatchError(
             "prepared-cache suffix changes boundary geometry or fields")
-    shifted = BoundaryInterval(
-        old_end, old_end + 3600.0, dict(suffix_interval.fields))
+    # Moved in time only, so the frame its tendency was built toward is
+    # the suffix's own record.
+    shifted = record_built_end_frame(BoundaryInterval(
+        old_end, old_end + 3600.0, dict(suffix_interval.fields)),
+        suffix_interval.end_frame_sha256)
     combined = LateralBoundaries(
         prior_boundaries.intervals + (shifted,),
         prior_boundaries.spec_bdy_width, prior_boundaries.spec_zone,
         prior_boundaries.relax_zone)
     combined_prefix = _forcing_prefix(combined)
+    # The predecessor's last row records the frame its tendency was built
+    # toward, so a suffix that starts from that frame joins it byte for
+    # byte, a hydrometeor that clears out at the join included (A140b).
+    # The rebuilt identity of a cache written before 2.8.1 cannot tell a
+    # clear-out from another frame, so its refusal says which it is.
     if (old_prefix["intervals"][-1]["end_frame_sha256"]
             != combined_prefix["intervals"][-1]["start_frame_sha256"]):
+        rebuilt = combined_prefix["schema"] in REBUILT_END_FRAME_PREFIX_SCHEMAS
         raise PreparedCacheMismatchError(
-            "prepared-cache suffix changes the shared endpoint frame")
+            "prepared-cache suffix changes the shared endpoint frame"
+            + ("" if not rebuilt else
+               " as the rebuilt end-frame identity sees it (value + "
+               "tendency * duration in FP32), which a boundary value "
+               "clearing out at the join also moves; the predecessor or the "
+               "suffix records no built end frame (prepared before 2.8.1), "
+               "so prepare both again to extend across such a join"))
 
     combined_lbc = _json_copy(prior_meta["lbc"])
-    combined_lbc["intervals"].append({
+    suffix_row = {
         "start_seconds": old_end,
         "end_seconds": old_end + 3600.0,
         "fields": list(prior_meta["lbc"]["intervals"][-1]["fields"]),
-    })
+    }
+    if shifted.end_frame_sha256 is not None:
+        suffix_row[END_FRAME_KEY] = shifted.end_frame_sha256
+    combined_lbc["intervals"].append(suffix_row)
     cache_metadata = _json_copy(prior_meta)
     cache_metadata.update({
         "user": _json_copy(metadata),
@@ -2282,6 +2539,32 @@ def reconcile_cached_state_inventory(stored_names, expected_names):
           "configuration the cache was prepared for.")
 
 
+def _device_boundary_values(reader, lbc_metadata, *, lbc_mode, streamed):
+    """Float32 values a restore attaches on the card as boundary tables.
+
+    Read off the cache's own manifest -- every array under ``lbc/<i>/`` --
+    so the count is the retained interval inventory the cache carries, not
+    the run duration's.  A streamed restore holds one interval's slot (the
+    largest); a nest forced by its parent attaches none.
+    """
+    if (lbc_mode == "nested-parent-forced" or not isinstance(lbc_metadata, dict)
+            or not isinstance(lbc_metadata.get("intervals"), list)):
+        return 0
+    per_interval = [0] * len(lbc_metadata["intervals"])
+    for key, spec in reader.arrays.items():
+        if not key.startswith("lbc/"):
+            continue
+        index = key.split("/", 2)[1]
+        if index.isdigit() and int(index) < len(per_interval):
+            count = 1
+            for extent in spec["shape"]:
+                count *= int(extent)
+            per_interval[int(index)] += count
+    if not per_interval:
+        return 0
+    return max(per_interval) if streamed else sum(per_interval)
+
+
 def restore_prepared_cache(path, *, expected_identity, cfg, static,
                            allow_nested_without_lbc: bool = False,
                            reader=None, boundary_source=None,
@@ -2325,7 +2608,7 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
     from gpuwm.core.state import DomainState
     from gpuwm.ingest.lateral_bc import (
         BoundaryInterval, FieldBoundary, LateralBoundaries, SideBoundary,
-        attach_lateral_boundaries,
+        attach_lateral_boundaries, record_built_end_frame,
     )
     from gpuwm.state_serialization_contract import (
         STATE_SERIALIZED_ATTRS, lateral_boundary_prefix_identity,
@@ -2362,6 +2645,19 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
     except (TypeError, ValueError) as exc:
         raise PreparedCacheMismatchError(str(exc)) from exc
 
+    if array_module is None:
+        # ADMITTED BEFORE THE CONSTRUCTOR, whatever [tiles] says.  A resident
+        # restore went straight into DomainState, so a cache too big for the
+        # card stopped in a CUDA out-of-memory part way through it; the state
+        # and the boundary tables this restore attaches are priced here, at
+        # the retained interval count the cache actually carries.
+        from gpuwm.core.resident_admission import admit_construction
+
+        admit_construction(
+            "restoring this prepared cache onto the card", cfg,
+            boundary_values=_device_boundary_values(
+                reader, metadata.get("lbc"), lbc_mode=lbc_mode,
+                streamed=boundary_source is not None))
     state = DomainState(cfg, array_module=array_module)
     state.load_base(coord, base)
     state.set_map_coriolis(
@@ -2413,9 +2709,12 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
                     prefix = f"lbc/{index}/{name}/{side_name}"
                     sides[side_name] = _reader_boundary_side(reader, prefix)
                 field_map[name] = FieldBoundary(**sides)
-            intervals.append(BoundaryInterval(
+            intervals.append(record_built_end_frame(BoundaryInterval(
                 float(interval_meta["start_seconds"]),
-                float(interval_meta["end_seconds"]), field_map))
+                float(interval_meta["end_seconds"]), field_map),
+                interval_built_end_frame(
+                    interval_meta,
+                    where=f"prepared cache LBC interval {index}")))
         boundaries = LateralBoundaries(
             tuple(intervals), int(lbc_meta["spec_bdy_width"]),
             int(lbc_meta["spec_zone"]), int(lbc_meta["relax_zone"]))
@@ -2486,7 +2785,8 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
 
 
 __all__ = [
-    "CACHE_WRITER_KEY", "CachedInitialResult", "HEADER_PARTIAL_NAME",
+    "CACHE_WRITER_KEY", "CachedInitialResult", "END_FRAME_KEY",
+    "HEADER_PARTIAL_NAME",
     "DEFAULT_TOLERANT_IDENTITY_FIELDS",
     "INERT_DIAGNOSTIC_IDENTITY_FIELDS",
     "NON_TRAJECTORY_IDENTITY_FIELDS", "PREPARATION_INERT_RUN_FIELDS",
@@ -2497,6 +2797,7 @@ __all__ = [
     "UNSTAMPED_WRITER",
     "cache_writer_version", "compare_prepared_domain_config",
     "compare_prepared_identity", "effective_prepared_domain_config",
+    "interval_built_end_frame",
     "prepared_cache_identity",
     "prepared_domain_config_identity", "prepared_identity_refusal",
     "PreparedCacheStream", "boundary_schedule", "read_manifest_array",

@@ -50,6 +50,7 @@ from gpuwm.offline_child import (
     bind_parent_physics_from_wrf_namelist,
     build_offline_child_domain_state,
     build_offline_lateral_boundaries,
+    child_mosaic_refusal,
     child_surface_requirement,
     derive_child_surface_from_parent,
     child_inherits_parent_levels,
@@ -1454,6 +1455,7 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
         xice = np.zeros_like(fields["LANDMASK"])
     landuse = initialize_landuse(
         fields["LU_INDEX"], soil_type=fields["ISLTYP"],
+        urban_legend=int(getattr(cfg, "sf_urban_physics", 0)) > 0,
         landmask=fields["LANDMASK"], snow=fields["SNOW"], xice=xice,
         valid_time=start_time, cen_lat=float(np.mean(lat)),
         mminlu=str(identity["MMINLU"]), iswater=int(identity["ISWATER"]),
@@ -3052,6 +3054,11 @@ def _run(args: argparse.Namespace,
     # checkpoint_due is the cadence.
     cadence = child_cadence(
         cfg, health_interval_seconds=float(args.health_interval_seconds))
+    # Noah mosaic, before the parent archive is interpolated: this route
+    # has no door that builds its tiles (offline_child.child_mosaic_refusal).
+    mosaic_refusal = child_mosaic_refusal(cfg)
+    if mosaic_refusal is not None:
+        raise OfflineChildContractError(mosaic_refusal)
     # THE DISK, before the parent archive is interpolated and before the
     # child takes a step: the same projection the plan review refused on,
     # asked again here for the runner door, which no review stands in
@@ -3158,6 +3165,26 @@ def _run(args: argparse.Namespace,
     tiles = pricing.options
     streaming_decision = pricing.decision
     _log("child_streaming_decision", **pricing.plan_entry())
+    admission_machine = streaming.cold_admission_machine(card.machine,
+                                                         options=tiles)
+    try:
+        # A pinned tiling, priced on this card before its buffers exist.
+        streaming.admit_pinned_road(cfg, tiles, streaming_decision,
+                                    machine=admission_machine,
+                                    resident_estimate=pricing.estimate)
+    except CannotPlan as error:
+        raise OfflineChildContractError(str(error)) from error
+    if pricing.estimate is not None:
+        # THE RESIDENT CHILD, ADMITTED BEFORE ITS FIRST ALLOCATION.  With
+        # [tiles] off the decision above admits nothing, so the child state
+        # and the physics driver attached after it (_initialize_child_physics
+        # below) went onto the card unpriced and a child too big for it died
+        # in CUDA after interpolation.  The same estimate the plan review
+        # printed, weighed against the card the decision was read on.
+        streaming.admit_resident_road(
+            None, streaming_decision, machine=admission_machine,
+            estimate=pricing.estimate,
+            what="this downscaled child, held resident on the card")
 
     # PUBLISHED HERE: after every contract that can refuse this child has
     # passed and before the first minute of preprocessing is spent, so a
@@ -3620,6 +3647,13 @@ def _parser() -> argparse.ArgumentParser:
                              "keeps in --outdir (default 1, the newest, "
                              "which a downscale from this child binds to); "
                              "0 keeps every set")
+    parser.add_argument("--no-memory-gate", action="store_true",
+                        dest="no_memory_gate",
+                        help="run a child whose priced peak envelope exceeds "
+                             "this card's free memory anyway: the envelope "
+                             "is an upper bound and the card's own "
+                             "allocation then decides; a child state too big "
+                             "to build at all is still refused")
     parser.add_argument("--outdir", type=Path, required=True)
     return parser
 
@@ -3629,8 +3663,12 @@ def main(argv=None) -> int:
     if arguments == ["--show-capabilities"]:
         print(json.dumps(_CAPABILITIES, sort_keys=True))
         return 0
+    args = _parser().parse_args(arguments)
+    from gpuwm.core.resident_admission import memory_gate_override
+
     try:
-        report = run(_parser().parse_args(arguments))
+        with memory_gate_override(args.no_memory_gate):
+            report = run(args)
     except KeyboardInterrupt:
         # The contract `gpuwm.cli.main` keeps for every subcommand: one
         # line and exit 130, not a traceback.  The stop itself is already

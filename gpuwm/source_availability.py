@@ -45,6 +45,13 @@ class ArchiveWindow:
     #: whole.  Measured from the archive's own listing, like ``start``.
     early_start: str = ""
     early_hours: tuple[int, ...] = ()
+    #: How long after a valid time this transport serves it, measured,
+    #: where it trails the source's own cycle grid: a copy of a
+    #: reanalysis that is refreshed later than the publisher's own
+    #: door.  ``--cycle latest`` for this transport resolves on it when
+    #: the bounds document above cannot be read.  None: the source's
+    #: cycle grid delay holds for this transport too.
+    publication_lag_hours: float | None = None
 
     def __post_init__(self) -> None:
         if self.start or self.retention_hours is None:
@@ -56,6 +63,8 @@ class ArchiveWindow:
                 raise ValueError("A partial early record names the UTC hours it holds.")
         if self.retention_hours is not None and not self.retention_hours > 0:
             raise ValueError("A rolling window keeps a positive number of hours.")
+        if self.publication_lag_hours is not None and not self.publication_lag_hours >= 0:
+            raise ValueError("A publication lag cannot be negative.")
         if not self.transport or not self.documentation:
             raise ValueError("An archive bound needs its transport and evidence.")
 
@@ -187,8 +196,32 @@ def _config_cadence(config: Path | None) -> int | None:
     return tomllib.loads(config.read_text(encoding="utf-8")).get("fetch", {}).get("cadence")
 
 
+def _as_posted(source: str) -> bool:
+    """Whether ``--cycle latest`` is the as-posted rule for ``source``.
+
+    The fetch's own answer (:func:`gpuwm.fetch._startable_rule_applies`
+    under the default ``[fetch] as_posted``), so this module's resolver
+    door (``--resolve-latest``, which the TUI calendar launches on) and
+    ``gpuwm fetch --cycle latest`` cannot disagree about which cycle
+    ``latest`` means.
+
+    The page's own calendar (:func:`availability`'s walk,
+    :func:`confirmed_latest` and :func:`page_latest`) keeps the whole
+    window's rule: its Start admits a start only when
+    :func:`page_start_check` finds the window whole through its last
+    hour, so a Newest run taken as posted would be a start the page opens
+    on and its own Start then refuses.  A run that starts as its source
+    posts is asked through the readiness door (``run-plan --readiness``).
+    """
+
+    from gpuwm.fetch import DEFAULT_AS_POSTED, _startable_rule_applies
+
+    return DEFAULT_AS_POSTED and _startable_rule_applies(source)
+
+
 def availability(source: str, hours: float, *, now: datetime | None = None,
-                 transport: str | None = None, published=None, cadence: int | None = None) -> dict:
+                 transport: str | None = None, published=None, cadence: int | None = None,
+                 as_posted: bool = False) -> dict:
     """Describe expected cycles and transport bounds.
 
     Nothing here reaches a server unless ``published`` is given: a
@@ -236,7 +269,18 @@ def availability(source: str, hours: float, *, now: datetime | None = None,
     # function, so the date this calendar PUBLISHES as the boundary and the
     # date its Latest button resolves cannot be two different dates.
     reference = analysis_window_reference(source, grid, last_hour, now) if grid else None
-    newest = grid.newest(reference) if grid else None
+    # The lead whose declared delay the Latest walk waits on: the window's
+    # last one for a forecast, none for an analysis series (its back-off is
+    # already in ``reference``).
+    walk_lead = 0 if analysis else last_hour
+    if as_posted and not analysis and _as_posted(source):
+        # The resolver door's as-posted latest (``resolve_latest``): a
+        # start is available once its first leads are out, and the fetch
+        # takes the rest as they post, so the walk waits on the first
+        # boundary lead, as the fetch's own latest does (DESIGN A136 2.2).
+        # The page's calendar never passes it (see :func:`_as_posted`).
+        walk_lead = min(last_hour, int(ladder_step or cadence or 1))
+    newest = grid.newest(reference, walk_lead) if grid else None
     allowed_hours = []
     spaced_out = []
     if grid:
@@ -314,8 +358,14 @@ def availability(source: str, hours: float, *, now: datetime | None = None,
     # a page takes as published while no check has answered for it.
     due = None
     if grid is not None and newest is not None and allowed_hours:
-        extra = max(0.0, grid.usual_delay - float(grid.delay_hours))
-        due = min(newest, grid.newest(reference - timedelta(hours=extra)))
+        if grid.delays:
+            # Rows per cycle hour and lead: the latest posting seen of this
+            # window's last lead.  Their earliest one, where the walk above
+            # starts, would take a start as published minutes before it is.
+            due = min(newest, grid.newest(reference, walk_lead, settled=True))
+        else:
+            extra = max(0.0, grid.usual_delay - float(grid.delay_hours))
+            due = min(newest, grid.newest(reference - timedelta(hours=extra), walk_lead))
         while due.hour not in allowed_hours:
             due = grid.snap(due - timedelta(hours=1))
     starts = [parse_cycle(row["record_start"]) for row in rows if row["record_start"]]
@@ -333,8 +383,15 @@ def availability(source: str, hours: float, *, now: datetime | None = None,
         notes.append("Cycle hours and forecast horizons describe current production; historical product versions can differ.")
     if not probeable:
         notes.append("Latest is an estimate from the publication schedule. This service has no public object completeness probe.")
-    if grid and grid.delay_hours:
-        notes.append(f"Expected publication delay: about {grid.delay_hours:g} hours; the provider can publish later.")
+    if grid and (grid.delay_hours or grid.delays):
+        # Per cycle hour where the producer's runs post at different
+        # times, for this window's last lead: the latest posting seen,
+        # which is what a reader can expect to wait.
+        delays = sorted({round(grid.delay(now.replace(hour=hour, minute=0, second=0, microsecond=0),
+                                          last_hour, settled=True), 1) for hour in grid.hours})
+        spoken = (f"{delays[0]:g}" if len(delays) == 1
+                  else f"{delays[0]:g} to {delays[-1]:g}, by cycle hour,")
+        notes.append(f"Expected publication delay: about {spoken} hours; the provider can publish later.")
     if analysis:
         notes.append(f"The whole {hours:g}-hour analysis period must be published, including its end.")
     if hourly_start:
@@ -954,7 +1011,9 @@ def page_latest(document: dict, *, now: datetime | None = None, session: ProbeSe
     try:
         grid = require_cycle_grid(source)
         reference = analysis_window_reference(source, grid, last_hour, now)
-        walk = [cycle for cycle in grid.candidates(reference)
+        # The resolver's own walk, from the declared delay of the window's
+        # last lead (fetch.resolve_latest_cycle asks the same question).
+        walk = [cycle for cycle in grid.candidates(reference, last_hour)
                 if grid.horizon(cycle) is None or last_hour <= grid.horizon(cycle)]
         cycles = walk[:PAGE_LATEST_PREFETCH]
         # One start at a time, newest first, each start's objects asked side by side: the first start one rung
@@ -999,11 +1058,19 @@ def page_latest(document: dict, *, now: datetime | None = None, session: ProbeSe
 
 
 def resolve_latest(source: str, hours: float, *, now: datetime | None = None,
-                   probe=None, cadence: int | None = None) -> dict:
-    """Resolve through the SAME acquisition resolver used by the ordinary CLI."""
+                   probe=None, cadence: int | None = None,
+                   as_posted: bool | None = None) -> dict:
+    """Resolve through the SAME acquisition resolver used by the ordinary CLI.
+
+    ``as_posted`` is the fetch's own ``[fetch] as_posted``: None takes its
+    default (the newest start whose first leads are posted), False the
+    whole-cycle rule (``gpuwm fetch --whole-cycle``).
+    """
     from gpuwm.fetch import resolve_latest_cycle, _head_ok
     now = _utc(now)
-    document = availability(source, hours, now=now, cadence=cadence)
+    posted = as_posted is not False and _as_posted(source)
+    document = availability(source, hours, now=now, cadence=cadence,
+                            as_posted=posted)
     if not document["latest_supported"]:
         raise ValueError("No declared cycle covers this period. Choose a date manually or shorten the duration.")
     checked = []
@@ -1018,7 +1085,8 @@ def resolve_latest(source: str, hours: float, *, now: datetime | None = None,
     # window twice, and the cycle selected for a 240-hour era5 request
     # landed ten days before this document's own latest_candidate.
     cycle = resolve_latest_cycle(document["source_id"], document["last_hour"],
-                                 now=now, probe=record_probe, cadence=cadence)
+                                 now=now, probe=record_probe, cadence=cadence,
+                                 **({"as_posted": True} if posted else {}))
     validate_cycle(document, _stamp(cycle))
     document["selected_cycle"] = _stamp(cycle)
     document["resolution"] = {

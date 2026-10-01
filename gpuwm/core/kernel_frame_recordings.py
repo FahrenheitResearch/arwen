@@ -27,7 +27,8 @@ sm_120 columns as re-read 2026-09-28, the sm_86 column as read
   ysu                           0           0           0
   nssl2_fused_gs              112         216         112
   rrtmgp_cloud                  0          40           0
-  shinhong                 13,000      17,160      14,040
+  shinhong (to 2026-09-30) 13,000      17,160      14,040
+  shinhong (workspace)          0           0           0
   noahmp_leaves               272         208         208
   ======================  ==========  ==========  ==========
 
@@ -37,6 +38,15 @@ shape.  All three kernels kept a whole column in the per-thread local
 frame; on 2026-08-21 all three moved those arrays into a global
 workspace (``gpuwm/core/kernels/gf.cu``, ``ysu.cu``, ``kf.cu``).  ``gf``
 went 22,416 -> 88 B, ``ysu`` 9,232 -> 0 B, ``kf`` 24,064 -> 512 B.
+
+``shinhong`` took the same route on 2026-09-30: its column arrays moved
+into a global workspace sized to the columns in flight, 17,160 -> 0 B.
+Every recording below was RE-READ at the new source that day rather
+than carried over: sm_120 on an RTX 5090 through the production loader
+under NVRTC 13.0.48, 13.0.88, 13.3.33 and 13.4.92, sm_89 on an RTX 4090
+under 13.4.92, and sm_86 compile-only (NVRTC 13.0.48 PTX through ptxas
+13.0.48, ``-v``), because the RTX 3080 stays out of GPU work.  All read
+0 B, so the recordings keep their completeness claims.
 
 ``kf``'s 512 B is not a failed zero: ``tv_env`` and ``positive_energy``
 stay on its stack on purpose, because they are the only two of its 54
@@ -242,7 +252,7 @@ SM120_NVRTC_13_0_48 = KernelFrameRecording(
         'sase': 6272,
         'saxpy': 0,
         'sfclay': 0,
-        'shinhong': 13000,
+        'shinhong': 0,
         'shinhong_validation': 0,
         'smag2d': 0,
         'spec_bdy': 0,
@@ -360,7 +370,7 @@ SM120_NVRTC_13_3_33 = KernelFrameRecording(
         'sase': 6272,
         'saxpy': 0,
         'sfclay': 0,
-        'shinhong': 17160,
+        'shinhong': 0,
         'shinhong_validation': 0,
         'smag2d': 0,
         'spec_bdy': 0,
@@ -420,7 +430,25 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
     # with the sm_120 value, so the claim is COMPLETE again on the same
     # terms as 2026-08-21 -- every standalone .cu in the tree has a number
     # this box produced.
-    complete=True,
+    #
+    # NOT COMPLETE since 2026-09-30: urban_ucm, urban_bep, urban_bep_couple
+    # and myjurb (sf_urban_physics 1-3) joined the tree unread on this card,
+    # which agents do not use (the desktop RTX 3080 is reserved for the
+    # release install smoke).  They are priced from the sm_89 and sm_120
+    # readings until someone reads them here; nothing is back-filled.
+    # INCOMPLETE again from 2026-09-30: rrtmg_legacy_adapter.cu and
+    # rrtmg_legacy_prep.cu (the legacy RRTMG adapter's device glue and
+    # wrapper prep) joined the tree unread on this card; both are 0 B on
+    # sm_120 at NVRTC 13.4.92.  The hole stays a hole until this
+    # card reads it, as the docstring says the flag is for.  The same day
+    # rrtmg_mcica_wrf.cu gained rmcw_fill_outputs_column (a copy-only
+    # layout twin, 0 B on sm_120 and sm_89 at NVRTC 13.4.92): its 0 B row
+    # below predates that kernel.
+    # The same day uwpbl.cu (the UW moist-turbulence PBL, bl_pbl_physics = 9)
+    # joined the tree unread on this card, which lanes do not use (it is kept
+    # for the release install smoke).  It is priced from the sm_89 and sm_120
+    # readings until it is read here; nothing is back-filled.
+    complete=False,
     frames=MappingProxyType({
         'acoustic': 544,
         'advection': 0,
@@ -540,7 +568,7 @@ SM86_NVRTC_13_0_48 = KernelFrameRecording(
         'sase': 6272,
         'saxpy': 0,
         'sfclay': 0,
-        'shinhong': 14040,
+        'shinhong': 0,
         'shinhong_validation': 0,
         'smag2d': 0,
         'spec_bdy': 0,
@@ -657,13 +685,42 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'diff6_seam': 0,
         'diffusion': 0,
         'dycore': 0,
+        # The dycore-host speed lane's four point-local units (66af318bc):
+        # read 2026-09-30 on this box at this NVRTC (RTX 5090, fresh CuPy
+        # cache, tools/vram_reserve_probe.py frames), every kernel 0 B, and
+        # 0 B again on an RTX 4090 (sm_89) at NVRTC 13.4.92.  The same
+        # reading reproduced every other row of this recording.
+        'face_mass': 0,
+        'held_heating': 0,
+        'rk_bookkeeping': 0,
+        'surface_w': 0,
+        # zadvect_implicit's unit (A158): read 2026-10-01 on this box at this
+        # NVRTC through the production loader at its shipped IEVA_KMAX = 65,
+        # the five column solves 1,040 B each (two double columns of 65),
+        # the split and column-mass kernels 0 B; 2,064 B at 129 and 4,112 B
+        # at 257 (preflight.IEVA_TIER_FRAME).
+        'ieva': 1040,
         'ftz_probe': 0,
-        'gf': 72,
+        # Re-read 2026-09-30 on this box at this NVRTC after the
+        # default-pieces speed lane's GF change (b11fc66ab: early exit for
+        # trigger-rejected columns, eight resident blocks per SM): every
+        # gf.cu kernel reads 0 B, where 72 B was read before.  Its GF A/B
+        # dumps and 1 h real HRRR GF forecast are byte-identical to
+        # d6929cb8d.
+        'gf': 0,
         'health': 0,
         'health_tile': 0,
         'jacobi_eigh': 0,
         'kessler': 5120,
-        'kf': 512,
+        # Re-read 2026-09-30 on this box at this NVRTC after the
+        # default-pieces speed lane's KF change (08a1eed93: eight-warp
+        # blocks under __launch_bounds__(256), trigger-predicted column
+        # order): every kf.cu kernel reads 0 B, where 512 B was read before
+        # (and 0 B again on an RTX 4090, sm_89, at NVRTC 13.4.92).  The
+        # lane's KF-every-step A/B and its 1 h real HRRR forecasts are
+        # byte-identical to d6929cb8d on both cards, so the placement change
+        # moved no output bit.
+        'kf': 0,
         'kf_validation': 0,
         'lbc_flow': 0,
         'lbc_state': 0,
@@ -701,7 +758,17 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'openbc': 0,
         'pd_advection': 0,
         'refl': 18432,
+        # Read 2026-09-30 on this box at this NVRTC (the device-resident
+        # legacy RRTMG adapter glue, tools/vram_reserve_probe.py frames reader):
+        # every kernel 0 B.  The same for its device wrapper prep.  Re-read
+        # the same day on an RTX PRO 4500 (sm_120, NVRTC 13.4) after the
+        # result-grid, SWDOWN and radius kernels joined the unit: all twelve
+        # 0 B, the prep unit's four 0 B.
+        'rrtmg_legacy_adapter': 0,
+        'rrtmg_legacy_prep': 0,
         'rrtmg_lw': 0,
+        # Re-read 2026-09-30 with rmcw_fill_outputs_column added (the
+        # longwave McICA slabs in the batched engine's layout): 0 B.
         'rrtmg_mcica_wrf': 0,
         'rrtmgp_cloud': 40,
         'rrtmgp_gas': 512,
@@ -712,7 +779,7 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'sase': 6272,
         'saxpy': 0,
         'sfclay': 0,
-        'shinhong': 17160,
+        'shinhong': 0,
         'shinhong_validation': 0,
         'smag2d': 0,
         'spec_bdy': 0,
@@ -724,7 +791,294 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'thompson_aerosol_state': 40,
         'thompson_aerosol_warm': 0,
         'tke_budget': 0,
+        # Read 2026-09-30 on this box at this NVRTC, fresh CuPy cache (WRF
+        # v4.7.1 slope_rad / topo_shading, lane 281-namelist-gaps): the
+        # shadow scan and the surface adjustment 40 B each, the other four
+        # entry points 0 B.
+        'topo_radiation': 40,
         'uh_diag': 0,
+        # uwpbl.cu joined after this reading.  Read on this card and
+        # this NVRTC build 2026-09-30 (the loader's get_function().
+        # attributes route of tools/vram_reserve_probe.py): uwpbl_columns
+        # 864 B, 255 registers.  The same source is 3,184 B on sm_89 at
+        # the same build (SM89_NVRTC_13_4_92).
+        'uwpbl': 864,
+        'vert_interp': 768,
+        'wdm6': 9264,
+        'wdm6_refl': 16128,
+        'wsm6': 7216,
+        'ysu': 0,
+        'ysu_validation': 0,
+        # The urban canopy models joined after this reading.  Read on this
+        # card and this NVRTC build 2026-09-30 with tools/
+        # vram_reserve_probe.py frames, at the source that reads the
+        # green-roof constants from __constant__ memory (urban_ucm.cu):
+        # urban_ucm 0 B (the same source is 72 B on sm_89, see
+        # SM89_NVRTC_13_4_92), urban_bep and urban_bep_couple 0 B, and
+        # myjurb 10,256 B -- MYJ's 9,232 B myjpbl frame plus MYJURB's
+        # urban arrays, a (10,256 - 1,024) B x 170 SMs x 1,536 threads =
+        # 2.2 GiB launch-time reservation.  BEP+BEM's composed unit is
+        # priced in preflight.CHAINED_TRANSLATION_UNIT_FRAMES.
+        'myjurb': 10256,
+        'urban_bep': 0,
+        'urban_bep_couple': 0,
+        'urban_ucm': 0,
+    }),
+)
+
+#: A167: sm_120 at NVRTC 12.9.86, the compiler of the default gpuwm[gpu]
+#: extra (cupy-cuda12x[ctk], RESOLVED_TOOLCHAIN_PINS) and of the shipped
+#: desktop runtime.  Until this reading the standalone tables had no
+#: sm_120 row for it (only Noah-MP's composed units below), and the urban
+#: canopy units, read 2026-09-30 under 13.4.92 only, compile WIDER here:
+#: myjurb 12,304 B against 10,256 B under 13.4.92, a (2,048 B) x 70 SMs x
+#: 1,536 threads = 0.205 GiB launch-time reservation the fit gate did not
+#: charge on an RTX 5070 Ti (0.50 GiB on an RTX 5090's 170 SMs);
+#: urban_ucm 552 B against 72 B and urban_bep 16 B against 0 B, both under
+#: the 1,024 B default stack.  Those three rows raise the ceiling; every
+#: other row is at or below it (gf 88, uwpbl 2,032, noahmp_leaves 272 read
+#: as other recordings already carry them).  Read 2026-10-01 with
+#: tools/vram_reserve_probe.py frames through the production loader, fresh
+#: CuPy and driver caches, two processes on each of node-4's RTX 5070 Ti
+#: (driver 13.2) and node-2's RTX 5090 (driver 13.3), CuPy 14.2.0 with
+#: nvidia-cuda-nvrtc-cu12 12.9.86: the four readings agree to the byte.
+#: COMPLETE: every ``.cu`` that compiles alone, the 15 that do not being
+#: exactly preflight.UNMEASURED_KERNEL_MODULES.
+SM120_NVRTC_12_9_86 = KernelFrameRecording(
+    box='weather-node-4 and weather-node-2',
+    device='NVIDIA GeForce RTX 5070 Ti and NVIDIA GeForce RTX 5090',
+    compute_capability='120',
+    nvrtc_build='12.9.86',
+    platform_family='linux',
+    measured='2026-10-01',
+    complete=True,
+    frames=MappingProxyType({
+        'acoustic': 544,
+        'advection': 0,
+        'coriolis_map': 0,
+        'diagnostics': 0,
+        'diff6': 0,
+        'diff6_seam': 0,
+        'diffusion': 0,
+        'dycore': 0,
+        'face_mass': 0,
+        'ftz_probe': 0,
+        'gf': 88,
+        'health': 0,
+        'health_tile': 0,
+        'held_heating': 0,
+        'ieva': 1040,
+        'jacobi_eigh': 0,
+        'kessler': 5120,
+        'kf': 0,
+        'kf_validation': 0,
+        'lbc_flow': 0,
+        'lbc_state': 0,
+        'lbc_time': 0,
+        'microphysics_validation': 0,
+        'milbrandt2': 2048,
+        'milbrandt2_zet': 0,
+        'morrison': 5120,
+        'myjpbl': 9232,
+        'myjsfc': 0,
+        'myjurb': 12304,
+        'mynn_dmp_sibling': 0,
+        'mynn_pbl': 0,
+        'mynn_scalar_mix': 0,
+        'mynn_surface': 0,
+        'nest': 0,
+        'nest_microphysics': 0,
+        'noah': 176,
+        'noahmp_bareflux': 0,
+        'noahmp_fluxprep': 0,
+        'noahmp_leaves': 272,
+        'noahmp_radiation': 0,
+        'noahmp_sflx': 0,
+        'noahmp_snow': 200,
+        'noahmp_soilwater': 0,
+        'noahmp_vegeflux': 0,
+        'noahmp_vegprecip': 0,
+        'noahmp_water': 224,
+        'nssl2': 15504,
+        'nssl2_diagnostics': 0,
+        'nssl2_driver_support': 15504,
+        'nssl2_fused_gs': 112,
+        'nssl2_nucond': 0,
+        'nssl2_qvexcess': 0,
+        'ntiedtke': 0,
+        'openbc': 0,
+        'pd_advection': 0,
+        'refl': 18432,
+        'rk_bookkeeping': 0,
+        'rrtmg_legacy_adapter': 0,
+        'rrtmg_legacy_prep': 0,
+        'rrtmg_lw': 0,
+        'rrtmg_mcica_wrf': 0,
+        'rrtmgp_cloud': 0,
+        'rrtmgp_gas': 512,
+        'rrtmgp_mcica': 0,
+        'rrtmgp_rte': 3600,
+        'rrtmgp_validation': 0,
+        'ruc': 144,
+        'sase': 6272,
+        'saxpy': 0,
+        'sfclay': 0,
+        'shinhong': 0,
+        'shinhong_validation': 0,
+        'smag2d': 0,
+        'spec_bdy': 0,
+        'surface_w': 0,
+        'thompson': 11264,
+        'thompson_aerosol_cold': 0,
+        'thompson_aerosol_probe': 0,
+        'thompson_aerosol_sat': 0,
+        'thompson_aerosol_sed': 9216,
+        'thompson_aerosol_state': 40,
+        'thompson_aerosol_warm': 0,
+        'tke_budget': 0,
+        'topo_radiation': 40,
+        'uh_diag': 0,
+        'urban_bep': 16,
+        'urban_bep_couple': 0,
+        'urban_ucm': 552,
+        'uwpbl': 2032,
+        'vert_interp': 768,
+        'wdm6': 9264,
+        'wdm6_refl': 16128,
+        'wsm6': 7216,
+        'ysu': 0,
+        'ysu_validation': 0,
+    }),
+)
+
+
+#: node-1's RTX 4090 (sm_89) at NVRTC 13.4.92, the cupy-cuda13x[ctk] build
+#: of a fresh gpu-cu13 install, read 2026-09-30 with tools/
+#: vram_reserve_probe.py frames: every standalone ``.cu`` in the tree (the
+#: 86 it compiles; the 13 it cannot are the composed fragments of
+#: preflight.UNMEASURED_KERNEL_MODULES).  Taken for the urban canopy
+#: models, whose urban_ucm frame differs by architecture (72 B here, 0 B on
+#: sm_120) -- so the ceiling needed this architecture -- and recorded whole
+#: rather than as four rows: every other module agrees with the shipped
+#: ceiling, so it raises no other row.  NVRTC 12.9.86 (cupy-cuda12x) on the
+#: same card read the same 86 values.  Re-read whole at the forward merge
+#: onto integrate/2.8: 94 standalone modules, 16 composed fragments.
+#: NOT COMPLETE since the namelist-gaps merge (2026-10-01): topo_radiation.cu
+#: (WRF's slope_rad / topo_shading) joined the tree unread on this card.  It
+#: is priced from the other recordings' readings (40 B on sm_120) until this
+#: card reads it; nothing is back-filled.  ieva.cu (A158, zadvect_implicit)
+#: is unread here too and is priced from its sm_120 reading, 1,040 B.
+SM89_NVRTC_13_4_92 = KernelFrameRecording(
+    box='weather-node-1',
+    device='NVIDIA GeForce RTX 4090',
+    compute_capability='89',
+    nvrtc_build='13.4.92',
+    platform_family='linux',
+    measured='2026-09-30',
+    complete=False,
+    frames=MappingProxyType({
+        # Re-read 2026-09-30 on this card at the urban tip forward-merged onto
+        # integrate/2.8 (tools/vram_reserve_probe.py frames): every row
+        # above and below read the same value again, and the eight
+        # modules the 2026-09-30 speed lanes added (face_mass,
+        # held_heating, mynn_seaice_glue, phy_glue, rk_bookkeeping,
+        # rrtmg_legacy_adapter, rrtmg_legacy_prep, surface_w) read 0 B,
+        # so the recording stays complete.  Re-read again at the merge of
+        # integrate/2.8 10977552d: kf 512 -> 0 B (the default-pieces lane's
+        # KF tiling) and shinhong 17,160 -> 0 B (its column arrays moved to a
+        # global workspace, 878435c39); every other row read the same.
+        # mynn_seaice_glue and phy_glue left the tree with the megakernel
+        # revert (A147), and their rows with them.
+        'acoustic': 544,
+        'advection': 0,
+        'coriolis_map': 0,
+        'diagnostics': 0,
+        'diff6': 0,
+        'diff6_seam': 0,
+        'diffusion': 0,
+        'dycore': 0,
+        'face_mass': 0,
+        'ftz_probe': 0,
+        'gf': 88,
+        'health': 0,
+        'health_tile': 0,
+        'held_heating': 0,
+        'jacobi_eigh': 0,
+        'kessler': 5120,
+        'kf': 0,
+        'kf_validation': 0,
+        'lbc_flow': 0,
+        'lbc_state': 0,
+        'lbc_time': 0,
+        'microphysics_validation': 0,
+        'milbrandt2': 2048,
+        'milbrandt2_zet': 0,
+        'morrison': 5120,
+        'myjpbl': 9232,
+        'myjsfc': 0,
+        'myjurb': 10256,
+        'mynn_dmp_sibling': 0,
+        'mynn_pbl': 0,
+        'mynn_scalar_mix': 0,
+        'mynn_surface': 0,
+        'nest': 0,
+        'nest_microphysics': 0,
+        'noah': 224,
+        'noahmp_bareflux': 0,
+        'noahmp_fluxprep': 0,
+        'noahmp_leaves': 208,
+        'noahmp_radiation': 0,
+        'noahmp_sflx': 0,
+        'noahmp_snow': 200,
+        'noahmp_soilwater': 0,
+        'noahmp_vegeflux': 0,
+        'noahmp_vegprecip': 0,
+        'noahmp_water': 224,
+        'nssl2': 15504,
+        'nssl2_diagnostics': 0,
+        'nssl2_driver_support': 15504,
+        'nssl2_fused_gs': 112,
+        'nssl2_nucond': 0,
+        'nssl2_qvexcess': 0,
+        'ntiedtke': 0,
+        'openbc': 0,
+        'pd_advection': 0,
+        'refl': 18432,
+        'rk_bookkeeping': 0,
+        'rrtmg_legacy_adapter': 0,
+        'rrtmg_legacy_prep': 0,
+        'rrtmg_lw': 0,
+        'rrtmg_mcica_wrf': 0,
+        'rrtmgp_cloud': 40,
+        'rrtmgp_gas': 512,
+        'rrtmgp_mcica': 0,
+        'rrtmgp_rte': 3600,
+        'rrtmgp_validation': 0,
+        'ruc': 144,
+        'sase': 6272,
+        'saxpy': 0,
+        'sfclay': 0,
+        'shinhong': 0,
+        'shinhong_validation': 0,
+        'smag2d': 0,
+        'spec_bdy': 0,
+        'surface_w': 0,
+        'thompson': 11264,
+        'thompson_aerosol_cold': 0,
+        'thompson_aerosol_probe': 0,
+        'thompson_aerosol_sat': 0,
+        'thompson_aerosol_sed': 9216,
+        'thompson_aerosol_state': 40,
+        'thompson_aerosol_warm': 112,
+        'tke_budget': 0,
+        'uh_diag': 0,
+        'urban_bep': 0,
+        'urban_bep_couple': 0,
+        'urban_ucm': 72,
+        # The UW moist-turbulence PBL (integrate/2.8's own sm_89 reading of
+        # it, merged into this recording): uwpbl_columns compiles to
+        # 3,184 B here against 864 B on sm_120 at the same build.
+        'uwpbl': 3184,
         'vert_interp': 768,
         'wdm6': 9264,
         'wdm6_refl': 16128,
@@ -840,7 +1194,7 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
             'sase': 6272,
             'saxpy': 0,
             'sfclay': 0,
-            'shinhong': 13000,
+            'shinhong': 0,
             'shinhong_validation': 0,
             'smag2d': 0,
             'spec_bdy': 0,
@@ -887,6 +1241,10 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
     # What a fresh gpu-cu13 install compiles on since 2026-09-16, read
     # 2026-09-28 on an RTX 5090 and an RTX 5070 Ti.  Defined above.
     SM120_NVRTC_13_4_92,
+    SM120_NVRTC_12_9_86,
+    # The same compiler on sm_89 (RTX 4090), read 2026-09-30 for the
+    # urban canopy models and the UW moist-turbulence PBL.  Defined above.
+    SM89_NVRTC_13_4_92,
 )
 
 
@@ -902,6 +1260,16 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
 #: cross-platform drift check (``preflight.under_priced_kernel_frames``,
 #: driven from the ``.cu`` enumeration) is structurally unable to see it.
 CHAINED_UNITS_WITHOUT_A_PER_PLATFORM_ROW = MappingProxyType({
+    "noah_mosaic_ucm_unit":
+        "glibc_flt32.cuh, unchanged urban_ucm.cu and noah_mosaic.cu compose "
+        "one NOAH_MOSAIC_UCM translation unit through _mosaic_ucm_module, "
+        "with C++17 and fmad disabled, so no *.cu enumeration reaches it.  "
+        "Priced 1,040 B, noah_mosaic_ucm_column's local_size_bytes on sm_120 "
+        "(RTX 5090) at NVRTC 12.9.86, the default install's compiler, read "
+        "2026-10-01: the widest of four readings (sm_89 400 B at 12.9.86 "
+        "and 13.4.92, sm_120 288 B at 13.4.92).  Re-read on any device by "
+        "tests/test_noah_mosaic_driver.py::"
+        "test_the_mosaic_units_compile_to_the_frames_they_are_priced_at.",
     # P3 one-category (mp_physics = 50), priced at 0 B.
     #
     # WHY IT CANNOT HAVE A ROW: the unit is ``noahmp_leaves.cu`` +
@@ -949,8 +1317,9 @@ CHAINED_UNITS_WITHOUT_A_PER_PLATFORM_ROW = MappingProxyType({
     # because the gate is "every composed unit says why", and a gate that
     # covered only the newest one would let the fourth hide.
     "rrtmg_lw_legacy_chain":
-        "rrtmg_lw.cu + rrtmg_lw_chain.cu + the four rrtmg_lw_taugb* band "
-        "fragments as one unit (gpuwm/core/rrtmg_lw.py section 10); the "
+        "rrtmg_lw.cu + rrtmg_lw_chain.cu + its address-only twin "
+        "rrtmg_lw_chain_coalesced.cu + the four rrtmg_lw_taugb* band "
+        "fragments + the batched entries rrtmg_lw_zbatched.cu as one unit (gpuwm/core/rrtmg_lw.py section 10); the "
         "fragments fail NVRTC standalone.  Priced 2,048 B from a single "
         "sm_120 / cupy 14.0.1 reading, 2026-07-27; bounded on a device by "
         "tests/test_rrtmg_lw_cuda.py (LOCAL_FRAME_BOUNDS).",
@@ -958,6 +1327,29 @@ CHAINED_UNITS_WITHOUT_A_PER_PLATFORM_ROW = MappingProxyType({
         "rrtmg_sw.cu through its own unit (gpuwm/core/rrtmg_sw.py); the "
         "fragment fails NVRTC standalone.  Priced 0 B from the same "
         "sm_120 / cupy 14.0.1 reading, 2026-07-27.",
+    # BEP+BEM (sf_urban_physics = 3).
+    "urban_bem_composed":
+        "glibc_flt32.cuh + glibc_trig_flt32.cuh + urban_bem.cuh + "
+        "urban_bep_bem.cu compiled as one unit with -fmad=false --ftz=false "
+        "by gpuwm/core/urban_bem.py (_bem_module); urban_bep_bem.cu fails "
+        "NVRTC standalone.  Priced 5,128 B, bep_bem_columns' sm_120 / "
+        "NVRTC 12.9.86 reading of 2026-10-01, the widest of four readings "
+        "(sm_89 4,368 B at 12.9.86 and 4,144 B at 13.4.92, sm_120 "
+        "2,312 B at 13.4.92; bep_bem_class_init 0 B on all four).  "
+        "Re-read on any device by tests/test_urban_bem_wrf471_parity.py::"
+        "test_the_composed_bem_unit_compiles_within_the_priced_frame.",
+    # Noah mosaic (sf_surface_mosaic = 1).
+    "noah_mosaic_unit":
+        "glibc_flt32.cuh + noah_mosaic.cu compiled as one unit with "
+        "-std=c++17 --fmad=false by gpuwm/core/noah_mosaic.py "
+        "(_mosaic_module); the *.cu glob compiles noah_mosaic.cu with the "
+        "loader's options, which is not what launches.  Priced 688 B, "
+        "noah_mosaic_column's local_size_bytes on sm_120 (RTX 5090) at "
+        "NVRTC 12.9.86, the default install's compiler, read 2026-10-01: "
+        "the widest of four readings (sm_89 240 B at 12.9.86 and 13.4.92, "
+        "sm_120 176 B at 13.4.92).  Re-read on any device by "
+        "tests/test_noah_mosaic_driver.py::"
+        "test_the_mosaic_units_compile_to_the_frames_they_are_priced_at.",
 })
 
 

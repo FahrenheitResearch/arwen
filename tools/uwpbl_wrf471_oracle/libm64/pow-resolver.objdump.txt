@@ -1,0 +1,40 @@
+
+/lib/x86_64-linux-gnu/libm.so.6:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+00000000000723b0 <__pow_finite@GLIBC_2.15>:
+   723b0:	f3 0f 1e fa          	endbr64
+   723b4:	48 8b 15 15 2c 0b 00 	mov    0xb2c15(%rip),%rdx        # 124fd0 <f32subf64x@@GLIBC_2.28+0x8c2b0>
+   723bb:	f6 82 9d 00 00 00 10 	testb  $0x10,0x9d(%rdx)
+   723c2:	74 10                	je     723d4 <__pow_finite@GLIBC_2.15+0x24>
+   723c4:	48 8d 05 85 f4 02 00 	lea    0x2f485(%rip),%rax        # a1850 <f32subf64x@@GLIBC_2.28+0x8b30>
+   723cb:	f6 82 b8 00 00 00 20 	testb  $0x20,0xb8(%rdx)
+   723d2:	75 19                	jne    723ed <__pow_finite@GLIBC_2.15+0x3d>
+   723d4:	f6 82 de 00 00 00 01 	testb  $0x1,0xde(%rdx)
+   723db:	48 8d 05 9e 88 02 00 	lea    0x2889e(%rip),%rax        # 9ac80 <f32subf64x@@GLIBC_2.28+0x1f60>
+   723e2:	48 8d 15 07 f8 ff ff 	lea    -0x7f9(%rip),%rdx        # 71bf0 <__log_finite@GLIBC_2.15+0x50>
+   723e9:	48 0f 44 c2          	cmove  %rdx,%rax
+   723ed:	c3                   	ret
+   723ee:	66 90                	xchg   %ax,%ax
+
+00000000000723f0 <__remainder_finite@GLIBC_2.15>:
+   723f0:	f3 0f 1e fa          	endbr64
+   723f4:	55                   	push   %rbp
+   723f5:	66 48 0f 7e c8       	movq   %xmm1,%rax
+   723fa:	66 0f 28 d1          	movapd %xmm1,%xmm2
+   723fe:	48 ba ff ff ff ff ff 	movabs $0x7fffffffffffffff,%rdx
+   72405:	ff ff 7f 
+   72408:	48 21 c2             	and    %rax,%rdx
+   7240b:	48 b8 ff ff ff ff ff 	movabs $0x7fdfffffffffffff,%rax
+   72412:	ff df 7f 
+   72415:	48 89 e5             	mov    %rsp,%rbp
+   72418:	53                   	push   %rbx
+   72419:	66 48 0f 7e c3       	movq   %xmm0,%rbx
+   7241e:	48 83 ec 18          	sub    $0x18,%rsp
+   72422:	66 0f 54 15 d6 04 04 	andpd  0x404d6(%rip),%xmm2        # b2900 <f32subf64x@@GLIBC_2.28+0x19be0>
+   72429:	00 
+   7242a:	48 39 d0             	cmp    %rdx,%rax
+   7242d:	72 59                	jb     72488 <__remainder_finite@GLIBC_2.15+0x98>
+   7242f:	66                   	data16

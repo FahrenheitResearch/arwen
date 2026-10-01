@@ -6,7 +6,7 @@
 # written down, and every number in this header is a measurement of
 # THIS file's own run.
 #
-# EXECUTION CARD: NVIDIA GeForce RTX 5070 Ti, 16 GiB, Linux (weather-node-1)
+# EXECUTION CARD: NVIDIA GeForce RTX 5070 Ti, 16 GiB, Linux
 #   The BUDGET is 10 GiB.  `gpuwm check --vram-gib 10` gated this
 #   config, and the peak below is the forecast PROCESS's own device
 #   memory, polled back-to-back off the driver for the whole run.

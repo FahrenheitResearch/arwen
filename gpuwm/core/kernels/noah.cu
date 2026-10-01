@@ -9,8 +9,11 @@
 // tables).  One thread per (i, j) column, 4 soil layers, FP32
 // throughout with FP64 used only for the energy-residual diagnostics.
 // NOT ported (see gpuwm/core/noah.py): UA_PHYS, FASDAS, WRF-Hydro,
-// urban canopy models (the plain VEGTYP==ISURBAN parameter overrides
-// ARE ported), SFCDIF_off, SFLX_GLACIAL (land-ice columns skipped).
+// SFCDIF_off, SFLX_GLACIAL (land-ice columns skipped).  The urban canopy
+// models run AFTER this kernel (gpuwm/core/urban_driver.py); this kernel
+// carries their hand-over only: the NATURAL remap of urban columns
+// (module_sf_noahdrv.F:964-990), TSK_RURAL_BEP, and the rural Q1/Q2K/ZLVL,
+// all behind urban_opt > 0.  The plain VEGTYP==ISURBAN overrides are ported.
 // Float64 mirror: gpuwm/verify/npref.py np_noah_column.
 //
 // Constant discipline: module_sf_noahlsm's own parameters are the file
@@ -95,7 +98,7 @@ __device__ static real noah_frh2o(real tkelv, real smc, real sh2o,
     if (swl < 0.0f) swl = 0.0f;
     while (nlog < 10 && kcount == 0) {
         nlog += 1;
-        real df = logf((psis * gs / hlice)
+        real df = logf(__fdiv_rn(psis * gs, hlice)
                        * powf(1.0f + ck * swl, 2.0f)
                        * powf(smcmax / (smc - swl), bx))
                   - logf(-(tkelv - t0) / tkelv);
@@ -166,7 +169,7 @@ __device__ static void noah_alcalc(real alb, real snoalb, real embrd,
     } else {
         snotime1 = snotime1 + dt;
         snoalb2 = snoalb1 * powf(snacca,
-                                 powf(snotime1 / 86400.0f, snaccb));
+                                 powf(__fdiv_rn(snotime1, 86400.0f), snaccb));
     }
     snoalb2 = fmaxf(snoalb2, alb);
     albedo = alb + sncovr * (snoalb2 - alb);
@@ -211,7 +214,7 @@ __device__ static real noah_snowz0(real sncovr, real z0brd, real snowh)
     real burial = 7.0f * z0brd - snowh;
     real z0eff;
     if (burial <= 0.0007f) z0eff = z0s;
-    else z0eff = burial / 7.0f;
+    else z0eff = __fdiv_rn(burial, 7.0f);
     return (1.0f - sncovr) * z0brd + sncovr * z0eff;
 }
 
@@ -227,7 +230,7 @@ __device__ static void noah_penman(real sfctmp, real sfcprs, real ch,
 {
     real emissi = emissi_in;
     real elcp1 = (1.0f - sncovr) * NELCP
-                 + sncovr * NELCP * NLSUBS / NLSUBC;
+                 + __fdiv_rn(sncovr * NELCP * NLSUBS, NLSUBC);
     real lvs = (1.0f - sncovr) * NLSUBC + sncovr * NLSUBS;
     flx2 = 0.0f;
     real delta = elcp1 * dqsdt2;
@@ -282,7 +285,7 @@ __device__ static void noah_canres(real solar, real ch, real sfctmp,
     for (int k = 0; k < nroot; ++k) rcsoil = rcsoil + part[k];
     rcsoil = fmaxf(rcsoil, 0.0001f);
     rc = rsmin / (xlai * rcs * rct * rcq * rcsoil);
-    real rr2 = (4.0f * emissi * NSIGMA * NRD / CP)
+    real rr2 = (__fdiv_rn(4.0f * emissi * NSIGMA * NRD, CP))
                * powf(sfctmp, 4.0f) / (sfcprs * ch) + 1.0f;
     real delta = (slv / CP) * dqsdt2;
     pc = (rr2 + delta) / (rr2 * (1.0f + rc * ch) + delta);
@@ -419,7 +422,7 @@ __device__ static void noah_srt(real* rhstt, real edir, const real* et,
     runoff1 = 0.0f;
     runoff2 = 0.0f;
     if (pcpdrp != 0.0f) {
-        real dt1 = dt / 86400.0f;
+        real dt1 = __fdiv_rn(dt, 86400.0f);
         real smcav = smcmax - smcwlt;
         dmax[0] = -zsoil[0] * smcav;
         real dice = -zsoil[0] * sice[0];
@@ -836,7 +839,7 @@ __device__ static void noah_snowpack(real esd, real dtsec, real& snowh,
     const real c1k = 0.01f, c2k = 21.0f;
     real snowhc = snowh * 100.0f;
     real esdc = esd * 100.0f;
-    real dthr = dtsec / 3600.0f;
+    real dthr = __fdiv_rn(dtsec, 3600.0f);
     real tsnowc = tsnow - 273.15f;
     real tsoilc = tsoil - 273.15f;
     real tavgc = 0.5f * (tsnowc + tsoilc);
@@ -847,14 +850,14 @@ __device__ static void noah_snowpack(real esd, real dtsec, real& snowh,
     const int ipol = 4;
     real pexp = 0.0f;
     for (int j = ipol; j >= 1; --j)
-        pexp = (1.0f + pexp) * bfac * esdcx / (real)(j + 1);
+        pexp = __fdiv_rn((1.0f + pexp) * bfac * esdcx, (real)(j + 1));
     pexp = pexp + 1.0f;
     real dsx = sndens * pexp;
     if (dsx > 0.40f) dsx = 0.40f;
     if (dsx < 0.05f) dsx = 0.05f;
     sndens = dsx;
     if (tsnowc >= 0.0f) {
-        real dw = 0.13f * dthr / 24.0f;
+        real dw = __fdiv_rn(0.13f * dthr, 24.0f);
         sndens = sndens * (1.0f - dw) + dw;
         if (sndens >= 0.40f) sndens = 0.40f;
     }
@@ -863,8 +866,20 @@ __device__ static void noah_snowpack(real esd, real dtsec, real& snowh,
 }
 
 // ---------------------------------------------------------------- kernel
-extern "C" __global__
-void noah_column(const int* __restrict__ ivgtyp,
+// ONE BODY, TWO ENTRY POINTS.  noah_column is the default path (no urban
+// model): it instantiates the body with URBAN = false, where every urban
+// statement sits under `if constexpr` and is not compiled, so the kernel is
+// built from exactly the statements it had before the urban hand-over was
+// added.  Compiling the hand-over into the one default kernel behind a
+// runtime `urban_opt > 0` test moved default forecasts: NVRTC contracts
+// multiplies into adds (FMA), and the conditional rewrites of vegtyp,
+// shdfac, alb, emissi, lwdn, solnet and t1 changed which products it
+// fused, so a 1 h default forecast drifted from its 15-minute history on
+// (measured on the RTX 5090, 2026-09-30).  noah_column_urban carries the
+// hand-over for sf_urban_physics > 0.
+template <bool URBAN>
+__device__ __forceinline__
+void noah_column_body(const int* __restrict__ ivgtyp,
                  const int* __restrict__ isltyp,
                  const real* __restrict__ psfc_a,
                  const real* __restrict__ sfcprs_a,
@@ -928,7 +943,18 @@ void noah_column(const int* __restrict__ ivgtyp,
                  real dt, int lucats, int slcats, int isurban,
                  int isice, real xice_threshold, int itimestep, int frpcpn,
                  int usemonalb, int rdlai2d, int opt_thcnd,
-                 int ny, int nx)
+                 int ny, int nx,
+                 // URBAN HANDOVER (sf_urban_physics > 0), read only by the
+                 // URBAN instantiation; noah_column passes zeros.
+                 int urban_opt,
+                 const int* __restrict__ urban_cat,   // category -> 0/1
+                 int urban_cat_size, int natural,
+                 const real* __restrict__ frc_urb2d,
+                 const real* __restrict__ ts_urb2d,
+                 real* __restrict__ tsk_rural_bep,    // options 2/3 only
+                 real* __restrict__ rural_q1,
+                 real* __restrict__ rural_q2k,
+                 real* __restrict__ rural_zlvl)
 {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     if (col >= ny * nx) return;
@@ -991,11 +1017,11 @@ void noah_column(const int* __restrict__ ivgtyp,
     real soldn = swdown_a[idx];
     real solnet = soldn * (1.0f - albedo_a[idx]);
     real prcp = rainbl_a[idx] / dt;
-    real shdfac = vegfra_a[idx] / 100.0f;
+    real shdfac = __fdiv_rn(vegfra_a[idx], 100.0f);
     real t1 = tsk_a[idx];
     real chk = chs_a[idx];
-    real shmin = shdmin_a[idx] / 100.0f;
-    real shmax = shdmax_a[idx] / 100.0f;
+    real shmin = __fdiv_rn(shdmin_a[idx], 100.0f);
+    real shmax = __fdiv_rn(shdmax_a[idx], 100.0f);
     real sneqv = snow_a[idx] * 0.001f;
     real snowhk = snowh_a[idx];
     real sncovr = snowc_a[idx];
@@ -1026,7 +1052,7 @@ void noah_column(const int* __restrict__ ivgtyp,
     real tbot = tmn_a[idx];
     if (soiltyp == 14 && xice_a[idx] == 0.0f) soiltyp = 7;
     real snoalb1 = snoalb_a[idx];
-    real cmc = canwat_a[idx] / 1000.0f;
+    real cmc = __fdiv_rn(canwat_a[idx], 1000.0f);
     real alb = albbck_a[idx];
     real z0brd = z0_a[idx];
     real embrd = embck_a[idx];
@@ -1040,6 +1066,41 @@ void noah_column(const int* __restrict__ ivgtyp,
     }
     if ((sneqv != 0.0f && snowhk == 0.0f) || (snowhk <= sneqv))
         snowhk = 5.0f * sneqv;
+    // URBAN NATURAL-SURFACE REMAP, module_sf_noahdrv.F:964-990.  With an
+    // urban model on, the natural fraction of a city cell is WRF's NATURAL
+    // vegetation category and its skin temperature is the RURAL one: for
+    // the UCM the blended TSK with the urban part taken back out, for
+    // BEP/BEM the rural skin BEP kept from the last call.  The test reads
+    // IVGTYP (the category array), as WRF's does, not the local VEGTYP.
+    // Explicit _rn intrinsics keep the T1 recovery out of an FMA, which
+    // gfortran -O0 does not form.
+    bool urban_col = false;   // written only by the URBAN instantiation
+    if constexpr (URBAN) {
+        if (urban_opt > 0) {
+            int cat = ivgtyp[idx];
+            if (cat >= 0 && cat < urban_cat_size && urban_cat[cat] != 0) {
+                urban_col = true;
+                vegtyp = natural;
+                shdfac = vegtbl[(size_t)(natural - 1) * NVEGC + VG_SHDTBL];
+                alb = 0.2f;                       // ALBBRD (ALBEDOK is SFLX's)
+                emissi = 0.98f;
+                lwdn = glw_a[idx] * emissi;
+                solnet = soldn * (1.0f - 0.2f);
+                real frc = frc_urb2d[idx];
+                if (frc < 0.99f) {
+                    if (urban_opt == 1) {
+                        t1 = __fdiv_rn(__fsub_rn(tsk_a[idx],
+                                                 __fmul_rn(frc, ts_urb2d[idx])),
+                                       __fsub_rn(1.0f, frc));
+                    } else {
+                        t1 = tsk_rural_bep[idx];
+                    }
+                } else {
+                    t1 = tsk_a[idx];
+                }
+            }
+        }
+    }
     real xlai = lai_a[idx];
     if (rdlai2d) {
         if (shdfac > 0.0f && xlai <= 0.0f) xlai = 0.01f;
@@ -1298,8 +1359,8 @@ void noah_column(const int* __restrict__ ivgtyp,
         real etanrg, etp1;
         if (etp <= 0.0f) {
             if (ribb >= 0.1f && fdown > 150.0f) {
-                etp = (fminf(etp * (1.0f - ribb), 0.0f) * sncovr
-                       / 0.980f + etp * (0.980f - sncovr)) / 0.980f;
+                etp = __fdiv_rn((__fdiv_rn(fminf(etp * (1.0f - ribb), 0.0f) * sncovr,
+                       0.980f) + etp * (0.980f - sncovr)), 0.980f);
             }
             if (etp == 0.0f) beta = 0.0f;
             etp1 = etp * 0.001f;
@@ -1376,7 +1437,7 @@ void noah_column(const int* __restrict__ ivgtyp,
                 real flx3_def = flx3;
                 if (flx3 <= 0.0f) flx3 = 0.0f;
                 if (flx3 != flx3_def) clipped = true;
-                ex = flx3 * 0.001f / NLSUBF;
+                ex = __fdiv_rn(flx3 * 0.001f, NLSUBF);
                 snomlt = ex * dt;
                 if (esd - snomlt >= esdmin) {
                     esd = esd - snomlt;
@@ -1485,8 +1546,12 @@ void noah_column(const int* __restrict__ ivgtyp,
     emiss_a[idx] = emissi;
     znt_a[idx] = z0k;
     tsk_a[idx] = t1;
+    // module_sf_noahdrv.F:1243-1247: TSK_RURAL_BEP = T1 for BEP/BEM.
+    if constexpr (URBAN) {
+        if (urban_opt >= 2) tsk_rural_bep[idx] = t1;
+    }
     hfx_a[idx] = sheat;
-    potevp_a[idx] = potevp_a[idx] + etp_e * (dt / (XLV * RHOWATER));
+    potevp_a[idx] = potevp_a[idx] + etp_e * (__fdiv_rn(dt, (XLV * RHOWATER)));
     qfx_a[idx] = eta_kin;
     lh_a[idx] = eta_e;
     grdflx_a[idx] = ssoil_out;
@@ -1496,6 +1561,16 @@ void noah_column(const int* __restrict__ ivgtyp,
     chs2_a[idx] = cqs2_a[idx];
     snotime_a[idx] = snotime1;
     qsfc_a[idx] = q1 / (1.0f - q1);
+    if constexpr (URBAN) {
+        if (urban_col) {
+            // The rural values the UCM blend reads and QSFC cannot give back
+            // exactly: Q1 before the mixing-ratio conversion, the specific
+            // humidity Q2K and ZLVL = 0.5*DZ8W (module_sf_noahdrv.F:798, 817).
+            rural_q1[idx] = q1;
+            rural_q2k[idx] = q2k;
+            rural_zlvl[idx] = 0.5f * dz8w1_a[idx];
+        }
+    }
     for (int k = 0; k < NSOIL; ++k) {
         smois_a[k * plane + idx] = smc[k];
         tslb_a[k * plane + idx] = stc[k];
@@ -1523,4 +1598,185 @@ void noah_column(const int* __restrict__ ivgtyp,
         acsnom_a[idx] = acsnom_a[idx] + snomlt * 1000.0f;
         snopcx_a[idx] = snopcx_a[idx] - snomlt * 1000.0f * NXLF / dt;
     }
+}
+
+extern "C" __global__
+void noah_column(const int* __restrict__ ivgtyp,
+                 const int* __restrict__ isltyp,
+                 const real* __restrict__ psfc_a,
+                 const real* __restrict__ sfcprs_a,
+                 const real* __restrict__ sfctmp_a,
+                 const real* __restrict__ qv1_a,
+                 const real* __restrict__ qgh_a,
+                 const real* __restrict__ dz8w1_a,
+                 const real* __restrict__ glw_a,
+                 const real* __restrict__ swdown_a,
+                 const real* __restrict__ rainbl_a,
+                 const real* __restrict__ sr_a,
+                 const real* __restrict__ chs_a,
+                 const real* __restrict__ cqs2_a,
+                 real* __restrict__ chs2_a,
+                 const real* __restrict__ rib_a,
+                 const real* __restrict__ vegfra_a,
+                 const real* __restrict__ shdmin_a,
+                 const real* __restrict__ shdmax_a,
+                 const real* __restrict__ tmn_a,
+                 const real* __restrict__ xland_a,
+                 const real* __restrict__ xice_a,
+                 const real* __restrict__ snoalb_a,
+                 const real* __restrict__ embck_a,
+                 real* __restrict__ tsk_a,
+                 real* __restrict__ hfx_a,
+                 real* __restrict__ qfx_a,
+                 real* __restrict__ lh_a,
+                 real* __restrict__ grdflx_a,
+                 real* __restrict__ qsfc_a,
+                 real* __restrict__ canwat_a,
+                 real* __restrict__ snow_a,
+                 real* __restrict__ snowc_a,
+                 real* __restrict__ snowh_a,
+                 real* __restrict__ albedo_a,
+                 real* __restrict__ albbck_a,
+                 real* __restrict__ emiss_a,
+                 real* __restrict__ znt_a,
+                 real* __restrict__ z0_a,
+                 real* __restrict__ snotime_a,
+                 real* __restrict__ lai_a,
+                 real* __restrict__ smstav_a,
+                 real* __restrict__ smstot_a,
+                 real* __restrict__ sfcrunoff_a,
+                 real* __restrict__ udrunoff_a,
+                 real* __restrict__ acsnow_a,
+                 real* __restrict__ acsnom_a,
+                 real* __restrict__ snopcx_a,
+                 real* __restrict__ potevp_a,
+                 real* __restrict__ noahres_a,
+                 real* __restrict__ reslin_a,
+                 real* __restrict__ chklowq_a,
+                 real* __restrict__ smois_a,      // (4, ny, nx)
+                 real* __restrict__ tslb_a,
+                 real* __restrict__ sh2o_a,
+                 real* __restrict__ smcrel_a,
+                 int* __restrict__ ebal_a,
+                 const real* __restrict__ vegtbl,   // (lucats, NVEGC)
+                 const real* __restrict__ soiltbl,  // (slcats, NSOILC)
+                 const real* __restrict__ genp,     // (16,)
+                 const real* __restrict__ dzs,      // (4,)
+                 real dt, int lucats, int slcats, int isurban,
+                 int isice, real xice_threshold, int itimestep, int frpcpn,
+                 int usemonalb, int rdlai2d, int opt_thcnd,
+                 int ny, int nx)
+{
+    noah_column_body<false>(ivgtyp, isltyp, psfc_a, sfcprs_a, sfctmp_a, qv1_a,
+                            qgh_a, dz8w1_a, glw_a, swdown_a, rainbl_a, sr_a,
+                            chs_a, cqs2_a, chs2_a, rib_a, vegfra_a, shdmin_a,
+                            shdmax_a, tmn_a, xland_a, xice_a, snoalb_a,
+                            embck_a, tsk_a, hfx_a, qfx_a, lh_a, grdflx_a,
+                            qsfc_a, canwat_a, snow_a, snowc_a, snowh_a,
+                            albedo_a, albbck_a, emiss_a, znt_a, z0_a,
+                            snotime_a, lai_a, smstav_a, smstot_a, sfcrunoff_a,
+                            udrunoff_a, acsnow_a, acsnom_a, snopcx_a,
+                            potevp_a, noahres_a, reslin_a, chklowq_a, smois_a,
+                            tslb_a, sh2o_a, smcrel_a, ebal_a, vegtbl, soiltbl,
+                            genp, dzs, dt, lucats, slcats, isurban, isice,
+                            xice_threshold, itimestep, frpcpn, usemonalb,
+                            rdlai2d, opt_thcnd, ny, nx, 0, nullptr, 0, 0,
+                            nullptr, nullptr, nullptr, nullptr, nullptr,
+                            nullptr);
+}
+
+extern "C" __global__
+void noah_column_urban(const int* __restrict__ ivgtyp,
+                 const int* __restrict__ isltyp,
+                 const real* __restrict__ psfc_a,
+                 const real* __restrict__ sfcprs_a,
+                 const real* __restrict__ sfctmp_a,
+                 const real* __restrict__ qv1_a,
+                 const real* __restrict__ qgh_a,
+                 const real* __restrict__ dz8w1_a,
+                 const real* __restrict__ glw_a,
+                 const real* __restrict__ swdown_a,
+                 const real* __restrict__ rainbl_a,
+                 const real* __restrict__ sr_a,
+                 const real* __restrict__ chs_a,
+                 const real* __restrict__ cqs2_a,
+                 real* __restrict__ chs2_a,
+                 const real* __restrict__ rib_a,
+                 const real* __restrict__ vegfra_a,
+                 const real* __restrict__ shdmin_a,
+                 const real* __restrict__ shdmax_a,
+                 const real* __restrict__ tmn_a,
+                 const real* __restrict__ xland_a,
+                 const real* __restrict__ xice_a,
+                 const real* __restrict__ snoalb_a,
+                 const real* __restrict__ embck_a,
+                 real* __restrict__ tsk_a,
+                 real* __restrict__ hfx_a,
+                 real* __restrict__ qfx_a,
+                 real* __restrict__ lh_a,
+                 real* __restrict__ grdflx_a,
+                 real* __restrict__ qsfc_a,
+                 real* __restrict__ canwat_a,
+                 real* __restrict__ snow_a,
+                 real* __restrict__ snowc_a,
+                 real* __restrict__ snowh_a,
+                 real* __restrict__ albedo_a,
+                 real* __restrict__ albbck_a,
+                 real* __restrict__ emiss_a,
+                 real* __restrict__ znt_a,
+                 real* __restrict__ z0_a,
+                 real* __restrict__ snotime_a,
+                 real* __restrict__ lai_a,
+                 real* __restrict__ smstav_a,
+                 real* __restrict__ smstot_a,
+                 real* __restrict__ sfcrunoff_a,
+                 real* __restrict__ udrunoff_a,
+                 real* __restrict__ acsnow_a,
+                 real* __restrict__ acsnom_a,
+                 real* __restrict__ snopcx_a,
+                 real* __restrict__ potevp_a,
+                 real* __restrict__ noahres_a,
+                 real* __restrict__ reslin_a,
+                 real* __restrict__ chklowq_a,
+                 real* __restrict__ smois_a,      // (4, ny, nx)
+                 real* __restrict__ tslb_a,
+                 real* __restrict__ sh2o_a,
+                 real* __restrict__ smcrel_a,
+                 int* __restrict__ ebal_a,
+                 const real* __restrict__ vegtbl,   // (lucats, NVEGC)
+                 const real* __restrict__ soiltbl,  // (slcats, NSOILC)
+                 const real* __restrict__ genp,     // (16,)
+                 const real* __restrict__ dzs,      // (4,)
+                 real dt, int lucats, int slcats, int isurban,
+                 int isice, real xice_threshold, int itimestep, int frpcpn,
+                 int usemonalb, int rdlai2d, int opt_thcnd,
+                 int ny, int nx,
+                 // URBAN HANDOVER (sf_urban_physics > 0), read only by the
+                 // URBAN instantiation; noah_column passes zeros.
+                 int urban_opt,
+                 const int* __restrict__ urban_cat,   // category -> 0/1
+                 int urban_cat_size, int natural,
+                 const real* __restrict__ frc_urb2d,
+                 const real* __restrict__ ts_urb2d,
+                 real* __restrict__ tsk_rural_bep,    // options 2/3 only
+                 real* __restrict__ rural_q1,
+                 real* __restrict__ rural_q2k,
+                 real* __restrict__ rural_zlvl)
+{
+    noah_column_body<true>(ivgtyp, isltyp, psfc_a, sfcprs_a, sfctmp_a, qv1_a,
+                           qgh_a, dz8w1_a, glw_a, swdown_a, rainbl_a, sr_a,
+                           chs_a, cqs2_a, chs2_a, rib_a, vegfra_a, shdmin_a,
+                           shdmax_a, tmn_a, xland_a, xice_a, snoalb_a,
+                           embck_a, tsk_a, hfx_a, qfx_a, lh_a, grdflx_a,
+                           qsfc_a, canwat_a, snow_a, snowc_a, snowh_a,
+                           albedo_a, albbck_a, emiss_a, znt_a, z0_a,
+                           snotime_a, lai_a, smstav_a, smstot_a, sfcrunoff_a,
+                           udrunoff_a, acsnow_a, acsnom_a, snopcx_a, potevp_a,
+                           noahres_a, reslin_a, chklowq_a, smois_a, tslb_a,
+                           sh2o_a, smcrel_a, ebal_a, vegtbl, soiltbl, genp,
+                           dzs, dt, lucats, slcats, isurban, isice,
+                           xice_threshold, itimestep, frpcpn, usemonalb,
+                           rdlai2d, opt_thcnd, ny, nx, urban_opt, urban_cat,
+                           urban_cat_size, natural, frc_urb2d, ts_urb2d,
+                           tsk_rural_bep, rural_q1, rural_q2k, rural_zlvl);
 }

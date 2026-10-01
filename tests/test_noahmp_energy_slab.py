@@ -493,7 +493,7 @@ def test_elai_esai_transposition_really_is_unobservable():
 
 @requires_gpu
 def test_the_tie_correct_min_is_load_bearing_in_btran(monkeypatch):
-    """Substituting ``cupy.minimum`` for ``fmn`` must be observable.
+    """Removing BTRAN's upper clamp must be observable.
 
     Not because the fixture columns hit a signed-zero tie -- they do not --
     but because if the substitution were invisible here, this file would not
@@ -509,7 +509,14 @@ def test_the_tie_correct_min_is_load_bearing_in_btran(monkeypatch):
     _s, _seg1, seg2, _r = _run_segments(columns, state=state)
     reference = cp.asnumpy(seg2["btran"]).copy()
 
-    monkeypatch.setattr(slab, "fmn", lambda a, b: cp.asarray(b, cp.float32))
+    from gpuwm.core import noahmp_slab_libm as transfers
+    compile_kernel = transfers.compile_generated_slab_kernel
+    def remove_upper_clamp(source, name):
+        if name == "noahmp_root_fractions":
+            source = source.replace("gx=1.0f<gx?1.0f:gx;", "")
+        return compile_kernel(source, name)
+    monkeypatch.setattr(transfers, "_ROOT_FRACTION_KERNELS", {})
+    monkeypatch.setattr(transfers, "compile_generated_slab_kernel", remove_upper_clamp)
     _s, _seg1, broken, _r = _run_segments(columns, state=state)
     assert (cp.asnumpy(broken["btran"]).view(np.int32)
             != reference.view(np.int32)).any(), (

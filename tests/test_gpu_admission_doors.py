@@ -49,10 +49,15 @@ class _NullLock:
 
 
 def _price_recorder(seen: dict, value):
-    """Record what a door priced, and hand it back one fixed number."""
+    """Record what a door priced, and hand it back one fixed number.
 
-    def price(configuration):
+    ``source`` is the forcing source a door that knows it prices with
+    (:func:`gpuwm.supervisor.priced_reservation_bytes`).
+    """
+
+    def price(configuration, *, source=None):
         seen["priced"] = configuration
+        seen["source"] = source
         return value
 
     return price
@@ -135,6 +140,71 @@ def test_multi_run_worker_prices_its_admission_from_its_experiment_config(
             "--outdir", str(outdir))) == 0
     assert Path(str(seen["priced"])) == config
     assert seen["preflight"]["reservation_bytes"] == 9 * 2 ** 30
+
+
+def test_multi_run_worker_prices_the_boundary_its_forecast_carries(
+        tmp_path, monkeypatch):
+    """The reservation carries the source the runner forecasts from.
+
+    The source's analysed hydrometeors ride the root's boundary tables
+    (gpuwm.boundary_fields), so a multi-run of HRRR-forced forecasts
+    priced with no source reserved a shared card short by those tables.
+    The single-domain runner names its source (``--source``); a tree
+    runner's prepared root names it in its own document; a root prepared
+    from a user's own mapping answers with the mapping document it
+    copied into its evidence, since the name ``mapped`` publishes none.
+    Red with the source left out of the reservation: every case below
+    priced with ``None``.
+    """
+    import json
+
+    from gpuwm import multi_run
+    from gpuwm.boundary_fields import source_boundary_species
+    from gpuwm.prepared_domain_tree_forecast import HIERARCHY_SCHEMA
+
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(multi_run, "priced_reservation_bytes",
+                        _price_recorder(seen, 5 * 2 ** 30))
+    config = tmp_path / "experiment.toml"
+    single = "gpuwm.prepared_single_domain_forecast"
+
+    def priced(module, root, *extra):
+        seen.clear()
+        arguments = ["--prepared-root", str(root),
+                     "--experiment-config", str(config), *extra]
+        if module == single:
+            arguments += ["--wps-namelist", str(tmp_path / "namelist.wps")]
+        assert multi_run._worker_reservation_bytes(
+            module, arguments) == 5 * 2 ** 30
+        assert Path(str(seen["priced"])) == config
+        return seen["source"]
+
+    named = tmp_path / "named"
+    named.mkdir()
+    assert priced(single, named, "--source", "hrrr") == "hrrr"
+
+    tree_root = tmp_path / "tree"
+    tree_root.mkdir()
+    (tree_root / "receipt.json").write_text(
+        json.dumps({"schema": HIERARCHY_SCHEMA}), encoding="utf-8")
+    source = priced("gpuwm.prepared_domain_tree_forecast", tree_root)
+    assert source == "hrrr" and source_boundary_species(source)
+
+    mapping = {"format": "grib2", "fields": {
+        "cloud_water_mixing_ratio": {}, "snow_mixing_ratio": {}}}
+    mapped = tmp_path / "mapped"
+    (mapped / "source-evidence").mkdir(parents=True)
+    (mapped / "source-evidence" / "mapping.json").write_text(
+        json.dumps(mapping), encoding="utf-8")
+    source = priced(single, mapped, "--source", "mapped")
+    assert source == mapping
+    assert source_boundary_species(source) == ("qc", "qs")
+
+    # A root that names nothing prices water vapour only, and never
+    # refuses: the runner admits its forecast again on the cache.
+    unnamed = tmp_path / "unnamed"
+    unnamed.mkdir()
+    assert priced("gpuwm.prepared_domain_tree_forecast", unnamed) is None
 
 
 def test_multi_run_check_worker_prices_the_configuration_it_reviews(

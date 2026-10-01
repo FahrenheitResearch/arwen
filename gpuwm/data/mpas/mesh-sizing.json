@@ -52,7 +52,7 @@
         "anchors": [
           {"mesh": "x1.40962", "cells": 40962, "process_mib": 8768.0, "tolerance_mib": 20.0}
         ],
-        "provenance": "weather-node-1, sm_120, float32, nVertLevels=55, full physics, 6 steps, rc 0, status passed. The 8,768.0 MiB peak is the run under memory pressure: VRAM was held down in a separate process so the run saw 9,656.7 MiB free, and four separate runs across a 2.6 GiB band of held-down budgets all peaked at exactly 8,768.0 MiB. Unconstrained the same run peaks at 10,514.0 MiB, which is CuPy pool opportunism and NOT a requirement -- sizing against it costs 1,745.6 MiB of pessimism. A like-for-like subtraction against the 5090 gives 5,388 MiB fixed independently, 4 MiB from this one.",
+        "provenance": "RTX 5070 Ti, sm_120, float32, nVertLevels=55, full physics, 6 steps, rc 0, status passed. The 8,768.0 MiB peak is the run under memory pressure: VRAM was held down in a separate process so the run saw 9,656.7 MiB free, and four separate runs across a 2.6 GiB band of held-down budgets all peaked at exactly 8,768.0 MiB. Unconstrained the same run peaks at 10,514.0 MiB, which is CuPy pool opportunism and NOT a requirement -- sizing against it costs 1,745.6 MiB of pessimism. A like-for-like subtraction against the 5090 gives 5,388 MiB fixed independently, 4 MiB from this one.",
         "notes": "nvidia-smi says 16,303 MiB and CUDA's own memGetInfo says 15,880.6; the 422 MiB gap is not addressable and device_addressable_mib is what sizing uses. The 120 km global x1.40962 mesh runs inside a 10 GiB budget on this part, with about a GiB to spare."
       },
       "rtx-5090": {

@@ -87,18 +87,19 @@ def _record_adapter_call(monkeypatch, *, refl_due: bool):
         return launch
 
     launcher_names = (
+        "launch_adapter_entry",
+        "launch_adapter_finish",
+        "launch_adapter_masks",
+        "launch_adapter_prepare",
         "launch_cloud_sedimentation",
         "launch_cloud_saturation_adjust",
         "launch_classic_graupel_number_finalize",
-        "launch_classic_graupel_number_init",
         "launch_effective_radius",
         "launch_final_phase_cleanup",
         "launch_frozen_vapor_network_from_owner",
-        "launch_graupel_fallout_column_mask",
         "launch_graupel_sedimentation",
         "launch_hydrometeor_column_mask",
         "launch_ice_sedimentation",
-        "launch_microphysics_columns",
         "launch_rain_evaporation",
         "launch_rain_sedimentation",
         "launch_snow_sedimentation",
@@ -178,10 +179,11 @@ def test_adapter_composes_all_thompson_phases_independently_of_output_cadence(
     assert "reflectivity" not in names_off
 
     ordered_phases = (
-        "launch_microphysics_columns",
-        "launch_classic_graupel_number_init",
+        "launch_adapter_prepare",
+        "launch_adapter_entry",
         "launch_warm_frozen_source_network_from_owner",
         "launch_frozen_vapor_network_from_owner",
+        "launch_adapter_masks",
         "launch_cloud_saturation_adjust",
         "launch_rain_evaporation",
         "launch_cloud_sedimentation",
@@ -192,26 +194,28 @@ def test_adapter_composes_all_thompson_phases_independently_of_output_cadence(
         "launch_final_phase_cleanup",
         "launch_classic_graupel_number_finalize",
         "launch_effective_radius",
+        "launch_adapter_finish",
     )
     for name in ordered_phases:
         assert names_off.count(name) == 1, (name, names_off)
 
     position = {name: names_off.index(name) for name in ordered_phases}
-    # WRF's column exit (:1646, :1827-1990, :2020) is decided on the entry
-    # state, before any source process runs.
-    assert position["launch_microphysics_columns"] < min(
-        position["launch_classic_graupel_number_init"],
+    # The entry rewrite, then WRF's column exit (:1646, :1827-1990, :2020)
+    # and the private graupel number on the rewritten entry state, all before
+    # any source process runs.
+    assert position["launch_adapter_prepare"] < position[
+        "launch_adapter_entry"]
+    assert position["launch_adapter_entry"] < min(
         position["launch_warm_frozen_source_network_from_owner"],
         position["launch_frozen_vapor_network_from_owner"],
     )
-    assert position["launch_classic_graupel_number_init"] < min(
-        position["launch_warm_frozen_source_network_from_owner"],
-        position["launch_frozen_vapor_network_from_owner"],
-    )
+    # The post-source rain and graupel fallout masks read the sources' state.
     assert max(
         position["launch_warm_frozen_source_network_from_owner"],
         position["launch_frozen_vapor_network_from_owner"],
-    ) < position["launch_cloud_saturation_adjust"]
+    ) < position["launch_adapter_masks"]
+    assert position["launch_adapter_masks"] < position[
+        "launch_cloud_saturation_adjust"]
     assert position["launch_cloud_saturation_adjust"] < position[
         "launch_rain_evaporation"]
     assert position["launch_rain_evaporation"] < min(
@@ -232,6 +236,8 @@ def test_adapter_composes_all_thompson_phases_independently_of_output_cadence(
         "launch_classic_graupel_number_finalize"]
     assert position["launch_classic_graupel_number_finalize"] < position[
         "launch_effective_radius"]
+    assert position["launch_effective_radius"] < position[
+        "launch_adapter_finish"]
 
     # One caller-owned classic ng scratch must flow through every phase.  The
     # cold and fallout kernels intentionally receive it as a tracked shadow,
@@ -240,8 +246,11 @@ def test_adapter_composes_all_thompson_phases_independently_of_output_cadence(
             (calls_off, state_off, owner_off),
             (calls_on, state_on, owner_on)):
         shadow = state._scratch["mp_thompson_graupel_number_shadow"]
-        _, init_args, _ = _named_call(
-            calls, "launch_classic_graupel_number_init")
+        _, prepare_args, prepare_kwargs = _named_call(
+            calls, "launch_adapter_prepare")
+        _, entry_args, entry_kwargs = _named_call(
+            calls, "launch_adapter_entry")
+        _, masks_args, _ = _named_call(calls, "launch_adapter_masks")
         _, warm_args, _ = _named_call(
             calls, "launch_warm_frozen_source_network_from_owner")
         _, cold_args, cold_kwargs = _named_call(
@@ -256,21 +265,34 @@ def test_adapter_composes_all_thompson_phases_independently_of_output_cadence(
             calls, "launch_classic_graupel_number_finalize")
         # The flag is written into the one (ny, nx) scratch slot the phase
         # cleanup reads, which carries WRF's terminal vapour floor only in
-        # the columns that had microphysics (:3974).
-        _, columns_args, columns_kwargs = _named_call(
-            calls, "launch_microphysics_columns")
+        # the columns that had microphysics (:3974); the entry launch clears
+        # it and the next launch sets it on the rewritten entry state.
         _, _cleanup_args, cleanup_kwargs = _named_call(
             calls, "launch_final_phase_cleanup")
         micro_columns = state._scratch["mp_thompson_micro_columns"]
         assert micro_columns.shape == state.p.shape[1:]
-        assert not columns_kwargs, columns_kwargs
-        assert len(columns_args) == 9, len(columns_args)
-        assert columns_args[8] is micro_columns
-        assert columns_args[0] is state.qc
-        assert columns_args[4] is state.qg
-        assert columns_args[7] is state.qv
+        assert not prepare_kwargs and not entry_kwargs
+        assert len(prepare_args) == 20, len(prepare_args)
+        assert prepare_args[5] is state._scratch["mp_pii"]
+        assert prepare_args[8] is state.h_diabatic
+        assert prepare_args[16] is state._scratch[
+            "mp_thompson_frozen_reference_temperature"]
+        assert prepare_args[17] is state._scratch[
+            "mp_thompson_graupel_melt_marker"]
+        assert prepare_args[19] is micro_columns
+        assert len(entry_args) == 10, len(entry_args)
+        assert entry_args[0] is state.qc
+        assert entry_args[4] is state.qg
+        assert entry_args[7] is state.qv
+        assert entry_args[8] is shadow
+        assert entry_args[9] is micro_columns
         assert cleanup_kwargs["micro_columns"] is micro_columns
-        assert init_args[4] is shadow
+        # The graupel fallout guard is the entry graupel marker's column
+        # mask, carried in SR until the graupel fallout reads it.
+        assert masks_args[2] is prepare_args[16]
+        assert masks_args[3] is state._scratch["mp_rainncv"]
+        assert masks_args[4] is state._scratch["mp_sr"]
+        assert fallout_kwargs["active_columns"] is masks_args[4]
         assert warm_args[5] is shadow
         assert warm_args[6] is state._scratch[
             "mp_thompson_graupel_melt_marker"]

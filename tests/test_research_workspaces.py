@@ -367,10 +367,23 @@ def test_native_sources_preserve_companions_and_labels_are_not_data_paths(tmp_pa
 
 
 @pytest.mark.parametrize("source", ["era5", "gdas", "hrrr"])
-def test_unadmitted_controlled_source_refuses_before_probe(tmp_path, known_products, monkeypatch, source):
+def test_a_controlled_scenario_is_created_on_every_tree_source(tmp_path, known_products, source):
+    """Creation used to admit GFS alone, because the other preparations
+    refused the block; every source's tree preparation now defers it to
+    the tree runner, so the reviewed bubble is written for each."""
+    receipt = research.create_workspace(_args(
+        tmp_path, "scenario-convection.gentle", f"--source={source}", "--hours=3",
+        "--cycle=2020-09-05T18", "--vram-gib=16"))
+    raw = tomllib.loads((tmp_path / "new.toml").read_text())
+    assert receipt["source"] == source
+    assert len(raw["domain"]) == 2
+    assert raw["perturbation"]["bubbles"][0]["amplitude_k"] == 1
+
+
+def test_an_unknown_controlled_source_still_refuses_before_probe(tmp_path, known_products, monkeypatch):
     monkeypatch.setattr(wizard, "resolve_sizing_budget", lambda *args, **kwargs: pytest.fail("should not probe"))
-    with pytest.raises(ValueError, match="Controlled-scenario creation"):
-        research.create_workspace(_args(tmp_path, "scenario-convection.gentle", f"--source={source}"))
+    with pytest.raises(ValueError, match="not a registered source"):
+        research.create_workspace(_args(tmp_path, "scenario-convection.gentle", "--source=no-such-model"))
     assert not list(tmp_path.iterdir())
 
 

@@ -94,6 +94,12 @@ MYJ_VERTICAL_LEVEL_BOUNDS = (4, 128)
 #: that depth in per-thread local memory.  The floor is where the solve stops
 #: being an identity -- one interior face needs two levels.
 SASE_VERTICAL_LEVEL_BOUNDS = (2, 128)
+#: UW moist turbulence (bl_pbl_physics=9).  No ceiling: the CAM automatic
+#: arrays live in a per-column global workspace sized from nz at launch
+#: (gpuwm/core/uwpbl.py), so no level count is compiled in.  The floor is
+#: where the implicit diffusion has an interior interface (compute_vdiff's
+#: k = 2..pver rows) and a Richardson number exists above the surface.
+UWPBL_VERTICAL_LEVEL_BOUNDS = (2, None)
 KF_VERTICAL_LEVEL_BOUNDS = (8, 128)
 # Grell-Freitas: the inversion-layer search clamps kend to ktf-8 and its
 # second-derivative stencil then reaches ktf-1, so a column shorter than 12

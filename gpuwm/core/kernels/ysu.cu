@@ -148,8 +148,55 @@ __device__ void ysu_diagnose(const real *u, const real *v, YsuColC thv,
     *brup_out = brup;
 }
 
-extern "C" __global__
-void ysu_column(const real *u, const real *v, const real *theta,
+// --------------------------------------------------------------------------
+// flag_bep arm (sf_urban_physics 2/3), bl_ysu.F90 at MMM-physics
+// 20240626-MPASv8.2, WRF v4.7.1.  That file differs from the v4.6.1 copy
+// this kernel was transcribed from by one line (`we(i) = 0.` at :605, which
+// the `we` local below already is); the flag_bep arithmetic is identical.
+// YsuBep carries the urban source terms exactly as
+// module_sf_noahdrv.F:1679-1720 / module_sf_noahmpdrv.F:3700-3740 leave
+// them (frc-weighted, rural surface flux folded into level 1):
+//   sf    -> sfk2d  (dtodsd/dtodsu factor, :1050-1051, :1138-1139, :1326-1327)
+//   vl    -> vlk2d  (au/al divisor, :1070-1071, :1158-1159, :1351-1352)
+//   a_t/b_t, a_q/b_q, a_u/b_u, a_v/b_v -> the implicit/explicit forcing
+//                    added after assembly (:1078-1083, :1164-1168, :1359-1368)
+//   frc   -> frc_urb1d, the urban fraction WRF removes from the surface
+//            drag (:1313).  Not read since the declared rural-drag
+//            divergence below removes the whole of YSU's own drag; kept in
+//            the signature so the launch contract and the WRF-stock arm's
+//            inputs are unchanged.
+// a_e/b_e/dlg/dl_u are unused by YSU (declared, never read in bl_ysu.F90).
+// The body is one template so ysu_column (BEP = false) compiles from exactly
+// the statements it always had; every BEP change is under `if constexpr`.
+struct YsuBep {
+    const real *a_u, *a_v, *a_t, *a_q, *b_u, *b_v, *b_t, *b_q, *sf, *vl;
+    const real *frc;
+};
+
+// bl_ysu.F90 tridi2n's f2 arm, exactly as WRF solves it: the v column
+// pivots on its OWN diagonal cm1 (ad1 = ad - a_v*dt2) but eliminates and
+// back-substitutes with au, the factors the u column's diagonal cm produced.
+// That is only the true v solve when cm1 == cm, i.e. always outside BEP --
+// which is why the plain kernel can re-run ysu_thomas for v -- and it is
+// what WRF does whenever a_v_bep differs from a_u_bep.  `gamma_u` must be
+// the u solve's gamma, untouched since.
+__device__ void ysu_tridi2n_v(YsuColC lower, YsuColC diag_v,
+                              YsuColC gamma_u, YsuCol rhs, int nz) {
+    real inv = 1.0f / diag_v[0];
+    rhs[0] *= inv;
+    for (int k = 1; k < nz - 1; ++k) {
+        inv = 1.0f / (diag_v[k] - lower[k] * gamma_u[k - 1]);
+        rhs[k] = (rhs[k] - lower[k] * rhs[k - 1]) * inv;
+    }
+    inv = 1.0f / (diag_v[nz - 1] - lower[nz - 1] * gamma_u[nz - 2]);
+    rhs[nz - 1] = (rhs[nz - 1] - lower[nz - 1] * rhs[nz - 2]) * inv;
+    for (int k = nz - 2; k >= 0; --k)
+        rhs[k] -= gamma_u[k] * rhs[k + 1];
+}
+
+template <bool BEP>
+__device__ __forceinline__
+void ysu_column_body(const real *u, const real *v, const real *theta,
                 const real *qv, const real *qc, const real *qi,
                 const real *p, const real *p_interface, const real *exner,
                 const real *dz, const real *rthraten,
@@ -164,7 +211,7 @@ void ysu_column(const real *u, const real *v, const real *theta,
                 real dt, real *topdown_radsum_out,
                 real *wstar3_2_out, int *cloudflg_out,
                 int ysu_topdown_pblmix, int nz, int ny, int nx,
-                real *ws, int wskp, int col0) {
+                real *ws, int wskp, int col0, const YsuBep bep) {
     // `col0` is the first column of this TILE.  The workspace is sized to
     // one tile, so its indexing uses the TILE-LOCAL blockIdx.x while every
     // field index keeps using the global column -- the arrays are
@@ -200,7 +247,7 @@ void ysu_column(const real *u, const real *v, const real *theta,
     YsuCol gamma   = YSUWS_AT(wsb, 17, wskp);
 
     real us = ust[col], hf = hfx[col], qf = qfx[col];
-    if (us == 0.0f && hf == 0.0f && qf == 0.0f) {
+    if (!BEP && us == 0.0f && hf == 0.0f && qf == 0.0f) {
         for (int k = 0; k < nz; ++k) {
             int q = k * st + col;
             du[q] = dv[q] = dtheta[q] = dqv[q] = dqc[q] = dqi[q] = 0.0f;
@@ -237,8 +284,8 @@ void ysu_column(const real *u, const real *v, const real *theta,
     for (int k = 0; k < nz; ++k) {
         int q = k * st + col;
         thv[k] = theta[q] * (1.0f + ep1 * qv[q]);
-        thli[k] = (theta[q] * exner[q] - XLV * qc[q] / CP
-                   - 2.834e6f * qi[q] / CP) / exner[q];
+        thli[k] = (theta[q] * exner[q] - __fdiv_rn(XLV * qc[q], CP)
+                   - __fdiv_rn(2.834e6f * qi[q], CP)) / exner[q];
         zq[k + 1] = zq[k] + dz[q];
         delp[k] = p_interface[k * st + col] - p_interface[(k + 1) * st + col];
     }
@@ -252,7 +299,7 @@ void ysu_column(const real *u, const real *v, const real *theta,
     real govrth = G / theta0;
     real u0 = u[col], v0 = v[col];
     real wspd1 = sqrtf(u0 * u0 + v0 * v0) + 1.0e-9f;
-    real sflux = hf / rho / CP + qf / rho * ep1 * theta0;
+    real sflux = __fdiv_rn(hf / rho, CP) + qf / rho * ep1 * theta0;
     real thermal = thv[0], thermalli = thli[0];
     real hpbl;
     int kpbl;
@@ -278,13 +325,13 @@ void ysu_column(const real *u, const real *v, const real *theta,
     real ust3 = us * us * us;
     real wscale = cbrtf(ysu_max(ust3 + phifac * karman * wstar3 * 0.5f, 0.0f));
     wscale = ysu_min(wscale, us * aphi16);
-    wscale = ysu_max(wscale, us / aphi5);
+    wscale = ysu_max(wscale, __fdiv_rn(us, aphi5));
     real hgamt = 0.0f, hgamq = 0.0f, hgamu = 0.0f, hgamv = 0.0f;
     if (sfcflg && sflux > 0.0f) {
         real gamfac = bfac / rho / wscale;
-        hgamt = ysu_min(gamfac * hf / CP, gamcrt);
+        hgamt = ysu_min(__fdiv_rn(gamfac * hf, CP), gamcrt);
         hgamq = ysu_min(gamfac * qf, gamcrq);
-        real vpert = (hgamt + ep1 * theta0 * hgamq) / bfac * afac;
+        real vpert = __fdiv_rn((hgamt + ep1 * theta0 * hgamq), bfac) * afac;
         thermal += ysu_max(vpert, 0.0f)
                  * ysu_min(za[0] / (sfcfrac * hpbl), 1.0f);
         thermalli += ysu_max(vpert, 0.0f)
@@ -382,7 +429,7 @@ void ysu_column(const real *u, const real *v, const real *theta,
         int kt = kpbl - 2;
         real wm3 = wstar3 + 5.0f * ust3;
         wm2 = powf(ysu_max(wm3, 0.0f), h2);
-        real bfxpbl = -0.15f * thv[0] / G * wm3 / hpbl;
+        real bfxpbl = __fdiv_rn(-0.15f * thv[0], G) * wm3 / hpbl;
         real dthv = ysu_max(thv[kt + 1] - thv[kt], tmin);
         we = ysu_max(bfxpbl / dthv, -sqrtf(wm2));
         // F90 839-897.  The kpbl<nz guard makes the source's k+2 access
@@ -391,7 +438,7 @@ void ysu_column(const real *u, const real *v, const real *theta,
                 && qc[kt * st + col] + qi[kt * st + col] > 1.0e-5f) {
             cloudflg = true;
             real ptop = p_interface[(kt + 1) * st + col];
-            real templ = thli[kt] * powf(ptop / 100000.0f, RCP);
+            real templ = thli[kt] * powf(__fdiv_rn(ptop, 100000.0f), RCP);
             real rvls = 100.0f * 6.112f
                       * expf(17.67f * (templ - 273.16f)
                              / (templ - 29.65f)) * (EP2 / ptop);
@@ -430,11 +477,11 @@ void ysu_column(const real *u, const real *v, const real *theta,
             real bfx0 = ysu_max(sflux, 0.0f);
             wm3 = govrth * bfx0 * hpbl + 5.0f * ust3;
             wm2 = powf(wm3, h2);
-            bfxpbl = -0.15f * thv[0] / G * wm3 / hpbl;
+            bfxpbl = __fdiv_rn(-0.15f * thv[0], G) * wm3 / hpbl;
             dthv = ysu_max(thv[kt + 1] - thv[kt], tmin);
             we = ysu_max(bfxpbl / dthv, -sqrtf(wm2));
 
-            bfx0 = ysu_max(topdown_radsum / rho2 / CP, 0.0f);
+            bfx0 = ysu_max(__fdiv_rn(topdown_radsum / rho2, CP), 0.0f);
             real wm3_top = G / thv[kt] * bfx0 * hpbl;
             real wm2_top = powf(wm3_top, h2);
             wm2 += wm2_top;
@@ -445,12 +492,12 @@ void ysu_column(const real *u, const real *v, const real *theta,
             wscale = cbrtf(ust3 + phifac * karman
                            * (wstar3 + wstar3_2) * 0.5f);
             wscale = ysu_min(wscale, us * aphi16);
-            wscale = ysu_max(wscale, us / aphi5);
+            wscale = ysu_max(wscale, __fdiv_rn(us, aphi5));
             real gamfac = bfac / rho / wscale;
-            hgamt = ysu_min(gamfac * hf / CP, gamcrt);
+            hgamt = ysu_min(__fdiv_rn(gamfac * hf, CP), gamcrt);
             hgamq = ysu_min(gamfac * qf, gamcrq);
             gamfac = bfac / rho2 / wscale;
-            real hgamt2 = ysu_min(gamfac * topdown_radsum / CP, gamcrt);
+            real hgamt2 = ysu_min(__fdiv_rn(gamfac * topdown_radsum, CP), gamcrt);
             hgamt = ysu_max(hgamt, 0.0f) + ysu_max(hgamt2, 0.0f);
             real cg = -15.9f * us * us / ysu_max(wspd[col], 1.0e-9f)
                     * (wstar3 + wstar3_2)
@@ -567,9 +614,9 @@ void ysu_column(const real *u, const real *v, const real *theta,
                 real qmean = 0.5f * (qv[q0i] + qv[q1i]);
                 real tmean = 0.5f * (theta[q0i] * exner[q0i]
                                      + theta[q1i] * exner[q1i]);
-                real alph = XLV * qmean / RD / tmean;
-                real chi = XLV * XLV * qmean / CP / RV / (tmean * tmean);
-                ri = (1.0f + alph) * (ri - G * G / ss / tmean / CP
+                real alph = __fdiv_rn(XLV * qmean, RD) / tmean;
+                real chi = __fdiv_rn(__fdiv_rn(XLV * XLV * qmean, CP), RV) / (tmean * tmean);
+                ri = (1.0f + alph) * (ri - __fdiv_rn(G * G / ss / tmean, CP)
                                       * ((chi - alph) / (1.0f + chi)));
             }
             real zk = karman * zq[k + 1];
@@ -597,9 +644,24 @@ void ysu_column(const real *u, const real *v, const real *theta,
     // Heat matrix, including the countergradient and entrainment fluxes.
     for (int k = 0; k < nz; ++k) lower[k] = diag[k] = upper[k] = rhs[k] = 0.0f;
     diag[0] = 1.0f;
-    rhs[0] = theta0 - 300.0f + hf / (CP / G) / delp[0] * dt2;
+    if constexpr (BEP) {
+        // bl_ysu.F90:1045 with bepswitch = 1: (1.0-bepswitch)*hfx/cont/del*dt2
+        // is a signed zero, so the surface heat flux enters only through
+        // b_t_bep(1), where the couple folded the rural part in.
+        rhs[0] = theta0 - 300.0f + __fdiv_rn(0.0f * hf, (CP / G)) / delp[0] * dt2;
+    } else {
+        rhs[0] = theta0 - 300.0f + __fdiv_rn(hf, (CP / G)) / delp[0] * dt2;
+    }
     for (int k = 0; k < nz - 1; ++k) {
-        real dtodsd = dt2 / delp[k], dtodsu = dt2 / delp[k + 1];
+        real dtodsd, dtodsu;
+        if constexpr (BEP) {
+            // bl_ysu.F90:1050-1051 (and :1138, :1326): sfk2d(i,k)*dt2/del.
+            real sfk = bep.sf[k * st + col];
+            dtodsd = sfk * dt2 / delp[k];
+            dtodsu = sfk * dt2 / delp[k + 1];
+        } else {
+            dtodsd = dt2 / delp[k], dtodsu = dt2 / delp[k + 1];
+        }
         real dsig = p[k * st + col] - p[(k + 1) * st + col];
         real rdz = 1.0f / dza[k + 1];
         real tem1 = dsig * xkzh[k] * rdz;
@@ -614,10 +676,27 @@ void ysu_column(const real *u, const real *v, const real *theta,
             rhs[k + 1] = theta[(k + 1) * st + col] - 300.0f;
         } else rhs[k + 1] = theta[(k + 1) * st + col] - 300.0f;
         real dsdz2 = dsig * xkzh[k] * rdz * rdz;
-        upper[k] = -dtodsd * dsdz2;
-        lower[k + 1] = -dtodsu * dsdz2;
+        if constexpr (BEP) {
+            // bl_ysu.F90:1070-1071: au = -dtodsd*dsdz2/vlk2d(i,k),
+            // al = -dtodsu*dsdz2/vlk2d(i,k) -- both divide by level k.
+            real vlk = bep.vl[k * st + col];
+            upper[k] = -dtodsd * dsdz2 / vlk;
+            lower[k + 1] = -dtodsu * dsdz2 / vlk;
+        } else {
+            upper[k] = -dtodsd * dsdz2;
+            lower[k + 1] = -dtodsu * dsdz2;
+        }
         diag[k] -= upper[k];
         diag[k + 1] = 1.0f - lower[k + 1];
+    }
+    if constexpr (BEP) {
+        // bl_ysu.F90:1078-1083.  __fmul_rn: WRF rounds the product before
+        // the add/subtract, NVRTC would otherwise fuse it.
+        for (int k = 0; k < nz; ++k) {
+            int q = k * st + col;
+            diag[k] = diag[k] - __fmul_rn(bep.a_t[q], dt2);
+            rhs[k] = rhs[k] + __fmul_rn(bep.b_t[q], dt2);
+        }
     }
     ysu_thomas(lower, diag, upper, rhs, gamma, nz);
     for (int k = 0; k < nz; ++k) {
@@ -635,9 +714,23 @@ void ysu_column(const real *u, const real *v, const real *theta,
     // Vapor matrix (Kq); cloud and ice reuse its matrix.
     for (int k = 0; k < nz; ++k) lower[k] = diag[k] = upper[k] = rhs[k] = 0.0f;
     diag[0] = 1.0f;
-    rhs[0] = qv0 + qf * G / delp[0] * dt2;
+    if constexpr (BEP) {
+        // bl_ysu.F90:1135 with bepswitch = 1: a signed zero is added, which
+        // is what turns a -0.0 qv into +0.0 exactly as WRF does.
+        rhs[0] = qv0 + 0.0f * qf * G / delp[0] * dt2;
+    } else {
+        rhs[0] = qv0 + qf * G / delp[0] * dt2;
+    }
     for (int k = 0; k < nz - 1; ++k) {
-        real dtodsd = dt2 / delp[k], dtodsu = dt2 / delp[k + 1];
+        real dtodsd, dtodsu;
+        if constexpr (BEP) {
+            // bl_ysu.F90:1050-1051 (and :1138, :1326): sfk2d(i,k)*dt2/del.
+            real sfk = bep.sf[k * st + col];
+            dtodsd = sfk * dt2 / delp[k];
+            dtodsu = sfk * dt2 / delp[k + 1];
+        } else {
+            dtodsd = dt2 / delp[k], dtodsu = dt2 / delp[k + 1];
+        }
         real dsig = p[k * st + col] - p[(k + 1) * st + col];
         real rdz = 1.0f / dza[k + 1];
         real tem1 = dsig * xkzq[k] * rdz;
@@ -652,12 +745,32 @@ void ysu_column(const real *u, const real *v, const real *theta,
             rhs[k + 1] = qv[(k + 1) * st + col];
         } else rhs[k + 1] = qv[(k + 1) * st + col];
         real dsdz2 = dsig * xkzq[k] * rdz * rdz;
-        upper[k] = -dtodsd * dsdz2;
-        lower[k + 1] = -dtodsu * dsdz2;
+        if constexpr (BEP) {
+            // bl_ysu.F90:1070-1071: au = -dtodsd*dsdz2/vlk2d(i,k),
+            // al = -dtodsu*dsdz2/vlk2d(i,k) -- both divide by level k.
+            real vlk = bep.vl[k * st + col];
+            upper[k] = -dtodsd * dsdz2 / vlk;
+            lower[k + 1] = -dtodsu * dsdz2 / vlk;
+        } else {
+            upper[k] = -dtodsd * dsdz2;
+            lower[k + 1] = -dtodsu * dsdz2;
+        }
         diag[k] -= upper[k];
         diag[k + 1] = 1.0f - lower[k + 1];
     }
-    ysu_thomas(lower, diag, upper, rhs, gamma, nz);
+    if constexpr (BEP) {
+        // bl_ysu.F90:1164-1168: vapor alone solves with adv = ad - a_q*dt2;
+        // cloud water and ice reuse the unforced ad (:1177, :1190).  xkzhl
+        // is dead after the vapor assembly above, so it holds adv.
+        for (int k = 0; k < nz; ++k) {
+            int q = k * st + col;
+            xkzhl[k] = diag[k] - __fmul_rn(bep.a_q[q], dt2);
+            rhs[k] = rhs[k] + __fmul_rn(bep.b_q[q], dt2);
+        }
+        ysu_thomas(lower, xkzhl, upper, rhs, gamma, nz);
+    } else {
+        ysu_thomas(lower, diag, upper, rhs, gamma, nz);
+    }
     for (int k = 0; k < nz; ++k) dqv[k * st + col] = (rhs[k] - qv[k * st + col]) * rdt;
     for (int k = 0; k < nz; ++k) rhs[k] = qc[k * st + col];
     ysu_thomas(lower, diag, upper, rhs, gamma, nz);
@@ -672,9 +785,43 @@ void ysu_column(const real *u, const real *v, const real *theta,
               * (wspd1 / ysu_max(wspd[col], 1.0e-9f))
               * (wspd1 / ysu_max(wspd[col], 1.0e-9f));
     diag[0] = 1.0f + fric;
+    if constexpr (BEP) {
+        // DECLARED DIVERGENCE FROM WRF v4.7.1 (docs/public/PHYSICS.md, "Urban
+        // canopy models"; pinned by tests/test_ysu_bep_rural_drag.py).
+        // bl_ysu.F90:1313-1314 removes only the URBAN fraction of YSU's own
+        // surface drag, ad(1) - bepswitch*frc*(fric*vconvlim+ctopo*fric*
+        // (1-vconvlim)), leaving (1-frc)*fric on the diagonal.  But the BEP
+        // couple has already folded that same rural drag,
+        // (1-frc)*(-ust*ust)/dz8w/|U|, into a_u_bep/a_v_bep at level 1
+        // (module_sf_noahdrv.F:1708-1711, module_sf_noahmpdrv.F:3718-3721),
+        // and :1359-1368 below adds a_u*dt2 to the same diagonal: WRF counts
+        // the rural surface drag twice on every column, ocean included, and
+        // the 750 m runs lost 1.25 m/s of 10 m wind over the sea in two
+        // hours.  Heat and moisture are counted once (:1045 drops YSU's own
+        // flux with (1-bepswitch) and takes the rural flux from b_t/b_q), and
+        // WRF's myjurb takes the surface drag only through a_u (its VDIFV
+        // never reads AKMS under BEP).  gpuwm removes the WHOLE of YSU's own
+        // drag here -- WRF's line without the frc_urb1d factor -- so the
+        // surface drag enters once, through a_u_bep, as heat already does.
+        // WRF's own driver passes ctopo = 1 (module_bl_ysu.F:404), where the
+        // bracket is fric in exact arithmetic and bitwise whenever vconvlim
+        // is 0 or 1; this kernel carries the ctopo-absent form of ad(1) (see
+        // tests/test_ysu_wrf461_parity.py WRF_CTOPO_GAP_MAX_ULP), so the
+        // removal is spelled on fric directly.  WRF's stock line was
+        // `diag[0] - __fmul_rn(bep.frc[col], fric)`.
+        diag[0] = diag[0] - fric;
+    }
     rhs[0] = u0;
     for (int k = 0; k < nz - 1; ++k) {
-        real dtodsd = dt2 / delp[k], dtodsu = dt2 / delp[k + 1];
+        real dtodsd, dtodsu;
+        if constexpr (BEP) {
+            // bl_ysu.F90:1050-1051 (and :1138, :1326): sfk2d(i,k)*dt2/del.
+            real sfk = bep.sf[k * st + col];
+            dtodsd = sfk * dt2 / delp[k];
+            dtodsu = sfk * dt2 / delp[k + 1];
+        } else {
+            dtodsd = dt2 / delp[k], dtodsu = dt2 / delp[k + 1];
+        }
         real dsig = p[k * st + col] - p[(k + 1) * st + col];
         real rdz = 1.0f / dza[k + 1];
         real tem1 = dsig * xkzm[k] * rdz;
@@ -688,10 +835,30 @@ void ysu_column(const real *u, const real *v, const real *theta,
             rhs[k + 1] = u[(k + 1) * st + col];
         } else rhs[k + 1] = u[(k + 1) * st + col];
         real dsdz2 = dsig * xkzm[k] * rdz * rdz;
-        upper[k] = -dtodsd * dsdz2;
-        lower[k + 1] = -dtodsu * dsdz2;
+        if constexpr (BEP) {
+            // bl_ysu.F90:1070-1071: au = -dtodsd*dsdz2/vlk2d(i,k),
+            // al = -dtodsu*dsdz2/vlk2d(i,k) -- both divide by level k.
+            real vlk = bep.vl[k * st + col];
+            upper[k] = -dtodsd * dsdz2 / vlk;
+            lower[k + 1] = -dtodsu * dsdz2 / vlk;
+        } else {
+            upper[k] = -dtodsd * dsdz2;
+            lower[k + 1] = -dtodsu * dsdz2;
+        }
         diag[k] -= upper[k];
         diag[k + 1] = 1.0f - lower[k + 1];
+    }
+    if constexpr (BEP) {
+        // bl_ysu.F90:1359-1368: ad1 = ad; ad -= a_u*dt2; ad1 -= a_v*dt2;
+        // f1 += b_u*dt2 (f2 += b_v*dt2 is added after the v RHS rebuild
+        // below).  entfac is dead after the assembly above, so it holds
+        // ad1, the v diagonal tridi2n solves with.
+        for (int k = 0; k < nz; ++k) {
+            int q = k * st + col;
+            entfac[k] = diag[k] - __fmul_rn(bep.a_v[q], dt2);
+            diag[k] = diag[k] - __fmul_rn(bep.a_u[q], dt2);
+            rhs[k] = rhs[k] + __fmul_rn(bep.b_u[q], dt2);
+        }
     }
     ysu_thomas(lower, diag, upper, rhs, gamma, nz);
     for (int k = 0; k < nz; ++k) du[k * st + col] = (rhs[k] - u[k * st + col]) * rdt;
@@ -700,7 +867,14 @@ void ysu_column(const real *u, const real *v, const real *theta,
     // sharing one matrix.  Recreate the v RHS after the u solve.
     for (int k = 0; k < nz - 1; ++k) {
         if (pblflg && k + 1 < kpbl) {
-            real dtodsd = dt2 / delp[k], dtodsu = dt2 / delp[k + 1];
+            real dtodsd, dtodsu;
+            if constexpr (BEP) {
+                real sfk = bep.sf[k * st + col];
+                dtodsd = sfk * dt2 / delp[k];
+                dtodsu = sfk * dt2 / delp[k + 1];
+            } else {
+                dtodsd = dt2 / delp[k], dtodsu = dt2 / delp[k + 1];
+            }
             real dsig = p[k * st + col] - p[(k + 1) * st + col];
             real rdz = 1.0f / dza[k + 1];
             real tem1 = dsig * xkzm[k] * rdz;
@@ -709,7 +883,13 @@ void ysu_column(const real *u, const real *v, const real *theta,
             rhs[k + 1] = v[(k + 1) * st + col] - dtodsu * flux;
         }
     }
-    ysu_thomas(lower, diag, upper, rhs, gamma, nz);
+    if constexpr (BEP) {
+        for (int k = 0; k < nz; ++k)
+            rhs[k] = rhs[k] + __fmul_rn(bep.b_v[k * st + col], dt2);
+        ysu_tridi2n_v(lower, entfac, gamma, rhs, nz);
+    } else {
+        ysu_thomas(lower, diag, upper, rhs, gamma, nz);
+    }
     for (int k = 0; k < nz; ++k) dv[k * st + col] = (rhs[k] - v[k * st + col]) * rdt;
 
     exch_h[col] = exch_m[col] = 0.0f;
@@ -724,4 +904,55 @@ void ysu_column(const real *u, const real *v, const real *theta,
     topdown_radsum_out[col] = topdown_radsum;
     wstar3_2_out[col] = wstar3_2;
     cloudflg_out[col] = cloudflg ? 1 : 0;
+}
+
+extern "C" __global__
+void ysu_column(const real *u, const real *v, const real *theta,
+                const real *qv, const real *qc, const real *qi,
+                const real *p, const real *p_interface, const real *exner,
+                const real *dz, const real *rthraten,
+                const real *psfc, const real *znt,
+                const real *ust, const real *hfx, const real *qfx,
+                const real *wspd, const real *br, const real *psim,
+                const real *psih, const real *xland, const real *u10,
+                const real *v10, real *du, real *dv, real *dtheta,
+                real *dqv, real *dqc, real *dqi, real *hpbl_out,
+                int *kpbl_out, real *exch_h, real *exch_m,
+                real *wstar_out, real *delta_out,
+                real dt, real *topdown_radsum_out,
+                real *wstar3_2_out, int *cloudflg_out,
+                int ysu_topdown_pblmix, int nz, int ny, int nx,
+                real *ws, int wskp, int col0) {
+    ysu_column_body<false>(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, rthraten, psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland, u10, v10, du, dv, dtheta, dqv, dqc, dqi, hpbl_out, kpbl_out, exch_h, exch_m, wstar_out, delta_out, dt, topdown_radsum_out, wstar3_2_out, cloudflg_out, ysu_topdown_pblmix, nz, ny, nx, ws, wskp, col0, YsuBep{});
+}
+
+// sf_urban_physics 2/3: the same column with WRF's flag_bep = .true. arm.
+// BEP arrays are (nz, ny, nx) mass levels (sf_bep is nz+1 in the state; the
+// first nz are read, as module_bl_ysu.F:360-375 copies kts:kte), frc (ny, nx).
+extern "C" __global__
+void ysu_column_bep(const real *u, const real *v, const real *theta,
+                const real *qv, const real *qc, const real *qi,
+                const real *p, const real *p_interface, const real *exner,
+                const real *dz, const real *rthraten,
+                const real *psfc, const real *znt,
+                const real *ust, const real *hfx, const real *qfx,
+                const real *wspd, const real *br, const real *psim,
+                const real *psih, const real *xland, const real *u10,
+                const real *v10, real *du, real *dv, real *dtheta,
+                real *dqv, real *dqc, real *dqi, real *hpbl_out,
+                int *kpbl_out, real *exch_h, real *exch_m,
+                real *wstar_out, real *delta_out,
+                real dt, real *topdown_radsum_out,
+                real *wstar3_2_out, int *cloudflg_out,
+                int ysu_topdown_pblmix, int nz, int ny, int nx,
+                real *ws, int wskp, int col0,
+                const real *a_u_bep, const real *a_v_bep,
+                const real *a_t_bep, const real *a_q_bep,
+                const real *b_u_bep, const real *b_v_bep,
+                const real *b_t_bep, const real *b_q_bep,
+                const real *sf_bep, const real *vl_bep,
+                const real *frc_urb2d) {
+    YsuBep bep{a_u_bep, a_v_bep, a_t_bep, a_q_bep, b_u_bep, b_v_bep,
+               b_t_bep, b_q_bep, sf_bep, vl_bep, frc_urb2d};
+    ysu_column_body<true>(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, rthraten, psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland, u10, v10, du, dv, dtheta, dqv, dqc, dqi, hpbl_out, kpbl_out, exch_h, exch_m, wstar_out, delta_out, dt, topdown_radsum_out, wstar3_2_out, cloudflg_out, ysu_topdown_pblmix, nz, ny, nx, ws, wskp, col0, bep);
 }

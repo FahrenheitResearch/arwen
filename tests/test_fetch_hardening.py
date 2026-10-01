@@ -298,11 +298,14 @@ def test_the_front_door_guard_and_the_transfer_share_one_lock(monkeypatch,
     """The guard authorises the transfer; a gap between them is the race."""
 
     import inspect
-    source = inspect.getsource(fetch.fetch_main)
+    # fetch_main is the exit-75 wrapper; the command body is _fetch_main,
+    # and its transfer is the (whole or as-posted) _legacy_transfer call.
+    source = inspect.getsource(fetch._fetch_main)
     guard_index = source.index("require_matching_request(args.out, source=source")
     hold_index = source.rindex('fetch_guard.hold("fetch-out", args.out)',
                                0, guard_index)
-    assert source.index("manifest = fetch_gfs(") > hold_index
+    assert source.index("return fetch_gfs(") > hold_index
+    assert source.index("manifest = _legacy_transfer(") > hold_index
 
 
 # ---------------------------------------------------------------------------

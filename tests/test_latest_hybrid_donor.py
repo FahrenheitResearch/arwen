@@ -109,7 +109,9 @@ def test_the_fetch_command_downloads_the_cycle_latest_chose(tmp_path, monkeypatc
     monkeypatch.setattr(fetch, "_fetch_route_donors", lambda *a: {})
     monkeypatch.setattr(fetch_routes, "write_handoff", lambda *a, **kw: None)
     monkeypatch.setattr(fetch_routes, "handoff_lines", lambda *a: ())
-    parsed = args("--source", source, "--cycle", "latest", "--hours", str(last),
+    # The whole-cycle rule (A136 L2: as-posted is the default, so this
+    # names --whole-cycle and keeps every assertion).
+    parsed = args("--whole-cycle", "--source", source, "--cycle", "latest", "--hours", str(last),
                   "--out", str(tmp_path / "fetch"))
     assert fetch.fetch_main(parsed) == 0
     assert downloaded == [older]

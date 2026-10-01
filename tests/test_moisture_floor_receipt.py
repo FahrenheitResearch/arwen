@@ -234,11 +234,15 @@ def test_every_proof_writer_that_holds_a_result_carries_the_receipt():
     """
 
     root = Path(__file__).resolve().parent.parent
+    # The mapped door publishes a third: the chained domain tree's head
+    # proof (the seal adds only its seal-only keys to it).
+    expected = {"gpuwm/era5_direct.py": 2, "gpuwm/gfs_direct.py": 2,
+                "gpuwm/mapped_direct.py": 3}
     for relative in _PROOF_WRITERS:
         literals = _proof_literals(root / relative)
-        assert len(literals) == 2, (
-            f"{relative} no longer publishes exactly two prepared proofs; "
-            f"it publishes {len(literals)}")
+        assert len(literals) == expected[relative], (
+            f"{relative} no longer publishes exactly {expected[relative]} "
+            f"prepared proofs; it publishes {len(literals)}")
         for literal in literals:
             text = ast.unparse(literal)
             assert "moisture_floor" in text, (

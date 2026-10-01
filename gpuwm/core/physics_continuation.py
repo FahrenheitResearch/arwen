@@ -41,10 +41,33 @@ radiation and cumulus rates. It runs no scheme and changes no cadence.
 GEOMETRY.  The overlap shifts in index space with the same
 :class:`~gpuwm.core.nest_relocation.RelocationPlan` window the
 serialised-state transplant uses.  The freshly exposed strip takes each
-slot's documented COLD value -- new ground has no convection memory and
-no accumulated rain -- which is 0 for every slot except ``cu_nca``,
-whose cold value is the -100 eligibility sentinel
-(gpuwm/core/physics.py driver init; module_cu_kfeta.F:3152-3156).
+slot's documented COLD value -- new ground has no convection memory --
+which is 0 for every slot except ``cu_nca``, whose cold value is the
+-100 eligibility sentinel (gpuwm/core/physics.py driver init;
+module_cu_kfeta.F:3152-3156).
+
+ACCUMULATED PRECIPITATION IS THE EXCEPTION (:data:`STRIP_ACCUMULATORS`).
+Fresh ground has had rain since the run began; only the nest has not been
+there to see it.  A strip started at zero drew a band of too little total
+rain along every leading edge, one per move (a 12 h tropical storm run
+moved its 3 km nest 8 times).  WRF interpolates RAINC, RAINNC, RAINSH,
+SNOWNC, GRAUPELNC and HAILNC from the parent onto the exposed cells
+(Registry.EM_COMMON flag ``d``; share/mediation_nest_move.F runs
+med_interp_domain after shift_domain_em on the exposed mask), so a cell's
+total is the parent's rain before the nest arrived plus the nest's after,
+which is what a gauge there measures.  The route preparers pass those
+parent values (:func:`parent_strip_accumulations`, WRF's SINT) as
+``strip`` to :func:`shift_continuation`.  The same holds for the old
+footprint's specified ring where it lands inside the new one: the nest's
+microphysics never touches that ring (WRF's clipped tiles,
+:func:`gpuwm.core.physics_inventory.spec_zone_ring_slices`), so its rain total
+is what the cell had when it arrived, and after a move it drew a one-cell
+line of too little rain inside the nest, one per move (the ring column
+held 24.3 mm beside 32 to 34 mm at 12 h).  It takes the parent's too.
+A nest spawned mid-run starts from the parent's at birth by the same rule
+(:func:`seed_birth_accumulations`); born at zero, the ground it held since
+birth counted from a later start than the ground each move seeded, and
+every move left a band of too much rain instead.
 """
 
 from __future__ import annotations
@@ -141,26 +164,186 @@ def capture_continuation(state, driver, *, store=None) -> dict[str, np.ndarray]:
     return captured
 
 
+#: The accumulated-precipitation slots a moving nest's fresh ground takes
+#: from its parent instead of from cold (module notes).  RAINSH has no slot:
+#: the driver writes it as zero on every domain.
+STRIP_ACCUMULATORS = ("mp_rainnc", "mp_snownc", "mp_graupelnc", "mp_hailnc",
+                      "cu_rainc")
+
+#: What the receipt says the rule is.
+STRIP_ACCUMULATION_RULE = (
+    "accumulated precipitation on ground a nest arrives on mid-run, by a "
+    "move or at a spawned nest's birth, starts from the parent's there "
+    "(WRF SINT, the Registry 'd' interpolation med_interp_domain applies to "
+    "exposed cells), not zero, so every cell of the nest holds the rain "
+    "since the run began; a nest with no cumulus accumulator carries the "
+    "parent's RAINC in RAINNC so the total is kept")
+
+
+def parent_strip_accumulations(parent_node, child_dc,
+                               slots) -> tuple[dict[str, np.ndarray], dict]:
+    """The parent's accumulated precipitation on the child's new footprint.
+
+    Returns ``(strip, receipt)``: ``strip`` maps each child slot in
+    :data:`STRIP_ACCUMULATORS` (of those ``slots`` names) to a host array of
+    the child's full extent, WRF's SINT of the parent's same accumulator at
+    the new placement; :func:`shift_continuation` takes its strip cells.
+    The parent's RAINC goes into the child's RAINNC when the child keeps no
+    RAINC (a nest that runs no cumulus scheme writes RAINC as zero), so the
+    child's total is the parent's either way.  A parent that holds none of
+    them (an idealized tree, a test double) seeds nothing, and the receipt
+    says why.
+    """
+    slots = [slot for slot in STRIP_ACCUMULATORS if slot in set(slots)]
+    receipt: dict[str, object] = {"rule": STRIP_ACCUMULATION_RULE,
+                                  "seeded": [], "convective_in_rainnc": False}
+    state = getattr(parent_node, "state", None)
+    existing = getattr(state, "existing_scratch", None)
+    if not slots or not callable(existing):
+        receipt["reason"] = ("the child carries no accumulator slot"
+                             if not slots else
+                             "the parent holds no scratch accumulators")
+        return {}, receipt
+    # Both host-importable: this runs, and is tested, where cupy is absent
+    # (the NumPy SINT is the device kernel's host twin).
+    from gpuwm.core.nest_interp import register_nest, sint
+
+    reg = register_nest(
+        nri=child_dc.parent_grid_ratio, nrj=child_dc.parent_grid_ratio,
+        i_parent_start=child_dc.i_parent_start,
+        j_parent_start=child_dc.j_parent_start,
+        child_nx=child_dc.run.nx, child_ny=child_dc.run.ny,
+        parent_nx=parent_node.cfg.run.nx, parent_ny=parent_node.cfg.run.ny,
+        stagger="", wrapper="interp")
+
+    def parent_value(slot):
+        # A parent array that is not the parent's whole mass grid (a
+        # streamed parent's slab template) is not the parent's rain: it
+        # seeds nothing rather than interpolating a slab as if it were the
+        # domain, and the receipt names it.
+        value = existing(slot)
+        if value is None:
+            return None
+        if tuple(value.shape[-2:]) != (int(reg.nyp), int(reg.nxp)):
+            receipt.setdefault("not_parent_extent", {})[slot] = list(value.shape)
+            return None
+        return value
+
+    strip: dict[str, np.ndarray] = {}
+    for slot in slots:
+        value = parent_value(slot)
+        if value is None:
+            continue
+        strip[slot] = _host(sint(value, reg)).astype(np.float32, copy=False)
+    if "cu_rainc" not in slots and "mp_rainnc" in slots:
+        convective = parent_value("cu_rainc")
+        if convective is not None:
+            folded = _host(sint(convective, reg)).astype(np.float32)
+            strip["mp_rainnc"] = (strip["mp_rainnc"] + folded
+                                  if "mp_rainnc" in strip else folded)
+            receipt["convective_in_rainnc"] = True
+    receipt["seeded"] = sorted(strip)
+    return strip, receipt
+
+
+def seed_birth_accumulations(state, parent_node, child_dc) -> dict:
+    """A spawned nest starts its accumulated precipitation from its
+    parent's, the same rule a move applies to its new ground.
+
+    WHY (a stated physics ruling, :data:`STRIP_ACCUMULATION_RULE`).  A move
+    seeds new ground with the parent's rain since the run began.  A living
+    nest born at zero holds only its rain since birth on the ground it
+    already covers, so every move after a mid-run spawn left a band of too
+    much rain (the parent's rain from before the birth) along its leading
+    edge: the stripe the move rule exists to remove, the other way round.
+    WRF zeroes a late nest's accumulators (mp_init when not a restart) and
+    interpolates the parent's onto a moved nest's exposed cells, which is
+    that same inconsistency.  Here the nest arrives on all of its ground at
+    birth, so all of it starts from the parent's.  The
+    history's run total, whose lead the renderer measures from the
+    simulation start, then holds the rain since that start everywhere on
+    the nest, which is what a gauge there measured over the same window.
+    A nest that exists from the start is unchanged: its parent holds no
+    rain yet.
+
+    Seeds the accumulator slots the child already carries (its driver
+    aliases them at construction), in place, and returns the receipt of
+    :func:`parent_strip_accumulations` with ``event = "birth"``.
+    """
+    existing = getattr(state, "existing_scratch", None)
+    slots = ([slot for slot in STRIP_ACCUMULATORS if existing(slot) is not None]
+             if callable(existing) else [])
+    seed, receipt = parent_strip_accumulations(parent_node, child_dc, slots)
+    receipt["event"] = "birth"
+    for slot, values in seed.items():
+        target = state.scratch(values.shape, slot)
+        if hasattr(target, "__cuda_array_interface__"):
+            import cupy as cp
+
+            target[...] = cp.asarray(values)
+        else:
+            target[...] = values
+    return receipt
+
+
 def shift_continuation(captured: dict[str, np.ndarray],
-                       plan) -> dict[str, np.ndarray]:
+                       plan, strip=None, ring: int = 0) -> dict[str, np.ndarray]:
     """Index-space shift of every captured array onto the new footprint.
 
     The overlap is a pure copy through ``plan.window`` -- the same
     arithmetic, and therefore the same cells, as the serialised-state
-    transplant -- and the strip is the slot's cold value.  A disjoint
-    plan (nothing shared) yields all-cold arrays, which is exactly what
-    a brand-new domain would carry.
+    transplant -- and the strip is the slot's cold value, or, for a slot
+    ``strip`` names, that array's values there (a moving nest's fresh
+    ground takes the parent's accumulated precipitation,
+    :func:`parent_strip_accumulations`).  For those slots the cells of the
+    old footprint's ``ring``-wide specified ring that land inside the new
+    footprint take ``strip`` too: the nest never accumulated there.  A
+    disjoint plan (nothing shared) yields all-cold arrays, which is
+    exactly what a brand-new domain would carry.
     """
+    strip = strip or {}
     shifted: dict[str, np.ndarray] = {}
     for name, value in captured.items():
         cold = np.float32(PHYSICS_CONTINUATION_COLD_VALUES.get(name, 0.0))
         staged = np.full_like(value, cold)
+        seed = strip.get(name)
+        if seed is not None and tuple(seed.shape) != tuple(value.shape):
+            seed = None
+        if seed is not None:
+            staged[...] = seed
         window = plan.window(value.shape)
         if window is not None:
             (dst_j, src_j), (dst_i, src_i) = window
             staged[..., dst_j, dst_i] = value[..., src_j, src_i]
+            if seed is not None and ring > 0:
+                stale = _old_ring_inside(value.shape[-2:], window, ring)
+                staged[..., stale] = seed[..., stale]
         shifted[name] = staged
     return shifted
+
+
+def _old_ring_inside(shape, window, ring: int) -> np.ndarray:
+    """The new footprint's cells that were the old footprint's specified
+    ring, the cells the nest's microphysics never touched."""
+    from gpuwm.core.physics_inventory import spec_zone_ring_slices
+
+    ny, nx = (int(n) for n in shape)
+    old = np.zeros((ny, nx), dtype=bool)
+    for section in spec_zone_ring_slices(ny, nx, int(ring)):
+        old[section] = True
+    (dst_j, src_j), (dst_i, src_i) = window
+    stale = np.zeros((ny, nx), dtype=bool)
+    stale[dst_j, dst_i] = old[src_j, src_i]
+    return stale
+
+
+def accumulation_ring(run) -> int:
+    """The specified ring width the nest's microphysics skips: WRF's
+    ``spec_zone`` on a specified or nested domain, else 0
+    (gpuwm/core/microphysics.py ``_ring_guard_slices``)."""
+    if not (getattr(run, "specified", False) or getattr(run, "nested", False)):
+        return 0
+    return max(int(getattr(run, "spec_zone", 0) or 0), 0)
 
 
 def restore_continuation(state, driver,
@@ -457,8 +640,10 @@ def restore_carriers(driver, shifted: dict[str, np.ndarray],
 
 
 __all__ = [
-    "PHYSICS_CONTINUATION_COLD_VALUES", "W0AVG_KEY",
-    "capture_carriers", "capture_continuation", "continuation_slots",
+    "PHYSICS_CONTINUATION_COLD_VALUES", "STRIP_ACCUMULATION_RULE",
+    "STRIP_ACCUMULATORS", "W0AVG_KEY",
+    "accumulation_ring", "capture_carriers", "capture_continuation",
+    "continuation_slots", "parent_strip_accumulations",
     "relocatable_carriers", "restore_carriers", "restore_continuation",
-    "shift_carriers", "shift_continuation",
+    "seed_birth_accumulations", "shift_carriers", "shift_continuation",
 ]

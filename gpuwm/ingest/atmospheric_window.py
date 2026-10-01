@@ -37,6 +37,11 @@ CANONICAL_ATMOSPHERIC_FIELDS = frozenset({
 })
 WINDOW_SCHEMA = "gpuwm-mapped-atmospheric-window-v1"
 WINDOWED_FRAMESET_SCHEMA = "gpuwm-mapped-windowed-frameset-v1"
+#: ``original.validation`` of a field the mapped engine decoded over the
+#: window alone (tools/rw_wps/crates/mapped-engine/src/window.rs,
+#: DECODED_VALIDATION): its values were checked over the window and nothing
+#: outside it was decoded, so it states no whole-field digest.
+WINDOW_DECODED_VALIDATION = "window-decoded-canonical-field-v1"
 
 
 @dataclass(frozen=True)
@@ -144,12 +149,16 @@ class WindowedAtmosphericSnapshot(Era5Snapshot):
 def atmospheric_window_for_grids(metadata, grids):
     """Union the existing FP32 mass/U/V stencils on the original geometry.
 
-    A cyclic source keeps its full representation for now: reorientation may
-    choose a different cut for another domain. Unknown/unproven support uses
-    the same full fallback, without rejecting a source or a requested feature.
+    A cyclic source is windowed only where its stored cut is clear of every
+    stencil (``global_ring_cut`` is ``None``): the preparation then reads the
+    ring in its stored order, so a window in that order is the support it
+    reads.  A domain whose stencils reach the cut is re-cut first
+    (``recut_global_ring``) and keeps the full representation.
+    Unknown/unproven support uses the same full fallback, without rejecting a
+    source or a requested feature.
     """
     from gpuwm.ingest.horiz import (
-        _regular_coordinates, global_longitude_period_columns,
+        _regular_coordinates, global_longitude_period_columns, global_ring_cut,
         source_coordinate_transform,
     )
     from gpuwm.ingest.interpolation_support import regular_source_support
@@ -157,7 +166,10 @@ def atmospheric_window_for_grids(metadata, grids):
 
     shape = (len(metadata.latitude), len(metadata.longitude))
     if metadata.projection is None and global_longitude_period_columns(metadata.longitude) is not None:
-        return None
+        longitudes = [pair[1] for grid in grids
+                      for pair in (grid.latlon_mass(), grid.latlon_u(), grid.latlon_v())]
+        if not longitudes or global_ring_cut(metadata.longitude, *longitudes) is not None:
+            return None
     transform, _ = source_coordinate_transform(metadata)
     supports = []
     for grid in grids:

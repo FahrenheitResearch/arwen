@@ -112,7 +112,12 @@ def test_linear_attachment_keeps_original_arrays_offset_and_identity_schema():
     assert device is original and offset == 17.
     assert 'lbc_evaluated_tables' not in state._scratch
     from gpuwm.state_serialization_contract import lateral_boundary_prefix_identity
-    assert lateral_boundary_prefix_identity(state)['schema'] == 'gpuwm-lateral-boundary-prefix-v2'
+    # The builder records each interval's end frame, so the series hashes
+    # in the built end-frame identity (A140b); rebuilt, a linear series
+    # keeps the linear schema, never the rational one.
+    assert lateral_boundary_prefix_identity(state)['schema'] == 'gpuwm-lateral-boundary-prefix-v4'
+    assert lateral_boundary_prefix_identity(
+        state, rebuilt_end_frames=True)['schema'] == 'gpuwm-lateral-boundary-prefix-v2'
 
 
 def test_time_coefficients_affect_restart_identity_and_survive_tile_windows():

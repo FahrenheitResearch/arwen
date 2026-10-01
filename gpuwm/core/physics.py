@@ -43,7 +43,7 @@ from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
                           NOAHMP_OPTION_IDENTITY,
                           NOAHMP_OPTIONS_WITHOUT_CONSUMER,
                           RUC_OPTION_IDENTITY,
-                          SASE_PBL_SCHEME, RunConfig,
+                          SASE_PBL_SCHEME, UW_PBL_SCHEME, RunConfig,
                           radiation_enabled, radiation_scheme_ids,
                           soil_layer_count)
 from gpuwm.core import constants as c
@@ -55,6 +55,8 @@ from gpuwm.core import constants as c
 from gpuwm.core.physics_inventory import (
     MYJ_PBL_STATE_3D, MYJ_SFCLAY_FIELDS_2D,
     PBL_RQI_MICROPHYSICS,
+    UWPBL_DIAGNOSTICS_2D, UWPBL_DIAGNOSTICS_FULL, UWPBL_HELD_3D,
+    UWPBL_STATE_2D, UWPBL_STATE_FULL,
     PBL_SHARED_FORCING, pbl_raw_rate_names,
     _HMIX_K_DIAG_NAMES,
     hmix_k_diag_names,
@@ -64,7 +66,8 @@ from gpuwm.core.physics_inventory import (
     physics_retains_ysu_output,
     physics_reuses_pbl_composition,
 )
-from gpuwm.core import health_ledger
+from gpuwm.core import (cumulus_clock, health_ledger, noah_forcing,
+                        noah_sfcdiags, tendency_coupling)
 from gpuwm.core.noah import (_F2D as NOAH_FIELDS_2D,
                              _F3D as NOAH_FIELDS_3D,
                              launch_noah, load_tables, pack_params)
@@ -112,6 +115,7 @@ from gpuwm.core.mynn_pbl_runtime import (
     mynn_pbl_step,
     validate_mynn_tendencies,
 )
+from gpuwm.core.mynn_pbl_scratch import resolve_mynn_tile_column_chunk
 from gpuwm.core.sase import (launch_bulk_richardson_zi,
                              launch_diff_flux_diag,
                              launch_implicit_vertical_diffusion,
@@ -217,7 +221,7 @@ def _wsm6_sr_roundoff_limit(
     ``step_scalings`` covers a family member whose kernel applies extra
     unit-scale multiplicative operations to BOTH sides of the quotient
     after each step's sums -- WDM6 scales every accumulation step by
-    ``delz[0]/1000*dtcld*1000`` (wdm6.cu:618-633, four roundings) where
+    ``delz[0]/1000*dtcld*1000`` (wdm6.cu:655-667, four roundings) where
     WSM6 accumulates pre-scaled sediment returns.  Each such rounding
     moves the numerator up by at most ``(1+u)`` and the denominator down
     by at most ``(1-u)``, so the bound widens by exactly
@@ -294,11 +298,11 @@ def _my2_sr_roundoff_limit() -> tuple[np.float32, int]:
 #: The positive-sum SR expression family (1.9.1 D2).  Audit of every
 #: kernel that writes SR (``grep 'sr\[' gpuwm/core/kernels/*.cu``):
 #:
-#: * wsm6.cu:402 and wdm6.cu:635 form the IDENTICAL expression
+#: * wsm6.cu:406 and wdm6.cu:672 form the IDENTICAL expression
 #:   ``sr = (snowncv + graupelncv) / (rainncv + 1e-12)`` accumulated
 #:   across the same ``floor(dt/120+0.5)`` minor-loop split
-#:   (wsm6.cu:372-374 == wdm6.cu:466-468).  WDM6 additionally applies
-#:   four post-sum unit scalings per step (wdm6.cu:618-633), priced by
+#:   (wsm6.cu:376-378 == wdm6.cu:484-486).  WDM6 additionally applies
+#:   four post-sum unit scalings per step (wdm6.cu:655-667), priced by
 #:   the ``step_scalings`` term.  1.9.0 granted the envelope to mp=6
 #:   only, so WDM6's own WRF-expression-order SR killed a healthy run
 #:   at its first frozen-dominated column.
@@ -415,6 +419,12 @@ PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
         # unconditionally) and publishes it as state.e_sgs, the field
         # the D1 gray-zone instrument scores.
         11: "_run_shinhong",
+        # UW moist turbulence (WRF v4.7.1 module_bl_camuwpbl_driver.F,
+        # CAMUWPBLSCHEME).  Like MYJ it performs its own implicit
+        # diffusion and returns finished tendencies; unlike every other
+        # row it computes in binary64 (CAM's real(r8)) and reads the
+        # radiation step's held RTHRATENLW and CLDFRA.
+        UW_PBL_SCHEME: "_run_uwpbl",
         # SASE: not a WRF scheme and deliberately outside WRF's selector
         # namespace, so it can never collide with one WRF adds later.
         SASE_PBL_SCHEME: "_run_sase",
@@ -1194,6 +1204,15 @@ class RadiationResult:
     # number no scheme computed.  A scheme that declares ``publishes_olr``
     # must supply it on every call; see ``PhysicsDriver._run_radiation``.
     olr: cp.ndarray | None = None
+    # SWDDIR/SWDDIF, the surface direct and diffuse shortwave, from a
+    # shortwave scheme that computes them (RRTMG's swdkdir/swdkdif; RTE+
+    # RRTMGP's direct beam).  None from the others, for which the radiation
+    # driver's own Ruiz-Arias split applies (module_radiation_driver.F:
+    # 2882-2914).  SWDDIR is produced only for BEP+BEM (sf_urban_physics =
+    # 3); SWDDIF for BEP+BEM and when the domain's slope_rad asks for it
+    # (gpuwm.core.topo_radiation.request_surface_diffuse).
+    swddir: cp.ndarray | None = None
+    swddif: cp.ndarray | None = None
 
 
 @dataclass
@@ -1439,6 +1458,12 @@ def _couple_momentum_to_faces(state: DomainState, cfg: RunConfig,
     caller; ``ru``/``rv`` were zeros for every non-PBL path until New
     Tiedtke, which is the first scheme in this tree with ``lmfdudv``.
     """
+    if tendency_coupling.ready(state, mass_u, mass_v):
+        # Everything below as one launch, operation for operation, the
+        # closure included (gpuwm.core.tendency_coupling).
+        return tendency_coupling.couple_faces(
+            state, mass_u, mass_v, mask_ring=bool(cfg.specified or cfg.nested),
+            open_x=bool(cfg.open_x), open_y=bool(cfg.open_y))
     # Periodic halo semantics: face f lies between cells f-1 and f; the
     # final staggered face duplicates face zero.
     ru = 0.5 * (mass_u + cp.roll(mass_u, 1, axis=2))
@@ -1507,6 +1532,23 @@ def couple_ysu_tendencies(state: DomainState, cfg: RunConfig,
     join the working slow slot.  Moist scalar tendencies remain in coupled
     form for ``rk_update_scalar``.
     """
+    dqi = ysu.get("dqi")
+    mut = state.total_mu()
+    if tendency_coupling.ready(
+            state, ysu["du"], ysu["dv"], ysu["dtheta"], ysu["dqv"],
+            ysu["dqc"], *(() if dqi is None else (dqi,)), mut=mut):
+        # The mass coupling, ring mask and theta map-factor division below
+        # as one launch (gpuwm.core.tendency_coupling); the faces go through
+        # the shared helper as before.
+        (rtheta, rqv, rqc, rqi), mass_u, mass_v = (
+            tendency_coupling.couple_mass(
+                state, mut,
+                [(ysu["dtheta"], True), (ysu["dqv"], True),
+                 (ysu["dqc"], True), (dqi, dqi is not None)],
+                theta_slot=0, mask_ring=bool(cfg.specified or cfg.nested),
+                momentum=(ysu["du"], ysu["dv"])))
+        ru, rv = _couple_momentum_to_faces(state, cfg, mass_u, mass_v)
+        return PhysicsTendencies(ru, rv, rtheta, rqv, rqc, rqi=rqi)
     chm = (state.c1h[:, None, None] * state.total_mu()[None]
            + state.c2h[:, None, None])
     ru, rv = _couple_momentum_to_faces(state, cfg, chm * ysu["du"],
@@ -1566,6 +1608,27 @@ def couple_column_tendencies(
     """
     nz, ny, nx = state.p.shape
     shape = (nz, ny, nx)
+    mut = state.total_mu()
+    rates = (rtheta, rqv, rqc, rqr, rqi, rqs)
+    if tendency_coupling.ready(
+            state, *(a for a in rates + (ru, rv) if a is not None), mut=mut):
+        # The coupling, ring mask and theta map-factor division below as one
+        # launch (gpuwm.core.tendency_coupling); theta, qv and qc keep their
+        # coupled zero stacks when absent, qr, qi and qs stay None.
+        (theta, qv, qc, qr, qi, qs), mass_u, mass_v = (
+            tendency_coupling.couple_mass(
+                state, mut,
+                [(rate, index < 3 or rate is not None)
+                 for index, rate in enumerate(rates)],
+                theta_slot=0, mask_ring=bool(cfg.specified or cfg.nested),
+                momentum=None if ru is None else (ru, rv)))
+        if ru is None:
+            face_u = cp.zeros((nz, ny, nx + 1), dtype=DTYPE)
+            face_v = cp.zeros((nz, ny + 1, nx), dtype=DTYPE)
+        else:
+            face_u, face_v = _couple_momentum_to_faces(state, cfg, mass_u,
+                                                       mass_v)
+        return PhysicsTendencies(face_u, face_v, theta, qv, qc, qr, qi, qs)
     zero = cp.zeros(shape, dtype=DTYPE)
     chm = (state.c1h[:, None, None] * state.total_mu()[None]
            + state.c2h[:, None, None])
@@ -1764,6 +1827,10 @@ class PhysicsDriver:
     #: is integrating a CONSTANT downward longwave says so in its receipt
     #: instead of publishing a GLW row that looks like a measurement.
     glw_provenance: str = "declared"
+    #: :class:`gpuwm.core.topo_radiation.TopoShortwave` when this domain
+    #: runs WRF's slope_rad (initialize_physics attaches it); ``None``
+    #: keeps every other domain's radiation and land calls untouched.
+    topo_shortwave: object | None = None
 
     #: CLASS DEFAULTS for the three bookkeeping slots the hot path reads
     #: every step, on exactly the argument the ``sase_active`` default
@@ -1779,11 +1846,24 @@ class PhysicsDriver:
     #: silently-created empty one would let a driver assembled without a
     #: contract consume whatever its buffers held -- which is the defect
     #: the contract exists to close, reintroduced through the back door.
+    noah_mosaic = None
     cam_ozone = None
     o3rad = None
     carriers = None
     surface_moisture_ledger = None
     carriers_need_producer_refresh = False
+    #: The urban canopy model (``sf_urban_physics > 0``): its per-domain
+    #: :class:`gpuwm.core.urban_state.UrbanState` and the
+    #: :class:`gpuwm.core.urban_driver.UrbanCoupler` that runs it.  None on
+    #: every run without one, which is the default path: every urban branch
+    #: in this class is a single ``is not None`` test.  initialize_physics
+    #: sets them; ``_urban_cfg`` is the RunConfig the DA refresh hands the
+    #: coupler, since that caller has a state and no config.
+    urban = None
+    urban_coupler = None
+    _urban_cfg = None
+    #: Whether the last radiation call handed over SWDDIR/SWDDIF itself.
+    _swdd_from_scheme = False
 
     def __init__(self, state: DomainState, cfg: RunConfig,
                  fields: dict[str, cp.ndarray], sfclay_result: SFClayResult,
@@ -1793,6 +1873,9 @@ class PhysicsDriver:
                  carriers=None):
         self.state = state
         self.cam_ozone = None
+        # WRF's slope_rad carrier; initialize_physics attaches it where
+        # WRF would adjust the surface shortwave (restart: rebuilt).
+        self.topo_shortwave = None
         self.o3rad = None
         self.fields = fields
         # Where this domain's downward longwave came from; see the class
@@ -1815,6 +1898,7 @@ class PhysicsDriver:
                 and cfg.sf_surface_physics == 3) else None
         )
         self.noah_params = noah_params
+        self.noah_mosaic = None
         # Noah-MP's parameter bundle and solar geometry are separate
         # attributes rather than extra members of ``noah_params``, because
         # restart identity dispatches on the scheme value through
@@ -1877,8 +1961,8 @@ class PhysicsDriver:
         self.cu_physics = cfg.cu_physics
         self.mp_physics = cfg.mp_physics
         # SR validator envelope, granted by shared-expression family
-        # membership rather than per scheme (1.9.1 D2): wsm6.cu:402 and
-        # wdm6.cu:635 form the identical positive-sum SR expression, and
+        # membership rather than per scheme (1.9.1 D2): wsm6.cu:406 and
+        # wdm6.cu:672 form the identical positive-sum SR expression, and
         # milbrandt2.cu:2340 the same quotient once per call, so all
         # three own their WRF expression-order roundoff allowance.
         (self._sr_roundoff_upper, self._sr_roundoff_max_ulps,
@@ -1989,6 +2073,12 @@ class PhysicsDriver:
         #: rather than left to ``getattr`` so that reading it is a plain
         #: attribute access on the hot path.
         self.surface_moisture_ledger = None
+        # The urban canopy model; initialize_physics attaches it when
+        # sf_urban_physics > 0 (see the class attributes).
+        self.urban = None
+        self.urban_coupler = None
+        self._urban_cfg = None
+        self._swdd_from_scheme = False
         #: THE SURFACE-RADIATION CARRIER CONTRACT
         #: (:mod:`gpuwm.core.radiation_carriers`).  Always present, never
         #: opt-in: it is the authority that stands between a land-surface
@@ -2385,8 +2475,28 @@ class PhysicsDriver:
         glw = _checked_array(result.glw, (ny, nx), "radiation GLW")
         self.radiation_tendencies = couple_column_tendencies(
             state, cfg, rtheta=self.rthratenlw + self.rthratensw)
+        if "uw_cldfra" in self.fields:
+            # WRF's grid%cldfra is written by the radiation driver on due
+            # steps and read by the UW PBL on every step (bl_pbl_physics=9
+            # allocates this field and nothing else reads it).
+            from gpuwm.core.uwpbl import uwpbl_radiation_cloud_fraction
+            uwpbl_radiation_cloud_fraction(
+                atmosphere, cfg, self.fields["uw_cldfra"])
         self.fields["swdown"][...] = swdown
         self.fields["glw"][...] = glw
+        if "swddir" in self.fields:
+            # BEP+BEM's direct/diffuse split.  A scheme that computes it
+            # hands it over; for any other the urban coupler applies the
+            # radiation driver's Ruiz-Arias split right after this call,
+            # on the same radiation-time sun (UrbanCoupler.update_solar).
+            if result.swddir is not None and result.swddif is not None:
+                self.fields["swddir"][...] = _checked_array(
+                    result.swddir, (ny, nx), "radiation SWDDIR")
+                self.fields["swddif"][...] = _checked_array(
+                    result.swddif, (ny, nx), "radiation SWDDIF")
+                self._swdd_from_scheme = True
+            else:
+                self._swdd_from_scheme = False
         if "gsw" in self.fields:
             if result.gsw is None:
                 raise ValueError(
@@ -2447,6 +2557,11 @@ class PhysicsDriver:
                     "but returned no OLR (TOA outgoing longwave)")
             self.olr[...] = _checked_array(
                 result.olr, (ny, nx), "radiation OLR")
+        # WRF's slope_rad / topo_shading: what the radiation driver leaves
+        # for the surface driver (diffuse fraction, solar geometry, shadow
+        # mask).  None on every domain that does not turn slope_rad on.
+        if self.topo_shortwave is not None:
+            self.topo_shortwave.after_radiation(result, state, cfg)
 
     def _run_cumulus(self, atmosphere: Mapping[str, cp.ndarray],
                       state: DomainState, cfg: RunConfig) -> None:
@@ -2476,12 +2591,18 @@ class PhysicsDriver:
         shape = (nz, ny, nx)
         native_kf = _is_native_kf_result(
             result, self.cumulus_callable, state, cfg, shape)
-        if native_kf:
-            _validate_native_kf_result(result, state)
-            # Exact production provenance makes these temporary launch
-            # outputs safe read-only sources.  The NCA branch below copies
-            # every value into persistent driver storage on this stream
-            # before the transient result can leave scope.
+        from gpuwm.core.gf import is_native_gf_result, validate_native_gf_result
+
+        native_gf = is_native_gf_result(
+            result, self.cumulus_callable, state, cfg)
+        if native_kf or native_gf:
+            if native_kf:
+                _validate_native_kf_result(result, state)
+            else:
+                validate_native_gf_result(result, state)
+            # Exact provenance permits read-only use of fresh launch outputs.
+            # The branches below copy rates into persistent driver storage
+            # and coupling produces independent tendencies on this stream.
             rtheta = result.rthcuten
             rqv = result.rqvcuten
             rqc = result.rqccuten
@@ -2546,8 +2667,8 @@ class PhysicsDriver:
             self.cumulus_tendencies.materialize(
                 _cumulus_optional_tendency_components(cfg))
             if result.rainc is not None:
-                increment = _checked_array(
-                    result.rainc, (ny, nx), "cumulus RAINC increment")
+                increment = (result.rainc if native_gf else _checked_array(
+                    result.rainc, (ny, nx), "cumulus RAINC increment"))
                 self.rainc += increment
                 # Convective rain also wets the surface (RAINBL, WRF
                 # module_surface_driver.F:1566) on the legacy contract.
@@ -2648,6 +2769,24 @@ class PhysicsDriver:
         if min(remainder, clock_dt - remainder) > 1.0e-6 * clock_dt:
             return
         dt = DTYPE(clock_dt)
+        surface_raincv = (
+            self.fields["surface_raincv"]
+            if self.ruc_params is not None or self.noahmp_params is not None
+            else None)
+        if cumulus_clock.device_arrays(
+                self.rainc, self._pending_rainbl, self.cu_nca,
+                self.cu_pratec, self.cu_expiring,
+                *(() if surface_raincv is None else (surface_raincv,))):
+            # The statements below as one launch, operation for operation
+            # (gpuwm.core.cumulus_clock); they were about 13 launches from
+            # Python on every step of every cumulus suite.
+            self._cu_expiry_pending = True
+            cumulus_clock.advance(
+                rainc=self.rainc, pending_rainbl=self._pending_rainbl,
+                surface_raincv=surface_raincv, nca=self.cu_nca,
+                pratec=self.cu_pratec, expiring=self.cu_expiring, dt=dt)
+            self.finish_step()
+            return
         self.rainc += self.cu_pratec * dt
         # WRF's surface driver adds convective rain to RAINBL every step
         # (module_surface_driver.F:1566, RAINBL += RAINCV + RAINNCV with
@@ -2697,6 +2836,19 @@ class PhysicsDriver:
         temporary), and constant-topology.
         """
         if self.cu_expiring is None:
+            self._cu_expiry_pending = False
+            return
+        volumes = list(self.cu_rates.values()) + [
+            array for array in (
+                getattr(self.cumulus_tendencies, name)
+                for name in ("rtheta", "rqv", "rqc", "rqr", "rqi", "rqs"))
+            if array is not None]
+        shape = (volumes[0].shape[0], *self.cu_expiring.shape)
+        if (len(volumes) <= cumulus_clock.MAX_VOLUMES
+                and all(array.shape == shape for array in volumes)
+                and cumulus_clock.device_arrays(self.cu_expiring, *volumes)):
+            # Every masked clear below and the mask reset as one launch.
+            cumulus_clock.clear(self.cu_expiring, volumes)
             self._cu_expiry_pending = False
             return
         mask = self.cu_expiring[None] != DTYPE(0.0)
@@ -2752,6 +2904,18 @@ class PhysicsDriver:
         Momentum uses the ordinary A-grid coupling before face interpolation;
         scaling already averaged face tendencies cannot reproduce it.
         """
+        if self.urban is not None:
+            # Named follow-up for the relocation owner: carry the urban
+            # arrays through the move (WRF re-derives the exposed cells
+            # with interp_mask_field on lu_index, Registry.EM_COMMON:
+            # 918-947).  Until then the move is refused rather than run on
+            # a city that stayed where it was.
+            raise ValueError(
+                f"sf_urban_physics={self.urban.option} on a moving domain: "
+                "the relocation does not carry the urban state arrays, so "
+                "the moved nest would run its urban model on the old "
+                "footprint's roof/wall/road temperatures and urban "
+                "fractions")
         if self.pbl_raw_rates:
             self.pbl_tendencies = couple_ysu_tendencies(
                 state, cfg, self.pbl_raw_rates)
@@ -2763,6 +2927,12 @@ class PhysicsDriver:
         if self.radiation_active:
             self.radiation_tendencies = couple_column_tendencies(
                 state, cfg, rtheta=self.rthratenlw + self.rthratensw)
+        if self.noah_mosaic is not None:
+            raise ValueError(
+                "the relocation does not carry the mosaic tile arrays; WRF "
+                "re-derives them with interp_mask_land_field on lu_index, "
+                "Registry.EM_COMMON:1873-1913, so the moved nest would run "
+                "the old footprint's tiles")
         self.recouple_cumulus_tendencies(state, cfg)
 
     def _compose_tendencies(self, cfg: RunConfig) -> None:
@@ -3183,8 +3353,25 @@ class PhysicsDriver:
             "uz0": f["uz0"], "vz0": f["vz0"],
         }
         state = {name: f[name] for name in MYJ_PBL_INOUT}
-        out = myj_pbl_step(columns, surface, state, f["tke_myj"],
-                           dtturbl=self.bldt_seconds, flqi=flqi)
+        if self.urban is not None and self.urban.pbl_terms is not None:
+            # WRF sends MYJ through its separate urban routine under BEP/BEM
+            # (module_pbl_driver.F:1444-1492, module_bl_myjurb.F), which
+            # takes QV and CWM only.  Contract: gpuwm.core.urban_driver.
+            from gpuwm.core.myjurb import launch_myjurb
+            # MYJURB seeds ZINT with HT (module_bl_myjurb.F), which the
+            # engine's MYJPBL does not read.
+            out = launch_myjurb(columns, surface, state, f["tke_myj"],
+                                dtturbl=self.bldt_seconds,
+                                bep=self.urban.pbl_terms,
+                                frc_urb2d=f["frc_urb2d"],
+                                ht=cp.ascontiguousarray(self.state.ht))
+            # MYJURB mixes QV and CWM only: RQIBLTEN is the pbl_driver's
+            # zeroed row, published as zero and never coupled (no ``dqi``).
+            if "rqiblten" not in out:
+                out["rqiblten"] = cp.zeros_like(out["rqcblten"])
+        else:
+            out = myj_pbl_step(columns, surface, state, f["tke_myj"],
+                               dtturbl=self.bldt_seconds, flqi=flqi)
         # Same validation policy as YSU and Shin-Hong, one host reduction
         # per field.  MYJ has no known WRF 0/0 of its own, so unlike
         # Shin-Hong a NaN here is a defect rather than a reproduced quirk;
@@ -3209,8 +3396,17 @@ class PhysicsDriver:
         # consumer of the rates, and the diagnostics persist in ``fields``.
         self.last_ysu = None
 
-    def _run_noah(self, atmosphere: Mapping[str, cp.ndarray],
-                  cfg: RunConfig, itimestep: int) -> None:
+    def _run_noah_mosaic(self, atmosphere: Mapping[str, cp.ndarray],
+                         cfg: RunConfig, itimestep: int) -> None:
+        """WRF's ``lsm_mosaic`` arm (module_surface_driver.F:2662-2776).
+
+        The forcing is prepared exactly as :meth:`_run_noah` prepares it;
+        the tile loop, the per-tile Noah column and the area averages are
+        :func:`gpuwm.core.noah_mosaic.launch_noah_mosaic`.  The XICE
+        threshold is the one the door built the tiles with.
+        """
+        from gpuwm.core.noah_mosaic import launch_noah_mosaic
+
         f = self.fields
         # WRF Noah receives the lowest-layer MID pressure from interfaces:
         # SFCPRS = (P8W3D(i,kts+1,j) + P8W3D(i,kts,j)) * 0.5
@@ -3234,14 +3430,93 @@ class PhysicsDriver:
         # microphysics contract, then consumed exactly once by the next due
         # surface call.  Externally supplied rainbl remains additive.
         f["rainbl"] += self._pending_rainbl
+        setup = self.noah_mosaic
+        launch_noah_mosaic(f, self.noah_params, self.bldt_seconds,
+                           NOAH_LAYER_THICKNESS_M,
+                           mosaic_cat=setup.mosaic_cat,
+                           categories=setup.categories,
+                           xice_threshold=setup.xice_threshold,
+                           frpcpn=use_scheme_sr,
+                           usemonalb=self.noah_usemonalb,
+                           rdlai2d=self.noah_rdlai2d,
+                           opt_thcnd=self.noah_opt_thcnd,
+                           itimestep=itimestep,
+                           urban=(self.urban_coupler.state if int(getattr(cfg, "sf_urban_physics", 0)) == 1 else None),
+                           atmosphere=atmosphere,
+                           solar=(self.urban_coupler.state.solar if self.urban_coupler is not None else None),
+                           use_wudapt_lcz=int(getattr(cfg, "use_wudapt_lcz", 0)))
+        f["rainbl"][...] = 0.0
+        self._pending_rainbl[...] = 0.0
+
+    def _run_noah(self, atmosphere: Mapping[str, cp.ndarray],
+                  cfg: RunConfig, itimestep: int) -> None:
+        if int(getattr(cfg, "sf_surface_mosaic", 0)) == 1:
+            if self.noah_mosaic is None:
+                raise ValueError(
+                    "sf_surface_mosaic=1 but this initialisation door built no "
+                    "tile state; it carries no LANDUSEF, so the run would "
+                    "silently integrate the dominant category")
+            return self._run_noah_mosaic(atmosphere, cfg, itimestep)
+        f = self.fields
+        # WRF's first-RK surface call always supplies the scheme SR field to
+        # Noah for every supported precipitating scheme.  Kessler explicitly
+        # produces SR=0 (liquid rain), so falling back to air temperature for
+        # mp_physics=1 incorrectly freezes cold rain.  The membership test is
+        # microphysics_scheme_sr_available (which cites the WRF driver arm
+        # per scheme) rather than a literal tuple repeated three times.
+        use_scheme_sr = microphysics_scheme_sr_available(self.mp_physics)
+        p_interface = atmosphere["p_interface"]
+        sr_scheme = self.microphysics.sr if use_scheme_sr else None
+        fused = noah_forcing.device_arrays(
+            f["tsk"].shape, p_interface[0], p_interface[1],
+            atmosphere["temperature"][0], atmosphere["qv"][0],
+            atmosphere["dz"][0], f["br"], self._pending_rainbl, f["sfcprs"],
+            f["sfctmp"], f["qv1"], f["dz8w1"], f["rib"], f["sr"],
+            f["rainbl"], *(() if sr_scheme is None else (sr_scheme,)))
+        if fused:
+            # The statements below as one launch, in their order
+            # (gpuwm.core.noah_forcing).
+            noah_forcing.forcing(
+                f, p_if0=p_interface[0], p_if1=p_interface[1],
+                temperature0=atmosphere["temperature"][0],
+                qv0=atmosphere["qv"][0], dz0=atmosphere["dz"][0],
+                sr_scheme=sr_scheme, pending=self._pending_rainbl,
+                freezing=DTYPE(273.15))
+        else:
+            # WRF Noah receives the lowest-layer MID pressure from
+            # interfaces: SFCPRS = (P8W3D(i,kts+1,j) + P8W3D(i,kts,j)) * 0.5
+            # (module_sf_noahdrv.F:795), not the half-level p_phy.
+            f["sfcprs"][...] = DTYPE(0.5) * (atmosphere["p_interface"][0]
+                                             + atmosphere["p_interface"][1])
+            f["sfctmp"][...] = atmosphere["temperature"][0]
+            f["qv1"][...] = atmosphere["qv"][0]
+            f["dz8w1"][...] = atmosphere["dz"][0]
+            f["rib"][...] = f["br"]
+            f["sr"][...] = (self.microphysics.sr if use_scheme_sr else
+                            (atmosphere["temperature"][0] <= DTYPE(273.15)))
+            # RAINBL is accumulated explicitly through the named post-RK
+            # microphysics contract, then consumed exactly once by the next
+            # due surface call.  Externally supplied rainbl remains additive.
+            f["rainbl"] += self._pending_rainbl
+        coupler = self.urban_coupler
         launch_noah(f, self.noah_params, self.bldt_seconds,
                     NOAH_LAYER_THICKNESS_M, frpcpn=use_scheme_sr,
                     usemonalb=self.noah_usemonalb,
                     rdlai2d=self.noah_rdlai2d,
                     opt_thcnd=self.noah_opt_thcnd,
-                    itimestep=itimestep)
-        f["rainbl"][...] = 0.0
-        self._pending_rainbl[...] = 0.0
+                    itimestep=itimestep,
+                    urban=(None if coupler is None
+                           else coupler.noah_kernel_args()))
+        if coupler is not None:
+            # BEFORE rainbl is consumed: the UCM and BEM read RAINBL
+            # (module_sf_noahdrv.F:1343, BEP_BEM's rainbl argument).
+            coupler.after_lsm(f, atmosphere, cfg, dt=self.bldt_seconds,
+                              itimestep=itimestep)
+        if fused:
+            noah_forcing.rain_clear(f["rainbl"], self._pending_rainbl)
+        else:
+            f["rainbl"][...] = 0.0
+            self._pending_rainbl[...] = 0.0
 
     def _run_ruc(self, atmosphere: Mapping[str, cp.ndarray],
                  cfg: RunConfig, itimestep: int) -> None:
@@ -3315,7 +3590,14 @@ class PhysicsDriver:
             elapsed_seconds=float(self.state.elapsed_seconds),
             dveg=cfg.dveg, opt_run=cfg.opt_run, opt_crop=cfg.opt_crop,
             opt_irr=cfg.opt_irr, opt_tdrn=cfg.opt_tdrn,
-            opt_soil=cfg.opt_soil)
+            opt_soil=cfg.opt_soil,
+            sf_urban_physics=int(getattr(cfg, "sf_urban_physics", 0)))
+        if self.urban_coupler is not None:
+            # noahmp_urban runs after noahmplsm (module_surface_driver.F:
+            # 3184) and before RAINBL is consumed.
+            self.urban_coupler.after_lsm(f, atmosphere, cfg,
+                                         dt=self.bldt_seconds,
+                                         itimestep=itimestep)
         # The remaining knobs are read here so the registry's citation of
         # this file is true for every one of them, and so a future widening
         # is a change in this call rather than in a solver default.  The
@@ -3398,6 +3680,11 @@ class PhysicsDriver:
         # from it, and an analysis can move the pressure column.
         self.fields["psfc"][...] = atmosphere["p_interface"][0]
         self._refresh_surface_diagnostics(atmosphere)
+        if self.urban_coupler is not None:
+            # The urban overrides own the published value on city cells, so
+            # they are part of the provider that reruns.
+            self.urban_coupler.after_surface_diagnostics(
+                self.fields, atmosphere, self._urban_cfg)
         return True
 
     def _refresh_surface_diagnostics(self, atmosphere) -> None:
@@ -3435,6 +3722,18 @@ class PhysicsDriver:
         (module_sf_mynn.F:1148, module_sf_sfcdiags_ruclsm.F:125-127).
         """
         f = self.fields
+        qv1 = atmosphere["qv"][0]
+        if noah_sfcdiags.device_arrays(
+                f["tsk"].shape, f["psfc"], f["tsk"], f["cqs2"], f["chs2"],
+                f["qsfc"], f["qfx"], f["hfx"], qv1,
+                f["q2"], f["t2"], f["th2"]):
+            # The statements below as one launch, operation for operation
+            # (gpuwm.core.noah_sfcdiags); they were about 20 launches from
+            # Python after every Noah call.
+            noah_sfcdiags.refresh(
+                f, qv1, rd=DTYPE(c.RD), cp_air=DTYPE(c.CP), p0=DTYPE(c.P0),
+                rcp=DTYPE(c.RCP), active_floor=DTYPE(1.0e-5))
+            return
         rho = f["psfc"] / (DTYPE(c.RD) * f["tsk"])
         q_active = f["cqs2"] >= DTYPE(1.0e-5)
         t_active = f["chs2"] >= DTYPE(1.0e-5)
@@ -3476,7 +3775,15 @@ class PhysicsDriver:
             u10=f["u10"], v10=f["v10"], dt=self.bldt_seconds,
             rthraten=cp.ascontiguousarray(
                 self.rthratenlw + self.rthratensw),
-            ysu_topdown_pblmix=cfg.ysu_topdown_pblmix)
+            ysu_topdown_pblmix=cfg.ysu_topdown_pblmix,
+            # BEP/BEM's drag, heat and TKE sources (bl_ysu.F90 flag_bep
+            # arm).  Passed ONLY when an urban model produced them, so the
+            # non-BEP call is the historical one.
+            # bl_ysu.F90:1313 takes the urban fraction out of the surface
+            # drag, so the fraction travels with the terms.
+            **({} if self.urban is None or self.urban.pbl_terms is None
+               else {"bep": self.urban.pbl_terms,
+                     "frc_urb2d": f["frc_urb2d"]}))
         try:
             # The forensic set is exactly what the scheme CONSUMES and
             # another component PRODUCED: the surface-layer/LSM coupling
@@ -3553,6 +3860,11 @@ class PhysicsDriver:
             # priced scratch slots instead of ~46 kB of pool churn per
             # column per step; see gpuwm/core/mynn_pbl_scratch.py.
             state=self.state,
+            # A streamed tile buffer holds its own workspace and walks the
+            # tile width it is priced at; every other state the run's.
+            column_chunk=(resolve_mynn_tile_column_chunk(
+                int(cfg.nz), walking=True)
+                if getattr(self.state, "_tile_buffer", False) else None),
             closure=cfg.bl_mynn_closure,
             bl_mynn_cloudpdf=cfg.bl_mynn_cloudpdf,
             bl_mynn_mixlength=cfg.bl_mynn_mixlength,
@@ -3754,6 +4066,120 @@ class PhysicsDriver:
         # (the _run_mynn_pbl rationale): every consumer of the rates is
         # the coupling above, and the diagnostics persist in ``fields``
         # and ``state.e_sgs``.
+        self.last_ysu = None
+
+    def _run_uwpbl(self, atmosphere: Mapping[str, cp.ndarray],
+                   cfg: RunConfig) -> None:
+        """Run the UW moist-turbulence PBL (bl_pbl_physics=9).
+
+        The scheme is WRF v4.7.1's CAMUWPBL (gpuwm/core/uwpbl.py).  Like
+        MYJ it does its own implicit diffusion and returns finished
+        tendencies, so what is left here is WRF's binding of the call
+        (module_pbl_driver.F:1937-1956) and the PBL slot's mass coupling.
+
+        Bindings, each with its source of truth:
+
+        * ``DT`` is the MODEL step, not the PBL interval: WRF passes
+          ``DT=dt`` to this scheme where the YSU family gets ``DT=dtbl``
+          (module_pbl_driver.F:1937 against :1186).
+        * ``ITIMESTEP`` is the domain's one-based step, reconstructed the
+          way :meth:`compute` does; its value 1 is the scheme's first-step
+          reset of the diffusivities and the residual stress.
+        * ``P_PHY``/``P8W`` are the hydrostatic ``p_hyd``/``p_hyd_w`` and
+          ``Z``/``Z_AT_W`` phy_prep's heights, ``z = 0.5*(z_at_w(k) +
+          z_at_w(k+1))`` (module_big_step_utilities_em.F:4869, :4893).
+        * ``RHO`` is phy_prep's ``1./alt*(1.+qv)`` IN THAT ORDER
+          (module_big_step_utilities_em.F:4856): two roundings, which is not
+          the ``(1+qv)/alt`` the shared atmosphere carries.  The scheme reads
+          it once, in the surface stress ``rho*ust*ust/|V1|``.
+        * ``RTHRATENLW`` and ``CLDFRA`` are the radiation step's held
+          arrays; ``CLDFRA_OLD_MP`` and ``WSEDL3D`` belong to CAMMGMP
+          microphysics, which ArWen does not have, so ``is_CAMMGMP_used``
+          is false and WSEDL3D is WRF's zero.
+        * ``QNC_CURR`` is passed as zero: the scheme diffuses the liquid
+          number as its own constituent and discards the result (no
+          RQNCBLTEN leaves camuwpbl, driver.F:732-736), and no other
+          constituent's solve reads it, so its value cannot reach an
+          output.  ``QNI_CURR`` is the scheme's ice number where the
+          microphysics carries WRF's P_QNI (gpuwm.config.
+          UW_PBL_ICE_NUMBER_SPECIES) and WRF's zero dummy slot otherwise;
+          RQNIBLTEN is coupled onto that species only.
+        """
+        from gpuwm.core.uwpbl import uwpbl_ice_number_name, uwpbl_step
+        f = self.fields
+        state = self.state
+        nz, ny, nx = state.p.shape
+        epoch = float(getattr(state, "domain_start_offset", 0.0) or 0.0)
+        itimestep = int(np.floor(
+            (float(state.elapsed_seconds) - epoch) / cfg.dt + 0.5)) + 1
+        zi = atmosphere["z_interface"]
+        z_mass = cp.ascontiguousarray(DTYPE(0.5) * (zi[:-1] + zi[1:]))
+        qv = atmosphere["qv"]
+        rho = cp.ascontiguousarray(
+            (DTYPE(1.0) / state.alt) * (DTYPE(1.0) + qv))
+        zero = state.scratch((nz, ny, nx), "uwpbl_zero")
+        zero[...] = 0.0
+        ice_name = uwpbl_ice_number_name(cfg)
+        ice = getattr(state, ice_name, None) if ice_name else None
+        if ice_name and ice is None:
+            raise RuntimeError(
+                f"mp_physics={cfg.mp_physics} declares the ice number "
+                f"state.{ice_name} (gpuwm.config.UW_PBL_ICE_NUMBER_SPECIES) "
+                "but the state does not carry it; the UW PBL would mix a "
+                "species that is not there")
+        inputs = {
+            "u": atmosphere["u"], "v": atmosphere["v"],
+            "th": atmosphere["theta"], "rho": rho, "qv": qv,
+            "qc": atmosphere["qc"], "qi": atmosphere["qi"],
+            "qnc": zero,
+            "qni": cp.ascontiguousarray(ice) if ice is not None else zero,
+            "p": atmosphere["pressure"], "z": z_mass,
+            "t": atmosphere["temperature"], "cldfra": f["uw_cldfra"],
+            "exner": atmosphere["exner"],
+            "rthratenlw": cp.ascontiguousarray(self.rthratenlw),
+            "wsedl3d": zero,
+            "p8w": atmosphere["p_interface"], "z_at_w": zi,
+            "hfx": f["hfx"], "qfx": f["qfx"], "ust": f["ust"],
+            "ht": cp.ascontiguousarray(state.ht, dtype=DTYPE),
+        }
+        carried = {"kvm3d": f["uw_kvm"], "kvh3d": f["uw_kvh"],
+                   "tauresx2d": f["tauresx2d"], "tauresy2d": f["tauresy2d"]}
+        out = uwpbl_step(inputs, carried, dt=float(cfg.dt),
+                         itimestep=itimestep)
+        for name in ("du", "dv", "dtheta", "dqv", "dqc", "dqi", "dqni",
+                     "pblh"):
+            if not bool(cp.isfinite(out[name]).all()):
+                raise FloatingPointError(
+                    f"the UW PBL returned non-finite {name}")
+        f["pblh"][...] = out["pblh2d"]
+        f["kpbl"][...] = out["kpbl2d"]
+        # WRF binds KVH3D=exch_h and KVM3D=exch_m (module_pbl_driver.F:
+        # 1951): the engine's nz-level exch_h/exch_m publish the same
+        # arrays' first nz interfaces.
+        f["exch_h"][...] = f["uw_kvh"][:nz]
+        f["exch_m"][...] = f["uw_kvm"][:nz]
+        for name in UWPBL_DIAGNOSTICS_FULL + UWPBL_DIAGNOSTICS_2D:
+            f[name][...] = out[name]
+        self.pbl_tendencies = self._couple_pbl_slot(cfg, out)
+        if ice is not None:
+            # RQNIBLTEN joins the ice-number scalar through the same
+            # calculate_phy_tend multiply and add_a2a bounds as every
+            # other A-grid scalar rate (module_physics_addtendc.F:966-970);
+            # held as a plain-attribute extra (PhysicsTendencies.
+            # scalar_for), restart-exact under the bldt=0 rule
+            # gpuwm.config.validate_uwpbl_config enforces for exactly
+            # these schemes.
+            chm = (state.c1h[:, None, None] * state.total_mu()[None]
+                   + state.c2h[:, None, None])
+            coupled = chm * out["dqni"]
+            if cfg.specified or cfg.nested:
+                _specified_mass_mask(coupled)
+            self.pbl_tendencies.extra_scalars = {ice_name: coupled}
+        pbl_components = (
+            _composed_optional_tendency_components(cfg)
+            if physics_reuses_pbl_composition(cfg)
+            else _pbl_optional_tendency_components(cfg))
+        self.pbl_tendencies.materialize(pbl_components)
         self.last_ysu = None
 
     def _run_sase(self, atmosphere: Mapping[str, cp.ndarray],
@@ -4546,6 +4972,27 @@ class PhysicsDriver:
                         and _radiation_step_due(
                             itimestep, self.stepra, self.radt_minutes)):
                     self._update_analytic_coszen(state, cfg)
+                # The urban models' DECLIN/COSZEN/HRANG, held between
+                # radiation calls exactly as WRF's radiation driver holds
+                # them (module_radiation_driver.F:1188-1208).
+                if self.urban_coupler is not None:
+                    if radiation_due:
+                        self.urban_coupler.update_solar(
+                            now, float(self.radt_seconds))
+                        if ("swddir" in self.fields
+                                and not self._swdd_from_scheme):
+                            self.urban_coupler.split_shortwave(
+                                self.fields, ht=self.state.ht)
+                    elif self.urban.solar.model_time is None:
+                        # A resumed or mid-run driver holds nothing yet:
+                        # rebuild the geometry of the radiation call the
+                        # unbroken run made last, so a resume continues
+                        # the same held sun rather than a fresher one.
+                        last = itimestep - (
+                            (itimestep - 1) % max(int(self.stepra), 1))
+                        self.urban_coupler.update_solar(
+                            epoch + (last - 1) * float(cfg.dt),
+                            float(self.radt_seconds))
                 # THE CARRIER CONTRACT, at the one instant that is
                 # downstream of every way a driver can be built: a config
                 # load, a direct initialize_physics call, a restart, a DA
@@ -4568,11 +5015,25 @@ class PhysicsDriver:
                     fields=self.fields, model_time=now,
                     radiation_interval_seconds=float(self.radt_seconds),
                     timestep_seconds=float(cfg.dt))
+                # WRF's slope_rad: SWDOWN and GSW become the flux on the
+                # local slope for the land surface, and go back to the flat
+                # values after it (module_surface_driver.F:1920-1936,
+                # :4461-4481).
+                topo_save = (self.topo_shortwave.before_land()
+                             if self.topo_shortwave is not None else None)
                 getattr(self, land_method)(atmosphere, cfg, itimestep)
                 if int(cfg.sf_surface_physics) in \
                         LAND_SURFACE_SFCDIAGS_SCHEMES:
                     self._refresh_surface_diagnostics(atmosphere)
+                if self.urban_coupler is not None:
+                    # The urban 2 m / 10 m overrides, after SFCDIAGS and
+                    # before the PBL (module_surface_driver.F:3001-3035
+                    # Noah, :3383-3423 Noah-MP).
+                    self.urban_coupler.after_surface_diagnostics(
+                        self.fields, atmosphere, cfg)
                 self.call_counts["noah"] += 1
+                if topo_save is not None:
+                    self.topo_shortwave.after_land(topo_save)
             # SURFACE-MOISTURE LEDGER (opt-in, off by default).  Placed here
             # because this is the instant after the FINAL writer of Q2 has
             # run and before the PBL scheme can touch the column, which is
@@ -4807,6 +5268,9 @@ class PhysicsDriver:
         if self.radiation_active:
             output.update(SWDOWN=self.fields["swdown"],
                           GLW=self.fields["glw"])
+            # WRF's SWNORM, written only where slope_rad runs.
+            if self.topo_shortwave is not None:
+                output["SWNORM"] = self.fields["swnorm"]
             # OLR rides the same "only while radiation is running" rule as
             # SWDOWN/GLW, and additionally only while the LONGWAVE half is
             # a scheme that computes a top-of-atmosphere flux.  WRF's own
@@ -4929,6 +5393,72 @@ def _resolve_initial_glw(glw, *, ra_lw_physics: int, radiation_active: bool,
         "calls wrf_error_fatal (phys/module_radiation_driver.F:2245).")
 
 
+def _attach_urban(driver: PhysicsDriver, state: DomainState,
+                  cfg: RunConfig, f: dict, *, noahmp_params,
+                  landuse_dataset: str, frc_urb2d, start_time, latitude,
+                  longitude) -> None:
+    """Build the domain's UrbanState and UrbanCoupler onto ``driver``."""
+    from gpuwm.config import validate_urban_config
+    from gpuwm.core.urban_driver import UrbanCoupler
+    from gpuwm.core.urban_state import init_urban_state, load_model_module
+    from gpuwm.core.urban_tables import (UrbanCategories, load_urban_params,
+                                         urban_category_set)
+
+    validate_urban_config(cfg)
+    option = int(cfg.sf_urban_physics)
+    if noahmp_params is not None:
+        identity = noahmp_params.land_use
+        categories = UrbanCategories(isurban=int(identity.isurban),
+                                     natural=int(identity.natural),
+                                     lcz=tuple(int(v) for v in identity.lcz))
+    else:
+        from gpuwm.core.noahmp import load_noahmp_parameters
+        _, veg = load_noahmp_parameters().vegetation_groups(landuse_dataset)
+        categories = urban_category_set(
+            landuse_dataset, isurban=int(veg.scalar("ISURBAN")))
+    params = load_urban_params(option, int(cfg.use_wudapt_lcz))
+    module = load_model_module(option)
+
+    def host(value):
+        if value is None:
+            return None
+        if hasattr(value, "__cuda_array_interface__"):
+            return cp.asnumpy(cp.asarray(value))
+        return np.asarray(value)
+
+    shape = f["tsk"].shape
+    # WRF's Registry holds every surface-layer diagnostic for every surface
+    # layer, and the urban overrides write them on city columns
+    # (module_surface_driver.F:3001-3035 Noah, :3395-3405 Noah-MP): PSIM,
+    # PSIH, GZ1OZ0, AKHS, AKMS, U10, V10.  gpuwm allocates each only for
+    # the surface layer that produces it, so the ones this configuration's
+    # layer does not produce are allocated here as the write targets they
+    # are in WRF; nothing else in such a run reads them.
+    for name in ("u10", "v10", "psim", "psih", "gz1oz0", "akhs", "akms",
+                 "chs", "t2", "th2", "q2", "psfc"):
+        if name not in f:
+            f[name] = cp.zeros(shape, dtype=DTYPE)
+    if int(cfg.sf_urban_physics) == 3:
+        # BEP_BEM puts the sun on roads, walls and windows from the direct
+        # and diffuse surface shortwave (shadow_mas, short_rad_dd), held
+        # between radiation calls as WRF's radiation driver holds them.
+        for name in ("swddir", "swddif"):
+            f[name] = cp.zeros(shape, dtype=DTYPE)
+    lat = host(latitude)
+    lon = host(longitude)
+    if lat is not None:
+        lat = np.broadcast_to(lat, shape)
+        lon = np.broadcast_to(lon, shape)
+    urban = init_urban_state(cfg, params, categories, f,
+                             nz=int(state.p.shape[0]), frc_urb2d=frc_urb2d,
+                             module=module)
+    driver.urban = urban
+    driver._urban_cfg = cfg
+    driver.urban_coupler = UrbanCoupler(
+        urban, lsm=int(cfg.sf_surface_physics), start_time=start_time,
+        latitude_deg=lat, longitude_deg=lon, module=module)
+
+
 def initialize_physics(
         state: DomainState, cfg: RunConfig, *, landmask=1.0, tsk=300.0,
         soil_temperature=285.0, soil_moisture=0.30, liquid_moisture=None,
@@ -4941,7 +5471,8 @@ def initialize_physics(
         radiation_start_time=None, radiation_latitude=None,
         radiation_longitude=None,
         noahmp_start_time=None, noahmp_latitude=None,
-        noahmp_longitude=None, cam_ozone=None) -> PhysicsDriver:
+        noahmp_longitude=None, cam_ozone=None,
+        frc_urb2d=None) -> PhysicsDriver:
     """Allocate and attach persistent physics state and scheme callables.
 
     An mp-only configuration also receives a driver: microphysics itself is
@@ -5370,6 +5901,22 @@ def initialize_physics(
         for name in MYJ_PBL_STATE_3D:
             f[name] = cp.full((cfg.nz, *shape), cold_start[name],
                               dtype=DTYPE)
+    if int(cfg.bl_pbl_physics) == UW_PBL_SCHEME:
+        # The UW scheme's carried and published fields, for its selector
+        # only, on the MYJ/MYNN terms above.  WRF's cold start
+        # (camuwpblinit, module_bl_camuwpbl_driver.F:1061-1073): TKE_PBL
+        # = epsq2 on the mass levels, everything else zero; the first step
+        # re-zeroes the diffusivities and the residual stress itself
+        # (:436-441, :465-468), so their cold value is unobservable.
+        # uw_cldfra is WRF's grid%cldfra: zero until the first radiation
+        # call writes it, which WRF makes on itimestep 1.
+        for name in UWPBL_STATE_FULL + UWPBL_DIAGNOSTICS_FULL:
+            f[name] = cp.zeros((cfg.nz + 1, *shape), dtype=DTYPE)
+        f["tke_pbl"][:cfg.nz] = DTYPE(0.2)
+        for name in UWPBL_STATE_2D + UWPBL_DIAGNOSTICS_2D:
+            f[name] = cp.zeros(shape, dtype=DTYPE)
+        for name in UWPBL_HELD_3D:
+            f[name] = cp.zeros((cfg.nz, *shape), dtype=DTYPE)
     if int(cfg.bl_pbl_physics) == 5:
         for name in MYNN_PBL_STATE_3D:
             f[name] = cp.zeros((cfg.nz, *shape), dtype=DTYPE)
@@ -5592,7 +6139,47 @@ def initialize_physics(
         # state -- it is a state whose saturation vapour pressure is
         # negative.
         noahmp_cold_start(f, params=noahmp_params,
-                          dzs=NOAH_LAYER_THICKNESS_M)
+                          dzs=NOAH_LAYER_THICKNESS_M,
+                          sf_urban_physics=int(
+                              getattr(cfg, "sf_urban_physics", 0)))
+    if int(getattr(cfg, "sf_urban_physics", 0)) > 0:
+        # urban_param_init + urban_var_init, after the LSM's own init and
+        # on its initialized TSK/TSLB/TMN/SMOIS, exactly where
+        # module_physics_init.F:3294-3356 (Noah) and :3437 (Noah-MP) run
+        # them.  ``frc_urb2d`` is the input file's urban fraction when it
+        # carries one; absent, urban_var_init takes the table's.
+        _attach_urban(driver, state, cfg, f,
+                      noahmp_params=noahmp_params,
+                      landuse_dataset=landuse_dataset,
+                      frc_urb2d=frc_urb2d,
+                      start_time=(noahmp_start_time if noahmp_start_time
+                                  is not None else radiation_start_time),
+                      latitude=(noahmp_latitude if noahmp_latitude
+                                is not None else radiation_latitude),
+                      longitude=(noahmp_longitude if noahmp_longitude
+                                 is not None else radiation_longitude))
+    elif frc_urb2d is not None:
+        raise ValueError(
+            "frc_urb2d was supplied but sf_urban_physics=0: no urban model "
+            "reads it, so the caller's urban fraction would be dropped")
+    # WRF's slope_rad / topo_shading (gpuwm.core.topo_radiation): the
+    # static slope from this domain's terrain, the held radiation-time
+    # geometry, and the scheme asked for its surface diffuse flux.  Only
+    # where WRF would run the adjustment, so every other driver is built
+    # exactly as before.
+    from gpuwm.core.topo_radiation import (TopoShortwave,
+                                           request_surface_diffuse,
+                                           topo_shortwave_active)
+    if topo_shortwave_active(cfg):
+        if radiation_latitude is None or radiation_longitude is None:
+            raise ValueError(
+                "slope_rad = 1 needs the domain's latitude and longitude "
+                "(radiation_latitude/radiation_longitude): the slope flux "
+                "and the shadow search read the local solar geometry")
+        driver.topo_shortwave = TopoShortwave(
+            state=state, cfg=cfg, fields=f, latitude=radiation_latitude,
+            longitude=radiation_longitude, start_time=radiation_start_time)
+        request_surface_diffuse(driver.radiation_callable)
     state.physics = driver
     # WRF's mp_init, ONCE per domain, exactly where phy_init runs it:
     # module_physics_init.F:1635 calls mp_init as the last physics

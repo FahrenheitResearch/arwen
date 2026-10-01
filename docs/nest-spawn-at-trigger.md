@@ -141,7 +141,9 @@ dormant d03 may fire on.
    sequence with the analysis's role played by the parent: fine-frame
    ht/mub/phb from the analytic hydrostatic real base on the own-grid
    `HGT_M` (`gpuwm.ingest.real._make_real_base`), `blend_terrain` on
-   all three operands (parent near the boundary, fine interior),
+   all three operands (parent near the boundary, fine interior), in
+   float64 on the fine base so the re-derived base keeps its FP32 EOS
+   correction (`dphb_resid`),
    `adjust_tempqv` for the column-mass change, the `start_domain`
    base/EOS re-derivation, and the real-nest `press_adj` MU correction
    (`_adjust_and_rederive`), then the RK time-t reseed.

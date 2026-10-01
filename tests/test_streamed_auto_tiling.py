@@ -273,7 +273,9 @@ def test_an_explicit_max_redundancy_false_still_streams_the_slow_tiling():
 
     ``[tiles] max_redundancy = false`` is the documented knob the refusal
     names; auto honours it, and the plan it returns states its tiling.
-    At 3.98 GiB free that is 529 tiles at 25.49x.
+    At 3.98 GiB free that is 494 tiles at 24.31x (529 at 25.49x until A163
+    measured the forecast margin at 1.13 of the subtotal instead of the
+    plan's 1.15, which leaves each buffer more room).
 
     It never hands back a tiling that runs relaxation-zone cells
     unrelaxed.  At the recorded 3.74 GiB the only tiling that fits is
@@ -288,7 +290,7 @@ def test_an_explicit_max_redundancy_false_still_streams_the_slow_tiling():
     assert decision.stream
     assert decision.redundancy > autoplan.MAX_REDUNDANCY
     assert f"{decision.ntiles:,} tiles" in decision.explain()
-    assert (decision.ntiles, round(decision.redundancy, 2)) == (529, 25.49)
+    assert (decision.ntiles, round(decision.redundancy, 2)) == (494, 24.31)
     decision, _ = _decide(exp, 3.74)
     assert not decision.stream
     assert "zone + halo = 22" in decision.reason
@@ -383,12 +385,15 @@ def test_the_low_end_quotes_back_the_run_it_was_fitted_from():
 def test_the_near_miss_line_quotes_a_step_that_holds_the_measured_one():
     """The sentence the forecast stage printed for the low end's run.
 
-    With 3.97 GiB free auto runs the 208x204 domain resident inside the
+    With 3.95 GiB free auto runs the 208x204 domain resident inside the
     external margin and names the tiling it declined with what a step at
     that tiling costs.  That tiling is the one the low end's run streamed,
-    so the step it names has to hold the step that run measured.
+    so the step it names has to hold the step that run measured.  (3.97
+    GiB on the plan's 1.15 margin; A163 measured it at 1.13 of the
+    subtotal, and read at 0.01 GiB steps from 3.86 to 3.98 the declined
+    tiling is 8x9 from 3.93 to 3.96, 6x12 above and 6x9 below.)
     """
-    decision, _ = _decide(_wide(), 3.97, _card_5070ti(3.97))
+    decision, _ = _decide(_wide(), 3.95, _card_5070ti(3.95))
     assert not decision.stream, decision.explain()
     declined = decision.detail["tile_road_declined"]
     assert "8x9 tiles (halo 18, 598 of them)" in decision.reason, (

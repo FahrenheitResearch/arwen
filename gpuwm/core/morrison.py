@@ -1,7 +1,7 @@
 """Morrison two-moment microphysics (WRF ``mp_physics=10``).
 
 The CUDA pipeline stages independent level work around one sedimentation
-thread per atmospheric column, which carries WRF's internal substeps.  The
+warp per category across atmospheric columns, carrying WRF's internal substeps.  The
 public launcher accepts contiguous FP32 ``(nz, ny, nx)`` fields and updates
 potential temperature, six water categories, and their moments in place.
 :func:`apply` prepares WRF's microphysics inputs from
@@ -27,10 +27,31 @@ from gpuwm.core.state import DTYPE, DomainState
 
 _CELL_TPB = 64
 _COLUMN_TPB = 32
+#: Sedimentation block: one warp per hydrometeor category over the same
+#: _COLUMN_TPB columns (kernels/morrison.cu, morrison_sediment_impl).
+_SEDIMENT_TPB = 5 * _COLUMN_TPB
 _SHALLOW_KMAX = 64
 _KMAX = 256
 VERTICAL_LEVEL_BOUNDS = (2, _KMAX)
 
+
+
+_prepare_fields = cp.ElementwiseKernel(
+    "raw float32 thb, raw float32 phb, raw float32 thp, raw float32 php, "
+    "raw float32 pressure, int32 ncol, int32 thb_full, int32 phb_full, "
+    "float32 p0, float32 rcp, float32 gravity",
+    "float32 theta, float32 pii, float32 dz",
+    r"""
+    size_t k = i / ncol;
+    size_t below = i;
+    size_t above = i + ncol;
+    theta = __fadd_rn(thb[thb_full ? i : k], thp[i]);
+    pii = powf(__fdiv_rn(pressure[i], p0), rcp);
+    float zb = __fdiv_rn(__fadd_rn(phb[phb_full ? below : k], php[below]), gravity);
+    float za = __fdiv_rn(__fadd_rn(phb[phb_full ? above : k + 1], php[above]), gravity);
+    dz = __fsub_rn(za, zb);
+    """,
+    "morrison_prepare_fields", options=("--ftz=true",))
 
 def launch_morrison(theta, qv, qc, qr, qi, qs, qg,
                     nc, nr, ni, ns, ng, rho, pii, pressure, dz,
@@ -153,7 +174,7 @@ def launch_morrison(theta, qv, qc, qr, qi, qs, qg,
              effective["effc"], effective["effi"], effective["effs"],
              DTYPE(rimed.ag), DTYPE(rimed.bg), DTYPE(rimed.rhog),
              DTYPE(dt), np.int32(has_cu_tendencies), np.int32(ncell)))
-    sediment((column_blocks,), (_COLUMN_TPB,),
+    sediment((column_blocks,), (_SEDIMENT_TPB,),
              (qc, qr, qi, qs, qg, nc, nr, ni, ns, ng,
               effective["effs"], theta, pii, pressure, rhoa_scratch, dz,
               rainnc, rainncv, snownc, snowncv,
@@ -189,13 +210,11 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
     pii = state.scratch((nz, ny, nx), "morr_pii")
     dz = state.scratch((nz, ny, nx), "morr_dz")
     ice_to_snow = state.scratch((nz, ny, nx), "morr_ice_to_snow")
-    z8w = state.scratch((nz + 1, ny, nx), "morr_z8w")
-    theta[...] = thb + state.thp
-    # launch_morrison's process stage diagnoses and overwrites every rho
-    # element before sedimentation; Morrison never consumes the wrapper rho.
-    pii[...] = cp.power(state.p / DTYPE(c.P0), DTYPE(c.RCP))
-    z8w[...] = (phb + state.php) / DTYPE(c.G)
-    dz[...] = z8w[1:] - z8w[:-1]
+    # Match the separate CuPy ufunc roundings, including their FTZ mode.
+    _prepare_fields(thb, phb, state.thp, state.php, state.p,
+                    np.int32(ny * nx), np.int32(state.thb.ndim == 3),
+                    np.int32(state.phb.ndim == 3),
+                    DTYPE(c.P0), DTYPE(c.RCP), DTYPE(c.G), theta, pii, dz)
 
     surface = (ny, nx)
     rainnc = state.scratch(surface, "mp_rainnc")

@@ -1,0 +1,12 @@
+sinf resolved=/usr/lib/x86_64-linux-gnu/libm.so.6+0xa75a0 threads=24 stride=1
+sinf inputs=4294967296 visited=4294967296 input_sum=7fffffff80000000 mismatches=0 seconds=2.374
+cosf resolved=/usr/lib/x86_64-linux-gnu/libm.so.6+0xa2cc0 threads=24 stride=1
+cosf inputs=4294967296 visited=4294967296 input_sum=7fffffff80000000 mismatches=0 seconds=2.227
+tanf resolved=/usr/lib/x86_64-linux-gnu/libm.so.6+0x8ee70 threads=24 stride=1
+tanf inputs=4294967296 visited=4294967296 input_sum=7fffffff80000000 mismatches=0 seconds=2.489
+asinf resolved=/usr/lib/x86_64-linux-gnu/libm.so.6+0x85f40 threads=24 stride=1
+asinf inputs=4294967296 visited=4294967296 input_sum=7fffffff80000000 mismatches=0 seconds=1.069
+acosf resolved=/usr/lib/x86_64-linux-gnu/libm.so.6+0x858d0 threads=24 stride=1
+acosf inputs=4294967296 visited=4294967296 input_sum=7fffffff80000000 mismatches=0 seconds=1.442
+atanf resolved=/usr/lib/x86_64-linux-gnu/libm.so.6+0x8c1f0 threads=24 stride=1
+atanf inputs=4294967296 visited=4294967296 input_sum=7fffffff80000000 mismatches=0 seconds=1.371

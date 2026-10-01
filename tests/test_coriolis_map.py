@@ -266,6 +266,21 @@ def test_msf_one_f_zero_bitwise_phase2(case):
     #   not the code prevents no breakage.  tools/release/precut_gpu_gate.py
     #   runs this test on the release node's card before a cut and records
     #   the card in its receipt, which is what 2.7.4 and 2.7.5 lacked.
+    #
+    # RECAPTURED 2026-09-30 (lane/281-nvrtc-literal-div, A146) on the RTX
+    # 5070 Ti (12.0, driver 595.91.07, NVRTC 13.4.92), the card the 5070 Ti
+    # file describes.  NVRTC had compiled every float division by a
+    # compile-time constant as a multiply by the rounded reciprocal on
+    # Blackwell, the advection fluxes' / 60 and / 12 among them, and the
+    # kernels now spell those divisions __fdiv_rn, the IEEE quotient.  Two
+    # readings, both by tools/recapture_phase2_pin.py against the committed
+    # file, under tests/data/receipts/a146/: integrate/2.8 10977552d on this
+    # card, 0 of 27 entries moved (the file was green there); the fix
+    # (lane commit 4370d5b87, exported), 25 of 27, largest dry_flat/mup
+    # 2.079e-02 on an rms of 1.081e+01, dry_flat/u 1.743e-04 on 3.732,
+    # terrain/mup 2.688e-02 on 5.539, open/v 2.031e-02 on 1.758e-02; moist/qc
+    # and moist/qr, identically zero, held.  The 4090 file is unchanged:
+    # sm_89 compiles the same division before and after the fix.
     import cupy as cp
     import _phase2_pin as pin
     from gpuwm.config import validate_run_config

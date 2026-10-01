@@ -1,0 +1,21 @@
+# gfortran: GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+# glibc:    ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43
+# -O0 module_sf_urban.o libm symbols (THE REFERENCE):
+U acosf
+U asinf
+U atan2f
+U atanf
+U cosf
+U expf
+U log10f
+U logf
+U powf
+U __powisf2
+U sinf
+U tanf
+# positive control (-Ofast expf loop):
+                 U expf
+                 U _ZGVbN4v_expf
+ucm-nlcd-gr: rows differing ref vs zero-init: 0; snan rows with NaN: 51
+ucm-nlcd-griri: rows differing ref vs zero-init: 0; snan rows with NaN: 51
+ucm-lcz-gr: rows differing ref vs zero-init: 187; snan rows with NaN: 187

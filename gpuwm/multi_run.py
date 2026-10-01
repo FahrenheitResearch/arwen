@@ -958,13 +958,38 @@ def _worker_reservation_bytes(module: str,
 
     Unpriceable is None, never a number and never a refusal: an unpriced
     run is admitted against the device's measured free memory and says so.
+
+    Priced with the source the runner forecasts from, so the analysed
+    hydrometeor tables that source puts on the root's boundary are in the
+    reservation (:func:`gpuwm.stage_cli.boundary_pricing_source`: the
+    single-domain runner's own ``--source``, else the one its prepared
+    root names).  Without it a multi-run of HRRR-forced forecasts reserved
+    a shared card short by those tables.
     """
 
     values = _runner_path_values(module, arguments, "worker arguments")
     config = values.get("--experiment-config")
     if config is None:
         return None
-    return priced_reservation_bytes(Path(config))
+    from gpuwm.stage_cli import boundary_pricing_source
+
+    root = values.get("--prepared-root")
+    source = _runner_option_value(arguments, "--source")
+    return priced_reservation_bytes(
+        Path(config),
+        source=(source if root is None else
+                boundary_pricing_source(Path(root), source)))
+
+
+def _runner_option_value(arguments: Sequence[str], flag: str) -> str | None:
+    """The value a runner's argument list gives ``flag``, or ``None``."""
+
+    for index, argument in enumerate(arguments):
+        if argument == flag and index + 1 < len(arguments):
+            return str(arguments[index + 1])
+        if argument.startswith(f"{flag}="):
+            return argument.split("=", 1)[1]
+    return None
 
 
 def _locked_module_main(*, gpu_uuid: str, module_name: str, outdir: Path,

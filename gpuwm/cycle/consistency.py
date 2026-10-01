@@ -15,7 +15,8 @@ asks how far the carried exner has drifted from the recomputation.
 
 **The equation of state is the PORT's, not a textbook's.**  This is not
 a stylistic preference; the first version of this module got it wrong
-and halted a correct closed loop.  ``mpas_port.cuda_backend.recovery``
+and halted a correct closed loop.  The port's ``cuda_backend.recovery``
+(package ``hexcore``, ``mpas_port`` before the port's 0.2.0 rename)
 carries the only authority::
 
     theta = rtheta / rho;
@@ -29,7 +30,7 @@ Two things follow, and both were originally missed:
     The port's prognostic mass variable is ``rho_zz`` (``state.rho``)
     and its mass-weighted potential temperature is ``rho_zz * theta_m``
     (``state.rho_theta``); ``zz = dzw / dz`` is the vertical metric
-    (``mpas_port.vertical``).  Recomputing exner from ``rho_theta``
+    (the port's ``vertical``).  Recomputing exner from ``rho_theta``
     alone leaves out ``zz`` entirely, and since exner is a power law the
     omission shows up as a departure of exactly ``|zz**(rd/cv) - 1|``.
     On the x1.40962 mesh ``zz`` runs 0.83 to 2.35, which puts that

@@ -1,7 +1,7 @@
 // gpuwm/core/kernels/morrison.cu
 //
 // WRF v4.6.1 Morrison two-moment microphysics, with independent level work
-// staged around one CUDA sedimentation thread per (j,i) column.  Transcription
+// staged around one CUDA sedimentation thread per column and category. Transcription
 // authority:
 //   phys/module_mp_morr_two_moment.F
 //
@@ -109,7 +109,7 @@ __device__ __forceinline__ void morr_bound_one(
     real raw = cbrtf(six_c * (*number) / q);
     *lambda = fminf(fmaxf(raw, lo), hi);
     if (*lambda != raw)
-        *number = q * (*lambda) * (*lambda) * (*lambda) / six_c;
+        *number = __fdiv_rn(q * (*lambda) * (*lambda) * (*lambda), six_c);
 }
 
 __device__ __forceinline__ MorrMoments morr_bound(
@@ -130,13 +130,13 @@ __device__ __forceinline__ MorrMoments morr_bound(
         // ice melt / homogeneous freezings (:3805-3843).  rhoa is
         // PRES/(R*T3D) frozen once at :1325, before any of that.
         real rho_cloud = pres / (287.15f * temp);
-        real pp = 0.0005714f * ((*nc) / 1.0e6f * rho_cloud) + 0.2714f;
+        real pp = 0.0005714f * (__fdiv_rn((*nc), 1.0e6f) * rho_cloud) + 0.2714f;
         m.pg = fminf(fmaxf(1.0f / (pp * pp) - 1.0f, 2.0f), 10.0f);
         real raw = cbrtf((MPI / 6.0f * MRHOW * (*nc)
                           * tgammaf(m.pg + 4.0f))
                          / (qc * tgammaf(m.pg + 1.0f)));
-        real lo = (m.pg + 1.0f) / 60.0e-6f;
-        real hi = (m.pg + 1.0f) / 1.0e-6f;
+        real lo = __fdiv_rn((m.pg + 1.0f), 60.0e-6f);
+        real hi = __fdiv_rn((m.pg + 1.0f), 1.0e-6f);
         m.lc = fminf(fmaxf(raw, lo), hi);
         if (m.lc != raw) {
             *nc = m.lc * m.lc * m.lc * qc * tgammaf(m.pg + 1.0f)
@@ -149,7 +149,7 @@ __device__ __forceinline__ MorrMoments morr_bound(
                    1.0f / 1.0e-6f, ni, &m.li);
     morr_bound_one(qs, 6.0f * MCS, 1.0f / 2000.0e-6f,
                    1.0f / 10.0e-6f, ns, &m.ls);
-    real morr_cg = morr_rhog * MPI / 6.0f;
+    real morr_cg = __fdiv_rn(morr_rhog * MPI, 6.0f);
     morr_bound_one(qg, 6.0f * morr_cg, 1.0f / 2000.0e-6f,
                    1.0f / 20.0e-6f, ng, &m.lg);
     return m;
@@ -164,13 +164,13 @@ __device__ __forceinline__ void morr_terminal_velocity(
     real ll = 0.0f, pg = 2.0f;
     if (kind == 0) {
         if (q >= MQSMALL) {
-            real rho_cloud = rhoa * RD / 287.15f;
-            real pp = 0.0005714f * (nn / 1.0e6f * rho_cloud) + 0.2714f;
+            real rho_cloud = __fdiv_rn(rhoa * RD, 287.15f);
+            real pp = 0.0005714f * (__fdiv_rn(nn, 1.0e6f) * rho_cloud) + 0.2714f;
             pg = fminf(fmaxf(1.0f / (pp * pp) - 1.0f, 2.0f), 10.0f);
             ll = cbrtf((MPI / 6.0f * MRHOW * nn * tgammaf(pg + 4.0f))
                         / (q * tgammaf(pg + 1.0f)));
-            ll = fminf(fmaxf(ll, (pg + 1.0f) / 60.0e-6f),
-                       (pg + 1.0f) / 1.0e-6f);
+            ll = fminf(fmaxf(ll, __fdiv_rn((pg + 1.0f), 60.0e-6f)),
+                       __fdiv_rn((pg + 1.0f), 1.0e-6f));
         }
     } else {
         real six_c, lo, hi;
@@ -235,10 +235,10 @@ __device__ __forceinline__ double morr_cloud_freezing(
 {
     const real nacnt_exponent = -2.80f + 0.262f * (273.15f - temp);
     const real nacnt = expf(nacnt_exponent) * 1000.0f;
-    const real slip = 7.37f * temp / (288.0f * 10.0f * pressure) / 100.0f;
+    const real slip = __fdiv_rn(7.37f * temp / (288.0f * 10.0f * pressure), 100.0f);
     const real rin = 0.1e-6f;
     const real dap = (4.0f * MPI * 1.38e-23f / (6.0f * MPI * rin)
-                      * temp * (1.0f + slip / rin) / mu);
+                      * temp * (1.0f + __fdiv_rn(slip, rin)) / mu);
     const real cdist = nc / tgammaf(pg + 1.0f);
     const real exponent = 0.66f * (273.15f - temp);
     const real bigg = expf(exponent) - 1.0f;
@@ -398,9 +398,9 @@ __device__ __forceinline__ void morr_process_level(
     // Zeroed rate-vector evaluation shared by both branches.
     if (*qc >= 1.0e-6f) {
         r.prc = 1350.0f * powf(*qc, 2.47f)
-                * powf(*nc / 1.0e6f * rhoa, -1.79f);
-        r.nprc1 = r.prc / (4.0f / 3.0f * MPI * MRHOW
-                           * 1.5625e-14f);
+                * powf(__fdiv_rn(*nc, 1.0e6f) * rhoa, -1.79f);
+        r.nprc1 = __fdiv_rn(r.prc, (4.0f / 3.0f * MPI * MRHOW
+                           * 1.5625e-14f));
         r.nprc = fminf(r.prc / (*qc / *nc), *nc / dt);
         r.nprc1 = fminf(r.nprc1, r.nprc);
     }
@@ -461,7 +461,7 @@ __device__ __forceinline__ void morr_process_level(
                                * (1.0f / (powf(m.lr, 3.0f) * m.lg)
                                   + 1.0f / (m.lr * m.lr * m.lg * m.lg)
                                   + 1.0f / (m.lr * powf(m.lg, 3.0f)));
-            r.npracg = collected_n - r.pracg / 5.2e-7f;
+            r.npracg = collected_n - __fdiv_rn(r.pracg, 5.2e-7f);
         }
         if (*qs >= 1.0e-8f) {
             real accel = -4187.0f / xlf * (*temp - 273.15f) * r.pracs;
@@ -564,8 +564,8 @@ __device__ __forceinline__ void morr_process_level(
         r.mnuccc = (real)cloud_freezing;
     }
     if (*qs >= 1.0e-8f) {
-        real cons15 = -1108.0f * 0.1f * powf(MPI, (1.0f - 0.41f) / 3.0f)
-                      * powf(MRHOS, (-2.0f - 0.41f) / 3.0f) / (4.0f * 720.0f);
+        real cons15 = __fdiv_rn(-1108.0f * 0.1f * powf(MPI, (1.0f - 0.41f) / 3.0f)
+                      * powf(MRHOS, (-2.0f - 0.41f) / 3.0f), (4.0f * 720.0f));
         r.nsagg = cons15 * asn * powf(rhoa, (2.0f + 0.41f) / 3.0f)
                   * powf(*qs, (2.0f + 0.41f) / 3.0f)
                   * powf(*ns * rhoa, (4.0f - 0.41f) / 3.0f) / rhoa;
@@ -644,7 +644,7 @@ __device__ __forceinline__ void morr_process_level(
     // Hallett-Mossop rate subtraction, WRF 2601-2713.
     if (*temp > 265.16f && *temp < 270.16f) {
         real fmult = *temp > 268.16f ? (270.16f - *temp) / 2.0f
-                                     : (*temp - 265.16f) / 3.0f;
+                                     : __fdiv_rn((*temp - 265.16f), 3.0f);
         real mmult = 4.0f / 3.0f * MPI * MRHOI * 1.25e-16f;
         if (*qs >= 0.1e-3f && (*qc >= 0.5e-3f || *qr >= 0.1e-3f)) {
             if (r.psacws > 0.0f) {
@@ -678,7 +678,7 @@ __device__ __forceinline__ void morr_process_level(
         r.pgsacw = fminf(r.psacws, cons17 * dt * n0s * *qc * *qc * asn * asn
                          / (rhoa * powf(m.ls, 2.82f)));
         real embryo = fmaxf(MRHOS / (morr_rhog - MRHOS) * r.pgsacw, 0.0f);
-        r.nscng = fminf(embryo / MMG0 * rhoa, *ns / dt);
+        r.nscng = fminf(__fdiv_rn(embryo, MMG0) * rhoa, __fdiv_rn(*ns, dt));
         r.psacws -= r.pgsacw;
     }
     if (r.pracs > 0.0f && *qs >= 0.1e-3f && *qr >= 0.1e-3f) {
@@ -703,7 +703,7 @@ __device__ __forceinline__ void morr_process_level(
         // the number rate only afterwards (F:2833-2836 statement order).
         r.nprci = 4.0f / (MDCS * MRHOI) * (*qv - qvi) * rhoa * n0i
                    * expf(-m.li * MDCS) * dv / abi;
-        r.prci = MPI * MRHOI * powf(MDCS, 3.0f) / 6.0f * r.nprci;
+        r.prci = __fdiv_rn(MPI * MRHOI * powf(MDCS, 3.0f), 6.0f) * r.nprci;
         r.nprci = fminf(r.nprci, *ni / dt);
     }
     if (*qs >= 1.0e-8f && *qi >= MQSMALL) {
@@ -874,66 +874,19 @@ __device__ __forceinline__ void morr_process_level(
     *ns += dt * tns; *ng += dt * tng; *temp += dt * tt;
 }
 
-__device__ int morr_sediment_nstep(
-        const real* qc, const real* qr, const real* qi,
-        const real* qs, const real* qg,
-        const real* nc, const real* nr, const real* ni,
-        const real* ns, const real* ng,
-        const real* cloud_nc_for_sedimentation,
-        const real* theta, const real* pii, const real* rho_fixed,
-        const real* dz, int j, int i, int nz, int ny, int nx, real dt,
-        real morr_ag, real morr_bg, real morr_rhog)
-{
-    real max_courant = 0.0f;
-    // Level-outer: rho, theta, pii and dz are one load per level instead of
-    // one per level per category.  The reduction is a chain of fmaxf, which
-    // is exactly associative and commutative -- max rounds nothing, and
-    // fmaxf(NaN, x) == x makes NaN a two-sided identity -- so regrouping it
-    // by level cannot move a bit.  Each category still walks downward, so
-    // its empty-level speed rebound is unchanged; the five carried pairs
-    // stay in registers because the category loop is fully unrolled.
-    real vm_above[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-    real vn_above[5] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-    for (int k = nz - 1; k >= 0; --k) {
-        size_t idx = IDX3(k, j, i);
-        real rhoa = fabsf(rho_fixed[idx]);
-        real temp = theta[idx] * pii[idx];
-        real dzk = dz[idx];
-#pragma unroll
-        for (int kind = 0; kind < 5; ++kind) {
-            const real* mass = kind == 0 ? qc : (kind == 1 ? qr :
-                               (kind == 2 ? qi : (kind == 3 ? qs : qg)));
-            const real* number = kind == 0 ? cloud_nc_for_sedimentation :
-                                 (kind == 1 ? nr :
-                                 (kind == 2 ? ni : (kind == 3 ? ns : ng)));
-            real nn, vm, vn;
-            morr_terminal_velocity(kind, fmaxf(mass[idx], 0.0f),
-                                   number[idx], rhoa, temp, &nn, &vm, &vn,
-                                   morr_ag, morr_bg, morr_rhog);
-            if (k < nz - 1) {
-                if (vm < 1.0e-10f) vm = vm_above[kind];
-                if (vn < 1.0e-10f) vn = vn_above[kind];
-            }
-            vm_above[kind] = vm; vn_above[kind] = vn;
-            max_courant = fmaxf(max_courant,
-                                fmaxf(vm, vn) * dt / dzk);
-        }
-    }
-    return max((int)(max_courant + 1.0f), 1);
-}
-
 template <int KMAX>
 __device__ __forceinline__ real morr_sediment_pair(
         real* mass, real* number, const real* sediment_number,
         const real* theta, const real* pii,
         const real* pressure, const real* rho_fixed, const real* dz, int j, int i,
-        int nz, int ny, int nx, int kind, real dt, int nstep,
+        int nz, int ny, int nx, int kind, real dt, real* shared,
         real morr_ag, real morr_bg, real morr_rhog)
 {
     real qd[KMAX], nd[KMAX], nd0[KMAX];
     real vm[KMAX], vn[KMAX];
     real vm_above = 0.0f, vn_above = 0.0f;
     int ktop = -1;
+    real max_courant = 0.0f;
     for (int k = nz - 1; k >= 0; --k) {
         size_t idx = IDX3(k, j, i);
         real temp = theta[idx] * pii[idx];
@@ -950,6 +903,9 @@ __device__ __forceinline__ real morr_sediment_pair(
             if (vn[k] < 1.0e-10f) vn[k] = vn_above;
         }
         vm_above = vm[k]; vn_above = vn[k];
+        real dzk = dz[idx];
+        max_courant = fmaxf(max_courant,
+                            fmaxf(vm[k], vn[k]) * dt / dzk);
         // Highest level this category can fall from.  The rebound above
         // makes the speeds non-zero all the way down from it, so the
         // sedimenting span is exactly [0, ktop].
@@ -960,6 +916,21 @@ __device__ __forceinline__ real morr_sediment_pair(
         nd[k] = fmaxf(nsed, 0.0f) * rhoa;
         nd0[k] = nd[k];
     }
+    // The substep count is one maximum over every category and level.  Each
+    // category thread reduces its own levels, then the five category warps
+    // of the block combine theirs in shared memory.  A chain of fmaxf is
+    // exactly associative and commutative (max rounds nothing, and
+    // fmaxf(NaN, x) == x makes NaN a two-sided identity), so regrouping it by
+    // category cannot move a bit, and the speeds reduced here are the ones
+    // this thread transports with: one terminal-velocity pass, not two.
+    int lane = threadIdx.x & 31;
+    shared[kind * 32 + lane] = max_courant;
+    __syncthreads();
+    max_courant = shared[lane];
+#pragma unroll
+    for (int category = 1; category < 5; ++category)
+        max_courant = fmaxf(max_courant, shared[category * 32 + lane]);
+    int nstep = max((int)(max_courant + 1.0f), 1);
     real dts = dt / (real)nstep;
     real exported = 0.0f;
     // Above ktop both speeds are exactly zero, so every flux there is
@@ -1068,7 +1039,7 @@ void morrison_process_levels(real* __restrict__ theta,
         }
         real qicu = qicuten[idx];
         if (qicu >= 1.0e-10f) {
-            nik += qicu * dt / (MCI * 80.0e-6f * 80.0e-6f * 80.0e-6f);
+            nik += __fdiv_rn(qicu * dt, (MCI * 80.0e-6f * 80.0e-6f * 80.0e-6f));
         }
     }
 
@@ -1136,35 +1107,28 @@ void morrison_sediment_impl(real* __restrict__ qc,
                             real dt, real morr_ag, real morr_bg,
                             real morr_rhog, int nz, int ny, int nx)
 {
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
-    if (col >= ny * nx) return;
+    __shared__ real shared[160];
+    int lane = threadIdx.x & 31;
+    int kind = threadIdx.x >> 5;
+    int col = blockIdx.x * 32 + lane;
+    bool valid = col < ny * nx;
     int j = col / nx;
     int i = col - j * nx;
-    int nstep = morr_sediment_nstep(qc, qr, qi, qs, qg, nc, nr, ni, ns, ng,
-                                    cloud_nc,
-                                    theta, pii, rho_in, dz,
-                                    j, i, nz, ny, nx, dt,
-                                    morr_ag, morr_bg, morr_rhog);
-    real out_c = morr_sediment_pair<KMAX>(qc, nc, cloud_nc, theta, pii, pressure,
-                                          rho_in, dz,
-                                          j, i, nz, ny, nx, 0, dt, nstep,
-                                          morr_ag, morr_bg, morr_rhog);
-    real out_r = morr_sediment_pair<KMAX>(qr, nr, nullptr, theta, pii, pressure,
-                                          rho_in, dz,
-                                          j, i, nz, ny, nx, 1, dt, nstep,
-                                          morr_ag, morr_bg, morr_rhog);
-    real out_i = morr_sediment_pair<KMAX>(qi, ni, nullptr, theta, pii, pressure,
-                                          rho_in, dz,
-                                          j, i, nz, ny, nx, 2, dt, nstep,
-                                          morr_ag, morr_bg, morr_rhog);
-    real out_s = morr_sediment_pair<KMAX>(qs, ns, nullptr, theta, pii, pressure,
-                                          rho_in, dz,
-                                          j, i, nz, ny, nx, 3, dt, nstep,
-                                          morr_ag, morr_bg, morr_rhog);
-    real out_g = morr_sediment_pair<KMAX>(qg, ng, nullptr, theta, pii, pressure,
-                                          rho_in, dz,
-                                          j, i, nz, ny, nx, 4, dt, nstep,
-                                          morr_ag, morr_bg, morr_rhog);
+    real* mass = kind == 0 ? qc : (kind == 1 ? qr :
+                 (kind == 2 ? qi : (kind == 3 ? qs : qg)));
+    real* number = kind == 0 ? nc : (kind == 1 ? nr :
+                   (kind == 2 ? ni : (kind == 3 ? ns : ng)));
+    real exported = morr_sediment_pair<KMAX>(
+        mass, number, kind == 0 ? cloud_nc : nullptr, theta, pii, pressure,
+        rho_in, dz, j, i, valid ? nz : 0, ny, nx, kind, dt, shared,
+        morr_ag, morr_bg, morr_rhog);
+    __syncthreads();
+    shared[kind * 32 + lane] = exported;
+    __syncthreads();
+    if (!valid || kind != 0) return;
+    real out_c = shared[lane], out_r = shared[32 + lane];
+    real out_i = shared[64 + lane], out_s = shared[96 + lane];
+    real out_g = shared[128 + lane];
 
     size_t sidx = (size_t)j * nx + i;
     real total = out_c + out_r + out_i + out_s + out_g;
@@ -1244,6 +1208,18 @@ void morrison_finalize_levels(real* __restrict__ theta,
     real rhoa = rho_in[idx];
     real qvk = qv[idx], qck = qc[idx], qrk = qr[idx];
     real qik = qi[idx], qsk = qs[idx], qgk = qg[idx];
+    // With zero hydrometeors and positive vapor, every conversion is zero.
+    // Retain the temperature round trip and final density-based moments.
+    if (qvk > 0.0f && qck == 0.0f && qrk == 0.0f && qik == 0.0f
+            && qsk == 0.0f && qgk == 0.0f) {
+        qc[idx] = qr[idx] = qi[idx] = qs[idx] = qg[idx] = 0.0f;
+        nr[idx] = ns[idx] = ng[idx] = 0.0f;
+        ni[idx] = fminf(0.0f, 0.3e6f / rhoa);
+        nc[idx] = 250.0e6f / rhoa;
+        effc[idx] = effr[idx] = effi[idx] = effs[idx] = 25.0f;
+        theta[idx] = temp / pii[idx];
+        return;
+    }
     real nck = nc[idx], nrk = nr[idx], nik = ni[idx];
     real nsk = ns[idx], ngk = ng[idx];
 

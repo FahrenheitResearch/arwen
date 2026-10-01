@@ -6,6 +6,7 @@ import numpy as np
 
 from gpuwm.core import constants as c
 from gpuwm.core.kernels import get_kernel
+from gpuwm.core.noahmp_libm import log1pf_array, powf_array
 from gpuwm.core.state import DomainState
 
 _THREADS = 256
@@ -152,8 +153,11 @@ def _update_diagnostics_numpy(state: DomainState,
         # pfd - pfu, with p_top cancelling identically.
         dpf = np.asarray(dc3f * mu + dc4f, dtype=np.float32)
         phm = np.asarray(c3h * mu + c4h + p_top, dtype=np.float32)
+        # glibc 2.39's log1pf on every host (log1pf_array), not NumPy's
+        # float32 log1p, which is the host's: NumPy 2.5's AVX-512 loop
+        # rounds about a fifth of these ratios differently.
         al = np.asarray(
-            dphi / phm / np.log1p(np.asarray(dpf / pfu, dtype=np.float32))
+            dphi / phm / log1pf_array(np.asarray(dpf / pfu, dtype=np.float32))
             - alb, dtype=np.float32)
         alt = np.asarray(al + alb, dtype=np.float32)
     else:
@@ -165,8 +169,13 @@ def _update_diagnostics_numpy(state: DomainState,
         al = np.asarray(alt - alb, dtype=np.float32)
     pressure_base = np.asarray(
         (f32(c.RD) * theta) / (f32(c.P0) * alt), dtype=np.float32)
+    # glibc's powf on every host (powf_array), not NumPy's float32 power,
+    # which is the host's own: NumPy 2.5's AVX-512 loop rounded a fifth of
+    # these powers differently, so a state prepared on an AVX-512 Linux
+    # machine carried other pressure bits than the same state prepared
+    # anywhere else.
     pressure = np.asarray(
-        f32(c.P0) * np.power(pressure_base, f32(c.GAMMA)),
+        f32(c.P0) * powf_array(pressure_base, f32(c.GAMMA)),
         dtype=np.float32)
     state.p[kwin] = pressure
     state.al[kwin] = al

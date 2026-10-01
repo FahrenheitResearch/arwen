@@ -1104,7 +1104,7 @@ def _validated_physics_receipt(
 _UNRESOLVED = object()
 
 
-def _resolved_static_highres(experiment_tables, companion_source):
+def _resolved_static_highres(experiment_tables, companion_source, run_config):
     """The ``[static.highres]`` block this preparation binds.
 
     Read from the root configuration :func:`resolve_root_experiment`
@@ -1113,12 +1113,30 @@ def _resolved_static_highres(experiment_tables, companion_source):
     ``require_prepared_highres`` all see one block.  A namelist-only
     preparation has no configuration file to hand the static builder, and
     a 1 km root that took the grid-spacing default used to be built on the
-    baseline and then refused by the benchmark.
+    baseline and then refused by the benchmark.  ``run_config`` is the
+    root's run, whose urban selectors pick the land-cover legend, as
+    :func:`gpuwm.static.highres_production.load_static_highres` picks it
+    for the builder.
     """
     from gpuwm.static.highres_production import resolve_static_highres
     return resolve_static_highres(
         experiment_tables, source=str(companion_source),
-        base_dir=Path(companion_source).parent)
+        base_dir=Path(companion_source).parent, run_config=run_config)
+
+
+def _receipt_attests_smoothing(receipt_path: Path) -> bool:
+    """True when a prebuilt native static's receipt records terrain smoothing.
+
+    tools/hrrr_build_native_static.py writes ``terrain_smoothing`` only for
+    a static built under a non-default d01 smoothing.  A receipt that does
+    not read as JSON is answered False here: the builder and the benchmark
+    verify it against its static and refuse it there.
+    """
+    try:
+        receipt = json.loads(Path(receipt_path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
+    return isinstance(receipt, dict) and "terrain_smoothing" in receipt
 
 
 def _sealed_extension(args, *, valid_time: datetime,
@@ -1624,6 +1642,48 @@ def _configured_defaults(args):
         args.history_interval_seconds = configured.root.history_interval_s
 
 
+#: What this wrapper hands a chained native preparation
+#: (``tools/hrrr_single_domain_benchmark.py --chained-bundle``).
+CHAINED_BUNDLE_SCHEMA = "gpuwm-hrrr-chained-bundle-v1"
+
+
+def _chains(args) -> bool:
+    """Whether this preparation publishes a head a forecast can start on.
+
+    On by default, as every chained route is (``GPUWM_CHAINED_PREP=0``
+    turns it off).  Not for a prefix-sealed cache, which the stream
+    controller extends one sealed hour at a time, and not in an
+    installation with no forecast to start on a head.
+    """
+
+    from gpuwm.ingest.boundary_stream import chained_enabled, forecast_installed
+
+    return (not args.sealed_prepared_cache and chained_enabled()
+            and forecast_installed())
+
+
+def _verified_chained_handoff(handoff, output: Path) -> dict:
+    """The handoff a chained preparation published, held to the files it names.
+
+    The chained preparation writes ``proof.json`` itself, at its seal; a
+    handoff whose digests are not the files beside it would send the
+    forecast stage pins it refuses one stage later.
+    """
+
+    proof = output / "proof.json"
+    header = output / "native" / "prepared-cache" / "header.json"
+    manifest = output / "source-input-manifest.json"
+    if (not isinstance(handoff, dict) or not proof.is_file()
+            or handoff.get("proof_sha256") != _sha256(proof)
+            or handoff.get("source_manifest_sha256") != _sha256(manifest)
+            or handoff.get("prepared_content_sha256") != json.loads(
+                header.read_text(encoding="utf-8")).get("content_sha256")):
+        raise RuntimeError(
+            "the chained HRRR preparation's portable handoff does not "
+            f"describe the proof, manifest and cache in {output}")
+    return dict(handoff)
+
+
 def _prepare_from_argv(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     from gpuwm.ingest.native_supplements import supplement_bindings
@@ -1672,7 +1732,8 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
     companion_source = args.experiment_config or args.namelist_input
     declared_case = optional_case_data_from_tables(
         experiment_tables, source=str(companion_source), base_dir=Path(companion_source).parent)
-    highres = _resolved_static_highres(experiment_tables, companion_source)
+    highres = _resolved_static_highres(
+        experiment_tables, companion_source, configured.root.run)
     require_native_pressure_field(native_pressure_policy(args.namelist_input, declared_case),
                                   bindings=supplement_bindings(args.supplement))
     _require_microphysics_tables(configured.root.run)
@@ -1744,12 +1805,16 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
             "--experiment-config", str(args.experiment_config.resolve()),
             "--case-date", model_start_time.date().isoformat()]
     elif highres is not None:
-        # No configuration file to name: hand the builder the block the
+        # No configuration file to name: hand the builder the carrier the
         # root configuration resolved, the one the benchmark checks the
-        # static receipt against.
+        # static receipt against, as the identity a seal records.  The
+        # [static] table alone carried neither d01's terrain smoothing nor
+        # the urban legend, and a carrier holding only smoothing has no
+        # [static] table at all.
+        from gpuwm.static.highres_production import static_highres_identity
         static_arguments = [
             "--static-highres",
-            json.dumps(experiment_tables["static"], sort_keys=True),
+            json.dumps(static_highres_identity(highres), sort_keys=True),
             "--case-date", model_start_time.date().isoformat()]
     else:
         static_arguments = []
@@ -1801,7 +1866,19 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
             # someone had already asked for it by name.
             sealed_static = output / "native-static.npz"
             sealed_receipt = output / "native-static-receipt.json"
-            if highres is not None and highres.enabled:
+            # A carrier smoothing d01 goes through the builder too, whose
+            # root seam refuses a prebuilt static that does not attest that
+            # smoothing; linked as it is, the cache's terrain would run
+            # under the setting's name.  So does a prebuilt static whose
+            # receipt attests a d01 smoothing: the builder refuses one built
+            # under another smoothing than this preparation asks for, and
+            # linked, a default run integrated smoothed terrain the root
+            # seam passes (a default request is not checked there).
+            from gpuwm.static.terrain_smoothing import smoothing_for
+            if ((highres is not None and (
+                    highres.enabled
+                    or not smoothing_for(highres, 1).is_default))
+                    or _receipt_attests_smoothing(static_receipt)):
                 _run([
                     sys.executable, str(REPO / "tools" / "hrrr_build_native_static.py"),
                     "--static-cache", str(static_cache), "--static-receipt", str(static_receipt),
@@ -1893,6 +1970,33 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
             str(args.cpu_preprocess_bridge.resolve())))
     if args.domain_spec is not None:
         benchmark.extend(("--domain-spec", str(args.domain_spec.resolve())))
+    chained = _chains(args)
+    if chained:
+        # The authorities the portable proof binds, so the preparation
+        # publishes the bundle's head the moment its start state exists
+        # and its forecast can start on it.
+        chain_document = native / "chained-bundle.json"
+        _write_json_create(chain_document, {
+            "schema": CHAINED_BUNDLE_SCHEMA,
+            "output_root": str(output),
+            "static_cache": str(static_cache),
+            "static_receipt": str(static_receipt),
+            "geometry_receipt": str(geometry_receipt),
+            "source_manifest": str(source_manifest),
+            "wps_namelist": (None if args.wps_namelist is None
+                             else str(args.wps_namelist.resolve())),
+            "experiment_config": str(output / PORTABLE_EXPERIMENT_CONFIG_NAME),
+            "physics_profile": args.physics_profile,
+            "acknowledgements": list(args.ack),
+            "domain_spec": (None if args.domain_spec is None
+                            else str(args.domain_spec.resolve())),
+            "requested": {
+                "preprocess_backend": args.preprocess_backend,
+                "preprocess_workers": args.preprocess_workers,
+                "pipeline_workers": args.pipeline_workers,
+            },
+        })
+        benchmark.extend(("--chained-bundle", str(chain_document)))
     prepare_started = time.perf_counter()
     with prep_stage("root_prepare",
                     label="Build the start state and boundaries"):
@@ -1981,6 +2085,48 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
     # thing at both ends.
     portable_bundle = None
     portable_bundle_refusal = None
+    chained_handoff = (preparation_report.get("portable_bundle")
+                       if chained else None)
+    if chained_handoff is not None:
+        # Published by the chained preparation at its seal, from the same
+        # function and the same values this wrapper would pass it.
+        portable_bundle = _verified_chained_handoff(chained_handoff, output)
+    else:
+        portable_bundle, portable_bundle_refusal = _publish_one_shot_bundle(
+            args, output=output, native=native, static_cache=static_cache,
+            static_receipt=static_receipt, geometry_receipt=geometry_receipt,
+            bridge_manifest=bridge_manifest, namelist_input=namelist_input,
+            source_manifest=source_manifest, valid_time=valid_time,
+            source_forecast_hours=source_forecast_hours,
+            model_forcing_hours=model_forcing_hours,
+            preprocess_receipt=preprocess_receipt,
+            namelist_invariant=namelist_invariant)
+    return _finish_wrapper(
+        args, output=output, native=native, valid_time=valid_time,
+        model_start_time=model_start_time,
+        source_forecast_hours=source_forecast_hours,
+        model_forcing_hours=model_forcing_hours,
+        bridge_manifest=bridge_manifest, started=started,
+        static_seconds=static_seconds, prepare_seconds=prepare_seconds,
+        export_seconds=export_seconds, stock_wrf_export=stock_wrf_export,
+        portable_bundle=portable_bundle,
+        portable_bundle_refusal=portable_bundle_refusal,
+        preprocess_receipt=preprocess_receipt,
+        preprocess_worker_budget=preprocess_worker_budget,
+        pipeline_worker_receipt=pipeline_worker_receipt,
+        preparation_report_path=preparation_report_path,
+        physics_receipt=physics_receipt)
+
+
+def _publish_one_shot_bundle(
+        args, *, output, native, static_cache, static_receipt,
+        geometry_receipt, bridge_manifest, namelist_input, source_manifest,
+        valid_time, source_forecast_hours, model_forcing_hours,
+        preprocess_receipt, namelist_invariant):
+    """Publish the portable bundle over a sealed cache; ``(handoff, refusal)``."""
+
+    portable_bundle = None
+    portable_bundle_refusal = None
     try:
         # Read inside the guard on purpose: every input the publication
         # needs is an input the publication can fail on, and a run that
@@ -2025,6 +2171,18 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
             "  what does not: `gpuwm sim` on this root, which binds those "
             "authorities and will say so",
             file=sys.stderr)
+    return portable_bundle, portable_bundle_refusal
+
+
+def _finish_wrapper(
+        args, *, output, native, valid_time, model_start_time,
+        source_forecast_hours, model_forcing_hours, bridge_manifest,
+        started, static_seconds, prepare_seconds, export_seconds,
+        stock_wrf_export, portable_bundle, portable_bundle_refusal,
+        preprocess_receipt, preprocess_worker_budget,
+        pipeline_worker_receipt, preparation_report_path,
+        physics_receipt) -> int:
+    """Write ``public-wrapper-result.json`` and print it."""
 
     result = {
         "status": "PASS",

@@ -94,14 +94,19 @@ NTIEDTKE_DEVICE_BITWISE = {
 #: The 20 local-frame rows assert a compiled kernel's local_size_bytes is
 #: 0, which is a launch-cost property of the artifact rather than a value
 #: the oracle has an opinion about, and they are recognised by that
-#: attribute rather than by name.  The three named below assert a
+#: attribute rather than by name.  The four named below assert a
 #: behaviour with no oracle number behind it: a seeded array comes back
-#: zeroed, a sentinel is gone everywhere, and deep-only slots are left
-#: alone on columns that did not take the deep branch.
+#: zeroed, a sentinel is gone everywhere, deep-only slots are left alone
+#: on columns that did not take the deep branch, and cutypen's parcel
+#: outputs and final scratch are one bit pattern at 32, 64 and 128 threads
+#: per block.  That last row (5310e64b2, the default-pieces speed lane's
+#: trial pruning) compares the kernel with itself at three launch widths;
+#: the oracle's numbers are held by the cutypen rows above.
 NTIEDTKE_DEVICE_NOT_A_RESULT = {
     "tests/test_ntiedtke_cloud_depth_parity.py::test_kernel_zeroes_the_downdraft_arrays",
     "tests/test_ntiedtke_mrescale_parity.py::test_the_kernel_writes_every_level",
     "tests/test_ntiedtke_prep_parity.py::test_the_kernel_leaves_deep_only_slots_alone_on_other_columns",
+    "tests/test_ntiedtke_prep_parity.py::test_cutypen_launch_widths_preserve_outputs_and_final_scratch",
 }
 #: What makes a device row a launch-cost row rather than a result row.
 LAUNCH_COST_MARK = "local_size_bytes"

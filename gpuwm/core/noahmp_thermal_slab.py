@@ -77,6 +77,8 @@ it reads the wrong words.  Two rules follow, and both are tested:
 
 from __future__ import annotations
 
+from gpuwm.core.noahmp_slab_libm import copy_slab_slots, split_slab_slots
+
 import numpy as np
 
 from gpuwm.core.noahmp_radiation_gpu import (
@@ -264,13 +266,12 @@ def _take(fields, name: str, width: int, n: int, leaf: str, cp):
 
 
 def _fill(flat, fields, spec, n: int, leaf: str, cp) -> None:
-    """One vectorised assignment per field, in slot order."""
+    """Copy validated fields together to reduce driver submissions."""
+    _slots_flat = []
     for name, (start, width) in spec.items():
         block = _take(fields, name, width, n, leaf, cp)
-        if width == 1:
-            flat[:, start] = block
-        else:
-            flat[:, start:start + width] = block
+        _slots_flat.append((start, block))
+    copy_slab_slots(flat, _slots_flat)
 
 
 def _integers(fields, spec, stride: int, n: int, leaf: str, cp):
@@ -280,9 +281,9 @@ def _integers(fields, spec, stride: int, n: int, leaf: str, cp):
     truncated-toward-zero integer the per-column packers' ``int()`` produces.
     """
     row = cp.zeros((n, stride), dtype=cp.int32)
-    for name, slot in spec.items():
-        row[:, slot] = _take(fields, name, 1, n, leaf, cp).astype(
-            cp.int32, copy=False)
+    blocks = [(slot, _take(fields, name, 1, n, leaf, cp).astype(
+        cp.int32, copy=False)) for name, slot in spec.items()]
+    copy_slab_slots(row, blocks)
     return row
 
 
@@ -297,12 +298,9 @@ def _blocks(n: int, threads: int) -> int:
 
 def _split(out, spec, cp, integers=()) -> dict:
     """Split a device output row into one owned, contiguous slab per name."""
-    values = {}
-    for name, (start, width) in spec.items():
-        block = out[:, start] if width == 1 else out[:, start:start + width]
-        if name in integers:
-            block = block.astype(cp.int32)
-        values[name] = cp.ascontiguousarray(block)
+    values = split_slab_slots(out, spec)
+    for name in integers:
+        values[name] = values[name].astype(cp.int32)
     return values
 
 
@@ -312,6 +310,7 @@ def pack_thermoprop_slab(fields, n: int):
     The rows are the ones ``noahmp_leaf_thermoprop`` reads, in the order
     :func:`gpuwm.core.noahmp_thermal_gpu.pack_thermoprop_calls` writes them.
     """
+    _slots_ix = []
     import cupy as cp
 
     _width(n, "THERMOPROP")
@@ -323,7 +322,8 @@ def pack_thermoprop_slab(fields, n: int):
     # bool slab and a float slab both land as 0/1 the way the loop does.
     for name, slot in THERMOPROP_FLAG.items():
         flag = _take(fields, name, 1, n, "THERMOPROP", cp)
-        ix[:, slot] = (flag != 0).astype(cp.int32)
+        _slots_ix.append((slot, (flag != 0).astype(cp.int32)))
+    copy_slab_slots(ix, _slots_ix)
     return x, ix
 
 

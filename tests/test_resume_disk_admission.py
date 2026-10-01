@@ -136,15 +136,16 @@ def test_a_prepared_resume_is_not_charged_a_preparation_or_its_frame_stream(
 
     The prepared route refuses a restart without that bundle, so its
     download, its preparation and the preparation's decoded frame stream
-    (about 40 GiB for this GEM GDPS window) are never written again, and a
-    resume charged for them would be refused on a disk that holds it.
+    (about 40 GiB for this GEM GDPS window on the antimeridian, where the
+    ring is kept whole) are never written again, and a resume charged for
+    them would be refused on a disk that holds it.
     """
     import tomllib
 
     from gpuwm.experiment import load_experiment
     from test_compose_scratch_budget import _gdps_config
 
-    config = _gdps_config(tmp_path)
+    config = _gdps_config(tmp_path, on_cut=True)
     raw = tomllib.loads(config.read_text(encoding="utf-8"))
     exp = load_experiment(config)
     monkeypatch.setattr(

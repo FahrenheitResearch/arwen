@@ -353,6 +353,8 @@ def test_a_genuine_mismatch_is_refused_by_name(tmp_path):
         1, {"experiment_fingerprint_components": stored}, model)
     assert "preparation_receipt_sha256" in reason
     assert "forecast length" in reason
+    # The refusal lists what a restart may change, the window included.
+    assert "history_begin_s" in reason and "history_end_s" in reason
     assert "experiment_identity" not in reason
 
     # CONTROL: a checkpoint from before the named-component format still
@@ -473,6 +475,13 @@ def test_the_tree_fingerprint_survives_all_three_permitted_changes(tmp_path):
     rerestarted["experiment"]["restart_interval_s"] = 7200.0
     assert _tree_fingerprint(rerestarted, tmp_path, "rerestarted") == base
 
+    # The history window --restart publishes beside them (cb8af5ccb).
+    rewindowed = _mutated(raw)
+    for domain in rewindowed["domain"]:
+        domain["history_begin_s"] = float(domain["history_interval_s"])
+        domain["history_end_s"] = float(raw["experiment"]["run_seconds"])
+    assert _tree_fingerprint(rewindowed, tmp_path, "rewindowed") == base
+
     # CONTROL: trajectory changes still move it, or the fingerprint
     # would have stopped binding anything.
     physics = _mutated(raw)
@@ -506,7 +515,11 @@ def test_the_permitted_keys_are_the_ones_the_help_text_publishes():
     # describe the same three user-facing knobs under their two spellings
     # (`output_interval_s` is `history_interval_s` on a RunConfig).
     assert set(RESTART_TOLERATED_RUN_FIELDS) == set(CONFIG_RUN_LENGTH_FIELDS)
-    assert RESTART_TOLERATED_DOMAIN_FIELDS == ("history_interval_s",)
+    # WRF's history window (history_begin_s / history_end_s, cb8af5ccb)
+    # chooses which frames are written, like the cadence beside it, and
+    # both published --restart texts now name it.
+    window = ("history_begin_s", "history_end_s")
+    assert RESTART_TOLERATED_DOMAIN_FIELDS == ("history_interval_s", *window)
     # The prepared-cache document carries the output cadence under BOTH
     # spellings (`run.output_interval_s` and the domain-level
     # `history_interval_s`), so the partition must name both or the
@@ -515,7 +528,30 @@ def test_the_permitted_keys_are_the_ones_the_help_text_publishes():
     # resident/streamed equivalence does not change a meteorological array.
     assert NON_TRAJECTORY_IDENTITY_FIELDS == frozenset(
         f"run.{name}" for name in CONFIG_RUN_LENGTH_FIELDS
-    ) | {"history_interval_s", "tiles"}
+    ) | {"history_interval_s", "tiles", *window}
+
+    # THE TEXT ITSELF: every tolerated domain field is named by both
+    # published --restart contracts, so a key tolerated in code and
+    # absent from the help (the window's state when it landed) fails here.
+    from gpuwm.cli import build_parser
+    from gpuwm.prepared_domain_tree_forecast import (
+        build_parser as build_tree_parser)
+
+    def restart_help(parser):
+        for action in parser._actions:
+            if "--restart" in action.option_strings:
+                return " ".join(action.help.split())
+        for action in parser._actions:
+            choices = getattr(action, "choices", None)
+            if isinstance(choices, dict) and "run" in choices:
+                return restart_help(choices["run"])
+        raise AssertionError("no --restart option")
+
+    for name, text in (("gpuwm run", restart_help(build_parser())),
+                       ("gpuwm-prepared-tree-forecast",
+                        restart_help(build_tree_parser()))):
+        for field in window:
+            assert field in text, (name, field, text)
 
 
 def test_extending_a_run_does_not_move_the_prepared_cache_identity(tmp_path):

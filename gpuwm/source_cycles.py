@@ -16,6 +16,15 @@ The question is answered from DECLARED FACTS instead:
                    server.  Zero where a completeness PROBE decides
                    publication -- the probe IS the answer there, and a
                    declared delay would only start the walk-back late.
+``delays``         the same fact per cycle hour and per lead, where the
+                   producer's timing differs between its cycles (a fetch
+                   route's ``publication_lag`` rows, :class:`PublicationRule`).
+                   ``delay_hours`` is then the longest first-object delay,
+                   for a reader that asks without naming a cycle.  Each
+                   rule is the EARLIEST posting seen, where the probed
+                   ``latest`` walk starts, plus how much later the latest
+                   posting seen came: a reader that no probe checks
+                   (``settled``) waits for that one instead.
 ``usual_delay_hours``  where the probe decides (``delay_hours`` zero),
                    how long after a nominal init the whole run is
                    usually on the server, measured.  The page's answer
@@ -43,8 +52,49 @@ true when the row grows.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+
+
+@dataclass(frozen=True)
+class PublicationRule:
+    """When one set of a producer's leads lands, measured: a table row.
+
+    Lead ``L`` of a cycle whose UTC hour is in ``cycle_hours`` (``None``:
+    every hour no earlier rule names) and with ``L >= from_lead`` was
+    first seen on the ladder head ``hours + per_lead_hours * L`` after
+    the cycle, and never more than ``late_hours`` after that.  The first
+    rule that matches answers, so a rule for a later part of the ladder
+    (GEFS's 00Z extension past f384, posted about a day later) comes
+    before the rule for the rest of it.
+
+    The earliest line is where the probed ``latest`` walk starts: later
+    than a real posting makes it skip a cycle that is out, earlier costs
+    one probe that answers no.  The latest line (``settled``) is for an
+    answer no probe checks, where earlier claims a lead that is not out.
+    """
+
+    cycle_hours: tuple[int, ...] | None
+    hours: float
+    per_lead_hours: float = 0.0
+    late_hours: float = 0.0
+    from_lead: int = 0
+    measured: str = ""
+
+    def __post_init__(self) -> None:
+        if (self.hours < 0.0 or self.per_lead_hours < 0.0
+                or self.late_hours < 0.0 or self.from_lead < 0):
+            raise ValueError(
+                "a publication rule cannot be negative: a cycle is not "
+                "published before it runs")
+
+    def matches(self, cycle_hour: int, lead: int = 0) -> bool:
+        return ((self.cycle_hours is None or int(cycle_hour) in self.cycle_hours)
+                and max(0, int(lead)) >= self.from_lead)
+
+    def at(self, lead: int = 0, *, settled: bool = False) -> float:
+        return (float(self.hours) + float(self.per_lead_hours) * max(0, int(lead))
+                + (float(self.late_hours) if settled else 0.0))
 
 
 #: The walk-back a source declares nothing better than.  Two days is the
@@ -82,6 +132,11 @@ class CycleGrid:
     #: whose walk already starts at its measured lag.  See
     #: :attr:`usual_delay`.
     usual_delay_hours: float | None = None
+    #: Per-cycle-hour and per-lead publication rules, most specific
+    #: first (:class:`PublicationRule`, the fetch route table's
+    #: ``publication_lag`` rows).  Empty means one delay for every cycle
+    #: and lead: ``delay_hours``.
+    delays: tuple[PublicationRule, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.hours:
@@ -97,6 +152,8 @@ class CycleGrid:
                 f"CycleGrid hours {self.hours} must be UTC hours of day")
         if self.delay_hours < 0.0:
             raise ValueError("CycleGrid delay_hours cannot be negative")
+        if not all(isinstance(rule, PublicationRule) for rule in self.delays):
+            raise ValueError("CycleGrid delays are PublicationRule rows")
         if self.usual_delay_hours is not None and self.usual_delay_hours < 0.0:
             raise ValueError("CycleGrid usual_delay_hours cannot be negative")
         if self.search_hours <= 0:
@@ -120,6 +177,29 @@ class CycleGrid:
                 return through
         return None
 
+    def delay(self, cycle: datetime, lead: int = 0, *,
+              settled: bool = False) -> float:
+        """Hours after ``cycle`` until its ``lead`` is published, declared.
+
+        The rule for the cycle's hour where :attr:`delays` has one, and
+        :attr:`delay_hours` otherwise.  ECMWF posts its 06/18Z runs an
+        hour before its 00/12Z ones and GEFS takes two hours longer to
+        reach f384 than f000, so one number per producer either starts
+        ``latest`` a cycle late or claims leads that are not out yet.
+
+        The rule is the earliest posting seen, which is where a probed
+        walk starts: earlier costs one probe that answers no, later skips
+        a cycle that is out.  ``settled`` asks for the latest posting seen
+        instead, for a reader that takes the schedule's word with no probe
+        to check it (a plan made offline, a page before its check answers,
+        a DA cycle's wait), where too early claims a lead that is not out.
+        """
+
+        for rule in self.delays:
+            if rule.matches(cycle.hour, lead):
+                return rule.at(lead, settled=settled)
+        return float(self.delay_hours)
+
     @property
     def usual_delay(self) -> float:
         """Hours after a nominal init by which the whole run is usually published.
@@ -127,11 +207,23 @@ class CycleGrid:
         A page takes a start at least this old as published while no
         check has answered for it, and opens on the newest such start
         until a check confirms a newer one.  The probe still decides:
-        a start a check found missing is not taken, however old.
+        a start a check found missing is not taken, however old.  Where
+        :attr:`delays` declares the timing per lead it is the latest
+        posting seen of the last lead EVERY cycle hour publishes, for the
+        slowest hour: the longest first-object delay took GEFS as whole
+        at 3.7 h where its f384 lands after six.  A longer ladder some
+        hours add (GEFS's 00Z extension, posted a day later) is left to
+        the page's lead-aware ``due``, which asks about the window's own
+        last lead.
         """
 
-        return float(self.delay_hours if self.usual_delay_hours is None
-                     else self.usual_delay_hours)
+        if self.usual_delay_hours is not None:
+            return float(self.usual_delay_hours)
+        if self.delays:
+            cycles = [datetime(2001, 1, 1, hour) for hour in self.hours]
+            common = min(self.horizon(cycle) or 0 for cycle in cycles)
+            return max(self.delay(cycle, common, settled=True) for cycle in cycles)
+        return float(self.delay_hours)
 
     def declaration(self) -> dict[str, object]:
         """This grid as JSON-safe fields, for a manifest or a front end."""
@@ -148,6 +240,14 @@ class CycleGrid:
         }
         if self.usual_delay_hours is not None:
             value["usual_delay_hours"] = float(self.usual_delay_hours)
+        if self.delays:
+            value["delays"] = [
+                {"cycle_hours": (None if rule.cycle_hours is None
+                                 else list(rule.cycle_hours)),
+                 "from_lead": int(rule.from_lead), "hours": float(rule.hours),
+                 "per_lead_hours": float(rule.per_lead_hours),
+                 "late_hours": float(rule.late_hours)}
+                for rule in self.delays]
         return value
 
     def snap(self, moment: datetime) -> datetime:
@@ -168,24 +268,35 @@ class CycleGrid:
         raise AssertionError(              # pragma: no cover - hours is nonempty
             "a nonempty hour set is reached within one day")
 
-    def newest(self, now: datetime) -> datetime:
-        """The newest init this grid says exists, optimistically.
+    def newest(self, now: datetime, lead: int = 0, *,
+               settled: bool = False) -> datetime:
+        """The newest init this grid says exists through ``lead``, optimistically.
 
-        ``now`` minus the declared publication delay, snapped back onto
-        the grid, and never later than a closed archive's last init.
-        This is the whole answer where no probe transport exists; where
-        one does, it is the first candidate the probe is asked about.
+        The newest grid point whose declared delay for ``lead``
+        (:meth:`delay`) has passed by ``now``, and never later than a
+        closed archive's last init.  With one delay for every cycle this
+        is ``now`` minus that delay, snapped back onto the grid.  This is
+        the whole answer where no probe transport exists; where one does,
+        it is the first candidate the probe is asked about.  ``settled``
+        waits for the latest posting seen instead (:meth:`delay`), for an
+        answer no probe will check.
         """
 
-        newest = self.snap(now - timedelta(hours=self.delay_hours))
+        newest = self.snap(now)
+        longest = max([self.delay_hours] + [rule.at(lead, settled=True)
+                                            for rule in self.delays])
+        for _step in range(int(longest) + 48):
+            if newest + timedelta(hours=self.delay(newest, lead, settled=settled)) <= now:
+                break
+            newest = self.snap(newest - timedelta(hours=1))
         if self.record_end is not None and newest > self.record_end:
             return self.snap(self.record_end)
         return newest
 
-    def candidates(self, now: datetime) -> tuple[datetime, ...]:
-        """Every cycle ``latest`` may resolve to, newest first."""
+    def candidates(self, now: datetime, lead: int = 0) -> tuple[datetime, ...]:
+        """Every cycle ``latest`` may resolve to through ``lead``, newest first."""
 
-        newest = self.newest(now)
+        newest = self.newest(now, lead)
         found = [newest]
         while True:
             earlier = self.snap(found[-1] - timedelta(hours=1))
@@ -222,7 +333,11 @@ def route_cycle_grid(source_id: str) -> CycleGrid | None:
          if getattr(host, "retention_hours", None)), None)
     return CycleGrid(
         hours=hours,
-        delay_hours=float(route.publication_lag_hours),
+        # The longest first-object delay, for a reader that names no
+        # cycle; every reader that has one asks :meth:`CycleGrid.delay`.
+        delay_hours=max(rule.at(0) for rule in route.publication_lag
+                        if rule.from_lead == 0),
+        delays=tuple(route.publication_lag),
         search_hours=int(retention) if retention else DEFAULT_SEARCH_HOURS,
         # The last rung of each ladder rule IS the horizon: the steps are
         # (through_hour, spacing) pairs in increasing order, so the final
@@ -231,11 +346,11 @@ def route_cycle_grid(source_id: str) -> CycleGrid | None:
             (None if cycle_hours is None else tuple(cycle_hours), steps[-1][0])
             for cycle_hours, steps in route.ladders if steps),
         basis=f"the fetch route table's measured cycle_hours and "
-              f"publication_lag_hours for {source_id!r} "
+              f"publication_lag rows for {source_id!r} "
               f"(measured {route.measured})")
 
 
-def cycle_grid_for(source_id: str) -> CycleGrid | None:
+def cycle_grid_for(source_id: str, *, posting: bool = False) -> CycleGrid | None:
     """The initialization grid for one source id, or ``None``.
 
     ``None`` means nothing in this product declares when this source
@@ -249,6 +364,17 @@ def cycle_grid_for(source_id: str) -> CycleGrid | None:
     cannot state (the legacy transports, and a keyed job API like the
     CDS, which has no object to probe and so needs its publication delay
     written down).  Everything else derives.
+
+    ``posting`` asks for the grid a posting schedule reads: a legacy
+    transport's measured lead times are the route table's
+    ``legacy_posting`` rows, in a route's :class:`PublicationRule` shape,
+    and they become that grid's :attr:`CycleGrid.delays`, so every source
+    answers when a lead is due through :meth:`CycleGrid.delay`.  Without
+    it a legacy grid keeps no delay: its completeness probe decides
+    publication object by object from now, which is what ``--cycle
+    latest`` and the date page's due start are built on for those
+    sources until the as-posted ``latest`` (DESIGN A136 2.2) replaces
+    them.  A route's grid is the same either way.
     """
 
     try:
@@ -257,7 +383,20 @@ def cycle_grid_for(source_id: str) -> CycleGrid | None:
         adapter = get_source_adapter(source_id)
     except (ImportError, ValueError):
         return route_cycle_grid(source_id)
-    return adapter.cycle_grid or route_cycle_grid(adapter.source_id)
+    grid = adapter.cycle_grid
+    if grid is None:
+        return route_cycle_grid(adapter.source_id)
+    if not posting:
+        return grid
+    from gpuwm import fetch_routes
+
+    rules = fetch_routes.legacy_publication_lag(adapter.source_id)
+    if rules:
+        grid = replace(grid, delays=tuple(rules),
+                       basis=f"{grid.basis}; lead timing from the fetch route "
+                             f"table's legacy_posting rows for "
+                             f"{adapter.source_id!r}")
+    return grid
 
 
 __all__ = ["DEFAULT_SEARCH_HOURS", "CycleGrid", "cycle_grid_for",

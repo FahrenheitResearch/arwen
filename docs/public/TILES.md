@@ -1,8 +1,8 @@
 # Tiling a domain that does not fit on the card
 
-**This page is not [Chunked forecast streaming](STREAMING.md).** That page
-is `gpuwm stream PLAN.toml`, which follows an uploading HRRR cycle with
-sealed hourly forecast legs. This page is the `[tiles]` table, which runs
+**This page is not [Streaming: forecasts that run as their source posts](STREAMING.md).** That page
+is about when a forecast starts and waits against a source still posting its
+cycle, and the `gpuwm stream PLAN.toml` controller. This page is the `[tiles]` table, which runs
 one domain out of core on one card. The two share no configuration and no
 code path, and either can be used without the other.
 

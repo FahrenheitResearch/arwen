@@ -3,6 +3,7 @@ from dataclasses import asdict, replace
 from datetime import datetime
 from types import SimpleNamespace
 import copy
+import tomllib
 
 import numpy as np
 import pytest
@@ -662,3 +663,78 @@ def test_a_two_way_adaptive_tree_goes_through_the_route(tmp_path):
         imported, load_hrrr_target_domain(target),
         forcing_hours=tuple(range(
             hrrr_forcing_end_hour(imported.run_seconds) + 1)))
+
+
+_NOISE_BUBBLE = {"bubbles": [{
+    "center_lat": 38.5, "center_lon": -99.5, "center_height_m": 1500.0,
+    "radius_km": 10.0, "depth_m": 1500.0, "amplitude_k": 0.01}]}
+
+
+def _perturbed_config(tmp_path, *, tree):
+    """A route configuration carrying a 0.01 K [perturbation] block."""
+    vertical = VerticalConfig(eta_levels=tuple(float(x) for x in np.linspace(1, 0, 13)),
+                              p_top=5000., hybrid_opt=2, etac=.2)
+    target = replace(HrrrTargetDomain.legacy_500x500(), nx=50, ny=50, nz=12)
+    raw, _ = benchmark._experiment_tables(vertical, run_seconds=3600, target=target,
+                                          physics_profile=WSM6_PROFILE_ID)
+    raw["experiment"]["name"] = target.name
+    if tree:
+        raw["domain"].append({
+            "grid_id": 2, "parent_id": 1, "i_parent_start": 18, "j_parent_start": 18,
+            "parent_grid_ratio": 3, "parent_time_step_ratio": 3, "nx": 30, "ny": 30,
+            "history_interval_s": 300.0, "specified": False, "nested": True})
+    raw["perturbation"] = copy.deepcopy(_NOISE_BUBBLE)
+    exp = build_experiment(copy.deepcopy(raw), source="perturbed native control")
+    config = tmp_path / "experiment.toml"
+    config.write_text(render_experiment_document(raw), encoding="utf-8")
+    return exp, target, config
+
+
+def test_a_native_root_of_a_perturbed_tree_prepares_and_records_the_deferral(
+        tmp_path, capsys):
+    """The native HRRR route reads the configuration only at its root.
+
+    Its hierarchy stage builds the children from namelists, so the root
+    preparation is where the tree's [perturbation] block is seen: it
+    prepares, and the deferral the root seals (and the hierarchy relays)
+    is the one receipt every source's tree preparation writes.
+    """
+    from gpuwm.experiment import deferred_initial_perturbation
+    from gpuwm.hrrr_configuration import root_perturbation_deferral
+
+    exp, target, config = _perturbed_config(tmp_path, tree=True)
+    actual, raw = resolve_root_experiment(target=target, vertical=exp.vertical,
+        namelist_input=tmp_path / "namelist.input", start_time=exp.start_time,
+        run_seconds=exp.run_seconds, experiment_config=config)
+    assert len(actual.domains) == 1
+    assert capsys.readouterr().err == ""
+    # The root publishes its d01 slice as the bundle's authority, the
+    # block included: dropped, the root alone would run unperturbed
+    # under the bubbles' name, and unwritable it stopped the preparation.
+    from gpuwm.experiment import build_experiment_from_config_tables
+
+    published = publish_experiment_document(tmp_path / "published.toml", raw, actual)
+    reloaded = build_experiment_from_config_tables(
+        tomllib.loads(published.read_text(encoding="utf-8")),
+        source=str(published), base_dir=tmp_path)
+    assert reloaded.perturbation == exp.perturbation
+    deferred = root_perturbation_deferral(config)
+    assert deferred == deferred_initial_perturbation(
+        exp, "any route", announce=False)
+    assert deferred["config"] == exp.perturbation.receipt()
+    assert "deferred to prepared-tree forecast initialization" in (
+        capsys.readouterr().err)
+    assert root_perturbation_deferral(None) is None
+
+
+def test_a_native_single_domain_perturbation_is_refused_before_the_decode(tmp_path):
+    """The prepared single-domain runner applies no bubble, so the root
+    preparer refuses the block by name where it first reads the
+    configuration, instead of publishing a bundle its forecast refuses."""
+    exp, target, config = _perturbed_config(tmp_path, tree=False)
+    with pytest.raises(ValueError, match=(
+            r"single-domain native HRRR root preparation route does not "
+            r"apply \[perturbation\]")):
+        resolve_root_experiment(target=target, vertical=exp.vertical,
+            namelist_input=tmp_path / "namelist.input", start_time=exp.start_time,
+            run_seconds=exp.run_seconds, experiment_config=config)

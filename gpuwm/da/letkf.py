@@ -1086,6 +1086,155 @@ def chunk_points_for_budget(total_slots: int, members: int,
     return max(0, min(int(npts), int(budget_bytes) // per_point))
 
 
+def stencil_slots(localization: "Localization", grid: "GridGeometry",
+                  nx: int, ny: int) -> int:
+    """Stencil slots one observation batch with this localisation adds.
+
+    The same two stencils :func:`analyze` builds for the batch, so a
+    caller pricing the solve before it has any observation counts the
+    slots the solve will count.
+    """
+    dj, _di = _horizontal_stencil(localization, grid, int(nx), int(ny))
+    return int(dj.size) * int(_vertical_stencil(localization, grid).size)
+
+
+@dataclass(frozen=True)
+class AnalysisDevicePrice:
+    """What one :func:`analyze` call holds on the card, by route.
+
+    ``setup_bytes`` is everything alive when the solve sizes its chunk on
+    the resident route: the uploaded prior and observation batches, the
+    validated working copies of each batch, each batch's squared error,
+    the prior perturbations, spreads and increments, and the localisation
+    coordinates.  The chunk loop then adds ``scratch_bytes``, the
+    configured chunk (:func:`chunk_points_for_budget` at the configured
+    budget) times :func:`solve_bytes_per_point`, and the spread
+    diagnostics after it add ``finish_bytes`` once the loop's scratch has
+    been handed back.
+    """
+
+    setup_bytes: int
+    finish_bytes: int
+    solve_bytes_per_point: int
+    stencil_slots: int
+    #: The configured chunk, or 0 when not one gridpoint fits the budget,
+    #: in which case the resident route refuses and the host-staged route
+    #: is the only one.
+    chunk_points: int
+    scratch_bytes: int
+    #: One packed row of the host-staged route at the full stencil.
+    staged_row_bytes: int
+    budget_bytes: int
+    #: True when ``chunk_points`` was configured rather than sized: the
+    #: solve then skips the free-memory reading and its fraction.
+    explicit_chunk: bool = False
+
+    def _with_free_fraction(self, nbytes: int) -> int:
+        if self.explicit_chunk:
+            return int(nbytes)
+        return int(math.ceil(int(nbytes) / _DEVICE_FREE_FRACTION))
+
+    @property
+    def resident_bytes(self) -> int | None:
+        """The resident route at the configured chunk.
+
+        The chunk loop takes its configured chunk only when
+        ``_DEVICE_FREE_FRACTION`` of the memory it finds free covers the
+        chunk's scratch, so the card it needs holds the scratch divided by
+        that fraction.  None when the resident route cannot solve at all.
+        """
+        if self.chunk_points < 1:
+            return None
+        return self.setup_bytes + max(
+            self.finish_bytes, self._with_free_fraction(self.scratch_bytes))
+
+    @property
+    def reduced_bytes(self) -> int | None:
+        """The resident route at the smallest chunk the solve will take."""
+        if self.chunk_points < 1:
+            return None
+        return self.setup_bytes + max(
+            self.finish_bytes,
+            self._with_free_fraction(self.solve_bytes_per_point))
+
+    @property
+    def staged_bytes(self) -> int | None:
+        """The host-staged fallback at one packed row, or None.
+
+        None when one row exceeds the configured budget: the staged route
+        caps its device scratch at that budget, so no card runs it.
+        """
+        if self.staged_row_bytes > self.budget_bytes:
+            return None
+        return int(math.ceil(self.staged_row_bytes / _DEVICE_FREE_FRACTION))
+
+
+def analysis_device_price(*, members: int, shape, fields: int,
+                          prior_itemsize: int, batches, grid: "GridGeometry",
+                          config: "LetkfConfig",
+                          obs_itemsize: int) -> AnalysisDevicePrice:
+    """The device price of :func:`analyze` before any array exists.
+
+    ``batches`` is one ``(points, localization)`` pair per observation
+    batch: the points of its storage extent (its window, or the grid) and
+    its own localisation, None for ``config.localization``.  The prior
+    arrives as ``fields`` arrays of ``(members, *shape)`` at
+    ``prior_itemsize`` (the work dtype :func:`analyze` adopts), and each
+    batch's values, errors and ``H(x)`` at ``obs_itemsize``.
+
+    The scratch is the solve's own sizing: :func:`chunk_points_for_budget`
+    at the configured budget over every batch's slots.  The solve sizes on
+    the slots the worst row can reach, never more than that sum, so the
+    price at the sum is the solve's chunk when the domain fits one chunk
+    and the budget itself when it does not, and the solve never exceeds
+    either.
+    """
+    nz, ny, nx = (int(extent) for extent in shape)
+    npts = nz * ny * nx
+    r = int(members)
+    ws = int(prior_itemsize)
+    ds = int(np.dtype(config.solve_dtype).itemsize)
+    extents = [(int(points), loc) for points, loc in batches]
+    slots = sum(stencil_slots(loc if loc is not None else config.localization,
+                              grid, nx, ny)
+                for _points, loc in extents)
+    observed = sum(points for points, _loc in extents)
+    setup = (
+        # the prior as it arrives; its work-dtype view is the same array
+        int(fields) * r * npts * ws
+        # each batch as it arrives: values, errors, H(x) and the mask
+        + observed * ((2 + r) * int(obs_itemsize) + 1)
+        # _validate_obs's working copies of the same four, in the work dtype
+        + observed * ((2 + r) * ws + 1)
+        # each batch's squared error, in the solve dtype
+        + observed * ds
+        # prior perturbations and increments (R each) and the spread (1)
+        + int(fields) * npts * ws * (2 * r + 1)
+        # the height field and the two horizontal coordinates, float64
+        + 8 * npts + 2 * 8 * ny * nx)
+    per_point = solve_bytes_per_point(max(1, slots), r, ds)
+    budget = int(config.memory_budget_mib * (1 << 20))
+    if config.chunk_points is not None:
+        chunk = min(npts, int(config.chunk_points))
+        scratch = chunk * per_point
+    else:
+        chunk = chunk_points_for_budget(max(1, slots), r, ds, budget, npts)
+        # One chunk over the whole domain costs exactly that; otherwise
+        # the solve fills the budget at whatever slot count it sizes on.
+        scratch = chunk * per_point if chunk >= npts else budget
+    # _finish: the posterior, its departures from the mean and their
+    # squares, R each, alive together for one field at a time.
+    finish = 3 * r * npts * ws
+    return AnalysisDevicePrice(
+        setup_bytes=int(setup), finish_bytes=int(finish),
+        solve_bytes_per_point=int(per_point), stencil_slots=int(slots),
+        chunk_points=int(chunk), scratch_bytes=int(scratch),
+        staged_row_bytes=int(_packed_bytes_per_point(
+            max(1, slots), r, ds, int(fields))),
+        budget_bytes=budget,
+        explicit_chunk=config.chunk_points is not None)
+
+
 # ---------------------------------------------------------------------------
 # Spatial reach: which observation batches can touch which gridpoints.
 #
@@ -2571,6 +2720,10 @@ def analyze(
             # An instrument that cannot read is silent, never fatal: this
             # measures the analysis, it does not gate it.
             pass
+        # The loop's idle scratch goes back before the spread diagnostics
+        # allocate, so they run beside the whole-domain arrays alone, which
+        # is what AnalysisDevicePrice.finish_bytes prices them against.
+        _release_device_scratch(solve_xp)
 
     _finish(xp, fields, pri, increments, members, diagnostics)
     _sync_namespace(xp)

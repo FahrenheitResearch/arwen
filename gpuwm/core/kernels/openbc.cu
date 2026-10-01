@@ -28,18 +28,18 @@
 // Task 9's REPLACE semantics dropped those retained terms, a linear-order
 // error under base-state shear with boundary-normal flow.
 //
-// w_damp is WRF's vertical-velocity limiter, transcribed from
-// dyn_em/module_big_step_utilities_em.F w_damp (w_damping = 1, non-IEVA,
-// map factors 1): on interior w levels, where the vertical Courant number
+// w_damp is WRF's vertical-velocity limiter, transcribed from WRF 4.7.1
+// dyn_em/module_big_step_utilities_em.F w_damp (w_damping = 1, map
+// factors 1): on interior w levels, where the vertical Courant number
 //   vert_cfl = |ww/(c1f*mut + c2f) * rdnw[k] * dt|
-// exceeds w_beta, the coupled w tendency gets
+// exceeds w_damp_on, the coupled w tendency gets
 //   -SIGN(1, w) * w_alpha * (vert_cfl - w_crit_cfl) * (c1f*mut + c2f).
+// WRF sets w_damp_on = w_crit_cfl when zadvect_implicit > 0 and w_beta
+// (1.0) otherwise, and measures the excess from the namelist w_crit_cfl
+// either way.  Both arrive as arguments (dycore.w_damp_onset, A165).
 
-// WRF share/module_model_constants.F:88-89; w_crit_cfl is the Registry
-// namelist default (Registry.EM_COMMON).
+// WRF share/module_model_constants.F:88.
 #define W_DAMP_ALPHA 0.3f
-#define W_DAMP_BETA  1.0f
-#define W_CRIT_CFL   1.0f
 
 extern "C" __global__
 void open_u_radiative(real* __restrict__ ru_t,          // (nz, ny, nx+1)
@@ -110,7 +110,8 @@ void w_damp(real* __restrict__ rw_t,                    // (nz+1, ny, nx)
             const real* __restrict__ c1f,               // (nz+1,)
             const real* __restrict__ c2f,               // (nz+1,)
             const real* __restrict__ rdnw,              // (nz,)
-            real dt, int nz, int ny, int nx)
+            real dt, real w_damp_on, real w_crit_cfl,
+            int nz, int ny, int nx)
 {
     int t = blockIdx.x * blockDim.x + threadIdx.x;      // interior w levels
     int plane = ny * nx;
@@ -121,9 +122,9 @@ void w_damp(real* __restrict__ rw_t,                    // (nz+1, ny, nx)
     real m = c1f[k] * (mub2d[c] + mup[c]) + c2f[k];
     size_t ix = (size_t)k * plane + c;
     real vert_cfl = fabsf(ww[ix] / m * rdnw[k] * dt);
-    if (vert_cfl > W_DAMP_BETA) {
+    if (vert_cfl > w_damp_on) {
         rw_t[ix] -= copysignf(1.0f, w[ix]) * W_DAMP_ALPHA
-                    * (vert_cfl - W_CRIT_CFL) * m;
+                    * (vert_cfl - w_crit_cfl) * m;
     }
 }
 
@@ -141,7 +142,7 @@ void w_damp(real* __restrict__ rw_t,                    // (nz+1, ny, nx)
 // target_cfl grades the eta-coordinate form.
 //
 // out[0] = max vert_cfl as float bits (non-negative floats order as uint)
-// out[1] = cells ABOVE W_DAMP_BETA (strict, matching w_damp above)
+// out[1] = cells ABOVE w_damp_on (strict, matching w_damp above)
 // out[2] = cells visited
 // out[3] = max horiz_cfl, WRF's max(|u*rdx*msfux*dt|, |v*rdy*msfvy*dt|)
 // out[4 + b] = vert_cfl HISTOGRAM, b = 0..CFL_HIST_BINS-1
@@ -177,7 +178,7 @@ void w_cfl_stat_impl(const real* __restrict__ ww,            // (nz+1, ny, nx)
                 const real* __restrict__ msfu,          // (ny, nx+1)
                 const real* __restrict__ msfv,          // (ny+1, nx)
                 unsigned int* __restrict__ out,         // (4 + CFL_HIST_BINS,)
-                real dt, real rdx, real rdy,
+                real dt, real rdx, real rdy, real w_damp_on,
                 int nz, int ny, int nx, int i0, int i1, int j0, int j1)
 {
     __shared__ unsigned int block_max;
@@ -207,7 +208,7 @@ void w_cfl_stat_impl(const real* __restrict__ ww,            // (nz+1, ny, nx)
         size_t ix = (size_t)k * plane + c;
         real vert_cfl = fabsf(ww[ix] / m * rdnw[k] * dt);
         bits = __float_as_uint(vert_cfl);
-        hit = (vert_cfl > W_DAMP_BETA) ? 1u : 0u;
+        hit = (vert_cfl > w_damp_on) ? 1u : 0u;
         // Written as "< top ? floor : last" rather than a min(), so that a
         // NaN lands in the overflow bin instead of wherever a comparison
         // with an undefined float cast happens to send it: every compare
@@ -261,10 +262,10 @@ void w_cfl_stat(const real* __restrict__ ww,            // (nz+1, ny, nx)
                 const real* __restrict__ msfu,          // (ny, nx+1)
                 const real* __restrict__ msfv,          // (ny+1, nx)
                 unsigned int* __restrict__ out,         // (4 + CFL_HIST_BINS,)
-                real dt, real rdx, real rdy,
+                real dt, real rdx, real rdy, real w_damp_on,
                 int nz, int ny, int nx)
 {
-    w_cfl_stat_impl(ww, mup, mub2d, c1f, c2f, rdnw, u, v, msfu, msfv, out, dt, rdx, rdy, nz, ny, nx, 0, nx, 0, ny);
+    w_cfl_stat_impl(ww, mup, mub2d, c1f, c2f, rdnw, u, v, msfu, msfv, out, dt, rdx, rdy, w_damp_on, nz, ny, nx, 0, nx, 0, ny);
 }
 
 extern "C" __global__
@@ -279,8 +280,8 @@ void w_cfl_stat_window(const real* __restrict__ ww,            // (nz+1, ny, nx)
                 const real* __restrict__ msfu,          // (ny, nx+1)
                 const real* __restrict__ msfv,          // (ny+1, nx)
                 unsigned int* __restrict__ out,         // (4 + CFL_HIST_BINS,)
-                real dt, real rdx, real rdy,
+                real dt, real rdx, real rdy, real w_damp_on,
                 int nz, int ny, int nx, int i0, int i1, int j0, int j1)
 {
-    w_cfl_stat_impl(ww, mup, mub2d, c1f, c2f, rdnw, u, v, msfu, msfv, out, dt, rdx, rdy, nz, ny, nx, i0, i1, j0, j1);
+    w_cfl_stat_impl(ww, mup, mub2d, c1f, c2f, rdnw, u, v, msfu, msfv, out, dt, rdx, rdy, w_damp_on, nz, ny, nx, i0, i1, j0, j1);
 }

@@ -378,6 +378,27 @@ def native_static_export_fields(
     return result
 
 
+def _landuse_category_count(landusef) -> int:
+    """21, or the urban legend's full table when a static carries it.
+
+    With an urban canopy model on, the high-resolution land cover keeps its
+    Local Climate Zone and NLCD intensity classes as categories 51-61 of the
+    same MODIFIED_IGBP_MODIS_NOAH table (gpuwm.static.highres.
+    landcover_legend), and every preparation route wrote that 61-category
+    static -- which this contract then refused at the forecast ("LANDUSEF has
+    shape (61, ...), expected (21, ...)"), so no urban run could use its
+    classes.  The table identity (MMINLU, ISWATER, ISLAKE, ISICE) is the same
+    table's; any other count still fails the shape check below.  Which legend
+    a run may use is bound by the prepared-static identity, not here.
+    """
+    count = int(np.shape(landusef)[0])
+    if count != _NATIVE_STATIC_CATEGORY_COUNT["LANDUSEF"]:
+        from gpuwm.core.landuse import load_landuse_table
+        if count == int(load_landuse_table().lucats):
+            return count
+    return _NATIVE_STATIC_CATEGORY_COUNT["LANDUSEF"]
+
+
 def validate_native_static_fields(
         fields: Mapping[str, object], grid, ny: int, nx: int, *,
         land_terrain: bool = True,
@@ -399,6 +420,7 @@ def validate_native_static_fields(
         name: np.asarray(fields[name], dtype=np.float64)
         for name in sorted(retained)
     }
+    landuse_categories = _landuse_category_count(result["LANDUSEF"])
     expected_shapes = {
         **{name: (ny, nx) for name in _NATIVE_STATIC_MASS_2D},
         **{name: (12, ny, nx) for name in _NATIVE_STATIC_MONTHLY},
@@ -406,6 +428,7 @@ def validate_native_static_fields(
             name: (categories, ny, nx)
             for name, categories in _NATIVE_STATIC_CATEGORY_COUNT.items()
         },
+        "LANDUSEF": (landuse_categories, ny, nx),
         "MAPFAC_M": (ny, nx),
         "MAPFAC_U": (ny, nx + 1),
         "MAPFAC_V": (ny + 1, nx),
@@ -424,7 +447,8 @@ def validate_native_static_fields(
             raise ValueError(f"static field {name} contains non-finite values")
     if not np.isin(result["LANDMASK"], (0.0, 1.0)).all():
         raise ValueError("static field LANDMASK must be exactly binary")
-    for name, upper in (("LU_INDEX", 21), ("SCT_DOM", 16), ("SCB_DOM", 16)):
+    for name, upper in (("LU_INDEX", landuse_categories), ("SCT_DOM", 16),
+                        ("SCB_DOM", 16)):
         value = result[name]
         if (np.any(value != np.floor(value)) or value.min() < 1.0
                 or value.max() > float(upper)):

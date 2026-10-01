@@ -1,0 +1,503 @@
+{
+  "planes": [
+    {
+      "input": "coast_valley-input.bin",
+      "settings": [
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "coast_valley-1-0.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "coast_valley-1-1.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "coast_valley-1-2.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "coast_valley-1-3.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 5,
+          "oracle_f32": true,
+          "output": "coast_valley-1-5.bin"
+        },
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "coast_valley-2-0.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "coast_valley-2-1.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "coast_valley-2-2.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "coast_valley-2-3.bin"
+        },
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "coast_valley-3-0.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "coast_valley-3-1.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "coast_valley-3-2.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "coast_valley-3-3.bin"
+        }
+      ]
+    },
+    {
+      "input": "geogrid_alps1km_raw-input.bin",
+      "settings": [
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "geogrid_alps1km_raw-1-0.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "geogrid_alps1km_raw-1-1.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "geogrid_alps1km_raw-1-2.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "geogrid_alps1km_raw-1-3.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 5,
+          "oracle_f32": true,
+          "output": "geogrid_alps1km_raw-1-5.bin"
+        },
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "geogrid_alps1km_raw-2-0.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "geogrid_alps1km_raw-2-1.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "geogrid_alps1km_raw-2-2.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "geogrid_alps1km_raw-2-3.bin"
+        },
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "geogrid_alps1km_raw-3-0.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "geogrid_alps1km_raw-3-1.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "geogrid_alps1km_raw-3-2.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "geogrid_alps1km_raw-3-3.bin"
+        }
+      ]
+    },
+    {
+      "input": "geogrid_alps3km_raw-input.bin",
+      "settings": [
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "geogrid_alps3km_raw-1-0.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "geogrid_alps3km_raw-1-1.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "geogrid_alps3km_raw-1-2.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "geogrid_alps3km_raw-1-3.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 5,
+          "oracle_f32": true,
+          "output": "geogrid_alps3km_raw-1-5.bin"
+        },
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "geogrid_alps3km_raw-2-0.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "geogrid_alps3km_raw-2-1.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "geogrid_alps3km_raw-2-2.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "geogrid_alps3km_raw-2-3.bin"
+        },
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "geogrid_alps3km_raw-3-0.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "geogrid_alps3km_raw-3-1.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "geogrid_alps3km_raw-3-2.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "geogrid_alps3km_raw-3-3.bin"
+        }
+      ]
+    },
+    {
+      "input": "near_subnormal-input.bin",
+      "settings": [
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "near_subnormal-1-0.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "near_subnormal-1-1.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "near_subnormal-1-2.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "near_subnormal-1-3.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 5,
+          "oracle_f32": true,
+          "output": "near_subnormal-1-5.bin"
+        },
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "near_subnormal-2-0.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "near_subnormal-2-1.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "near_subnormal-2-2.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "near_subnormal-2-3.bin"
+        },
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "near_subnormal-3-0.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "near_subnormal-3-1.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "near_subnormal-3-2.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "near_subnormal-3-3.bin"
+        }
+      ]
+    },
+    {
+      "input": "ridges_noise-input.bin",
+      "settings": [
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "ridges_noise-1-0.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "ridges_noise-1-1.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "ridges_noise-1-2.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "ridges_noise-1-3.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 5,
+          "oracle_f32": true,
+          "output": "ridges_noise-1-5.bin"
+        },
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "ridges_noise-2-0.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "ridges_noise-2-1.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "ridges_noise-2-2.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "ridges_noise-2-3.bin"
+        },
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "ridges_noise-3-0.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "ridges_noise-3-1.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "ridges_noise-3-2.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "ridges_noise-3-3.bin"
+        }
+      ]
+    },
+    {
+      "input": "spikes-input.bin",
+      "settings": [
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "spikes-1-0.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "spikes-1-1.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "spikes-1-2.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "spikes-1-3.bin"
+        },
+        {
+          "smooth_option": "1-2-1",
+          "smooth_passes": 5,
+          "oracle_f32": true,
+          "output": "spikes-1-5.bin"
+        },
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "spikes-2-0.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "spikes-2-1.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "spikes-2-2.bin"
+        },
+        {
+          "smooth_option": "smth-desmth",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "spikes-2-3.bin"
+        },
+        {
+          "smooth_option": "none",
+          "smooth_passes": 0,
+          "oracle_f32": true,
+          "output": "spikes-3-0.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 1,
+          "oracle_f32": true,
+          "output": "spikes-3-1.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 2,
+          "oracle_f32": true,
+          "output": "spikes-3-2.bin"
+        },
+        {
+          "smooth_option": "smth-desmth_special",
+          "smooth_passes": 3,
+          "oracle_f32": true,
+          "output": "spikes-3-3.bin"
+        }
+      ]
+    }
+  ],
+  "provenance": "wps_commit=335c76a111f84503e8b963abaf273ea8053645bb\nsha256 d0a09c3099977edb54efa6982a59c9329e3ff287bdb0434e7fca53931de67558 geogrid/src/parallel_module.F\nsha256 a95b265bd5f93309285303d6c22a1e2e0923a59d58b5e8729090a19e39351336 geogrid/src/smooth_module.F\ncpp=cpp (Ubuntu 15.2.0-16ubuntu1) 15.2.0\ngfortran=GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0\nfflags=-ffree-form -O -fconvert=big-endian -frecord-marker=4\ncppflags=-P -traditional -D_UNDERSCORE -DBYTESWAP -DLINUX -DIO_NETCDF -DBIT32\n"
+}

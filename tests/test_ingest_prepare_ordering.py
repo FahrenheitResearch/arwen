@@ -430,10 +430,37 @@ def test_every_prepare_adapter_holds_one_forcing_time_in_either_order():
             f"{module.__name__} still has an in-order forcing loop")
         # The single-domain arm: the head, then the start time released,
         # then the later times streamed, each step after the one before.
-        assert source.count("writer.write_head(") == 1
-        assert source.count("writer.stream_forcing_times(") == 1, (
-            f"{module.__name__} streams its forcing times from more than "
-            "one place; this gate reads only one")
+        # The mapped and GFS doors have a second head and stream: the
+        # chained domain tree, on either backend, which releases every
+        # start state (the root's and the children's) after its head and
+        # re-reads them from the head at the seal, so no start state is
+        # resident under a later build on the card or in host memory.
+        chained_trees = {
+            mapped_direct: "def _prepare_chained_mapped_tree(",
+            gfs_direct: "def _prepare_chained_gfs_tree(",
+        }
+        heads = 2 if module in chained_trees else 1
+        assert source.count("writer.write_head(") == heads
+        assert source.count("writer.stream_forcing_times(") == heads, (
+            f"{module.__name__} streams its forcing times from more places "
+            "than this gate reads")
+        if heads == 2:
+            tree = source[source.index(chained_trees[module]):]
+            at = tree.index("writer.write_head(")
+            for step in ("TreeStartStates.release(",
+                         "c.initial_result = c.initial_met = None",
+                         "tree_head.child_results = ()",
+                         "release_backend_memory(c.preprocess)",
+                         "writer.stream_forcing_times(",
+                         "start_states.reread(",
+                         "seal_regular_source_hierarchy("):
+                found = tree.find(step, at)
+                assert found > at, (
+                    f"{module.__name__}'s chained tree has no {step!r} "
+                    "after its previous step, so a start state may still "
+                    "be resident when the later forcing times are built")
+                at = found
+            assert "keep=" not in tree.split("\ndef ", 1)[0]
         at = source.index("writer.write_head(")
         for step in ("del initial_result, initial_met",
                      "release_backend_memory(preprocess)",

@@ -1,0 +1,430 @@
+option i4 0
+use_wudapt_lcz i4 0
+usemonalb i4 0
+opt_thcnd i4 0
+natural i4 0
+lcz_categories i4 1 11
+dt f4 0
+isurban i4 0
+isice i4 0
+itimestep i4 0
+frpcpn i4 0
+rdlai2d i4 0
+myj i4 0
+ua_phys i4 0
+fasdas i4 0
+xice_threshold f4 0
+rovcp f4 0
+julian i4 0
+julyr i4 0
+julday i4 0
+declin_urb f4 0
+gmt f4 0
+nurbm i4 0
+num_soil_layers i4 0
+num_roof_layers i4 0
+num_wall_layers i4 0
+num_road_layers i4 0
+domain_bounds i4 1 6
+memory_bounds i4 1 6
+tile_bounds i4 1 6
+num_urban_ndm i4 0
+urban_map_zrd i4 0
+urban_map_zwd i4 0
+urban_map_gd i4 0
+urban_map_zd i4 0
+urban_map_zdf i4 0
+urban_map_bd i4 0
+urban_map_wd i4 0
+urban_map_gbd i4 0
+urban_map_fbd i4 0
+urban_map_zgrd i4 0
+num_urban_hi i4 0
+dz8w_in f4 3 16 21 1
+qv3d_in f4 3 16 21 1
+p8w3d_in f4 3 16 21 1
+t3d_in f4 3 16 21 1
+tsk_in f4 2 16 1
+hfx_in f4 2 16 1
+qfx_in f4 2 16 1
+lh_in f4 2 16 1
+grdflx_in f4 2 16 1
+qgh_in f4 2 16 1
+gsw_in f4 2 16 1
+swdown_in f4 2 16 1
+swddir_in f4 2 16 1
+swddif_in f4 2 16 1
+glw_in f4 2 16 1
+smstav_in f4 2 16 1
+smstot_in f4 2 16 1
+sfcrunoff_in f4 2 16 1
+udrunoff_in f4 2 16 1
+vegfra_in f4 2 16 1
+albedo_in f4 2 16 1
+albbck_in f4 2 16 1
+znt_in f4 2 16 1
+z0_in f4 2 16 1
+tmn_in f4 2 16 1
+xland_in f4 2 16 1
+xice_in f4 2 16 1
+emiss_in f4 2 16 1
+embck_in f4 2 16 1
+snowc_in f4 2 16 1
+qsfc_in f4 2 16 1
+rainbl_in f4 2 16 1
+snow_in f4 2 16 1
+canwat_in f4 2 16 1
+chs_in f4 2 16 1
+chs2_in f4 2 16 1
+cqs2_in f4 2 16 1
+cpm_in f4 2 16 1
+sr_in f4 2 16 1
+chklowq_in f4 2 16 1
+lai_in f4 2 16 1
+qz0_in f4 2 16 1
+snowh_in f4 2 16 1
+snoalb_in f4 2 16 1
+shdmin_in f4 2 16 1
+shdmax_in f4 2 16 1
+snotime_in f4 2 16 1
+acsnom_in f4 2 16 1
+acsnow_in f4 2 16 1
+snopcx_in f4 2 16 1
+potevp_in f4 2 16 1
+rib_in f4 2 16 1
+noahres_in f4 2 16 1
+flx4_2d_in f4 2 16 1
+fvb_2d_in f4 2 16 1
+fbur_2d_in f4 2 16 1
+fgsn_2d_in f4 2 16 1
+ust_urb2d_in f4 2 16 1
+frc_urb2d_in f4 2 16 1
+sda_hfx_in f4 2 16 1
+sda_qfx_in f4 2 16 1
+hfx_both_in f4 2 16 1
+qfx_both_in f4 2 16 1
+qnorm_in f4 2 16 1
+smois_in f4 3 16 4 1
+tslb_in f4 3 16 4 1
+sh2o_in f4 3 16 4 1
+smcrel_in f4 3 16 4 1
+cmr_sfcdif_in f4 2 16 1
+chr_sfcdif_in f4 2 16 1
+cmc_sfcdif_in f4 2 16 1
+chc_sfcdif_in f4 2 16 1
+cmgr_sfcdif_in f4 2 16 1
+chgr_sfcdif_in f4 2 16 1
+dzs_in f4 1 4
+tr_urb2d_in f4 2 16 1
+tb_urb2d_in f4 2 16 1
+tg_urb2d_in f4 2 16 1
+tc_urb2d_in f4 2 16 1
+qc_urb2d_in f4 2 16 1
+xxxr_urb2d_in f4 2 16 1
+xxxb_urb2d_in f4 2 16 1
+xxxg_urb2d_in f4 2 16 1
+xxxc_urb2d_in f4 2 16 1
+drelr_urb2d_in f4 2 16 1
+drelb_urb2d_in f4 2 16 1
+drelg_urb2d_in f4 2 16 1
+flxhumr_urb2d_in f4 2 16 1
+flxhumb_urb2d_in f4 2 16 1
+flxhumg_urb2d_in f4 2 16 1
+cmcr_urb2d_in f4 2 16 1
+tgr_urb2d_in f4 2 16 1
+trl_urb3d_in f4 3 16 4 1
+tbl_urb3d_in f4 3 16 4 1
+tgl_urb3d_in f4 3 16 4 1
+tgrl_urb3d_in f4 3 16 4 1
+smr_urb3d_in f4 3 16 4 1
+sh_urb2d_in f4 2 16 1
+lh_urb2d_in f4 2 16 1
+g_urb2d_in f4 2 16 1
+rn_urb2d_in f4 2 16 1
+ts_urb2d_in f4 2 16 1
+trb_urb4d_in f4 3 16 360 1
+tw1_urb4d_in f4 3 16 360 1
+tw2_urb4d_in f4 3 16 360 1
+tgb_urb4d_in f4 3 16 20 1
+tlev_urb3d_in f4 3 16 36 1
+qlev_urb3d_in f4 3 16 36 1
+tw1lev_urb3d_in f4 3 16 36 1
+tw2lev_urb3d_in f4 3 16 36 1
+tglev_urb3d_in f4 3 16 2 1
+tflev_urb3d_in f4 3 16 20 1
+lf_ac_urb3d_in f4 2 16 1
+sf_ac_urb3d_in f4 2 16 1
+cm_ac_urb3d_in f4 2 16 1
+sfvent_urb3d_in f4 2 16 1
+lfvent_urb3d_in f4 2 16 1
+sfwin1_urb3d_in f4 3 16 36 1
+sfwin2_urb3d_in f4 3 16 36 1
+sfw1_urb3d_in f4 3 16 36 1
+sfw2_urb3d_in f4 3 16 36 1
+sfr_urb3d_in f4 3 16 36 1
+sfg_urb3d_in f4 3 16 2 1
+ep_pv_urb3d_in f4 2 16 1
+t_pv_urb3d_in f4 3 16 36 1
+trv_urb4d_in f4 3 16 360 1
+qr_urb4d_in f4 3 16 360 1
+qgr_urb3d_in f4 2 16 1
+tgr_urb3d_in f4 2 16 1
+drain_urb4d_in f4 3 16 36 1
+draingr_urb3d_in f4 2 16 1
+sfrv_urb3d_in f4 3 16 36 1
+lfrv_urb3d_in f4 3 16 36 1
+dgr_urb3d_in f4 3 16 36 1
+dg_urb3d_in f4 3 16 2 1
+lfr_urb3d_in f4 3 16 36 1
+lfg_urb3d_in f4 3 16 2 1
+hi_urb2d_in f4 3 16 15 1
+lp_urb2d_in f4 2 16 1
+lb_urb2d_in f4 2 16 1
+hgt_urb2d_in f4 2 16 1
+mh_urb2d_in f4 2 16 1
+stdh_urb2d_in f4 2 16 1
+lf_urb2d_in f4 3 16 4 1
+a_u_bep_in f4 3 16 21 1
+a_v_bep_in f4 3 16 21 1
+a_t_bep_in f4 3 16 21 1
+a_q_bep_in f4 3 16 21 1
+a_e_bep_in f4 3 16 21 1
+b_u_bep_in f4 3 16 21 1
+b_v_bep_in f4 3 16 21 1
+b_t_bep_in f4 3 16 21 1
+b_q_bep_in f4 3 16 21 1
+b_e_bep_in f4 3 16 21 1
+vl_bep_in f4 3 16 21 1
+dlg_bep_in f4 3 16 21 1
+sf_bep_in f4 3 16 21 1
+dl_u_bep_in f4 3 16 21 1
+uc_urb2d_in f4 2 16 1
+psim_urb2d_in f4 2 16 1
+psih_urb2d_in f4 2 16 1
+u10_urb2d_in f4 2 16 1
+v10_urb2d_in f4 2 16 1
+gz1oz0_urb2d_in f4 2 16 1
+akms_urb2d_in f4 2 16 1
+th2_urb2d_in f4 2 16 1
+q2_urb2d_in f4 2 16 1
+cosz_urb2d_in f4 2 16 1
+omg_urb2d_in f4 2 16 1
+xlat_urb2d_in f4 2 16 1
+lf_urb2d_s_in f4 2 16 1
+z0_urb2d_in f4 2 16 1
+ust_in f4 2 16 1
+tsk_rural_bep_in f4 2 16 1
+xlong_in f4 2 16 1
+xlat_in f4 2 16 1
+u_phy_in f4 3 16 21 1
+v_phy_in f4 3 16 21 1
+th_phy_in f4 3 16 21 1
+rho_in f4 3 16 21 1
+p_phy_in f4 3 16 21 1
+ivgtyp_in i4 2 16 1
+isltyp_in i4 2 16 1
+utype_urb2d_in i4 2 16 1
+cmr_sfcdif_in f4 2 16 1
+chr_sfcdif_in f4 2 16 1
+cmc_sfcdif_in f4 2 16 1
+chc_sfcdif_in f4 2 16 1
+cmgr_sfcdif_in f4 2 16 1
+chgr_sfcdif_in f4 2 16 1
+dzs_in f4 1 4
+dzr_in f4 1 4
+dzb_in f4 1 4
+dzg_in f4 1 4
+dz8w_out f4 3 16 21 1
+qv3d_out f4 3 16 21 1
+p8w3d_out f4 3 16 21 1
+t3d_out f4 3 16 21 1
+tsk_out f4 2 16 1
+hfx_out f4 2 16 1
+qfx_out f4 2 16 1
+lh_out f4 2 16 1
+grdflx_out f4 2 16 1
+qgh_out f4 2 16 1
+gsw_out f4 2 16 1
+swdown_out f4 2 16 1
+swddir_out f4 2 16 1
+swddif_out f4 2 16 1
+glw_out f4 2 16 1
+smstav_out f4 2 16 1
+smstot_out f4 2 16 1
+sfcrunoff_out f4 2 16 1
+udrunoff_out f4 2 16 1
+vegfra_out f4 2 16 1
+albedo_out f4 2 16 1
+albbck_out f4 2 16 1
+znt_out f4 2 16 1
+z0_out f4 2 16 1
+tmn_out f4 2 16 1
+xland_out f4 2 16 1
+xice_out f4 2 16 1
+emiss_out f4 2 16 1
+embck_out f4 2 16 1
+snowc_out f4 2 16 1
+qsfc_out f4 2 16 1
+rainbl_out f4 2 16 1
+snow_out f4 2 16 1
+canwat_out f4 2 16 1
+chs_out f4 2 16 1
+chs2_out f4 2 16 1
+cqs2_out f4 2 16 1
+cpm_out f4 2 16 1
+sr_out f4 2 16 1
+chklowq_out f4 2 16 1
+lai_out f4 2 16 1
+qz0_out f4 2 16 1
+snowh_out f4 2 16 1
+snoalb_out f4 2 16 1
+shdmin_out f4 2 16 1
+shdmax_out f4 2 16 1
+snotime_out f4 2 16 1
+acsnom_out f4 2 16 1
+acsnow_out f4 2 16 1
+snopcx_out f4 2 16 1
+potevp_out f4 2 16 1
+rib_out f4 2 16 1
+noahres_out f4 2 16 1
+flx4_2d_out f4 2 16 1
+fvb_2d_out f4 2 16 1
+fbur_2d_out f4 2 16 1
+fgsn_2d_out f4 2 16 1
+ust_urb2d_out f4 2 16 1
+frc_urb2d_out f4 2 16 1
+sda_hfx_out f4 2 16 1
+sda_qfx_out f4 2 16 1
+hfx_both_out f4 2 16 1
+qfx_both_out f4 2 16 1
+qnorm_out f4 2 16 1
+smois_out f4 3 16 4 1
+tslb_out f4 3 16 4 1
+sh2o_out f4 3 16 4 1
+smcrel_out f4 3 16 4 1
+cmr_sfcdif_out f4 2 16 1
+chr_sfcdif_out f4 2 16 1
+cmc_sfcdif_out f4 2 16 1
+chc_sfcdif_out f4 2 16 1
+cmgr_sfcdif_out f4 2 16 1
+chgr_sfcdif_out f4 2 16 1
+dzs_out f4 1 4
+tr_urb2d_out f4 2 16 1
+tb_urb2d_out f4 2 16 1
+tg_urb2d_out f4 2 16 1
+tc_urb2d_out f4 2 16 1
+qc_urb2d_out f4 2 16 1
+xxxr_urb2d_out f4 2 16 1
+xxxb_urb2d_out f4 2 16 1
+xxxg_urb2d_out f4 2 16 1
+xxxc_urb2d_out f4 2 16 1
+drelr_urb2d_out f4 2 16 1
+drelb_urb2d_out f4 2 16 1
+drelg_urb2d_out f4 2 16 1
+flxhumr_urb2d_out f4 2 16 1
+flxhumb_urb2d_out f4 2 16 1
+flxhumg_urb2d_out f4 2 16 1
+cmcr_urb2d_out f4 2 16 1
+tgr_urb2d_out f4 2 16 1
+trl_urb3d_out f4 3 16 4 1
+tbl_urb3d_out f4 3 16 4 1
+tgl_urb3d_out f4 3 16 4 1
+tgrl_urb3d_out f4 3 16 4 1
+smr_urb3d_out f4 3 16 4 1
+sh_urb2d_out f4 2 16 1
+lh_urb2d_out f4 2 16 1
+g_urb2d_out f4 2 16 1
+rn_urb2d_out f4 2 16 1
+ts_urb2d_out f4 2 16 1
+trb_urb4d_out f4 3 16 360 1
+tw1_urb4d_out f4 3 16 360 1
+tw2_urb4d_out f4 3 16 360 1
+tgb_urb4d_out f4 3 16 20 1
+tlev_urb3d_out f4 3 16 36 1
+qlev_urb3d_out f4 3 16 36 1
+tw1lev_urb3d_out f4 3 16 36 1
+tw2lev_urb3d_out f4 3 16 36 1
+tglev_urb3d_out f4 3 16 2 1
+tflev_urb3d_out f4 3 16 20 1
+lf_ac_urb3d_out f4 2 16 1
+sf_ac_urb3d_out f4 2 16 1
+cm_ac_urb3d_out f4 2 16 1
+sfvent_urb3d_out f4 2 16 1
+lfvent_urb3d_out f4 2 16 1
+sfwin1_urb3d_out f4 3 16 36 1
+sfwin2_urb3d_out f4 3 16 36 1
+sfw1_urb3d_out f4 3 16 36 1
+sfw2_urb3d_out f4 3 16 36 1
+sfr_urb3d_out f4 3 16 36 1
+sfg_urb3d_out f4 3 16 2 1
+ep_pv_urb3d_out f4 2 16 1
+t_pv_urb3d_out f4 3 16 36 1
+trv_urb4d_out f4 3 16 360 1
+qr_urb4d_out f4 3 16 360 1
+qgr_urb3d_out f4 2 16 1
+tgr_urb3d_out f4 2 16 1
+drain_urb4d_out f4 3 16 36 1
+draingr_urb3d_out f4 2 16 1
+sfrv_urb3d_out f4 3 16 36 1
+lfrv_urb3d_out f4 3 16 36 1
+dgr_urb3d_out f4 3 16 36 1
+dg_urb3d_out f4 3 16 2 1
+lfr_urb3d_out f4 3 16 36 1
+lfg_urb3d_out f4 3 16 2 1
+hi_urb2d_out f4 3 16 15 1
+lp_urb2d_out f4 2 16 1
+lb_urb2d_out f4 2 16 1
+hgt_urb2d_out f4 2 16 1
+mh_urb2d_out f4 2 16 1
+stdh_urb2d_out f4 2 16 1
+lf_urb2d_out f4 3 16 4 1
+a_u_bep_out f4 3 16 21 1
+a_v_bep_out f4 3 16 21 1
+a_t_bep_out f4 3 16 21 1
+a_q_bep_out f4 3 16 21 1
+a_e_bep_out f4 3 16 21 1
+b_u_bep_out f4 3 16 21 1
+b_v_bep_out f4 3 16 21 1
+b_t_bep_out f4 3 16 21 1
+b_q_bep_out f4 3 16 21 1
+b_e_bep_out f4 3 16 21 1
+vl_bep_out f4 3 16 21 1
+dlg_bep_out f4 3 16 21 1
+sf_bep_out f4 3 16 21 1
+dl_u_bep_out f4 3 16 21 1
+uc_urb2d_out f4 2 16 1
+psim_urb2d_out f4 2 16 1
+psih_urb2d_out f4 2 16 1
+u10_urb2d_out f4 2 16 1
+v10_urb2d_out f4 2 16 1
+gz1oz0_urb2d_out f4 2 16 1
+akms_urb2d_out f4 2 16 1
+th2_urb2d_out f4 2 16 1
+q2_urb2d_out f4 2 16 1
+cosz_urb2d_out f4 2 16 1
+omg_urb2d_out f4 2 16 1
+xlat_urb2d_out f4 2 16 1
+lf_urb2d_s_out f4 2 16 1
+z0_urb2d_out f4 2 16 1
+ust_out f4 2 16 1
+tsk_rural_bep_out f4 2 16 1
+xlong_out f4 2 16 1
+xlat_out f4 2 16 1
+u_phy_out f4 3 16 21 1
+v_phy_out f4 3 16 21 1
+th_phy_out f4 3 16 21 1
+rho_out f4 3 16 21 1
+p_phy_out f4 3 16 21 1
+ivgtyp_out i4 2 16 1
+isltyp_out i4 2 16 1
+utype_urb2d_out i4 2 16 1
+cmr_sfcdif_out f4 2 16 1
+chr_sfcdif_out f4 2 16 1
+cmc_sfcdif_out f4 2 16 1
+chc_sfcdif_out f4 2 16 1
+cmgr_sfcdif_out f4 2 16 1
+chgr_sfcdif_out f4 2 16 1
+dzs_out f4 1 4
+dzr_out f4 1 4
+dzb_out f4 1 4
+dzg_out f4 1 4

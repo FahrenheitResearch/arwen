@@ -277,3 +277,546 @@ def test_the_emitted_config_loads_through_the_shared_front_door(profile):
     expected = single_domain_runtime_switches(profile)
     assert {name: getattr(run, name) for name in expected} == expected
     assert identify_single_domain_profile(run) == profile
+
+
+# ---------------------------------------------------------------------------
+# The default below 1 km
+# ---------------------------------------------------------------------------
+
+
+def _door(tmp_path, *extra, source="hrrr", root_dx="2.25", chain="3"):
+    """``gpuwm domain`` with no --physics-profile, the custom ladder form."""
+
+    import argparse
+
+    from gpuwm import domain_wizard as wizard
+
+    parser = argparse.ArgumentParser()
+    wizard.register_cli(parser.add_subparsers())
+    out = tmp_path / f"{source}-{root_dx}-{chain}.toml"
+    argv = ["domain", "--source", source, "--cycle", "2026-09-20T18",
+            "--hours", "6", "--root-dx", root_dx, "--point", "37.62,-122.2",
+            "--point-extent-km", "200", "--vram-gib", "16", "--tiles", "off",
+            "--out", str(out), *extra]
+    if chain:
+        argv[argv.index("--point"):argv.index("--point")] = ["--chain", chain]
+    args = parser.parse_args(argv)
+    args.explain = False
+    assert wizard.domain_main(args) == 0
+    text = out.read_text()
+    return text, experiment_from_text(text, source=str(out))
+
+
+@pytest.mark.parametrize("source,root_dx,chain", [
+    ("hrrr-prs", "2.25", "3"), ("era5", "2.25", "3"), ("gfs", "2.25", "3"),
+    # A single native HRRR domain, and a native HRRR tree whose hierarchy
+    # stage pins the soil column its land surface runs.
+    ("hrrr", "0.75", ""), ("hrrr", "2.25", "3"),
+])
+def test_a_custom_sub_km_domain_with_no_profile_takes_the_fog_suite_and_the_adaptive_clock(
+        tmp_path, source, root_dx, chain):
+    """The site's custom route: 2.25 km with a 750 m nest, no suite named.
+
+    On 2.8.0 the default keyed on the source alone, so this domain got
+    YSU and Noah (Morrison on hrrr-prs, Thompson + YSU + MM5 + Noah on
+    hrrr), the pair the fog screen showed losing stratus.  The spacing
+    row binds now wherever the source's route admits the suite, and the
+    auto clock is adaptive at these spacings (500 m to 12 km).
+    """
+
+    text, exp = _door(tmp_path, source=source, root_dx=root_dx, chain=chain)
+    assert f"# PHYSICS: {THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID}" in text
+    switches = single_domain_runtime_switches(
+        THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID)
+    for domain in exp.domains:
+        run = domain.run
+        assert (run.mp_physics, run.bl_pbl_physics, run.sf_sfclay_physics,
+                run.sf_surface_physics, run.num_soil_layers) == (
+            switches["mp_physics"], switches["bl_pbl_physics"],
+            switches["sf_sfclay_physics"], switches["sf_surface_physics"],
+            switches["num_soil_layers"]) == (8, 5, 5, 3, 9)
+        assert run.use_adaptive_time_step is True
+    assert "use_adaptive_time_step = true" in text
+
+
+@pytest.mark.parametrize("source", ["hrrr-prs", "era5", "gfs"])
+def test_the_sub_km_default_tree_never_damps_the_nest_harder_than_its_parent(
+        tmp_path, source):
+    """2.25 km with a 750 m nest, no suite named: sixth-order damping.
+
+    The fog suite pins diff_6th_factor = 0.08 on the root, and the nest
+    used to take the certified ladder's second rung, 0.10, so the default
+    sub-km tree carried a child damped harder than its parent.  The nest
+    now takes the smaller of its parent's value and the ladder's.
+    """
+
+    text, exp = _door(tmp_path, source=source)
+    assert f"# PHYSICS: {THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID}" in text
+    root = single_domain_runtime_switches(
+        THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID)["diff_6th_factor"]
+    factors = [float(domain.run.diff_6th_factor) for domain in exp.domains]
+    assert factors == [root, root] == [0.08, 0.08]
+
+
+def test_a_coarser_grid_keeps_the_sources_own_default(tmp_path):
+    """The control: the same door at 3 km with no nest is unchanged."""
+
+    from gpuwm.physics_menu import default_profile_for
+
+    text, exp = _door(tmp_path, source="gfs", root_dx="3", chain="")
+    assert f"# PHYSICS: {default_profile_for('gfs')}" in text
+    assert default_profile_for("gfs") != THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+    assert exp.root.run.bl_pbl_physics == 1
+
+
+def test_a_nested_hrrr_domain_takes_the_sub_km_default_and_the_suite_named(tmp_path):
+    """The nested HRRR route's hierarchy stage pins the soil its land surface runs.
+
+    Its certified raw runtime contract held &physics/num_soil_layers = 4
+    whatever the land surface, so a --source hrrr tree kept the route's
+    own YSU and Noah default below 1 km and a RUC suite named there was
+    refused.  The pin follows the land surface now (nine layers for RUC),
+    so the tree takes the sub-km default like every other source, and
+    naming the suite is admitted too.
+    """
+
+    from gpuwm.physics_menu import profile_route_blocker
+
+    text, exp = _door(tmp_path, source="hrrr")
+    assert f"# PHYSICS: {THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID}" in text
+    assert [domain.run.num_soil_layers for domain in exp.domains] == [9, 9]
+    for domains in (1, 2, 4):
+        assert profile_route_blocker(
+            THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID, "hrrr", domains=domains) is None
+    named, _ = _door(tmp_path / "named", "--physics-profile",
+                     THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID, source="hrrr")
+    assert f"# PHYSICS: {THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID}" in named
+
+
+def test_a_source_whose_soil_ruc_cannot_start_keeps_its_own_default_below_1_km():
+    """GEM GDPS publishes one soil layer, so the spacing row does not bind."""
+
+    from gpuwm.physics_menu import (default_basis, default_profile_for,
+                                    spacing_default_rows)
+
+    row = spacing_default_rows("gem-gdps")[0]
+    assert row["admitted"] is False
+    assert "1 source layer(s)" in row["why_not"]
+    assert default_profile_for("gem-gdps", 750.0) == default_profile_for("gem-gdps")
+    for source in ("hrrr", "hrrr-prs", "era5", "gfs"):
+        # One domain; a nested hrrr tree is the test above.
+        assert default_profile_for(source, 750.0) == \
+            THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+        assert default_profile_for(source, 999.0) == \
+            THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+        # The bound is exclusive: a 1 km grid is not sub-km.
+        assert default_profile_for(source, 1000.0) == default_profile_for(source)
+        assert "fog" in default_basis(source, 750.0)
+
+
+def test_under_500_m_the_suite_binds_and_the_clock_stays_fixed_by_name(tmp_path):
+    """Below the terrain clock's measured spacings auto keeps one step.
+
+    The terrain clock's stability map was measured from 500 m to 12 km,
+    and it is what caps the adaptive step over steep ground at launch, so
+    a 250 m nest gets the fog suite and a fixed step, and the door says
+    which spacing kept it fixed.
+    """
+
+    text, exp = _door(tmp_path, "--clock", "auto", source="gfs",
+                      root_dx="1", chain="4")
+    assert f"# PHYSICS: {THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID}" in text
+    assert "use_adaptive_time_step" not in text
+    assert all(domain.run.use_adaptive_time_step is False
+               for domain in exp.domains)
+    from fractions import Fraction
+
+    from gpuwm.domain_wizard import clock_decision
+
+    root = exp.root
+    step = Fraction(root.time_step) + Fraction(
+        root.time_step_fract_num, root.time_step_fract_den)
+    adaptive, why = clock_decision("auto", time_step=step, root_dx_m=1000.0,
+                                   ratios=(4,))
+    assert adaptive is False
+    assert "250 m lies outside the 500..12000 m spacings" in why
+
+
+def test_new_forecast_checks_the_suite_the_plan_will_run():
+    """New forecast reads the same row the wizard binds, at the draft's grid."""
+
+    from gpuwm.gui.api import draft_default_suite, draft_finest_dx_m
+    from gpuwm.physics_menu import default_profile_for
+
+    base = {"source": "gfs", "ladder": None, "chain": None, "dx_km": None}
+    assert draft_finest_dx_m(base) == 12000.0
+    assert draft_default_suite(base) == default_profile_for("gfs")
+    sub_km = {**base, "dx_km": 2.25, "chain": "3"}
+    assert draft_finest_dx_m(sub_km) == pytest.approx(750.0)
+    assert draft_default_suite(sub_km) == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+    ladder = {**base, "ladder": "12-3-1-0.5"}
+    assert draft_finest_dx_m(ladder) == 500.0
+    assert draft_default_suite(ladder) == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+    assert draft_finest_dx_m({**base, "ladder": "auto"}) is None
+    # A nested native HRRR draft takes it too.
+    assert draft_default_suite({**sub_km, "source": "hrrr"}) == \
+        THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+
+
+#: Grids below and above 1 km, one domain and trees: (root km, nest ratios).
+_CHECK_GRIDS = [(0.75, ()), (0.999, ()), (1.0, ()), (3.0, ()), (12.0, ()),
+                (2.25, (3,)), (3.0, (3,)), (9.0, (3,)), (12.0, (4, 3)), (12.0, (4, 3, 2))]
+
+
+def _check_request(root_km, ratios):
+    from gpuwm.domain_wizard import finest_spacing_m
+
+    request = {"dx_km": root_km}
+    if ratios:
+        request.update(finest_dx_km=finest_spacing_m(root_km * 1000.0, ratios) / 1000.0,
+                       domains=len(ratios) + 1)
+    return request
+
+
+@pytest.mark.parametrize("root_km,ratios", _CHECK_GRIDS)
+def test_the_physics_check_names_the_suite_the_run_binds_for_every_source(root_km, ratios):
+    """A check naming no suite and `gpuwm domain` naming none answer from one table row.
+
+    The check read the source's own default at every spacing, so `gpuwm physics-catalog --check
+    '{"source": "gfs", "dx_km": 0.75}'`, and New forecast's Physics step with it, named Morrison with YSU and
+    Noah on a grid whose run binds the sub-km row.  Every registered source, below and above 1 km, on one
+    domain and on a tree: the check's base and default are the suite the wizard binds, the one it writes.
+    """
+
+    from gpuwm import physics_catalog as pc
+    from gpuwm.domain_wizard import finest_spacing_m, resolved_physics_profile
+    from gpuwm.physics_menu import registered_sources
+
+    finest_m = finest_spacing_m(root_km * 1000.0, ratios)
+    below = []
+    for source in registered_sources():
+        run = resolved_physics_profile(source, None, finest_dx_m=finest_m, domains=len(ratios) + 1)
+        verdict = pc.check({**_check_request(root_km, ratios), "source": source})
+        assert (verdict["base_suite"], verdict["default_suite"]) == (run, run), source
+        assert verdict["finest_dx_km"] == pytest.approx(finest_m / 1000.0)
+        assert verdict["domains"] == len(ratios) + 1
+        if verdict["valid"]:
+            assert verdict["named_suite"] == run, source
+        below.append(run == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID)
+    # The table binds below 1 km and nowhere else, so both halves are exercised.
+    assert any(below) == (finest_m < 1000.0)
+
+
+@pytest.mark.parametrize("source,root_dx,chain", [
+    ("gfs", "0.75", ""), ("gfs", "3", ""), ("gfs", "2.25", "3"),
+    ("hrrr", "0.75", ""), ("hrrr", "2.25", "3"),
+])
+def test_the_physics_check_and_the_written_file_carry_one_suite(tmp_path, source, root_dx, chain):
+    """The same agreement read from the file `gpuwm domain` writes, and from the check of that file's mix."""
+
+    from gpuwm import physics_catalog as pc
+
+    ratios = tuple(int(value) for value in chain.split(",") if value)
+    text, exp = _door(tmp_path, source=source, root_dx=root_dx, chain=chain)
+    verdict = pc.check({**_check_request(float(root_dx), ratios), "source": source})
+    assert f"# PHYSICS: {verdict['base_suite']}" in text
+    assert pc.experiment_grid(text) == pytest.approx(
+        {"dx_km": float(root_dx), "finest_dx_km": verdict["finest_dx_km"], "domains": len(exp.domains)})
+    # A mix naming no suite changes that same suite when written into the file.
+    assert pc.request_default_suite({**pc.experiment_grid(text), "source": source}) == verdict["base_suite"]
+
+
+def test_schemes_picked_with_no_suite_change_the_default_the_grid_runs(tmp_path):
+    """The check, `gpuwm domain --physics-choices` and the run manifest take one base for a mix.
+
+    The check reads the default at the finest grid, so the wizard writes picks naming no suite over that same
+    suite and the manifest records it as their base: a pick of microphysics alone on a 750 m nest keeps MYNN and
+    RUC, the boundary layer and land surface the Physics step showed running.
+    """
+
+    from gpuwm import physics_catalog as pc
+    from gpuwm.physics_menu import default_profile_for
+    from gpuwm.runplan import build_plan, manifest_physics
+
+    choices = {"microphysics": "nssl2-mp18"}
+    verdict = pc.check({**_check_request(2.25, (3,)), "source": "gfs", "choices": choices})
+    assert verdict["valid"] and verdict["base_suite"] == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+    assert "physics_profile" not in verdict["plan_intent"]
+    text, exp = _door(tmp_path, "--physics-choices", '{"microphysics": "nssl2-mp18"}', source="gfs")
+    assert f"schemes picked over {THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID}" in text
+    for domain in exp.domains:
+        run = domain.run
+        assert (run.mp_physics, run.bl_pbl_physics, run.sf_surface_physics) == (18, 5, 3)
+    for root_dx_km, chain, base in ((2.25, "3", THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID),
+                                    (3, None, default_profile_for("gfs"))):
+        intent = {"point": "37.62,-122.2", "source": "gfs", "cycle": "2026-09-20T18", "hours": 1,
+                  "card": "16gb", "root_dx_km": root_dx_km, "physics_choices": choices,
+                  **({"chain": chain} if chain else {})}
+        plan = build_plan({"schema": "gpuwm.run-plan.v1", "name": "p", "route": "prepared",
+                           "config": {"intent": intent}, "output_root": str(tmp_path / f"out{root_dx_km}")},
+                          source="test", base_dir=tmp_path, sha256="0" * 64)
+        recorded = manifest_physics(plan)
+        assert recorded["base_suite"] == base and recorded["choices"] == choices, recorded
+
+
+def test_new_forecasts_physics_step_sends_the_drafts_nests_to_the_check():
+    """The step's check carries the ladder or chain's finest grid, so its default is the plan's."""
+
+    import json
+    from types import SimpleNamespace
+
+    from gpuwm.gui.api import ApiError, PhysicsMixin, draft_check_grid
+
+    def sent(payload):
+        reply = PhysicsMixin.physics_check(SimpleNamespace(), payload, True)
+        return json.loads(reply.body["argv"][reply.body["argv"].index("--check") + 1])
+
+    assert "finest_dx_km" not in sent({"source": "gfs", "dx_km": 0.75})
+    assert sent({"source": "gfs", "dx_km": 2.25, "chain": "3"})["finest_dx_km"] == pytest.approx(0.75)
+    ladder = sent({"source": "gfs", "ladder": "12-3-1-0.5"})
+    assert (ladder["finest_dx_km"], ladder["domains"]) == (0.5, 4)
+    # A ladder's root is the wizard's 12 km root, where the check reads the root's cumulus.
+    assert ladder["dx_km"] == 12.0
+    assert "finest_dx_km" not in sent({"source": "gfs", "ladder": "auto"})
+    assert sent({"source": "gfs", "ladder": "auto"})["dx_km"] == 12.0
+    assert draft_check_grid({"ladder": None, "chain": None, "dx_km": 0.75}) == {}
+    with pytest.raises(ApiError):
+        sent({"source": "gfs", "ladder": "12-6"})
+
+
+def test_the_menus_answer_the_spacing_row_for_one_domain_and_for_a_tree():
+    """A one-domain answer alone read admitted for hrrr, whose trees keep their own."""
+
+    from gpuwm.physics_catalog import catalog
+    from gpuwm.physics_menu import source_menu
+
+    for document in (source_menu("hrrr"), catalog(source="hrrr")):
+        row = document["spacing_defaults"][0]
+        assert row["profile_id"] == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+        assert row["admitted"] is True and row["why_not"] is None
+        assert row["admitted_nested"] is True and row["why_not_nested"] is None
+    for source in ("gfs", "era5", "hrrr-prs"):
+        row = source_menu(source)["spacing_defaults"][0]
+        assert row["admitted"] is True and row["admitted_nested"] is True
+    row = source_menu("gem-gdps")["spacing_defaults"][0]
+    assert row["admitted"] is False and row["admitted_nested"] is False
+
+
+def test_the_assistant_marks_the_suite_the_ladder_runs_unnamed():
+    """Below 1 km the ladder's default is the spacing row's where admitted."""
+
+    from gpuwm.gui.assistant.plan import ladder_default_profile
+    from gpuwm.physics_menu import source_menu
+
+    def row_for(source):
+        menu = source_menu(source)
+        return {"default_profile": menu["default_profile_id"],
+                "spacing_defaults": menu["spacing_defaults"]}
+
+    gfs = row_for("gfs")
+    assert ladder_default_profile(gfs, "12-3-1-0.5") == \
+        THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+    for ladder in ("12", "12-3", "12-3-1", "auto"):
+        assert ladder_default_profile(gfs, ladder) == gfs["default_profile"]
+    # A nested hrrr ladder takes it too.
+    hrrr = row_for("hrrr")
+    assert ladder_default_profile(hrrr, "12-3-1-0.5") == \
+        THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+    # A menu with no spacing rows (an older engine) reads as before.
+    assert ladder_default_profile({"default_profile": "p1"}, "12-3-1-0.5") == "p1"
+
+
+#: The grids of the deepest preset ladder, as a fit of the auto ladder describes them (gpuwm.gui.api.describe_fit).
+_AUTO_SUB_KM_FIT = {"domains": [{"dx_km": 12.0}, {"dx_km": 3.0}, {"dx_km": 1.0}, {"dx_km": 0.5}]}
+_AUTO_KM_FIT = {"domains": [{"dx_km": 12.0}, {"dx_km": 3.0}]}
+
+
+def test_the_assistant_marks_the_default_of_the_ladder_auto_fits():
+    """On auto the default marked is the one of the ladder its fit lands on.
+
+    ladder_default_profile(row, "auto") returned the source's own default, so a plan that chose it left the profile
+    unnamed and said "Morrison, the source's default" while the fitted 500 m ladder ran the sub-km suite.
+    """
+
+    from gpuwm.gui.assistant.plan import ladder_default_profile
+    from gpuwm.physics_menu import source_menu
+
+    menu = source_menu("gfs")
+    gfs = {"default_profile": menu["default_profile_id"], "spacing_defaults": menu["spacing_defaults"]}
+    assert ladder_default_profile(gfs, "auto", _AUTO_SUB_KM_FIT) == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+    assert ladder_default_profile(gfs, "auto", _AUTO_KM_FIT) == gfs["default_profile"]
+    # A named ladder is its own grid, whatever a fit says.
+    assert ladder_default_profile(gfs, "12-3", _AUTO_SUB_KM_FIT) == gfs["default_profile"]
+
+
+def test_the_assistant_fits_the_auto_ladder_before_it_marks_the_physics():
+    """The plan asks the fit where auto lands, then marks and leaves unnamed that ladder's default only."""
+
+    from datetime import timezone
+    from types import SimpleNamespace
+
+    from gpuwm.gui.assistant.plan import Planner
+    from gpuwm.physics_menu import source_menu
+
+    menu = source_menu("gfs")
+    own = menu["default_profile_id"]
+    row = {"id": "gfs", "name": "GFS", "coverage": None, "horizon_hours": 384, "step_hours": 1,
+           "default_profile": own, "spacing_defaults": menu["spacing_defaults"],
+           "profiles": [{"id": own, "summary": "Morrison"},
+                        {"id": THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID, "summary": "Thompson, MYNN, RUC"}]}
+    fits = []
+
+    def fit(payload, dry):
+        fits.append(dict(payload))
+        return SimpleNamespace(body={"fit": {**_AUTO_SUB_KM_FIT, "words": "4 domains."}})
+
+    api = SimpleNamespace(sources=lambda: {"default_cycle": "2026-09-20T18", "sources": [row],
+                                           "ladders": ["12", "12-3", "12-3-1", "12-3-1-0.5", "auto"]},
+                          system=lambda: {"card": "24gb", "devices": [{"name": "card"}]}, fit=fit)
+    for picked, named in ((own, own), (THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID, None)):
+        asked = {}
+        picks = {"day": "now", "box_size": "600", "ladder": "auto", "source": "gfs", "physics": picked,
+                 "machine": "this-computer"}
+
+        def decide(question, state):
+            asked[question.id] = dict(question.options)
+            return {"question": question.id, "choice": picks[question.id], "reason": "",
+                    "options": dict(question.options), "probability": 1.0}
+
+        fits.clear()
+        planner = Planner(None, decide, lambda name, args, fn: fn(), api,
+                          now=datetime(2026, 9, 20, 20, tzinfo=timezone.utc))
+        plan = planner.plan("storms", place={"lat": 37.6, "lon": -122.2, "place": "the bay", "finest_km": None})
+        # Fitted before the physics question, with no physics named: the run the field left alone makes.
+        assert fits[0]["ladder"] == "auto" and "profile" not in fits[0]
+        options = asked["physics"]
+        assert options[THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID].endswith("(the default on this ladder)")
+        assert "default" not in options[own]
+        # The source's own default is not what the fitted ladder runs unnamed, so choosing it names it.
+        assert plan["fields"]["profile"] == named and plan["fields"]["ladder"] == "auto"
+
+
+def test_new_forecast_reads_the_auto_ladders_fitted_grid():
+    """The Physics step, Start and the night check read the grid the auto ladder's fit landed on.
+
+    draft_check_grid returned {} for auto, so the check was asked about {"source": "gfs"} and named Morrison with
+    YSU and Noah, and New forecast tagged them default, while the fitted 500 m ladder runs Thompson, MYNN and RUC.
+    """
+
+    import json
+    from types import SimpleNamespace
+
+    from gpuwm.gui.api import ApiError, PhysicsMixin, draft_default_suite, fit_grid
+    from gpuwm.physics_menu import default_profile_for
+
+    def sent(payload):
+        reply = PhysicsMixin.physics_check(SimpleNamespace(), payload, True)
+        asked = json.loads(reply.body["argv"][reply.body["argv"].index("--check") + 1])
+        return asked.get("finest_dx_km"), asked.get("domains")
+
+    grid = fit_grid(_AUTO_SUB_KM_FIT)
+    assert grid == {"finest_dx_km": 0.5, "domains": 4}
+    assert sent({"source": "gfs", "ladder": "auto", **grid}) == (0.5, 4)
+    assert sent({"source": "gfs", "ladder": "auto", **fit_grid(_AUTO_KM_FIT)}) == (3.0, 2)
+    # A fitted grid is the auto ladder's alone, both keys together, on a grid the auto ladder reaches.
+    for payload in ({"ladder": "12-3", **grid}, {"dx_km": 3.0, **grid}, {"ladder": "auto", "finest_dx_km": 0.5},
+                    {"ladder": "auto", "finest_dx_km": 0.75, "domains": 4}):
+        with pytest.raises(ApiError):
+            sent({"source": "gfs", **payload})
+    assert draft_default_suite({"source": "gfs", "ladder": "auto", "fitted": grid}) == \
+        THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+    assert draft_default_suite({"source": "gfs", "ladder": "auto", "fitted": None}) == default_profile_for("gfs")
+
+
+def test_a_start_on_the_auto_ladder_checks_its_picks_on_the_fitted_grid():
+    """Picks on auto ride into the plan as they are and are checked where the fit lands.
+
+    A Start that arrives without the fitted grid is fitted first.  Before this the check read the source's own
+    default, so nssl2-mp18 picked on a fitted 500 m ladder was recorded as a YSU, Noah and KF suite.
+    """
+
+    import json
+
+    from gpuwm import physics_catalog as pc
+    from gpuwm.gui.api import CreateMixin, Reply
+
+    class Runner:
+        def __init__(self):
+            self.checks = []
+
+        def query(self, argv, **_):
+            body = json.loads(argv[argv.index("--check") + 1])
+            self.checks.append(body)
+            return pc.check(body)
+
+    class Door(CreateMixin):
+        def __init__(self):
+            self.runner = Runner()
+            self.fits = []
+
+        def fit(self, payload, dry):
+            self.fits.append(dict(payload))
+            return Reply(200, {"fit": _AUTO_SUB_KM_FIT})
+
+    choices = {"microphysics": "nssl2-mp18"}
+    payload = {"name": "x", "physics_choices": choices, "profile": "a-set-the-page-named"}
+    base = {"source": "gfs", "ladder": "auto", "fitted": None, "profile": "a-set-the-page-named", "dx_km": None,
+            "nz": None, "cycle": "2026-09-20T18", "hours": 1, "lat": 37.62, "lon": -122.2, "following": False}
+    door = Door()
+    # The fit itself: its depth is not known yet, so the picks go to the wizard as they are, over no named set.
+    fitting = dict(base)
+    assert door.composed_physics(payload, fitting) is None
+    assert (fitting["physics_choices"], fitting["profile"], door.runner.checks) == (choices, None, [])
+    # A Start without the fitted grid is fitted once, with the same plan, and checked on the grid it lands on.
+    start = dict(base)
+    door.bind_auto_grid(payload, start)
+    assert start["fitted"] == {"finest_dx_km": 0.5, "domains": 4} and len(door.fits) == 1
+    record = door.composed_physics(payload, start)
+    asked = door.runner.checks[-1]
+    assert (asked["finest_dx_km"], asked["domains"]) == (0.5, 4)
+    assert record["base_suite"] == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+    switches = pc.check(asked)["resolved"]
+    assert record["resolved"] == switches
+    assert (start["physics_choices"], start["profile"]) == (choices, None)
+    # A Start that carries the grid is not fitted again.
+    door.bind_auto_grid(payload, {**base, "fitted": {"finest_dx_km": 0.5, "domains": 4}})
+    assert len(door.fits) == 1
+
+
+def test_an_auto_ladder_mix_records_the_base_its_fitted_file_carries(tmp_path):
+    """The run manifest reads the grid the auto ladder's fit lands on.
+
+    Measured on 2.8.1 before this: an intent {ladder: auto, card: 24gb, physics_choices: {microphysics:
+    nssl2-mp18}} resolved to a file headed "schemes picked over thompson-mp8-mynn-mynn-ruc..." while the manifest
+    recorded base_suite morrison-mp10 and named a YSU, Noah and KF suite the run does not carry.
+    """
+
+    import json
+
+    from gpuwm import physics_catalog as pc
+    from gpuwm.physics_menu import default_profile_for
+    from gpuwm.runplan import build_plan, manifest_physics, refresh_manifest_physics, resolve_plan
+
+    choices = {"microphysics": "nssl2-mp18"}
+    intent = {"point": "37.62,-122.2", "source": "gfs", "cycle": "2026-09-20T18", "hours": 1,
+              "card": "24gb", "ladder": "auto", "physics_choices": choices}
+    plan = build_plan({"schema": "gpuwm.run-plan.v1", "name": "p", "route": "prepared",
+                       "config": {"intent": intent}, "output_root": str(tmp_path / "out")},
+                      source="test", base_dir=tmp_path, sha256="0" * 64)
+    pending = manifest_physics(plan)
+    assert pending["base_suite"] is None and pending["suite"] is None and "auto ladder" in pending["unresolved"]
+    resolution, _exp, _data = resolve_plan(plan, generate_into=tmp_path / "gen", require_inputs=False)
+    text = resolution["generated_config"]
+    grid = pc.experiment_grid(text)
+    # The fit reached below 1 km, the grid the defect was measured on.
+    assert grid["finest_dx_km"] < 1.0, grid
+    written = default_profile_for("gfs", grid["finest_dx_km"] * 1000.0, grid["domains"])
+    assert written == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+    assert f"schemes picked over {written}" in text
+    recorded = manifest_physics(plan, generated_config=text)
+    assert recorded["base_suite"] == written and recorded["choices"] == choices and "unresolved" not in recorded
+    # The published record is rewritten with it once the plan resolves.
+    manifest = tmp_path / "run-manifest.json"
+    manifest.write_text(json.dumps({"schema": "m", "physics": pending}), encoding="utf-8")
+    refresh_manifest_physics(manifest, plan, text)
+    assert json.loads(manifest.read_text(encoding="utf-8")) == {"schema": "m", "physics": recorded}

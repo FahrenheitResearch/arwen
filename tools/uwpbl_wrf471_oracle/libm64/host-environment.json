@@ -1,0 +1,12 @@
+{
+ "glibc": "ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43",
+ "gcc": "gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+ "objdump": "GNU objdump (GNU Binutils for Ubuntu) 2.46",
+ "cpu_model": "Intel(R) Core(TM) Ultra 7 270K Plus",
+ "cpu_flags_relevant": [
+  "fma",
+  "avx2"
+ ],
+ "libm_sha256": "1c488db6f4fe8cecb72456bc018de000b7a9b539c2994864b0416b5e8371b3d8",
+ "libm_path": "/lib/x86_64-linux-gnu/libm.so.6"
+}

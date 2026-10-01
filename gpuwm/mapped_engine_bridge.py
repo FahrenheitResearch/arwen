@@ -87,6 +87,12 @@ REFUSAL_SCHEMA = "gpuwm-mapped-refusal-v1"
 #: documented workaround through this environment variable or the
 #: matching front-door flag.
 ENGINE_ENV = "GPUWM_MAPPED_ENGINE"
+
+#: How many worker threads the engine runs, when the caller names a count
+#: (``gpuwm prep --preprocess-workers N``).  Unset, the engine uses every
+#: core it may run on and keeps as many valid times in flight as memory
+#: allows (``tools/rw_wps/crates/mapped-engine/src/threads.rs``).
+ENGINE_THREADS_ENV = "GPUWM_MAPPED_ENGINE_THREADS"
 ENGINE_RUST = "rust"
 ENGINE_PYTHON = "python"
 ENGINES = (ENGINE_RUST, ENGINE_PYTHON)
@@ -1125,12 +1131,17 @@ class FrameSet(_ABCSequence):
         A full payload is checked against this digest at materialization.
         A windowed payload carries the writer's completely validated original
         field digest and its own retained-payload digest separately, preserving
-        source receipts while the retained bytes are checked when read.
+        source receipts while the retained bytes are checked when read.  A
+        field decoded over the window alone has no whole-field digest; its
+        payload digest is the only one there is.
         """
 
         for field in self._entries[index]["fields"]:
             if str(field["name"]) == name:
-                return str(field.get("original", field)["sha256"])
+                original = field.get("original")
+                if original is not None and original.get("sha256") is not None:
+                    return str(original["sha256"])
+                return str(field["sha256"])
         raise KeyError(f"frame {index} carries no field {name!r}")
 
     def field_count(self, index: int) -> int:
@@ -1305,7 +1316,8 @@ class FrameSet(_ABCSequence):
 
     def _published_window(self, index):
         from gpuwm.ingest.atmospheric_window import (
-            AtmosphericWindow, CANONICAL_ATMOSPHERIC_FIELDS, WINDOW_SCHEMA,
+            AtmosphericWindow, CANONICAL_ATMOSPHERIC_FIELDS, WINDOW_DECODED_VALIDATION,
+            WINDOW_SCHEMA,
         )
         entry = self._entries[index]
         row = entry.get("atmospheric_window")
@@ -1332,17 +1344,27 @@ class FrameSet(_ABCSequence):
                 continue
             original = field["original"]
             shape = tuple(original["shape"])
+            if original.get("validation") == WINDOW_DECODED_VALIDATION:
+                # Decoded over the window alone: there is no whole field,
+                # so no whole-field digest or missing count to state.
+                contract = (original.get("sha256") is None
+                            and original.get("missing_count") is None)
+            else:
+                contract = (
+                    original.get("validation") == "complete-canonical-field-before-window-v1"
+                    and len(str(original.get("sha256", ""))) == 64
+                    and all(c in "0123456789abcdef" for c in str(original.get("sha256", "")))
+                    and type(original.get("missing_count")) is int
+                    and 0 <= original["missing_count"] <= math.prod(shape))
             if (len(shape) != 3 or any(type(n) is not int or n < 1 for n in shape)
                     or shape[1:] != window.source_shape
                     or tuple(field["shape"]) != (shape[0], *window.shape)
                     or tuple(field["axes"]) != ("vertical", "y", "x")
-                    or original.get("validation") != "complete-canonical-field-before-window-v1"
-                    or len(str(original.get("sha256", ""))) != 64
-                    or any(c not in "0123456789abcdef" for c in str(original.get("sha256", "")))
-                    or type(original.get("missing_count")) is not int
-                    or not 0 <= original["missing_count"] <= math.prod(shape)):
+                    or not contract):
                 raise ValueError("published atmospheric payload lost its original field contract")
         if "air_pressure" in fields:
+            if "original_pressure_hpa" not in entry:
+                raise ValueError("published atmosphere lacks its full-source pressure ladder")
             levels = _axis_values(entry["original_pressure_hpa"], "original pressure")
             if len(levels) != len(entry["vertical_values"]["values"]) or not (levels > 0).all():
                 raise ValueError("published atmosphere changed its full-source pressure ladder")
@@ -1358,8 +1380,10 @@ class FrameSet(_ABCSequence):
                     or full.mapping_sha256s != self.mapping_sha256s):
                 raise ValueError("full frameset fallback changed its source clock or identity")
             for index in range(len(self)):
+                decoded = self._window_decoded_fields(index)
                 if (full._published_window(index) is not None
-                        or full.header(index) != self.header(index)
+                        or _header_without(full._entries[index]["header"], decoded)
+                        != _header_without(self._entries[index]["header"], decoded)
                         or any(full._entries[index][key] != self._entries[index][key]
                                for key in ("grid_fingerprint", "latitude", "longitude", "source_cycle",
                                            "vertical_kind", "vertical_units", "vertical_values"))):
@@ -1367,10 +1391,30 @@ class FrameSet(_ABCSequence):
                 if full.input_sha256(index) != self.input_sha256(index):
                     raise ValueError("full frameset fallback changed its original input authority")
                 if any(full.field_digest(index, name) != self.field_digest(index, name)
-                       for name in self.field_names(index)):
+                       for name in self.field_names(index) if name not in decoded):
                     raise ValueError("full frameset fallback changed its original field identity")
+                if decoded:
+                    # A field decoded over the window alone is held to the
+                    # full decode by value: the full field cropped to the
+                    # window must be the payload, byte for byte.
+                    from gpuwm.mapped_source import _array_sha256
+                    window = self._published_window(index)
+                    for name in decoded:
+                        document = next(row for row in full._entries[index]["fields"]
+                                        if row["name"] == name)
+                        cropped, _ = full._read_window_field(index, document, window)
+                        if _array_sha256(cropped.values) != self.field_digest(index, name):
+                            raise ValueError(
+                                "full frameset fallback changed its original field identity")
             self._full_frames = full
         return self._full_frames
+
+    def _window_decoded_fields(self, index):
+        """The fields of one frame decoded over its window alone."""
+        from gpuwm.ingest.atmospheric_window import WINDOW_DECODED_VALIDATION
+        return frozenset(
+            str(field["name"]) for field in self._entries[index]["fields"]
+            if field.get("original", {}).get("validation") == WINDOW_DECODED_VALIDATION)
 
     def _read_published_window_field(self, index, document, requested):
         import numpy as np
@@ -1529,6 +1573,14 @@ def read_frameset(directory: str | Path) -> tuple[Any, ...]:
 
 
 
+def _header_without(header, names):
+    """A frame header document with the named fields' descriptors left out."""
+    if not names:
+        return header
+    return {**header, "fields": [descriptor for descriptor in header["fields"]
+                                 if descriptor.get("canonical_name") not in names]}
+
+
 # --------------------------------------------------------------------
 # Launching the engine
 # --------------------------------------------------------------------
@@ -1547,6 +1599,7 @@ def engine_command(
     input_manifest: Path | None = None,
     input_manifest_sha256: str | None = None,
     atmospheric_window: bool = False,
+    lead_batch: bool = False,
 ) -> list[str]:
     """The exact argv the seam contract defines, in a stable order.
 
@@ -1592,6 +1645,10 @@ def engine_command(
         command.extend(("--input-manifest-sha256", str(input_manifest_sha256)))
     if atmospheric_window:
         command.extend(("--atmospheric-window", "stdio"))
+    if lead_batch:
+        # One lead batch of a window decoded as it posts: the window's
+        # series rules are the caller's (see decode_composed_source).
+        command.append("--lead-batch")
     return command
 
 
@@ -1690,8 +1747,14 @@ def run_engine(
     engine: str | Path | None = None,
     on_progress: Callable[[dict], None] | None = None,
     atmospheric_grids=(),
+    threads: int | None = None,
+    lead_batch: bool = False,
 ) -> dict[str, object]:
     """Run one engine subcommand; refusals become Python exceptions.
+
+    ``threads`` is the worker count the engine runs with when the caller
+    names one; ``None`` leaves the engine to size itself from the cores it
+    may run on.
 
     Returns ``{"output", "receipt", "stdout", "command"}``.  The caller
     reads frames with :func:`read_frameset` (``decode``/``compose``) or
@@ -1750,12 +1813,20 @@ def run_engine(
             None if input_manifest is None else Path(input_manifest)),
         input_manifest_sha256=input_manifest_sha256,
         atmospheric_window=window_enabled,
+        lead_batch=lead_batch,
     )
+    environment = None
+    if threads is not None:
+        if int(threads) < 1:
+            raise ValueError(f"engine threads must be a positive count, got {threads}")
+        import os
+        environment = {**os.environ, ENGINE_THREADS_ENV: str(int(threads))}
     if window_enabled:
-        completed = _run_window_engine(command, grids)
+        completed = _run_window_engine(command, grids, env=environment)
     else:
         completed = subprocess.run(
             command, capture_output=True, text=True, check=False,
+            env=environment,
         )
     if completed.returncode != 0:
         refusal = parse_refusal(completed.stderr or "")
@@ -1777,7 +1848,7 @@ def run_engine(
     }
 
 
-def _run_window_engine(command, grids):
+def _run_window_engine(command, grids, env=None):
     """One owned process; metadata replies precede atmospheric publication.
 
     Stderr goes to a real file so decoder diagnostics cannot deadlock the
@@ -1788,7 +1859,7 @@ def _run_window_engine(command, grids):
     from gpuwm.ingest.atmospheric_window import window_request_response
     with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as errors:
         child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                 stderr=errors, text=True, encoding="utf-8")
+                                 stderr=errors, text=True, encoding="utf-8", env=env)
         lines = []
         try:
             for line in child.stdout:
@@ -1828,6 +1899,7 @@ __all__ = [
     "ENGINE_PATH_ENV",
     "ENGINE_PYTHON",
     "ENGINE_RUST",
+    "ENGINE_THREADS_ENV",
     "EngineUnavailable",
     "FRAMESET_SCHEMA",
     "FRAMES_DOCUMENT",

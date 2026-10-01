@@ -1,0 +1,154 @@
+[
+  {
+    "start": 9013,
+    "end": 9030,
+    "name": "fold_000",
+    "expression": "((273.15)-(1.0e-3))",
+    "original_line": 217,
+    "word": "0x43889312"
+  },
+  {
+    "start": 9461,
+    "end": 9475,
+    "name": "fold_001",
+    "expression": "((2.0)*(8.0))",
+    "original_line": 224,
+    "word": "0x41800000"
+  },
+  {
+    "start": 10268,
+    "end": 10288,
+    "name": "fold_002",
+    "expression": "((2.0)*(0.11631))",
+    "original_line": 244,
+    "word": "0x3e6e33f0"
+  },
+  {
+    "start": 16611,
+    "end": 16628,
+    "name": "fold_003",
+    "expression": "((0.55)*(2.0))",
+    "original_line": 383,
+    "word": "0x3f8ccccd"
+  },
+  {
+    "start": 17766,
+    "end": 17779,
+    "name": "fold_004",
+    "expression": "((2.501000e6)/(1004.5))",
+    "original_line": 404,
+    "word": "0x451b9cbc"
+  },
+  {
+    "start": 30359,
+    "end": 30381,
+    "name": "fold_005",
+    "expression": "((0.0001)*(1000.0))",
+    "original_line": 706,
+    "word": "0x3dcccccc"
+  },
+  {
+    "start": 34956,
+    "end": 34973,
+    "name": "fold_006",
+    "expression": "((1.0000e3)*(3.3350e5))",
+    "original_line": 801,
+    "word": "0x4d9f0673"
+  },
+  {
+    "start": 35303,
+    "end": 35321,
+    "name": "fold_007",
+    "expression": "((-(1.0000e3))*(3.3350e5))",
+    "original_line": 812,
+    "word": "0xcd9f0673"
+  },
+  {
+    "start": 43753,
+    "end": 43772,
+    "name": "fold_008",
+    "expression": "((0.1309)*(0.5))",
+    "original_line": 1028,
+    "word": "0x3d860aa6"
+  },
+  {
+    "start": 48205,
+    "end": 48229,
+    "name": "fold_009",
+    "expression": "((17.67)*(((273.15)-(29.65))))",
+    "original_line": 1144,
+    "word": "0x45867529"
+  },
+  {
+    "start": 49550,
+    "end": 49569,
+    "name": "fold_011",
+    "expression": "((1.0)/(273.15))",
+    "original_line": 1175,
+    "word": "0x3b6fed42"
+  },
+  {
+    "start": 51547,
+    "end": 51566,
+    "name": "fold_012",
+    "expression": "((273.15)-(5.0))",
+    "original_line": 1223,
+    "word": "0x43861333"
+  },
+  {
+    "start": 52729,
+    "end": 52762,
+    "name": "fold_013",
+    "expression": "((((2.4888e+3)*(2.83e+6)))/(2.501e+6))",
+    "original_line": 1250,
+    "word": "0x4530031f"
+  },
+  {
+    "start": 53589,
+    "end": 53607,
+    "name": "fold_015",
+    "expression": "((0.980)-(1.0))",
+    "original_line": 1266,
+    "word": "0xbca3d700"
+  },
+  {
+    "start": 56170,
+    "end": 56189,
+    "name": "fold_016",
+    "expression": "((2.5e6)*(1000.0))",
+    "original_line": 1312,
+    "word": "0x4f1502f9"
+  },
+  {
+    "start": 59719,
+    "end": 59743,
+    "name": "fold_009",
+    "expression": "((17.67)*(((273.15)-(29.65))))",
+    "original_line": 1404,
+    "word": "0x45867529"
+  },
+  {
+    "start": 61064,
+    "end": 61083,
+    "name": "fold_011",
+    "expression": "((1.0)/(273.15))",
+    "original_line": 1435,
+    "word": "0x3b6fed42"
+  },
+  {
+    "start": 63729,
+    "end": 63749,
+    "name": "fold_017",
+    "expression": "((0.412)/(0.468))",
+    "original_line": 1501,
+    "word": "0x3f615e16"
+  },
+  {
+    "start": 79013,
+    "end": 79032,
+    "name": "fold_016",
+    "expression": "((2.5e6)*(1000.0))",
+    "original_line": 1883,
+    "word": "0x4f1502f9"
+  }
+]

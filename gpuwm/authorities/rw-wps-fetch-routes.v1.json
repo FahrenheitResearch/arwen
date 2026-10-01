@@ -2,10 +2,15 @@
   "schema": "gpuwm-fetch-routes-v1",
   "note": "Acquisition routes: where a registered source's public bytes live, what the cycle and lead grammars are, and how the fetched objects compose into the primary/supplement/donor roles the packaged decode profile binds. This document is DATA. Adding a model's front door is a row here, not a code path; gpuwm/fetch_routes.py is the one engine that reads every row. Every host, path template and ladder below was measured against the live service on the date in `measured`.",
   "endpoint_note": "Every source's hosts are an ORDERED LADDER, not a set. The router resolves the concrete cycle first, then takes the entries whose `retention_hours` covers that cycle's age -- so a cycle older than the operational window goes straight to the archive instead of paying for a doomed attempt. `retention_hours: null` is an archive: effectively unbounded. When NO entry covers the age the whole ladder is still tried, because retention is an optimisation and not a bar. Failure -- a refused connection, 403/503, a Retry-After the host's own retry discipline could not wait out, or a payload that does not verify -- moves to the next entry; when every entry fails the refusal names each one and why. Each retention figure below was measured by counting the day directories the live tree served on the date named in its `why`.",
+  "cadence_note": "A route offers every boundary spacing that is a whole number of hours at which the cycle's `ladders` row publishes every lead of the window and the route's packaged preparation takes the series. Those are the only two things that break a spacing: a lead the publisher never posts, and a decode that would refuse the downloaded series. `default_cadence` is where a window that names no cadence starts; where the ladder coarsens inside the window it takes the coarser spacing, a whole multiple of the default. A per-row list of offered spacings is retired (A173): it left out spacings the publisher posts and the decode takes, and refused them naming no breakage.",
   "transfer_note": "`transfer_rank` is a SECOND order over the same rungs, and it decides which host moves the bytes rather than which hosts are asked. Lower is quicker; absent means the ladder position, so a source that declares no rank transfers in table order and nothing about it changes. The two orders differ for exactly one reason: the operational server's advantage is having a cycle FIRST, and that advantage is spent the moment the archive has the same object -- after which what is left is throughput, which the archive wins. Measured at peak hours, the operational server paced whole-file transfers at about 3 MB/s per file, so a 3.4 GB request took about 20 minutes where the archive served the same volume in about 3. So for each requested object inside the retention window the engine asks the throughput rung whether it HAS that object (one HEAD, milliseconds against a multi-hundred-megabyte transfer) and promotes it when it does. Promotion REORDERS the ladder and never shortens it: every rung stays behind the chosen one, fall-through and the whole-ladder refusal are unchanged, and a probe that 404s or errors costs the transfer nothing.",
   "host_policy": {
+    "ecmwf-forecasts.s3.eu-central-1.amazonaws.com": {
+      "throttle": {"statuses": [503], "codes": ["SlowDown"], "first_wait_s": 2, "max_wait_s": 60, "budget_s": 600, "why": "ECMWF's AWS mirror answers S3's 503 SlowDown to about half of all requests whatever the object: 24 of 48 one-kilobyte range GETs to four objects at a low rate on 2026-09-30, and an IFS fetch of the 20 Sep 00Z cycle gave up on one file after 5 tries in 30 s while a plain GET of the same object answered 200. SlowDown is the host asking this client to slow down, so each further ask of a file waits a doubling, jittered interval from 2 s up to 60 s, for up to 600 s per file, before the file is refused."}
+    },
     "nomads.ncep.noaa.gov": {
       "concurrent": 2,
+      "missing_path": {"statuses": [403], "why": "NCEP's operational server answers 403, not 404, for a path under a cycle directory it has not created yet (A136 L1 check, 2026-09-30: every lead of a cycle not yet started). It also answers 403 to a client it has blocked, so a 403 here is only 'not there or refused': a lead counts as not posted on it when another host on the ladder said the lead is not there, and as not heard otherwise."},
       "why": "NCEP's operational server is one shared public service behind Akamai and it answers an aggressive client with an over-rate-limit page and then an IP block. Two is deliberate rather than small-for-safety's-sake: the node-wide governor already spaces request STARTS 2.5 s apart, and the service answers in about 3.1 s, so a second in-flight request is exactly enough to keep the pipeline full. A third would only queue on the governor while holding another connection open against a service that throttles."
     }
   },
@@ -20,9 +25,39 @@
       {"name": "s3", "base": "https://noaa-gfs-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data archive noaa-gfs-bdp-pds is unbounded, holds every cycle the operational window has dropped, and serves bulk objects several times quicker at peak hours -- so it takes any object it has already mirrored"}
     ],
     "hrrr": [
-      {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod", "default": true, "retention_hours": 48, "transfer_rank": 1, "why": "the operational server publishes each forecast hour before the mirrors, which is the whole reason --wait-for polls it; 2 day directories present, measured 2026-08-24"},
+      {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod", "default": true, "retention_hours": 48, "transfer_rank": 1, "why": "the operational server publishes each forecast hour before the mirrors, which is why an as-posted fetch asks it first while a cycle is posting; 2 day directories present, measured 2026-08-24"},
       {"name": "s3", "base": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data archive noaa-hrrr-bdp-pds serves byte-identical files and .idx indexes without a retention bound, and serves them quicker at peak hours -- so it takes any object it has already mirrored"}
     ]
+  },
+  "legacy_posting": {
+    "note": "The posting facts of the sources outside the route table, in a route's shapes: `publication_lag` rules, read into the source's cycle grid so every source answers when a lead is due through one function, and a `posting` block. `idx_sidecar` is the index suffix the legacy transport's objects carry; `providers` holds the posting of an alternate provider transport.",
+    "gfs": {
+      "publication_lag": [
+        {"cycle_hours": null, "hours": 3.51, "per_lead_hours": 0.0043, "late_hours": 1.45, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 7 cycles 28 Sep 12Z to 30 Sep 00Z: f000 at + 3 h 31 min to 4 h 37 min, f384 at + 5 h 12 min to 6 h 35 min"}
+      ],
+      "posting": {"shape": "rolling", "ready_check": "objects", "late_after_minutes": 120, "poll_seconds": 30, "why": "one pgrb2.0p25 object per lead, posted in lead order: f000 at + 3 h 31 min, f384 at + 5 h 12 min; the .idx is the record-count bar after download"},
+      "idx_sidecar": ".idx"
+    },
+    "gdas": {
+      "publication_lag": [
+        {"cycle_hours": null, "hours": 6.8, "per_lead_hours": 0.0, "late_hours": 1.35, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 7 cycles 28 Sep 12Z to 30 Sep 00Z: f000 at + 6 h 48 min to 7 h 44 min, f009 at + 7 h 00 min to 8 h 00 min"}
+      ],
+      "posting": {"shape": "whole_cycle", "ready_check": "objects", "late_after_minutes": 115, "poll_seconds": 30, "why": "f000 to f009 post together, within about 16 min, from + 6 h 48 min after the cycle (the 30 Sep 00Z run from + 7 h 44 min); a run is capped at 9 h, so there is nothing to wait for inside a cycle"},
+      "idx_sidecar": ".idx"
+    },
+    "hrrr": {
+      "publication_lag": [
+        {"cycle_hours": [0, 6, 12, 18], "from_lead": 19, "hours": 0.87, "per_lead_hours": 0.0183, "late_hours": 0.85, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 5 cycles 29 Sep 06Z to 30 Sep 06Z: f019 at + 1 h 14 min to 1 h 43 min, f048 at + 1 h 46 min to 2 h 20 min"},
+        {"cycle_hours": [0, 6, 12, 18], "hours": 0.83, "per_lead_hours": 0.0203, "late_hours": 0.65, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 5 cycles 29 Sep 06Z to 30 Sep 06Z: f000 at + 51 min to 1 h 02 min, f018 at + 1 h 13 min to 1 h 41 min"},
+        {"cycle_hours": null, "hours": 0.8, "per_lead_hours": 0.0324, "late_hours": 0.95, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 27 cycles 29 Sep 01Z to 30 Sep 08Z: f000 at + 49 min to 1 h 43 min, f018 at + 1 h 24 min to 1 h 36 min"}
+      ],
+      "posting": {"shape": "rolling", "ready_check": "objects_and_index", "late_after_minutes": 90, "poll_seconds": 30, "why": "one wrfnat and one wrfprs object with their .idx per lead, posted in lead order: f000 from + 49 min, f018 from + 1 h 13 min (synoptic) or 1 h 24 min, f048 from + 1 h 46 min; the 30 Sep 06Z and 07Z runs posted 30 to 55 min late"},
+      "idx_sidecar": ".idx"
+    },
+    "era5": {
+      "posting": {"shape": "brokered", "why": "the default provider, the Copernicus CDS, is a keyed job API: the file exists only when the job finishes and there is no object to HEAD, so the fetch runs its job and a run starts when the job's file verifies"},
+      "providers": {"arco": {"posting": {"shape": "archive", "why": "the keyless ARCO copy is an archive: every hour already exists or does not, and the store declares its own end (valid_time_stop_era5t) and grows in whole days, so a window before that end starts at once and one past it is refused with the end date"}}}
+    }
   },
   "routes": {
     "icon-global": {
@@ -45,7 +80,10 @@
         12,
         18
       ],
-      "publication_lag_hours": 5,
+      "publication_lag": [
+        {"cycle_hours": null, "hours": 2.64, "per_lead_hours": 0.0045, "late_hours": 0.2, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 4 cycles 29 Sep 12Z to 30 Sep 06Z: f000 at + 2 h 40 min to 2 h 43 min, f180 at + 3 h 29 min"}
+      ],
+      "posting": {"shape": "rolling", "ready_check": "objects", "late_after_minutes": 60, "poll_seconds": 30, "why": "about 116 per-field bz2 objects per lead on opendata.dwd.de, no index, posted in lead order over about 50 min: f000 at + 2 h 40 min, f180 at + 3 h 29 min (29 Sep 12Z to 30 Sep 06Z)"},
       "ladders": [
         {
           "cycle_hours": [
@@ -79,9 +117,6 @@
             ]
           ]
         }
-      ],
-      "cadences": [
-        3
       ],
       "default_cadence": 3,
       "layout": "flat",
@@ -240,12 +275,16 @@
         {"name": "aws", "base": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data mirror is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"}
       ],
       "cycle_hours": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
-      "publication_lag_hours": 3,
+      "publication_lag": [
+        {"cycle_hours": [0, 6, 12, 18], "from_lead": 19, "hours": 0.87, "per_lead_hours": 0.0183, "late_hours": 0.85, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted; hrrr-prs is the hrrr row's wrfprs objects, the same producer): 5 cycles 29 Sep 06Z to 30 Sep 06Z: f019 at + 1 h 14 min to 1 h 43 min, f048 at + 1 h 46 min to 2 h 20 min"},
+        {"cycle_hours": [0, 6, 12, 18], "hours": 0.83, "per_lead_hours": 0.0203, "late_hours": 0.65, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted; hrrr-prs is the hrrr row's wrfprs objects, the same producer): 5 cycles 29 Sep 06Z to 30 Sep 06Z: f000 at + 51 min to 1 h 02 min, f018 at + 1 h 13 min to 1 h 41 min"},
+        {"cycle_hours": null, "hours": 0.8, "per_lead_hours": 0.0324, "late_hours": 0.95, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted; hrrr-prs is the hrrr row's wrfprs objects, the same producer): 27 cycles 29 Sep 01Z to 30 Sep 08Z: f000 at + 49 min to 1 h 43 min, f018 at + 1 h 24 min to 1 h 36 min"}
+      ],
+      "posting": {"shape": "rolling", "ready_check": "objects_and_index", "late_after_minutes": 90, "poll_seconds": 30, "why": "one wrfprs object and its .idx per lead, posted in lead order: f000 from + 49 min, f018 from + 1 h 13 min (synoptic) or 1 h 24 min, f048 from + 1 h 46 min; the 30 Sep 06Z and 07Z runs posted 30 to 55 min late"},
       "ladders": [
         {"cycle_hours": [0, 6, 12, 18], "steps": [[48, 1]]},
         {"cycle_hours": null, "steps": [[18, 1]]}
       ],
-      "cadences": [1],
       "default_cadence": 1,
       "layout": "flat",
       "files": [
@@ -275,12 +314,14 @@
         {"name": "aws", "base": "https://noaa-rap-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data mirror is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"}
       ],
       "cycle_hours": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
-      "publication_lag_hours": 3,
+      "publication_lag": [
+        {"cycle_hours": null, "hours": 0.75, "per_lead_hours": 0.005, "late_hours": 1.05, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 32 cycles 29 Sep 01Z to 30 Sep 08Z: f000 at + 47 min to 1 h 25 min, f051 at + 1 h 07 min to 1 h 11 min"}
+      ],
+      "posting": {"shape": "rolling", "ready_check": "objects_and_index", "late_after_minutes": 95, "poll_seconds": 30, "why": "one awip32 object and its .idx per lead, posted in lead order: a whole cycle lands within about 20 min, f000 at + 47 min, f051 at + 1 h 07 min"},
       "ladders": [
         {"cycle_hours": [3, 9, 15, 21], "steps": [[51, 1]]},
         {"cycle_hours": null, "steps": [[21, 1]]}
       ],
-      "cadences": [1],
       "default_cadence": 1,
       "layout": "flat",
       "files": [
@@ -312,11 +353,13 @@
       "host_note": "noaa-rrfs-pds is the RETIRED prototype feed: it stopped mid-day on 2026-08-12 by design and nothing newer will ever appear there. The operational bucket is noaa-rrfs-ops-pds, and NOMADS serves the same product set under rrfs/v1.0 (rrfs/prod is 403 until the 2026-10-06 implementation).",
       "cycle_note": "RRFS runs hourly, but only the 00/06/12/18Z cycles publish the hourly prslev/2dfld pair this profile initialises from. MEASURED 2026-08-16: a synoptic cycle holds 1,846 objects with prslev f000..f084; an off-synoptic cycle holds 144, all of them sub-hourly 2dfld, with no prslev at any lead. Offering the off-synoptic cycles here would resolve keys that are 404s.",
       "cycle_hours": [0, 6, 12, 18],
-      "publication_lag_hours": 5,
+      "publication_lag": [
+        {"cycle_hours": null, "hours": 1.2, "per_lead_hours": 0.0198, "late_hours": 0.8, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 5 cycles 29 Sep 06Z to 30 Sep 06Z: f000 at + 1 h 13 min to 1 h 49 min, f084 at + 2 h 53 min to 3 h 29 min"}
+      ],
+      "posting": {"shape": "rolling", "ready_check": "objects_and_index", "late_after_minutes": 90, "poll_seconds": 30, "why": "one prslev and one 2dfld object with their .idx per lead, posted in lead order over about 1 h 40 min; its f000 alone spreads 36 min (+ 1 h 13 min to 1 h 49 min), so the budget is 90 min"},
       "ladders": [
         {"cycle_hours": null, "steps": [[84, 1]]}
       ],
-      "cadences": [1],
       "default_cadence": 1,
       "layout": "flat",
       "files": [
@@ -353,12 +396,15 @@
         {"name": "aws", "base": "https://noaa-gefs-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data mirror is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"}
       ],
       "cycle_hours": [0, 6, 12, 18],
-      "publication_lag_hours": 8,
+      "publication_lag": [
+        {"cycle_hours": [0], "from_lead": 390, "hours": 22.3, "per_lead_hours": 0.0045, "late_hours": 0.1, "measured": "2026-09-30, Last-Modified on NOMADS for the 28 and 29 Sep 00Z extension, a day after its f384: f390 at cycle + 24 h 05 to 24 h 07 min, f600 at + 25 h 02 to 25 h 03 min, f840 at + 26 h 07 to 26 h 08 min; the posting watch's listing of 29 Sep 00Z agrees (f390 + 24 h 07 min, f840 + 26 h 08 min)"},
+        {"cycle_hours": null, "hours": 3.7, "per_lead_hours": 0.0059, "late_hours": 1.45, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 7 cycles 28 Sep 12Z to 30 Sep 00Z: f000 at + 3 h 45 min to 4 h 44 min, f384 at + 6 h 02 min to 7 h 24 min"}
+      ],
+      "posting": {"shape": "rolling", "ready_check": "objects_and_index", "late_after_minutes": 120, "poll_seconds": 30, "why": "one pgrb2a/pgrb2b pair with their .idx per member and lead, posted in lead order: f000 at + 3 h 45 min, f384 at + 6 h 02 min; the 00Z extension past f384 a day later"},
       "ladders": [
         {"cycle_hours": [0], "steps": [[240, 3], [840, 6]]},
         {"cycle_hours": null, "steps": [[240, 3], [384, 6]]}
       ],
-      "cadences": [3, 6],
       "default_cadence": 3,
       "layout": "upstream",
       "members": {
@@ -412,9 +458,11 @@
       ],
       "host_note": "NOMADS ONLY, and the refusal to mirror is deliberate. noaa-nws-graphcastgfs-pds publishes objects under byte-identical key names that are a DIFFERENT product -- the experimental EAGLE stream, subCentre 2 against the operational subCentre 0, 65 pres messages against 78, and 500 hPa geopotential height differing by 8.7 gpm. Every packaged selector pins subcenter=0, so the S3 copies refuse at decode by identity octet. Nothing in the filename distinguishes them. SCN 25-89: 'Data for these models will be on the NCEP NOMADS server only'. NOMADS keeps a 10-day rolling window; there is no archive behind this door.",
       "cycle_hours": [0, 6, 12, 18],
-      "publication_lag_hours": 6,
+      "publication_lag": [
+        {"cycle_hours": null, "hours": 3.61, "per_lead_hours": 0.0015, "late_hours": 1.3, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 7 cycles 28 Sep 12Z to 30 Sep 00Z: f000 at + 3 h 37 min to 4 h 44 min, f384 at + 4 h 13 min to 5 h 19 min"}
+      ],
+      "posting": {"shape": "donor_gated", "ready_check": "objects_and_index", "late_after_minutes": 110, "poll_seconds": 30, "why": "every AI lead is posted by + 4 h 13 min to 5 h 19 min, but the same-cycle GDAS donor lands at + 6 h 48 min to 7 h 44 min and the engine refuses a donor from another cycle, so the donor decides the start and nothing is left to wait for"},
       "ladders": [{"cycle_hours": null, "steps": [[384, 6]]}],
-      "cadences": [6],
       "default_cadence": 6,
       "layout": "flat",
       "files": [
@@ -461,9 +509,11 @@
       ],
       "host_note": "the S3 mirror lags NOMADS by about three hours and is the EAGLE experimental line's own bucket; NOMADS is the operational door.",
       "cycle_hours": [0, 6, 12, 18],
-      "publication_lag_hours": 6,
+      "publication_lag": [
+        {"cycle_hours": null, "hours": 3.85, "per_lead_hours": 0.0016, "late_hours": 1.25, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 7 cycles 28 Sep 12Z to 30 Sep 00Z: f000 at + 3 h 51 min to 4 h 51 min, f384 at + 4 h 29 min to 5 h 29 min"}
+      ],
+      "posting": {"shape": "donor_gated", "ready_check": "objects_and_index", "late_after_minutes": 105, "poll_seconds": 30, "why": "every AI lead is posted by + 4 h 29 min to 5 h 29 min, but the same-cycle GDAS donor lands at + 6 h 48 min to 7 h 44 min and the engine refuses a donor from another cycle, so the donor decides the start and nothing is left to wait for"},
       "ladders": [{"cycle_hours": null, "steps": [[384, 6]]}],
-      "cadences": [6],
       "default_cadence": 6,
       "layout": "upstream",
       "members": {
@@ -880,12 +930,15 @@
         }
       ],
       "cycle_hours": [0, 6, 12, 18],
-      "publication_lag_hours": 12,
+      "publication_lag": [
+        {"cycle_hours": [0, 12], "hours": 7.5, "per_lead_hours": 0, "late_hours": 0.15, "measured": "2026-09-29 and 2026-09-30: every object of the 28 and 29 Sep 00Z and 12Z runs on data.ecmwf.int carries Last-Modified cycle + 7 h 34 min; 2026-09-30 posting watch: the AWS rung's own object times put every lead of the 28 Sep 00Z to 30 Sep 00Z 00/12Z runs on at + 7 h 34 min, within 0.8 min, and the watch first saw the 30 Sep 00Z run whole on data.ecmwf.int from + 7 h 34 min 54 s to 7 h 36 min 36 s"},
+        {"cycle_hours": null, "hours": 6.4, "per_lead_hours": 0, "late_hours": 0.1, "measured": "same listing: the 06Z and 18Z runs of 28 and 29 Sep post whole at cycle + 6 h 27 min (18Z was still 404 at + 6 h 16 min); the AWS rung's object times agree to 0.6 min"}
+      ],
+      "posting": {"shape": "whole_cycle", "ready_check": "objects", "late_after_minutes": 60, "poll_seconds": 30, "why": "the files only appear complete: every lead of a run posts within a minute, at + 7 h 34 min for 00/12Z and + 6 h 27 min for 06/18Z"},
       "ladders": [
         {"cycle_hours": [0, 12], "steps": [[144, 3], [360, 6]]},
         {"cycle_hours": null, "steps": [[144, 3]]}
       ],
-      "cadences": [3, 6],
       "default_cadence": 3,
       "layout": "flat",
       "files": [
@@ -915,9 +968,11 @@
         {"name": "aws", "base": "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "retention_hours": null, "why": "the mirror, which keeps every cycle the publisher's door has dropped: it serves a cycle past the door's window, and any cycle with --transport aws"}
       ],
       "cycle_hours": [0, 6, 12, 18],
-      "publication_lag_hours": 8,
+      "publication_lag": [
+        {"cycle_hours": null, "hours": 5.44, "per_lead_hours": 0, "late_hours": 0.25, "measured": "2026-09-30 posting watch: the AWS rung's own object times (S3 LastModified) put every lead of the nine runs 28 Sep 00Z to 30 Sep 00Z on the server at cycle + 5 h 27 min to 5 h 40 min, each run within 3.3 min; data.ecmwf.int's Last-Modified (f000 + 5 h 45 min to f360 + 7 h 34 min, the rule this replaces) is its dissemination schedule, not the posting: it served the 30 Sep 00Z f360 at 07:04Z stamped 07:34Z"}
+      ],
+      "posting": {"shape": "whole_cycle", "ready_check": "objects", "late_after_minutes": 60, "poll_seconds": 30, "why": "every lead of a run lands within about 3 min, at + 5 h 27 min to 5 h 40 min on the AWS rung (nine runs, 28 to 30 Sep); data.ecmwf.int's per-lead Last-Modified is its dissemination schedule, not the posting"},
       "ladders": [{"cycle_hours": null, "steps": [[360, 6]]}],
-      "cadences": [6],
       "default_cadence": 6,
       "layout": "flat",
       "files": [
@@ -935,7 +990,8 @@
       },
       "prep": {
         "source": "aifs",
-        "supplement": {"from": "first_input", "role": "aifs_single_in_band_surface"}
+        "supplement": {"from": "step0", "role": "aifs_single_in_band_surface",
+                       "why": "AIFS publishes its land-sea mask and surface geopotential in the step-0 object alone (measured 2026-09-30: the 12Z f012 object carries 122 messages and neither), so a window starting past f000 fetches the cycle's f000 object as well and the composition binds both statics from it for every lead"}
       }
     },
 
@@ -948,12 +1004,15 @@
       "host_note": "opendata.dwd.de keeps roughly a rolling day; there is no archive behind this door. Every object is bz2-wrapped and stays that way -- the acquisition codec stages them for the decoder.",
       "coverage_note": "ICON-EU spans 23.5 W to 62.5 E, 29.5 to 70.5 N. A domain outside that window is refused at prep by the horizontal mapper, which names the offending corner and the window the source covers.",
       "cycle_hours": [0, 3, 6, 9, 12, 15, 18, 21],
-      "publication_lag_hours": 5,
+      "publication_lag": [
+        {"cycle_hours": [0, 6, 12, 18], "hours": 2.65, "per_lead_hours": 0.0072, "late_hours": 0.35, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 4 cycles 29 Sep 12Z to 30 Sep 06Z: f000 at + 2 h 41 min to 2 h 45 min, f120 at + 3 h 33 min to 3 h 40 min"},
+        {"cycle_hours": null, "hours": 2.62, "per_lead_hours": 0.005, "late_hours": 0.2, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 4 cycles 29 Sep 09Z to 30 Sep 03Z: f000 at + 2 h 40 min to 2 h 44 min, f048 at + 2 h 56 min to 2 h 58 min"}
+      ],
+      "posting": {"shape": "rolling", "ready_check": "objects", "late_after_minutes": 60, "poll_seconds": 30, "why": "about 125 per-field bz2 objects per lead on opendata.dwd.de, no index, posted in lead order: f000 at + 2 h 40 min, f120 at + 3 h 33 min"},
       "ladders": [
         {"cycle_hours": [0, 6, 12, 18], "steps": [[78, 1], [120, 3]]},
         {"cycle_hours": null, "steps": [[30, 1], [48, 6]]}
       ],
-      "cadences": [1, 3, 6],
       "default_cadence": 1,
       "layout": "flat",
       "axes": {
@@ -1012,11 +1071,13 @@
       "host_note": "opendata.dwd.de keeps about one day of ICON-D2 runs; there is no archive behind this door. Every object is bz2-wrapped and stays that way -- the normalization stage stages them for the remapper. Measured 2026-09-27 for all eight cycles: the first objects land 44 minutes after the start, every pressure-level, soil and time-invariant object by 1 h 13 min, every single-level object by 1 h 23 min.",
       "coverage_note": "ICON-D2's native mesh covers Germany and its neighbours, and DWD masks its 13 km lateral boundary strip in every record. The registry row's coverage window (lat 44.0..57.3, lon 0.0..17.3) is the largest lat/lon box the published cells fill, less the 0.25-degree normalization halo; the wizard refuses a domain outside it.",
       "cycle_hours": [0, 3, 6, 9, 12, 15, 18, 21],
-      "publication_lag_hours": 2,
+      "publication_lag": [
+        {"cycle_hours": null, "hours": 0.73, "per_lead_hours": 0.0097, "late_hours": 0.1, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 8 cycles 29 Sep 09Z to 30 Sep 06Z: f000 at + 44 min, f048 at + 1 h 12 min to 1 h 14 min"}
+      ],
+      "posting": {"shape": "rolling", "ready_check": "objects", "late_after_minutes": 60, "poll_seconds": 30, "why": "about 675 per-field and per-level bz2 objects per lead on opendata.dwd.de, no index, posted in lead order at about 0.6 min per lead: f000 at + 44 min, f048 at + 1 h 12 min to 1 h 14 min (eight cycles)"},
       "ladders": [
         {"cycle_hours": null, "steps": [[48, 1]]}
       ],
-      "cadences": [1],
       "default_cadence": 1,
       "layout": "flat",
       "axes": {
@@ -1088,9 +1149,11 @@
       ],
       "host_note": "MSC Datamart publishes one single-message JPEG2000 file per variable-level. The lead directories run hourly to 240 h, but the full model state exists only every three hours -- the intermediate directories carry surface-only files.",
       "cycle_hours": [0, 12],
-      "publication_lag_hours": 8,
+      "publication_lag": [
+        {"cycle_hours": null, "hours": 3.8, "per_lead_hours": 0.004, "late_hours": 0.65, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 3 cycles 29 Sep 00Z to 30 Sep 00Z: f000 at + 3 h 50 min to 4 h 04 min, f240 at + 4 h 49 min to 5 h 03 min"}
+      ],
+      "posting": {"shape": "rolling", "ready_check": "objects", "late_after_minutes": 70, "poll_seconds": 30, "why": "about 175 single-message files per lead on dd.weather.gc.ca, no index, posted in lead order: f000 at + 3 h 50 min, f240 at + 4 h 49 min"},
       "ladders": [{"cycle_hours": null, "steps": [[240, 3]]}],
-      "cadences": [3, 6],
       "default_cadence": 3,
       "layout": "flat",
       "axes": {
@@ -1119,13 +1182,13 @@
           "idx_sidecar": null
         },
         {
-          "role": "analysis-invariant", "primary": false, "leads": "first",
+          "role": "analysis-invariant", "primary": false, "leads": "step0",
           "axis": "analysis_invariant",
           "path": "{YYYYMMDD}/WXO-DD/model_gdps/15km/{HH}/{FFF}/{YYYYMMDD}T{HH}Z_MSC_GDPS_{FIELD}_{LEVEL}_LatLon0.15_PT{FFF}H.grib2",
           "idx_sidecar": null
         },
         {
-          "role": "terrain", "primary": false, "leads": "first", "axis": "terrain",
+          "role": "terrain", "primary": false, "leads": "step0", "axis": "terrain",
           "path": "{YYYYMMDD}/WXO-DD/model_gdps/15km/{HH}/{FFF}/{YYYYMMDD}T{HH}Z_MSC_GDPS_{FIELD}_{LEVEL}_LatLon0.15_PT{FFF}H.grib2",
           "idx_sidecar": null
         }
@@ -1136,7 +1199,7 @@
           "roles": ["state", "analysis-invariant"],
           "primary": true,
           "name": "composed/gdps_{YYYYMMDDHH}_PT{FFF}H.grib2",
-          "why": "GDPS ships one message per file; a valid time is that lead's files concatenated, which is the standard GRIB2 multi-record form. Orography, land mask and the ice analysis exist ONLY at the analysis lead, and the profile declares them once-per-cycle invariants the engine broadcasts, so they join the first composed state and nothing else."
+          "why": "GDPS ships one message per file; a valid time is that lead's files concatenated, which is the standard GRIB2 multi-record form. Orography, land mask and the ice analysis exist ONLY at the analysis lead (PT000H; the same objects at PT003H and PT012H answered 404, measured 2026-09-30), and the profile declares them once-per-cycle invariants the engine broadcasts, so the cycle's step-0 objects join the window's first composed state, whatever lead it starts at, and nothing else."
         }
       ],
       "record_subset": {

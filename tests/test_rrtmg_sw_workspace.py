@@ -12,7 +12,7 @@ its kernel before anything reads it (the kernel facts are recorded slot
 by slot in ``SW_SCRATCH_SLOTS``).  Now the slots live on the engine's
 ``SWBatchScratch``, allocated once per slot and reused across chunks
 and calls, and only ``wkl`` (rsw_inatm_layers_b scales species it never
-wrote) and the 4-byte abort flag are zeroed per chunk.
+wrote) is zeroed per chunk; the 4-byte abort flag is zeroed per call.
 
 The 2048-column ceiling on the chunk width is gone: it was reasoned
 against 170 SMs x 1536 threads, and on a 170 SM part with 2048 threads
@@ -186,7 +186,7 @@ def test_the_loop_zeroes_exactly_the_read_before_write_slots():
     zeroed = sorted(lit for m, lit in _calls(loop, "scratch")
                     if m == "zeros")
     assert zeroed == sorted(SW_CHUNK_ZEROED_SLOTS)
-    assert set(SW_CHUNK_ZEROED_SLOTS) == {"wkl", "err"}
+    assert set(SW_CHUNK_ZEROED_SLOTS) == {"wkl"}
 
 
 def test_the_loop_fills_exactly_the_constant_slots():
@@ -206,8 +206,7 @@ def test_the_loop_takes_only_declared_slots_and_declares_each_once():
     # accumulators) and the transpose helper reach the declared table
     # through the module tuples the loop iterates.
     for k in (sw.SETCOEF_INT_SLOTS + sw.SETCOEF_REAL_SLOTS
-              + sw.SPCVMC_OUT_SLOTS + sw.SPC_ACCUM_SLOTS
-              + ("zcldfmc", "ztaucmc", "ztaormc", "zasycmc", "zomgcmc")):
+              + sw.SPCVMC_OUT_SLOTS + sw.SPC_ACCUM_SLOTS):
         assert k in declared, k
     names = [k for k, _, _ in SW_SCRATCH_SLOTS]
     assert len(names) == len(set(names)), "a slot is classified twice"
@@ -245,8 +244,8 @@ def _memset_bytes_before(ncol, nlay, chunk):
                   + 2 * s_gnl + s_g              # taug taur sflux
                   + 5 * s_gnl                    # t201 x5
                   + 2 * s_bnl                    # ztaua zasya
-                  + nc * NGPTSW * SPCVMC_WK_ARRAYS * n1 * 4   # wk
-                  + nc * NGPTSW * SPCVMC_WKC_ARRAYS * n1      # wkc
+                  + nc * NGPTSW * 35 * n1 * 4                 # historical wk
+                  + nc * NGPTSW * 2 * n1                      # historical wkc
                   + s_g                          # zincflx
                   + 6 * s_gn1                    # six spcvmc outputs
                   + 14 * s_n1                    # spc_accum outputs
@@ -258,7 +257,7 @@ def _memset_bytes_before(ncol, nlay, chunk):
 def test_the_old_per_chunk_zeroing_is_the_profiled_figure():
     # The largest single memset the profile saw was 1,958.87 MB: wk at
     # (2048 x 112, 35 x 61) float32, exactly.
-    assert CHUNK * NGPTSW * SPCVMC_WK_ARRAYS * (NLAY + 1) * 4 == 1958871040
+    assert CHUNK * NGPTSW * 35 * (NLAY + 1) * 4 == 1958871040
     per_chunk = _memset_bytes_before(CHUNK, NLAY, CHUNK)
     assert 2.7e9 < per_chunk < 2.9e9
 
@@ -269,14 +268,13 @@ def test_memset_bytes_per_nest_event_fall_by_more_than_a_hundredfold():
     # 50 GB -> a third of a GB for the 36,378-column nest event.
     assert 49e9 < before < 51e9, before
     assert after == (NEST_DAY_COLUMNS * NLAY * MXMOL * 4     # wkl
-                     + 4 * -(-NEST_DAY_COLUMNS // CHUNK)     # err per chunk
+                     + 4                                       # err per call
                      + 2 * NEST_DAY_COLUMNS * (NLAY + 1) * 4)  # cln slabs
     assert before / after > 100
     # The residue does not depend on the chunk width beyond the 4-byte
     # flag: the wider 5090 chunk zeroes the same wkl bytes.
     wide = sw_batched_memset_bytes(NEST_DAY_COLUMNS, NLAY, 3328)
-    assert abs(wide - after) == 4 * (-(-NEST_DAY_COLUMNS // CHUNK)
-                                     - -(-NEST_DAY_COLUMNS // 3328))
+    assert wide == after
 
 
 def test_memset_bytes_for_the_parent_event():
@@ -303,24 +301,22 @@ def test_the_scratch_price_is_the_slot_table_at_the_chunk():
         s.take(k, (nc, nl), np.int32)
     for k in sw.SETCOEF_REAL_SLOTS:
         s.take(k, (nc, nl), np.float32)
-    s.take("taug", (nc, NGPTSW, nl), np.float32)
-    s.take("taur", (nc, NGPTSW, nl), np.float32)
+    s.take("taug", (nc, nl, NGPTSW), np.float32)
+    s.take("taur", (nc, nl, NGPTSW), np.float32)
     s.take("sflux", (nc, NGPTSW), np.float32)
-    for k in ("zcldfmc", "ztaucmc", "ztaormc", "zasycmc", "zomgcmc"):
-        s.take(k, (nc, NGPTSW, nl), np.float32)
     for k, fill in (("ztaua", 0.0), ("zasya", 0.0), ("zomga", 1.0)):
         s.constant(k, (nc, NBNDSW, nl), np.float32, fill)
     s.take("wk", (nc * NGPTSW, SPCVMC_WK_ARRAYS * n1), np.float32)
     s.take("wkc", (nc * NGPTSW, SPCVMC_WKC_ARRAYS * n1), np.uint8)
     s.take("zincflx", (nc, NGPTSW), np.float32)
     for k in sw.SPCVMC_OUT_SLOTS:
-        s.take(k, (nc, NGPTSW, n1), np.float32)
+        s.take(k, (nc, n1, NGPTSW), np.float32)
     for k in sw.SPC_ACCUM_SLOTS:
         s.take(k, (nc, n1), np.float32)
     s.take("swhr", (nc, nl), np.float32)
     s.take("swhrc", (nc, nl), np.float32)
     assert set(s.slots()) == {k for k, _, _ in SW_SCRATCH_SLOTS
-                              if k not in SW_CHUNK_ZEROED_SLOTS}
+                              if k not in SW_CHUNK_ZEROED_SLOTS + sw.SW_CALL_ZEROED_SLOTS}
     held = s.held_bytes()
     priced = sw_batched_scratch_bytes(nc, nl)
     # Priced at the 512-byte pool quantum per slot: at most 511 B over
@@ -336,10 +332,10 @@ def test_the_vram_price_is_monotone_and_holds_the_scratch():
         assert price > last
         assert price > sw_batched_scratch_bytes(nc, NLAY)
         last = price
-    # The pair's numbers: the 2048 chunk prices about 3.1 GiB, the
-    # 3328 chunk about 5.0 GiB, both dominated by wk.
-    assert 3.0 * 2**30 < sw_batched_vram_bytes(2048, NLAY) < 3.2 * 2**30
-    assert 4.9 * 2**30 < sw_batched_vram_bytes(3328, NLAY) < 5.1 * 2**30
+    # The pair's numbers: the 2048 chunk prices about 1.8 GiB, the
+    # 3328 chunk about 2.9 GiB, both dominated by wk.
+    assert 1.7 * 2**30 < sw_batched_vram_bytes(2048, NLAY) < 1.9 * 2**30
+    assert 2.8 * 2**30 < sw_batched_vram_bytes(3328, NLAY) < 3.0 * 2**30
 
 
 def test_the_width_bound_is_the_widest_quantum_multiple_that_fits():

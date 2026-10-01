@@ -255,6 +255,37 @@ def test_host_staging_frees_the_outgoing_child_before_the_rebuild():
         "allocated; peak residency would be two children")
 
 
+def test_a_caller_that_names_no_staging_frees_the_outgoing_child_first():
+    """The default is the host staging, not the doubled device one.
+
+    A caller that took the default used to hold the outgoing and the
+    incoming child on the card together, with nothing pricing the second
+    one, so a tree that fit could run out of memory at a move.  Driven
+    through relocate_child with no ``staging`` argument at all.
+    """
+    parent_plane, _parent, child = _cpu_tree()
+    refs = [weakref.ref(getattr(child.state, name)) for name in _FIELDS]
+    dead_at_rebuild = []
+
+    def rebuild_probe():
+        gc.collect()
+        dead_at_rebuild.append(all(ref() is None for ref in refs))
+
+    receipt = relocate_child(
+        child,
+        i_parent_start=int(child.cfg.i_parent_start) + 1,
+        j_parent_start=int(child.cfg.j_parent_start),
+        initializer=_initializer(parent_plane, on_call=rebuild_probe),
+        static_provenance="footprint-parametric synthetic statics (test)",
+        state_digest=lambda _s: "digest")
+    assert dead_at_rebuild == [True], (
+        "the default staging kept the outgoing child alive while the "
+        "incoming one allocated; peak residency would be two children")
+    assert receipt["staging"]["mode"] == "host"
+    # Every prognostic array plus the footprint statics (pb) fell.
+    assert receipt["staging"]["released"]["host_arrays"] == len(_FIELDS) + 1
+
+
 def test_device_staging_keeps_the_outgoing_child_alive_at_the_rebuild():
     """The negative control: the instrument can tell the stagings apart."""
     parent_plane, _parent, child = _cpu_tree()

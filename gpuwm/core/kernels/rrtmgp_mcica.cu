@@ -39,7 +39,7 @@
 // residues are therefore refused and the thread walks the stream instead.
 // It costs a rare thread its jump and never costs an answer.
 
-__device__ __forceinline__ double mcica_kiss(
+__device__ __forceinline__ int mcica_advance(
     unsigned int& s1, unsigned int& s2, unsigned int& s3,
     unsigned int& s4) {
   // The KISS combination; Fortran ISHFT is a logical (zero-fill) shift,
@@ -51,7 +51,15 @@ __device__ __forceinline__ double mcica_kiss(
   s3 = 18000u * (s3 & 65535u) + (s3 >> 16);
   s4 = 30903u * (s4 & 65535u) + (s4 >> 16);
   const int kiss = (int)(s1 + s2 + (s3 << 16) + s4);
-  return (double)kiss * 2.328306e-10 + 0.5;
+  return kiss;
+}
+
+__device__ __forceinline__ double mcica_kiss(
+    unsigned int& s1, unsigned int& s2, unsigned int& s3,
+    unsigned int& s4) {
+  // The base sm_89 SASS uses DFMA for the draw and DMUL for rescaling.
+  return __fma_rn((double)mcica_advance(s1, s2, s3, s4),
+                   2.328306e-10, 0.5);
 }
 
 // Seed from the fractional Pa of the bottom four layer pressures
@@ -73,13 +81,14 @@ __device__ __forceinline__ void mcica_seed(
 }
 
 // Apply a 32x32 GF(2) matrix (given as the images of the basis vectors) to
-// the state vector: XOR the columns selected by the set bits.
+// the state vector: XOR the columns selected by the set bits. The host
+// stores bit-major rows so adjacent g threads load adjacent words.
 __device__ __forceinline__ unsigned int mcica_gf2_apply(
-    const unsigned int* mat, unsigned int v) {
+    const unsigned int* mat, unsigned int v, int stride) {
   unsigned int out = 0u;
   while (v) {
     const int bit = __ffs((int)v) - 1;
-    out ^= mat[bit];
+    out ^= mat[bit * stride];
     v &= v - 1u;
   }
   return out;
@@ -87,6 +96,16 @@ __device__ __forceinline__ unsigned int mcica_gf2_apply(
 
 #define MCICA_P3 1179647999u
 #define MCICA_P4 2025259007u
+
+// Barrett reduction: floor(2^64 / p) underestimates x/p by at most one
+// for x < p*p. The remainder needs at most one exact subtraction.
+template<unsigned int P>
+__device__ __forceinline__ unsigned int mcica_mod(unsigned long long x) {
+  constexpr unsigned long long mu = (~0ull / P);
+  const unsigned long long q = __umul64hi(x, mu);
+  const unsigned long long r = x - q * P;
+  return (unsigned int)(r >= P ? r - P : r);
+}
 
 // One block per column.  Everything that depends only on the column is
 // then computed once instead of ngpt times: `s_omc[k]` is `1 - cldfra[k]`
@@ -107,49 +126,73 @@ extern "C" __global__ void rrtmgp_mcica_maxran(
   if (col >= ncol) return;
 
   extern __shared__ double s_omc[];
+  __shared__ unsigned int seed[4];
+  bool cloudy = false;
   for (int k = (int)threadIdx.x; k < nlay; k += (int)blockDim.x) {
     double cf = (double)cldfra[col * nlay + k];
     if (cf < 1.0e-20) cf = 0.0;
     s_omc[k] = 1.0 - cf;
+    cloudy |= s_omc[k] != 1.0;
   }
+  const int any_cloud = __syncthreads_or(cloudy);
+  if (!any_cloud) {
+    for (int i = (int)threadIdx.x; i < nlay * ngpt; i += blockDim.x)
+      mask[col * nlay * ngpt + i] = 0;
+    return;
+  }
+  if (threadIdx.x == 0)
+    mcica_seed(play, col, nlay, permuteseed,
+               seed[0], seed[1], seed[2], seed[3]);
   __syncthreads();
 
   for (int g = (int)threadIdx.x; g < ngpt; g += (int)blockDim.x) {
-    unsigned int s1, s2, s3, s4;
-    mcica_seed(play, col, nlay, permuteseed, s1, s2, s3, s4);
+    unsigned int s1 = seed[0], s2 = seed[1];
+    unsigned int s3 = seed[2], s4 = seed[3];
 
     if (g > 0) {
       unsigned int r3 = s3 % MCICA_P3;
       unsigned int r4 = s4 % MCICA_P4;
       const unsigned int a1 = jump_s1[g * 2] * s1 + jump_s1[g * 2 + 1];
-      const unsigned int a2 = mcica_gf2_apply(jump_s2 + g * 32, s2);
-      r3 = (unsigned int)((unsigned long long)r3
-                          * (unsigned long long)jump_s3[g] % MCICA_P3);
-      r4 = (unsigned int)((unsigned long long)r4
-                          * (unsigned long long)jump_s4[g] % MCICA_P4);
+      const unsigned int a2 = mcica_gf2_apply(jump_s2 + g, s2, ngpt);
+      r3 = mcica_mod<MCICA_P3>((unsigned long long)r3 * jump_s3[g]);
+      r4 = mcica_mod<MCICA_P4>((unsigned long long)r4 * jump_s4[g]);
       if (r3 > 1u && r4 > 1u) {
         // Unambiguous: the residue IS the state.
         s1 = a1; s2 = a2; s3 = r3; s4 = r4;
       } else {
-        // Aliased onto p or p+1.  Walk the stream, exactly as the Fortran
-        // does, rather than guess.
+        // Walk both MWC components when either residue aliases. The LCG
+        // and xorshift maps are independent and their jumps remain exact.
         const int steps = g * nlay;
-        for (int i = 0; i < steps; ++i) mcica_kiss(s1, s2, s3, s4);
+        for (int i = 0; i < steps; ++i) {
+          s3 = 18000u * (s3 & 65535u) + (s3 >> 16);
+          s4 = 30903u * (s4 & 65535u) + (s4 >> 16);
+        }
+        s1 = a1;
+        s2 = a2;
       }
     }
 
     double cdf = 0.0;
     double omb = 0.0;  // 1 - cldfra[k-1]; only read once k > 0
     for (int k = 0; k < nlay; ++k) {
-      const double draw = mcica_kiss(s1, s2, s3, s4);
+      const int kiss = mcica_advance(s1, s2, s3, s4);
       const double omc = s_omc[k];
+      if (omc == 1.0) {
+        // All draws and retained CDF values are below one. The next
+        // nonclear layer therefore always takes a fresh draw with omb=1.
+        mask[(col * nlay + k) * ngpt + g] = 0;
+        cdf = 0.0;
+        omb = 1.0;
+        continue;
+      }
+      const double draw = __fma_rn((double)kiss, 2.328306e-10, 0.5);
       if (k == 0) {
         cdf = draw;
       } else if (!(cdf > omb)) {
         // Maximum-random walk: reuse the number when the layer below is
         // cloudy in this subcolumn, otherwise rescale a fresh draw
         // (lines 1803-1813, applied in place so the kept value chains).
-        cdf = draw * omb;
+        cdf = __dmul_rn(draw, omb);
       }
       mask[(col * nlay + k) * ngpt + g] =
           (cdf >= omc) ? (unsigned char)1 : (unsigned char)0;

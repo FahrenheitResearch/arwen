@@ -21,6 +21,7 @@ shape ``tests/test_stage1_manifest.py`` established for the stage-1 list.
 from __future__ import annotations
 
 import importlib.util
+import json
 import pathlib
 import subprocess
 
@@ -157,6 +158,24 @@ def test_a_non_python_change_falls_back_to_the_always_list():
     selected = fastfix.select(["docs/public/HARDWARE.md"])
     for gate in kernel_gates:
         assert selected[gate] == ["always (repo-scanning gate)"], selected[gate]
+
+
+def test_a_change_to_a_research_authority_file_runs_the_research_catalog():
+    """The catalog pins renderer sources by digest, and nothing imports them.
+
+    A renderer edit that moved local_import.rs left the recorded digest in
+    gpuwm/data/tui/research-diagnostics.json stale three times (5e914cb3b, a
+    2.8.0 dry cut, 3aacaed10), and each time only the stage-1 leg at the cut
+    noticed.  A lane that touches any pinned file must run the catalog.
+    """
+
+    authority = json.loads((REPOSITORY_ROOT / "gpuwm" / "data" / "tui" / "research-diagnostics.json")
+                           .read_text(encoding="utf-8"))["authority"]
+    assert authority, "the research catalog pins no authority files"
+    for path in sorted(authority):
+        assert (REPOSITORY_ROOT / path).is_file(), path
+        selected = fastfix.select([path])
+        assert "tests/test_research_catalog.py" in selected, (path, sorted(selected))
 
 
 def test_an_empty_change_still_runs_the_always_list():

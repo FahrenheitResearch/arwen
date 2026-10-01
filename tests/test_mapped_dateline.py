@@ -138,11 +138,21 @@ def test_a_ring_whose_cut_is_clear_of_the_target_is_left_untouched(global_bundle
     grid = _grid(10.0)
     assert global_ring_cut(
         global_bundle.regular_snapshots()[0].longitude, *_targets(grid)) is None
+    from gpuwm.ingest.atmospheric_window import ATMOSPHERIC_FIELDS, WindowedAtmosphericSnapshot
+
     unoriented = global_bundle.regular_snapshots()[0]
     snapshot = global_bundle.regular_snapshots().for_grids((grid,))[0]
     assert snapshot.longitude.tobytes() == unoriented.longitude.tobytes()
+    # Since A135 a ring whose cut is clear of every stencil takes the
+    # atmospheric window (this pin compared whole fields while a ring was
+    # never windowed): its atmospheric fields are the STORED ring's crop,
+    # and every other field is the stored field itself.  Nothing is re-cut.
+    assert isinstance(snapshot, WindowedAtmosphericSnapshot)
     for name in snapshot.fields:
-        assert snapshot.fields[name].tobytes() == unoriented.fields[name].tobytes(), name
+        expected = unoriented.fields[name]
+        if name in ATMOSPHERIC_FIELDS:
+            expected = snapshot.window.crop(expected)
+        assert snapshot.fields[name].tobytes() == expected.tobytes(), name
 
 
 def test_a_re_cut_taken_on_another_axis_is_refused(global_bundle):

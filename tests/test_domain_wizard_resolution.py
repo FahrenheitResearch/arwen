@@ -262,15 +262,18 @@ def test_fit_keeps_a_domain_whose_preparation_fits_the_host(small_host):
     # A 902x720x76 root over 6 h peaks at 15.32e9 bytes in a real CPU
     # preparation (tests/test_cpu_preparation_host_ram.py), which a 16 GiB
     # host holds: sizing on the preparation's estimated peak keeps it.
-    free = int(wizard.card_assumed_free_gib(48.) * wizard.GIB)
+    # The card is 64 GB so that HOST RAM is what binds whatever the
+    # forecast margin: on the 48 GB card this test used until A163 the card
+    # bound first at 896x718 at the first repair's 1.16 of the subtotal.
+    free = int(wizard.card_assumed_free_gib(64.) * wizard.GIB)
     kwargs = dict(ratios=(), free_bytes=free, hours=6, start_time=START,
                   projection=wizard._projection_entries(35.3, -97.5, "auto"),
                   source="gfs", name="point", root_dx_m=3000., nz=76,
-                  vram_gib=48., point_extent_km=20000.)
+                  vram_gib=64., point_extent_km=20000.)
     assert small_host["bytes"] == 16 * wizard.GIB
     dims, exp = wizard.fit_ladder(**kwargs, tiles="auto")
     assert dims[0][0] * dims[0][1] >= 902 * 720
-    phases = wizard._sizing_phases(exp, free_bytes=free, source="gfs", vram_gib=48.)
+    phases = wizard._sizing_phases(exp, free_bytes=free, source="gfs", vram_gib=64.)
     host_target = small_host["bytes"] - wizard.fit_headroom_bytes(small_host["bytes"])
     assert 15_315_107_840 <= phases.host_preparation_bytes <= host_target
 

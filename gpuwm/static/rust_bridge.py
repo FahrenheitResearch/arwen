@@ -623,3 +623,92 @@ def highres_derive_window(request: dict) -> dict:
             f"derive_window audit is {written} bytes, beyond the {cap}-byte "
             "buffer; the window was written but its audit was truncated")
     return json.loads(bytes(out[:written]).decode("utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# Terrain smoothing (gpuwm.static.terrain_smoothing).  Bound on first use,
+# never in _bind_entry_points, so a library staged before these entries
+# existed keeps loading and serving every default build.
+# ---------------------------------------------------------------------------
+
+def _smoothing_entry(name, argtypes):
+    library = load()
+    try:
+        entry = getattr(library, name)
+    except AttributeError:
+        raise StaticBridgeError(
+            "the staged static-fields library predates terrain-smoothing "
+            "options; restage the rebuilt bridge or rebuild from this "
+            "checkout: " + _checkout_build_command()) from None
+    entry.argtypes = argtypes
+    entry.restype = ctypes.c_int32
+    return library, entry
+
+
+#: Exported by a library whose smoothing JSON takes ``smooth_precision``
+#: (``"wps-float32"`` on the default smoother).  A library without it
+#: refuses the key as an unknown field; asking first names the remedy.
+SMOOTHING_PRECISION_MARKER: Final[str] = (
+    "gpuwm_static_terrain_smoothing_precision_v1")
+
+
+def _smoothing_policy(library, smoothing):
+    """``smoothing``'s JSON echo for the library, which must read it."""
+    echo = smoothing.echo()
+    if "smooth_precision" in echo and not hasattr(
+            library, SMOOTHING_PRECISION_MARKER):
+        raise StaticBridgeError(
+            "the staged static-fields library predates terrain-smoothing "
+            f"options for smooth_precision ({smoothing.label()}); restage "
+            "the rebuilt bridge or rebuild from this checkout: "
+            + _checkout_build_command())
+    return _utf8(json.dumps(echo))
+
+
+def _build_smoothed(name, grid_handle, payload, halo, smoothing):
+    u8p = ctypes.POINTER(ctypes.c_uint8)
+    library, entry = _smoothing_entry(name, [
+        ctypes.c_uint64, u8p, ctypes.c_size_t, ctypes.c_uint32, u8p,
+        ctypes.c_size_t, ctypes.POINTER(ctypes.c_uint64)])
+    buffer, length = _utf8(payload)
+    policy, policy_len = _smoothing_policy(library, smoothing)
+    result = ctypes.c_uint64(0)
+    _check(library, entry(grid_handle, buffer, length, halo, policy,
+                          policy_len, ctypes.byref(result)), name)
+    return result.value
+
+
+def build_fields_smoothed(grid_handle, geog_paths, halo, smoothing):
+    """:func:`build_fields` with a non-default terrain smoothing."""
+    return _build_smoothed(
+        "gpuwm_static_build_fields_smoothed", grid_handle,
+        json.dumps({k: str(v) for k, v in geog_paths.items()}), halo,
+        smoothing)
+
+
+def build_terrain_smoothed(grid_handle, path, halo, smoothing):
+    """:func:`build_terrain` with a non-default terrain smoothing."""
+    result = _build_smoothed("gpuwm_static_build_terrain_smoothed",
+                             grid_handle, str(path), halo, smoothing)
+    try:
+        return fieldset_to_dict(result)["HGT_M"]
+    finally:
+        fieldset_free(result)
+
+
+def terrain_smooth(extended, smoothing):
+    """One halo-extended float64 plane through ``smoothing``."""
+    f64p = ctypes.POINTER(ctypes.c_double)
+    library, entry = _smoothing_entry("gpuwm_static_terrain_smooth", [
+        f64p, ctypes.c_uint64, ctypes.c_uint64,
+        ctypes.POINTER(ctypes.c_uint8), ctypes.c_size_t, f64p])
+    a = np.ascontiguousarray(extended, dtype=np.float64)
+    if a.ndim != 2:
+        raise ValueError(
+            "terrain smoothing takes one two-dimensional extended plane")
+    out = np.empty_like(a)
+    policy, policy_len = _smoothing_policy(library, smoothing)
+    _check(library, entry(a.ctypes.data_as(f64p), *a.shape, policy,
+                          policy_len, out.ctypes.data_as(f64p)),
+           "terrain_smooth")
+    return out

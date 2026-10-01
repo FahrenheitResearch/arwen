@@ -1,5 +1,5 @@
 // The storm wiki's pages: Main page, event, kind of storm, place, places, run article, search and recent changes.
-// Every page is drawn from the page store's JSON (/api/library/...); every fact carries its footnote; every weather
+// Every page is drawn from the page store's JSON (/api/wiki/...); every fact carries its footnote; every weather
 // picture is a PNG the Rust renderer wrote, shown as it is. Each page is the same two columns: the article on the
 // left, and on the right a small map, a picture and the sources.
 
@@ -112,7 +112,7 @@ function eventRows(rows, words) {
 // The sidebar group of one kind's events, the open one lit.
 async function kindContext(page, kindId, kindTitle, openId) {
   try {
-    const data = await api.get(`/api/library/kind/${encodeURIComponent(kindId)}`);
+    const data = await api.get(`/api/wiki/kind/${encodeURIComponent(kindId)}`);
     const events = data.events.slice().sort((a, b) => (a.rarity_pct ?? 1e9) - (b.rarity_pct ?? 1e9) || a.title.localeCompare(b.title));
     page.setContext({ title: kindTitle || data.phenomenon.plural, items: events.slice(0, 24).map((e) => ({
       href: eventHref(e.id), label: e.title, on: e.id === openId, title: e.title })) });
@@ -124,7 +124,7 @@ async function kindContext(page, kindId, kindTitle, openId) {
 async function mainPage(body, args, page) {
   const words = page.words;
   const w = words.wiki.main;
-  const [data, runsData] = await Promise.all([api.get("/api/library"), api.get("/api/runs")]);
+  const [data, runsData] = await Promise.all([api.get("/api/wiki"), api.get("/api/runs")]);
   const c = data.counts;
   page.setCrumbs([[words.wiki.name]]);
   const main = h("div", { class: "article" });
@@ -289,12 +289,12 @@ function bestPanel(ev, best, words, cites, onrow) {
       }
       const run = actionButton(wb.button, {
         kind: "primary", disabled: problems.length > 0,
-        request: () => ({ path: "/api/library/simulate", body: { event: ev.id, card_gb: row.card_gb } }),
+        request: () => ({ path: "/api/wiki/simulate", body: { event: ev.id, card_gb: row.card_gb } }),
         onclick: async () => {
           run.button.disabled = true;
           notice(wb.starting);
           try {
-            const reply = await api.post("/api/library/simulate", { event: ev.id, card_gb: row.card_gb });
+            const reply = await api.post("/api/wiki/simulate", { event: ev.id, card_gb: row.card_gb });
             notice(wb.started);
             go(runRoute("watch", reply.run));
           } catch (err) {
@@ -371,12 +371,12 @@ async function eventPage(body, args, page) {
   const wa = words.wiki.article;
   const id = args[0];
   let pendingRow = null;
-  const data = await api.get(`/api/library/event/${encodeURIComponent(id)}`);
+  const data = await api.get(`/api/wiki/event/${encodeURIComponent(id)}`);
   const ev = data.event;
   const facts = factIndex(ev.facts);
   const cites = new Cites(data.sources, words);
   document.title = `${ev.title} · ${words.wiki.name}`;
-  page.setCrumbs([[words.wiki.name, "#/library"], [data.phenomenon.plural || data.phenomenon.title, kindHref(data.phenomenon.id)], [ev.title]]);
+  page.setCrumbs([[words.wiki.name, "#/wiki"], [data.phenomenon.plural || data.phenomenon.title, kindHref(data.phenomenon.id)], [ev.title]]);
   kindContext(page, data.phenomenon.id, data.phenomenon.plural, ev.id);
 
   const canvas = mapBox("tall");
@@ -465,11 +465,11 @@ async function eventPage(body, args, page) {
 async function kindPage(body, args, page) {
   const words = page.words;
   const wk = words.wiki.kind;
-  const data = await api.get(`/api/library/kind/${encodeURIComponent(args[0])}`);
+  const data = await api.get(`/api/wiki/kind/${encodeURIComponent(args[0])}`);
   const k = data.phenomenon;
   const cites = new Cites(data.sources, words);
   document.title = `${k.title} · ${words.wiki.name}`;
-  page.setCrumbs([[words.wiki.name, "#/library"], [k.plural || k.title]]);
+  page.setCrumbs([[words.wiki.name, "#/wiki"], [k.plural || k.title]]);
   const events = data.events;
   const filters = { region: "", decade: "", season: "" };
   let sortKey = "rarity_pct";
@@ -533,11 +533,11 @@ async function kindPage(body, args, page) {
 async function placePage(body, args, page) {
   const words = page.words;
   const wp = words.wiki.place;
-  const data = await api.get(`/api/library/place/${encodeURIComponent(args[0])}`);
+  const data = await api.get(`/api/wiki/place/${encodeURIComponent(args[0])}`);
   const p = data.place;
   const cites = new Cites(data.sources, words);
   document.title = `${p.title} · ${words.wiki.name}`;
-  page.setCrumbs([[words.wiki.name, "#/library"], [wp.title, "#/places"], data.parent ? [data.parent.title, placeHref(data.parent.id)] : null, [p.title]]);
+  page.setCrumbs([[words.wiki.name, "#/wiki"], [wp.title, "#/places"], data.parent ? [data.parent.title, placeHref(data.parent.id)] : null, [p.title]]);
   const counts = Object.entries(p.counts || {}).map(([, c]) => h("li", {}, c.text, cites.mark(c.cite)));
   const rarest = data.events[0];
   const factRows = [{ label: wp.kind, text: wp.kinds[p.kind] || p.kind, cite: p.cite }];
@@ -580,8 +580,8 @@ function placeLabelOf(p, events) {
 
 async function placesPage(body, args, page) {
   const words = page.words;
-  const data = await api.get("/api/library/places");
-  page.setCrumbs([[words.wiki.name, "#/library"], [words.wiki.place.title]]);
+  const data = await api.get("/api/wiki/places");
+  page.setCrumbs([[words.wiki.name, "#/wiki"], [words.wiki.place.title]]);
   const total = data.groups.reduce((a, g) => a + g.places.length, 0);
   body.append(h("div", { class: "article" }, h("h1", {}, words.wiki.place.title),
     h("p", { class: "lede" }, fill(words.wiki.place.lede, { count: total })),
@@ -605,7 +605,7 @@ async function runPage(body, args, page) {
   const words = page.words;
   const wr = words.wiki.run;
   const runId = args[0];
-  const data = await api.get(`/api/library/run/${encodeURIComponent(runId)}`);
+  const data = await api.get(`/api/wiki/run/${encodeURIComponent(runId)}`);
   const cites = new Cites(data.sources, words);
   const title = data.title || runId;
   document.title = `${title} · ${words.wiki.name}`;
@@ -687,8 +687,8 @@ async function searchPage(body, args, page, browse = false) {
   const ws = words.wiki.search;
   const params = parseSearch(args, page.query);
   const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v));
-  const data = await api.get(`/api/library/search?${q}`);
-  page.setCrumbs([[words.wiki.name, "#/library"], [browse && !params.q ? words.wiki.nav.browse : ws.title]]);
+  const data = await api.get(`/api/wiki/search?${q}`);
+  page.setCrumbs([[words.wiki.name, "#/wiki"], [browse && !params.q ? words.wiki.nav.browse : ws.title]]);
   const box = searchBox(words, params.q);
   const set = (key, value) => {
     const target = searchHref({ ...params, [key]: value }).slice(2);
@@ -733,8 +733,8 @@ async function searchPage(body, args, page, browse = false) {
 async function changesPage(body, args, page) {
   const words = page.words;
   const wc = words.wiki.changes;
-  const data = await api.get("/api/library/changes");
-  page.setCrumbs([[words.wiki.name, "#/library"], [wc.title]]);
+  const data = await api.get("/api/wiki/changes");
+  page.setCrumbs([[words.wiki.name, "#/wiki"], [wc.title]]);
   const rows = data.changes.map((ch) => h("tr", {},
     h("td", { class: "mono" }, String(ch.when || "").replace("T", " ").slice(0, 16)),
     h("td", {}, h("span", { class: "tag" }, ch.what === "run" ? wc.run : wc.event)),
@@ -748,7 +748,7 @@ async function changesPage(body, args, page) {
 }
 
 const wikiTitle = () => "";
-register("library", mainPage, { title: wikiTitle });
+register("wiki", mainPage, { title: wikiTitle });
 register("browse", (body, args, page) => searchPage(body, args, page, true), { title: wikiTitle });
 register("places", placesPage, { title: wikiTitle });
 register("changes", changesPage, { title: wikiTitle });

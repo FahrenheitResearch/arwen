@@ -779,7 +779,7 @@
   "header_rule": "gpuwm-portable-frame-header-v1",
   "mapping": {
     "name": "rw-wps-aigefs-member-hybrid-grib2.mapping.json",
-    "sha256": "c7ede9fa23ca9c9903ffb46be27a36f8a613db8eb3f9d32611fbda0e047d44d7"
+    "sha256": "d34ff39693af3a6cef6d4f3d83a72c7bff1d710470518d986724eae368bde623"
   },
   "measured_on": {
     "machine": "x86_64",

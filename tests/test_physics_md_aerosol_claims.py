@@ -1029,9 +1029,17 @@ def test_the_committed_deck_carries_wrfs_own_exner_constant():
         "the superseded constant is not 4774 ulps from WRF's; the published "
         "distance is wrong")
 
+    from gpuwm.core.noahmp_libm import powf
+
     def invertible(pressure, temperature, rcp):
-        pii = np.power((pressure / f32(100000.0)).astype(np.float32),
-                       rcp).astype(np.float32)
+        # The oracle's own ``(p/p0)**rd_over_cp`` is gfortran calling glibc
+        # ``powf``, so the Exner values come from the glibc 2.39 transcription
+        # element by element, not from NumPy's float32 ``power``: NumPy
+        # 2.5's AVX-512 loop rounds 110 of these 1056 powers differently
+        # and put the count below at 40 on an AVX-512 Linux machine.
+        base = (pressure / f32(100000.0)).astype(np.float32)
+        pii = np.array([powf(value, rcp) for value in base],
+                       dtype=np.float32)
         theta = (temperature / pii).astype(np.float32)
         ok = (theta * pii).astype(np.float32) == temperature
         for candidate in (np.nextafter(theta, f32(np.inf), dtype=np.float32),
@@ -1068,6 +1076,9 @@ def test_the_committed_deck_carries_wrfs_own_exner_constant():
     # the original 2026-08-01 environment measured 40; every current
     # environment measures 47 with identical per-fixture counts (measured
     # 2026-08-03 on glibc 2.43 / numpy 2.5.1 and on MSVC / numpy 2.2.6).
+    # 40 is NumPy 2.5's AVX-512 float32 ``power``; glibc's ``powf``, which
+    # the oracle calls and which ``invertible`` now takes from the
+    # transcription, gives 47 on every host.
     assert sum(broken.values()) == 47, (
         "the superseded Exner constant now breaks "
         f"{sum(broken.values())} of {levels} entry levels, not the "

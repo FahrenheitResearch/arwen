@@ -83,8 +83,15 @@ CLAIM_PATTERN = re.compile(r"ftz|subnormal", re.IGNORECASE)
 #: ``crates/mapped-engine`` beside it IS gpuwm-authored and its claims stay in
 #: scope.  Measured at this tip: all 46 sit under ``vendor/``, none in
 #: authored rw_wps code.
+#:
+#: ``tools/uwpbl_wrf471_oracle/libm64/upstream/`` holds the verbatim MIT
+#: sources (Arm optimized-routines exp/log/pow, CORE-MATH cos/acos) that
+#: gpuwm/core/kernels/glibc_flt64.cuh transcribes, hash-pinned in
+#: ``libm64/upstream-sha256.json``; their subnormal comments describe the
+#: upstream C, and editing them would break the pin.
 VENDOR_PREFIXES = ("tools/grib1_bridge/vendor/", "tools/rustwx/vendor/",
-                   "tools/region_global_dealias/", "tools/rw_wps/vendor/")
+                   "tools/region_global_dealias/", "tools/rw_wps/vendor/",
+                   "tools/uwpbl_wrf471_oracle/libm64/upstream/")
 
 #: The receipt itself.  Registering a measurement against itself is circular:
 #: the bit table and the receipt are the authority these records point AT, so

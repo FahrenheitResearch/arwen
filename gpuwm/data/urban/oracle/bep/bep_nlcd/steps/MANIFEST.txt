@@ -1,0 +1,179 @@
+meta_nz f4 0
+meta_ncol f4 0
+meta_nstep f4 0
+meta_use_wudapt_lcz f4 0
+meta_dt f4 0
+meta_declin_urb f4 0
+tbl_ICATE i4 1 1
+tbl_CAPB_TBL f4 1 3
+tbl_CAPR_TBL f4 1 3
+tbl_CAPG_TBL f4 1 3
+tbl_AKSB_TBL f4 1 3
+tbl_AKSR_TBL f4 1 3
+tbl_AKSG_TBL f4 1 3
+tbl_TBLEND_TBL f4 1 3
+tbl_TRLEND_TBL f4 1 3
+tbl_TGLEND_TBL f4 1 3
+tbl_ALBB_TBL f4 1 3
+tbl_ALBR_TBL f4 1 3
+tbl_ALBG_TBL f4 1 3
+tbl_EPSB_TBL f4 1 3
+tbl_EPSR_TBL f4 1 3
+tbl_EPSG_TBL f4 1 3
+tbl_Z0R_TBL f4 1 3
+tbl_Z0G_TBL f4 1 3
+tbl_NUMDIR_TBL i4 1 3
+tbl_STREET_DIRECTION_TBL f4 2 3 3
+tbl_STREET_WIDTH_TBL f4 2 3 3
+tbl_BUILDING_WIDTH_TBL f4 2 3 3
+tbl_NUMHGT_TBL i4 1 3
+tbl_HEIGHT_BIN_TBL f4 2 50 3
+tbl_HPERCENT_BIN_TBL f4 2 50 3
+dz8w f4 2 21 31
+u_phy f4 2 21 31
+v_phy f4 2 21 31
+th_phy f4 2 21 31
+rho f4 2 21 31
+p_phy f4 2 21 31
+swdown f4 1 21
+glw f4 1 21
+cosz_urb2d f4 1 21
+omg_urb2d f4 1 21
+frc_urb2d f4 1 21
+utype_urb2d i4 1 21
+lp_urb2d f4 1 21
+lb_urb2d f4 1 21
+hgt_urb2d f4 1 21
+hi_urb2d f4 2 21 15
+s1_in_trb_urb4d f4 2 21 360
+s1_in_tw1_urb4d f4 2 21 360
+s1_in_tw2_urb4d f4 2 21 360
+s1_in_tgb_urb4d f4 2 21 20
+s1_in_sfw1_urb3d f4 2 21 36
+s1_in_sfw2_urb3d f4 2 21 36
+s1_in_sfr_urb3d f4 2 21 36
+s1_in_sfg_urb3d f4 2 21 2
+s1_out_trb_urb4d f4 2 21 360
+s1_out_tw1_urb4d f4 2 21 360
+s1_out_tw2_urb4d f4 2 21 360
+s1_out_tgb_urb4d f4 2 21 20
+s1_out_sfw1_urb3d f4 2 21 36
+s1_out_sfw2_urb3d f4 2 21 36
+s1_out_sfr_urb3d f4 2 21 36
+s1_out_sfg_urb3d f4 2 21 2
+s1_out_a_u f4 2 21 31
+s1_out_a_v f4 2 21 31
+s1_out_a_t f4 2 21 31
+s1_out_a_e f4 2 21 31
+s1_out_b_u f4 2 21 31
+s1_out_b_v f4 2 21 31
+s1_out_b_t f4 2 21 31
+s1_out_b_e f4 2 21 31
+s1_out_b_q f4 2 21 31
+s1_out_dlg f4 2 21 31
+s1_out_dl_u f4 2 21 31
+s1_out_sf f4 2 21 31
+s1_out_vl f4 2 21 31
+s1_out_rl_up f4 1 21
+s1_out_rs_abs f4 1 21
+s1_out_emiss f4 1 21
+s1_out_grdflx_urb f4 1 21
+s2_in_trb_urb4d f4 2 21 360
+s2_in_tw1_urb4d f4 2 21 360
+s2_in_tw2_urb4d f4 2 21 360
+s2_in_tgb_urb4d f4 2 21 20
+s2_in_sfw1_urb3d f4 2 21 36
+s2_in_sfw2_urb3d f4 2 21 36
+s2_in_sfr_urb3d f4 2 21 36
+s2_in_sfg_urb3d f4 2 21 2
+s2_out_trb_urb4d f4 2 21 360
+s2_out_tw1_urb4d f4 2 21 360
+s2_out_tw2_urb4d f4 2 21 360
+s2_out_tgb_urb4d f4 2 21 20
+s2_out_sfw1_urb3d f4 2 21 36
+s2_out_sfw2_urb3d f4 2 21 36
+s2_out_sfr_urb3d f4 2 21 36
+s2_out_sfg_urb3d f4 2 21 2
+s2_out_a_u f4 2 21 31
+s2_out_a_v f4 2 21 31
+s2_out_a_t f4 2 21 31
+s2_out_a_e f4 2 21 31
+s2_out_b_u f4 2 21 31
+s2_out_b_v f4 2 21 31
+s2_out_b_t f4 2 21 31
+s2_out_b_e f4 2 21 31
+s2_out_b_q f4 2 21 31
+s2_out_dlg f4 2 21 31
+s2_out_dl_u f4 2 21 31
+s2_out_sf f4 2 21 31
+s2_out_vl f4 2 21 31
+s2_out_rl_up f4 1 21
+s2_out_rs_abs f4 1 21
+s2_out_emiss f4 1 21
+s2_out_grdflx_urb f4 1 21
+s3_in_trb_urb4d f4 2 21 360
+s3_in_tw1_urb4d f4 2 21 360
+s3_in_tw2_urb4d f4 2 21 360
+s3_in_tgb_urb4d f4 2 21 20
+s3_in_sfw1_urb3d f4 2 21 36
+s3_in_sfw2_urb3d f4 2 21 36
+s3_in_sfr_urb3d f4 2 21 36
+s3_in_sfg_urb3d f4 2 21 2
+s3_out_trb_urb4d f4 2 21 360
+s3_out_tw1_urb4d f4 2 21 360
+s3_out_tw2_urb4d f4 2 21 360
+s3_out_tgb_urb4d f4 2 21 20
+s3_out_sfw1_urb3d f4 2 21 36
+s3_out_sfw2_urb3d f4 2 21 36
+s3_out_sfr_urb3d f4 2 21 36
+s3_out_sfg_urb3d f4 2 21 2
+s3_out_a_u f4 2 21 31
+s3_out_a_v f4 2 21 31
+s3_out_a_t f4 2 21 31
+s3_out_a_e f4 2 21 31
+s3_out_b_u f4 2 21 31
+s3_out_b_v f4 2 21 31
+s3_out_b_t f4 2 21 31
+s3_out_b_e f4 2 21 31
+s3_out_b_q f4 2 21 31
+s3_out_dlg f4 2 21 31
+s3_out_dl_u f4 2 21 31
+s3_out_sf f4 2 21 31
+s3_out_vl f4 2 21 31
+s3_out_rl_up f4 1 21
+s3_out_rs_abs f4 1 21
+s3_out_emiss f4 1 21
+s3_out_grdflx_urb f4 1 21
+s4_in_trb_urb4d f4 2 21 360
+s4_in_tw1_urb4d f4 2 21 360
+s4_in_tw2_urb4d f4 2 21 360
+s4_in_tgb_urb4d f4 2 21 20
+s4_in_sfw1_urb3d f4 2 21 36
+s4_in_sfw2_urb3d f4 2 21 36
+s4_in_sfr_urb3d f4 2 21 36
+s4_in_sfg_urb3d f4 2 21 2
+s4_out_trb_urb4d f4 2 21 360
+s4_out_tw1_urb4d f4 2 21 360
+s4_out_tw2_urb4d f4 2 21 360
+s4_out_tgb_urb4d f4 2 21 20
+s4_out_sfw1_urb3d f4 2 21 36
+s4_out_sfw2_urb3d f4 2 21 36
+s4_out_sfr_urb3d f4 2 21 36
+s4_out_sfg_urb3d f4 2 21 2
+s4_out_a_u f4 2 21 31
+s4_out_a_v f4 2 21 31
+s4_out_a_t f4 2 21 31
+s4_out_a_e f4 2 21 31
+s4_out_b_u f4 2 21 31
+s4_out_b_v f4 2 21 31
+s4_out_b_t f4 2 21 31
+s4_out_b_e f4 2 21 31
+s4_out_b_q f4 2 21 31
+s4_out_dlg f4 2 21 31
+s4_out_dl_u f4 2 21 31
+s4_out_sf f4 2 21 31
+s4_out_vl f4 2 21 31
+s4_out_rl_up f4 1 21
+s4_out_rs_abs f4 1 21
+s4_out_emiss f4 1 21
+s4_out_grdflx_urb f4 1 21

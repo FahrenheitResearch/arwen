@@ -16,7 +16,8 @@ import pytest
 from gpuwm.acoustic_adaptation import (
     STABLE_SLOPE_BY_OFFCENTERING, STEEP_TERRAIN_SOUND_STEPS,
     acoustic_receipt, adapt_experiment_acoustics, derive_acoustics,
-    readings_from_static, stable_slopes, steepest_slope, SlopeReading)
+    offcentering_floor, readings_from_static, stable_slopes, steepest_slope,
+    SlopeReading)
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,8 @@ class _Domain:
 @dataclass(frozen=True)
 class _Experiment:
     domains: tuple
+    #: grid_ids whose epssm is the model's choice (ExperimentConfig's).
+    auto_epssm: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -362,3 +365,240 @@ def test_run_route_reads_a_following_nests_corridor(monkeypatch, highres):
     derived = runtime._terrain_acoustics_for_case(exp, data)
     assert planned == [2]
     assert [dc.run.time_step_sound for dc in derived.domains] == [4, 6]
+
+
+# ---------------------------------------------------------------------------
+# The off-centering floor (A171): a default epssm over ground it was not
+# measured stable on.  A user's 1 km mountain nest (steepest slope 0.87)
+# ran WRF's default 0.1 because its namelist listed epssm once; WRF 4.7.1
+# faulted at step 19 and gpuwm went non-finite at step 46 on the same
+# real.exe files, and both ran at 0.5.
+# ---------------------------------------------------------------------------
+
+def test_the_floor_reads_the_measured_map():
+    # WRF's default holds every slope its six-substep bound covers.
+    for slope in (0.0, 0.33, 0.49):
+        assert offcentering_floor(slope) is None
+    # Past it, the least row whose six-substep bound is steeper.
+    assert offcentering_floor(0.50) == 0.2
+    assert offcentering_floor(0.64) == 0.2
+    assert offcentering_floor(0.65) == 0.3
+    assert offcentering_floor(0.70) == 0.4
+    assert offcentering_floor(0.80) == 0.5
+    # Past every row, the most stable off-centering measured.
+    assert offcentering_floor(0.87) == 0.5
+    assert offcentering_floor(1.07) == 0.5
+    # Every row's own six-substep bound is held by that row or a lower one.
+    for epssm, _four, six in STABLE_SLOPE_BY_OFFCENTERING:
+        floor = offcentering_floor(six - 1e-6)
+        assert floor is None or floor <= epssm
+
+
+def test_a_default_epssm_over_steep_ground_takes_the_floor():
+    exp = _Experiment((_Domain(1, _Run(dx=3000.0, dy=3000.0)),
+                       _Domain(2, _Run(dx=1000.0, dy=1000.0, epssm=0.1))),
+                      auto_epssm=(2,))
+    lines = []
+    adapted, adaptations = adapt_experiment_acoustics(
+        exp, {1: _reading(0.31, "d01"), 2: _reading(0.87, "d02")},
+        announce=lines.append, caution=lines.append)
+    assert adapted.domains[0] is exp.domains[0]
+    child = adapted.domains[1].run
+    assert child.epssm == 0.5 and child.time_step_sound == 6
+    assert adaptations[1].offcentering_raised
+    assert adaptations[1].configured_epssm == 0.1
+    row = acoustic_receipt(adaptations)["domains"][1]
+    assert row["configured_epssm"] == 0.1 and row["epssm"] == 0.5
+    assert row["epssm_basis"] == "measured off-centering floor"
+    # The substep row is read at the epssm that runs.
+    assert row["six_substeps_stable_below"] == 0.85
+    assert "configured_epssm" not in acoustic_receipt(adaptations)[
+        "domains"][0]
+    assert lines[0].startswith("acoustic off-centering: d02")
+    assert "epssm 0.1 is the default" in lines[0]
+    assert "runs epssm 0.5" in lines[0]
+    assert "past 0.50" in lines[0]
+    # The substep caution still follows: 0.87 is past every measured row.
+    assert lines[1].startswith("acoustic substeps: d02")
+
+
+def test_a_default_epssm_inside_the_map_takes_the_least_row_that_holds():
+    exp = _Experiment((_Domain(2, _Run(dx=1000.0, dy=1000.0, epssm=0.1)),),
+                      auto_epssm=(2,))
+    adapted, adaptations = adapt_experiment_acoustics(
+        exp, {2: _reading(0.6, "d02")})
+    assert adapted.domains[0].run.epssm == 0.2
+    assert adapted.domains[0].run.time_step_sound == 6
+    assert adaptations[0].status == "ADAPTED"
+
+
+def test_a_default_epssm_on_gentle_ground_is_untouched():
+    exp = _Experiment((_Domain(1, _Run(epssm=0.1)),), auto_epssm=(1,))
+    same, adaptations = adapt_experiment_acoustics(exp, {1: _reading(0.3)})
+    assert same is exp
+    assert not adaptations[0].offcentering_raised
+    assert "configured_epssm" not in acoustic_receipt(adaptations)[
+        "domains"][0]
+    # A default already at or above the floor is left alone too.
+    exp = _Experiment((_Domain(1, _Run(epssm=0.5)),), auto_epssm=(1,))
+    _, adaptations = adapt_experiment_acoustics(exp, {1: _reading(0.87)})
+    assert not adaptations[0].offcentering_raised
+
+
+def test_a_chosen_epssm_below_the_floor_is_refused_with_the_floor_named():
+    exp = _Experiment((_Domain(1, _Run(dx=3000.0, dy=3000.0)),
+                       _Domain(2, _Run(dx=1000.0, dy=1000.0, epssm=0.1))))
+    with pytest.raises(ValueError) as refused:
+        adapt_experiment_acoustics(
+            exp, {1: _reading(0.31, "d01"), 2: _reading(0.87, "d02")})
+    message = str(refused.value)
+    assert message.startswith("d02's epssm 0.1 is set explicitly")
+    assert ("measured stable with any acoustic substep count only below "
+            "0.50") in message
+    assert "at least 0.5" in message and '"auto"' in message
+    # `gpuwm run` showed a worker's error cut to about 250 characters,
+    # and the cut fell before the remedy: the remedy now leads.
+    assert message.index("set d02's epssm to at least 0.5") < 200
+    assert "d01" not in message
+
+
+def test_a_chosen_epssm_at_the_floor_runs_as_chosen():
+    exp = _Experiment((_Domain(2, _Run(dx=1000.0, dy=1000.0, epssm=0.2)),))
+    adapted, adaptations = adapt_experiment_acoustics(
+        exp, {2: _reading(0.6, "d02")})
+    assert adapted.domains[0].run.epssm == 0.2
+    assert not adaptations[0].offcentering_raised
+
+
+_OFFCENTERING_TREE = """\
+[experiment]
+name = "offcentering"
+start_time = 2026-09-22T12:00:00
+run_seconds = 600.0
+restart_interval_s = 0.0
+
+[shared]
+nz = 8
+ztop = 20000.0
+p_top = 50000.0
+eta_levels = [1.0, 0.875, 0.75, 0.625, 0.5, 0.375, 0.25, 0.125, 0.0]
+ra_lw_physics = 0
+ra_sw_physics = 0
+bl_pbl_physics = 0
+{shared}
+[[domain]]
+grid_id = 1
+parent_id = 0
+i_parent_start = 1
+j_parent_start = 1
+parent_grid_ratio = 1
+parent_time_step_ratio = 1
+nx = 40
+ny = 40
+time_step = 15
+dx = 3000.0
+history_interval_s = 600.0
+
+[[domain]]
+grid_id = 2
+parent_id = 1
+i_parent_start = 12
+j_parent_start = 12
+parent_grid_ratio = 3
+parent_time_step_ratio = 3
+nx = 30
+ny = 30
+history_interval_s = 600.0
+{child}"""
+
+
+def _tree(tmp_path, shared="", child=""):
+    from gpuwm.experiment import load_experiment
+
+    path = tmp_path / "offcentering.toml"
+    path.write_text(_OFFCENTERING_TREE.format(
+        shared=shared + "\n" if shared else "",
+        child=child + "\n" if child else ""))
+    return load_experiment(path)
+
+
+def test_the_loader_labels_each_domain_whose_epssm_the_model_chooses(
+        tmp_path):
+    unset = _tree(tmp_path)
+    assert unset.auto_epssm == (1, 2)
+    assert [dc.run.epssm for dc in unset.domains] == [0.1, 0.1]
+    written = _tree(tmp_path, shared="epssm = 0.5")
+    assert written.auto_epssm == ()
+    tail = _tree(tmp_path, shared="epssm = 0.5", child='epssm = "auto"')
+    assert tail.auto_epssm == (2,)
+    assert [dc.run.epssm for dc in tail.domains] == [0.5, 0.1]
+    shared_auto = _tree(tmp_path, shared='epssm = "auto"',
+                        child="epssm = 0.3")
+    assert shared_auto.auto_epssm == (1,)
+    assert [dc.run.epssm for dc in shared_auto.domains] == [0.1, 0.3]
+    with pytest.raises(ValueError, match='or the string "auto"'):
+        _tree(tmp_path, child='epssm = "default"')
+
+
+def test_the_epssm_label_never_reaches_the_restart_identity(tmp_path):
+    from gpuwm.core.model import restart_identity_payload
+
+    auto = _tree(tmp_path, shared="epssm = 0.5", child='epssm = "auto"')
+    written = _tree(tmp_path, shared="epssm = 0.5", child="epssm = 0.1")
+    assert "auto_epssm" not in restart_identity_payload(auto)
+    assert restart_identity_payload(auto) == restart_identity_payload(
+        written)
+    assert replace(auto, auto_epssm=()) == written
+
+
+def test_gpuwm_run_publishes_the_raised_epssm_in_its_folder(tmp_path):
+    """`gpuwm run` writes the acoustic record beside its history when the
+    floor raised a domain's epssm, and nothing when no epssm moved."""
+    import json
+
+    from gpuwm import runtime
+
+    exp = _Experiment((_Domain(2, _Run(dx=1000.0, dy=1000.0, epssm=0.1)),),
+                      auto_epssm=(2,))
+    _, calm = adapt_experiment_acoustics(exp, {2: _reading(0.3, "d02")})
+    assert runtime._write_acoustic_receipt(tmp_path, calm) is None
+    assert not (tmp_path / runtime.ACOUSTIC_RECEIPT_NAME).exists()
+    _, raised = adapt_experiment_acoustics(exp, {2: _reading(0.87, "d02")})
+    path = runtime._write_acoustic_receipt(tmp_path, raised)
+    assert path == tmp_path / runtime.ACOUSTIC_RECEIPT_NAME
+    row = json.loads(path.read_text())["domains"][0]
+    assert (row["configured_epssm"], row["epssm"]) == (0.1, 0.5)
+    assert row["epssm_basis"] == "measured off-centering floor"
+
+
+def test_auto_under_a_named_profile_is_the_profiles_to_supply():
+    """The importer writes epssm = "auto" (A171), which means the same as
+    leaving epssm unset; under a named physics profile that is the profile's
+    value to supply, while a stated 0.1 still differs from the profile."""
+
+    import re
+    from datetime import datetime
+
+    from gpuwm import domain_wizard as wizard
+    from gpuwm.prepared_single_domain_forecast import (
+        PHYSICS_PROFILES, named_profile_config_conflicts)
+
+    text = wizard.render_config(
+        name="acoustic-route", start_time=datetime(2024, 6, 13, 12),
+        hours=1, projection={
+            "map_proj": "lambert", "ref_lat": -33.0, "ref_lon": -70.1,
+            "truelat1": -23.0, "truelat2": -43.0, "stand_lon": -70.1},
+        dims=[(40, 40)], ratios=(), fetch_hints={"source": "gfs"},
+        case_data=None, root_dx_m=500.0, history_interval_s=300.0)
+    profile = next(name for name in PHYSICS_PROFILES
+                   if name.startswith("thompson-mp8-mynn-mynn-ruc-rte"))
+
+    def epssm_rows(value):
+        stated = re.sub(r"^epssm = .*$", f"epssm = {value}", text,
+                        count=1, flags=re.M)
+        assert stated != text or value == "0.5"
+        return [row for row in named_profile_config_conflicts(
+            stated, source="gfs", profile=profile) if row["key"] == "epssm"]
+
+    assert epssm_rows('"auto"') == []
+    assert [row["config_value"] for row in epssm_rows("0.1")] == [0.1]

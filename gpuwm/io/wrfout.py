@@ -428,6 +428,10 @@ def wrf_global_attrs(
     }
     if landuse_attrs is not None:
         attrs.update(dict(landuse_attrs))
+    if (run is not None and getattr(run, "sf_urban_physics", 0) > 0
+            and attrs["MMINLU"] == "MODIFIED_IGBP_MODIS_NOAH"):
+        from gpuwm.core.landuse import load_landuse_table
+        attrs["NUM_LAND_CAT"] = load_landuse_table().lucats
     domain_values = {
         "GRID_ID": grid_id,
         "PARENT_ID": parent_id,

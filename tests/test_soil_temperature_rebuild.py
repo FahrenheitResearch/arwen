@@ -264,3 +264,151 @@ def test_the_native_mapping_admits_land_outside_the_band_and_counts_it():
         healthy, "SOILT", source, candidate, source_land, target_land,
         (170.0, 400.0), land_columns_rebuilt=True)
     assert not any("rebuilt" in key for key in healthy["SOILT"])
+
+
+# --- snow-covered land whose top soil sits implausibly far below its skin ---
+#
+# HRRRv2 analyses under western snowpack also carry top soils of 170 to 243 K
+# under a skin near 268 K: inside real.exe's band, so the band rebuild left
+# them, and a 2017-01-19 15Z preparation over Idaho started its land model
+# with 8,082 of 17,978 land top soils below 240 K.  A snowpack insulates the
+# ground, so such a column is rebuilt TSK-to-TMN as the band rebuild does.
+
+from gpuwm.ingest.soil import (  # noqa: E402
+    SNOW_COVER_WATER_KG_M2, SNOW_SOIL_SKIN_DEFICIT_K,
+    snow_soil_below_skin_columns)
+
+
+def _snow(value=50.0):
+    snow = np.zeros(_SHAPE)
+    snow[_LAND.astype(bool)] = value
+    return snow
+
+
+def _cold_top_nodes():
+    """The measured in-band shape: 200 to 215 K over the top 10 cm under a
+    271 K skin, so Noah's first layer (5 cm) reads about 211 K from it."""
+    temperature, moisture = _nodes(bad=False)
+    temperature[:4, _BAD[0], _BAD[1]] = [200.0, 205.0, 210.0, 215.0]
+    return temperature, moisture
+
+
+def _snow_fields(route, *, snow=50.0, cold=True):
+    temperature, moisture = _cold_top_nodes() if cold else _nodes(bad=False)
+    names = ((MAPPED_SOIL_TEMPERATURE, MAPPED_SOIL_MOISTURE)
+             if route == "mapped" else ("SOILT", "SOILW"))
+    return {**_surface(), names[0]: temperature, names[1]: moisture,
+            "SNOW": _snow(snow)}
+
+
+def test_the_snow_rule_needs_snow_cover_a_deficit_past_the_limit_and_land():
+    skin = np.full((2, 3), 271.0)
+    temperature = np.full((2, 2, 3), 268.0)
+    limit = SNOW_SOIL_SKIN_DEFICIT_K
+    temperature[0, 0, 0] = 271.0 - limit - 0.5    # past the limit: selected
+    temperature[0, 0, 1] = 271.0 - limit          # AT the limit: kept
+    temperature[0, 0, 2] = 200.0                  # under too little snow
+    temperature[0, 1, 0] = 200.0                  # on water
+    temperature[0, 1, 1] = 200.0                  # a missing sample:
+    temperature[1, 1, 1] = np.nan                 # the refusal keeps it
+    temperature[1, 1, 2] = 150.0                  # deep only, top healthy
+    snow = np.full((2, 3), SNOW_COVER_WATER_KG_M2)
+    snow[0, 2] = SNOW_COVER_WATER_KG_M2 - 0.5
+    land = np.array([[True, True, True], [False, True, True]])
+    columns = snow_soil_below_skin_columns(
+        temperature, land, skin=skin, snow_water=snow)
+    assert columns.tolist() == [[True, False, False], [False, False, False]]
+
+
+@pytest.mark.parametrize("route", ["mapped", "native"])
+def test_a_snow_covered_column_far_below_its_skin_is_rebuilt_on_noah_layers(
+        route, capsys):
+    state = _prepare(_snow_fields(route))
+    expected = tsk_tmn_soil_profile(
+        NOAH_LAYER_MIDPOINTS_M, np.full(_SHAPE, 271.0),
+        np.full(_SHAPE, 277.0))[:, _BAD[0], _BAD[1]]
+    np.testing.assert_allclose(
+        state.soil_temperature[:, _BAD[0], _BAD[1]], expected,
+        rtol=0.0, atol=1.0e-12)
+    receipt = state.soil_temperature_repair
+    assert receipt["repaired_land_columns"] == 1
+    assert receipt["samples_outside_band"] == 0
+    assert "outside_band" not in receipt
+    assert receipt["bounding_box"] == {"rows": [1, 1], "columns": [2, 2]}
+    snow = receipt["snow_top_soil_below_skin"]
+    assert snow["columns"] == 1
+    assert snow["top_soil_min_k"] == 200.0
+    assert snow["largest_deficit_k"] == 71.0
+    assert snow["deficit_limit_k"] == SNOW_SOIL_SKIN_DEFICIT_K
+    assert snow["bounding_box"] == {"rows": [1, 1], "columns": [2, 2]}
+    # Moisture is kept and every other column is untouched.
+    healthy = _prepare(_snow_fields(route, cold=False))
+    np.testing.assert_array_equal(state.soil_moisture, healthy.soil_moisture)
+    others = np.ones(_SHAPE, dtype=bool)
+    others[_BAD] = False
+    np.testing.assert_array_equal(
+        state.soil_temperature[:, others], healthy.soil_temperature[:, others])
+    assert healthy.soil_temperature_repair == {}
+    err = capsys.readouterr().err
+    assert ("soil temperature rebuild under snow: 1 of 10 land column(s) are "
+            "snow covered (at least 10 kg m-2 of snow water) with a source "
+            "top soil more than 30 K below the skin temperature (top soil "
+            "200..200 K, mean 200 K, up to 71 K below the skin; rows 1..1 "
+            "and columns 2..2 of the 3x4 grid)") in err
+    assert "carried a source soil temperature outside 170..400 K" not in err
+
+
+@pytest.mark.parametrize("route", ["mapped", "native"])
+def test_the_same_cold_top_soil_without_snow_cover_is_left_as_analysed(route):
+    state = _prepare(_snow_fields(route, snow=SNOW_COVER_WATER_KG_M2 - 1.0))
+    assert state.soil_temperature_repair == {}
+    assert float(state.soil_temperature[0, _BAD[0], _BAD[1]]) < 240.0
+
+
+@pytest.mark.parametrize("route", ["mapped", "native"])
+def test_a_snow_covered_column_far_below_its_skin_is_rebuilt_on_ruc_levels(
+        route):
+    state = _prepare(_snow_fields(route), scheme=3)
+    expected = tsk_tmn_soil_profile(
+        state.level_depths, np.full(_SHAPE, 271.0),
+        np.full(_SHAPE, 277.0))[:, _BAD[0], _BAD[1]]
+    np.testing.assert_allclose(
+        state.soil_temperature[:, _BAD[0], _BAD[1]],
+        expected.astype(state.soil_temperature.dtype), rtol=0.0, atol=0.0)
+    receipt = state.soil_temperature_repair
+    assert receipt["snow_top_soil_below_skin"]["columns"] == 1
+    healthy = _prepare(_snow_fields(route, cold=False), scheme=3)
+    others = np.ones(_SHAPE, dtype=bool)
+    others[_BAD] = False
+    np.testing.assert_array_equal(
+        state.soil_temperature[:, others], healthy.soil_temperature[:, others])
+
+
+def test_both_rules_are_counted_apart_and_the_proof_boxes_both_in_degrees(
+        capsys):
+    from types import SimpleNamespace
+
+    from gpuwm.ingest.soil import soil_temperature_repair_proof
+
+    fields = _snow_fields("native")
+    fields["SOILT"][0, 0, 0] = 64.0          # a band column as well
+    state = _prepare(fields)
+    receipt = state.soil_temperature_repair
+    assert receipt["repaired_land_columns"] == 2
+    assert receipt["outside_band"]["columns"] == 1
+    assert receipt["outside_band"]["bounding_box"] == {
+        "rows": [0, 0], "columns": [0, 0]}
+    assert receipt["snow_top_soil_below_skin"]["columns"] == 1
+    assert receipt["bounding_box"] == {"rows": [0, 1], "columns": [0, 2]}
+    err = capsys.readouterr().err
+    assert "soil temperature rebuild: 1 of 10 land column(s) carried" in err
+    assert "soil temperature rebuild under snow: 1 of 10" in err
+    latitude = np.broadcast_to(np.array([43.0, 44.0, 45.0])[:, None], _SHAPE)
+    longitude = np.broadcast_to(
+        np.array([-118.0, -117.0, -116.0, -115.0])[None, :], _SHAPE)
+    proof = soil_temperature_repair_proof(state, SimpleNamespace(
+        latlon_mass=lambda: (latitude, longitude)))
+    assert proof["outside_band"]["bounding_box"]["latitude"] == [43.0, 43.0]
+    assert proof["snow_top_soil_below_skin"]["bounding_box"] == {
+        "rows": [1, 1], "columns": [2, 2],
+        "latitude": [44.0, 44.0], "longitude": [-116.0, -116.0]}

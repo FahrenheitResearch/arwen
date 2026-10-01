@@ -46,13 +46,25 @@ def read_plan(path):
     unsigned = {k: v for k, v in document.items() if k not in ('review_sha256', 'files')}
     if digest(unsigned) != document.get('review_sha256'):
         raise PlanError('The saved review digest changed; restore the reviewed document or generate a new plan.', code='REVIEW_CHANGED')
-    from gpuwm.local_da import PUBLISHED_FILES
-    expected_files = {name: key for name, key in PUBLISHED_FILES}
-    if set(document.get('files', {})) != set(expected_files):
+    from gpuwm.local_da import PUBLISHED_FILES, _route_companions
+    bound = {name: hashlib.sha256(document['configuration'][key].encode()).hexdigest()
+             for name, key in PUBLISHED_FILES}
+    # The files the route reads beside the configuration, derived again from
+    # the reviewed configuration as publish derived them: checked against
+    # the three alone, every published case on a route with companions (the
+    # HRRR chain's namelists) was refused here before anything ran.  A plan
+    # published before the publisher wrote them records the three alone and
+    # still launches: preparation writes the route's own set into its
+    # authority folder (gpuwm.regional_preparation._prepare_hourly).
+    companions = {companion.name: hashlib.sha256(text.encode()).hexdigest()
+                  for companion, text in _route_companions(document, path.parent)}
+    recorded = set(document.get('files', {}))
+    if recorded not in (set(bound), set(bound) | set(companions)):
         raise PlanError('The saved configuration roster is incomplete; republish into a new directory.', code='CONFIGURATION_CHANGED')
-    for name, key in expected_files.items():
-        expected = hashlib.sha256(document['configuration'][key].encode()).hexdigest()
-        if document['files'][name] != expected or _sha(path.parent / name) != expected:
+    bound.update(companions)
+    for name in sorted(recorded):
+        sha = bound[name]
+        if document['files'][name] != sha or _sha(path.parent / name) != sha:
             raise PlanError(f'{name} differs from the reviewed configuration; restore it or generate a new plan.', code='CONFIGURATION_CHANGED')
     for name, expected in document.get('inputs', {}).items():
         if _sha(name) != expected:

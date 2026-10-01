@@ -2,10 +2,10 @@
   "decode": {
     "mapping": {
       "name": "rw-wps-aifs-single-grib2.mapping.json",
-      "sha256": "421178fe8a81e304db6904428d57bd1852d2c55d9f3fda1f95a1becaeafba5dc"
+      "sha256": "1dec5755c55c2a527e7545bc6add7ce11beddc9fdd51c7f6ea95a8c7083d1a85"
     },
     "refusal": {
-      "message": "mapped frame at 2026-08-17 06:00:00 lacks required fields ['terrain_height']",
+      "message": "fields ['land_fraction', 'terrain_height'] are composition_bound: this mapping cannot materialize alone, because those values live in another packaged source's decode; a cross-source composition must bind each of them to a contributing source",
       "type": "ValueError"
     },
     "schema": "gpuwm-mapped-parity-digest-v2",
@@ -23,14 +23,12 @@
             "eastward_wind",
             "eastward_wind_10m",
             "geopotential_height",
-            "land_fraction",
             "northward_wind",
             "northward_wind_10m",
             "skin_temperature",
             "soil_temperature",
             "specific_humidity",
             "surface_pressure",
-            "terrain_height",
             "volumetric_soil_moisture"
           ],
           "fields": {
@@ -178,23 +176,6 @@
                 "20260817000000-0h-oper-fc.grib2:112"
               ]
             },
-            "land_fraction": {
-              "axes": [
-                "y",
-                "x"
-              ],
-              "maximum": 1.0,
-              "minimum": 0.0,
-              "missing": 0,
-              "sha256": "cec1b08bb05717bed5906c98a91ec524bfc74858d143841def57e28ded8c1b8f",
-              "shape": [
-                721,
-                1440
-              ],
-              "source_references": [
-                "20260817000000-0h-oper-fc.grib2:31"
-              ]
-            },
             "northward_wind": {
               "axes": [
                 "vertical",
@@ -328,23 +309,6 @@
                 "20260817000000-0h-oper-fc.grib2:24"
               ]
             },
-            "terrain_height": {
-              "axes": [
-                "y",
-                "x"
-              ],
-              "maximum": 5995.987620844338,
-              "minimum": -271.3921673606048,
-              "missing": 0,
-              "sha256": "c405ccbb581be0b2b2c7aafa6b0f3c0cde019290ea9c4821ee43c56b31db9acd",
-              "shape": [
-                721,
-                1440
-              ],
-              "source_references": [
-                "20260817000000-0h-oper-fc.grib2:17"
-              ]
-            },
             "volumetric_soil_moisture": {
               "axes": [
                 "soil",
@@ -368,7 +332,10 @@
           },
           "member": null,
           "source_cycle": "2026-08-17T00:00:00",
-          "unresolved_direct_fields": [],
+          "unresolved_direct_fields": [
+            "land_fraction",
+            "terrain_height"
+          ],
           "valid_time": "2026-08-17T00:00:00"
         },
         {
@@ -379,7 +346,6 @@
             "eastward_wind",
             "eastward_wind_10m",
             "geopotential_height",
-            "land_fraction",
             "northward_wind",
             "northward_wind_10m",
             "skin_temperature",
@@ -531,23 +497,6 @@
                 "20260817000000-6h-oper-fc.grib2:96",
                 "20260817000000-6h-oper-fc.grib2:99",
                 "20260817000000-6h-oper-fc.grib2:111"
-              ]
-            },
-            "land_fraction": {
-              "axes": [
-                "y",
-                "x"
-              ],
-              "maximum": 1.0,
-              "minimum": 0.0,
-              "missing": 0,
-              "sha256": "cec1b08bb05717bed5906c98a91ec524bfc74858d143841def57e28ded8c1b8f",
-              "shape": [
-                721,
-                1440
-              ],
-              "source_references": [
-                "20260817000000-0h-oper-fc.grib2:31"
               ]
             },
             "northward_wind": {
@@ -707,6 +656,7 @@
           "member": null,
           "source_cycle": "2026-08-17T00:00:00",
           "unresolved_direct_fields": [
+            "land_fraction",
             "terrain_height"
           ],
           "valid_time": "2026-08-17T06:00:00"
@@ -732,10 +682,10 @@
       ],
       "mapping": {
         "name": "rw-wps-aifs-single-grib2.mapping.json",
-        "sha256": "421178fe8a81e304db6904428d57bd1852d2c55d9f3fda1f95a1becaeafba5dc"
+        "sha256": "1dec5755c55c2a527e7545bc6add7ce11beddc9fdd51c7f6ea95a8c7083d1a85"
       },
       "materialization": {
-        "error": "mapped frame at 2026-08-17 06:00:00 lacks required fields ['terrain_height']",
+        "error": "fields ['land_fraction', 'terrain_height'] are composition_bound: this mapping cannot materialize alone, because those values live in another packaged source's decode; a cross-source composition must bind each of them to a contributing source",
         "error_type": "ValueError",
         "verdict": "INCOMPLETE"
       },
@@ -749,8 +699,8 @@
     "verdict": "INSPECTED"
   },
   "measured_on": {
-    "machine": "AMD64",
-    "system": "Windows"
+    "machine": "x86_64",
+    "system": "Linux"
   },
   "schema": "gpuwm-mapped-parity-digest-v2",
   "source": "aifs-single"

@@ -147,14 +147,18 @@ proposal is then reported against. A budget larger than what the card has free
 is bound by the card instead, and the document says which of the two bound it.
 A budget under the preset nest is refused, naming the floor in cells and in
 parent cells, what that floor prices on this machine, the number that price was
-compared against and the way out. That number is never the budget itself. On
-`--tiles off` it is the fit target: the budget less the headroom the admission
-leaves unspent. On the default `--tiles auto` the tree walk withholds the
-following nest's rebuild transient before it compares anything, so what binds
-is a smaller admission budget still, and the refusal quotes that one instead,
-names the bytes withheld and for which grid, and carries the walk's own way
-out beside the flag. Either way the quoted number is at or under the price, so
-raising the flag to just over what the floor costs is never the advice given.
+compared against and the way out. The floor is the preset nest itself, so it
+is judged the way the same command judges the preset without the flag: on
+`--tiles off` against the budget, with no headroom held back (a nest grown
+past the floor still leaves the headroom unspent). So, on the same free
+memory, the flag refuses the preset exactly where the command without it would
+shrink the preset, and admits it wherever that command keeps it; with a budget
+larger than the card, that is the card's own free memory. On the default
+`--tiles auto` the tree walk withholds the following nest's rebuild transient
+before it compares anything, so what binds is a smaller admission budget, and
+the refusal quotes that one instead, names the bytes withheld and for which
+grid, and carries the walk's own way out beside the flag. Either way the
+quoted number is at or under the price.
 
 When it is the CARD and not the named budget that cannot hold the preset nest,
 the refusal says that instead. A budget already larger than the card's free
@@ -210,7 +214,7 @@ decision:
 | `budget_gib` | the requested budget, or `null` when none was named |
 | `budget_bytes` | the budget the tree was admitted against |
 | `budget_bound_by` | `request` when the named budget bound it, `card` when the card's free memory did, `null` when no budget was named |
-| `headroom_bytes` | the part of the budget the admission leaves unspent |
+| `headroom_bytes` | the part of the budget the admission held back from the layout: the fit headroom when a search grew or shrank it, 0 when it was admitted as requested (the preset without `--nest-budget-gib`, or the floor with it); what the tree leaves unspent is the budget less `peak_envelope_bytes` (`memory.budget_bytes` carries the budget when none was named) |
 | `peak_envelope_bytes` | what the priced tree costs |
 | `sized_to_budget` | whether a budget chose this nest |
 

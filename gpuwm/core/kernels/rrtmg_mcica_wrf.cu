@@ -245,3 +245,43 @@ extern "C" __global__ void rmcw_fill_outputs(
         ((float *)outptrs[j])[oidx] = v;
     }
 }
+
+// Column layout changes only the copy addresses.
+extern "C" __global__ void rmcw_fill_outputs_column(
+    int ncol_total, int col0, int nc, int nlay, int ngpt,
+    const unsigned char *__restrict__ mask,          // (ngpt, nc, nlay)
+    int nout,
+    const unsigned long long *__restrict__ outptrs,  // [nout] float*
+    const unsigned long long *__restrict__ srcptrs,  // [nout] float*
+    const int *__restrict__ srckind,                 // [nout]
+    const float *__restrict__ clearval,              // [nout]
+    const int *__restrict__ bandoff)                 // [ngpt] 0-based
+{
+    long long t = (long long)blockDim.x * blockIdx.x + threadIdx.x;
+    if (t >= (long long)ngpt * nc * nlay) return;
+    int isub = (int)(t % ngpt);
+    long long rest = t / ngpt;
+    int l = (int)(rest % nlay);
+    int cc = (int)(rest / nlay);
+    int col = col0 + cc;
+    bool cloudy = mask[((size_t)isub * nc + cc) * nlay + l] != 0;
+    size_t oidx = ((size_t)col * nlay + l) * ngpt + isub;
+    for (int j = 0; j < nout; ++j) {
+        float v;
+        if (cloudy) {
+            int kind = srckind[j];
+            const float *src = (const float *)srcptrs[j];
+            if (kind == RMCW_SRC_CONST1) {
+                v = 1.0f;
+            } else if (kind == RMCW_SRC_PERCOL) {
+                v = src[(size_t)col * nlay + l];
+            } else {
+                v = src[((size_t)bandoff[isub] * ncol_total + col)
+                        * nlay + l];
+            }
+        } else {
+            v = clearval[j];
+        }
+        ((float *)outptrs[j])[oidx] = v;
+    }
+}

@@ -51,7 +51,7 @@ use rustwx_cross_section as xs;
 use rustwx_render::{RenderTheme, Rgba};
 use wrf_core::{ComputeOpts, WrfFile, getvar};
 
-use crate::local_import::parse_utc_timestamp;
+use crate::local_import::{parse_utc_timestamp, wrf_run_origin};
 
 /// One term of a section product: a sum of named 3-D fields with modifiers.
 #[derive(Debug, Clone, PartialEq)]
@@ -911,14 +911,16 @@ fn enumerate_frames(inputs: &[PathBuf]) -> Result<(Vec<FrameRef>, i64), String> 
             });
         }
         if origin.is_none() {
-            for name in ["START_DATE", "SIMULATION_START_DATE"] {
-                if let Ok(value) = file.global_attr_str(name) {
-                    if let Some(parsed) = parse_utc_timestamp(&value) {
-                        origin = Some(parsed);
-                        break;
-                    }
-                }
-            }
+            // The run's origin, not the domain's own start: a delayed nest's
+            // START_DATE is later by design, and its sections are labelled on
+            // the same lead clock as every other domain's (A137).
+            let stamp = |name: &str| {
+                file.global_attr_str(name)
+                    .ok()
+                    .and_then(|value| parse_utc_timestamp(&value))
+            };
+            origin = wrf_run_origin(stamp("START_DATE"), stamp("SIMULATION_START_DATE"))
+                .map_err(|err| format!("{}: {err}", path.display()))?;
         }
     }
     if frames.is_empty() {

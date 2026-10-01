@@ -7,6 +7,12 @@
 # 2025-03-15 23:00Z and 2025-03-16 00:00Z and whose START_DATE is
 # 2025-03-15 12:00Z, so the cut record is hour 12 and a reader that falls
 # back to the start time is visibly wrong.
+#
+# Every ncks call passes -h: without it ncks appends its command line, with
+# the absolute output path, to the global history attribute, and 2.8.0
+# shipped a home folder inside these three files that way.  The committed
+# copies had that attribute deleted through the NetCDF library and were
+# rewritten by nccopy (netCDF 4.9.3); every variable is unchanged.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 work="$(mktemp -d)"
@@ -69,8 +75,8 @@ PY
 
 # A cut that drops Times (and T, so only the generic reader takes it): the
 # valid time survives only in the file name.
-ncks -O -6 -d Time,1 -x -v Times,T "$work/char_source.nc" "$here/no_times_cut.nc"
+ncks -O -h -6 -d Time,1 -x -v Times,T "$work/char_source.nc" "$here/no_times_cut.nc"
 # The same record cut to NetCDF-4: ncks keeps Times as char[Time, DateStrLen].
-ncks -O -4 -d Time,1 "$work/char_source.nc" "$here/times_char_netcdf4_cut.nc"
+ncks -O -h -4 -d Time,1 "$work/char_source.nc" "$here/times_char_netcdf4_cut.nc"
 # A NetCDF-4 source whose Times is NC_STRING[Time], cut by ncks.
-ncks -O -4 -d Time,1 "$work/string_source.nc" "$here/times_string_netcdf4_cut.nc"
+ncks -O -h -4 -d Time,1 "$work/string_source.nc" "$here/times_string_netcdf4_cut.nc"

@@ -907,8 +907,8 @@ def _extend_above_model_profile(
             upper_plev = xp.full(
                 (ncol, 1), DTYPE(pressure_floor), dtype=DTYPE)
             upper_play = DTYPE(0.5) * top_pressure
-        upper_tlev = top_temperature.copy()
-        upper_tlay = top_temperature.copy()
+        upper_tlev = top_temperature
+        upper_tlay = top_temperature
     else:
         if rows is not None:
             plev_row, play_row, climo_top, climo_upper = rows
@@ -931,6 +931,15 @@ def _extend_above_model_profile(
             climo_upper = xp.interp(
                 upper_plev.ravel() * DTYPE(0.01), pprof, tprof).reshape(
                     ncol, upper_nlay)
+        if hasattr(xp, "RawModule"):
+            upper_qv = xp.broadcast_to(top_qv, (ncol, upper_nlay))
+            outputs = _append_profile_fields(
+                (play, plev, tlay, tlev, qv),
+                (upper_play, upper_plev,
+                 xp.broadcast_to(climo_top, (ncol, 1)),
+                 xp.broadcast_to(climo_upper, (ncol, upper_nlay)), upper_qv),
+                xp=xp, derive_lw_temperature=True)
+            return _RadiationColumnProfile(*outputs, model_nlay, upper_nlay)
         # Broadcast, not tile: (1, upper) against the chunk's own (ncol, 1)
         # top temperature is the same subtraction and the same addition the
         # wide arrays performed, element for element.
@@ -940,13 +949,47 @@ def _extend_above_model_profile(
         upper_tlay = DTYPE(0.5) * (
             all_upper_tlev[:, :-1] + all_upper_tlev[:, 1:])
     upper_qv = xp.broadcast_to(top_qv, (ncol, upper_nlay))
-    return _RadiationColumnProfile(
-        xp.ascontiguousarray(xp.concatenate((play, upper_play), axis=1)),
-        xp.ascontiguousarray(xp.concatenate((plev, upper_plev), axis=1)),
-        xp.ascontiguousarray(xp.concatenate((tlay, upper_tlay), axis=1)),
-        xp.ascontiguousarray(xp.concatenate((tlev, upper_tlev), axis=1)),
-        xp.ascontiguousarray(xp.concatenate((qv, upper_qv), axis=1)),
-        model_nlay, upper_nlay)
+    outputs = _append_profile_fields(
+        (play, plev, tlay, tlev, qv),
+        (upper_play, upper_plev, upper_tlay, upper_tlev, upper_qv), xp=xp)
+    return _RadiationColumnProfile(*outputs, model_nlay, upper_nlay)
+
+
+def _append_profile_fields(model, upper, *, xp, derive_lw_temperature=False):
+    """Concatenate five fields without changing their promoted dtypes."""
+    if not hasattr(xp, "RawModule"):
+        return tuple(xp.ascontiguousarray(xp.concatenate((a, b), axis=1))
+                     for a, b in zip(model, upper))
+    from gpuwm.core.kernels import get_kernel
+
+    ncol, model_nlay = model[0].shape
+    upper_nlay = upper[0].shape[1]
+    temperature_dtype = xp.result_type(model[2].dtype, upper[2].dtype)
+    if (temperature_dtype != xp.result_type(model[3].dtype, upper[3].dtype)
+            or temperature_dtype not in (xp.float32, xp.float64)):
+        raise TypeError("cap temperature fields must share float32 or float64")
+    if derive_lw_temperature and not (upper[2].dtype == xp.float64
+                                      == upper[3].dtype):
+        # rrtmgp_append_lw_profile reads the climatology rows as doubles
+        # (cupy.interp's float64 output); float32 rows would be read as
+        # the wrong bytes.
+        raise TypeError("LW cap climatology rows must be float64")
+    shapes = tuple((ncol, a.shape[1] + upper_nlay) for a in model)
+    outputs = tuple(xp.empty(shape, dtype=xp.result_type(a.dtype, b.dtype))
+                    for shape, a, b in zip(shapes, model, upper))
+    strides = tuple(np.int32(stride // v.itemsize)
+                    for v in upper for stride in v.strides)
+    threads = 256
+    size = ncol * (model_nlay + upper_nlay + 1)
+    suffix = "fp64" if temperature_dtype == xp.float64 else "fp32"
+    entry = ("rrtmgp_append_lw_profile" if derive_lw_temperature else
+             f"rrtmgp_append_profile_{suffix}")
+    get_kernel("rrtmgp_cloud", entry)(
+        ((size + threads - 1) // threads,), (threads,),
+        (*model, *upper, *outputs, np.int32(ncol), np.int32(model_nlay),
+         np.int32(upper_nlay), *strides))
+    return outputs
+
 
 
 def _model_flux_interfaces(flux, model_nlay: int, *, xp=None):
@@ -957,6 +1000,80 @@ def _model_flux_interfaces(flux, model_nlay: int, *, xp=None):
     if flux.ndim != 2 or flux.shape[1] < int(model_nlay) + 1:
         raise ValueError("radiation flux column does not reach model top")
     return flux[:, :int(model_nlay) + 1]
+
+
+def _store_model_flux_pair(up, dn, model_nlay, out_up, out_dn, *,
+                           daylight=None, xp=None):
+    """Copy both model fluxes straight to their final chunk views."""
+    if xp is None:
+        import cupy as xp
+    if not hasattr(xp, "RawModule"):
+        for source, target in ((up, out_up), (dn, out_dn)):
+            values = _model_flux_interfaces(source, model_nlay, xp=xp)
+            target[...] = values if daylight is None else xp.where(
+                daylight[:, None], values, DTYPE(0.0))
+        return
+    from gpuwm.core.kernels import get_kernel
+
+    up, dn = (xp.ascontiguousarray(xp.asarray(v, dtype=DTYPE))
+              for v in (up, dn))
+    model_nlev = int(model_nlay) + 1
+    if up.ndim != 2 or dn.shape != up.shape or up.shape[1] < model_nlev:
+        raise ValueError("radiation flux column does not reach model top")
+    ncol, source_nlev = up.shape
+    outputs = tuple(_workspace_output(v, (ncol, model_nlev), "model flux")
+                    for v in (out_up, out_dn))
+    if daylight is None:
+        mask = up
+    else:
+        mask = xp.ascontiguousarray(xp.asarray(daylight, dtype=xp.bool_))
+        if mask.shape != (ncol,):
+            raise ValueError("daylight must have one value per column")
+    threads = 256
+    get_kernel("rrtmgp_cloud", "rrtmgp_store_model_flux_pair")(
+        ((ncol * model_nlev + threads - 1) // threads,), (threads,),
+        (up, dn, mask, *outputs, np.int32(ncol), np.int32(source_nlev),
+         np.int32(model_nlev), np.int32(daylight is not None)))
+
+
+def _prepare_sw_inputs(albedo, solar, mu, nlay, *, out=None, xp=None):
+    """Materialize all three exact solver-input broadcasts together."""
+    if xp is None:
+        import cupy as xp
+    albedo, solar = (xp.ascontiguousarray(xp.asarray(v, dtype=DTYPE))
+                     for v in (albedo, solar))
+    mu = xp.ascontiguousarray(xp.asarray(mu))
+    if mu.dtype not in (xp.float32, xp.float64) or not hasattr(xp, "RawModule"):
+        mu = xp.asarray(mu, dtype=DTYPE)
+    if albedo.ndim != 1 or solar.ndim != 1 or mu.shape != albedo.shape:
+        raise ValueError("SW broadcast inputs must be one-dimensional")
+    ncol, ngpt = albedo.size, solar.size
+    shapes = ((ncol, ngpt), (ncol, ngpt), (ncol, int(nlay)))
+    if not hasattr(xp, "RawModule"):
+        values = (xp.broadcast_to(albedo[:, None], shapes[0]),
+                  xp.broadcast_to(solar[None, :], shapes[1]),
+                  xp.broadcast_to(mu[:, None], shapes[2]))
+        if out is None:
+            return tuple(xp.ascontiguousarray(v) for v in values)
+        for a, b in zip(out, values): a[...] = b
+        return out
+    from gpuwm.core.kernels import get_kernel
+
+    if out is None:
+        out = (None,) * 3
+    if len(out) != 3:
+        raise ValueError("SW broadcast outputs must contain three arrays")
+    outputs = tuple(_workspace_output(v, shape, name)
+                    for v, shape, name in zip(out, shapes, ("albedo", "inc", "mu0")))
+    threads = 256
+    size = ncol * max(ngpt, int(nlay))
+    entry = ("rrtmgp_prepare_sw_inputs_fp64" if mu.dtype == xp.float64 else
+             "rrtmgp_prepare_sw_inputs")
+    get_kernel("rrtmgp_cloud", entry)(
+        ((size + threads - 1) // threads,), (threads,),
+        (albedo, solar, mu, *outputs, np.int32(ncol), np.int32(ngpt),
+         np.int32(nlay)))
+    return outputs
 
 
 #: Named per-chunk scratch buffers.  `_prepare_above_model_chunk` runs 2364
@@ -1022,6 +1139,36 @@ def _append_clear_upper_layers(value, upper_nlay: int, *, xp=None,
     if clear_tail:
         out[:, model_nlay:] = DTYPE(0.0)
     return out
+
+
+def _clear_upper_fields(values, upper_nlay, *, xp, names=None):
+    """Copy all five fields and append clear tails with one launch."""
+    if not hasattr(xp, "RawModule") or upper_nlay == 0:
+        return tuple(_append_clear_upper_layers(
+            value, upper_nlay, xp=xp,
+            scratch=None if names is None else names[i])
+            for i, value in enumerate(values))
+    from gpuwm.core.kernels import get_kernel
+
+    values = tuple(xp.ascontiguousarray(xp.asarray(v, dtype=DTYPE))
+                   for v in values)
+    if len(values) != 5 or any(v.ndim != 2 or v.shape != values[0].shape
+                               for v in values):
+        raise ValueError("clear-layer fields must share a 2-D shape")
+    if upper_nlay < 0:
+        raise ValueError("upper_nlay must be nonnegative")
+    ncol, model_nlay = values[0].shape
+    shape = (ncol, model_nlay + upper_nlay)
+    outputs = tuple(xp.empty(shape, dtype=DTYPE) if names is None else
+                    _chunk_scratch(names[i], shape, xp=xp)[0]
+                    for i in range(5))
+    threads = 256
+    size = ncol * shape[1]
+    get_kernel("rrtmgp_cloud", "rrtmgp_clear_upper_layers")(
+        ((size + threads - 1) // threads,), (threads,),
+        (*values, *outputs, np.int32(ncol), np.int32(model_nlay),
+         np.int32(shape[1])))
+    return outputs
 
 
 def _array(value, dtype):
@@ -1171,6 +1318,27 @@ class _RadiationColumnChunk:
     paths: HydrometeorPaths
     cldfra: object
     metadata: _InterpolationMetadata
+    solver_profile: _RadiationColumnProfile | None = None
+
+
+def _solver_temperature_profile(profile, *, xp):
+    """Keep the retained profile and share its two FP32 consumer casts."""
+    if not hasattr(xp, "RawModule") or profile.tlay.dtype == xp.float32:
+        return profile
+    from gpuwm.core.kernels import get_kernel
+
+    if profile.tlay.dtype != xp.float64 or profile.tlev.dtype != xp.float64:
+        raise TypeError("solver temperature profile must use float32 or float64")
+    tlay = xp.empty(profile.tlay.shape, dtype=DTYPE)
+    tlev = xp.empty(profile.tlev.shape, dtype=DTYPE)
+    ncol, nlay = tlay.shape
+    threads = 256
+    get_kernel("rrtmgp_cloud", "rrtmgp_solver_temperatures")(
+        ((ncol * (nlay + 1) + threads - 1) // threads,), (threads,),
+        (profile.tlay, profile.tlev, tlay, tlev, np.int32(ncol), np.int32(nlay)))
+    return _RadiationColumnProfile(
+        profile.play, profile.plev, tlay, tlev, profile.qv,
+        profile.model_nlay, profile.upper_nlay)
 
 
 def _prepare_above_model_chunk(
@@ -1208,21 +1376,22 @@ def _prepare_above_model_chunk(
     # Distinct names: all five are live at once, so they must never share
     # a buffer.  `kind` keeps the LW and SW passes apart even where their
     # shapes coincide.
-    chunk_paths = HydrometeorPaths(*(
-        _append_clear_upper_layers(
-            value[columns], profile.upper_nlay, xp=xp,
-            scratch=(f"clear.{kind}.{name}" if scratch else None))
-        for name, value in (("clwp", paths.clwp), ("ciwp", paths.ciwp),
-                            ("reliq", paths.reliq), ("dgice", paths.dgice))))
-    chunk_cldfra = _append_clear_upper_layers(
-        cldfra[columns], profile.upper_nlay, xp=xp,
-        scratch=(f"clear.{kind}.cldfra" if scratch else None))
+    clear_values = (paths.clwp[columns], paths.ciwp[columns],
+                    paths.reliq[columns], paths.dgice[columns], cldfra[columns])
+    clear_names = tuple(f"clear.{kind}.{name}" for name in
+                        ("clwp", "ciwp", "reliq", "dgice", "cldfra"))
+    clear_outputs = _clear_upper_fields(
+        clear_values, profile.upper_nlay, xp=xp,
+        names=clear_names if scratch else None)
+    chunk_paths = HydrometeorPaths(*clear_outputs[:4])
+    chunk_cldfra = clear_outputs[4]
+    solver_profile = _solver_temperature_profile(profile, xp=xp)
     metadata = _interpolation_metadata(
-        tables, profile.play, profile.tlay, validate=validate,
+        tables, solver_profile.play, solver_profile.tlay, validate=validate,
         scratch=(f"meta.{kind}" if scratch else None))
     return _RadiationColumnChunk(
         profile=profile, paths=chunk_paths, cldfra=chunk_cldfra,
-        metadata=metadata)
+        metadata=metadata, solver_profile=solver_profile)
 
 
 # Shared-workspace counterpart to SCRATCH_SLOT_LIFETIME_AUDIT.  Each value
@@ -1237,7 +1406,7 @@ RRTMGP_WORKSPACE_LIFETIME_AUDIT = {
         "cld_tau": "rrtmgp_cloud_optics kernel",
         "cld_ssa": "rrtmgp_cloud_optics kernel",
         "cld_asy": "rrtmgp_cloud_optics kernel",
-        "col_dry": "complete expression assignment",
+        "col_dry": "reserved unread slot; no producer required",
         "mcica_mask": "rrtmgp_mcica_maxran kernel",
     },
     "lw_rte": {
@@ -1265,7 +1434,7 @@ RRTMGP_WORKSPACE_LIFETIME_AUDIT = {
         "cld_tau": "rrtmgp_cloud_optics kernel",
         "cld_ssa": "rrtmgp_cloud_optics kernel",
         "cld_asy": "rrtmgp_cloud_optics kernel",
-        "col_dry": "complete expression assignment",
+        "col_dry": "reserved unread slot; no producer required",
         "mcica_mask": "rrtmgp_mcica_maxran kernel",
     },
     "sw_rte": {
@@ -2443,7 +2612,9 @@ def _mcica_jump_tables(nlay: int, ngpt: int):
         s3[g] = (int(s3[rest]) * lvl_mwc[0][j]) % _MCICA_MWC[0][1]
         s4[g] = (int(s4[rest]) * lvl_mwc[1][j]) % _MCICA_MWC[1][1]
     u32 = lambda a: cp.asarray(np.ascontiguousarray(a, dtype=np.uint32))
-    return njump, u32(s1.ravel()), u32(s2.ravel()), u32(s3), u32(s4)
+    # All subcolumns start with the same xorshift seed. At each selected
+    # bit, neighboring g threads therefore read neighboring table words.
+    return njump, u32(s1.ravel()), u32(s2.T.ravel()), u32(s3), u32(s4)
 
 
 def mcica_cloud_masks(play, cldfra, ngpt, permuteseed, *, validate=True):
@@ -3058,7 +3229,7 @@ class RRTMGPRadiation:
         ncells = int(play.shape[0]) * int(play.shape[1])
         threads = 256
         get_kernel("rrtmgp_gas", "rrtmgp_gas_vmr_fill")(
-            ((ncells + threads - 1) // threads,), (threads,), (
+            ((ncells * (tables.ngas + 1) + threads - 1) // threads,), (threads,), (
                 qv, ozone, trace_index, trace_value, vmr,
                 DTYPE(0.028964 / 0.018016),
                 np.int32(tables.gas_index["h2o"]),
@@ -3477,7 +3648,7 @@ class RRTMGPRadiation:
                 validate_top=False,
                 validate=full_validation, uniform_top=uniform_top,
                 scratch=workspace is not None)
-            lw_profile = lw_chunk.profile
+            lw_profile = lw_chunk.solver_profile or lw_chunk.profile
             lw_paths = lw_chunk.paths
             lw_cldfra = lw_chunk.cldfra
             chunk_metadata = lw_chunk.metadata
@@ -3525,7 +3696,7 @@ class RRTMGPRadiation:
                     lw_profile.tlay, vmr_lw,
                     metadata=chunk_metadata, validate=full_validation,
                     zero_g_sentinel=True, out=(work["gas_tau"],),
-                    col_dry_out=work["col_dry"])
+                    compute_col_dry=False)
                 cld_lw = _cloud_optics(
                     self.lw_cloud_tables, lw_paths.clwp, lw_paths.ciwp,
                     lw_paths.reliq, lw_paths.dgice,
@@ -3556,10 +3727,8 @@ class RRTMGPRadiation:
                         tables=self.lw_tables, cloud=cld_lw, mask=mask_lw),
                     planck=planck_in)
                 del mask_lw, planck_in
-            lw_up[sl] = _model_flux_interfaces(
-                flux.flux_up, nz, xp=cp)
-            lw_dn[sl] = _model_flux_interfaces(
-                flux.flux_dn, nz, xp=cp)
+            _store_model_flux_pair(
+                flux.flux_up, flux.flux_dn, nz, lw_up[sl], lw_dn[sl], xp=cp)
             del vmr_lw, gas_lw, cld_lw, emiss, flux
             del chunk_metadata, lw_profile, lw_paths, lw_cldfra, lw_chunk
             # ``work`` is the phase view mapping and every value in it is a
@@ -3596,11 +3765,41 @@ class RRTMGPRadiation:
             self._solar_constant(valid_time)
             / float(np.sum(np.asarray(self.sw_tables.solar_source,
                                       dtype=np.float64))))
-        sw_up = cp.empty_like(lw_up) if self.shortwave else cp.zeros_like(lw_up)
-        sw_dn = cp.empty_like(lw_up) if self.shortwave else cp.zeros_like(lw_up)
-        for start in range(0, ncol if self.shortwave else 0, self.column_chunk):
-            sl = slice(start, min(start + self.column_chunk, ncol))
-            chunk_ncol = sl.stop - sl.start
+        # A dark column's shortwave result is replaced by zero below, so
+        # it is never computed: every SW stage is a function of its own
+        # column (per-cell optics, a McICA seed from the column's own
+        # pressures, a per-column solve whose g-point sum order is fixed),
+        # so a daylit column gives the same bits in any chunk.  Inside a
+        # graph capture nothing can be read back, and the full-column
+        # path runs as before.
+        sw_ncol = ncol if self.shortwave else 0
+        sw_columns = None
+        if self.shortwave and not _stream_is_capturing(cp):
+            sw_ncol = int(cp.count_nonzero(daylight))
+            if 0 < sw_ncol < ncol:
+                # Ascending column order, so chunks stay in model order.
+                sw_columns = cp.flatnonzero(daylight.reshape(-1))
+        sw_allocate = cp.empty_like if sw_ncol == ncol else cp.zeros_like
+        sw_up = sw_allocate(lw_up)
+        sw_dn = sw_allocate(lw_up)
+        # The surface direct beam of the same two-stream solve (RRTMG's
+        # SWDDIR analogue), computed only when a consumer asked for it:
+        # BEP+BEM (sf_urban_physics = 3) allocated SWDDIR/SWDDIF in the
+        # surface fields, or slope_rad asked for the surface DIFFUSE flux
+        # (gpuwm.core.topo_radiation), total minus direct beam at the
+        # surface (RTE's flux_dn already carries the direct beam).  One
+        # plane, night columns keep the radiation driver's zero, and
+        # nothing it feeds changes any other output.
+        want_swddir = bool(self.shortwave and "swddir" in fields)
+        sw_dir_sfc = (cp.zeros(lw_up.shape[0], dtype=DTYPE)
+                      if want_swddir or (self.shortwave and getattr(
+                          self, "surface_diffuse_requested", False))
+                      else None)
+        for start in range(0, sw_ncol, self.column_chunk):
+            stop = min(start + self.column_chunk, sw_ncol)
+            sl = (slice(start, stop) if sw_columns is None
+                  else sw_columns[start:stop])
+            chunk_ncol = stop - start
             sw_chunk = _prepare_above_model_chunk(
                 tables=self.sw_tables, play=play, plev=plev, tlay=tlay,
                 tlev=tlev, qv=qv, paths=paths, cldfra=cldfra, columns=sl,
@@ -3608,8 +3807,12 @@ class RRTMGPRadiation:
                 pressure_floor=RRTMGP_TOA_PRESSURE_PA, xp=cp,
                 validate_top=False,
                 validate=full_validation, uniform_top=uniform_top,
-                scratch=workspace is not None)
-            sw_profile = sw_chunk.profile
+                # A moving daylight boundary produces many tail widths.
+                # Reuse full chunks without retaining every tail in the cache.
+                scratch=(workspace is not None and
+                         (sw_columns is None or
+                          chunk_ncol == self.column_chunk)))
+            sw_profile = sw_chunk.solver_profile or sw_chunk.profile
             sw_paths = sw_chunk.paths
             sw_cldfra = sw_chunk.cldfra
             chunk_metadata = sw_chunk.metadata
@@ -3632,14 +3835,11 @@ class RRTMGPRadiation:
                     self.sw_tables, gas_sw, cld_sw, cloud_mask=mask_sw)
                 del mask_sw
                 # (workspace-less path: finalize kept)
-                albedo = cp.ascontiguousarray(cp.broadcast_to(
-                    albedo_surface[sl, None],
-                    (chunk_ncol, self.sw_tables.ngpt)))
-                inc = cp.ascontiguousarray(cp.broadcast_to(
-                    solar[None, :],
-                    (chunk_ncol, self.sw_tables.ngpt)))
+                albedo, inc, mu_chunk = _prepare_sw_inputs(
+                    albedo_surface[sl], solar, mu[sl], sw_profile.play.shape[1],
+                    xp=cp)
                 flux = sw_rte(
-                    optics_sw.tau, optics_sw.ssa, optics_sw.g, mu[sl],
+                    optics_sw.tau, optics_sw.ssa, optics_sw.g, mu_chunk,
                     albedo, albedo, inc, top_at_1=False)
                 del optics_sw
             else:
@@ -3653,7 +3853,7 @@ class RRTMGPRadiation:
                     metadata=chunk_metadata, validate=full_validation,
                     zero_g_sentinel=True,
                     out=(work["gas_tau"], work["gas_ssa"]),
-                    col_dry_out=work["col_dry"])
+                    compute_col_dry=False)
                 cld_sw = _cloud_optics(
                     self.sw_cloud_tables, sw_paths.clwp, sw_paths.ciwp,
                     sw_paths.reliq, sw_paths.dgice,
@@ -3665,12 +3865,9 @@ class RRTMGPRadiation:
                     out=work["mcica_mask"])
                 # No finalize; see the LW branch.
                 work = workspace.phase("sw_rte", chunk_ncol)
-                albedo = work["albedo_gpt"]
-                albedo[...] = albedo_surface[sl, None]
-                inc = work["inc_gpt"]
-                inc[...] = solar[None, :]
-                mu_chunk = work["mu0"]
-                mu_chunk[...] = mu[sl, None]
+                albedo, inc, mu_chunk = _prepare_sw_inputs(
+                    albedo_surface[sl], solar, mu[sl], sw_profile.play.shape[1],
+                    out=(work["albedo_gpt"], work["inc_gpt"], work["mu0"]), xp=cp)
                 flux = _sw_rte(
                     gas_sw.tau, gas_sw.ssa, None, mu_chunk,
                     albedo, albedo, inc, top_at_1=False,
@@ -3679,15 +3876,31 @@ class RRTMGPRadiation:
                     fused_cloud=FusedCloudOptics(
                         tables=self.sw_tables, cloud=cld_sw, mask=mask_sw))
                 del mask_sw
-            mask = daylight.reshape(-1)[sl, None]
-            sw_up[sl] = cp.where(
-                mask, _model_flux_interfaces(flux.flux_up, nz, xp=cp),
-                DTYPE(0.0))
-            sw_dn[sl] = cp.where(
-                mask, _model_flux_interfaces(flux.flux_dn, nz, xp=cp),
-                DTYPE(0.0))
+            if sw_columns is None:
+                _store_model_flux_pair(
+                    flux.flux_up, flux.flux_dn, nz, sw_up[sl], sw_dn[sl],
+                    daylight=daylight.reshape(-1)[sl], xp=cp)
+            else:
+                # Compacted daylit columns: an index array selects a COPY,
+                # not a view, so the fused store fills chunk-shaped arrays
+                # that are then scattered back.  Every column here is
+                # daylit, so the store applies no mask.
+                chunk_up = cp.empty((chunk_ncol, nz + 1), dtype=DTYPE)
+                chunk_dn = cp.empty_like(chunk_up)
+                _store_model_flux_pair(
+                    flux.flux_up, flux.flux_dn, nz, chunk_up, chunk_dn,
+                    xp=cp)
+                sw_up[sl] = chunk_up
+                sw_dn[sl] = chunk_dn
+                del chunk_up, chunk_dn
+            if sw_dir_sfc is not None:
+                direct = _model_flux_interfaces(flux.flux_dir, nz, xp=cp)[:, 0]
+                sw_dir_sfc[sl] = (direct if sw_columns is not None else
+                                  cp.where(daylight.reshape(-1)[sl], direct,
+                                           DTYPE(0.0)))
+                del direct
             del vmr_sw, gas_sw, cld_sw
-            del albedo, inc, flux, mask, chunk_metadata
+            del albedo, inc, flux, chunk_metadata
             del sw_profile, sw_paths, sw_cldfra, sw_chunk
             # As in the LW loop: ``work`` and the materialized mu0 broadcast
             # are workspace views and hold the backing alive past the loop.
@@ -3696,6 +3909,12 @@ class RRTMGPRadiation:
         result = _fluxes_to_radiation(
             lw_up, lw_dn, sw_up, sw_dn, plev, exner, ny=ny, nx=nx,
             coszen=mu_raw, validate=full_validation)
+        if sw_dir_sfc is not None:
+            if want_swddir:
+                result.swddir = cp.ascontiguousarray(
+                    sw_dir_sfc.reshape(ny, nx))
+            result.swddif = cp.ascontiguousarray(
+                (sw_dn[:, 0] - sw_dir_sfc).reshape(ny, nx))
         if not self.longwave:
             result.glw = fields["glw"]
             result.olr = None
@@ -3962,7 +4181,7 @@ def gas_optics(tables: GasTables, play, plev, tlay, vmr) -> GasOpticsResult:
 
 def _gas_optics(tables: GasTables, play, plev, tlay, vmr, *, metadata,
                 validate, zero_g_sentinel, out=None,
-                col_dry_out=None) -> GasOpticsResult:
+                col_dry_out=None, compute_col_dry=True) -> GasOpticsResult:
     """Internal gas optics path supporting one-call shared metadata."""
     import cupy as cp
     from gpuwm.core.kernels import get_kernel
@@ -3999,14 +4218,12 @@ def _gas_optics(tables: GasTables, play, plev, tlay, vmr, *, metadata,
     rayleigh = (d.rayleigh if tables.rayleigh is not None
                 else (tau if out is not None
                       else cp.empty((1,), dtype=DTYPE)))
-    # One block per cell (see the kernel).  64 threads was swept
-    # against 32/96/128 at both band widths and won at both; the
-    # kernel strides the g-point axis, so any block size is
-    # correct and only the sweep decides this one.
-    threads = min(64, int(tables.ngpt))
-    blocks = int(ncol) * int(nlay)
-    shared = 4 * max(int(tables.minor_limits_gpt_lower.shape[0]),
-                     int(tables.minor_limits_gpt_upper.shape[0]))
+    # Four warp-local cells share a block without sharing their values.
+    threads = 128
+    blocks = (int(ncol) * int(nlay) + 3) // 4
+    shared = 16 * (max(int(tables.minor_limits_gpt_lower.shape[0]),
+                       int(tables.minor_limits_gpt_upper.shape[0]))
+                   + 8 * int(tables.nflav))
     kernel = get_kernel("rrtmgp_gas", "rrtmgp_gas_optics")
     kernel((blocks,), (threads,), (
         play, plev, tlay, vmr, metadata.iatm, metadata.jt, metadata.jp,
@@ -4032,18 +4249,20 @@ def _gas_optics(tables: GasTables, play, plev, tlay, vmr, *, metadata,
         np.int32(tables.minor_limits_gpt_lower.shape[0]),
         np.int32(tables.minor_limits_gpt_upper.shape[0])),
         shared_mem=shared)
-    h2o = vmr[:, :, tables.gas_index["h2o"]]
-    fact = DTYPE(1.0) / (DTYPE(1.0) + h2o)
-    m_air = (DTYPE(0.028964) + DTYPE(0.018016) * h2o) * fact
-    col_dry_value = (cp.abs(plev[:, 1:] - plev[:, :-1])
-                     * DTYPE(6.02214076e23) * fact
-                     / (DTYPE(10000.0) * m_air * DTYPE(9.80665)))
-    if col_dry_out is None:
-        col_dry = col_dry_value
-    else:
-        col_dry = _workspace_output(
-            col_dry_out, (ncol, nlay), "col_dry")
-        col_dry[...] = col_dry_value
+    col_dry = None
+    if compute_col_dry:
+        h2o = vmr[:, :, tables.gas_index["h2o"]]
+        fact = DTYPE(1.0) / (DTYPE(1.0) + h2o)
+        m_air = (DTYPE(0.028964) + DTYPE(0.018016) * h2o) * fact
+        col_dry_value = (cp.abs(plev[:, 1:] - plev[:, :-1])
+                         * DTYPE(6.02214076e23) * fact
+                         / (DTYPE(10000.0) * m_air * DTYPE(9.80665)))
+        if col_dry_out is None:
+            col_dry = col_dry_value
+        else:
+            col_dry = _workspace_output(
+                col_dry_out, (ncol, nlay), "col_dry")
+            col_dry[...] = col_dry_value
     if tables.kind == "lw":
         return GasOpticsResult(tau=tau, col_dry=col_dry)
     # The zero-field sentinel is private to the production fused finalizer.
@@ -4215,40 +4434,48 @@ _RTE_MAX_FOLD_BLOCK = 1024
 
 
 def _rte_gpt_tile(kernel, ncol: int, ngpt: int, *,
-                  fold: bool = False) -> int:
-    """How many g-points per column to hold in flight in the RTE solvers.
+                  fold: bool = False, longwave: bool = False) -> int:
+    """Select buffered fold widths without querying the card SM count.
 
-    Each thread integrates one g-point of one column and carries the whole
-    column in local memory, so these kernels want SM COVERAGE and nothing
-    beyond it: past about one block per SM the extra threads only multiply
-    the live local working set and the solver slows down again.  More
-    parallelism is emphatically not monotonically better here.
+    Buffered folds use 128 LW g-points and 32 SW g-points (ngpt 224 admits
+    no power of two above 32). Narrow bands use smaller full tiles. The
+    helper mode fold=False retains coverage based on the frame.
 
-    Measured on this 70-SM card, sweeping the tile at fixed ncol:
+    Measured on an RTX PRO 4500 Blackwell (82 SMs), 288 x 288 x 59, CUPTI
+    ms per radiation call, every width byte-identical:
 
-        ncol  256   tile   4     8    16    32    64   128   256
-        lw ms       4.27  2.50  1.39  0.82  0.56  0.76  0.90
-        ncol 1024   tile   4     8    16    32    64   128   256
-        lw ms       5.18  3.01  2.06  3.03  3.76  5.64  6.39
-        sw ms       6.41  3.76  3.91  4.84  5.69
+        LW width      16      32      64     128
+        LW ms      135.9   114.4    87.0    76.6
 
-    Both LW optima land on 16,384 threads and SW's on 8,192 -- that is
-    64 and 32 blocks against 70 SMs.  The optimum is a THREAD COUNT: it does
-    not move when the per-thread frame changes, which is what rules this out
-    as a cache-footprint effect (the same sweep run against a 42% smaller
-    frame peaks at the same tile, not a proportionally larger one).
+    and SW at width 32 with 1, 2 or 4 columns per block: 123.2, 138.1,
+    123.8 ms (width 16: 145.6).
+
+    Measurement-only overrides are read once per solver call, before its
+    tile loop. GPUWM_RTE_TILE_WIDTH overrides either band; the optional
+    GPUWM_RTE_LW_TILE_WIDTH or GPUWM_RTE_SW_TILE_WIDTH takes precedence.
+    Widths must be integers from 1 through 1024 and are capped by the band
+    length. GPUWM_RTE_FOLD accepts auto, 0 or 1; 0 keeps that width and
+    uses partials/reduce, while 1 requires a full tile of at least 16 and enough shared
+    memory. GPUWM_RTE_COLUMNS_PER_BLOCK overrides the requested packing;
+    resource limits and complete wide groups still apply. These controls
+    only partition an unchanged ascending sum. GPUWM_RTE_TILE_COVERAGE
+    remains a measurement-only override for the non-folding tile rule.
     """
-    # SM coverage scaled by how big a column frame the kernel carries.  The
-    # single-coverage rule was measured when BOTH solvers spilled ~1.2-2.7 kB
-    # per thread; halving the LW frame to 592 B (and trimming SW to 2088)
-    # moved LW's optimum and left SW's where it was.  Re-swept at ncol 1024:
-    #
-    #     tile      8      16      24      32      48      64
-    #     LW ms  2.369   1.417   1.414   1.267   1.635   1.579
-    #     SW ms  3.345   2.575   3.020   3.259   3.862   3.864
-    #
-    # LW wants two blocks per SM now, SW still wants one.  Reading the frame
-    # off the compiled kernel keeps this accurate if either changes again.
+    forced = os.environ.get("GPUWM_RTE_TILE_WIDTH", "").strip()
+    band_forced = os.environ.get(
+        "GPUWM_RTE_LW_TILE_WIDTH" if longwave else "GPUWM_RTE_SW_TILE_WIDTH",
+        "").strip()
+    forced = band_forced or forced
+    if forced:
+        tile = int(forced)
+        if not 1 <= tile <= _RTE_MAX_FOLD_BLOCK:
+            raise ValueError("GPUWM_RTE_TILE_WIDTH must be from 1 through 1024")
+        return min(tile, int(ngpt))
+    if fold:
+        tile = 128 if longwave else 32
+        while tile > int(ngpt) or int(ngpt) % tile:
+            tile //= 2
+        return max(1, tile)
     frame = 0
     if kernel is not None:
         try:
@@ -4256,45 +4483,20 @@ def _rte_gpt_tile(kernel, ncol: int, ngpt: int, *,
         except Exception:                                # pragma: no cover
             frame = 0
     coverage = 2 if 0 < frame <= 1024 else 1
-    # Measurement override, so the two settings can be INTERLEAVED in one
-    # session (13.5 trap 3).  Comparing a block of runs against a block taken
-    # later cost me a wrong answer here: the control moved 7.7% between the
-    # groups and the normaliser does not survive a regime change (13.5e).
     forced = os.environ.get("GPUWM_RTE_TILE_COVERAGE", "").strip()
     if forced:
         coverage = max(1, int(forced))
-    # A FOLDING kernel writes no partial fluxes, so the tile the
-    # partial-writing kernel wanted is not the tile this one wants -- the
-    # third time in this file that a constant went stale when the thing it
-    # was tuned against changed shape.  Re-swept, LW, nlay 99:
-    #
-    #     ncol      tile 32   tile 64  tile 128
-    #     1024       1.249     0.971     1.166
-    #      912       1.195     0.912     1.091
-    #
-    # and the optimum is a THREAD COUNT, not a tile: it held at 65536
-    # across ncol 256, 512 and 1024.  That is 1024 threads per SM here, so
-    # it scales with the card the way the coverage rule below does.
-    target = (_rte_sm_count() * 1024 if fold
-              else _rte_sm_count() * _RTE_BLOCK * coverage)
+    target = _rte_sm_count() * _RTE_BLOCK * coverage
     tile, cap = 1, min(max(1, target // max(1, int(ncol))), int(ngpt))
     while tile * 2 <= cap:
         tile *= 2
-    if fold:
-        # The fold group is a block and every pass must be full, because the
-        # kernel's `gpt >= ngpt` guard is NOT block-uniform and a short last
-        # pass would strand threads at a barrier.  So the tile has to DIVIDE
-        # the band as well as fit in it -- ngpt 224 admits no power of two
-        # above 32, which is the ceiling on the SW fold.
-        while tile > 1 and int(ngpt) % tile:
-            tile //= 2
     return max(1, min(tile, int(ngpt)))
 
 
 def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
             incident_flux=None, *, top_at_1: bool, out,
             incident_out, fused_cloud=None,
-            planck=None) -> FluxResult:
+            planck=None, _fold_columns=2) -> FluxResult:
     import cupy as cp
     from gpuwm.core.kernels import get_kernel
 
@@ -4346,19 +4548,36 @@ def _lw_rte(tau, lay_source, lev_source, sfc_source, sfc_emis,
     stage = _rte_kernel("rrtmgp_lw_noscat", nlay)
     fold = _rte_kernel("rrtmgp_lw_flux_reduce", nlay)
     nlev = nlay + 1
-    tile = _rte_gpt_tile(stage, ncol, ngpt, fold=True)
-    # The folding path gives each COLUMN its own block, so the block is
-    # the fold group and no partial block can strand a thread at a
-    # barrier: grid is exactly ncol and blockDim is exactly the tile.
-    # `ngpt % tile` keeps the last pass full, so the kernel's `gpt >= ngpt`
-    # guard -- which is NOT block-uniform -- can never fire on this path.
-    # Folding is worth it from tile 32 up; below that the fold costs more
-    # than the scatter it removes (measured: at tile 16 it LOSES).
-    warp_fold = 1 if (tile >= 32 and ngpt % tile == 0
-                      and tile <= _RTE_MAX_FOLD_BLOCK) else 0
+    tile = _rte_gpt_tile(stage, ncol, ngpt, fold=True, longwave=True)
+    # Full g-point tiles preserve the ascending fold. Each packed group
+    # owns a separate shared buffer. A 16- or 32-thread group synchronizes
+    # its lanes, so a final block may contain unused groups. Wider groups
+    # use block barriers and require a full final block.
+    forced_fold = os.environ.get("GPUWM_RTE_FOLD", "auto").strip().lower()
+    forced_columns = os.environ.get("GPUWM_RTE_COLUMNS_PER_BLOCK", "").strip()
+    if forced_fold not in ("auto", "0", "1"):
+        raise ValueError("GPUWM_RTE_FOLD must be auto, 0 or 1")
+    requested_columns = int(forced_columns) if forced_columns else _fold_columns
+    if int(requested_columns) < 1:
+        raise ValueError("GPUWM_RTE_COLUMNS_PER_BLOCK must be positive")
+    warp_fold = 1 if (tile >= 16 and ngpt % tile == 0
+                      and tile <= _RTE_MAX_FOLD_BLOCK
+                      and 16 * (tile + 1) * 4 + 16 * 8 <= 49152) else 0
+    if forced_fold == "1" and not warp_fold:
+        raise ValueError("GPUWM_RTE_FOLD=1 requires a full tile of at least 16 "
+                         "within the shared-memory limit")
+    if forced_fold == "0":
+        warp_fold = 0
     if warp_fold:
         part_up, part_dn = up, down
-        threads, stage_blocks, shared = tile, ncol, tile * 4
+        columns = max(1, min(int(requested_columns), 1024 // tile,
+                             49152 // (16 * (tile + 1) * 4 + 16 * 8)))
+        # Wide groups use block barriers, so their last block must be full.
+        if tile not in (16, 32) and ncol % columns:
+            columns = 1
+        threads = tile * columns
+        stage_blocks = (ncol + columns - 1) // columns
+        shared = columns * (16 * (tile + 1) * 4 + 16 * 8)
     else:
         part_up = cp.empty((tile, nlev, ncol), dtype=DTYPE)
         part_dn = cp.empty_like(part_up)
@@ -4392,7 +4611,8 @@ def sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
 
 
 def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
-            *, top_at_1: bool, out, fused_cloud=None) -> FluxResult:
+            *, top_at_1: bool, out, fused_cloud=None,
+            _fold_columns=1) -> FluxResult:
     import cupy as cp
     from gpuwm.core.kernels import get_kernel
 
@@ -4435,17 +4655,34 @@ def _sw_rte(tau, ssa, g, mu0, sfc_alb_dir, sfc_alb_dif, inc_flux_dir,
     fold = _rte_kernel("rrtmgp_sw_flux_reduce", nlay)
     nlev = nlay + 1
     tile = _rte_gpt_tile(stage, ncol, ngpt, fold=True)
-    # Same block fold as the LW solver, and rejected once for the same
-    # reason it now pays: the earlier SW measurement (+0.078 s) was taken
-    # at tile 16, which is below the tile where folding starts to earn its
-    # barriers at all.  SW has THREE partial arrays, so it has more scatter
-    # to delete -- but ngpt 224 admits no power of two above 32, so 32 is
-    # the widest fold SW can have.  Measured there: 2.992 -> 1.968 ms.
-    warp_fold = 1 if (tile >= 32 and ngpt % tile == 0
-                      and tile <= _RTE_MAX_FOLD_BLOCK) else 0
+    # Each column owns a padded buffer of 16 independent flux values.
+    # The fold retains ascending g-point order for every value. Whole
+    # unused groups in the final block can return before their lane barriers.
+    forced_fold = os.environ.get("GPUWM_RTE_FOLD", "auto").strip().lower()
+    forced_columns = os.environ.get("GPUWM_RTE_COLUMNS_PER_BLOCK", "").strip()
+    if forced_fold not in ("auto", "0", "1"):
+        raise ValueError("GPUWM_RTE_FOLD must be auto, 0 or 1")
+    requested_columns = int(forced_columns) if forced_columns else _fold_columns
+    if int(requested_columns) < 1:
+        raise ValueError("GPUWM_RTE_COLUMNS_PER_BLOCK must be positive")
+    warp_fold = 1 if (tile >= 16 and ngpt % tile == 0
+                      and tile <= _RTE_MAX_FOLD_BLOCK
+                      and 16 * (tile + 1) * 4 + 16 * 8 <= 49152) else 0
+    if forced_fold == "1" and not warp_fold:
+        raise ValueError("GPUWM_RTE_FOLD=1 requires a full tile of at least 16 "
+                         "within the shared-memory limit")
+    if forced_fold == "0":
+        warp_fold = 0
     if warp_fold:
         part_up, part_dn, part_dir = up, down, direct
-        threads, stage_blocks, shared = tile, ncol, tile * 4
+        columns = max(1, min(int(requested_columns), 1024 // tile,
+                             49152 // (16 * (tile + 1) * 4 + 16 * 8)))
+        # Wide groups use block barriers, so their last block must be full.
+        if tile not in (16, 32) and ncol % columns:
+            columns = 1
+        threads = tile * columns
+        stage_blocks = (ncol + columns - 1) // columns
+        shared = columns * (16 * (tile + 1) * 4 + 16 * 8)
     else:
         part_up = cp.empty((tile, nlev, ncol), dtype=DTYPE)
         part_dn = cp.empty_like(part_up)

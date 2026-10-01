@@ -74,3 +74,93 @@ def ruc_kernel_source(nzs: int) -> str:
     if not defines:
         return module_source(RUC_MODULE)
     return module_source_int_defines(RUC_MODULE, defines)
+
+
+# ---------------------------------------------------------------------------
+# The fused RUC translation unit.
+# ---------------------------------------------------------------------------
+
+#: The fused column kernels' manifest name.
+RUC_FUSED_MODULE = "ruc_fused"
+
+#: The fused kernels' own sources, appended in this order after ``ruc.cu``.
+#: They are ``.cuh`` fragments, not ``.cu`` modules: neither compiles alone,
+#: because both call the leaf bodies ``ruc.cu`` defines.
+RUC_FUSED_SOURCES = ("ruc_fused_sfctmp.cuh", "ruc_fused_driver.cuh")
+
+#: ``ruc.cu``'s leaves are ``extern "C" __global__`` functions whose body
+#: finds its column as ``blockIdx.x * blockDim.x + threadIdx.x`` and returns
+#: past ``n``.  Compiled once more with ``__global__`` spelled ``__device__``,
+#: the SAME text becomes a set of column functions a fused kernel calls from
+#: the thread that owns that column, so the leaf arithmetic has one source
+#: and ``ruc.cu`` does not change by a byte.  Every FP operation in it is an
+#: explicit round-to-nearest intrinsic, so the calling context cannot
+#: contract or reorder it.
+#:
+#: NVRTC does not honour ``#pragma push_macro``/``pop_macro`` (measured: a
+#: kernel declared after the pop is still a device function), so the close
+#: restores the spelling CUDA's host_defines.h gives ``__global__``.
+_RUC_AS_DEVICE_OPEN = (
+    "#undef __global__\n"
+    "#define __global__ __device__\n")
+_RUC_AS_DEVICE_CLOSE = (
+    "\n#undef __global__\n"
+    "#define __global__ __location__(global)\n")
+
+
+def ruc_fused_source(nzs: int) -> str:
+    """The exact string NVRTC receives for the fused RUC unit.  CPU-only.
+
+    The preamble, then the tier define exactly where
+    :func:`gpuwm.core.kernels.module_source_int_defines` places it for
+    ``ruc.cu`` (before its text, so the ladder sees it), then ``ruc.cu``
+    with ``__global__`` read as ``__device__``, then the fused sources.
+    """
+    from gpuwm.core.kernels import _ENCODING, _KDIR, _preamble
+
+    defines = ruc_module_defines(nzs)
+    prefix = "".join(f"#define {key} {value}\n" for key, value in defines)
+    parts = [_preamble(), prefix, _RUC_AS_DEVICE_OPEN,
+             (_KDIR / f"{RUC_MODULE}.cu").read_text(encoding=_ENCODING),
+             _RUC_AS_DEVICE_CLOSE]
+    parts += [(_KDIR / name).read_text(encoding=_ENCODING)
+              for name in RUC_FUSED_SOURCES]
+    return "".join(parts)
+
+
+def _ruc_fused_module_key(nzs: int) -> str:
+    from gpuwm.core.kernels import MODULE_KEY_ROOT
+
+    defines = ruc_module_defines(nzs)
+    key = f"{MODULE_KEY_ROOT}:{RUC_FUSED_MODULE}"
+    if defines:
+        key += "[" + ",".join(f"{k}={v}" for k, v in defines) + "]"
+    return key
+
+
+_RUC_FUSED_MODULES: dict[int, object] = {}
+
+
+def ruc_fused_kernel(func: str, nzs: int):
+    """A kernel of the fused RUC unit at this soil geometry.
+
+    One compile per geometry per process, recorded in the kernel manifest
+    under its own key like every other translation unit.
+    """
+    nzs = int(nzs)
+    module = _RUC_FUSED_MODULES.get(nzs)
+    if module is None:
+        import cupy as cp
+
+        from gpuwm.certify.kernel_manifest import record_module
+        from gpuwm.core.kernels import _compile_observed
+
+        source = ruc_fused_source(nzs)
+        key = _ruc_fused_module_key(nzs)
+        module = cp.RawModule(code=source, options=("-std=c++17",),
+                              name_expressions=None)
+        _compile_observed(module, key)
+        record_module(key, source=source, options=("-std=c++17",),
+                      module=module)
+        _RUC_FUSED_MODULES[nzs] = module
+    return module.get_function(func)

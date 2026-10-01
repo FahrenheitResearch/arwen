@@ -22,6 +22,9 @@ through their own functions:
 * :func:`gpuwm.physics_compat.profile_route_blocker` -- the emission
   route's actual input-species requirements; source/template evidence membership
   does not restrict otherwise valid land-surface choices;
+* :func:`source_soil_blocker` -- the soil the source publishes against the
+  land surface's own soil ingest (RUC's nine-level remap), the question
+  the preparation asks after the download;
 * the nocturnal-validity class, which is the same predicate
   :func:`gpuwm.domain_wizard.declared_nocturnal_night` and
   :func:`gpuwm.physics_compat.nocturnal_radiation_refusal` test:
@@ -58,6 +61,7 @@ are safe there because their only callers are the wizard itself
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any, Callable, Mapping
 
 from gpuwm.physics_compat import (SINGLE_DOMAIN_PHYSICS_PROFILES,
@@ -144,8 +148,8 @@ _WIZARD_PROFILE_RANKING = (
     MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
     # The Thompson member of the MYNN + RUC pair sits beside its WSM6
     # sibling in each block: both radiation streams here, Dudhia below.
-    # Offered, not picked: no table in the tree chooses a suite by grid
-    # spacing, so a sub-km domain gets it by choosing it.
+    # Offered at every spacing, and the default below 1 km by the
+    # spacing table that follows.
     THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
     THOMPSON_PROFILE_ID,
     WSM6_PROFILE_ID,
@@ -153,6 +157,32 @@ _WIZARD_PROFILE_RANKING = (
     RUC_PROFILE_ID,
     MYNN_RUC_PROFILE_ID,
     THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID,
+)
+
+
+#: The default suite by GRID SPACING, as table rows.  A row binds when the
+#: finest grid a run asks for is finer than ``finest_dx_below_m`` and the
+#: source's route admits its suite (the same pairing predicate every
+#: refusal and every menu cell reads); the first row that binds wins, and
+#: a source that admits no row's suite keeps its spacing-free default
+#: (:func:`default_profile_for`).  Nothing here names a source.
+#:
+#: The one row: sub-km product domains take Thompson + MYNN surface layer
+#: and PBL + RUC with radiation on both streams.  Scored against stations
+#: and ceilometers on marine fog days at 750 m, that composition kept the
+#: stratus that the source defaults' YSU and Noah each lost part of
+#: (stratus CSI 0.71 against 0.52 with Noah and 0.55 with YSU + Noah),
+#: and a custom sub-km domain with no --physics-profile got the source
+#: default because the default keyed on the source alone.
+SPACING_DEFAULTS: tuple[dict[str, Any], ...] = (
+    {
+        "finest_dx_below_m": 1000.0,
+        "profile_id": THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
+        "basis": (
+            "the default below 1 km: Thompson, MYNN and RUC kept coastal "
+            "fog and low stratus that YSU or Noah each lost part of, scored "
+            "against stations and ceilometers on marine fog days"),
+    },
 )
 
 
@@ -177,27 +207,127 @@ def _route_emission_physics_gates() -> dict[str, Any]:
     return {"hrrr": route_physics_blocker}
 
 
-def switch_route_blocker(switches, source) -> str | None:
+def _land_surface_soil_admissions() -> dict[int, tuple[str, Callable]]:
+    """Land surfaces whose soil ingest is a table lookup on the SOURCE'S soil.
+
+    Keyed by ``sf_surface_physics``: the scheme's name and the admission
+    the preparation's own soil ingest calls on the soil geometry a
+    source's mapped composition declares.  RUC is the one row: its nine
+    levels are remapped from whatever ladder the source publishes through
+    :func:`gpuwm.ingest.soil_contract.ruc_soil_remap_policy`, which
+    refuses a ladder WRF's ``init_soil_3_real`` cannot build a column
+    from.  Noah's four layers are every mapped contract's own target
+    (:func:`gpuwm.ingest.soil_contract.validate_soil_layer_contract`), so
+    it has no row.  A TABLE, not a code path: a land surface that gains a
+    source-geometry requirement is one row here, and every surface that
+    reads the pairing predicate -- the wizard's refusal, the menu's cells,
+    the default derivation -- answers with it.
+    """
+
+    from gpuwm.ingest.soil_contract import ruc_soil_remap_policy
+
+    return {3: ("the RUC land surface (sf_surface_physics = 3)",
+                ruc_soil_remap_policy)}
+
+
+@lru_cache(maxsize=None)
+def _source_soil_contract(source: str):
+    """The soil geometry ``source``'s mapped composition declares, or None.
+
+    None for a source with no packaged composition: its preparation
+    dispatches on the native field names (ERA5, GFS, HRRR), whose soil
+    arms the RUC ingest reproduces at 0 ULP against WRF
+    (tests/test_ruc_soil_wiring.py), and for a composition that is still
+    pending or declares no soil, which its own preparation refuses first.
+    """
+
+    from gpuwm.mapped_composition import load_composition
+    from gpuwm.source_adapters import source_adapters
+    from gpuwm.source_authorities import packaged_authorities
+
+    profile_id = next((adapter.packaged_profile for adapter in source_adapters()
+                       if adapter.source_id == source), None)
+    if profile_id is None:
+        return None
+    try:
+        authorities = packaged_authorities(profile_id)
+        composition = load_composition(
+            authorities["composition"], authorities["mapping"])
+    except ValueError:
+        return None
+    return composition.get("soil_layers")
+
+
+def source_soil_blocker(switches, source) -> str | None:
+    """Why ``source``'s published soil cannot start this land surface.
+
+    A runtime REQUIREMENT, never template membership (the rule
+    gpuwm/physics_compat.py states where the membership gate was
+    retired): the question asked is the one the preparation's soil
+    ingest asks after the download, on the geometry the source's own
+    composition declares, so the answer here and the refusal there are
+    one answer.  The breakage it names is a preparation that fetched the
+    whole cycle and then could not build the land surface's soil column;
+    measured on 2.8.0, a RUC suite on ``--source gem-gdps`` (one 0-10 cm
+    slab) passed ``gpuwm domain``, ``gpuwm check`` and ``gpuwm go
+    --dry-run`` and could only be refused at preparation.
+    """
+
+    if switches is None or source is None:
+        return None
+    try:
+        surface = int(dict(switches).get("sf_surface_physics"))
+    except (TypeError, ValueError):
+        return None
+    admission = _land_surface_soil_admissions().get(surface)
+    if admission is None:
+        return None
+    contract = _source_soil_contract(str(source))
+    if contract is None:
+        return None
+    scheme, admit = admission
+    try:
+        admit(contract)
+    except ValueError as error:
+        return (f"{scheme} cannot be initialised from the soil --source "
+                f"{source} publishes, so its preparation would download "
+                f"the cycle and then refuse: {error}")
+    return None
+
+
+def switch_route_blocker(switches, source, *, domains: int = 1
+                         ) -> str | None:
     """Why ``source``'s emission route refuses these resolved switches.
 
     The switch-level spelling of the same gate
     :func:`profile_route_blocker` asks about a shipped suite, for the
     callers that hold a resolved domain rather than a profile id -- the
-    companion's option availability is one.  It reads the SAME table, so
+    companion's option availability is one.  It reads the SAME tables, so
     a greyed cell in a front end and the refusal a run meets later
     cannot disagree, and a source registered tomorrow is answered here
-    with no edit.
+    with no edit: the emission route's own physics gate, then the soil
+    the source publishes against the land surface's soil ingest
+    (:func:`source_soil_blocker`).
+
+    ``domains`` is how many grids the run has, so each door asks for the
+    run it holds.  Every route answers a tree with its single-domain gate:
+    the nested HRRR route's hierarchy stage pins the soil column its land
+    surface runs (four layers for Noah, nine for RUC), so it has no
+    objection that binds only a tree.
     """
 
     if switches is None or source is None:
         return None
     emission_gate = _route_emission_physics_gates().get(str(source))
-    if emission_gate is None:
-        return None
-    return emission_gate(dict(switches))
+    if emission_gate is not None:
+        blocked = emission_gate(dict(switches))
+        if blocked is not None:
+            return blocked
+    return source_soil_blocker(switches, source)
 
 
-def profile_route_blocker(profile, source) -> str | None:
+def profile_route_blocker(profile, source, *, domains: int = 1
+                          ) -> str | None:
     """Why ``source`` cannot prepare ``profile``, or ``None``.
 
     The registry answer plus the emission route's own physics gate,
@@ -217,7 +347,7 @@ def profile_route_blocker(profile, source) -> str | None:
         switches = single_domain_runtime_switches(profile)
     except (KeyError, ValueError):
         return None
-    return switch_route_blocker(switches, source)
+    return switch_route_blocker(switches, source, domains=domains)
 
 
 def shipped_profiles() -> tuple[str, ...]:
@@ -407,6 +537,7 @@ def profile_facts(profile: str) -> dict[str, Any]:
         "cumulus_scheme_id": int(switches.get("cu_physics", 0)),
         "pbl_scheme_id": int(switches.get("bl_pbl_physics", 0)),
         "land_surface_scheme_id": int(switches.get("sf_surface_physics", 0)),
+        "urban_scheme_id": int(switches.get("sf_urban_physics", 0)),
         "longwave_scheme_id": longwave,
         "shortwave_scheme_id": shortwave,
         "day_only": day_only(profile),
@@ -434,8 +565,67 @@ def _recommended_profile(source):
                  if adapter.source_id == source), None)
 
 
-def default_profile_for(source: str) -> str | None:
-    """Prefer source metadata, then the global default, among executable suites.
+def spacing_default_rows(source: str, domains: int = 1
+                         ) -> list[dict[str, Any]]:
+    """:data:`SPACING_DEFAULTS` as ``source`` answers it, row by row.
+
+    Each row carries whether this source's route admits its suite for a
+    run of ``domains`` domains and, when it does not, the pairing
+    predicate's own sentence, so a front end that shows the default for a
+    spacing reads the same answer the wizard binds rather than
+    re-deriving it.
+    """
+
+    rows = []
+    offered = set(shipped_profiles())
+    for row in SPACING_DEFAULTS:
+        profile = row["profile_id"]
+        why_not = (profile_route_blocker(profile, source, domains=domains)
+                   if profile in offered else
+                   f"{profile} is not a suite this door offers")
+        if why_not is None and day_only(profile):
+            why_not = day_only_reason(profile)
+        rows.append({**row, "admitted": why_not is None, "why_not": why_not})
+    return rows
+
+
+def spacing_default_menu_rows(source: str) -> list[dict[str, Any]]:
+    """:func:`spacing_default_rows` for a menu, which knows no domain count.
+
+    ``admitted`` and ``why_not`` answer for a single domain, and
+    ``admitted_nested`` and ``why_not_nested`` for a domain with nests,
+    each from the pairing predicate asked for that many grids, so a
+    front end reads the answer the door gives the run it holds.
+    """
+
+    return [{**single, "admitted_nested": nested["admitted"],
+             "why_not_nested": nested["why_not"]}
+            for single, nested in zip(spacing_default_rows(source, 1),
+                                      spacing_default_rows(source, 2))]
+
+
+def spacing_default(source: str, finest_dx_m: float | None,
+                    domains: int = 1) -> dict[str, Any] | None:
+    """The :data:`SPACING_DEFAULTS` row that binds this grid, or ``None``."""
+
+    if finest_dx_m is None:
+        return None
+    for row in spacing_default_rows(source, domains):
+        if float(finest_dx_m) < float(row["finest_dx_below_m"]) \
+                and row["admitted"]:
+            return row
+    return None
+
+
+def default_profile_for(source: str, finest_dx_m: float | None = None,
+                        domains: int = 1) -> str | None:
+    """Prefer the spacing row, then source metadata, then the global default.
+
+    ``finest_dx_m`` is the finest grid spacing the run asks for.  Given,
+    the first :data:`SPACING_DEFAULTS` row that covers it and that this
+    source's route admits for ``domains`` domains is the default; a
+    source whose route admits no row's suite falls through to its
+    spacing-free default below.
 
     The recommendation is independent of capability: allowing another suite
     cannot silently change the default. A global None retains the explicit
@@ -447,6 +637,9 @@ def default_profile_for(source: str) -> str | None:
     declared = DEFAULT_PHYSICS_PROFILE
     if declared is None:
         return None
+    by_spacing = spacing_default(source, finest_dx_m, domains)
+    if by_spacing is not None:
+        return by_spacing["profile_id"]
     preferred = _recommended_profile(source) or declared
     admissible = admissible_profiles(source)
     if preferred in admissible and not day_only(preferred):
@@ -461,9 +654,13 @@ def default_profile_for(source: str) -> str | None:
     return declared
 
 
-def default_basis(source: str) -> str:
+def default_basis(source: str, finest_dx_m: float | None = None,
+                  domains: int = 1) -> str:
     """Why that suite is this source's default, in one sentence."""
 
+    by_spacing = spacing_default(source, finest_dx_m, domains)
+    if by_spacing is not None:
+        return by_spacing["basis"]
     recommendation = _recommended_profile(source)
     if recommendation is not None and default_profile_for(source) == recommendation:
         return "the source's declared recommendation; other implemented suites remain selectable"
@@ -582,6 +779,22 @@ def admissibility_rules() -> list[dict[str, Any]]:
             },
         },
         {
+            # The soil the source publishes against the land surface's
+            # own soil ingest: the question the preparation asks after
+            # the download, asked before it.
+            "rule": "source-soil-geometry",
+            "owner": "gpuwm.physics_menu.source_soil_blocker",
+            "applies_to": "every source with a packaged composition",
+            "declares": {
+                "land_surfaces": {
+                    str(surface): scheme for surface, (scheme, _admit)
+                    in _land_surface_soil_admissions().items()},
+                "admission": "gpuwm.ingest.soil_contract."
+                             "ruc_soil_remap_policy",
+                "profile_membership_required": False,
+            },
+        },
+        {
             "rule": "nocturnal-validity",
             "owner": "gpuwm.physics_compat.nocturnal_radiation_refusal",
             "applies_to": "every source",
@@ -671,6 +884,10 @@ def source_menu(source: str, *, display_name: str | None = None,
         "display_name": display_name if display_name is not None else source,
         "default_profile_id": default,
         "default_basis": default_basis(source),
+        # The default by grid spacing, which binds ahead of the one above
+        # when the run's finest grid is finer than a row's bound, answered
+        # for one domain and for a tree.
+        "spacing_defaults": spacing_default_menu_rows(source),
         "admissible_count": admissible_count,
         "nocturnal_remedy": nocturnal_remedy(source),
         "profiles": cells,
@@ -678,12 +895,14 @@ def source_menu(source: str, *, display_name: str | None = None,
 
 
 __all__ = [
-    "WIZARD_PHYSICS_PROFILES", "profile_route_blocker",
+    "SPACING_DEFAULTS", "WIZARD_PHYSICS_PROFILES", "profile_route_blocker",
+    "spacing_default", "spacing_default_menu_rows", "spacing_default_rows",
     "admissibility_rules", "admissible_profiles", "day_only",
     "day_only_reason", "default_basis", "default_profile_for", "maturity",
     "nocturnal_remedy", "profile_facts", "radiation_scheme_ids",
     "registered_sources", "shipped_profiles", "source_menu",
-    "switch_route_blocker", "switches_day_only_reason",
+    "source_soil_blocker", "switch_route_blocker",
+    "switches_day_only_reason",
     "universally_admissible_profile", "vertical_levels",
 ]
 

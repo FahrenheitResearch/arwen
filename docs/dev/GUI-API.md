@@ -15,7 +15,7 @@ its `message` under its title.
 
 ### Starting on this computer needs the geography tree
 
-`POST /api/create/start` (on this computer), `POST /api/library/simulate` and
+`POST /api/create/start` (on this computer), `POST /api/wiki/simulate` and
 `POST /api/runs/RUN/start` check the geography tree the run will build its
 static fields from (`$GPUWM_CASE_DATA_ROOT/WPS_GEOG`, or the tree the plan
 names in `run_options.geog_root` or `config.intent.geog_root`) with the check
@@ -221,7 +221,7 @@ way, and one the check refuses as the form's own set.
 The set is kept beside the plan as `gui-physics.json`
 (`gpuwm.gui-physics-choice.v1`: `suite` (null for a mix no set matches),
 `label`, `base_suite`, `cumulus`, `choices`, `resolved`, `words`, `cost`,
-`command`), and the run's Weather Library article lists it as its Physics fact,
+`command`), and the run's wiki article lists it as its Physics fact,
 citing that file and the plan ("Picked schemes, no named set" and the
 schemes, for a mix). A run with no composed choice names its plan's
 suite, or "The source's default set".
@@ -370,7 +370,7 @@ rows, the queue listing and the Machines list never wait on a data
 server, on SSH or on a start. `/api/create/fit` runs the engine's fit in
 the request (a few seconds; a repeat of the same fit is answered from its
 cache). Start, Queue it and an event's **Run the best simulation for this event** button
-(`POST /api/library/simulate`) may wait up to 20 s for the one check above;
+(`POST /api/wiki/simulate`) may wait up to 20 s for the one check above;
 the button refuses a start only Queue it takes and points to Customise,
 where Review offers Queue it. Machines **Check**, and a start on a
 Machines node, wait on SSH by design. The engine's source list and
@@ -867,9 +867,9 @@ nothing else in the home. `gpuwm assistant on` and `gpuwm assistant off
 ### Where its answers come from
 
 Besides planning a forecast, the model has read tools over the page's
-own data: `search_wiki` and `read_event` (the Weather Library's events: title,
+own data: `search_wiki` and `read_event` (the storm wiki's events: title,
 summary, facts, rarity, runs; never map geometry), `read_run` (a run's
-Weather Library article: source, start, length, grid, physics, levels, box,
+wiki article: source, start, length, grid, physics, levels, box,
 pictures, each from the run's files), `run_status` and `list_runs`, and
 `check_fit` (the engine's own fit). The panel names where each reply was
 read from, and shows each typed decision as its options under letters
@@ -966,7 +966,7 @@ names both (`gpuwm run-plan --resolve` refuses `--ladder` beside
 
 A storm-following event's Customise sends `following: true` with the
 layout's `event` and `recipe_card_gb` (the card size its Customise opened
-with). The server reads that layout from the Weather Library and runs its own
+with). The server reads that layout from the storm wiki and runs its own
 `gpuwm cyclone-setup` options, as the event page's button runs them
 (history intervals, surface flux and, for a nest that grows, a nest
 budget set to the card); options the page sends of its own are not used.
@@ -992,19 +992,19 @@ written plan (`gpuwm run-plan PLAN --resolve`) and reads the engine's own
 projection of what the run writes (`disk.total_bytes`, the number
 `gpuwm run-plan` refuses on before its download). A start that needs more
 than the free disk under the runs root is HTTP 507, and its folder is
-removed, as `/api/library/simulate` refuses the event's row; a queued one
+removed, as `/api/wiki/simulate` refuses the event's row; a queued one
 keeps the projection as its queue marker's `disk_gib`, and the queue holds
 it until the disk has the room.
 
 Every Customise that keeps the event's own grids (its outer spacing and
 nests) sends the layout's `event` and `recipe_card_gb`, following or not.
-The server reads that best run's `intent` from the Weather Library and writes
+The server reads that best run's `intent` from the storm wiki and writes
 every key of it that New forecast has no control for into the plan
 (`DRAFT_INTENT_KEYS` in `gpuwm/gui/api.py` lists the ones it has), such as
 `history_interval_s`, `nest_history_interval_s` and `isftcflx`, so a
-Customise nobody changed plans exactly what `/api/library/simulate` plans.
+Customise nobody changed plans exactly what `/api/wiki/simulate` plans.
 An `event` whose best run the store does not hold for that card is HTTP
-422. `/api/library/recipe/ID` reads every value New forecast has a control
+422. `/api/wiki/recipe/ID` reads every value New forecast has a control
 for from the same `intent`, and adds `layout`: the best run's `domains`
 (spacing, points and size of each grid), `physics` (`profile`, `why`) and
 `output` (its history intervals), which How fine, Physics and Review show.

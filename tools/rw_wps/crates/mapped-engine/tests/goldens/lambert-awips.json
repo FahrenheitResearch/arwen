@@ -1176,7 +1176,7 @@
   ],
   "libm_relative_tolerance": 1e-12,
   "mapping": "gpuwm/authorities/rw-wps-rap-awip32-grib2.mapping.json",
-  "mapping_sha256": "61a1041ee68dff3202eb6d37a7492b57f634899bbde7e0c7644f78679634f55e",
+  "mapping_sha256": "5bc58e43b2cb997c2946aa28b2211ffca0a778c5543642c45dda919a94158de0",
   "materialization": {
     "frame_count": 3,
     "frame_header_sha256": [

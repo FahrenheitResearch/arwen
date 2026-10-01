@@ -910,7 +910,8 @@ def authority_cmd(*, case_toml: Path, wps_namelist: Path, profile: str,
     ]
 
 
-def fetch_cmd(*, hints: dict, data_dir: Path, source: str) -> list[str]:
+def fetch_cmd(*, hints: dict, data_dir: Path, source: str,
+              now: datetime | None = None) -> list[str]:
     argv = [
         _py(), "-m", "gpuwm.cli", "fetch", "--source", source,
         "--cycle", str(hints["cycle"]),
@@ -928,8 +929,21 @@ def fetch_cmd(*, hints: dict, data_dir: Path, source: str) -> list[str]:
     # lands exactly on a background cycle -- the COMMON case on hourly
     # HRRR cycles, and any synoptic-hour window end on GFS -- is lead 0.
     # Indexing here raised KeyError on exactly those runs (issue #74).
-    argv.extend(("--forecast-start-hour",
-                 str(hints.get("forecast_start_hour", 0))))
+    start = int(hints.get("forecast_start_hour", 0))
+    argv.extend(("--forecast-start-hour", str(start)))
+    from gpuwm.da.background import late_background_wait_minutes
+
+    wait = late_background_wait_minutes(
+        source, datetime.strptime(str(hints["cycle"])[:13], "%Y-%m-%dT%H"),
+        start + int(hints["hours"]),
+        now=now if now is not None else datetime.now(timezone.utc))
+    if wait is not None:
+        # The plan took the newest cycle whose window is due on its
+        # posting row's expected line, so a cycle running late can still
+        # be posting its last leads: the fetch waits for each one, saying
+        # which, until the window's last lead is late on its row, instead
+        # of refusing the cycle as unpublished.
+        argv.extend(("--wait-for", "--wait-timeout-minutes", str(wait)))
     return argv
 
 

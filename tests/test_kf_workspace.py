@@ -25,9 +25,8 @@ The breakage each one prevents, named:
 3. ``test_the_python_side_mirrors_the_kernels_workspace_geometry`` -- the
    launcher allocates the workspace and the kernel indexes it.  If the two
    disagree about slot count, lane width or per-slot extent, the kernel
-   writes past the allocation.  The LANE WIDTH is the sharp one: kf.cu
-   indexes by the thread's lane within a block of ``KFWS_LANES``, so a
-   launch at any other block width aliases lanes silently.
+   writes past the allocation.  Each warp needs its own region even when
+   several warps share a block, or columns alias silently.
 
 4. ``test_the_two_stack_arrays_are_the_measured_pair`` -- ``tv_env`` and
    ``positive_energy`` stay on the stack ON PURPOSE, and the purpose is
@@ -61,7 +60,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from gpuwm.core.kf import (                                  # noqa: E402
-    KFWS_SLOTS, KF_TILE_BLOCKS_PER_SM, _TPB, kf_workspace_floats,
+    KFWS_SLOTS, KF_TILE_BLOCKS_PER_SM, _TPB, _WS_LANES, kf_workspace_floats,
 )
 
 _CU = os.path.join(_ROOT, "gpuwm", "core", "kernels", "kf.cu")
@@ -109,9 +108,11 @@ def test_the_workspace_slot_map_fits_the_declared_region():
 
 def test_the_python_side_mirrors_the_kernels_workspace_geometry():
     assert _define("KFWS_SLOTS") == KFWS_SLOTS
-    assert _define("KFWS_LANES") == _TPB, (
-        "kf.cu indexes the workspace by lane within a block of KFWS_LANES "
-        "threads; a launch at any other block width aliases lanes")
+    assert _define("KFWS_LANES") == _WS_LANES == 32
+    assert _TPB % _WS_LANES == 0 and _TPB <= 256
+    assert "blockDim.x / KFWS_LANES" in _source()
+    assert "threadIdx.x / KFWS_LANES" in _source()
+    assert "threadIdx.x % KFWS_LANES" in _source()
     # One whole block of columns, both sides.
     assert kf_workspace_floats(49, _TPB) == KFWS_SLOTS * 49 * _TPB
     # A partial block still allocates a whole block's region.
@@ -289,7 +290,7 @@ def test_the_tiled_launch_matches_the_single_launch():
     cp = pytest.importorskip("cupy")
     from gpuwm.core.kernels import get_kernel
 
-    host = _kf_batch(200)
+    host = _kf_batch(8 * _TPB + 8)
     nz, ny, nx = host["temperature"].shape
     ncol = ny * nx
     dev = {n: cp.asarray(v) for n, v in host.items()}
@@ -332,7 +333,7 @@ def test_the_shipped_launcher_tiles_and_frees_its_workspace():
     from gpuwm.core.kernels import get_kernel
     from gpuwm.core.kf import KFPhaseMode, kf_tile_columns, launch_kf
 
-    host = _kf_batch(64)
+    host = _kf_batch(2 * _TPB)
     nz, ny, nx = host["temperature"].shape
     dev = {n: cp.asarray(v) for n, v in host.items()}
     tile = kf_tile_columns(get_kernel("kf", "kf_column"), ny * nx)

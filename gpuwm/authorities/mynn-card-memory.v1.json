@@ -1,0 +1,18 @@
+{
+  "schema": "gpuwm.mynn-card-memory.v1",
+  "basis": "CUDA memGetInfo total and getDeviceProperties totalGlobalMem agree before and after engine imports. These are capacity-tier reference samples; an explicit hardware measurement takes precedence.",
+  "rows": [
+    {
+      "capacity_gib": 16,
+      "device_name": "NVIDIA GeForce RTX 5070 Ti",
+      "cuda_total_bytes": 16611278848,
+      "measured_date": "2026-10-01"
+    },
+    {
+      "capacity_gib": 32,
+      "device_name": "NVIDIA GeForce RTX 5090",
+      "cuda_total_bytes": 33711521792,
+      "measured_date": "2026-10-01"
+    }
+  ]
+}

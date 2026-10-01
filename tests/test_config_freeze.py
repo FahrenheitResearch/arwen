@@ -48,6 +48,49 @@ def _frozen_constructors():
 def test_new_fields_are_reviewed_defaults_appended_last():
     """New fields remain appended, preserving positional construction."""
     names = [f.name for f in dataclasses.fields(RunConfig)]
+    # RE-BASELINED AGAIN (lane/281-mosaic-town, merged after A165 below):
+    # THREE fields, ``sf_surface_mosaic`` and ``mosaic_cat``,
+    # WRF's Noah mosaic land-use pair (Registry.EM_COMMON:2536-2537), and
+    # ``mosaic_urban_canopy``, where mosaic runs the urban canopy, appended
+    # after ``w_crit_cfl`` and last.  ``sf_surface_mosaic`` defaults to WRF's 0
+    # (no tiles), ``mosaic_cat`` is read only when mosaic is on, and the
+    # canopy rule defaults to WRF's ("dominant") and is read only with
+    # mosaic and urban option 1, so every golden entry resolves to what it
+    # ran before plus the three keys at their defaults, which the golden
+    # snapshot carries.
+    mosaic_names = names[-3:]
+    assert mosaic_names == ["sf_surface_mosaic", "mosaic_cat",
+                            "mosaic_urban_canopy"]
+    assert RunConfig.__dataclass_fields__["sf_surface_mosaic"].default == 0
+    assert RunConfig.__dataclass_fields__["mosaic_cat"].default == 3
+    assert RunConfig.__dataclass_fields__["mosaic_urban_canopy"].default == "dominant"
+    names = names[:-3]
+    # APPENDED (A165): ``w_crit_cfl``, WRF's w_damp reference Courant
+    # number, last (after zadvect_implicit, so every positional index
+    # stands), default 1.0 (WRF's Registry value, the w_damp every golden
+    # entry runs), so the window below is exactly what it held before it.
+    assert names[-1] == "w_crit_cfl"
+    assert RunConfig.__dataclass_fields__["w_crit_cfl"].default == 1.0
+    names = names[:-1]
+    # APPENDED (A158): ``zadvect_implicit``, WRF's implicit-explicit
+    # vertical advection, last (after the urban and topographic-radiation
+    # fields, so their positional indices stand), default 0 (explicit,
+    # every golden entry's behaviour), so the window below is exactly what
+    # it held before it.
+    assert names[-1] == "zadvect_implicit"
+    assert RunConfig.__dataclass_fields__["zadvect_implicit"].default == 0
+    names = names[:-1]
+    # RE-BASELINED AGAIN (lane/281-namelist-gaps, merged after the urban
+    # fields below): THREE fields, WRF's &physics slope_rad, topo_shading
+    # and shadlen, appended after ``num_urban_hi`` and last.  Their
+    # defaults (0, 0, 25000.) are WRF's Registry values and turn nothing
+    # on, and gpuwm.core.model.restart_identity_payload drops all three
+    # while slope_rad is 0, so no experiment fingerprint moves.
+    assert names[-3:] == ["slope_rad", "topo_shading", "shadlen"]
+    assert RunConfig.__dataclass_fields__["slope_rad"].default == 0
+    assert RunConfig.__dataclass_fields__["topo_shading"].default == 0
+    assert RunConfig.__dataclass_fields__["shadlen"].default == 25000.0
+    names = names[:-3]
     # RE-BASELINED (lane/wif-climatology + lane/wif-default): 95 -> 97.
     # TWO fields were appended, ``wif_climatology_path`` and
     # ``mp28_aerosol_source``, and the second of them is last, which is the
@@ -96,9 +139,31 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     # gpuwm.core.model.ADAPTIVE_TIMESTEP_RUN_FIELDS, so it moves no
     # experiment fingerprint.  Same reconstruction rule: names[-115:-1] is
     # exactly the window this assertion held before it.
+    # RE-BASELINED AGAIN (integrate/2.8): 115 -> 116.  ONE field,
+    # ``adaptive_nest_lattice``, appended after ``min_time_step_sound``.
+    # RE-BASELINED AGAIN (lane/urban-infra, forward-merged onto
+    # integrate/2.8): 116 -> 119.  THREE fields, WRF's urban selector and
+    # its two companions (``sf_urban_physics``, ``use_wudapt_lcz``,
+    # ``num_urban_hi``), appended after ``adaptive_nest_lattice`` and last,
+    # so the mainline field keeps the positional index 2.8 gave it.
+    # Defaults are WRF's (0, 0, 15), at which no urban code is reached, so
+    # every frozen configuration below resolves to what it ran before plus
+    # the three keys.  Same reconstruction rule: names[-119:-3] is exactly
+    # the window this assertion held before them.
+    assert names[-3:] == ["sf_urban_physics", "use_wudapt_lcz",
+                          "num_urban_hi"]
+    assert RunConfig.__dataclass_fields__["sf_urban_physics"].default == 0
+    assert RunConfig.__dataclass_fields__["use_wudapt_lcz"].default == 0
+    assert RunConfig.__dataclass_fields__["num_urban_hi"].default == 15
+    # The golden snapshot predates adaptive_nest_lattice, which the two
+    # identity tests below pop before comparing.
+    every_name = (set(names) - {"adaptive_nest_lattice"}) | set(mosaic_names)
+    names = names[:-3]
+    assert names[-1] == "adaptive_nest_lattice"
+    assert RunConfig.__dataclass_fields__["adaptive_nest_lattice"].default is False
+    names = names[:-1]
     assert names[-1] == "min_time_step_sound"
     assert RunConfig.__dataclass_fields__["min_time_step_sound"].default == 0
-    every_name = set(names)
     names = names[:-1]
     assert names[-2:] == ["relax_timescale_s", "relax_w"]
     assert RunConfig.__dataclass_fields__["relax_timescale_s"].default == 0.0
@@ -451,6 +516,13 @@ def _declares_a_run_config_table(path: Path) -> bool:
     return any(table in raw for table in _KNOWN_TABLES)
 
 
+def _pop_topo_radiation_defaults(actual: dict) -> bool:
+    """WRF's slope_rad/topo_shading/shadlen, appended after the golden was
+    captured, popped at their defaults the way adaptive_nest_lattice is."""
+    return (actual.pop("slope_rad") == 0 and actual.pop("topo_shading") == 0
+            and actual.pop("shadlen") == 25000.0)
+
+
 def test_every_existing_legacy_toml_resolves_identically():
     """Re-resolve every legacy TOML in configs/ and compare dataclasses
     (as field dicts) against the pre-change golden snapshot."""
@@ -464,7 +536,12 @@ def test_every_existing_legacy_toml_resolves_identically():
             f"{key} has no golden freeze entry: pin new legacy TOMLs in "
             "tests/data/config_freeze_golden.json consciously.")
         cfg = load_config(path)
-        assert dataclasses.asdict(cfg) == GOLDEN[key], key
+        actual = dataclasses.asdict(cfg)
+        assert actual.pop("adaptive_nest_lattice") is False
+        assert actual.pop("zadvect_implicit") == 0
+        assert actual.pop("w_crit_cfl") == 1.0
+        assert _pop_topo_radiation_defaults(actual)
+        assert actual == GOLDEN[key], key
         assert cfg.nested is False and cfg.grid_id == 1, key
 
 
@@ -475,7 +552,12 @@ def test_frozen_case_constructed_configs_resolve_identically():
     for key, ctor in _frozen_constructors().items():
         cfg = ctor()
         assert key in GOLDEN, key
-        assert dataclasses.asdict(cfg) == GOLDEN[key], key
+        actual = dataclasses.asdict(cfg)
+        assert actual.pop("adaptive_nest_lattice") is False
+        assert actual.pop("zadvect_implicit") == 0
+        assert actual.pop("w_crit_cfl") == 1.0
+        assert _pop_topo_radiation_defaults(actual)
+        assert actual == GOLDEN[key], key
         assert cfg.nested is False and cfg.grid_id == 1, key
 
 

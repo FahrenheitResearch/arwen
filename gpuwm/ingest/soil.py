@@ -115,8 +115,10 @@ class NoahSoilState:
     #: is empty only for a route that declared no source mesh at all.
     soil_texture_downscale: Mapping[str, object] = field(default_factory=dict)
     #: Ingest-repair receipt for real.exe's TSLB reasonableness rebuild
-    #: (:func:`unreasonable_land_soil_columns`): how many land columns were
-    #: rebuilt TSK-to-TMN, their pre-repair range and their bounding box.
+    #: (:func:`unreasonable_land_soil_columns`) and the snow-covered rebuild
+    #: beside it (:func:`snow_soil_below_skin_columns`): how many land
+    #: columns were rebuilt TSK-to-TMN, their pre-repair range and their
+    #: bounding box, in all and per rule.
     #: EMPTY whenever no land column needed it, the ``moisture_floor``
     #: discipline.
     soil_temperature_repair: Mapping[str, object] = field(default_factory=dict)
@@ -751,6 +753,70 @@ _SOIL_TEMPERATURE_REPAIR_WRF_REFERENCE = {
 }
 
 
+#: The snow water, kg m-2, at and above which a cell is snow covered: the
+#: threshold real.exe itself sets SNOWC = 1 at
+#: (dyn_em/module_initialize_real.F:2913-2917, WRF v4.7.1), about 5 cm of
+#: snow at the 200 kg m-3 initial density the SNOW/SNOWH reconciliation
+#: below assumes.
+SNOW_COVER_WATER_KG_M2 = 10.0
+
+#: The furthest, in kelvin, the top soil sample of a snow-covered land
+#: column may sit below that column's skin temperature before the column
+#: is rebuilt TSK-to-TMN (:func:`snow_soil_below_skin_columns`).
+#:
+#: Physical basis.  The skin of a snow-covered cell is the snow surface,
+#: which cannot warm past the melting point, and a snowpack insulates the
+#: ground beneath it: in the cold season heat flows UP out of the soil
+#: through the snow, so the soil top is warmer than the snow surface, not
+#: colder.  It falls below the snow surface only while a warming surface
+#: has not yet conducted that warming down through the pack, so the gap is
+#: bounded by how far a snow surface warms faster than the soil beneath it
+#: follows -- a diurnal swing over snow (10 to 20 K on a clear day) or a
+#: rapid synoptic warming toward the melting point.  30 K is beyond both.
+#: A top soil further below its skin than that is not a state the ground
+#: can be in; it is the kind of soil analysis HRRRv2 carried under western
+#: snowpack in 2017 (tops of 170 to 243 K under a 268 K skin), which
+#: real.exe's 170..400 K band lets through.  A healthy HRRRv4 analysis over
+#: the same ground (2024-01-19 15Z) puts no top soil more than 10 K below
+#: its skin under snow.  A table constant, not a case constant:
+#: it holds for every source, grid and season, and it acts only under
+#: snow cover, because bare ground under a strong sun legitimately runs
+#: its skin tens of kelvin above the soil.
+SNOW_SOIL_SKIN_DEFICIT_K = 30.0
+
+
+def snow_soil_below_skin_columns(temperature, land, *, skin, snow_water):
+    """``(ny, nx)`` snow-covered land columns whose top soil is implausible.
+
+    The column's shallowest source soil sample (every soil contract is
+    ordered shallow-to-deep, so it is sample 0) lies more than
+    :data:`SNOW_SOIL_SKIN_DEFICIT_K` below ``skin`` on a land cell whose
+    snow water is at least :data:`SNOW_COVER_WATER_KG_M2`.  A column with
+    a missing sample is not selected, as in
+    :func:`unreasonable_land_soil_columns`, so the refusal that names a
+    missing land sample still fires on it.
+
+    Named breakage: HRRRv2 analyses (January 2017, western snowpack)
+    carry top soil temperatures of 170 to 243 K under a skin near 268 K,
+    inside real.exe's 170..400 K band, so the band rebuild left them in
+    place and a 2017-01-19 15Z preparation over Idaho started its land
+    model with 8,082 of 17,978 land top soils below 240 K, and its 2 m
+    temperature over snow ran 2.5 K cold against ASOS.
+    """
+    values = np.asarray(temperature, dtype=np.float64)
+    if values.ndim != 3 or values.shape[0] < 1:
+        raise ValueError(
+            "soil temperature samples must be (samples, ny, nx)")
+    skin = np.asarray(skin, dtype=np.float64)
+    snow = np.asarray(snow_water, dtype=np.float64)
+    finite = np.isfinite(values).all(axis=0)
+    snow_covered = np.isfinite(snow) & (snow >= SNOW_COVER_WATER_KG_M2)
+    with np.errstate(invalid="ignore"):
+        deficit = skin - values[0]
+    return (np.asarray(land, dtype=bool) & finite & snow_covered
+            & np.isfinite(skin) & (deficit > SNOW_SOIL_SKIN_DEFICIT_K))
+
+
 def unreasonable_land_soil_columns(temperature, land):
     """``(ny, nx)`` land columns whose soil temperature real.exe rebuilds.
 
@@ -786,24 +852,46 @@ def tsk_tmn_soil_profile(depths_m, tsk, deep):
     return (tsk * (3.0 - z) + deep * z) / 3.0
 
 
-def soil_temperature_repair_receipt(temperature, columns, land):
+def _grid_box(columns):
+    """0-based inclusive ``rows`` (j) and ``columns`` (i) holding ``columns``."""
+    rows, cols = np.nonzero(columns)
+    return {"rows": [int(rows.min()), int(rows.max())],
+            "columns": [int(cols.min()), int(cols.max())]}
+
+
+def soil_temperature_repair_receipt(temperature, columns, land, *,
+                                    snow_columns=None, skin=None):
     """Counted receipt for the rebuilt columns; EMPTY when there are none.
 
-    The bounding box is the smallest block of the grid, as 0-based
-    inclusive ``rows`` (j) and ``columns`` (i), that holds every rebuilt
-    column.
+    ``columns`` are the columns real.exe's band rebuilds
+    (:func:`unreasonable_land_soil_columns`); ``snow_columns`` the
+    snow-covered ones whose top soil sits implausibly far below ``skin``
+    (:func:`snow_soil_below_skin_columns`), which then needs ``skin``.
+    Both are rebuilt alike, and the top-level count, range and bounding
+    box cover every rebuilt column.  The bounding box is the smallest
+    block of the grid, as 0-based inclusive ``rows`` (j) and ``columns``
+    (i), that holds them.  ``outside_band`` and
+    ``snow_top_soil_below_skin``, each present only when its rule
+    selected a column, count that rule's columns with their own range
+    and box; a column both rules select is the band's, so the snow block
+    counts what the snow rule adds.
     """
     columns = np.asarray(columns, dtype=bool)
-    count = int(np.count_nonzero(columns))
+    snow = (np.zeros_like(columns) if snow_columns is None
+            else np.asarray(snow_columns, dtype=bool))
+    rebuilt = columns | snow
+    count = int(np.count_nonzero(rebuilt))
     if count == 0:
         return {}
-    before = np.asarray(temperature, dtype=np.float64)[:, columns]
+    samples = np.asarray(temperature, dtype=np.float64)
+    before = samples[:, rebuilt]
     low, high = SOIL_TEMPERATURE_BAND_K
     outside = (before < low) | (before > high)
-    rows, cols = np.nonzero(columns)
     land_cells = int(np.count_nonzero(np.asarray(land, dtype=bool)))
-    return {
-        "policy": "land-soil-column-outside-170..400K-rebuilt-tsk-to-tmn",
+    receipt = {
+        "policy": ("land-soil-column-rebuilt-tsk-to-tmn: a source sample "
+                   "outside 170..400K, or under snow a top soil more than "
+                   f"{SNOW_SOIL_SKIN_DEFICIT_K:g} K below the skin"),
         "wrf_reference": dict(_SOIL_TEMPERATURE_REPAIR_WRF_REFERENCE),
         "repaired_land_columns": count,
         "land_cells": land_cells,
@@ -812,11 +900,40 @@ def soil_temperature_repair_receipt(temperature, columns, land):
         "pre_repair_min_k": float(before.min()),
         "pre_repair_max_k": float(before.max()),
         "grid_shape": [int(value) for value in columns.shape],
-        "bounding_box": {
-            "rows": [int(rows.min()), int(rows.max())],
-            "columns": [int(cols.min()), int(cols.max())],
-        },
+        "bounding_box": _grid_box(rebuilt),
     }
+    if np.any(columns):
+        band = samples[:, columns]
+        receipt["outside_band"] = {
+            "columns": int(np.count_nonzero(columns)),
+            "pre_repair_min_k": float(band.min()),
+            "pre_repair_max_k": float(band.max()),
+            "bounding_box": _grid_box(columns),
+        }
+    snow = snow & ~columns
+    if np.any(snow):
+        if skin is None:
+            raise ValueError(
+                "the snow-covered soil rebuild's receipt needs the skin "
+                "temperature its deficits are measured from")
+        top = samples[0][snow]
+        deficit = np.asarray(skin, dtype=np.float64)[snow] - top
+        receipt["snow_top_soil_below_skin"] = {
+            "rule": (
+                "snow-covered land (snow water >= "
+                f"{SNOW_COVER_WATER_KG_M2:g} kg m-2, real.exe's SNOWC) whose "
+                "top soil sample is more than "
+                f"{SNOW_SOIL_SKIN_DEFICIT_K:g} K below its skin temperature"),
+            "snow_cover_water_kg_m2": SNOW_COVER_WATER_KG_M2,
+            "deficit_limit_k": SNOW_SOIL_SKIN_DEFICIT_K,
+            "columns": int(np.count_nonzero(snow)),
+            "top_soil_min_k": float(top.min()),
+            "top_soil_max_k": float(top.max()),
+            "top_soil_mean_k": float(top.mean()),
+            "largest_deficit_k": float(deficit.max()),
+            "bounding_box": _grid_box(snow),
+        }
+    return receipt
 
 
 def soil_temperature_repair_proof(soil, grid):
@@ -835,38 +952,68 @@ def soil_temperature_repair_proof(soil, grid):
     if not receipt:
         return None
     latitude, longitude = (np.asarray(value) for value in grid.latlon_mass())
-    box = dict(receipt["bounding_box"])
-    (j0, j1), (i0, i1) = box["rows"], box["columns"]
-    block = (slice(j0, j1 + 1), slice(i0, i1 + 1))
-    box["latitude"] = [float(np.min(latitude[block])),
-                       float(np.max(latitude[block]))]
-    box["longitude"] = [float(np.min(longitude[block])),
-                        float(np.max(longitude[block]))]
-    receipt["bounding_box"] = box
+
+    def in_degrees(box):
+        box = dict(box)
+        (j0, j1), (i0, i1) = box["rows"], box["columns"]
+        block = (slice(j0, j1 + 1), slice(i0, i1 + 1))
+        box["latitude"] = [float(np.min(latitude[block])),
+                           float(np.max(latitude[block]))]
+        box["longitude"] = [float(np.min(longitude[block])),
+                            float(np.max(longitude[block]))]
+        return box
+
+    receipt["bounding_box"] = in_degrees(receipt["bounding_box"])
+    for rule in ("outside_band", "snow_top_soil_below_skin"):
+        if rule in receipt:
+            block = dict(receipt[rule])
+            block["bounding_box"] = in_degrees(block["bounding_box"])
+            receipt[rule] = block
     return receipt
 
 
 def _announce_soil_temperature_repair(receipt):
-    """The one line that says which soil columns were rebuilt."""
-    box = receipt["bounding_box"]
+    """One line per rule that says which soil columns were rebuilt."""
     ny, nx = receipt["grid_shape"]
     whole = (" -- that is EVERY land column in the domain, so no source "
              "soil temperature survives in it"
              if receipt["repaired_land_columns"] == receipt["land_cells"]
              else "")
-    print(
-        f"soil temperature rebuild: {receipt['repaired_land_columns']} of "
-        f"{receipt['land_cells']} land column(s) carried a source soil "
-        f"temperature outside 170..400 K "
-        f"({receipt['pre_repair_min_k']:.6g}..{receipt['pre_repair_max_k']:.6g}"
-        f" K, rows {box['rows'][0]}..{box['rows'][1]} and columns "
-        f"{box['columns'][0]}..{box['columns'][1]} of the {ny}x{nx} grid) and "
-        "were rebuilt linear in depth from the skin temperature at 0 m to "
-        "the deep soil temperature at 3 m, following WRF real.exe's "
-        "rebuild with its deep-temperature sign corrected (real.exe's "
-        "tmn*(0-zs) takes the column toward 0 K); "
-        f"their soil moisture is kept{whole}",
-        file=sys.stderr)
+    band = receipt.get("outside_band")
+    if band:
+        box = band["bounding_box"]
+        print(
+            f"soil temperature rebuild: {band['columns']} of "
+            f"{receipt['land_cells']} land column(s) carried a source soil "
+            f"temperature outside 170..400 K "
+            f"({band['pre_repair_min_k']:.6g}..{band['pre_repair_max_k']:.6g}"
+            f" K, rows {box['rows'][0]}..{box['rows'][1]} and columns "
+            f"{box['columns'][0]}..{box['columns'][1]} of the {ny}x{nx} grid) "
+            "and were rebuilt linear in depth from the skin temperature at "
+            "0 m to the deep soil temperature at 3 m, following WRF "
+            "real.exe's rebuild with its deep-temperature sign corrected "
+            "(real.exe's tmn*(0-zs) takes the column toward 0 K); "
+            f"their soil moisture is kept{whole}",
+            file=sys.stderr)
+    snow = receipt.get("snow_top_soil_below_skin")
+    if snow:
+        box = snow["bounding_box"]
+        print(
+            f"soil temperature rebuild under snow: {snow['columns']} of "
+            f"{receipt['land_cells']} land column(s) are snow covered (at "
+            f"least {snow['snow_cover_water_kg_m2']:g} kg m-2 of snow water) "
+            f"with a source top soil more than {snow['deficit_limit_k']:g} K "
+            f"below the skin temperature (top soil "
+            f"{snow['top_soil_min_k']:.6g}..{snow['top_soil_max_k']:.6g} K, "
+            f"mean {snow['top_soil_mean_k']:.6g} K, up to "
+            f"{snow['largest_deficit_k']:.4g} K below the skin; rows "
+            f"{box['rows'][0]}..{box['rows'][1]} and columns "
+            f"{box['columns'][0]}..{box['columns'][1]} of the {ny}x{nx} grid), "
+            "which a snowpack's insulation does not allow, and were rebuilt "
+            "linear in depth from the skin temperature at 0 m to the deep "
+            "soil temperature at 3 m as the band rebuild does; their soil "
+            f"moisture is kept{'' if band else whole}",
+            file=sys.stderr)
 
 
 def _count_land_deep_soil_repair(deep, land, valid_deep, tsk):
@@ -1352,19 +1499,50 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
     # sets water TMN to the selected SST/TSK before module_soil_pre consumes it.
     deep_repair = _count_land_deep_soil_repair(deep, land, valid_deep, tsk)
     deep = np.where(land & valid_deep, deep, tsk)
+    # dyn_em/module_initialize_real.F:517-543 reconciles the independently
+    # optional SNOW (kg m-2 SWE) and SNOWH (m physical depth) fields.  Its
+    # fixed 5:1 liquid-to-snow depth ratio is a 200 kg m-3 initial density.
+    # SNOW_EC is ERA5 metres water equivalent and therefore counts as SNOW.
+    # Reconciled here, before the soil rebuild, because the rebuild's
+    # snow-covered rule reads the snow water.
+    snow_present = "SNOW" in fields or "SNOW_EC" in fields
+    snowh_present = "SNOWH" in fields
+    if "SNOW" in fields:
+        snow = _host(fields["SNOW"])
+    elif "SNOW_EC" in fields:
+        snow = 1000.0 * _host(fields["SNOW_EC"])
+    else:
+        snow = np.zeros(shape, dtype=np.float64)
+    snowh = (_host(fields["SNOWH"]) if snowh_present
+             else np.zeros(shape, dtype=np.float64))
+    snow, snowh = (
+        _admitted_snow_field("snow water", snow, shape,
+                             _SNOW_WATER_CEILING_KG_M2, "kg m-2"),
+        _admitted_snow_field("snow depth", snowh, shape,
+                             _SNOW_DEPTH_CEILING_M, "m"))
+    if not snow_present and snowh_present:
+        snow = snowh * (1000.0 / 5.0)
+    elif snow_present and not snowh_present:
+        snowh = snow / 1000.0 * 5.0
     # real.exe's TSLB reasonableness rebuild, on every soil source alike:
     # a land column carrying a source soil temperature outside 170..400 K
     # is held at TSK through the vertical mapping below and rebuilt
-    # TSK-to-TMN on Noah's layers after it.
+    # TSK-to-TMN on Noah's layers after it.  So is a snow-covered land
+    # column whose top soil sits further below its skin than a snowpack
+    # allows (snow_soil_below_skin_columns), which the band lets through.
     if mapped_layers:
         samples = declared_temperature
     elif hrrr_nodes:
         samples = soil_temperature_nodes
     else:
         samples = np.stack(temperatures)
-    rebuilt_columns = unreasonable_land_soil_columns(samples, terrestrial)
+    band_columns = unreasonable_land_soil_columns(samples, terrestrial)
+    snow_columns = snow_soil_below_skin_columns(
+        samples, terrestrial, skin=tsk, snow_water=snow)
+    rebuilt_columns = band_columns | snow_columns
     temperature_repair = soil_temperature_repair_receipt(
-        samples, rebuilt_columns, terrestrial)
+        samples, band_columns, terrestrial, snow_columns=snow_columns,
+        skin=tsk)
     if temperature_repair:
         _announce_soil_temperature_repair(temperature_repair)
         samples = np.array(samples, copy=True)
@@ -1540,29 +1718,6 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
     liquid_m = sh2o_init(soil_m, soil_t, soil_type, noah_params)
     liquid_m[:, sea_ice] = 0.0
 
-    # dyn_em/module_initialize_real.F:517-543 reconciles the independently
-    # optional SNOW (kg m-2 SWE) and SNOWH (m physical depth) fields.  Its
-    # fixed 5:1 liquid-to-snow depth ratio is a 200 kg m-3 initial density.
-    # SNOW_EC is ERA5 metres water equivalent and therefore counts as SNOW.
-    snow_present = "SNOW" in fields or "SNOW_EC" in fields
-    snowh_present = "SNOWH" in fields
-    if "SNOW" in fields:
-        snow = _host(fields["SNOW"])
-    elif "SNOW_EC" in fields:
-        snow = 1000.0 * _host(fields["SNOW_EC"])
-    else:
-        snow = np.zeros(shape, dtype=np.float64)
-    snowh = (_host(fields["SNOWH"]) if snowh_present
-             else np.zeros(shape, dtype=np.float64))
-    snow, snowh = (
-        _admitted_snow_field("snow water", snow, shape,
-                             _SNOW_WATER_CEILING_KG_M2, "kg m-2"),
-        _admitted_snow_field("snow depth", snowh, shape,
-                             _SNOW_DEPTH_CEILING_M, "m"))
-    if not snow_present and snowh_present:
-        snow = snowh * (1000.0 / 5.0)
-    elif snow_present and not snowh_present:
-        snowh = snow / 1000.0 * 5.0
     return NoahSoilState(
         soil_temperature=soil_t,
         soil_moisture=soil_m,

@@ -60,14 +60,43 @@ def test_absent_case_companion_keeps_default_gas_policy(tmp_path):
     assert trace_gas_overrides_from_config(path) is None
 
 
+@pytest.fixture
+def numpy_as_cupy(monkeypatch):
+    """NumPy stands in for ``cupy`` for one test, and leaves no module bound to it.
+
+    The initializer imports cupy inside its body, so only that import has to
+    see the stand-in.  A module imported for the first time while the stand-in
+    is installed keeps NumPy as its ``cp`` for the rest of the process: the
+    breakage this prevents is gpuwm.core.sase imported that way, after which
+    test_sase.py on the same worker failed on ``numpy.asnumpy``.  So the
+    modules the initializer reaches are imported before the stand-in, and any
+    module still first imported under it is forgotten afterwards, together with
+    its attribute on its package, so the next import builds it on real cupy.
+    """
+
+    from gpuwm.ingest import hrrr_physics  # noqa: F401 - imported before the stand-in
+    import gpuwm.core.diagnostics  # noqa: F401
+    import gpuwm.core.landuse  # noqa: F401
+    import gpuwm.core.physics  # noqa: F401
+    import gpuwm.static.build  # noqa: F401
+
+    before = set(sys.modules)
+    monkeypatch.setitem(sys.modules, "cupy", np)
+    yield
+    for name in sorted(set(sys.modules) - before, reverse=True):
+        module = sys.modules.pop(name)
+        package, _, attribute = name.rpartition(".")
+        if package and getattr(sys.modules.get(package), attribute, None) is module:
+            delattr(sys.modules[package], attribute)
+
+
 @pytest.mark.parametrize("co2", [None, {"co2": .000731}])
 @pytest.mark.parametrize("simulation_start", [None, datetime(2026, 7, 19, 21)])
 def test_prepared_initializer_passes_gas_vertical_chunk_and_parent_to_factory(
-        monkeypatch, co2, simulation_start):
+        monkeypatch, numpy_as_cupy, co2, simulation_start):
     # Exercise the entire prepared initializer through its real input validation.
     # Replace only GPU execution and the already-tested radiation factory with
     # recorders; this control makes no claim about radiative transfer numbers.
-    monkeypatch.setitem(sys.modules, "cupy", np)
     from gpuwm.ingest import hrrr_physics
     import gpuwm.core.diagnostics as diagnostics
     import gpuwm.core.landuse as landuse

@@ -104,7 +104,7 @@ __device__ __forceinline__ float thompson_t_lcl(
     float temperature, float dewpoint)
 {
     const float denominator = 1.0f / (dewpoint - 56.0f)
-        + logf(temperature / dewpoint) / 800.0f;
+        + __fdiv_rn(logf(temperature / dewpoint), 800.0f);
     return 1.0f / denominator + 56.0f;
 }
 
@@ -132,7 +132,7 @@ __device__ __forceinline__ float thompson_temperature_from_theta_e(
 {
     float guess = (theta_e_lcl - 0.5f
         * powf(fmaxf(theta_e_lcl - 270.0f, 0.0f), 1.05f))
-        * powf(pressure / 100000.0f, 0.2f);
+        * powf(__fdiv_rn(pressure, 100000.0f), 0.2f);
     for (int iteration = 0; iteration < 100; ++iteration) {
         const float w1 = thompson_rslf(pressure, guess);
         const float w2 = thompson_rslf(pressure, guess + 1.0f);
@@ -147,7 +147,7 @@ __device__ __forceinline__ float thompson_temperature_from_theta_e(
         if (fabsf(correction) < 0.01f) return guess;
     }
     return thompson_theta_wetb(theta_e_lcl)
-        * powf(pressure / 100000.0f, 0.286f);
+        * powf(__fdiv_rn(pressure, 100000.0f), 0.286f);
 }
 
 __device__ __forceinline__ float thompson_wet_bulb_temperature(
@@ -383,6 +383,18 @@ extern "C" __global__ void thompson_effective_radius(
     const int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= n) return;
 
+#ifndef THOMPSON_NO_EXACT_SHORTCUTS
+    // Exact shortcut: with no cloud, ice or snow mass (either signed zero)
+    // every concentration below takes its 1e-12 floor, whatever the density,
+    // so each radius is its lower clamp.  These are the full path's writes.
+    if (qc[idx] == 0.0f && qi[idx] == 0.0f && qs[idx] == 0.0f) {
+        effc[idx] = fmaxf(2.49e-6f, fminf(2.49e-6f, 50.0e-6f)) * 1.0e6f;
+        effi[idx] = fmaxf(4.99e-6f, fminf(4.99e-6f, 125.0e-6f)) * 1.0e6f;
+        effs[idx] = fmaxf(9.99e-6f, fminf(9.99e-6f, 999.0e-6f)) * 1.0e6f;
+        return;
+    }
+#endif  // THOMPSON_NO_EXACT_SHORTCUTS
+
     // All constants are explicitly single precision because the corresponding
     // WRF declarations and pre-lambda expressions are default REAL.  Only the
     // two lambda variables and their final divisions are double precision.
@@ -444,6 +456,36 @@ extern "C" __global__ void thompson_effective_radius(
 #define THOMPSON_KMAX_SHALLOW 64
 #define THOMPSON_KMAX_GENERIC 256
 
+// Exact shortcuts.  A column or cell whose result is already known
+// (no species above R1, so nothing falls and every terminal write is a
+// floor or a zero-tendency update) takes a short path that performs
+// exactly the writes of the full path, signed zeros included.  The bit
+// tests compile this unit with THOMPSON_NO_EXACT_SHORTCUTS defined as
+// their reference, which removes every shortcut and nothing else.
+#ifndef THOMPSON_NO_EXACT_SHORTCUTS
+// The no-fallout gate is conservative: an unusual environment (a
+// non-finite number, a density or depth out of range) takes the full sweep.
+__device__ __forceinline__ bool thompson_empty_column(
+    const float* q, const float* number, const float* temperature,
+    const float* pressure, const float* qv, const float* dz,
+    const float* presence, float dt, int column, int nz, int ny, int nx)
+{
+    if (!(dt >= 0.0f && dt <= 100000.0f)) return false;
+    for (int k = 0; k < nz; ++k) {
+        const size_t idx = (size_t)k * ny * nx + column;
+        if (!(q[idx] >= -1.0f
+                && q[idx] <= (presence != nullptr ? 1.0f : 1.0e-12f))) return false;
+        if (presence != nullptr && presence[idx] != 0.0f) return false;
+        if (number != nullptr && !isfinite(number[idx])) return false;
+        if (!(temperature[idx] >= 100.0f && temperature[idx] <= 400.0f
+                && pressure[idx] >= 1.0f && pressure[idx] <= 120000.0f
+                && qv[idx] >= -1.0f && qv[idx] <= 1.0f
+                && dz[idx] >= 1.0f && dz[idx] <= 100000.0f)) return false;
+    }
+    return true;
+}
+#endif  // THOMPSON_NO_EXACT_SHORTCUTS
+
 // DENSITY_CARRIES_LQR: the caller's reference density is zero exactly where
 // WRF's L_qr failed at :3236 (the mp=28 rain evaporation writes it so, see
 // thompson_aerosol_sat.cu).  The plain entry points keep the state's mixing
@@ -465,6 +507,43 @@ __device__ __forceinline__ void thompson_rain_sediment_impl(
     if (column >= ny * nx) return;
     const int j = column / nx;
     const int i = column - j * nx;
+
+#ifndef THOMPSON_NO_EXACT_SHORTCUTS
+    // Preserve the terminal writes, including zero-tendency signed-zero changes.
+    if (thompson_empty_column(qr, nullptr, temperature, pressure, qv, dz,
+            DENSITY_CARRIES_LQR ? reference_density : nullptr, dt, column, nz, ny, nx)) {
+        for (int k = 0; k < nz; ++k) {
+            const size_t idx = IDX3(k, j, i);
+            const float qr_new = qr[idx] + 0.0f * dt;
+            if (qr_new <= 1.0e-12f) {
+                qr[idx] = 0.0f;
+                nr[idx] = 0.0f;
+                continue;
+            }
+            // Absence of a fall speed does not suppress the terminal MVD bound.
+            const float qvk = fmaxf(1.0e-10f, qv[idx]);
+            const float rho = 0.622f * pressure[idx]
+                / (287.04f * temperature[idx] * (qvk + 0.622f));
+            const float am_r = 3.1415926536f * 1000.0f / 6.0f;
+            const float org3 = 1.0f / 6.0f;
+            float nr_new = fmaxf(1.0e-6f / rho, nr[idx] + 0.0f * dt);
+            const float lambda_arg = am_r * 6.0f * nr_new / qr_new;
+            double lambda = (double)powf(lambda_arg, 1.0f / 3.0f);
+            float mvd = (float)(3.672 / lambda);
+            if (mvd > 2.5e-3f) mvd = 2.5e-3f;
+            else if (mvd < 37.5e-6f) mvd = 37.5e-6f;
+            lambda = 3.672 / (double)mvd;
+            const float prefix = __fdiv_rn(org3 * qr_new, am_r);
+            nr_new = (float)((double)prefix * pow(lambda, 3.0));
+            qr[idx] = qr_new;
+            nr[idx] = nr_new;
+        }
+        if (accumulate_surface) rainncv[column] += 0.0f;
+        else rainncv[column] = 0.0f;
+        rainnc[column] += 0.0f;
+        return;
+    }
+#endif  // THOMPSON_NO_EXACT_SHORTCUTS
 
     float density[KMAX];
     float rain_mass[KMAX];
@@ -555,8 +634,8 @@ __device__ __forceinline__ void thompson_rain_sediment_impl(
             const float mass_prefix = rhof * 4854.0f * 24.0f * org3;
             mass_velocity[k] = (float)((double)mass_prefix
                 * pow(lambda, 4.0) * pow(lambda + 195.0, -5.0));
-            const float number_prefix = rhof * 4854.0f
-                * 3.3233511f / 1.3293403f;
+            const float number_prefix = __fdiv_rn(rhof * 4854.0f
+                * 3.3233511f, 1.3293403f);
             number_velocity[k] = (float)((double)number_prefix
                 * pow(lambda, 2.5) * pow(lambda + 195.0, -3.5));
         } else {
@@ -645,7 +724,7 @@ __device__ __forceinline__ void thompson_rain_sediment_impl(
         if (mvd > 2.5e-3f) mvd = 2.5e-3f;
         else if (mvd < 37.5e-6f) mvd = 37.5e-6f;
         lambda = 3.672 / (double)mvd;
-        const float prefix = org3 * qr_new / am_r;
+        const float prefix = __fdiv_rn(org3 * qr_new, am_r);
         nr_new = (float)((double)prefix * pow(lambda, 3.0));
         qr[idx] = qr_new;
         nr[idx] = nr_new;
@@ -744,6 +823,23 @@ __device__ __forceinline__ void thompson_ice_sediment_impl(
     const int j = column / nx;
     const int i = column - j * nx;
 
+#ifndef THOMPSON_NO_EXACT_SHORTCUTS
+    // Preserve the terminal writes, including zero-tendency signed-zero changes.
+    if (thompson_empty_column(qi, ni, temperature, pressure, qv, dz,
+            nullptr, dt, column, nz, ny, nx)) {
+        for (int k = 0; k < nz; ++k) {
+            const size_t idx = IDX3(k, j, i);
+            qi[idx] = qi[idx] + 0.0f * dt;
+            ni[idx] = ni[idx] + 0.0f * dt;
+        }
+        rainncv[column] = 0.0f;
+        snowncv[column] = 0.0f;
+        rainnc[column] += 0.0f;
+        snownc[column] += 0.0f;
+        return;
+    }
+#endif  // THOMPSON_NO_EXACT_SHORTCUTS
+
     float density[KMAX];
     float ice_mass[KMAX];
     float ice_number[KMAX];
@@ -795,7 +891,7 @@ __device__ __forceinline__ void thompson_ice_sediment_impl(
             float nn = fmaxf(1.0e-6f, ni[idx] * state_rho);
             if (nn <= 1.0e-6f) {
                 const double lambda = 4.0 / 5.0e-6;
-                const float prefix = oig2 * ri / am_i;
+                const float prefix = __fdiv_rn(oig2 * ri, am_i);
                 nn = fminf(999.0e3f,
                            (float)((double)prefix * pow(lambda, 3.0)));
             }
@@ -805,13 +901,13 @@ __device__ __forceinline__ void thompson_ice_sediment_impl(
             if (diameter < 5.0e-6f) {
                 diameter = 5.0e-6f;
                 lambda = 4.0 / (double)diameter;
-                const float prefix = oig2 * ri / am_i;
+                const float prefix = __fdiv_rn(oig2 * ri, am_i);
                 nn = fminf(999.0e3f,
                            (float)((double)prefix * pow(lambda, 3.0)));
             } else if (diameter > 300.0e-6f) {
                 diameter = 300.0e-6f;
                 lambda = 4.0 / (double)diameter;
-                const float prefix = oig2 * ri / am_i;
+                const float prefix = __fdiv_rn(oig2 * ri, am_i);
                 nn = (float)((double)prefix * pow(lambda, 3.0));
             }
             ice_mass[k] = ri;
@@ -821,8 +917,8 @@ __device__ __forceinline__ void thompson_ice_sediment_impl(
             const double inverse_lambda = 1.0 / lambda;
             const float mass_prefix = rhof * 1493.9f * 24.0f * oig2;
             mass_velocity[k] = (float)((double)mass_prefix * inverse_lambda);
-            const float number_prefix = rhof * 1493.9f
-                * 3.3233511f / 1.3293403f;
+            const float number_prefix = __fdiv_rn(rhof * 1493.9f
+                * 3.3233511f, 1.3293403f);
             number_velocity[k] = (float)((double)number_prefix
                                           * inverse_lambda);
         } else {
@@ -910,7 +1006,7 @@ __device__ __forceinline__ void thompson_ice_sediment_impl(
         if (diameter < 5.0e-6f) diameter = 5.0e-6f;
         else if (diameter > 300.0e-6f) diameter = 300.0e-6f;
         lambda = 4.0 / (double)diameter;
-        const float prefix = oig2 * qi_new / am_i;
+        const float prefix = __fdiv_rn(oig2 * qi_new, am_i);
         ni_new = fminf((float)((double)prefix * pow(lambda, 3.0)),
                        999.0e3f / density[k]);
         qi[idx] = qi_new;
@@ -990,6 +1086,18 @@ __device__ __forceinline__ void thompson_cloud_sediment_impl(
     if (column >= ny * nx) return;
     const int j = column / nx;
     const int i = column - j * nx;
+
+#ifndef THOMPSON_NO_EXACT_SHORTCUTS
+    // Preserve the terminal writes, including zero-tendency signed-zero changes.
+    if (thompson_empty_column(qc, nullptr, temperature, pressure, qv, dz,
+            nullptr, dt, column, nz, ny, nx)) {
+        for (int k = 0; k < nz; ++k) {
+            const size_t idx = IDX3(k, j, i);
+            qc[idx] = 0.0f;
+        }
+        return;
+    }
+#endif  // THOMPSON_NO_EXACT_SHORTCUTS
 
     float density[KMAX];
     float cloud_mass[KMAX];
@@ -1105,6 +1213,18 @@ __device__ __forceinline__ void thompson_cloud_sediment_held_density_impl(
             && cloud_active_columns[column] == 0.0f) return;
     const int j = column / nx;
     const int i = column - j * nx;
+
+#ifndef THOMPSON_NO_EXACT_SHORTCUTS
+    // Preserve the terminal writes, including zero-tendency signed-zero changes.
+    if (thompson_empty_column(qc, nullptr, temperature, pressure, qv, dz,
+            nullptr, dt, column, nz, ny, nx)) {
+        for (int k = 0; k < nz; ++k) {
+            const size_t idx = IDX3(k, j, i);
+            qc[idx] = qc[idx] + 0.0f * dt;
+        }
+        return;
+    }
+#endif  // THOMPSON_NO_EXACT_SHORTCUTS
 
     float density[KMAX];
     float cloud_mass[KMAX];
@@ -1291,6 +1411,24 @@ __device__ __forceinline__ void thompson_snow_sediment_impl(
     if (column >= ny * nx) return;
     const int j = column / nx;
     const int i = column - j * nx;
+
+#ifndef THOMPSON_NO_EXACT_SHORTCUTS
+    // Preserve the terminal writes, including zero-tendency signed-zero changes.
+    if (thompson_empty_column(qs, nullptr, temperature, pressure, qv, dz,
+            nullptr, dt, column, nz, ny, nx)) {
+        for (int k = 0; k < nz; ++k) {
+            const size_t idx = IDX3(k, j, i);
+            qs[idx] = 0.0f;
+        }
+        if (accumulate_surface) rainncv[column] += 0.0f;
+        else rainncv[column] = 0.0f;
+        if (accumulate_surface) snowncv[column] += 0.0f;
+        else snowncv[column] = 0.0f;
+        rainnc[column] += 0.0f;
+        snownc[column] += 0.0f;
+        return;
+    }
+#endif  // THOMPSON_NO_EXACT_SHORTCUTS
 
     float density[KMAX];
     float snow_mass[KMAX];
@@ -1854,6 +1992,33 @@ extern "C" __global__ void thompson_hydrometeor_column_mask(
 // so its vapour is not floored at 1.E-10 (:3974).  1.0 where the column has
 // microphysics, 0.0 where WRF returns; read by
 // thompson_final_phase_cleanup_with_columns.  Take it on the entry state.
+// One level's part of that test: true where the level alone clears
+// no_micro.  A column has microphysics where any of its levels does.
+__device__ __forceinline__ bool thompson_level_has_microphysics(
+    const float* __restrict__ qc,
+    const float* __restrict__ qi,
+    const float* __restrict__ qr,
+    const float* __restrict__ qs,
+    const float* __restrict__ qg,
+    const float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    size_t idx)
+{
+    if (qc[idx] > 1.0e-12f || qi[idx] > 1.0e-12f || qr[idx] > 1.0e-12f
+            || qs[idx] > 1.0e-12f || qg[idx] > 1.0e-12f) {
+        return true;
+    }
+    const float temp = temperature[idx];
+    const float qv_local = fmaxf(1.0e-10f, qv[idx]);
+    const float qvsi = temp - 273.15f <= 0.0f
+        ? thompson_rsif(pressure[idx], temp)
+        : thompson_rslf(pressure[idx], temp);
+    float ssati = qv_local / qvsi - 1.0f;
+    if (fabsf(ssati) < 1.0e-15f) ssati = 0.0f;
+    return ssati > 0.0f;
+}
+
 extern "C" __global__ void thompson_microphysics_columns(
     const float* __restrict__ qc,
     const float* __restrict__ qi,
@@ -1873,20 +2038,8 @@ extern "C" __global__ void thompson_microphysics_columns(
 
     float micro = 0.0f;
     for (int k = 0; k < nz; ++k) {
-        const size_t idx = IDX3(k, j, i);
-        if (qc[idx] > 1.0e-12f || qi[idx] > 1.0e-12f || qr[idx] > 1.0e-12f
-                || qs[idx] > 1.0e-12f || qg[idx] > 1.0e-12f) {
-            micro = 1.0f;
-            break;
-        }
-        const float temp = temperature[idx];
-        const float qv_local = fmaxf(1.0e-10f, qv[idx]);
-        const float qvsi = temp - 273.15f <= 0.0f
-            ? thompson_rsif(pressure[idx], temp)
-            : thompson_rslf(pressure[idx], temp);
-        float ssati = qv_local / qvsi - 1.0f;
-        if (fabsf(ssati) < 1.0e-15f) ssati = 0.0f;
-        if (ssati > 0.0f) {
+        if (thompson_level_has_microphysics(qc, qi, qr, qs, qg, temperature,
+                                            pressure, qv, IDX3(k, j, i))) {
             micro = 1.0f;
             break;
         }
@@ -1900,20 +2053,14 @@ extern "C" __global__ void thompson_microphysics_columns(
 // consumes it only for same-call fallout and REFL_10CM.  Initialize gpuwm's
 // output-due shadow with the identical wrapper diagnosis (module_mp_thompson.F
 // 1265-1281 and 1915-1939).  The shadow is never a transported model field.
-extern "C" __global__ void thompson_classic_graupel_number_init(
+__device__ __forceinline__ float thompson_classic_graupel_number(
     const float* __restrict__ qg,
     const float* __restrict__ temperature,
     const float* __restrict__ pressure,
     const float* __restrict__ qv,
-    float* __restrict__ graupel_number_per_kg,
-    const int size)
+    int idx)
 {
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= size) return;
-    if (qg[idx] <= 1.0e-12f) {
-        graupel_number_per_kg[idx] = 0.0f;
-        return;
-    }
+    if (qg[idx] <= 1.0e-12f) return 0.0f;
 
     const float qvk = fmaxf(1.0e-10f, qv[idx]);
     const float rho = 0.622f * pressure[idx]
@@ -1927,20 +2074,34 @@ extern "C" __global__ void thompson_classic_graupel_number_init(
     const float intercept = powf(10.0f, intercept_power);
     double lambda = (double)powf(
         intercept * am_g * 6.0f / rg, 0.25f);
-    float number = (float)((double)((1.0f / 6.0f) * rg / am_g)
+    float number = (float)((double)(__fdiv_rn((1.0f / 6.0f) * rg, am_g))
         * lambda * lambda * lambda);
 
     float mvd = (float)(3.672 / lambda);
     if (mvd > 25.4e-3f) {
         lambda = 3.672 / 25.4e-3;
-        number = (float)((double)((1.0f / 6.0f) * rg / am_g)
+        number = (float)((double)(__fdiv_rn((1.0f / 6.0f) * rg, am_g))
             * lambda * lambda * lambda);
     } else if (mvd < 50.0e-6f) {
         lambda = 3.672 / 50.0e-6;
-        number = (float)((double)((1.0f / 6.0f) * rg / am_g)
+        number = (float)((double)(__fdiv_rn((1.0f / 6.0f) * rg, am_g))
             * lambda * lambda * lambda);
     }
-    graupel_number_per_kg[idx] = number / rho;
+    return number / rho;
+}
+
+extern "C" __global__ void thompson_classic_graupel_number_init(
+    const float* __restrict__ qg,
+    const float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    float* __restrict__ graupel_number_per_kg,
+    const int size)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= size) return;
+    graupel_number_per_kg[idx] = thompson_classic_graupel_number(
+        qg, temperature, pressure, qv, idx);
 }
 
 // mp_thompson applies the private ng1d tendency only after every source and
@@ -1984,12 +2145,12 @@ extern "C" __global__ void thompson_classic_graupel_number_finalize(
     const float mvd = (float)(3.672 / lambda);
     if (mvd > 25.4e-3f) {
         lambda = 3.672 / 25.4e-3;
-        number_per_kg = (float)((double)((1.0f / 6.0f)
-            * qg[idx] / am_g) * lambda * lambda * lambda);
+        number_per_kg = (float)((double)(__fdiv_rn((1.0f / 6.0f)
+            * qg[idx], am_g)) * lambda * lambda * lambda);
     } else if (mvd < 50.0e-6f) {
         lambda = 3.672 / 50.0e-6;
-        number_per_kg = (float)((double)((1.0f / 6.0f)
-            * qg[idx] / am_g) * lambda * lambda * lambda);
+        number_per_kg = (float)((double)(__fdiv_rn((1.0f / 6.0f)
+            * qg[idx], am_g)) * lambda * lambda * lambda);
     }
     graupel_number_per_kg[idx] = number_per_kg;
 }
@@ -2014,6 +2175,26 @@ __device__ __forceinline__ void thompson_graupel_sediment_impl(
     if (column >= ny * nx) return;
     const int j = column / nx;
     const int i = column - j * nx;
+
+#ifndef THOMPSON_NO_EXACT_SHORTCUTS
+    // Preserve the terminal writes, including zero-tendency signed-zero changes.
+    if (thompson_empty_column(qg, TRACK_NUMBER ? graupel_number_shadow : nullptr, temperature, pressure, qv, dz,
+            nullptr, dt, column, nz, ny, nx)) {
+        for (int k = 0; k < nz; ++k) {
+            const size_t idx = IDX3(k, j, i);
+            qg[idx] = 0.0f;
+            if (TRACK_NUMBER) graupel_number_shadow[idx] =
+                graupel_number_shadow[idx] + 0.0f * dt;
+        }
+        if (accumulate_surface) rainncv[column] += 0.0f;
+        else rainncv[column] = 0.0f;
+        if (accumulate_surface) graupelncv[column] += 0.0f;
+        else graupelncv[column] = 0.0f;
+        rainnc[column] += 0.0f;
+        graupelnc[column] += 0.0f;
+        return;
+    }
+#endif  // THOMPSON_NO_EXACT_SHORTCUTS
 
     float density[KMAX];
     float graupel_mass[KMAX];
@@ -2081,8 +2262,8 @@ __device__ __forceinline__ void thompson_graupel_sediment_impl(
                 * pow(1.0 / lambda, 0.89));
             graupel_mass[k] = rg;
             if (TRACK_NUMBER) {
-                diagnostic_number[k] = (float)((double)((1.0f / 6.0f)
-                    * rg / am_g) * lambda * lambda * lambda);
+                diagnostic_number[k] = (float)((double)(__fdiv_rn((1.0f / 6.0f)
+                    * rg, am_g)) * lambda * lambda * lambda);
                 const float number_prefix = rhof * 442.0f * 2.21880022f;
                 number_velocity[k] = (float)((double)number_prefix
                     * pow(1.0 / lambda, 0.89));
@@ -2525,7 +2706,7 @@ __device__ __forceinline__ void thompson_rain_evaporation_impl(
         (101325.0f / (287.05f * 298.0f)) * orho);
     const float rho_factor_sqrt = sqrtf(rho_factor);
     const float diffusivity = 2.11e-5f
-        * powf(temp0 / 273.15f, 1.94f)
+        * powf(__fdiv_rn(temp0, 273.15f), 1.94f)
         * (101325.0f / pressure[idx]);
     const float viscosity = tempc >= 0.0f
         ? (1.718f + 0.0049f * tempc) * 1.0e-5f
@@ -2591,7 +2772,7 @@ __device__ __forceinline__ void thompson_rain_evaporation_impl(
         // immediately behaving as freely falling rain.
         if (melting_graupel) {
             const float evaporation_factor = fminf(
-                1.0f, 0.01f + (0.99f - 0.01f) * (tempc / 20.0f));
+                1.0f, 0.01f + (0.99f - 0.01f) * (__fdiv_rn(tempc, 20.0f)));
             evaporation_rate *= (double)evaporation_factor;
         }
     }
@@ -2745,7 +2926,7 @@ extern "C" __global__ void thompson_snow_sublimation(
         (101325.0f / (287.05f * 298.0f)) * orho);
     const float rho_factor_sqrt = sqrtf(rho_factor);
     const float diffusivity = 2.11e-5f
-        * powf(temp0 / 273.15f, 1.94f)
+        * powf(__fdiv_rn(temp0, 273.15f), 1.94f)
         * (101325.0f / pressure[idx]);
     const float viscosity = (1.718f + 0.0049f * tempc
         - 1.2e-5f * tempc * tempc) * 1.0e-5f;
@@ -2792,7 +2973,7 @@ extern "C" __global__ void thompson_snow_sublimation(
         * powf(snow_second_moment,
                thompson_field_b(tc0, deposition_moment));
     const float snow_capacitance = fmaxf(0.15f, fminf(
-        0.15f + (tempc + 1.5f) * (0.5f - 0.15f) / (-30.0f + 1.5f),
+        0.15f + __fdiv_rn((tempc + 1.5f) * (0.5f - 0.15f), (-30.0f + 1.5f)),
         0.5f));
     const float schmidt_cuberoot = powf(0.632f, 1.0f / 3.0f);
     const float ventilation_coefficient = 0.28f * schmidt_cuberoot
@@ -2852,7 +3033,7 @@ extern "C" __global__ void thompson_graupel_sublimation(
         (101325.0f / (287.05f * 298.0f)) * orho);
     const float rho_factor_sqrt = sqrtf(rho_factor);
     const float diffusivity = 2.11e-5f
-        * powf(temp0 / 273.15f, 1.94f)
+        * powf(__fdiv_rn(temp0, 273.15f), 1.94f)
         * (101325.0f / pressure[idx]);
     const float viscosity = (1.718f + 0.0049f * tempc
         - 1.2e-5f * tempc * tempc) * 1.0e-5f;
@@ -2898,8 +3079,8 @@ extern "C" __global__ void thompson_graupel_sublimation(
     const float diagnosed_intercept = powf(10.0f, intercept_power);
     float lambda = powf(
         diagnosed_intercept * am_g * 6.0f / graupel_mass, 0.25f);
-    float number_per_kg = (1.0f / 6.0f) * graupel_mass
-        * powf(lambda, 3.0f) / am_g / rho;
+    float number_per_kg = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+        * powf(lambda, 3.0f), am_g) / rho;
     number_per_kg = fmaxf(1.0e-6f, number_per_kg);
     float graupel_number = fmaxf(1.0e-6f, number_per_kg * rho);
     lambda = powf(
@@ -2908,13 +3089,13 @@ extern "C" __global__ void thompson_graupel_sublimation(
     if (mvd > 25.4e-3f) {
         mvd = 25.4e-3f;
         lambda = 3.672f / mvd;
-        graupel_number = (1.0f / 6.0f) * graupel_mass
-            * powf(lambda, 3.0f) / am_g;
+        graupel_number = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+            * powf(lambda, 3.0f), am_g);
     } else if (mvd < 50.0e-6f) {
         mvd = 50.0e-6f;
         lambda = 3.672f / mvd;
-        graupel_number = (1.0f / 6.0f) * graupel_mass
-            * powf(lambda, 3.0f) / am_g;
+        graupel_number = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+            * powf(lambda, 3.0f), am_g);
     }
     const float inverse_lambda = 1.0f / lambda;
     const float graupel_intercept = graupel_number * lambda;
@@ -2967,7 +3148,7 @@ __device__ __forceinline__ void thompson_bound_rain_number(
         return;
     }
     lambda = 3.672f / mvd;
-    rain_number = (1.0f / 6.0f) * rain_mass / am_r
+    rain_number = __fdiv_rn((1.0f / 6.0f) * rain_mass, am_r)
         * lambda * lambda * lambda;
     *rain_number_per_kg = rain_number / density;
 }
@@ -2993,7 +3174,7 @@ __device__ __forceinline__ bool thompson_prepare_entry_rain_distribution(
     float number = fmaxf(1.0e-6f, rain_number_per_kg * density);
     if (number <= 1.0e-6f) {
         const float lambda = 3.672f / 1.0e-3f;
-        number = (1.0f / 6.0f) * rain_mass / am_r
+        number = __fdiv_rn((1.0f / 6.0f) * rain_mass, am_r)
             * lambda * lambda * lambda;
     }
 
@@ -3010,7 +3191,7 @@ __device__ __forceinline__ bool thompson_prepare_entry_rain_distribution(
         return true;
     }
     lambda = 3.672f / mvd;
-    number = (1.0f / 6.0f) * rain_mass / am_r
+    number = __fdiv_rn((1.0f / 6.0f) * rain_mass, am_r)
         * lambda * lambda * lambda;
     *rain_number = number;
     *rain_lambda = (double)lambda;
@@ -3044,7 +3225,7 @@ extern "C" __global__ void thompson_snow_melting(
     const float snow_mass = qs[idx] * rho;
     const float tempc = temp0 - 273.15f;
     const float diffusivity = 2.11e-5f
-        * powf(temp0 / 273.15f, 1.94f)
+        * powf(__fdiv_rn(temp0, 273.15f), 1.94f)
         * (101325.0f / pressure[idx]);
     const float viscosity = (1.718f + 0.0049f * tempc) * 1.0e-5f;
     const float conductivity = (5.69f + 0.0168f * tempc)
@@ -3131,8 +3312,8 @@ extern "C" __global__ void thompson_graupel_melting(
     const float diagnosed_intercept = powf(10.0f, intercept_power);
     float lambda = powf(
         diagnosed_intercept * am_g * 6.0f / graupel_mass, 0.25f);
-    float graupel_number = (1.0f / 6.0f) * graupel_mass
-        * lambda * lambda * lambda / am_g;
+    float graupel_number = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+        * lambda * lambda * lambda, am_g);
     graupel_number = fmaxf(1.0e-6f, graupel_number);
     lambda = powf(am_g * 6.0f * graupel_number / graupel_mass,
                   1.0f / 3.0f);
@@ -3140,19 +3321,19 @@ extern "C" __global__ void thompson_graupel_melting(
     if (mvd > 25.4e-3f) {
         mvd = 25.4e-3f;
         lambda = 3.672f / mvd;
-        graupel_number = (1.0f / 6.0f) * graupel_mass
-            * lambda * lambda * lambda / am_g;
+        graupel_number = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+            * lambda * lambda * lambda, am_g);
     } else if (mvd < 50.0e-6f) {
         mvd = 50.0e-6f;
         lambda = 3.672f / mvd;
-        graupel_number = (1.0f / 6.0f) * graupel_mass
-            * lambda * lambda * lambda / am_g;
+        graupel_number = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+            * lambda * lambda * lambda, am_g);
     }
     graupel_number_per_kg[idx] = graupel_number * orho;
 
     const float tempc = temp0 - 273.15f;
     const float diffusivity = 2.11e-5f
-        * powf(temp0 / 273.15f, 1.94f)
+        * powf(__fdiv_rn(temp0, 273.15f), 1.94f)
         * (101325.0f / pressure[idx]);
     const float viscosity = (1.718f + 0.0049f * tempc) * 1.0e-5f;
     const float conductivity = (5.69f + 0.0168f * tempc)
@@ -3212,8 +3393,8 @@ extern "C" __global__ void thompson_graupel_melting(
         }
         if (final_mvd > 0.0f) {
             final_lambda = 3.672f / final_mvd;
-            remaining_number = (1.0f / 6.0f) * remaining_mass
-                * final_lambda * final_lambda * final_lambda / am_g;
+            remaining_number = __fdiv_rn((1.0f / 6.0f) * remaining_mass
+                * final_lambda * final_lambda * final_lambda, am_g);
             graupel_number_per_kg[idx] = remaining_number * orho;
         }
     } else {
@@ -3590,8 +3771,8 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
         } else if (diameter < 50.0e-6f) {
             graupel_lambda = 3.672 / 50.0e-6;
         }
-        graupel_number = (float)((double)((1.0f / 6.0f)
-            * graupel_mass / am_g) * graupel_lambda * graupel_lambda
+        graupel_number = (float)((double)(__fdiv_rn((1.0f / 6.0f)
+            * graupel_mass, am_g)) * graupel_lambda * graupel_lambda
             * graupel_lambda);
     }
 
@@ -3602,7 +3783,7 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
     double autoconversion_number_rate = 0.0;
     if (cloud_mass > 0.01e-3f) {
         const float xdc = fmaxf(1.0f,
-            powf(cloud_mass / (am_r * cloud_number), 1.0f / 3.0f)
+            powf(__fdiv_rn(cloud_mass, am_r * cloud_number), 1.0f / 3.0f)
                 * 1.0e6f);
         const float dcg = powf(
             gamma_higher * inverse_gamma_mass, 1.0f / 3.0f)
@@ -3745,15 +3926,15 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
     if (rain_mass >= 1.0e-6f) {
         const int rain_bin = thompson_decade_table_index(
             rain_mass, -6, 37);
-        const double rain_intercept = (double)((1.0f / 6.0f)
-            * rain_mass / am_r) * rain_lambda * rain_lambda
+        const double rain_intercept = (double)(__fdiv_rn((1.0f / 6.0f)
+            * rain_mass, am_r)) * rain_lambda * rain_lambda
             * rain_lambda * rain_lambda;
         const int rain_intercept_bin =
             thompson_decade_table_index_double(rain_intercept, 6, 37);
         if (snow_mass >= 1.0e-6f) {
             const int snow_bin = thompson_decade_table_index(
                 snow_mass, -6, 37);
-            const int raw_temp_bin = (int)((tempc - 2.5f) / 5.0f) - 1;
+            const int raw_temp_bin = (int)(__fdiv_rn((tempc - 2.5f), 5.0f)) - 1;
             const int temp_bin = min(9, max(1, -raw_temp_bin)) - 1;
             const size_t table_idx = (size_t)snow_bin
                 + (size_t)37 * ((size_t)temp_bin
@@ -3837,7 +4018,7 @@ extern "C" __global__ void thompson_warm_frozen_source_network(
     }
 
     const float diffusivity = 2.11e-5f
-        * powf(temp0 / 273.15f, 1.94f) * (101325.0f / pressure0);
+        * powf(__fdiv_rn(temp0, 273.15f), 1.94f) * (101325.0f / pressure0);
     const float viscosity = (1.718f + 0.0049f * tempc) * 1.0e-5f;
     const float conductivity = (5.69f + 0.0168f * tempc)
         * 1.0e-5f * 418.936f;
@@ -4173,11 +4354,11 @@ __device__ __forceinline__ void thompson_bound_ice_number(
     if (diameter < 5.0e-6f) {
         lambda = 4.0 / 5.0e-6;
         ice_number = fminf(999.0e3f,
-            (1.0f / 6.0f) * ice_mass / am_i
+            __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
             * (float)(lambda * lambda * lambda));
     } else if (diameter > 300.0e-6f) {
         lambda = 4.0 / 300.0e-6;
-        ice_number = (1.0f / 6.0f) * ice_mass / am_i
+        ice_number = __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
             * (float)(lambda * lambda * lambda);
     }
     *ice_number_per_kg = fminf(ice_number, 999.0e3f) / density;
@@ -4263,7 +4444,7 @@ __device__ __forceinline__ void thompson_final_phase_cleanup_impl(
             lami = (double)(4.0f / 300.0e-6f);
         }
         ni[idx] = (float)fmin(
-            (double)((1.0f / 6.0f) * qi_local / am_i) * pow(lami, 3.0),
+            (double)(__fdiv_rn((1.0f / 6.0f) * qi_local, am_i)) * pow(lami, 3.0),
             999.0e3 / (double)rho);
     }
 }
@@ -4344,8 +4525,8 @@ extern "C" __global__ void thompson_rain_freezing(
         // crg(3)*org2*org1 is exactly one for classic mu_r=0, so
         // N0_exp reduces to this expression while retaining WRF's mixed
         // REAL/DOUBLE evaluation order.
-        const float mass_coefficient = (1.0f / 6.0f)
-            * rain_mass0 / am_r;
+        const float mass_coefficient = __fdiv_rn((1.0f / 6.0f)
+            * rain_mass0, am_r);
         const double intercept = (double)mass_coefficient
             * lambda * lambda * lambda * lambda;
         const int intercept_bin = thompson_decade_table_index_double(
@@ -4541,8 +4722,8 @@ extern "C" __global__ void thompson_graupel_cloud_riming(
         graupel_lambda = 3.672 / 50.0e-6;
     }
     const double inverse_lambda = 1.0 / graupel_lambda;
-    const float graupel_number = (1.0f / 6.0f) * graupel_mass
-        / graupel_mass_coefficient
+    const float graupel_number = __fdiv_rn((1.0f / 6.0f) * graupel_mass,
+        graupel_mass_coefficient)
         * (float)(graupel_lambda * graupel_lambda * graupel_lambda);
     const double graupel_intercept = (double)graupel_number
         * graupel_lambda;
@@ -4791,7 +4972,7 @@ extern "C" __global__ void thompson_cold_cloud_source_network(
     double autoconversion_number_rate = 0.0;
     if (cloud_mass > 0.01e-3f) {
         const float xdc = fmaxf(1.0f,
-            powf(cloud_mass / (am_r * cloud_number), 1.0f / 3.0f)
+            powf(__fdiv_rn(cloud_mass, am_r * cloud_number), 1.0f / 3.0f)
                 * 1.0e6f);
         const float dcg = powf(
             gamma_higher * inverse_gamma_mass, 1.0f / 3.0f)
@@ -4968,8 +5149,8 @@ extern "C" __global__ void thompson_cold_cloud_source_network(
             lambda = 3.672 / 50.0e-6;
         }
         const double inverse_lambda = 1.0 / lambda;
-        const float graupel_number = (1.0f / 6.0f) * graupel_mass
-            / am_g * (float)(lambda * lambda * lambda);
+        const float graupel_number = __fdiv_rn((1.0f / 6.0f) * graupel_mass,
+            am_g) * (float)(lambda * lambda * lambda);
         const double intercept = (double)graupel_number * lambda;
         const float density_factor = sqrtf(
             (101325.0f / (287.05f * 298.0f)) / rho);
@@ -5118,7 +5299,7 @@ extern "C" __global__ void thompson_snow_rime_conversion(
         - 1.2e-5f * tempc * tempc) * 1.0e-5f;
     const float viscosity_factor = sqrtf(rho / viscosity);
     const float diffusivity = 2.11e-5f
-        * powf(temp0 / 273.15f, 1.94f)
+        * powf(__fdiv_rn(temp0, 273.15f), 1.94f)
         * (101325.0f / pressure[idx]);
     const float qvsi = thompson_rsif(pressure[idx], temp0);
     float ssati = qv0 / qvsi - 1.0f;
@@ -5160,8 +5341,8 @@ extern "C" __global__ void thompson_snow_rime_conversion(
                 snow_second_moment,
                 thompson_field_b(snow_temperature, ventilation_moment));
         const float capacitance = fmaxf(0.15f, fminf(
-            0.15f + (tempc + 1.5f) * (0.5f - 0.15f)
-                / (-30.0f + 1.5f),
+            0.15f + __fdiv_rn((tempc + 1.5f) * (0.5f - 0.15f),
+                (-30.0f + 1.5f)),
             0.5f));
         const float ventilation = 0.28f * powf(
             0.632f, 1.0f / 3.0f) * sqrtf(40.0f);
@@ -5534,14 +5715,14 @@ extern "C" __global__ void thompson_rain_snow_collection(
             snow_mass, -6, 37);
         const int rain_bin = thompson_decade_table_index(
             rain_mass, -6, 37);
-        const float intercept_prefix = (1.0f / 6.0f)
-            * rain_mass / am_r;
+        const float intercept_prefix = __fdiv_rn((1.0f / 6.0f)
+            * rain_mass, am_r);
         const double intercept = (double)intercept_prefix
             * rain_lambda * rain_lambda * rain_lambda * rain_lambda;
         const int intercept_bin = thompson_decade_table_index_double(
             intercept, 6, 37);
         const float tempc = temp0 - 273.15f;
-        const int raw_temp_bin = (int)((tempc - 2.5f) / 5.0f) - 1;
+        const int raw_temp_bin = (int)(__fdiv_rn((tempc - 2.5f), 5.0f)) - 1;
         const int temp_bin = min(9, max(1, -raw_temp_bin)) - 1;
         const size_t table_idx = (size_t)snow_bin
             + (size_t)37 * ((size_t)temp_bin
@@ -5646,7 +5827,7 @@ extern "C" __global__ void thompson_rain_graupel_collection(
                 graupel_intercept, 2, 37);
         const int rain_intercept_bin =
             thompson_decade_table_index_double(
-                (double)((1.0f / 6.0f) * rain_mass / am_r)
+                (double)(__fdiv_rn((1.0f / 6.0f) * rain_mass, am_r))
                     * rain_lambda * rain_lambda
                     * rain_lambda * rain_lambda,
                 6, 37);
@@ -5744,7 +5925,7 @@ extern "C" __global__ void thompson_cold_rain_snow_graupel_network(
     const int rain_mass_bin = thompson_decade_table_index(
         rain_mass, -6, 37);
     const double rain_intercept =
-        (double)((1.0f / 6.0f) * rain_mass / am_r)
+        (double)(__fdiv_rn((1.0f / 6.0f) * rain_mass, am_r))
         * rain_lambda * rain_lambda * rain_lambda * rain_lambda;
     const int rain_intercept_bin =
         thompson_decade_table_index_double(rain_intercept, 6, 37);
@@ -5767,7 +5948,7 @@ extern "C" __global__ void thompson_cold_rain_snow_graupel_network(
         const int snow_bin = thompson_decade_table_index(
             snow_mass, -6, 37);
         const float tempc = temp0 - 273.15f;
-        const int raw_temp_bin = (int)((tempc - 2.5f) / 5.0f) - 1;
+        const int raw_temp_bin = (int)(__fdiv_rn((tempc - 2.5f), 5.0f)) - 1;
         const int temp_bin = min(9, max(1, -raw_temp_bin)) - 1;
         const size_t table_idx = (size_t)snow_bin
             + (size_t)37 * ((size_t)temp_bin
@@ -5945,7 +6126,7 @@ extern "C" __global__ void thompson_cold_rain_source_network(
     const int rain_mass_bin = thompson_decade_table_index(
         rain_mass, -6, 37);
     const double rain_intercept =
-        (double)((1.0f / 6.0f) * rain_mass / am_r)
+        (double)(__fdiv_rn((1.0f / 6.0f) * rain_mass, am_r))
         * rain_lambda * rain_lambda * rain_lambda * rain_lambda;
     const int rain_intercept_bin =
         thompson_decade_table_index_double(rain_intercept, 6, 37);
@@ -6052,7 +6233,7 @@ extern "C" __global__ void thompson_cold_rain_source_network(
         const int snow_bin = thompson_decade_table_index(
             snow_mass, -6, 37);
         const float tempc = temp0 - 273.15f;
-        const int raw_temp_bin = (int)((tempc - 2.5f) / 5.0f) - 1;
+        const int raw_temp_bin = (int)(__fdiv_rn((tempc - 2.5f), 5.0f)) - 1;
         const int temp_bin = min(9, max(1, -raw_temp_bin)) - 1;
         const size_t table_idx = (size_t)snow_bin
             + (size_t)37 * ((size_t)temp_bin
@@ -6213,13 +6394,13 @@ extern "C" __global__ void thompson_ice_deposition(
         lambda = 4.0 / 5.0e-6;
         inverse_lambda = 1.0 / lambda;
         ice_number = fminf(999.0e3f,
-            (1.0f / 6.0f) * ice_mass / am_i
+            __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
             * (float)(lambda * lambda * lambda));
         mean_diameter = 5.0e-6f;
     } else if (mean_diameter > 300.0e-6f) {
         lambda = 4.0 / 300.0e-6;
         inverse_lambda = 1.0 / lambda;
-        ice_number = (1.0f / 6.0f) * ice_mass / am_i
+        ice_number = __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
             * (float)(lambda * lambda * lambda);
         mean_diameter = 300.0e-6f;
     }
@@ -6227,7 +6408,7 @@ extern "C" __global__ void thompson_ice_deposition(
     const float tempc = temp0 - 273.15f;
     const float inverse_temp = 1.0f / temp0;
     const float diffusivity = 2.11e-5f
-        * powf(temp0 / 273.15f, 1.94f)
+        * powf(__fdiv_rn(temp0, 273.15f), 1.94f)
         * (101325.0f / pressure[idx]);
     const float conductivity = (5.69f + 0.0168f * tempc)
         * 1.0e-5f * 418.936f;
@@ -6306,11 +6487,11 @@ extern "C" __global__ void thompson_ice_deposition(
         if (final_diameter < 5.0e-6f) {
             final_lambda = 4.0 / 5.0e-6;
             final_ice_number = fminf(999.0e3f,
-                (1.0f / 6.0f) * final_ice_mass / am_i
+                __fdiv_rn((1.0f / 6.0f) * final_ice_mass, am_i)
                 * (float)(final_lambda * final_lambda * final_lambda));
         } else if (final_diameter > 300.0e-6f) {
             final_lambda = 4.0 / 300.0e-6;
-            final_ice_number = (1.0f / 6.0f) * final_ice_mass / am_i
+            final_ice_number = __fdiv_rn((1.0f / 6.0f) * final_ice_mass, am_i)
                 * (float)(final_lambda * final_lambda * final_lambda);
         }
         final_ice_number = fminf(final_ice_number, 999.0e3f);
@@ -6395,7 +6576,7 @@ extern "C" __global__ void thompson_frozen_vapor_network(
     const float tempc = temp0 - 273.15f;
     const float inverse_temp = 1.0f / temp0;
     const float diffusivity = 2.11e-5f
-        * powf(temp0 / 273.15f, 1.94f)
+        * powf(__fdiv_rn(temp0, 273.15f), 1.94f)
         * (101325.0f / pressure[idx]);
     const float viscosity = (1.718f + 0.0049f * tempc
         - 1.2e-5f * tempc * tempc) * 1.0e-5f;
@@ -6488,13 +6669,13 @@ extern "C" __global__ void thompson_frozen_vapor_network(
             lambda = 4.0 / 5.0e-6;
             inverse_lambda = 1.0 / lambda;
             ice_number = fminf(999.0e3f,
-                (1.0f / 6.0f) * ice_mass / am_i
+                __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
                 * (float)(lambda * lambda * lambda));
             mean_diameter = 5.0e-6f;
         } else if (mean_diameter > 300.0e-6f) {
             lambda = 4.0 / 300.0e-6;
             inverse_lambda = 1.0 / lambda;
-            ice_number = (1.0f / 6.0f) * ice_mass / am_i
+            ice_number = __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
                 * (float)(lambda * lambda * lambda);
             mean_diameter = 300.0e-6f;
         }
@@ -6609,7 +6790,7 @@ extern "C" __global__ void thompson_frozen_vapor_network(
         const int rain_mass_bin = thompson_decade_table_index(
             rain_mass, -6, 37);
         const double table_rain_intercept =
-            (double)((1.0f / 6.0f) * rain_mass / am_r)
+            (double)(__fdiv_rn((1.0f / 6.0f) * rain_mass, am_r))
             * rain_lambda * rain_lambda * rain_lambda * rain_lambda;
         const int rain_intercept_bin =
             thompson_decade_table_index_double(
@@ -6643,7 +6824,7 @@ extern "C" __global__ void thompson_frozen_vapor_network(
             const int snow_bin = thompson_decade_table_index(
                 incoming_snow_mass, -6, 37);
             const int raw_temp_bin =
-                (int)(((temp0 - 273.15f) - 2.5f) / 5.0f) - 1;
+                (int)(__fdiv_rn(((temp0 - 273.15f) - 2.5f), 5.0f)) - 1;
             const int temp_bin = min(9, max(1, -raw_temp_bin)) - 1;
             const size_t table_idx = (size_t)snow_bin
                 + (size_t)37 * ((size_t)temp_bin
@@ -6752,8 +6933,8 @@ extern "C" __global__ void thompson_frozen_vapor_network(
             * powf(snow_second_moment,
                    thompson_field_b(tc0, 2.55f));
         const float snow_capacitance = fmaxf(0.15f, fminf(
-            0.15f + (tempc + 1.5f) * (0.5f - 0.15f)
-                / (-30.0f + 1.5f), 0.5f));
+            0.15f + __fdiv_rn((tempc + 1.5f) * (0.5f - 0.15f),
+                (-30.0f + 1.5f)), 0.5f));
         const float ventilation_coefficient = 0.28f
             * powf(0.632f, 1.0f / 3.0f) * sqrtf(40.0f);
         const float moment_sum = 0.86f * snow_first_moment
@@ -6800,8 +6981,8 @@ extern "C" __global__ void thompson_frozen_vapor_network(
             10.0f, intercept_power);
         float lambda = powf(
             diagnosed_intercept * am_g * 6.0f / graupel_mass, 0.25f);
-        float number_per_kg = (1.0f / 6.0f) * graupel_mass
-            * powf(lambda, 3.0f) / am_g / rho;
+        float number_per_kg = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+            * powf(lambda, 3.0f), am_g) / rho;
         number_per_kg = fmaxf(1.0e-6f, number_per_kg);
         float graupel_number = fmaxf(
             1.0e-6f, number_per_kg * rho);
@@ -6812,13 +6993,13 @@ extern "C" __global__ void thompson_frozen_vapor_network(
         if (mvd > 25.4e-3f) {
             mvd = 25.4e-3f;
             lambda = 3.672f / mvd;
-            graupel_number = (1.0f / 6.0f) * graupel_mass
-                * powf(lambda, 3.0f) / am_g;
+            graupel_number = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+                * powf(lambda, 3.0f), am_g);
         } else if (mvd < 50.0e-6f) {
             mvd = 50.0e-6f;
             lambda = 3.672f / mvd;
-            graupel_number = (1.0f / 6.0f) * graupel_mass
-                * powf(lambda, 3.0f) / am_g;
+            graupel_number = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+                * powf(lambda, 3.0f), am_g);
         }
         const float inverse_lambda = 1.0f / lambda;
         const float graupel_intercept = graupel_number * lambda;
@@ -7123,7 +7304,7 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
     const float tempc = temp0 - 273.15f;
     const float inverse_temp = 1.0f / temp0;
     const float diffusivity = 2.11e-5f
-        * powf(temp0 / 273.15f, 1.94f)
+        * powf(__fdiv_rn(temp0, 273.15f), 1.94f)
         * (101325.0f / pressure[idx]);
     const float viscosity = (1.718f + 0.0049f * tempc
         - 1.2e-5f * tempc * tempc) * 1.0e-5f;
@@ -7218,7 +7399,7 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
         if (ice_number <= 1.0e-6f) {
             const double lambda5 = 4.0 / 5.0e-6;
             ice_number = fminf(999.0e3f,
-                (1.0f / 6.0f) * ice_mass / am_i
+                __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
                 * (float)(lambda5 * lambda5 * lambda5));
         }
         double lambda = (double)powf(
@@ -7229,13 +7410,13 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
             lambda = 4.0 / 5.0e-6;
             inverse_lambda = 1.0 / lambda;
             ice_number = fminf(999.0e3f,
-                (1.0f / 6.0f) * ice_mass / am_i
+                __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
                 * (float)(lambda * lambda * lambda));
             mean_diameter = 5.0e-6f;
         } else if (mean_diameter > 300.0e-6f) {
             lambda = 4.0 / 300.0e-6;
             inverse_lambda = 1.0 / lambda;
-            ice_number = (1.0f / 6.0f) * ice_mass / am_i
+            ice_number = __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
                 * (float)(lambda * lambda * lambda);
             mean_diameter = 300.0e-6f;
         }
@@ -7358,7 +7539,7 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
         const int rain_mass_bin = thompson_decade_table_index(
             rain_mass, -6, 37);
         const double table_rain_intercept =
-            (double)((1.0f / 6.0f) * rain_mass / am_r)
+            (double)(__fdiv_rn((1.0f / 6.0f) * rain_mass, am_r))
             * rain_lambda * rain_lambda * rain_lambda * rain_lambda;
         const int rain_intercept_bin =
             thompson_decade_table_index_double(
@@ -7392,7 +7573,7 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
             const int snow_bin = thompson_decade_table_index(
                 incoming_snow_mass, -6, 37);
             const int raw_temp_bin =
-                (int)(((temp0 - 273.15f) - 2.5f) / 5.0f) - 1;
+                (int)(__fdiv_rn(((temp0 - 273.15f) - 2.5f), 5.0f)) - 1;
             const int temp_bin = min(9, max(1, -raw_temp_bin)) - 1;
             const size_t table_idx = (size_t)snow_bin
                 + (size_t)37 * ((size_t)temp_bin
@@ -7508,7 +7689,7 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
         // cloud-water conservation group even below freezing.
         if (cloud_mass > 0.01e-3f) {
             const float xdc = fmaxf(1.0f,
-                powf(cloud_mass / (am_r * cloud_number), 1.0f / 3.0f)
+                powf(__fdiv_rn(cloud_mass, am_r * cloud_number), 1.0f / 3.0f)
                     * 1.0e6f);
             const float dcg = powf(
                 gamma_higher * inverse_gamma_mass, 1.0f / 3.0f)
@@ -7684,8 +7865,8 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
                 lambda = 3.672 / 50.0e-6;
             }
             const double inverse_lambda = 1.0 / lambda;
-            const float graupel_number = (1.0f / 6.0f)
-                * cloud_graupel_mass / am_g
+            const float graupel_number = __fdiv_rn((1.0f / 6.0f)
+                * cloud_graupel_mass, am_g)
                 * (float)(lambda * lambda * lambda);
             const double intercept = (double)graupel_number * lambda;
             const float density_factor = sqrtf(
@@ -7789,8 +7970,8 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
             * powf(snow_second_moment,
                    thompson_field_b(tc0, 2.55f));
         const float snow_capacitance = fmaxf(0.15f, fminf(
-            0.15f + (tempc + 1.5f) * (0.5f - 0.15f)
-                / (-30.0f + 1.5f), 0.5f));
+            0.15f + __fdiv_rn((tempc + 1.5f) * (0.5f - 0.15f),
+                (-30.0f + 1.5f)), 0.5f));
         const float ventilation_coefficient = 0.28f
             * powf(0.632f, 1.0f / 3.0f) * sqrtf(40.0f);
         const float moment_sum = 0.86f * snow_first_moment
@@ -7876,8 +8057,8 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
             10.0f, intercept_power);
         float lambda = powf(
             diagnosed_intercept * am_g * 6.0f / graupel_mass, 0.25f);
-        float number_per_kg = (1.0f / 6.0f) * graupel_mass
-            * powf(lambda, 3.0f) / am_g / rho;
+        float number_per_kg = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+            * powf(lambda, 3.0f), am_g) / rho;
         number_per_kg = fmaxf(1.0e-6f, number_per_kg);
         float graupel_number = fmaxf(
             1.0e-6f, number_per_kg * rho);
@@ -7888,13 +8069,13 @@ extern "C" __global__ void thompson_frozen_vapor_cloud_network(
         if (mvd > 25.4e-3f) {
             mvd = 25.4e-3f;
             lambda = 3.672f / mvd;
-            graupel_number = (1.0f / 6.0f) * graupel_mass
-                * powf(lambda, 3.0f) / am_g;
+            graupel_number = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+                * powf(lambda, 3.0f), am_g);
         } else if (mvd < 50.0e-6f) {
             mvd = 50.0e-6f;
             lambda = 3.672f / mvd;
-            graupel_number = (1.0f / 6.0f) * graupel_mass
-                * powf(lambda, 3.0f) / am_g;
+            graupel_number = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+                * powf(lambda, 3.0f), am_g);
         }
         const float inverse_lambda = 1.0f / lambda;
         const float graupel_intercept = graupel_number * lambda;
@@ -8255,11 +8436,11 @@ extern "C" __global__ void thompson_ice_nucleation(
         if (diameter < 5.0e-6f) {
             lambda = 4.0 / 5.0e-6;
             ice_number = fminf(999.0e3f,
-                (1.0f / 6.0f) * ice_mass / am_i
+                __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
                 * (float)(lambda * lambda * lambda));
         } else if (diameter > 300.0e-6f) {
             lambda = 4.0 / 300.0e-6;
-            ice_number = (1.0f / 6.0f) * ice_mass / am_i
+            ice_number = __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
                 * (float)(lambda * lambda * lambda);
         }
     }
@@ -8270,7 +8451,7 @@ extern "C" __global__ void thompson_ice_nucleation(
         * inverse_dt;
     const float vapor_limit = (qv0 - qvsi) * rho * inverse_dt * 0.999f;
     float mass_rate = fminf(vapor_limit, 1.0e-12f * number_rate);
-    number_rate = mass_rate / 1.0e-12f;
+    number_rate = __fdiv_rn(mass_rate, 1.0e-12f);
 
     const float mass_tendency = mass_rate * orho;
     const float number_tendency = number_rate * orho;
@@ -8287,11 +8468,11 @@ extern "C" __global__ void thompson_ice_nucleation(
         if (diameter < 5.0e-6f) {
             lambda = 4.0 / 5.0e-6;
             final_ice_number = fminf(999.0e3f,
-                (1.0f / 6.0f) * final_ice_mass / am_i
+                __fdiv_rn((1.0f / 6.0f) * final_ice_mass, am_i)
                 * (float)(lambda * lambda * lambda));
         } else if (diameter > 300.0e-6f) {
             lambda = 4.0 / 300.0e-6;
-            final_ice_number = (1.0f / 6.0f) * final_ice_mass / am_i
+            final_ice_number = __fdiv_rn((1.0f / 6.0f) * final_ice_mass, am_i)
                 * (float)(lambda * lambda * lambda);
         }
         final_ice_number = fminf(final_ice_number, 999.0e3f);
@@ -8359,3 +8540,1127 @@ extern "C" __global__ void thompson_ice_autoconversion(
     qs[idx] += mass_tendency * dt;
     ni[idx] -= number_tendency * dt;
 }
+
+// ---------------------------------------------------------------------------
+// The classic adapter's own arithmetic in four launches
+// (gpuwm/core/microphysics.py:_apply_thompson through thompson.py's
+// launch_adapter_*), where it was about forty CuPy operations and four small
+// kernels.  Each cell does exactly what those did, in their order; a value
+// that crossed a CuPy launch boundary is rounded where it crossed
+// (__fadd_rn / __fmul_rn), so no product can contract into a later sum, and
+// min / max keep CuPy's canonical NaN.  tests/test_thompson_speed_glue.py
+// holds every output, special values included, to the former sequence bit
+// for bit.
+
+#define THOMPSON_CANONICAL_NAN __int_as_float(0x7fffffff)
+
+// Before any process: theta (thb + thp) and temperature (theta times the
+// Exner function the adapter computed with CuPy's power); the layer depths
+// from the full-level geopotential, divided by gravity passed as a value,
+// because NVRTC for sm_120 divides by a literal constant without IEEE
+// rounding (0.08 percent of quotients off by one ULP on an RTX 5090) while a
+// runtime divisor, like CuPy's, rounds correctly; the entry graupel mask and
+// the entry-temperature
+// warm marker; GRAUPELNCV reset; the pre-microphysics full theta parked in
+// h_diabatic (save_pre_mp_theta);
+// WRF's entry rewrite (:1844-1845, :1871-1872, :1900-1901, :1911,
+// :1941-1942), which zeroes the mass (and number) of every species at or
+// below R1 in every column; and the no-microphysics column flag cleared for
+// thompson_adapter_entry to set.
+extern "C" __global__ void thompson_adapter_prepare(
+    const float* __restrict__ thb, const float* __restrict__ thp,
+    const float* __restrict__ phb, const float* __restrict__ php,
+    float* __restrict__ th, const float* __restrict__ pii,
+    float* __restrict__ temperature, float* __restrict__ dz,
+    float* __restrict__ saved_theta,
+    float* __restrict__ qc, float* __restrict__ qi, float* __restrict__ ni,
+    float* __restrict__ qr, float* __restrict__ nr, float* __restrict__ qs,
+    float* __restrict__ qg,
+    float* __restrict__ entry_graupel, float* __restrict__ warm_entry,
+    float* __restrict__ graupelncv, float* __restrict__ micro_columns,
+    float gravity, int size, int columns, int thb_full, int phb_full)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= size) return;
+    const int k = idx / columns;
+    const float theta = __fadd_rn(thb[thb_full ? idx : k], thp[idx]);
+    const float temp = __fmul_rn(theta, pii[idx]);
+    th[idx] = theta;
+    temperature[idx] = temp;
+    saved_theta[idx] = theta;
+    const float lower = __fadd_rn(phb[phb_full ? idx : k], php[idx])
+        / gravity;
+    const float upper = __fadd_rn(phb[phb_full ? idx + columns : k + 1],
+                                  php[idx + columns]) / gravity;
+    dz[idx] = __fsub_rn(upper, lower);
+    entry_graupel[idx] = qg[idx] > 1.0e-12f ? 1.0f : 0.0f;
+    warm_entry[idx] = temp >= 273.15f ? 1.0f : 0.0f;
+    if (idx < columns) {
+        graupelncv[idx] = 0.0f;
+        micro_columns[idx] = 0.0f;
+    }
+    if (!(qc[idx] > 1.0e-12f)) qc[idx] = 0.0f;
+    if (!(qi[idx] > 1.0e-12f)) { qi[idx] = 0.0f; ni[idx] = 0.0f; }
+    if (!(qr[idx] > 1.0e-12f)) { qr[idx] = 0.0f; nr[idx] = 0.0f; }
+    if (!(qs[idx] > 1.0e-12f)) qs[idx] = 0.0f;
+    if (!(qg[idx] > 1.0e-12f)) qg[idx] = 0.0f;
+}
+
+// On the rewritten entry state: the private graupel number
+// (thompson_classic_graupel_number_init) and WRF's no-microphysics column
+// flag (thompson_microphysics_columns), one thread per cell.  A level that
+// clears the flag sets its column's; every writer writes the same 1.0, and
+// the flag does not depend on which level is read first.
+extern "C" __global__ void thompson_adapter_entry(
+    const float* __restrict__ qc, const float* __restrict__ qi,
+    const float* __restrict__ qr, const float* __restrict__ qs,
+    const float* __restrict__ qg, const float* __restrict__ temperature,
+    const float* __restrict__ pressure, const float* __restrict__ qv,
+    float* __restrict__ graupel_number_per_kg,
+    float* __restrict__ micro_columns, int size, int columns)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= size) return;
+    graupel_number_per_kg[idx] = thompson_classic_graupel_number(
+        qg, temperature, pressure, qv, idx);
+    if (thompson_level_has_microphysics(qc, qi, qr, qs, qg, temperature,
+                                        pressure, qv, idx)) {
+        micro_columns[idx % columns] = 1.0f;
+    }
+}
+
+// After the sources: the post-source rain column mask
+// (thompson_hydrometeor_column_mask on qr) and the graupel fallout column
+// mask (thompson_graupel_fallout_column_mask), one thread per column.
+extern "C" __global__ void thompson_adapter_masks(
+    const float* __restrict__ qr, const float* __restrict__ qg,
+    const float* __restrict__ entry_graupel,
+    float* __restrict__ rain_columns, float* __restrict__ graupel_columns,
+    int nz, int columns)
+{
+    const int column = blockIdx.x * blockDim.x + threadIdx.x;
+    if (column >= columns) return;
+    float rain = 0.0f;
+    float graupel = 0.0f;
+    for (int k = 0; k < nz && (rain == 0.0f || graupel == 0.0f); ++k) {
+        const size_t idx = (size_t)k * columns + column;
+        if (qr[idx] > 1.0e-12f) rain = 1.0f;
+        if (entry_graupel[idx] != 0.0f && qg[idx] > 1.0e-12f) graupel = 1.0f;
+    }
+    rain_columns[column] = rain;
+    graupel_columns[column] = graupel;
+}
+
+// Last: theta from temperature (T / Exner), moist_physics_finish (WRF
+// moist_physics_finish_em, use_theta_m = 0: the increment over the saved
+// theta clamped to +/- mp_tend_lim * dt, added to thp once and kept as
+// h_diabatic = increment / dt; with no_mp_heating h_diabatic = 0), and the
+// surface frozen fraction SR.
+extern "C" __global__ void thompson_adapter_finish(
+    const float* __restrict__ temperature, const float* __restrict__ pii,
+    float* __restrict__ th, float* __restrict__ thp,
+    float* __restrict__ h_diabatic,
+    const float* __restrict__ rainncv, const float* __restrict__ snowncv,
+    const float* __restrict__ graupelncv, float* __restrict__ sr,
+    float limit, float dt, int no_mp_heating, int size, int columns)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= size) return;
+    const float theta = temperature[idx] / pii[idx];
+    th[idx] = theta;
+    if (!no_mp_heating) {
+        float increment = __fsub_rn(theta, h_diabatic[idx]);
+        increment = isnan(increment) || isnan(limit)
+            ? THOMPSON_CANONICAL_NAN : min(limit, increment);
+        increment = isnan(increment) || isnan(limit)
+            ? THOMPSON_CANONICAL_NAN : max(-limit, increment);
+        thp[idx] = __fadd_rn(thp[idx], increment);
+        h_diabatic[idx] = increment / dt;
+    } else {
+        h_diabatic[idx] = 0.0f;
+    }
+    if (idx < columns) {
+        const float frozen = __fadd_rn(snowncv[idx], graupelncv[idx]);
+        const float ratio = frozen / rainncv[idx];
+        const float bounded = isnan(ratio)
+            ? THOMPSON_CANONICAL_NAN : min(1.0f, ratio);
+        sr[idx] = rainncv[idx] > 1.0e-12f ? bounded : 0.0f;
+    }
+}
+
+// Level-parallel sedimentation for columns of at most 64 levels.  Each
+// block carries eight columns (thirty-two for graupel, compacted to the
+// active ones) with one level per thread.  Every level keeps the column
+// kernel's own expressions and order: fall speeds are computed per level,
+// a level at or below R1 inherits the nearest defined speed above it, the
+// substep count and sediment top are exact maxima, each substep publishes
+// every flux before any level updates (the column kernel's Jacobi form),
+// and the surface export is summed in substep order by the bottom level.
+// Deeper columns and the other entry points keep the column kernels.
+
+// Device only: a block barrier has no meaning in the serial host
+// build (tools/thompson_real_column_parity), which runs the column
+// kernels instead (gpuwm/core/thompson.py LEVEL_PARALLEL_FALLOUT).
+#ifdef __CUDACC_RTC__
+extern "C" __global__ void thompson_rain_sediment_levels_64_with_presence(
+    float* __restrict__ qr,
+    float* __restrict__ nr,
+    const float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    const float* __restrict__ reference_density,
+    const float* __restrict__ dz,
+    float* __restrict__ rainnc,
+    float* __restrict__ rainncv,
+    int accumulate_surface, float dt, int nz, int ny, int nx)
+{
+    const int c = threadIdx.x;
+    const int column = blockIdx.x * 8 + c;
+    const int j = column / nx;
+    const int i = column - j * nx;
+    const int k = threadIdx.y;
+    __shared__ float mass_flux[64][8], number_flux[64][8];
+    __shared__ float defined_mass[64][8], defined_number[64][8];
+    __shared__ int defined[64][8], steps[64][8], tops[64][8];
+    __shared__ int column_nstep[8], column_top[8];
+    float density;
+    float rain_mass;
+    float rain_number;
+    float mass_velocity;
+    float number_velocity;
+    float qr_tendency;
+    float nr_tendency;
+    float qr_initial;
+    float nr_initial;
+    const float pi = 3.1415926536f;
+    const float am_r = pi * 1000.0f / 6.0f;
+    const float org3 = 1.0f / 6.0f;
+    const float rho_not = 101325.0f / (287.05f * 298.0f);
+    int sediment_top = 0;
+    int nstep = 0;
+    float velocity_above_mass = 0.0f;
+    float velocity_above_number = 0.0f;
+
+    defined[k][c] = 0;
+    if (column < ny * nx && k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        const float qvk = fmaxf(1.0e-10f, qv[idx]);
+        const float rho = 0.622f * pressure[idx]
+            / (287.04f * temperature[idx] * (qvk + 0.622f));
+        const float rain_density_carried = reference_density == nullptr
+            ? rho : reference_density[idx];
+        const float rain_density = fabsf(rain_density_carried);
+        density = rho;
+        qr_initial = qr[idx];
+        nr_initial = nr[idx];
+        qr_tendency = 0.0f;
+        nr_tendency = 0.0f;
+        const bool l_qr = true
+            ? rain_density_carried != 0.0f : qr[idx] > 1.0e-12f;
+        const bool rewritten = true
+            && rain_density_carried < 0.0f;
+        const float rr = !l_qr ? 1.0e-12f
+            : rewritten ? fmaxf(1.0e-12f, qr[idx] * rain_density)
+            : qr[idx] * rain_density;
+        defined[k][c] = rr > 1.0e-12f;
+        if (rr > 1.0e-12f) {
+            const float nn = fmaxf(1.0e-6f, nr[idx] * rain_density);
+            const float lambda_arg = am_r * 6.0f * nn / rr;
+            const double lambda = (double)powf(lambda_arg, 1.0f / 3.0f);
+            rain_mass = rr;
+            rain_number = nn;
+
+            const float rhof = sqrtf(rho_not / rho);
+            const float mass_prefix = rhof * 4854.0f * 24.0f * org3;
+            mass_velocity = (float)((double)mass_prefix
+                * pow(lambda, 4.0) * pow(lambda + 195.0, -5.0));
+            const float number_prefix = __fdiv_rn(rhof * 4854.0f
+                * 3.3233511f, 1.3293403f);
+            number_velocity = (float)((double)number_prefix
+                * pow(lambda, 2.5) * pow(lambda + 195.0, -3.5));
+        } else {
+            rain_mass = rr;
+            rain_number = l_qr
+                ? fmaxf(1.0e-6f, nr[idx] * rain_density) : 1.0e-6f;
+            mass_velocity = velocity_above_mass;
+            number_velocity = velocity_above_number;
+        }
+    }
+    defined_mass[k][c] = column < ny * nx && k < nz ? mass_velocity : 0.0f;
+    defined_number[k][c] = column < ny * nx && k < nz ? number_velocity : 0.0f;
+    __syncthreads();
+    if (column < ny * nx && k < nz) {
+        if (!defined[k][c]) {
+            for (int above = k + 1; above < nz; ++above) {
+                if (defined[above][c]) {
+                    mass_velocity = defined_mass[above][c];
+                    number_velocity = defined_number[above][c];
+                    break;
+                }
+            }
+        }
+        const size_t idx = IDX3(k, j, i);
+        const float vmax = fmaxf(mass_velocity, number_velocity);
+        if (vmax > 1.0e-3f) {
+            sediment_top = max(sediment_top, k);
+            const float delta_tp = dz[idx] / vmax;
+            nstep = max(nstep, (int)(dt / delta_tp + 1.0f));
+        }
+    }
+    steps[k][c] = nstep;
+    tops[k][c] = sediment_top;
+    __syncthreads();
+    if (k == 0) {
+        int n = 0, t = 0;
+        for (int lane = 0; lane < nz; ++lane) {
+            n = max(n, steps[lane][c]);
+            t = max(t, tops[lane][c]);
+        }
+        column_nstep[c] = max(n, 1);
+        column_top[c] = t == nz - 1 ? nz - 2 : t;
+    }
+    __syncthreads();
+    nstep = column_nstep[c];
+    sediment_top = column_top[c];
+    const float onstep = 1.0f / (float)nstep;
+    const float dt_substep = dt * onstep;
+    float exported = 0.0f;
+    int block_nstep = 1;
+    for (int col = 0; col < 8; ++col) block_nstep = max(block_nstep, column_nstep[col]);
+    for (int step = 0; step < block_nstep; ++step) {
+        if (column < ny * nx && k < nz && step < nstep) {
+            mass_flux[k][c] = mass_velocity * rain_mass;
+            number_flux[k][c] = number_velocity * rain_number;
+        }
+        __syncthreads();
+        if (column < ny * nx && k == nz - 1 && step < nstep) {
+        const size_t idx = IDX3(k, j, i);
+        float inv_dz = 1.0f / dz[idx];
+        float inv_rho = 1.0f / density;
+        qr_tendency -= mass_flux[k][c] * inv_dz * onstep * inv_rho;
+        nr_tendency -= number_flux[k][c] * inv_dz * onstep * inv_rho;
+        rain_mass = fmaxf(1.0e-12f,
+            rain_mass - mass_flux[k][c] * inv_dz * dt_substep);
+        rain_number = fmaxf(1.0e-6f,
+            rain_number - number_flux[k][c] * inv_dz * dt_substep);
+
+        }
+        if (column < ny * nx && k <= sediment_top && step < nstep) {
+            const size_t idx = IDX3(k, j, i);
+            const float inv_dz = 1.0f / dz[idx];
+            const float inv_rho = 1.0f / density;
+            const float mass_divergence = mass_flux[k + 1][c] - mass_flux[k][c];
+            const float number_divergence =
+                number_flux[k + 1][c] - number_flux[k][c];
+            qr_tendency += mass_divergence * inv_dz * onstep * inv_rho;
+            nr_tendency += number_divergence * inv_dz * onstep * inv_rho;
+            rain_mass = fmaxf(1.0e-12f,
+                rain_mass + mass_divergence * inv_dz * dt_substep);
+            rain_number = fmaxf(1.0e-6f,
+                rain_number + number_divergence * inv_dz * dt_substep);
+        }
+        if (column < ny * nx && k == 0 && step < nstep && rain_mass > 1.0e-9f) {
+            exported += mass_flux[0][c] * dt_substep;
+        }
+        __syncthreads();
+    }
+    if (column < ny * nx && k == 0) {
+    if (accumulate_surface) {
+        rainncv[column] += exported;
+    } else {
+        rainncv[column] = exported;
+    }
+    rainnc[column] += exported;
+    }
+    if (column < ny * nx && k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        float qr_new = qr_initial + qr_tendency * dt;
+        float nr_new = fmaxf(1.0e-6f / density,
+                             nr_initial + nr_tendency * dt);
+        if (qr_new <= 1.0e-12f) {
+            qr[idx] = 0.0f;
+            nr[idx] = 0.0f;
+            return;
+        }
+        const float lambda_arg = am_r * 6.0f * nr_new / qr_new;
+        double lambda = (double)powf(lambda_arg, 1.0f / 3.0f);
+        float mvd = (float)(3.672 / lambda);
+        if (mvd > 2.5e-3f) mvd = 2.5e-3f;
+        else if (mvd < 37.5e-6f) mvd = 37.5e-6f;
+        lambda = 3.672 / (double)mvd;
+        const float prefix = __fdiv_rn(org3 * qr_new, am_r);
+        nr_new = (float)((double)prefix * pow(lambda, 3.0));
+        qr[idx] = qr_new;
+        nr[idx] = nr_new;
+    }
+}
+extern "C" __global__ void thompson_ice_sediment_levels_64_with_density(
+    float* __restrict__ qi,
+    float* __restrict__ ni,
+    const float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    const float* __restrict__ reference_density,
+    const float* __restrict__ dz,
+    float* __restrict__ rainnc,
+    float* __restrict__ rainncv,
+    float* __restrict__ snownc,
+    float* __restrict__ snowncv,
+    float dt, int nz, int ny, int nx)
+{
+    const int c = threadIdx.x;
+    const int column = blockIdx.x * 8 + c;
+    const int j = column / nx;
+    const int i = column - j * nx;
+    const int k = threadIdx.y;
+    __shared__ float mass_flux[64][8], number_flux[64][8];
+    __shared__ float defined_mass[64][8], defined_number[64][8];
+    __shared__ int defined[64][8], steps[64][8], tops[64][8];
+    __shared__ int column_nstep[8], column_top[8];
+    float density;
+    float ice_mass;
+    float ice_number;
+    float mass_velocity;
+    float number_velocity;
+    float qi_tendency;
+    float ni_tendency;
+    float qi_initial;
+    float ni_initial;
+    const float pi = 3.1415926536f;
+    const float am_i = pi * 890.0f / 6.0f;
+    const float oig2 = 1.0f / 6.0f;
+    const float rho_not = 101325.0f / (287.05f * 298.0f);
+    int sediment_top = 0;
+    int nstep = 0;
+    float velocity_above_mass = 0.0f;
+    float velocity_above_number = 0.0f;
+
+    defined[k][c] = 0;
+    if (column < ny * nx && k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        const float qvk = fmaxf(1.0e-10f, qv[idx]);
+        const float rho = 0.622f * pressure[idx]
+            / (287.04f * temperature[idx] * (qvk + 0.622f));
+        density = rho;
+        qi_initial = qi[idx];
+        ni_initial = ni[idx];
+        qi_tendency = 0.0f;
+        ni_tendency = 0.0f;
+        const float ice_state_rho = reference_density == nullptr
+            ? rho : reference_density[idx];
+        defined[k][c] = qi[idx] > 1.0e-12f && qi[idx] * ice_state_rho > 1.0e-12f;
+        if (defined[k][c]) {
+            const float state_rho = ice_state_rho;
+            const float ri = qi[idx] * state_rho;
+            float nn = fmaxf(1.0e-6f, ni[idx] * state_rho);
+            if (nn <= 1.0e-6f) {
+                const double lambda = 4.0 / 5.0e-6;
+                const float prefix = __fdiv_rn(oig2 * ri, am_i);
+                nn = fminf(999.0e3f,
+                           (float)((double)prefix * pow(lambda, 3.0)));
+            }
+            const float lambda_arg = am_i * 6.0f * nn / ri;
+            double lambda = (double)powf(lambda_arg, 1.0f / 3.0f);
+            float diameter = (float)(4.0 / lambda);
+            if (diameter < 5.0e-6f) {
+                diameter = 5.0e-6f;
+                lambda = 4.0 / (double)diameter;
+                const float prefix = __fdiv_rn(oig2 * ri, am_i);
+                nn = fminf(999.0e3f,
+                           (float)((double)prefix * pow(lambda, 3.0)));
+            } else if (diameter > 300.0e-6f) {
+                diameter = 300.0e-6f;
+                lambda = 4.0 / (double)diameter;
+                const float prefix = __fdiv_rn(oig2 * ri, am_i);
+                nn = (float)((double)prefix * pow(lambda, 3.0));
+            }
+            ice_mass = ri;
+            ice_number = nn;
+
+            const float rhof = sqrtf(rho_not / rho);
+            const double inverse_lambda = 1.0 / lambda;
+            const float mass_prefix = rhof * 1493.9f * 24.0f * oig2;
+            mass_velocity = (float)((double)mass_prefix * inverse_lambda);
+            const float number_prefix = __fdiv_rn(rhof * 1493.9f
+                * 3.3233511f, 1.3293403f);
+            number_velocity = (float)((double)number_prefix
+                                          * inverse_lambda);
+        } else {
+            const bool l_qi = qi[idx] > 1.0e-12f;
+            ice_mass = l_qi ? qi[idx] * ice_state_rho : 1.0e-12f;
+            ice_number = l_qi
+                ? fmaxf(1.0e-6f, ni[idx] * ice_state_rho) : 1.0e-6f;
+            mass_velocity = velocity_above_mass;
+            number_velocity = velocity_above_number;
+        }
+    }
+    defined_mass[k][c] = column < ny * nx && k < nz ? mass_velocity : 0.0f;
+    defined_number[k][c] = column < ny * nx && k < nz ? number_velocity : 0.0f;
+    __syncthreads();
+    if (column < ny * nx && k < nz) {
+        if (!defined[k][c]) {
+            for (int above = k + 1; above < nz; ++above) {
+                if (defined[above][c]) {
+                    mass_velocity = defined_mass[above][c];
+                    number_velocity = defined_number[above][c];
+                    break;
+                }
+            }
+        }
+        const size_t idx = IDX3(k, j, i);
+        if (mass_velocity > 1.0e-3f) {
+            sediment_top = max(sediment_top, k);
+            const float delta_tp = dz[idx] / mass_velocity;
+            nstep = max(nstep, (int)(dt / delta_tp + 1.0f));
+        }
+    }
+    steps[k][c] = nstep;
+    tops[k][c] = sediment_top;
+    __syncthreads();
+    if (k == 0) {
+        int n = 0, t = 0;
+        for (int lane = 0; lane < nz; ++lane) {
+            n = max(n, steps[lane][c]);
+            t = max(t, tops[lane][c]);
+        }
+        column_nstep[c] = max(n, 1);
+        column_top[c] = t == nz - 1 ? nz - 2 : t;
+    }
+    __syncthreads();
+    nstep = column_nstep[c];
+    sediment_top = column_top[c];
+    const float onstep = 1.0f / (float)nstep;
+    const float dt_substep = dt * onstep;
+    float exported = 0.0f;
+    int block_nstep = 1;
+    for (int col = 0; col < 8; ++col) block_nstep = max(block_nstep, column_nstep[col]);
+    for (int step = 0; step < block_nstep; ++step) {
+        if (column < ny * nx && k < nz && step < nstep) {
+            mass_flux[k][c] = mass_velocity * ice_mass;
+            number_flux[k][c] = number_velocity * ice_number;
+        }
+        __syncthreads();
+        if (column < ny * nx && k == nz - 1 && step < nstep) {
+        const size_t idx = IDX3(k, j, i);
+        float inv_dz = 1.0f / dz[idx];
+        float inv_rho = 1.0f / density;
+        qi_tendency -= mass_flux[k][c] * inv_dz * onstep * inv_rho;
+        ni_tendency -= number_flux[k][c] * inv_dz * onstep * inv_rho;
+        ice_mass = fmaxf(1.0e-12f,
+            ice_mass - mass_flux[k][c] * inv_dz * dt_substep);
+        ice_number = fmaxf(1.0e-6f,
+            ice_number - number_flux[k][c] * inv_dz * dt_substep);
+
+        }
+        if (column < ny * nx && k <= sediment_top && step < nstep) {
+            const size_t idx = IDX3(k, j, i);
+            const float inv_dz = 1.0f / dz[idx];
+            const float inv_rho = 1.0f / density;
+            const float mass_divergence = mass_flux[k + 1][c] - mass_flux[k][c];
+            const float number_divergence =
+                number_flux[k + 1][c] - number_flux[k][c];
+            qi_tendency += mass_divergence * inv_dz * onstep * inv_rho;
+            ni_tendency += number_divergence * inv_dz * onstep * inv_rho;
+            ice_mass = fmaxf(1.0e-12f,
+                ice_mass + mass_divergence * inv_dz * dt_substep);
+            ice_number = fmaxf(1.0e-6f,
+                ice_number + number_divergence * inv_dz * dt_substep);
+        }
+        if (column < ny * nx && k == 0 && step < nstep && ice_mass > 1.0e-9f) {
+            exported += mass_flux[0][c] * dt_substep;
+        }
+        __syncthreads();
+    }
+    if (column < ny * nx && k == 0) {
+    rainncv[column] = exported;
+    snowncv[column] = exported;
+    rainnc[column] += exported;
+    snownc[column] += exported;
+    }
+    if (column < ny * nx && k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        const float qi_new = qi_initial + qi_tendency * dt;
+        float ni_new = fmaxf(1.0e-6f / density,
+                             ni_initial + ni_tendency * dt);
+        if (qi_new <= 1.0e-12f) {
+            qi[idx] = qi_new;
+            ni[idx] = ni_initial + ni_tendency * dt;
+            return;
+        }
+        const float lambda_arg = am_i * 6.0f * ni_new / qi_new;
+        double lambda = (double)powf(lambda_arg, 1.0f / 3.0f);
+        float diameter = (float)(4.0 / lambda);
+        if (diameter < 5.0e-6f) diameter = 5.0e-6f;
+        else if (diameter > 300.0e-6f) diameter = 300.0e-6f;
+        lambda = 4.0 / (double)diameter;
+        const float prefix = __fdiv_rn(oig2 * qi_new, am_i);
+        ni_new = fminf((float)((double)prefix * pow(lambda, 3.0)),
+                       999.0e3f / density);
+        qi[idx] = qi_new;
+        ni[idx] = ni_new;
+    }
+}
+
+// Rain inheritance precedes the snow blend. Substep sums retain their order.
+extern "C" __global__ void thompson_snow_sediment_levels_64_with_rain_profile_and_presence(
+    float* __restrict__ qs,
+    const float* __restrict__ snow_melt_marker,
+    const float* __restrict__ melt_rain_qr,
+    const float* __restrict__ melt_rain_nr,
+    const float* __restrict__ melt_rain_density,
+    const float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    const float* __restrict__ reference_density,
+    const float* __restrict__ reference_temperature,
+    const float* __restrict__ velocity_boost,
+    const float* __restrict__ dz,
+    float* __restrict__ rainnc,
+    float* __restrict__ rainncv,
+    float* __restrict__ snownc,
+    float* __restrict__ snowncv,
+    int accumulate_surface, float dt, int nz, int ny, int nx)
+{
+    const int c = threadIdx.x;
+    const int column = blockIdx.x * 8 + c;
+    const int j = column / nx;
+    const int i = column - j * nx;
+    const int k = threadIdx.y;
+    __shared__ float mass_flux[64][8], defined_mass[64][8], rain_speed[64][8];
+    __shared__ int defined[64][8], rain_defined[64][8], steps[64][8], tops[64][8];
+    __shared__ int column_nstep[8], column_top[8];
+    float density;
+    float snow_mass;
+    float mass_velocity;
+    float qs_tendency;
+    float qs_initial;
+    const float rho_not = 101325.0f / (287.05f * 298.0f);
+    int sediment_top = 0;
+    int nstep = 0;
+    float velocity_above = 0.0f;
+    float rain_velocity_above = 0.0f;
+
+    float rain_rr = 1.0e-12f, rain_velocity = 0.0f;
+    defined[k][c] = 0;
+    rain_defined[k][c] = 0;
+    if (column < ny * nx && k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        const float qvk = fmaxf(1.0e-10f, qv[idx]);
+        const float rho = 0.622f * pressure[idx]
+            / (287.04f * temperature[idx] * (qvk + 0.622f));
+        density = rho;
+        qs_initial = qs[idx];
+        qs_tendency = 0.0f;
+        rain_rr = 1.0e-12f;
+        rain_velocity = 0.0f;
+        if (melt_rain_qr != (const float*)0) {
+            const float rain_density_carried = melt_rain_density == nullptr
+                ? (reference_density == nullptr ? rho : reference_density[idx])
+                : melt_rain_density[idx];
+            const float rain_density = fabsf(rain_density_carried);
+            const bool l_qr = true
+                ? rain_density_carried != 0.0f : melt_rain_qr[idx] > 1.0e-12f;
+            const bool rewritten = true
+                && rain_density_carried < 0.0f;
+            rain_rr = !l_qr ? 1.0e-12f
+                : rewritten ? fmaxf(1.0e-12f, melt_rain_qr[idx] * rain_density)
+                : melt_rain_qr[idx] * rain_density;
+            if (rain_rr > 1.0e-12f) {
+                const float am_r = 3.1415926536f * 1000.0f / 6.0f;
+                const float rain_number = fmaxf(
+                    1.0e-6f, melt_rain_nr[idx] * rain_density);
+                const double rain_lambda = (double)powf(
+                    am_r * 6.0f * rain_number / rain_rr, 1.0f / 3.0f);
+                const float rain_rhof = sqrtf(rho_not / rho);
+                rain_velocity = (float)(
+                    (double)(rain_rhof * 4854.0f * 24.0f * (1.0f / 6.0f))
+                    * pow(rain_lambda, 4.0)
+                    * pow(rain_lambda + 195.0, -5.0));
+            } else {
+                rain_velocity = rain_velocity_above;
+            }
+
+        }
+        rain_defined[k][c] = melt_rain_qr != nullptr && rain_rr > 1.0e-12f;
+    }
+    rain_speed[k][c] = rain_velocity;
+    __syncthreads();
+    if (column < ny * nx && k < nz) {
+        if (!rain_defined[k][c]) {
+            for (int above = k + 1; above < nz; ++above) {
+                if (rain_defined[above][c]) {
+                    rain_velocity = rain_speed[above][c];
+                    break;
+                }
+            }
+        }
+        const float rho = density;
+        const size_t idx = IDX3(k, j, i);
+        const float snow_state_rho = reference_density == nullptr
+            ? rho : reference_density[idx];
+        defined[k][c] = qs[idx] > 1.0e-12f && qs[idx] * snow_state_rho > 1.0e-12f;
+        if (defined[k][c]) {
+            const float state_rho = snow_state_rho;
+            const float rs = qs[idx] * state_rho;
+            const float smob = rs * (1.0f / 0.069f);
+            const float state_temperature = reference_temperature == nullptr
+                ? temperature[idx] : reference_temperature[idx];
+            const float tc0 = fminf(-0.1f, state_temperature - 273.15f);
+            const float moment = 3.0f;
+            const float tc02 = tc0 * tc0;
+            const float moment2 = moment * moment;
+            const float loga = 5.065339f + -0.062659f * tc0
+                + -3.032362f * moment + 0.029469f * tc0 * moment
+                + -0.000285f * tc02 + 0.31255f * moment2
+                + 0.000204f * tc02 * moment
+                + 0.003199f * tc0 * moment2
+                + 0.0f * tc02 * tc0
+                + -0.015952f * moment2 * moment;
+            const float exponent = 0.476221f + -0.015896f * tc0
+                + 0.165977f * moment + 0.007468f * tc0 * moment
+                + -0.000141f * tc02 + 0.060366f * moment2
+                + 0.000079f * tc02 * moment
+                + 0.000594f * tc0 * moment2
+                + 0.0f * tc02 * tc0
+                + -0.003577f * moment2 * moment;
+            const float smoc = powf(10.0f, loga) * powf(smob, exponent);
+            const float mean_ratio = smob / smoc;
+            float ils1 = 1.0f / (mean_ratio * 20.78f + 100.0f);
+            float ils2 = 1.0f / (mean_ratio * 3.29f + 100.0f);
+            const float ratio_power = powf(mean_ratio, 0.6357f);
+            const float numerator1 = 490.6f * 3.51325202f
+                * powf(ils1, 3.55f);
+            const float numerator2 = 17.46f * ratio_power * 7.61279917f
+                * powf(ils2, 4.1857f);
+            ils1 = 1.0f / (mean_ratio * 20.78f);
+            ils2 = 1.0f / (mean_ratio * 3.29f);
+            const float denominator1 = 490.6f * 2.0f
+                * powf(ils1, 3.0f);
+            const float denominator2 = 17.46f * ratio_power * 3.87160635f
+                * powf(ils2, 3.6357f);
+            const float rhof = sqrtf(rho_not / rho);
+            float snow_velocity = rhof * 40.0f
+                * (numerator1 + numerator2)
+                / (denominator1 + denominator2);
+            if (velocity_boost != (const float*)0) {
+                snow_velocity *= velocity_boost[idx];
+            }
+            if (snow_melt_marker != (const float*)0
+                    && snow_melt_marker[idx] != 0.0f
+                    && melt_rain_qr != (const float*)0) {
+                const float solid_fraction = rs / (rs + rain_rr);
+                snow_velocity = snow_velocity * solid_fraction
+                    + rain_velocity * (1.0f - solid_fraction);
+            }
+            mass_velocity = snow_velocity;
+            snow_mass = rs;
+        } else {
+            snow_mass = qs[idx] > 1.0e-12f
+                ? qs[idx] * snow_state_rho : 1.0e-12f;
+            mass_velocity = velocity_above;
+        }
+    }
+    defined_mass[k][c] = column < ny * nx && k < nz ? mass_velocity : 0.0f;
+    __syncthreads();
+    if (column < ny * nx && k < nz) {
+        if (!defined[k][c]) {
+            for (int above = k + 1; above < nz; ++above) {
+                if (defined[above][c]) {
+                    mass_velocity = defined_mass[above][c];
+                    break;
+                }
+            }
+        }
+        const size_t idx = IDX3(k, j, i);
+        if (mass_velocity > 1.0e-3f) {
+            sediment_top = max(sediment_top, k);
+            const float delta_tp = dz[idx] / mass_velocity;
+            nstep = max(nstep, (int)(dt / delta_tp + 1.0f));
+        }
+    }
+    steps[k][c] = nstep;
+    tops[k][c] = sediment_top;
+    __syncthreads();
+    if (k == 0) {
+        int n = 0, t = 0;
+        for (int lane = 0; lane < nz; ++lane) {
+            n = max(n, steps[lane][c]);
+            t = max(t, tops[lane][c]);
+        }
+        column_nstep[c] = max(n, 1);
+        column_top[c] = t == nz - 1 ? nz - 2 : t;
+    }
+    __syncthreads();
+    nstep = column_nstep[c];
+    sediment_top = column_top[c];
+    const float onstep = 1.0f / (float)nstep;
+    const float dt_substep = dt * onstep;
+    float exported = 0.0f;
+    int block_nstep = 1;
+    for (int col = 0; col < 8; ++col) block_nstep = max(block_nstep, column_nstep[col]);
+    for (int step = 0; step < block_nstep; ++step) {
+        if (column < ny * nx && k < nz && step < nstep) mass_flux[k][c] = mass_velocity * snow_mass;
+        __syncthreads();
+        if (column < ny * nx && k == nz - 1 && step < nstep) {
+        const size_t idx = IDX3(k, j, i);
+        float inv_dz = 1.0f / dz[idx];
+        float inv_rho = 1.0f / density;
+        qs_tendency -= mass_flux[k][c] * inv_dz * onstep * inv_rho;
+        snow_mass = fmaxf(1.0e-12f,
+            snow_mass - mass_flux[k][c] * inv_dz * dt_substep);
+
+        }
+        if (column < ny * nx && k <= sediment_top && step < nstep) {
+            const size_t idx = IDX3(k, j, i);
+            const float inv_dz = 1.0f / dz[idx];
+            const float inv_rho = 1.0f / density;
+            const float divergence = mass_flux[k + 1][c] - mass_flux[k][c];
+            qs_tendency += divergence * inv_dz * onstep * inv_rho;
+            snow_mass = fmaxf(1.0e-12f,
+                snow_mass + divergence * inv_dz * dt_substep);
+        }
+        if (column < ny * nx && k == 0 && step < nstep && snow_mass > 1.0e-9f) {
+            exported += mass_flux[0][c] * dt_substep;
+        }
+        __syncthreads();
+    }
+    if (column < ny * nx && k == 0) {
+    if (accumulate_surface) {
+        rainncv[column] += exported;
+        snowncv[column] += exported;
+    } else {
+        rainncv[column] = exported;
+        snowncv[column] = exported;
+    }
+    rainnc[column] += exported;
+    snownc[column] += exported;
+    }
+    if (column < ny * nx && k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        const float qs_new = qs_initial + qs_tendency * dt;
+        qs[idx] = qs_new <= 1.0e-12f ? 0.0f : qs_new;
+    }
+}
+extern "C" __global__ void thompson_graupel_sediment_levels_64_with_density_and_column_mask_and_shadow(
+    float* __restrict__ qg,
+    const float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    const float* __restrict__ reference_density,
+    const float* __restrict__ dz,
+    float* __restrict__ rainnc,
+    float* __restrict__ rainncv,
+    float* __restrict__ graupelnc,
+    float* __restrict__ graupelncv,
+    const float* __restrict__ active_columns,
+    float* __restrict__ graupel_number_shadow,
+    int accumulate_surface, float dt, int nz, int ny, int nx)
+{
+    const int c = threadIdx.x;
+    const int k = threadIdx.y;
+    const int lane = k * 8 + c;
+    __shared__ int selected[32], selected_count, enabled[32];
+    if (lane < 32) {
+        const int candidate = blockIdx.x * 32 + lane;
+        enabled[lane] = candidate < ny * nx && active_columns[candidate] != 0.0f;
+    }
+    __syncthreads();
+    if (lane == 0) {
+        int count = 0;
+        for (int candidate = 0; candidate < 32; ++candidate) {
+            if (enabled[candidate]) selected[count++] = candidate;
+        }
+        selected_count = count;
+    }
+    __syncthreads();
+    if (selected_count == 0) return;
+    for (int group = 0; group < selected_count; group += 8) {
+    const int column = group + c < selected_count
+        ? blockIdx.x * 32 + selected[group + c] : ny * nx;
+    const int j = column / nx;
+    const int i = column - j * nx;
+    const bool live = column < ny * nx && active_columns[column] != 0.0f;
+    const float* graupel_number_per_kg = nullptr;
+    __shared__ float mass_flux[64][8], number_flux[64][8];
+    __shared__ float defined_mass[64][8], defined_number[64][8];
+    __shared__ int defined[64][8], steps[64][8], tops[64][8];
+    __shared__ int column_nstep[8], column_top[8];
+    float density;
+    float graupel_mass;
+    float diagnostic_number;
+    float mass_velocity;
+    float number_velocity;
+    float qg_tendency;
+    float number_tendency;
+    float qg_initial;
+    float number_initial;
+    const float pi = 3.1415926536f;
+    const float am_g = pi * 400.0f / 6.0f;
+    const float ogg3 = 1.0f / 6.0f;
+    const float rho_not = 101325.0f / (287.05f * 298.0f);
+    int sediment_top = 0;
+    int nstep = 0;
+    float velocity_above = 0.0f;
+    float number_velocity_above = 0.0f;
+
+    defined[k][c] = 0;
+    if (live && k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        const float qvk = fmaxf(1.0e-10f, qv[idx]);
+        const float rho = 0.622f * pressure[idx]
+            / (287.04f * temperature[idx] * (qvk + 0.622f));
+        density = rho;
+        qg_initial = qg[idx];
+        qg_tendency = 0.0f;
+        if (true) {
+            number_initial = graupel_number_shadow[idx];
+            number_tendency = 0.0f;
+        }
+
+        defined[k][c] = qg[idx] > 1.0e-12f;
+        if (defined[k][c]) {
+            const float state_rho = reference_density == nullptr
+                ? rho : reference_density[idx];
+            const float rg = qg[idx] * state_rho;
+            double lambda;
+            if (graupel_number_per_kg != (const float*)0) {
+                const float number = fmaxf(
+                    1.0e-6f, graupel_number_per_kg[idx] * state_rho);
+                lambda = (double)powf(
+                    am_g * 6.0f * number / rg, 1.0f / 3.0f);
+            } else {
+                const float log_mass = log10f(fmaxf(1.0e-9f, rg));
+                const float intercept_power = fmaxf(2.0f, fminf(
+                    3.0f + (2.0f / 7.0f) * (log_mass + 8.0f), 6.0f));
+                const float intercept = powf(10.0f, intercept_power);
+                const float lambda_arg = intercept * am_g * 6.0f / rg;
+                lambda = (double)powf(lambda_arg, 0.25f);
+            }
+            float mvd = (float)(3.672 / lambda);
+            if (mvd > 25.4e-3f) {
+                mvd = 25.4e-3f;
+                lambda = 3.672 / (double)mvd;
+            } else if (mvd < 50.0e-6f) {
+                mvd = 50.0e-6f;
+                lambda = 3.672 / (double)mvd;
+            }
+            const float rhof = sqrtf(rho_not / rho);
+            const double velocity_power = pow(1.0 / lambda, 0.89);
+            const float prefix = rhof * 442.0f * 20.3632278f * ogg3;
+            mass_velocity = (float)((double)prefix
+                * velocity_power);
+            graupel_mass = rg;
+            if (true) {
+                diagnostic_number = (float)((double)(__fdiv_rn((1.0f / 6.0f)
+                    * rg, am_g)) * lambda * lambda * lambda);
+                const float number_prefix = rhof * 442.0f * 2.21880022f;
+                number_velocity = (float)((double)number_prefix
+                    * velocity_power);
+            }
+        } else {
+            graupel_mass = 1.0e-12f;
+            mass_velocity = velocity_above;
+            if (true) {
+                diagnostic_number = 1.0e-6f;
+                number_velocity = number_velocity_above;
+            }
+        }
+    }
+    defined_mass[k][c] = live && k < nz ? mass_velocity : 0.0f;
+    defined_number[k][c] = live && k < nz ? number_velocity : 0.0f;
+    __syncthreads();
+    if (live && k < nz) {
+        if (!defined[k][c]) {
+            for (int above = k + 1; above < nz; ++above) {
+                if (defined[above][c]) {
+                    mass_velocity = defined_mass[above][c];
+                    number_velocity = defined_number[above][c];
+                    break;
+                }
+            }
+        }
+        const size_t idx = IDX3(k, j, i);
+        if (mass_velocity > 1.0e-3f) {
+            sediment_top = max(sediment_top, k);
+            const float delta_tp = dz[idx] / mass_velocity;
+            nstep = max(nstep, (int)(dt / delta_tp + 1.0f));
+        }
+    }
+    steps[k][c] = nstep;
+    tops[k][c] = sediment_top;
+    __syncthreads();
+    if (k == 0) {
+        int n = 0, t = 0;
+        for (int lane = 0; lane < nz; ++lane) {
+            n = max(n, steps[lane][c]);
+            t = max(t, tops[lane][c]);
+        }
+        column_nstep[c] = max(n, 1);
+        column_top[c] = t == nz - 1 ? nz - 2 : t;
+    }
+    __syncthreads();
+    nstep = column_nstep[c];
+    sediment_top = column_top[c];
+    const float onstep = 1.0f / (float)nstep;
+    const float dt_substep = dt * onstep;
+    float exported = 0.0f;
+    int block_nstep = 1;
+    for (int col = 0; col < 8; ++col) block_nstep = max(block_nstep, column_nstep[col]);
+    for (int step = 0; step < block_nstep; ++step) {
+        if (live && k < nz && step < nstep) {
+            mass_flux[k][c] = mass_velocity * graupel_mass;
+            number_flux[k][c] = number_velocity * diagnostic_number;
+        }
+        __syncthreads();
+        if (live && k == nz - 1 && step < nstep) {
+        const size_t idx = IDX3(k, j, i);
+        float inv_dz = 1.0f / dz[idx];
+        float inv_rho = 1.0f / density;
+        qg_tendency -= mass_flux[k][c] * inv_dz * onstep * inv_rho;
+        if (true) {
+            number_tendency -=
+                number_flux[k][c] * inv_dz * onstep * inv_rho;
+        }
+        graupel_mass = fmaxf(1.0e-12f,
+            graupel_mass - mass_flux[k][c] * inv_dz * dt_substep);
+        if (true) {
+            diagnostic_number = fmaxf(1.0e-6f,
+                diagnostic_number
+                    - number_flux[k][c] * inv_dz * dt_substep);
+        }
+
+        }
+        if (live && k <= sediment_top && step < nstep) {
+            const size_t idx = IDX3(k, j, i);
+            const float inv_dz = 1.0f / dz[idx];
+            const float inv_rho = 1.0f / density;
+            const float divergence = mass_flux[k + 1][c] - mass_flux[k][c];
+            qg_tendency += divergence * inv_dz * onstep * inv_rho;
+            graupel_mass = fmaxf(1.0e-12f,
+                graupel_mass + divergence * inv_dz * dt_substep);
+            if (true) {
+                const float number_divergence =
+                    number_flux[k + 1][c] - number_flux[k][c];
+                number_tendency +=
+                    number_divergence * inv_dz * onstep * inv_rho;
+                diagnostic_number = fmaxf(1.0e-6f,
+                    diagnostic_number
+                        + number_divergence * inv_dz * dt_substep);
+            }
+        }
+        if (live && k == 0 && step < nstep && graupel_mass > 1.0e-9f) {
+            exported += mass_flux[0][c] * dt_substep;
+        }
+        __syncthreads();
+    }
+    if (live && k == 0) {
+    if (accumulate_surface) {
+        rainncv[column] += exported;
+        graupelncv[column] += exported;
+    } else {
+        rainncv[column] = exported;
+        graupelncv[column] = exported;
+    }
+    rainnc[column] += exported;
+    graupelnc[column] += exported;
+    }
+    if (live && k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        const float qg_new = qg_initial + qg_tendency * dt;
+        qg[idx] = qg_new <= 1.0e-12f ? 0.0f : qg_new;
+        if (true) {
+            graupel_number_shadow[idx] =
+                number_initial + number_tendency * dt;
+        }
+    }
+    __syncthreads();
+    }
+}
+
+// The height search retains its serial float additions. Level updates are Jacobi.
+extern "C" __global__ void thompson_cloud_sediment_levels_64_with_density_and_masks(
+    float* __restrict__ qc,
+    const float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    const float* __restrict__ reference_density,
+    const float* __restrict__ rain_active_columns,
+    const float* __restrict__ cloud_active_columns,
+    const float* __restrict__ vertical_velocity,
+    const float* __restrict__ dz,
+    float dt, int nz, int ny, int nx)
+{
+    const int c = threadIdx.x;
+    const int column = blockIdx.x * 8 + c;
+    const int j = column / nx;
+    const int i = column - j * nx;
+    const int k = threadIdx.y;
+    const bool live = column < ny * nx
+        && (cloud_active_columns == nullptr || cloud_active_columns[column] != 0.0f);
+    __shared__ float depth[64][8], mass[64][8], mass_flux[64][8];
+    __shared__ int top[8];
+    float density, cloud_mass, mass_velocity, qc_tendency, qc_initial;
+    const float am_r = 3.1415926536f * 1000.0f / 6.0f;
+    const float rho_not = 101325.0f / (287.05f * 298.0f);
+    const bool rain_refreshes_rhof = live && rain_active_columns != nullptr
+        && rain_active_columns[column] != 0.0f;
+
+    if (live && k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        const float qvk = fmaxf(1.0e-10f, qv[idx]);
+        density = 0.622f * pressure[idx]
+            / (287.04f * temperature[idx] * (qvk + 0.622f));
+        qc_initial = qc[idx];
+        qc_tendency = 0.0f;
+        cloud_mass = qc[idx] > 1.0e-12f
+            ? qc[idx] * reference_density[idx] : 1.0e-12f;
+        mass_velocity = 0.0f;
+        depth[k][c] = dz[idx];
+        mass[k][c] = cloud_mass;
+    }
+    __syncthreads();
+    if (k == 0) {
+        int sediment_top = 0;
+        float height_agl = 0.0f;
+        if (live) for (int level = 0; level < nz - 1; ++level) {
+            if (mass[level][c] > 1.0e-6f) sediment_top = level;
+            height_agl += depth[level][c];
+            if (height_agl > 500.0f) break;
+        }
+        top[c] = sediment_top;
+    }
+    __syncthreads();
+    const int sediment_top = top[c];
+    if (live && k <= sediment_top) {
+        const size_t idx = IDX3(k, j, i);
+        if (cloud_mass > 1.0e-12f
+                && vertical_velocity[idx] < 1.0e-1f) {
+            const float lambda_arg = 100.0e6f * am_r * 2730.0f
+                / cloud_mass;
+            const double lambda =
+                (double)powf(lambda_arg, 1.0f / 3.0f);
+            const double inverse_lambda = 1.0 / lambda;
+            const float velocity_density = rain_refreshes_rhof
+                ? density : reference_density[idx];
+            const float prefix = sqrtf(rho_not / velocity_density)
+                * 0.316946e8f * 272.0f;
+            mass_velocity = (float)((double)prefix
+                * inverse_lambda * inverse_lambda);
+        }
+    }
+    if (live && k < nz) mass_flux[k][c] = mass_velocity * cloud_mass;
+    __syncthreads();
+    if (live && k <= sediment_top) {
+        const size_t idx = IDX3(k, j, i);
+        const float divergence = mass_flux[k + 1][c] - mass_flux[k][c];
+        const float inv_dz = 1.0f / dz[idx];
+        qc_tendency += divergence * inv_dz / density;
+        cloud_mass = fmaxf(1.0e-12f,
+            cloud_mass + divergence * inv_dz * dt);
+    }
+    if (live && k < nz) {
+        const size_t idx = IDX3(k, j, i);
+        qc[idx] = qc_initial + qc_tendency * dt;
+    }
+}
+#endif  // __CUDACC_RTC__

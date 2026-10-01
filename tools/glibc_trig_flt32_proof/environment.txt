@@ -1,0 +1,8 @@
+Linux weather-node-1 7.0.0-31-generic #31-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 04:26:38 UTC 2026 x86_64 GNU/Linux
+ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43
+g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+flags		: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdt_a rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni lam wbnoinvd dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi vnmi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid bus_lock_detect movdiri movdir64b fsrm md_clear serialize arch_lbr ibt flush_l1d arch_capabilities
+1c488db6f4fe8cecb72456bc018de000b7a9b539c2994864b0416b5e8371b3d8  /lib/x86_64-linux-gnu/libm.so.6
+e1e622cbd635019090fa23260e5d9ec219b12f97ae7ae02f033d4ae42cf2c004  glibc.tar.gz
+28103a7cf808c29901c6053d89a4e8299880abfbb850c0d97a09c8df8533e306  ubuntu-debian.tar.xz
+target-file Ubuntu patch matches:

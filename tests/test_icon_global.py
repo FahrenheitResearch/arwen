@@ -11,7 +11,7 @@ fixture lives in tests/test_gdt101_real_bytes.py.
 from __future__ import annotations
 
 import bz2
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -117,10 +117,17 @@ def test_cycle_specific_horizon(hour, limit, spec):
 
 
 def test_unsupported_cycle_and_cadence_fail_at_plan_time():
+    """A173: DWD posts hourly to f078, so --cadence 1 plans there and is
+    refused only where the ladder turns three-hourly, naming the lead."""
+
     with pytest.raises(ValueError):
         request(6, CYCLE.replace(hour=3))
-    with pytest.raises(ValueError):
-        fetch_routes.resolve_request("icon-global", cycle=CYCLE, hours=6, cadence=1)
+    plan = fetch_routes.resolve_request("icon-global", cycle=CYCLE, hours=6,
+                                        cadence=1)
+    assert plan.leads == tuple(range(7))
+    with pytest.raises(ValueError, match="does not publish f079 at --cadence 1"):
+        fetch_routes.resolve_request("icon-global", cycle=CYCLE, hours=81,
+                                     cadence=1)
 
 
 def test_pinned_profile_contains_real_sea_ice_not_missing_policy(spec):
@@ -169,7 +176,10 @@ def test_soil_filename_five_is_half_a_centimetre(tmp_path, spec):
                                     "missing-clat", "duplicate", "mixed-cycle",
                                     "gap"])
 def test_inventory_refuses_incomplete_or_ambiguous_state(tmp_path, change, spec):
-    objects = inventory(spec, tmp_path, 6)
+    # f000..f009: dropping f003 leaves f000, f006, f009, a gap.  (Over
+    # f000..f006 it left f000 and f006, which since A173 is a uniform 6 h
+    # series the publisher posts and the decode takes.)
+    objects = inventory(spec, tmp_path, 9)
     paths = [o.path for o in objects]
     if change == "missing-atmosphere":
         paths.remove(next(o.path for o in objects if o.field == "T"))
@@ -190,7 +200,9 @@ def test_inventory_refuses_incomplete_or_ambiguous_state(tmp_path, change, spec)
 @pytest.mark.parametrize("name", [
     "icon-eu_europe_regular-lat-lon_single-level_2026091500_000_PS.grib2",
     "icon_global_icosahedral_pressure-level_2026091500_000_775_T.grib2",
-    "icon_global_icosahedral_single-level_2026091500_001_PS.grib2",
+    # f001 was refused here while the contract was three-hourly; DWD posts
+    # it (A173).  A lead past the 00Z cycle's f180 is not a time it runs.
+    "icon_global_icosahedral_single-level_2026091500_181_PS.grib2",
     "icon_global_icosahedral_single-level_2026091506_123_PS.grib2",
     "icon_global_icosahedral_single-level_2026091530_000_PS.grib2",
     "icon_global_icosahedral_single-level_2026091500_000_UNKNOWN.grib2",
@@ -538,3 +550,22 @@ def test_wps_reversed_time_and_half_declared_pair_fail(tmp_path, spec):
                            if "end_date" not in line))
     with pytest.raises(ValueError, match="together"):
         norm._check_wps_time_coverage(spec, p, objects)
+
+
+@pytest.mark.parametrize("cadence,hours", [(1, 3), (3, 6), (6, 12), (12, 24)])
+def test_a_series_at_a_whole_multiple_of_the_hour_normalizes(
+        tmp_path, cadence, hours, spec):
+    """A173: DWD posts hourly to f078, so the normalization declares the
+    publisher's hour and takes a uniform series at any whole multiple of
+    it, with the namelist's interval equal to the series' spacing."""
+
+    plan = fetch_routes.resolve_request("icon-global", cycle=CYCLE,
+                                        hours=hours, cadence=cadence)
+    objects = norm.validate_inventory(
+        spec, [Path("/not-downloaded") / name for name in plan.primary_files])
+    assert sorted({o.lead for o in objects if o.lead is not None}) == list(
+        range(0, hours + 1, cadence))
+    end = CYCLE + timedelta(hours=hours)
+    p = wps(tmp_path / "namelist.wps", end=end.strftime("%Y-%m-%d_%H:%M:%S"),
+            interval=str(cadence * 3600))
+    norm._check_wps_time_coverage(spec, p, objects)

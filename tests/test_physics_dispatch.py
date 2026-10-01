@@ -58,9 +58,11 @@ def test_dispatch_table_routes_only_values_with_a_real_runner():
         # byte-frozen WRF v4.6.1 module); 900 is SASE, the one ArWen-only
         # scheme: it takes a value outside WRF's namespace precisely so
         # this table can route it without ever shadowing a WRF selector.
+        # 9 is the UW moist-turbulence PBL (WRF v4.7.1 CAMUWPBL), routed
+        # to its own runner and graded against tools/uwpbl_wrf471_oracle.
         "bl_pbl_physics": {0: None, 1: "_run_ysu", 2: "_run_myj_pbl",
-                           5: "_run_mynn_pbl", 11: "_run_shinhong",
-                           900: "_run_sase"},
+                           5: "_run_mynn_pbl", 9: "_run_uwpbl",
+                           11: "_run_shinhong", 900: "_run_sase"},
     }
 
 
@@ -468,7 +470,10 @@ def test_schema_tables_and_soil_geometry():
     # widening the registry admission (a5e101c5) enumerated.  900 is
     # SASE: ArWen-only, deliberately outside WRF's namespace (which runs
     # to 99) so it can never collide with a scheme WRF adds later.
-    assert PBL_SCHEMES == (0, 1, 2, 5, 11, 900)
+    # 9 joined with the UW moist-turbulence port (WRF v4.7.1
+    # module_bl_camuwpbl_driver.F): a routed runner, a restart identity,
+    # a registry option and a namelist-import row in the same change.
+    assert PBL_SCHEMES == (0, 1, 2, 5, 9, 11, 900)
     assert LAND_SURFACE_SOIL_LAYERS[2] == (4,)
     assert LAND_SURFACE_SOIL_LAYERS[3] == (6, 9)
     assert LAND_SURFACE_SOIL_LAYERS[4] == (4,)

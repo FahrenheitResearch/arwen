@@ -71,6 +71,7 @@ reveal spreading-generation intent, ``cugd_avedx`` != 1 beside
 
 from __future__ import annotations
 
+import contextvars
 import math
 import re
 import tomllib
@@ -81,7 +82,9 @@ from pathlib import Path
 from numbers import Real
 from typing import Mapping
 
+from gpuwm.config import EPSSM_AUTO
 from gpuwm.experiment import _reject_moving_nest_keys, build_experiment
+from gpuwm.fortran_namelist import parse_namelist, parse_namelist_text
 from gpuwm.static.projection import WRF_MAP_PROJ_CODES
 from gpuwm.physics_compat import (
     RRTMG_VARIANT_LEGACY,
@@ -416,6 +419,10 @@ class SubstitutionReport:
     fixed: tuple[FixedKey, ...] = ()
     translated: tuple[TranslatedKey, ...] = ()
     notices: tuple[str, ...] = ()
+    #: Values the namelist left to WRF's Registry default that the TOML
+    #: hands to the model as ``"auto"`` (A171: ``epssm``), one sentence
+    #: each, so the reader learns the run may change them and why.
+    model_choices: tuple[str, ...] = ()
 
     def format(self) -> str:
         lines = []
@@ -431,6 +438,10 @@ class SubstitutionReport:
             lines.append("Scheme-generation notices:")
             for notice in self.notices:
                 lines.append(f"  {notice}")
+        if self.model_choices:
+            lines.append("Left to the model (written \"auto\"):")
+            for choice in self.model_choices:
+                lines.append(f"  {choice}")
         lines.append("Physics substitutions (ratified):")
         if self.substitutions:
             for s in self.substitutions:
@@ -461,54 +472,10 @@ class SubstitutionReport:
 
 
 # ---------------------------------------------------------------------------
-# Fortran-namelist parsing (multi-line value continuations included --
-# the bundle's eta_levels span ten lines)
+# Fortran-namelist parsing lives in gpuwm.fortran_namelist, the one reader
+# every namelist door shares; parse_namelist / parse_namelist_text keep
+# their long-standing home here for the callers that import them from it.
 # ---------------------------------------------------------------------------
-
-_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
-#: Fortran repetition constant ``N*value`` (e.g. ``3*1.0``, ``4*.true.``).
-_REPEAT = re.compile(r"([1-9]\d*)\*(.+)")
-#: Fortran double-precision exponent literal (``2.90D2``); Python floats
-#: only accept E, so D/d maps to e before conversion.
-_D_EXPONENT = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)[dD][+-]?\d+")
-
-
-def _parse_scalar(tok: str):
-    if _QUOTED.fullmatch(tok):
-        return tok[1:-1]
-    low = tok.lower()
-    if low in (".true.", ".t.", "t"):
-        return True
-    if low in (".false.", ".f.", "f"):
-        return False
-    if _D_EXPONENT.fullmatch(tok):
-        return float(low.replace("d", "e"))
-    try:
-        return int(tok)
-    except ValueError:
-        pass
-    try:
-        return float(tok)
-    except ValueError:
-        return tok
-
-
-def _parse_token(tok: str) -> list:
-    """One comma-separated token -> list of values (repetition expands)."""
-    match = None if _QUOTED.fullmatch(tok) else _REPEAT.fullmatch(tok)
-    if match:
-        return [_parse_scalar(match.group(2).strip())] * int(match.group(1))
-    return [_parse_scalar(tok)]
-
-
-def _tokens(rhs: str) -> list:
-    out: list = []
-    for tok in rhs.strip().rstrip(",").split(","):
-        tok = tok.strip()
-        if tok:
-            out.extend(_parse_token(tok))
-    return out
-
 
 def read_namelist_role(path: str | Path, role: str) -> dict[str, dict[str, list]]:
     """:func:`parse_namelist`, with an unreadable file as one sentence.
@@ -526,51 +493,6 @@ def read_namelist_role(path: str | Path, role: str) -> dict[str, dict[str, list]
         return parse_namelist(path)
     except (OSError, UnicodeDecodeError) as error:
         raise ValueError(f"cannot read {role} {path}: {error}") from None
-
-
-def parse_namelist(path: str | Path) -> dict[str, dict[str, list]]:
-    """Parse a Fortran namelist FILE into {section: {key: [values]}}."""
-
-    return parse_namelist_text(Path(path).read_text(encoding="utf-8"))
-
-
-def parse_namelist_text(text: str) -> dict[str, dict[str, list]]:
-    """Parse Fortran namelist TEXT into {section: {key: [values]}}.
-
-    Handles the WRF/WPS style: ``&section`` .. ``/`` blocks,
-    ``key = v1, v2,`` lines, bare continuation lines carrying further
-    values for the previous key (namelist.input eta_levels), repetition
-    constants (``3*1.0``), and D-exponent reals (``2.90D2``).
-
-    Split out from :func:`parse_namelist` so a RENDERER can read back
-    what it just produced without writing a file first -- an emitter
-    that checks its own bytes is checking the artifact, and one that
-    checks its own variables is checking its intentions.
-    """
-    sections: dict[str, dict[str, list]] = {}
-    current: dict[str, list] | None = None
-    current_key: str | None = None
-    for raw in text.splitlines():
-        line = raw.split("!", 1)[0].strip()
-        if not line:
-            continue
-        if line.startswith("&"):
-            name = line[1:].strip().lower()
-            sections[name] = {}
-            current, current_key = sections[name], None
-            continue
-        if line == "/":
-            current, current_key = None, None
-            continue
-        if current is None:
-            continue
-        if "=" in line:
-            key, rhs = line.split("=", 1)
-            current_key = key.strip().lower()
-            current[current_key] = _tokens(rhs)
-        elif current_key is not None:
-            current[current_key].extend(_tokens(line))
-    return sections
 
 
 # ---------------------------------------------------------------------------
@@ -805,6 +727,12 @@ _BL_MAP = {
     # widens together with the physics_compat readiness row (the WRF
     # matrix's four (11, sfclay) cells) and the PHYSICS_SLOT_DISPATCH row.
     11: (11, "Shin-Hong", "Shin-Hong"),
+    # The UW moist-turbulence PBL (CAMUWPBLSCHEME) imports natively: the
+    # scheme is transcribed from WRF v4.7.1 module_bl_camuwpbl_driver.F and
+    # the CAM modules it calls, dispatched by _run_uwpbl and graded against
+    # tools/uwpbl_wrf471_oracle.  WRF names no surface layer for it; its one
+    # pairing fatal (BEP/BEM urban) is gpuwm.config.validate_uwpbl_config.
+    9: (9, "UW (CAM5 Bretherton-Park)", "UW moist turbulence"),
 }
 _RA_LW_MAP = {
     0: (0, "none", "none"),
@@ -869,6 +797,136 @@ GF_SCHEME_GENERATION_NOTICE = (
     "generation substitution is never silent.")
 
 
+#: The namelist groups the importer reads, by file.  Any other group is
+#: refused by name.  Exported by gpuwm.namelist_contract.
+WPS_SECTIONS = ("share", "geogrid", "ungrib", "metgrid")
+INPUT_SECTIONS = ("time_control", "domains", "physics", "fdda", "dynamics",
+                  "bdy_control", "grib2", "namelist_quilt", "noah_mp",
+                  "stoch")
+#: Groups whose every key is recorded and dropped: ungrib/metgrid staging
+#: is replaced by gpuwm's own ingest; FDDA (once no nudging selector is on),
+#: GRIB2 and quilt-server keys have no gpuwm counterpart.
+WPS_DROPPED_SECTIONS = ("ungrib", "metgrid")
+INPUT_DROPPED_SECTIONS = ("fdda", "grib2", "namelist_quilt")
+#: WRF's numbered auxiliary input/history stream keys, recorded and dropped.
+AUX_STREAM_KEY = re.compile(r"^aux(hist|input)\d+_")
+
+#: &physics keys pinned to the one value gpuwm implements, as
+#: (key, pin, why).  Exported by gpuwm.namelist_contract.
+PHYSICS_PINS: tuple[tuple[str, int, str], ...] = (
+    ("swint_opt", 0,
+     "shortwave interpolation between radt calls is not "
+     "implemented; radiation is recomputed on the radt cadence"),
+    ("gwd_opt", 0, "no gravity-wave-drag scheme is implemented"),
+    ("sf_lake_physics", 0, "no lake model is implemented"),
+    ("shcu_physics", 0,
+     "no shallow-cumulus scheme is implemented"),
+    ("kf_edrates", 0,
+     "KF entrainment/detrainment rate diagnostics are not "
+     "implemented"),
+    ("flag_sm_adj", 0,
+     "RUC option identity: gpuwm has no RUC soil ingest for the "
+     "adjustment to act on (share/module_soil_pre.F:2063)"),
+    ("sst_update", 0,
+     "SST update cycling is not implemented (single-analysis "
+     "case runs)"),
+    ("sst_skin", 0,
+     "skin-SST diurnal adjustment is not implemented"),
+    ("tmn_update", 0,
+     "deep-soil temperature update is not implemented"),
+)
+
+#: &dynamics keys pinned to the one value the dycore implements, as
+#: (key, pin, why).  Exported by gpuwm.namelist_contract.
+DYNAMICS_PINS: tuple[tuple[str, int, str], ...] = (
+    ("rk_ord", 3,
+     "the dycore integrates WRF's 3-stage RK3 only "
+     "(gpuwm/core/dycore.py stage table)"),
+    ("h_mom_adv_order", 5,
+     "horizontal momentum advection is the WRF flux5 stencil, "
+     "hardcoded (gpuwm/core/kernels/advection.cu)"),
+    ("v_mom_adv_order", 3,
+     "vertical momentum advection is the WRF flux3 stencil, "
+     "hardcoded (gpuwm/core/kernels/advection.cu)"),
+    ("v_sca_adv_order", 3,
+     "vertical scalar advection is the WRF flux3 stencil, "
+     "hardcoded (gpuwm/core/kernels/advection.cu)"),
+    ("momentum_adv_opt", 1,
+     "standard (non-positive-definite) momentum advection only"),
+    # WRF has declared gwd_opt in &dynamics since v4.0
+    # (Registry.EM_COMMON, `namelist,dynamics`); its PHYSICS_PINS row
+    # is the v3 placement.  Read only there, a v4 namelist
+    # carrying gwd_opt = 0 was refused as unmapped.
+    ("gwd_opt", 0, "no gravity-wave-drag scheme is implemented"),
+)
+
+#: &dynamics keys with one implemented value on every domain, as
+#: key -> (value, why any other is refused).  The translation below reads
+#: its pins from here and gpuwm.namelist_contract exports them.
+DYNAMICS_REQUIRED_VALUES: dict[str, tuple[object, str]] = {
+    "diff_opt": (2, "only the diff_opt=2 full-diffusion form backs "
+                    "gpuwm's km_opt selection."),
+    "mix_full_fields": (True, "gpuwm Smagorinsky mixing always acts on "
+                              "full fields."),
+    "non_hydrostatic": (True, "gpuwm is nonhydrostatic-only."),
+    "moist_adv_opt": (1, "only the matched WRF positive-definite option 1 "
+                         "is implemented for moisture mass."),
+    "scalar_adv_opt": (1, "only the matched WRF positive-definite option "
+                          "1 is implemented for scalar/number fields."),
+    "h_sca_adv_order": (5, "only the WRF Registry default 5 imports: "
+                           "gpuwm's transported-scalar stencils are fixed "
+                           "at WRF's 5th-order horizontal/3rd-order "
+                           "vertical forms."),
+}
+
+
+#: &physics integer switches the importer admits at a closed set of
+#: values, key -> (admitted values, why any other is refused).  Read
+#: by the translation below and exported by gpuwm.namelist_contract,
+#: so the site checks an upload against the rule the engine runs.
+PHYSICS_CHOICES: dict[str, tuple[tuple[int, ...], str]] = {
+    "no_mp_heating": ((0, 1),
+     'must be 0 (microphysics latent heating on, the WRF default) '
+     'or 1 (heating off, '
+     'module_big_step_utilities_em.F:5770-5782).'),
+    "ysu_topdown_pblmix": ((0, 1),
+     'must be 0 or 1 (top-down radiation-driven PBL mixing).'),
+    "isfflx": ((0, 1),
+     'must be 0 (surface heat/moisture fluxes off) or 1 (on); WRF '
+     "value 2 also needs gpuwm's unported prescribed-"
+     'flux/diffusion forcing path.'),
+    "use_mp_re": ((0, 1),
+     'must be 0 (legacy-RRTMG calculated radii) or 1 (use the WRF '
+     'microphysics scheme table).'),
+    "isftcflx": ((0, 1, 2),
+     'must be 0 (standard MM5 water-point roughness), 1 (Garratt),'
+     ' or 2 (Donelan).'),
+    "iz0tlnd": ((0, 1, 2),
+     'must be 0 (standard CZIL), 1 (Chen-Zhang), or 2 (fixed CZIL '
+     '0.1).'),
+    "opt_thcnd": ((1, 2),
+     'must be 1 (Johansen soil thermal conductivity) or 2 '
+     '(McCumber-Pielke).'),
+}
+
+#: &domains nest-interpolation keys pinned to WRF's default, as
+#: key -> (the one admitted value, why).  Exported by
+#: gpuwm.namelist_contract.
+NEST_GUARDS: dict[str, tuple[object, str]] = {
+    "interp_method_type": (2,
+     'only SINT (2, the WRF default per Registry.EM_COMMON:2301) '
+     'is implemented.'),
+    "nest_interp_coord": (0,
+     'isobaric nest re-interpolation is not implemented.'),
+    "vert_refine_method": (0,
+     'vertical nest refinement is rejected (identical '
+     'e_vert/eta_levels/p_top on all domains).'),
+    "input_from_hires": (False,
+     'high-resolution child terrain input is rejected (children '
+     'SINT + blend the parent terrain).'),
+}
+
+
 def _port_receipt(**selection) -> str:
     """The fail-closed port receipt for an in-port selector, or ``""``."""
     from gpuwm.physics_compat import pending_wrf_physics_components
@@ -883,8 +941,30 @@ def _port_receipt(**selection) -> str:
         item.format() for item in blockers)
 
 
-def _err(section: str, key: str, value, why: str) -> ValueError:
-    return ValueError(f"&{section} {key} = {value!r}: {why}")
+class NamelistRefusal(ValueError):
+    """One importer refusal that names the namelist setting(s) it is about.
+
+    ``keys`` holds ``(section, key)`` pairs, ``key == "*"`` for a whole
+    section.  :func:`import_namelists` uses them to set the named settings
+    aside and keep checking the rest of the pair, so one refusal lists
+    every problem instead of the first one (a WOOF user found five
+    refusals in one namelist on five GPU boxes, one per boot).
+    """
+
+    def __init__(self, message: str, keys=()):
+        super().__init__(message)
+        self.keys = tuple((str(section), str(key)) for section, key in keys)
+
+
+_KEY_TOKEN = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _err(section: str, key: str, value, why: str) -> NamelistRefusal:
+    # "moist_adv_opt/scalar_adv_opt" names two keys; a composite label
+    # such as "end_* datetime" names none the census could set aside.
+    keys = [(section, part) for part in str(key).split("/")
+            if _KEY_TOKEN.match(part)]
+    return NamelistRefusal(f"&{section} {key} = {value!r}: {why}", keys)
 
 
 def _identity_matches(value, admitted) -> bool:
@@ -928,6 +1008,40 @@ _REQUIRED_KEYS = {
 }
 
 
+def _run_length_seconds(time_control: dict) -> float:
+    """WRF's run_days/hours/minutes/seconds, summed (0 when unset)."""
+    total = 0.0
+    for key, scale in (("run_days", 86400), ("run_hours", 3600),
+                       ("run_minutes", 60), ("run_seconds", 1)):
+        values = time_control.get(key)
+        if values:
+            try:
+                total += float(values[0]) * scale
+            except (TypeError, ValueError):
+                return 0.0
+    return total
+
+
+def _census_optional(section: str, wps: dict, inp: dict) -> frozenset:
+    """Keys the census may not demand, because the translation does not
+    read them for this pair.
+
+    * Mercator and polar stereographic ignore truelat2 (and Mercator
+      stand_lon) in WPS; the translation fills them from truelat1/ref_lon,
+      so demanding them refused a pair WRF runs.
+    * WRF takes the run length from run_* when it is positive and never
+      reads end_* then; the translation derives the end from start + run_*.
+    """
+    if section == "geogrid":
+        projection = wps.get("geogrid", {}).get("map_proj", ["lambert"])
+        if str(projection[0]).strip().lower() != "lambert":
+            return frozenset({"truelat2", "stand_lon"})
+    if section == "time_control":
+        if _run_length_seconds(inp.get("time_control", {})) > 0.0:
+            return frozenset({"end_year", "end_month", "end_day"})
+    return frozenset()
+
+
 def _census_missing_keys(wps: dict, inp: dict,
                          wps_path, input_path) -> None:
     """One report of every missing required key across both namelists."""
@@ -937,6 +1051,8 @@ def _census_missing_keys(wps: dict, inp: dict,
     for (role, section), keys in _REQUIRED_KEYS.items():
         document, path = parsed[role]
         entries = document.get(section, {})
+        keys = tuple(key for key in keys
+                     if key not in _census_optional(section, wps, inp))
         absent = sorted(key for key in keys if key not in entries)
         if absent:
             lines.append(f"  &{section} of {path}: {', '.join(absent)}")
@@ -946,6 +1062,29 @@ def _census_missing_keys(wps: dict, inp: dict,
             + "\n".join(lines)
             + "\nadd every listed key and re-run (this is the complete "
             "missing-key inventory, not the first failure).")
+
+
+def _misplaced_key_hint(section: str, entries) -> str:
+    """Where WRF itself reads each unmapped key, when that is elsewhere.
+
+    Only for namelist.input groups WRF's Registry declares: the WPS groups
+    and &namelist_quilt are read by other programs.
+    """
+    from gpuwm.wrf_namelist_registry import placement_note, wrf_namelist_keys
+
+    if section not in {group for group, _ in wrf_namelist_keys()}:
+        return ""
+    notes = [note for note in (placement_note(section, key)
+                               for key in sorted(entries)) if note]
+    return (" " + "; ".join(notes) + ".") if notes else ""
+
+
+#: When set to a set, every key a translation ASKS a section for -- found
+#: or not -- is added as ``(section, key)``.  gpuwm.namelist_contract reads
+#: the importer's vocabulary this way instead of keeping a second copy of
+#: it; nothing else sets it, so an ordinary import records nothing.
+_TAKE_TRACE: contextvars.ContextVar = contextvars.ContextVar(
+    "namelist_take_trace", default=None)
 
 
 class _Section:
@@ -971,6 +1110,9 @@ class _Section:
         _reject_moving_nest_keys(name, self.entries, source)
 
     def take(self, key: str, default=None) -> list | None:
+        trace = _TAKE_TRACE.get()
+        if trace is not None:
+            trace.add((self.name, key))
         if key in self.entries:
             self.consumed.append(key)
             return self.entries.pop(key)
@@ -1020,11 +1162,12 @@ class _Section:
 
     def finish(self) -> None:
         if self.entries:
-            raise ValueError(
+            raise NamelistRefusal(
                 f"unmapped key(s) {sorted(self.entries)} in &{self.name} "
                 f"of {self.source}: the importer refuses to drop namelist "
                 "settings silently -- extend the ratified map or remove "
-                "the key(s).")
+                "the key(s)." + _misplaced_key_hint(self.name, self.entries),
+                [(self.name, key) for key in sorted(self.entries)])
 
 
 def _uniform(section: str, key: str, values: list):
@@ -1061,6 +1204,271 @@ def _fmt(value) -> str:
 
 
 # ---------------------------------------------------------------------------
+# &geogrid geog_data_res: which static datasets a namelist asks for
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class StaticLandcover:
+    """The ``[static.highres]`` land cover an imported namelist selects.
+
+    ``source_id`` is the row of
+    :data:`gpuwm.static.highres_fetch.LANDCOVER_SOURCES` whose
+    ``wps_geog_tokens`` the namelist's ``geog_data_res`` names;
+    ``grid_ids`` the domains that name it and ``max_dx_m`` the block's
+    spacing scope (``None``: every domain).  ``values`` are the per-domain
+    ``geog_data_res`` strings as WPS reads them, for the report.
+    """
+
+    source_id: str
+    grid_ids: tuple[int, ...]
+    max_dx_m: float | None
+    values: tuple[str, ...]
+
+
+def geog_data_res_tokens() -> dict[str, str]:
+    """Every WPS ``geog_data_res`` token gpuwm builds, and how.
+
+    ``{token: "geog"}`` for the GEOG-tree selectors the static builder
+    resolves (:class:`gpuwm.static.build.GeogSelection`), and
+    ``{token: <landcover_source id>}`` for a land-cover collection built
+    through ``[static.highres]``.  Both halves are tables owned elsewhere;
+    a token reaches this map by a row there, never by a branch here.
+    """
+    from gpuwm.static.build import _SUPPORTED_GEOG_TOKENS
+    from gpuwm.static.highres_fetch import landcover_source_ids_by_wps_token
+
+    tokens = {token: "geog" for token in sorted(_SUPPORTED_GEOG_TOKENS)}
+    tokens.update(landcover_source_ids_by_wps_token())
+    return tokens
+
+
+def _geog_data_res_landcover(values, *, max_dom: int, grid_ids: list[int],
+                             spacings: list[float]
+                             ) -> StaticLandcover | None:
+    """Read ``geog_data_res`` the way WPS does and say what it builds.
+
+    WPS v4.6 gridinfo_module.F initializes every element to ``'default'``
+    and the namelist replaces only the elements listed, so an unlisted
+    domain is ``'default'`` (not the last value repeated).  Each value is a
+    ``+``-joined token list.  WPS applies a land-cover table entry wherever
+    its token appears in the list (GEOGRID.TBL.ARW_LCZ's priority-2
+    LANDUSEF entry knows only ``cglc_modis_lcz``, so ``default`` before it
+    does not shadow it).
+
+    Returns ``None`` when no domain names a land-cover collection.  A token
+    gpuwm builds from nothing is refused by name: building another dataset
+    under its name would be a silent substitution.
+    """
+    if values is None:
+        return None
+    known = geog_data_res_tokens()
+    column = [str(value) for value in values[:max_dom]]
+    column += ["default"] * (max_dom - len(column))
+    unknown: list[str] = []
+    selected: dict[int, str] = {}
+    for n, value in enumerate(column):
+        tokens = [token.strip().lower() for token in value.split("+")
+                  if token.strip()]
+        unknown += [token for token in tokens
+                    if token not in known and token not in unknown]
+        sources = sorted({known[token] for token in tokens
+                          if known.get(token, "geog") != "geog"})
+        if len(sources) > 1:
+            raise _err(
+                "geogrid", "geog_data_res", values,
+                f"d{grid_ids[n]:02d}'s {value!r} names {len(sources)} "
+                f"land-cover collections ({', '.join(sources)}); one domain "
+                "builds its land use from one, so which one this namelist "
+                "means cannot be read from it.  Keep one token.")
+        if sources:
+            selected[n] = sources[0]
+    if unknown:
+        geog = sorted(token for token, how in known.items() if how == "geog")
+        landcover = sorted(token for token, how in known.items()
+                           if how != "geog")
+        raise _err(
+            "geogrid", "geog_data_res", values,
+            f"token(s) {unknown} name GEOG dataset(s) gpuwm does not "
+            f"build.  It builds {geog} from the GEOG tree (read from the "
+            "namelist.wps that [case_data] wps_namelist names) and "
+            f"{landcover} through [static.highres]; building a domain from "
+            "another dataset under the name the namelist gives would be a "
+            "silent substitution.  Replace or remove the token(s).")
+    if not selected:
+        return None
+    source_ids = sorted(set(selected.values()))
+    if len(source_ids) > 1:
+        raise _err(
+            "geogrid", "geog_data_res", values,
+            f"the domains name {len(source_ids)} land-cover collections "
+            f"({', '.join(source_ids)}); one [static.highres] block "
+            "carries one landcover_source.  Keep one collection.")
+    inside = sorted(selected)
+    outside = [n for n in range(max_dom) if n not in selected]
+    max_dx_m = None
+    if outside:
+        finest_outside = min(spacings[n] for n in outside)
+        coarsest_inside = max(spacings[n] for n in inside)
+        if coarsest_inside >= finest_outside:
+            raise _err(
+                "geogrid", "geog_data_res", values,
+                f"{source_ids[0]} is named on "
+                f"{', '.join(f'd{grid_ids[n]:02d}' for n in inside)} but "
+                f"not on {', '.join(f'd{grid_ids[n]:02d}' for n in outside)}, "
+                "and [static.highres] reaches domains by grid spacing "
+                f"(max_dx_m) alone: a domain at {coarsest_inside:g} m names "
+                f"it while one at {finest_outside:g} m does not, so no "
+                "spacing bound builds it on exactly those domains.  Name "
+                "it on every domain at or below one spacing.")
+        max_dx_m = coarsest_inside
+    return StaticLandcover(
+        source_id=source_ids[0],
+        grid_ids=tuple(grid_ids[n] for n in inside),
+        max_dx_m=max_dx_m, values=tuple(column))
+
+
+def _innermost_int(section, key: str, default: int, max_dom: int):
+    """The innermost domain's value of a per-domain integer, read without
+    consuming the key (WRF resets every domain to it,
+    share/module_check_a_mundo.F:1063-1077); ``None`` when it is not an
+    integer, which the key's own reader refuses later."""
+    raw = section.entries.get(key)
+    if raw is None:
+        return default
+    values = list(raw[:max_dom]) + [raw[-1]] * max(0, max_dom - len(raw))
+    value = values[-1]
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _built_land_categories(static_landcover: StaticLandcover | None, *,
+                           grid_ids, urban, use_wudapt_lcz, geog_data_res
+                           ) -> tuple[dict[int, int], str]:
+    """``({grid_id: NUM_LAND_CAT the static build stamps}, why)``.
+
+    The GEOG tree's land use is the 21-category MODIS set; a domain whose
+    land cover ``[static.highres]`` builds takes that collection's legend
+    under the run's urban canopy (:func:`gpuwm.static.highres.
+    landcover_legend`, the one authority the static build itself calls).
+    A legend the canopy cannot run is refused here with that function's
+    reason, which is WRF's own stop, instead of at preparation.
+    """
+    from gpuwm.static.highres import MODIS21_CATEGORY_COUNT, landcover_legend
+    from gpuwm.static.highres_fetch import LANDCOVER_SOURCES
+
+    counts = {int(gid): MODIS21_CATEGORY_COUNT for gid in grid_ids}
+    if static_landcover is None:
+        return counts, ("the GEOG tree's MODIS land use on every domain, "
+                        f"{MODIS21_CATEGORY_COUNT} categories")
+    row = LANDCOVER_SOURCES[static_landcover.source_id]
+    urban = urban or 0
+    lcz = use_wudapt_lcz or 0
+    try:
+        _, count = landcover_legend(static_landcover.source_id,
+                                    sf_urban_physics=urban,
+                                    use_wudapt_lcz=lcz)
+    except ValueError as error:
+        raise _err(
+            "geogrid", "geog_data_res", geog_data_res,
+            f"it selects {row.label} land cover, and with the urban canopy "
+            f"on (sf_urban_physics = {urban}) and use_wudapt_lcz = {lcz} "
+            f"its built classes have no urban parameter table: {error}.  "
+            "Set use_wudapt_lcz = 1, or remove the "
+            f"{'/'.join(row.wps_geog_tokens)} token to keep the MODIS "
+            f"land use ({MODIS21_CATEGORY_COUNT} categories, so "
+            f"num_land_cat = {MODIS21_CATEGORY_COUNT}).") from None
+    for gid in static_landcover.grid_ids:
+        counts[int(gid)] = int(count)
+    where = ", ".join(f"d{gid:02d}" for gid in static_landcover.grid_ids)
+    if int(count) > MODIS21_CATEGORY_COUNT:
+        note = (f"{row.label} land cover on {where}, whose built classes "
+                f"the urban canopy (sf_urban_physics = {urban}"
+                + (", use_wudapt_lcz = 1" if lcz else "")
+                + f") keeps as categories 51-{int(count)}")
+    else:
+        note = (f"{row.label} land cover on {where}, its built classes "
+                "collapsed to MODIS urban (13) because no urban canopy runs "
+                "(sf_urban_physics = 0)")
+    if len(static_landcover.grid_ids) < len(counts):
+        note += ("; the GEOG tree's MODIS land use, "
+                 f"{MODIS21_CATEGORY_COUNT} categories, elsewhere")
+    return counts, note
+
+
+def _static_landcover_block(selection: StaticLandcover, *, cache_root,
+                            legend_note: str) -> tuple[list[str], str]:
+    """The ``[static.highres]`` lines an imported land-cover token becomes,
+    and the report notice that says what else that block replaces.
+
+    ``fields = "all"`` is the block's only mode that builds land cover, and
+    it replaces terrain and soil texture too, which WPS's land-cover token
+    does not: that is stated, never left for the reader to find.  The
+    cache folder is the per-user one the engine's own default terrain row
+    uses unless the caller names another (``--static-cache-root``).
+    """
+    from gpuwm.static.highres_fetch import LANDCOVER_SOURCES
+    from gpuwm.static.highres_production import default_highres_cache_root
+
+    row = LANDCOVER_SOURCES[selection.source_id]
+    root = (default_highres_cache_root().as_posix() if cache_root is None
+            else (Path(cache_root).as_posix()
+                  if isinstance(cache_root, Path) else str(cache_root)))
+    if len(set(selection.values)) == 1:
+        named = f"'{selection.values[0]}' on every domain"
+    else:
+        named = ", ".join(f"'{value}'" for value in selection.values)
+    where = ("every domain" if selection.max_dx_m is None else
+             ", ".join(f"d{gid:02d}" for gid in selection.grid_ids)
+             + f" (max_dx_m = {selection.max_dx_m:g}, the domains at or "
+               "below that spacing)")
+    replaces = (
+        "That block also replaces terrain (terrain_source \"auto\": USGS "
+        "3DEP 1/3 arc-second inside the conterminous United States, "
+        "Copernicus DEM GLO-30 elsewhere, where WPS reads GMTED2010 30 s) "
+        "and soil texture (SoilGrids v2 250 m, where WPS reads the 30 s "
+        "soil category tables), and recomputes TMN from the new terrain; "
+        "the monthly climatologies stay on the GEOG tree.")
+    notice = (
+        f"Static land cover imported from &geogrid geog_data_res = {named}: "
+        f"[static.highres] enabled = true, fields = \"all\", "
+        f"landcover_source = \"{selection.source_id}\" ({row.label}, "
+        f"{row.coverage.nominal_resolution}, representing "
+        f"{row.first_year}"
+        + (f"-{row.last_year}" if row.last_year != row.first_year else "")
+        + f") on {where}; {legend_note}.  {replaces}  The GEOG-tree "
+        "tokens beside it are read from the namelist.wps that [case_data] "
+        f"wps_namelist names.  Its tiles are cached in {root}.")
+    lines = [
+        "",
+        "# &geogrid geog_data_res "
+        + ", ".join(f"'{value}'" for value in selection.values) + ":",
+        f"# {row.label} land cover, built by the high-resolution static "
+        "block.  fields = \"all\"",
+        "# also replaces terrain and soil texture, which WPS's token does "
+        "not (see the",
+        "# import report).  The other tokens are read from the namelist.wps "
+        "that",
+        "# [case_data] wps_namelist names.",
+        "[static.highres]",
+        "enabled = true",
+        f"cache_root = {_toml_string(root)}",
+        'fields = "all"',
+        f"landcover_source = {_toml_string(selection.source_id)}",
+    ]
+    if selection.max_dx_m is not None:
+        lines.append(f"max_dx_m = {_fmt(float(selection.max_dx_m))}")
+    return lines, notice
+
+
+def _toml_string(value: str) -> str:
+    """A TOML basic string (JSON's escapes are TOML's)."""
+    import json
+
+    return json.dumps(str(value), ensure_ascii=True)
+
+
+# ---------------------------------------------------------------------------
 # The importer
 # ---------------------------------------------------------------------------
 
@@ -1071,7 +1479,10 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                      acknowledgements: tuple[str, ...] = (),
                      landuse_identity: Mapping[str, object] | None = None,
                      wrf_boundary_use_theta_m: int | None = None,
-                     metgrid_initialization: bool = False
+                     static_cache_root: str | Path | None = None,
+                     metgrid_initialization: bool = False,
+                     geogrid_tbl: str | Path | None = None,
+                     terrain_smoothing_precision: str | None = None
                      ) -> tuple[str, SubstitutionReport]:
     """Translate namelist.wps + namelist.input into (TOML text, report).
 
@@ -1108,6 +1519,14 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     local night -- would refuse validation HERE, before the TOML the
     reader could have added the declaration to even exists.  Empty adds
     nothing and keeps every existing import byte-identical.
+
+    ``static_cache_root`` is the ``cache_root`` written into the
+    ``[static.highres]`` block a land-cover ``geog_data_res`` token
+    (``cglc_modis_lcz``) becomes (the CLI ``--static-cache-root`` flag);
+    ``None`` writes the engine's per-user high-resolution cache, the folder
+    its default terrain row already uses.  A relative path is resolved
+    against the TOML's own folder when it is loaded.  A namelist naming no
+    land-cover token writes no block and ignores it.
     """
     if rrtmg_variant not in (None, RRTMG_VARIANT_RTE_RRTMGP,
                              RRTMG_VARIANT_LEGACY):
@@ -1128,10 +1547,220 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
 
     wps = read_namelist_role(wps_path, "namelist.wps")
     inp = read_namelist_role(input_path, "namelist.input")
+    return import_parsed_namelists(
+        wps, inp, wps_path=wps_path, input_path=input_path, name=name,
+        rrtmg_variant=rrtmg_variant,
+        rrtmg_compatibility=rrtmg_compatibility,
+        acknowledgements=acknowledgements,
+        landuse_identity=landuse_identity,
+        wrf_boundary_use_theta_m=wrf_boundary_use_theta_m,
+        static_cache_root=static_cache_root,
+        metgrid_initialization=metgrid_initialization,
+        geogrid_tbl=geogrid_tbl,
+        terrain_smoothing_precision=terrain_smoothing_precision)
+
+
+#: A refused physics selector the importer cannot simply drop (the key is
+#: required, or dropping it moves the rest of the namelist onto another
+#: code path) is replaced by the representative below while the rest of
+#: the pair is checked.  The representatives are the ones WOOF's default
+#: suite runs, so the branches a real suite takes stay the branches that
+#: are checked; a later refusal whose text names a replaced key is a
+#: consequence of the replacement, not of the user's namelist, and is not
+#: reported.
+_REFUSED_SELECTOR_STAND_INS = {
+    ("physics", "mp_physics"): 8,
+    ("physics", "bl_pbl_physics"): 1,
+    ("physics", "sf_sfclay_physics"): 1,
+    ("physics", "sf_surface_physics"): 2,
+    ("physics", "cu_physics"): 0,
+    ("physics", "ra_lw_physics"): 4,
+    ("physics", "ra_sw_physics"): 4,
+    ("dynamics", "km_opt"): 4,
+    ("dynamics", "mix_full_fields"): True,
+    # A refused geog_data_res is checked as WPS's own default.  Which
+    # land-use category count the pair builds hangs on it, so the
+    # num_land_cat = 61 refusal a removed key would add (it names
+    # geog_data_res) is that consequence, not a second fix to make: an
+    # LCZ token's num_land_cat = 61 is right once the token imports.
+    ("geogrid", "geog_data_res"): "default",
+}
+
+#: Keys a refusal can never be continued past: the geometry and the clock
+#: every later check is computed from.
+_UNREMOVABLE_KEYS = frozenset(
+    (section, key)
+    for (_role, section), keys in _REQUIRED_KEYS.items()
+    for key in keys) - frozenset(_REFUSED_SELECTOR_STAND_INS)
+
+#: The most settings one import sets aside before it stops looking.  A
+#: namelist has a few hundred keys at most; the bound only keeps a
+#: pathological file from looping.
+_MAX_SET_ASIDE_ROUNDS = 256
+
+
+def _without(document: dict, section: str, key: str) -> bool:
+    """Remove ``key`` (or the whole section for ``*``) in place."""
+    entries = document.get(section)
+    if entries is None:
+        return False
+    if key == "*":
+        del document[section]
+        return True
+    if key in entries:
+        del entries[key]
+        return True
+    return False
+
+
+def _format_refusals(problems: list[str]) -> str:
+    lines = [
+        f"the importer refuses {len(problems)} setting(s) in this namelist "
+        "pair; every one is listed, so they can all be fixed before the "
+        "next import:"]
+    for index, problem in enumerate(problems, 1):
+        lines.append(f"  {index}. {problem}")
+    return "\n".join(lines)
+
+
+def import_parsed_namelists(wps: dict, inp: dict, *, wps_path, input_path,
+                            **options) -> tuple[str, SubstitutionReport]:
+    """:func:`import_namelists` on parsed documents, every refusal at once.
+
+    The translation stops at its first refusal, so on its own a namelist
+    with five unsupported settings needed five imports to discover them;
+    on WOOF each import ran on a freshly booted GPU box.  This runs the
+    translation, sets the refused setting(s) aside and runs it again until
+    it succeeds or reaches a refusal it cannot continue past (a missing
+    geometry key, a refusal that names no setting), then raises ONE
+    ValueError listing every refusal it met, each with its own reason.
+
+    Settings are set aside, never repaired: a set-aside key takes its WRF
+    Registry default for the rest of the check, the way an omitted key
+    does, and a refused physics selector is checked as its
+    :data:`_REFUSED_SELECTOR_STAND_INS` representative.  A namelist with
+    exactly one refusal raises that refusal unchanged.
+    """
+
+    from copy import deepcopy
+
+    from gpuwm.explain import muted_warnings
+
+    work_wps, work_inp = deepcopy(wps), deepcopy(inp)
+    problems: list[str] = []
+    collected = options.pop("_collect", None)
+    first_error: BaseException | None = None
+    stand_ins: dict[tuple[str, str], object] = {}
+    for attempt in range(_MAX_SET_ASIDE_ROUNDS):
+        try:
+            if attempt == 0:
+                return _translate_namelists(
+                    work_wps, work_inp, wps_path=Path(wps_path),
+                    input_path=Path(input_path), **options)
+            with muted_warnings():
+                _translate_namelists(
+                    work_wps, work_inp, wps_path=Path(wps_path),
+                    input_path=Path(input_path), **options)
+            break
+        except (ValueError, NotImplementedError) as error:
+            text = str(error)
+            if stand_ins and any(re.search(rf"\b{re.escape(key)}\b", text)
+                                 for _, key in stand_ins):
+                # A consequence of a stand-in, not of the namelist.
+                keys = getattr(error, "keys", ())
+                if not keys or not _set_aside(keys, work_wps, work_inp,
+                                              stand_ins):
+                    break
+                continue
+            if first_error is None:
+                first_error = error
+            if text not in problems:
+                problems.append(text)
+                if collected is not None:
+                    collected.append(error)
+            keys = getattr(error, "keys", ())
+            if keys:
+                if not _set_aside(keys, work_wps, work_inp, stand_ins):
+                    break
+                continue
+            from gpuwm.physics_compat import UnsupportedPhysicsSuiteError
+            if isinstance(error, UnsupportedPhysicsSuiteError):
+                # The suite preview refuses a combination, not one key:
+                # check the rest of the pair with the representative suite.
+                keys = [pair for pair in _REFUSED_SELECTOR_STAND_INS
+                        if pair[1] in work_inp.get("physics", {})
+                        and pair[1] in text]
+                if keys and _set_aside(keys, work_wps, work_inp, stand_ins):
+                    continue
+            break
+    if first_error is None:      # pragma: no cover - loop always records
+        raise AssertionError("namelist import finished without a result")
+    if len(problems) == 1:
+        raise first_error
+    raise NamelistRefusal(_format_refusals(problems))
+
+
+def namelist_refusals(wps: dict, inp: dict, *, wps_path="namelist.wps",
+                      input_path="namelist.input", **options) -> list:
+    """Every refusal the importer gives a parsed pair, as exceptions.
+
+    Empty when the pair imports.  Each element is the refusal the
+    translation raised (a :class:`NamelistRefusal` carries the
+    ``(section, key)`` pairs it names), in the order met; the same loop as
+    :func:`import_parsed_namelists`, which raises them as one.
+    """
+    collected: list = []
+    try:
+        import_parsed_namelists(wps, inp, wps_path=wps_path,
+                                input_path=input_path, _collect=collected,
+                                **options)
+    except (ValueError, NotImplementedError):
+        if not collected:
+            raise
+    return collected
+
+
+def _set_aside(keys, work_wps: dict, work_inp: dict,
+               stand_ins: dict) -> bool:
+    """Set the refused settings aside; False when one cannot be."""
+    wps_sections = {"share", "geogrid", "ungrib", "metgrid"}
+    progressed = False
+    for section, key in keys:
+        document = work_wps if section in wps_sections else work_inp
+        pair = (section, key)
+        if pair in _REFUSED_SELECTOR_STAND_INS:
+            stand_in = _REFUSED_SELECTOR_STAND_INS[pair]
+            column = document.get(section, {}).get(key)
+            if pair in stand_ins or column is None:
+                return False
+            stand_ins[pair] = stand_in
+            document[section][key] = [stand_in] * len(column)
+            progressed = True
+            continue
+        if pair in _UNREMOVABLE_KEYS:
+            return False
+        progressed = _without(document, section, key) or progressed
+    return progressed
+
+
+def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
+                         input_path: Path, name: str | None = None,
+                         rrtmg_variant: str | None = RRTMG_VARIANT_RTE_RRTMGP,
+                         rrtmg_compatibility: str | None = None,
+                         acknowledgements: tuple[str, ...] = (),
+                         landuse_identity: Mapping[str, object] | None = None,
+                         wrf_boundary_use_theta_m: int | None = None,
+                         static_cache_root: str | Path | None = None,
+                         metgrid_initialization: bool = False,
+                         geogrid_tbl: str | Path | None = None,
+                         terrain_smoothing_precision: str | None = None
+                         ) -> tuple[str, SubstitutionReport]:
+    """The translation itself; stops at its first refusal."""
     substitutions: list[Substitution] = []
     dropped: list[DroppedKey] = []
     fixed: list[FixedKey] = []
     notices: list[str] = []
+    model_choices: list[str] = []
     defaults_applied: list[AppliedDefault] = [AppliedDefault(
         key="ztop", value=20000.0,
         reason="gpuwm-only vertical scaffold height (no WRF namelist "
@@ -1157,7 +1786,7 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                               values=tuple(values), fixed_value=fixed_value,
                               reason=reason))
 
-    for section_name in ("ungrib", "metgrid"):
+    for section_name in WPS_DROPPED_SECTIONS:
         if section_name in wps:
             for key, values in wps[section_name].items():
                 drop(section_name, key, values,
@@ -1168,27 +1797,27 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     # selectors and their inert companion keys drop with a reason.
     for key, values in active_nudging_selectors(inp.get("fdda", {})):
         raise _err("fdda", key, values, NUDGING_NOT_IMPLEMENTED)
-    for section_name in ("fdda", "grib2", "namelist_quilt"):
+    for section_name in INPUT_DROPPED_SECTIONS:
         if section_name in inp:
             for key, values in inp[section_name].items():
                 drop(section_name, key, values,
                      "FDDA/GRIB2/quilt-server machinery has no gpuwm "
                      "counterpart")
 
-    known_wps = {"share", "geogrid", "ungrib", "metgrid"}
+    known_wps = set(WPS_SECTIONS)
     unknown = sorted(set(wps) - known_wps)
     if unknown:
-        raise ValueError(
+        raise NamelistRefusal(
             f"unknown section(s) {unknown} in {wps_path}; known: "
-            f"{sorted(known_wps)}.")
-    known_inp = {"time_control", "domains", "physics", "fdda", "dynamics",
-                 "bdy_control", "grib2", "namelist_quilt", "noah_mp",
-                 "stoch"}
+            f"{sorted(known_wps)}.",
+            [(section, "*") for section in unknown])
+    known_inp = set(INPUT_SECTIONS)
     unknown = sorted(set(inp) - known_inp)
     if unknown:
-        raise ValueError(
+        raise NamelistRefusal(
             f"unknown section(s) {unknown} in {input_path}; known: "
-            f"{sorted(known_inp)}.")
+            f"{sorted(known_inp)}.",
+            [(section, "*") for section in unknown])
     for required, parsed, path in (("share", wps, wps_path),
                                    ("geogrid", wps, wps_path),
                                    ("time_control", inp, input_path),
@@ -1199,6 +1828,32 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
 
     share = _Section("share", wps["share"], str(wps_path))
     geo = _Section("geogrid", wps["geogrid"], str(wps_path))
+    from gpuwm.static.terrain_smoothing import (
+        geogrid_tbl_smoothing, WPS_DEFAULT, static_inline, with_precision)
+    named_table = wps["geogrid"].get("opt_geogrid_tbl_path")
+    named_table = named_table[0] if isinstance(named_table, (list, tuple)) else named_table
+    table_path = Path(geogrid_tbl) if geogrid_tbl is not None else Path(named_table or "geogrid")
+    if geogrid_tbl is None and not table_path.is_absolute():
+        table_path = Path(wps_path).parent / table_path
+    if table_path.is_dir() or (geogrid_tbl is None and not table_path.is_file()):
+        table_path = table_path / "GEOGRID.TBL"
+    terrain_smoothing = WPS_DEFAULT
+    if table_path.is_file():
+        terrain_smoothing = geogrid_tbl_smoothing(table_path)
+        if not terrain_smoothing.is_default:
+            notices.append(f"Terrain smoothing imported from {table_path}: {terrain_smoothing.label()} on every domain.")
+    elif geogrid_tbl is not None or named_table is not None:
+        notices.append(f"GEOGRID.TBL {table_path} was not found; the terrain smoothing it may set was not imported.")
+    if terrain_smoothing_precision is not None:
+        # --terrain-smoothing-precision: the default smoother's arithmetic
+        # (wps-float32 = geogrid.exe's HGT_M exactly); every other smoother
+        # has one arithmetic, WPS's, and keeps its setting.
+        chosen = with_precision(terrain_smoothing, terrain_smoothing_precision)
+        if chosen != terrain_smoothing:
+            notices.append(f"Terrain smoothing {chosen.label()} on every domain (--terrain-smoothing-precision {terrain_smoothing_precision}).")
+        elif not terrain_smoothing.precision_is_a_choice:
+            notices.append(f"--terrain-smoothing-precision {terrain_smoothing_precision} leaves terrain smoothing {terrain_smoothing.label()} as it is: only smth-desmth_special x1 has a choice of arithmetic, and every other smoother already runs WPS's.")
+        terrain_smoothing = chosen
     tc = _Section("time_control", inp["time_control"], str(input_path))
     dm = _Section("domains", inp["domains"], str(input_path))
     ph = _Section("physics", inp.get("physics", {}), str(input_path))
@@ -1306,15 +1961,23 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                 f"{prefix}_* datetime column: {error}") from None
 
     start_times = _dt_columns("start")
-    end_times = _dt_columns("end")
     start_time = start_times[0]
-    end_time = _uniform("time_control", "end_* datetime", end_times)
     run_days = int(tc.scalar("run_days", 0))
     run_hours = int(tc.scalar("run_hours", 0))
     run_minutes = int(tc.scalar("run_minutes", 0))
     run_secs = int(tc.scalar("run_seconds", 0))
     run_seconds = float(run_days * 86400 + run_hours * 3600
                         + run_minutes * 60 + run_secs)
+    if run_seconds > 0.0 and not any(
+            f"end_{unit}" in tc.entries
+            for unit in ("year", "month", "day", "hour", "minute",
+                         "second")):
+        # WRF reads no end_* when run_* is positive: the end is start +
+        # run length, which is what a present end_* is checked against.
+        end_time = start_time + timedelta(seconds=run_seconds)
+    else:
+        end_times = _dt_columns("end")
+        end_time = _uniform("time_control", "end_* datetime", end_times)
     if run_seconds <= 0.0:
         run_seconds = (end_time - start_time).total_seconds()
     if run_seconds <= 0.0:
@@ -1363,8 +2026,6 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
              "gpuwm filenames are always colon-free (H_M_S)"),
             ("time_control", tc, "nocolons",
              "gpuwm filenames are always colon-free (H_M_S)"),
-            ("time_control", tc, "history_begin",
-             "history alarms start at t=0 (WRF before-solve position)"),
             ("time_control", tc, "frames_per_outfile",
              "gpuwm writes one frame per wrfout file"),
             ("time_control", tc, "restart",
@@ -1502,16 +2163,107 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                  f"{FINE_INPUT_STREAM_OWN_INPUT} selects; there is no "
                  "[domains] counterpart key to carry it to")
 
-    history_min = tc.col("history_interval", max_dom, default=0)
-    history_sec = tc.col("history_interval_s", max_dom, default=0)
-    history_interval_s = [
-        float(s) if s else float(m) * 60.0
-        for m, s in zip(history_min, history_sec)]
-    if any(v <= 0.0 for v in history_interval_s):
+    # ---- the history alarm: interval, begin and end -------------------
+    # WRF builds every output alarm from one macro
+    # (share/set_timekeeping_alarms.m4): the interval is
+    # D/H/M/S of <stream>_interval_d/_h/_m/_s with the bare <stream>_interval
+    # (minutes) standing in for _m when _m is 0, and the alarm first rings
+    # at the domain's start + <stream>_begin_d/_h/_m/_s, then every
+    # interval, and never after start + <stream>_end_d/_h/_m/_s
+    # (frame/module_domain.F:2260-2332 domain_alarm_create; the ESMF clock
+    # stops an alarm once the time passes its StopTime).  _y is read only
+    # to test whether a begin or end is set and never enters the offset.
+    def _alarm_column(stem: str, *, bare_minutes: bool,
+                      fill) -> list[float] | None:
+        """Seconds per domain, WRF's D/H/M/S sum; None when unset."""
+        parts = {unit: tc.take(f"{stem}_{unit}")
+                 for unit in ("d", "h", "m", "s")}
+        bare = tc.take(stem) if bare_minutes else None
+        if bare is None and all(value is None for value in parts.values()):
+            return None
+        columns = {}
+        for unit, raw in (*parts.items(), ("bare", bare)):
+            if raw is None:
+                columns[unit] = [0] * max_dom
+                continue
+            label = stem if unit == "bare" else f"{stem}_{unit}"
+            if any(isinstance(value, bool) or not isinstance(value, int)
+                   or value < 0 for value in raw):
+                raise _err("time_control", label, raw,
+                           "WRF declares it a non-negative integer "
+                           "(registry.io_boilerplate).")
+            columns[unit] = fill(raw)
+        seconds = []
+        for n in range(max_dom):
+            minutes = columns["m"][n] or columns["bare"][n]
+            seconds.append(float(columns["d"][n] * 86400
+                                 + columns["h"][n] * 3600
+                                 + minutes * 60 + columns["s"][n]))
+        return seconds
+
+    def _last_value_fill(raw: list) -> list:
+        # The importer's ratified fill for the history cadence (``col``).
+        values = list(raw[:max_dom])
+        return values + [values[-1]] * (max_dom - len(values))
+
+    def _registry_fill(raw: list) -> list:
+        # Fortran leaves an unassigned tail at the Registry default, 0.
+        values = list(raw[:max_dom])
+        return values + [0] * (max_dom - len(values))
+
+    history_interval_s = _alarm_column(
+        "history_interval", bare_minutes=True, fill=_last_value_fill)
+    if history_interval_s is None or any(v <= 0.0
+                                         for v in history_interval_s):
         raise _err("time_control", "history_interval",
-                   list(zip(history_min, history_sec)),
+                   history_interval_s,
                    "every domain needs a positive history cadence.")
-    restart_interval_s = float(tc.scalar("restart_interval", 0)) * 60.0
+    # WRF's bare history_begin / history_end are declared in minutes
+    # (registry.io_boilerplate:62, :82) but the alarm macro never reads
+    # them: it reads _m, and substitutes the bare key only for the
+    # INTERVAL.  ArWen applies them the way WRF applies history_interval,
+    # as minutes where _m is 0, and says so (below), because a namelist
+    # that writes history_begin = 600 is asking for output from ten hours.
+    bare_offsets = {key: tc.entries.get(key)
+                    for key in ("history_begin", "history_end")}
+    history_begin_s = _alarm_column(
+        "history_begin", bare_minutes=True, fill=_registry_fill)
+    history_end_s = _alarm_column(
+        "history_end", bare_minutes=True, fill=_registry_fill)
+    for key in ("history_begin_y", "history_end_y"):
+        drop("time_control", key, tc.take(key),
+             "WRF reads the year entry only to test whether an offset is "
+             "set and never adds years to it (share/set_timekeeping_alarms"
+             ".m4), so it changes no alarm")
+    for key, raw in bare_offsets.items():
+        if raw is not None and any(int(value) for value in raw):
+            substitutions.append(Substitution(
+                key=key, wrf_value=list(raw),
+                wrf_name="declared in minutes, never read by WRF's alarm "
+                         "setup",
+                gpuwm_key=f"[[domain]] {key}_s",
+                gpuwm_value=[value * 60 for value in raw],
+                gpuwm_name=f"{key} applied as minutes",
+                reason=(f"WRF v4.7.1 declares {key} in minutes "
+                        "(registry.io_boilerplate) but its alarm setup "
+                        f"(share/set_timekeeping_alarms.m4) reads only "
+                        f"{key}_d/_h/_m/_s, so wrf.exe ignores it; ArWen "
+                        "applies it as minutes where the _m entry is 0, the "
+                        "rule WRF uses for history_interval.  Write "
+                        f"{key}_m to get the same output from wrf.exe.")))
+    if history_end_s is not None:
+        for n in range(max_dom):
+            if history_end_s[n] and history_end_s[n] <= (
+                    history_begin_s[n] if history_begin_s else 0.0):
+                raise _err("time_control", "history_end",
+                           history_end_s,
+                           f"domain {n + 1} ends its history at "
+                           f"{history_end_s[n]:g} s, not after its begin "
+                           "offset, so it would write nothing.")
+    restart_parts = _alarm_column(
+        "restart_interval", bare_minutes=True, fill=_last_value_fill)
+    # Restart alarms ring on the d01 clock only (WRF reads id 1).
+    restart_interval_s = restart_parts[0] if restart_parts else 0.0
     # Output-stream and logging keys with no gpuwm counterpart: gpuwm
     # writes its fixed per-domain wrfout product set on the history
     # cadence, so auxiliary stream declarations and I/O field overrides
@@ -1525,9 +2277,8 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
          tc.take("adjust_output_times"),
          "inert on the exact rational clock (fixed dt; alarms land "
          "exactly on the history cadence)")
-    _AUX_STREAM = re.compile(r"^aux(hist|input)\d+_")
     for key in sorted(tc.entries):
-        if _AUX_STREAM.match(key) or key in (
+        if AUX_STREAM_KEY.match(key) or key in (
                 "iofields_filename", "ignore_iofields_warning",
                 "output_diagnostics"):
             drop("time_control", key, tc.take(key),
@@ -1728,31 +2479,22 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
      min_time_step, min_time_step_den) = (
         adaptive_columns[key][0] for key, _, _ in ADAPTIVE_CLOCK_COLUMNS)
 
-    _NEST_GUARD_WHY = {
-        "interp_method_type":
-            "only SINT (2, the WRF default per "
-            "Registry.EM_COMMON:2301) is implemented.",
-        "nest_interp_coord":
-            "isobaric nest re-interpolation is not implemented.",
-        "vert_refine_method":
-            "vertical nest refinement is rejected (identical "
-            "e_vert/eta_levels/p_top on all domains).",
-        "input_from_hires":
-            "high-resolution child terrain input is rejected "
-            "(children SINT + blend the parent terrain).",
-        "smooth_cg_topo":
-            "coarse-grid topography smoothing is not "
-            "implemented.",
-    }
-    for key, ok in (("interp_method_type", 2), ("nest_interp_coord", 0),
-                    ("vert_refine_method", 0), ("input_from_hires", False),
-                    ("smooth_cg_topo", False)):
+    for key, (ok, why) in NEST_GUARDS.items():
         raw = dm.take(key)
         value = ok if raw is None else raw[0]
         if value != ok:
-            raise _err("domains", key, value, _NEST_GUARD_WHY[key])
-        fix("domains", key, raw, ok, _NEST_GUARD_WHY[key].rstrip("."))
+            raise _err("domains", key, value, why)
+        fix("domains", key, raw, ok, why.rstrip("."))
 
+    # smooth_cg_topo (Registry.EM_COMMON:2301, logical, scope 1): real.exe
+    # blends domain 1's outer rows toward the input model's terrain
+    # (gpuwm.ingest.cg_topo ports it).  Emitted into [experiment] only
+    # when true, so every other import is byte-identical.
+    smooth_cg_topo_values = dm.take("smooth_cg_topo")
+    smooth_cg_topo = False
+    if smooth_cg_topo_values is not None:
+        smooth_cg_topo = _require_bools(
+            "domains", "smooth_cg_topo", smooth_cg_topo_values[:1])[0]
     # WRF process/tile decomposition layout: gpuwm's GPU decomposition is
     # internal, so these carry no science and drop with a reason.
     # tile_sz_x/tile_sz_y size the CPU build's shared-memory tiles and
@@ -1993,9 +2735,22 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                 "geometry at the WPS default centre cell, ref_lat/ref_lon "
                 f"= ({float(centre_lat):.6f}, {float(centre_lon):.6f}); "
                 "[projection] has no ref_x/ref_y key to carry")
+    # geog_data_res: on a route that builds its own statics (no input file
+    # supplies them), a land-cover token becomes the [static.highres]
+    # block that builds that collection, and a token nothing here builds
+    # is refused by name.  The GEOG-tree tokens (default, 5m, modis_lai)
+    # stay where they are read: the namelist.wps [case_data] names.
+    geog_data_res = geo.take("geog_data_res")
+    static_landcover = None
+    if landuse_identity is None:
+        static_landcover = _geog_data_res_landcover(
+            geog_data_res, max_dom=max_dom, grid_ids=grid_ids,
+            spacings=[float(value) for value in dx_exact])
+    if static_landcover is None:
+        drop("geogrid", "geog_data_res", geog_data_res,
+             "GEOG dataset/resolution selection is static-build "
+             "configuration, not imported")
     for key, reason in (
-            ("geog_data_res", "GEOG dataset/resolution selection is "
-                              "static-build configuration, not imported"),
             ("geog_data_path", "geography root is declared in "
                                "[case_data] (or --geog-root), not "
                                "imported"),
@@ -2177,9 +2932,7 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         return _require_bools("physics", key, values)[0]
 
     no_mp_heating = _optional_scalar_int(
-        "no_mp_heating", (0, 1),
-        "must be 0 (microphysics latent heating on, the WRF default) or "
-        "1 (heating off, module_big_step_utilities_em.F:5770-5782).")
+        "no_mp_heating", *PHYSICS_CHOICES["no_mp_heating"])
     mp_tend_lim_values = ph.take("mp_tend_lim")
     mp_tend_lim = None
     if mp_tend_lim_values is not None:
@@ -2189,22 +2942,16 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                        "must be a finite positive microphysics theta-"
                        "tendency clamp in K/s (WRF Registry default 10.0).")
     ysu_topdown_pblmix = _optional_scalar_int(
-        "ysu_topdown_pblmix", (0, 1),
-        "must be 0 or 1 (top-down radiation-driven PBL mixing).")
+        "ysu_topdown_pblmix", *PHYSICS_CHOICES["ysu_topdown_pblmix"])
     isfflx = _optional_scalar_int(
-        "isfflx", (0, 1),
-        "must be 0 (surface heat/moisture fluxes off) or 1 (on); WRF "
-        "value 2 also needs gpuwm's unported prescribed-flux/diffusion "
-        "forcing path.")
+        "isfflx", *PHYSICS_CHOICES["isfflx"])
     if isfflx == 1:
         fix(
             "physics", "isfflx", [1], 1,
             "the established surface heat/moisture-flux-on value")
         isfflx = None
     use_mp_re = _optional_scalar_int(
-        "use_mp_re", (0, 1),
-        "must be 0 (legacy-RRTMG calculated radii) or 1 (use the WRF "
-        "microphysics scheme table).")
+        "use_mp_re", *PHYSICS_CHOICES["use_mp_re"])
     if use_mp_re == 1:
         fix(
             "physics", "use_mp_re", [1], 1,
@@ -2212,13 +2959,9 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             "value")
         use_mp_re = None
     isftcflx = _optional_scalar_int(
-        "isftcflx", (0, 1, 2),
-        "must be 0 (standard MM5 water-point roughness), 1 (Garratt), or "
-        "2 (Donelan).")
+        "isftcflx", *PHYSICS_CHOICES["isftcflx"])
     iz0tlnd = _optional_scalar_int(
-        "iz0tlnd", (0, 1, 2),
-        "must be 0 (standard CZIL), 1 (Chen-Zhang), or 2 (fixed CZIL "
-        "0.1).")
+        "iz0tlnd", *PHYSICS_CHOICES["iz0tlnd"])
     usemonalb = _optional_scalar_bool("usemonalb")
     rdlai2d = _optional_scalar_bool("rdlai2d")
     rdmaxalb = _optional_scalar_bool("rdmaxalb")
@@ -2233,40 +2976,13 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                 seaice_albedo_default_values,
                 "must be a finite albedo fraction in [0, 1].")
     opt_thcnd = _optional_scalar_int(
-        "opt_thcnd", (1, 2),
-        "must be 1 (Johansen soil thermal conductivity) or 2 "
-        "(McCumber-Pielke).")
+        "opt_thcnd", *PHYSICS_CHOICES["opt_thcnd"])
 
     # ---- &physics keys the model pins where WRF has options ------------
     # Present keys are validated against the single implemented value and
     # recorded as fixed; any other value is a hard error, never a silent
     # reinterpretation.
-    for key, pin, why in (
-            ("swint_opt", 0,
-             "shortwave interpolation between radt calls is not "
-             "implemented; radiation is recomputed on the radt cadence"),
-            ("gwd_opt", 0, "no gravity-wave-drag scheme is implemented"),
-            ("sf_lake_physics", 0, "no lake model is implemented"),
-            ("shcu_physics", 0,
-             "no shallow-cumulus scheme is implemented"),
-            ("topo_shading", 0,
-             "terrain shadowing of shortwave is not implemented"),
-            ("slope_rad", 0,
-             "slope-dependent radiation geometry is not implemented"),
-            ("kf_edrates", 0,
-             "KF entrainment/detrainment rate diagnostics are not "
-             "implemented"),
-            ("flag_sm_adj", 0,
-             "RUC option identity: gpuwm has no RUC soil ingest for the "
-             "adjustment to act on (share/module_soil_pre.F:2063)"),
-            ("sst_update", 0,
-             "SST update cycling is not implemented (single-analysis "
-             "case runs)"),
-            ("sst_skin", 0,
-             "skin-SST diurnal adjustment is not implemented"),
-            ("tmn_update", 0,
-             "deep-soil temperature update is not implemented"),
-    ):
+    for key, pin, why in PHYSICS_PINS:
         raw = ph.take(key)
         if raw is None:
             continue
@@ -2275,6 +2991,34 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             raise _err("physics", key, raw,
                        f"gpuwm implements {key} = {pin} only ({why}).")
         fix("physics", key, raw, pin, why)
+    # ---- slope-dependent shortwave and terrain shadowing ---------------
+    # WRF's &physics slope_rad and topo_shading are max_domains columns
+    # (Registry.EM_COMMON; an omitted tail keeps the Registry default 0)
+    # and shadlen is a scalar.  gpuwm.core.topo_radiation ports them from
+    # WRF v4.7.1 (module_radiation_driver.F toposhad,
+    # module_surface_driver.F TOPO_RAD_ADJ), so they translate 1:1 and are
+    # emitted only where set: an omitted key keeps every import
+    # byte-identical.
+    topo_columns = {}
+    for key in ("slope_rad", "topo_shading"):
+        raw = ph.take(key)
+        if raw is None:
+            continue
+        if any(isinstance(value, bool) or not isinstance(value, int)
+               or value not in (0, 1) for value in raw):
+            raise _err("physics", key, raw,
+                       "must be 0 or 1 on every domain (WRF "
+                       "Registry.EM_COMMON: 1 turns it on).")
+        column = list(raw[:max_dom])
+        topo_columns[key] = column + [0] * (max_dom - len(column))
+    shadlen_values = ph.take("shadlen")
+    shadlen = None
+    if shadlen_values is not None:
+        shadlen = float(shadlen_values[0])
+        if not math.isfinite(shadlen) or shadlen <= 0.0:
+            raise _err("physics", "shadlen", shadlen_values,
+                       "must be a finite positive length in metres (WRF "
+                       "default 25000.).")
     cu_rad_feedback = ph.take("cu_rad_feedback")
     if cu_rad_feedback is not None:
         if any(_require_bools("physics", "cu_rad_feedback",
@@ -2911,28 +3655,75 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     # reads it from the namelist: the count comes from LANDUSE.TBL for the
     # MMINLU the static build stamped (gpuwm/core/landuse.py
     # load_landuse_table + the lucats bound check), and every gpuwm
-    # geography and wrfout is the 21-category MODIS set
-    # (gpuwm/native_wrf_contract.py:47, gpuwm/io/wrfout.py:197).  So it is
-    # validated against that identity and recorded -- a namelist declaring
-    # USGS's 24 describes static data gpuwm does not build, and refusing is
-    # the only accurate answer.
+    # geography is the MODIS table: its 21 categories, or 61 where a
+    # [static.highres] land cover keeps its urban classes under the urban
+    # canopy (gpuwm.static.highres.landcover_legend).  So it is validated
+    # against the count the static build will stamp and recorded -- a
+    # namelist declaring USGS's 24 describes static data gpuwm does not
+    # build, and refusing is the only accurate answer.
     if landuse_identity is None:
-        _MODIS_LAND_CATEGORIES = 21
+        # The count the static build will stamp, per domain: the GEOG
+        # tree's MODIS set (21), or for a domain whose land cover the
+        # [static.highres] block builds, that collection's legend under the
+        # run's urban canopy (gpuwm.static.highres.landcover_legend): 61
+        # with the canopy on, where the LCZ / NLCD intensity classes keep
+        # categories 51-61, else 21 with them collapsed to MODIS urban.
+        # The urban keys are peeked, not consumed: the loop below reads
+        # them, and WRF resets every domain to the innermost value.
         num_land_cat = ph.take("num_land_cat")
+        built_categories, legend_note = _built_land_categories(
+            static_landcover, grid_ids=grid_ids,
+            urban=_innermost_int(ph, "sf_urban_physics", 0, max_dom),
+            use_wudapt_lcz=_innermost_int(ph, "use_wudapt_lcz", 0, max_dom),
+            geog_data_res=geog_data_res)
+        counts = sorted(set(built_categories.values()))
         if num_land_cat is not None:
             if any(isinstance(value, bool) or not isinstance(value, int)
-                   or value != _MODIS_LAND_CATEGORIES for value in num_land_cat):
+                   or value not in counts or len(counts) > 1
+                   for value in num_land_cat):
+                built = " and ".join(
+                    f"{count} categories on "
+                    + ", ".join(f"d{gid:02d}" for gid, c
+                                in built_categories.items() if c == count)
+                    for count in counts)
+                # Only the urban legend's own count earns the pointer to
+                # geog_data_res: it is the value a land-cover token makes
+                # right, and the pointer is also what marks this refusal as
+                # a consequence when a refused geog_data_res stands in as
+                # 'default' (_REFUSED_SELECTOR_STAND_INS).  Any other count
+                # is wrong whatever geog_data_res says, and is reported.
+                from gpuwm.core.landuse import load_landuse_table
+                urban_count = int(load_landuse_table().lucats)
+                hint = ""
+                if static_landcover is None and any(
+                        not isinstance(value, bool) and value == urban_count
+                        for value in num_land_cat):
+                    tokens = sorted(token for token, how
+                                    in geog_data_res_tokens().items()
+                                    if how != "geog")
+                    hint = (f"  A geog_data_res land-cover token ({tokens}) "
+                            "with the urban canopy on and use_wudapt_lcz = "
+                            f"1 builds the {urban_count}-category Local "
+                            "Climate Zone legend.")
                 raise _err(
                     "physics", "num_land_cat", num_land_cat,
-                    f"gpuwm builds one land-use identity -- the "
-                    f"{_MODIS_LAND_CATEGORIES}-category "
-                    "MODIFIED_IGBP_MODIS_NOAH set stamped by its static builder "
-                    "and written into every wrfout -- so no other category count "
-                    "describes the geography it will actually initialize from.")
-        fix("physics", "num_land_cat", num_land_cat, _MODIS_LAND_CATEGORIES,
+                    f"this pair builds {built} of the "
+                    f"MODIFIED_IGBP_MODIS_NOAH table ({legend_note}); the "
+                    "static builder stamps that count into the prepared "
+                    "geography, so this value describes geography the run "
+                    "will not initialize from."
+                    + ("  WRF reads one num_land_cat for the whole run, so "
+                       "no single value describes these domains."
+                       if len(counts) > 1 else
+                       f"  Set num_land_cat = {counts[0]} (or leave it "
+                       "out).")
+                    + hint)
+        fix("physics", "num_land_cat", num_land_cat,
+            counts[0] if len(counts) == 1 else counts,
             "the land-use category count is read from LANDUSE.TBL for the "
             "static build's MMINLU (MODIFIED_IGBP_MODIS_NOAH), never from the "
-            "namelist")
+            "namelist" + ("" if static_landcover is None
+                          else f" ({legend_note})"))
     else:
         dataset = landuse_identity.get("MMINLU")
         category_count = landuse_identity.get("NUM_LAND_CAT")
@@ -2979,14 +3770,38 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         fix("physics", "fractional_seaice", fractional_seaice,
             0 if fractional_seaice is None else fractional_seaice[0],
             "the WRF input adapter consumes this flag in land-use initialization")
-    urban = ph.take("sf_urban_physics")
-    if urban is not None and any(int(v) != 0 for v in urban):
-        raise _err("physics", "sf_urban_physics", urban,
-                   "urban physics is not implemented.")
-    fix("physics", "sf_urban_physics", urban, 0,
-        "urban physics is not implemented; validated off")
+    urban_settings = {}
+    for key, default in (("sf_urban_physics", 0), ("use_wudapt_lcz", 0),
+                         ("num_urban_hi", 15)):
+        raw = ph.take(key)
+        values = ([default] * max_dom if raw is None else
+                  list(raw[:max_dom]) + [raw[-1]] * max(0, max_dom - len(raw)))
+        if any(isinstance(v, bool) or not isinstance(v, int) for v in values):
+            raise _err("physics", key, raw, "WRF declares an integer namelist key.")
+        urban_settings[key] = values[-1]
+        fix("physics", key, raw, values[-1],
+            "WRF resets every domain to the innermost domain's value "
+            "(share/module_check_a_mundo.F:1063-1077)")
+    for key, default in (("slucm_distributed_drag", False),
+                         ("distributed_ahe_opt", 0)):
+        raw = ph.take(key)
+        if raw is not None and any(value != default for value in raw):
+            raise _err("physics", key, raw,
+                       "the arm is not transcribed, the setting would be ignored")
+        fix("physics", key, raw, default, "the unported arm is disabled")
     for key in ("sf_surface_mosaic", "mosaic_lu", "mosaic_soil"):
         values = ph.take(key)
+        if key == "sf_surface_mosaic":
+            sf_surface_mosaic = 0 if values is None else values[0]
+            mosaic_values = values
+            if sf_surface_mosaic == 0:
+                fix("physics", key, values, 0,
+                    ("WRF run-wide integer: reads the first value "
+                     "(Registry.EM_COMMON:2536); Noah mosaic off"
+                     if values is not None and len(values) > 1 else
+                     "Noah mosaic off (WRF default); sf_surface_mosaic = 1 "
+                     "runs Noah land-use tiles"))
+            continue
         if values is not None and any(int(value) != 0 for value in values):
             raise _err(
                 "physics", key, values,
@@ -2994,6 +3809,55 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                 "suite requires this option off (0).")
         fix("physics", key, values, 0,
             "mosaic land/soil physics is not implemented; validated off")
+    mosaic_cat_values = ph.take("mosaic_cat")
+    mosaic_cat = 3 if mosaic_cat_values is None else mosaic_cat_values[0]
+    from types import SimpleNamespace
+    from gpuwm.config import validate_noah_mosaic_config
+    try:
+        validate_noah_mosaic_config(SimpleNamespace(
+            sf_surface_mosaic=sf_surface_mosaic, mosaic_cat=mosaic_cat,
+            sf_surface_physics=sfsfc))
+    except ValueError as exc:
+        raise _err("physics", "sf_surface_mosaic", mosaic_values, str(exc)) from None
+    if sf_surface_mosaic == 1:
+        fix("physics", "sf_surface_mosaic", mosaic_values, sf_surface_mosaic,
+            "WRF run-wide integer: reads the first value (Registry.EM_COMMON:2536)")
+    if mosaic_cat_values is not None or sf_surface_mosaic == 1:
+        fix("physics", "mosaic_cat", (mosaic_cat_values if mosaic_cat_values is not None
+                                     else [mosaic_cat]), mosaic_cat,
+            "WRF run-wide integer: reads the first value (Registry.EM_COMMON:2537); unread when mosaic is off")
+    # gpuwm's mosaic_urban_canopy (gpuwm/config.py MOSAIC_URBAN_CANOPY_RULES):
+    # no WRF spelling, read as a per-domain column of rule names; an
+    # omitted tail is "dominant", WRF's own rule, so a namelist without the
+    # key imports byte-identically.
+    from gpuwm.config import (MOSAIC_URBAN_CANOPY_DEFAULT,
+                              MOSAIC_URBAN_CANOPY_RULES)
+    canopy_values = ph.take("mosaic_urban_canopy")
+    canopy_column = None
+    if canopy_values is not None:
+        if any(not isinstance(value, str)
+               or value not in MOSAIC_URBAN_CANOPY_RULES
+               for value in canopy_values):
+            raise _err(
+                "physics", "mosaic_urban_canopy", canopy_values,
+                f"must name a rule on every domain, one of "
+                f"{sorted(MOSAIC_URBAN_CANOPY_RULES)} (a gpuwm key; WRF has "
+                f"no such switch and runs 'dominant').")
+        column = list(canopy_values[:max_dom])
+        canopy_column = column + [MOSAIC_URBAN_CANOPY_DEFAULT] * (
+            max_dom - len(column))
+        for value in sorted(set(canopy_column)):
+            try:
+                validate_noah_mosaic_config(SimpleNamespace(
+                    sf_surface_mosaic=sf_surface_mosaic, mosaic_cat=mosaic_cat,
+                    sf_surface_physics=sfsfc, mosaic_urban_canopy=value,
+                    sf_urban_physics=urban_settings["sf_urban_physics"]))
+            except ValueError as exc:
+                raise _err("physics", "mosaic_urban_canopy", canopy_values,
+                           str(exc)) from None
+        fix("physics", "mosaic_urban_canopy", canopy_values, canopy_column[0],
+            "gpuwm per-domain key: where Noah mosaic runs the urban canopy "
+            "('dominant' is WRF v4.7.1's rule)")
     ph.finish()
 
     # ---- switches WRF's namelist cannot state -----------------------------
@@ -3081,12 +3945,48 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     hybrid_opt = int(dyn.scalar("hybrid_opt", 2))
     etac = float(dyn.scalar("etac", 0.2))
     w_damping = int(dyn.scalar("w_damping", 0))
+    # WRF zadvect_implicit (Registry.EM_COMMON:2873, one value for every
+    # domain, default 0).  CHK_IEVA tests ``> 0`` alone -- its 2 and 3
+    # variants are commented out of WRF 4.7.1 -- so every positive value
+    # is the one scheme gpuwm runs as 1, and zero or below is off.
+    zadvect_implicit = 1 if int(dyn.scalar("zadvect_implicit", 0)) > 0 else 0
+    # WRF w_crit_cfl (Registry.EM_COMMON:2872, one value for every domain,
+    # default 1.0): where w_damp measures its excess from, and its onset
+    # under zadvect_implicit (A165).  Refused here, keyed, by the rule
+    # RunConfig applies, so a one-pass import lists it with the others.
+    w_crit_cfl = dyn.scalar("w_crit_cfl")
+    if w_crit_cfl is not None:
+        from gpuwm.config import w_crit_cfl_refusal
+        why = w_crit_cfl_refusal(w_crit_cfl, w_damping=w_damping,
+                                 zadvect_implicit=zadvect_implicit)
+        if why is not None:
+            raise _err("dynamics", "w_crit_cfl", w_crit_cfl, why)
+        w_crit_cfl = float(w_crit_cfl)
     # Registry.EM_COMMON initializes every domain to 0.1.  A scalar
     # ``epssm = 0.5`` namelist assignment changes d01 only; its unassigned
     # tail remains 0.1 (as confirmed by WRF's effective namelist.output).
     # Preserve that per-domain state instead of broadcasting the scalar.
-    epssm = [float(value) for value in
-             dyn.registry_col("epssm", max_dom, 0.1)]
+    # A domain the namelist did not assign runs WRF's DEFAULT, not a value
+    # the user chose, and is written as the "auto" sentinel: 0.1, raised
+    # to the measured off-centering floor over ground 0.1 does not hold
+    # (gpuwm.acoustic_adaptation), where a chosen value is held as written.
+    epssm_given = dyn.take("epssm") or []
+    epssm_assigned = min(len(epssm_given), max_dom)
+    epssm = [float(value) for value in epssm_given[:max_dom]] \
+        + [0.1] * (max_dom - epssm_assigned)
+    if epssm_assigned < max_dom:
+        unassigned = ", ".join(f"d{n + 1:02d}"
+                               for n in range(epssm_assigned, max_dom))
+        model_choices.append(
+            ("epssm is not set, so every domain takes"
+             if not epssm_assigned else
+             f"epssm lists {epssm_assigned} value(s), so {unassigned} "
+             "take(s)")
+            + " WRF's Registry default 0.1, written epssm = \"auto\": it "
+            "runs 0.1 except over terrain steeper than 0.1 was measured "
+            "stable on, where the run raises it to the measured "
+            "off-centering floor and says so (gpuwm/acoustic_adaptation.py)."
+            "  Write a value for a domain to hold it as chosen.")
     km_opt_col = dyn.col("km_opt", max_dom)
     if km_opt_col is None:
         raise _err("dynamics", "km_opt", None,
@@ -3101,10 +4001,11 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     km_opt_col = [int(value) for value in km_opt_col]
     km_opt = km_opt_col[0]
     diff_opt = dyn.col("diff_opt", max_dom)
-    if diff_opt is not None and any(int(v) != 2 for v in diff_opt):
+    if diff_opt is not None and any(
+            int(v) != DYNAMICS_REQUIRED_VALUES["diff_opt"][0]
+            for v in diff_opt):
         raise _err("dynamics", "diff_opt", diff_opt,
-                   "only the diff_opt=2 full-diffusion form backs "
-                   "gpuwm's km_opt selection.")
+                   DYNAMICS_REQUIRED_VALUES["diff_opt"][1])
     fix("dynamics", "diff_opt", diff_opt, 2,
         "gpuwm's km_opt selection implies the diff_opt=2 mixing form")
     mix_full = dyn.col("mix_full_fields", max_dom)
@@ -3116,7 +4017,7 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             "full-field diff_opt=2 mixing.")
     if not all(_require_bools("dynamics", "mix_full_fields", mix_full)):
         raise _err("dynamics", "mix_full_fields", mix_full,
-                   "gpuwm Smagorinsky mixing always acts on full fields.")
+                   DYNAMICS_REQUIRED_VALUES["mix_full_fields"][1])
     fix("dynamics", "mix_full_fields", mix_full, True,
         "explicit WRF full-field mode matches gpuwm's implemented mixing")
     diff_6th_opt = int(_uniform("dynamics", "diff_6th_opt",
@@ -3240,22 +4141,7 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                    "(WRF Registry default 0.10).")
     # &dynamics keys the dycore pins where WRF has options: validated
     # against the single implemented value, recorded as fixed.
-    for key, pin, why in (
-            ("rk_ord", 3,
-             "the dycore integrates WRF's 3-stage RK3 only "
-             "(gpuwm/core/dycore.py stage table)"),
-            ("h_mom_adv_order", 5,
-             "horizontal momentum advection is the WRF flux5 stencil, "
-             "hardcoded (gpuwm/core/kernels/advection.cu)"),
-            ("v_mom_adv_order", 3,
-             "vertical momentum advection is the WRF flux3 stencil, "
-             "hardcoded (gpuwm/core/kernels/advection.cu)"),
-            ("v_sca_adv_order", 3,
-             "vertical scalar advection is the WRF flux3 stencil, "
-             "hardcoded (gpuwm/core/kernels/advection.cu)"),
-            ("momentum_adv_opt", 1,
-             "standard (non-positive-definite) momentum advection only"),
-    ):
+    for key, pin, why in DYNAMICS_PINS:
         raw = dyn.col(key, max_dom)
         if raw is None:
             continue
@@ -3264,6 +4150,9 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             raise _err("dynamics", key, raw,
                        f"gpuwm implements {key} = {pin} only ({why}).")
         fix("dynamics", key, raw, pin, why)
+    drop("dynamics", "gwd_diags", dyn.take("gwd_diags"),
+         "inert: WRF writes gravity-wave-drag diagnostics only from a "
+         "gwd_opt scheme, and gwd_opt is 0")
     # tke_adv_opt (Registry.EM_COMMON:2880, max_domains, default 1).  The
     # old rationale here -- "inert: no prognostic-TKE mixing scheme is
     # selectable (km_opt 1 and 4 only)" -- was falsified by km_opt=2, and
@@ -3329,7 +4218,7 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     if non_hydro is not None and not all(_require_bools(
             "dynamics", "non_hydrostatic", non_hydro)):
         raise _err("dynamics", "non_hydrostatic", non_hydro,
-                   "gpuwm is nonhydrostatic-only.")
+                   DYNAMICS_REQUIRED_VALUES["non_hydrostatic"][1])
     fix("dynamics", "non_hydrostatic", non_hydro, True,
         "gpuwm is nonhydrostatic-only")
     # Per domain in the Registry and per domain here, though only one
@@ -3408,7 +4297,8 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             "(Registry.EM_COMMON:2283, `namelist,domains`, nentries 1); "
             "in &dynamics it fails wrf.exe's own namelist read before "
             "the first timestep.  Move the key to &domains.")
-    if any(value != 5 for value in h_sca_adv_order_col):
+    if any(value != DYNAMICS_REQUIRED_VALUES["h_sca_adv_order"][0]
+           for value in h_sca_adv_order_col):
         raise _err(
             "dynamics", "h_sca_adv_order", h_sca_adv_order_col,
             "only the WRF Registry default 5 imports: gpuwm's transported-"
@@ -3479,6 +4369,7 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         f"smooth_option = {smooth_option}",
         f"blend_width = {blend_width}",
         f"spec_bdy_width = {spec_bdy_width}",
+        *(["smooth_cg_topo = true"] if smooth_cg_topo else []),
         f"restart_interval_s = {_fmt(restart_interval_s)}",
         *([
             "# Declared-experiment acknowledgements, carried through the "
@@ -3516,9 +4407,11 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         f"etac = {_fmt(etac)}",
         f"base_temp = {_fmt(base_temp)}",
         f"time_step_sound = {time_step_sound}",
-        # [shared] carries d01; differing Registry-tail values are emitted as
-        # explicit [[domain]] overrides below.
-        f"epssm = {_fmt(epssm[0])}",
+        # [shared] carries d01; differing assigned values are emitted as
+        # explicit [[domain]] overrides below, and an unassigned Registry
+        # tail as the "auto" sentinel.
+        (f"epssm = {_fmt(epssm[0])}" if epssm_assigned
+         else f'epssm = "{EPSSM_AUTO}"'),
         "# WRF Registry defaults the namelist leaves unset, ratified "
         "binding for the",
         "# reference configuration (Phase-4 native-dt baseline): emdiv "
@@ -3559,6 +4452,12 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         f"diff_6th_opt = {diff_6th_opt}",
         f"diff_6th_slopeopt = {diff_6th_slopeopt}",
         f"w_damping = {w_damping}",
+        # Emitted only when on, so a namelist without it imports to the
+        # same bytes it always did.
+        *((f"zadvect_implicit = {zadvect_implicit}",)
+          if zadvect_implicit else ()),
+        *((f"w_crit_cfl = {_fmt(w_crit_cfl)}",)
+          if w_crit_cfl is not None else ()),
         f"damp_opt = {damp_opt}",
         f"zdamp = {_fmt(zdamp)}",
         f"dampcoef = {_fmt(dampcoef)}",
@@ -3589,6 +4488,10 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         lines.append(f"moist_mix6_off = {_fmt(moist_mix6_off_col[0])}")
     if tke_budget_col is not None:
         lines.append(f"tke_budget = {tke_budget_col[0]}")
+    for _topo_key, _topo_col in topo_columns.items():
+        lines.append(f"{_topo_key} = {_topo_col[0]}")
+    if shadlen is not None:
+        lines.append(f"shadlen = {_fmt(shadlen)}")
     lines += [
         f"spec_zone = {spec_zone}",
         f"relax_zone = {relax_zone}",
@@ -3599,8 +4502,14 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         f"bl_pbl_physics = {bl_pbl_physics}",
         f"ra_physics = {ra_physics}",
     ]
+    for key, value in urban_settings.items():
+        lines.append(f"{key} = {value}")
     if resolved_soil_layers != 4:
         lines.append(f"num_soil_layers = {resolved_soil_layers}")
+    if sf_surface_mosaic == 1:
+        lines += ["sf_surface_mosaic = 1", f"mosaic_cat = {mosaic_cat}"]
+    if canopy_column is not None and canopy_column[0] != "dominant":
+        lines.append(f"mosaic_urban_canopy = {_fmt(canopy_column[0])}")
     for key, value in (("no_mp_heating", no_mp_heating),
                        ("mp_tend_lim", mp_tend_lim),
                        ("ysu_topdown_pblmix", ysu_topdown_pblmix),
@@ -3688,6 +4597,8 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             f"nx = {e_we[n] - 1}",
             f"ny = {e_sn[n] - 1}",
         ]
+        if not terrain_smoothing.is_default:
+            lines.append(static_inline(terrain_smoothing))
         if is_root:
             lines.append(f"time_step = {time_step}")
             if fract_num:
@@ -3703,10 +4614,21 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
             f"nested = {_fmt(nested[n])}",
             f"history_interval_s = {_fmt(history_interval_s[n])}",
         ]
+        # Emitted only where set, so every namelist without a begin or
+        # end offset keeps producing a byte-identical TOML.
+        if history_begin_s is not None and history_begin_s[n]:
+            lines.append(f"history_begin_s = {_fmt(history_begin_s[n])}")
+        if history_end_s is not None and history_end_s[n]:
+            lines.append(f"history_end_s = {_fmt(history_end_s[n])}")
         if start_times[n] != start_time:
             lines.append(
                 f"start_time = {start_times[n].isoformat(sep='T')}")
-        if epssm[n] != epssm[0]:
+        if n >= epssm_assigned:
+            # WRF's Registry default, not a choice: under a [shared]
+            # number it is said here; under a [shared] "auto" inherited.
+            if epssm_assigned:
+                lines.append(f'epssm = "{EPSSM_AUTO}"')
+        elif epssm[n] != epssm[0]:
             lines.append(f"epssm = {_fmt(epssm[n])}")
         # The turbulence column, emitted on exactly the same rule as
         # epssm: only where a domain differs from the root, so every
@@ -3735,6 +4657,11 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
                 continue
             if _dom_col[n] != _dom_col[0]:
                 lines.append(f"{_dom_key} = {_dom_fmt(_dom_col[n])}")
+        for _topo_key, _topo_col in topo_columns.items():
+            if _topo_col[n] != _topo_col[0]:
+                lines.append(f"{_topo_key} = {_topo_col[n]}")
+        if canopy_column is not None and canopy_column[n] != canopy_column[0]:
+            lines.append(f"mosaic_urban_canopy = {_fmt(canopy_column[n])}")
         # The adaptive clock's max_domains targets and clamps, same rule.
         for _clock_key, _, _ in ADAPTIVE_CLOCK_COLUMNS:
             _clock_col = adaptive_columns[_clock_key]
@@ -3800,13 +4727,29 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
         # not by writing a value into a receipt this importer has always
         # reproduced byte for byte.
         lines.append(f"diff_6th_factor = {_fmt(diff_6th_factor[n])}")
+    if static_landcover is not None:
+        block_lines, notice = _static_landcover_block(
+            static_landcover, cache_root=static_cache_root,
+            legend_note=legend_note)
+        lines += block_lines
+        notices.append(notice)
     text = "\n".join(lines) + "\n"
 
     # Validate the emitted TOML through the schema loader: every
     # section-A rule binds at import time.
-    build_experiment(
-        tomllib.loads(text),
-        source=f"import of {wps_path.name} + {input_path.name}")
+    if static_landcover is None:
+        build_experiment(
+            tomllib.loads(text),
+            source=f"import of {wps_path.name} + {input_path.name}")
+    else:
+        # The [static] table is the one-file case schema's, validated by
+        # its owner (gpuwm.static.highres_production.parse_static_table)
+        # on the way past, exactly as every config file door does.
+        from gpuwm.experiment import build_experiment_from_config_tables
+        build_experiment_from_config_tables(
+            tomllib.loads(text),
+            source=f"import of {wps_path.name} + {input_path.name}",
+            base_dir=Path(wps_path).parent)
     # Every consumed key lands in exactly one report section: keys
     # recorded above as fixed or dropped are subtracted from each
     # section's consumption trace and the remainder is what produced the
@@ -3822,5 +4765,6 @@ def import_namelists(wps_path: str | Path, input_path: str | Path,
     report = SubstitutionReport(
         substitutions=tuple(substitutions), dropped=tuple(dropped),
         defaults_applied=tuple(defaults_applied), fixed=tuple(fixed),
-        translated=tuple(translated), notices=tuple(notices))
+        translated=tuple(translated), notices=tuple(notices),
+        model_choices=tuple(model_choices))
     return text, report

@@ -423,6 +423,120 @@ pub fn unpack_message_scan_normalized_row_window(
     }
 }
 
+/// A rectangle of a regular grid in STORED order: rows `rows.0..rows.1`
+/// and columns `columns.0..columns.1` of Section 7's row-major layout,
+/// first stored row first, before any scan-mode normalization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoredRect {
+    pub rows: (usize, usize),
+    pub columns: (usize, usize),
+}
+
+/// Whether a raw J2K codestream's main header declares the reversible
+/// 5/3 wavelet for its one component: a COD whose transform octet is 1
+/// and no COC that could restate it.  Only then does an area decode
+/// reconstruct integers that are the whole decode's integers exactly;
+/// the irreversible 9/7 path computes in floating point over a
+/// different span, so it is never trusted to agree bit for bit.
+fn jpeg2000_main_header_is_reversible(data: &[u8]) -> bool {
+    if data.len() < 4 || data[0] != 0xFF || data[1] != 0x4F {
+        return false;
+    }
+    let mut position = 2usize;
+    let mut reversible = false;
+    while position + 4 <= data.len() {
+        if data[position] != 0xFF {
+            return false;
+        }
+        let marker = data[position + 1];
+        if marker == 0x90 {
+            // SOT: the main header is over.
+            return reversible;
+        }
+        let length = u16::from_be_bytes([data[position + 2], data[position + 3]]) as usize;
+        if length < 2 || position + 2 + length > data.len() {
+            return false;
+        }
+        match marker {
+            // COD: Lcod(2) Scod(1) SGcod(4) then SPcod levels, xcb, ycb,
+            // style and the transform octet.
+            0x52 => {
+                if length < 12 {
+                    return false;
+                }
+                reversible = data[position + 13] == 1;
+            }
+            // COC restates coding per component; not interpreted here.
+            0x53 => return false,
+            _ => {}
+        }
+        position += 2 + length;
+    }
+    false
+}
+
+/// Unpack only a stored-order rectangle of a regular grid.
+///
+/// The result is `(rows.1 - rows.0) * (columns.1 - columns.0)` values,
+/// row-major in stored order, and every value equals the value
+/// `unpack_message` returns at that cell.  A JPEG2000 message (Template
+/// 5.40) with no bitmap, a non-constant payload and the reversible 5/3
+/// wavelet decodes through OpenJPEG's decode area, so its cost follows
+/// the rectangle instead of the grid; every other message is unpacked
+/// whole and cropped.
+pub fn unpack_message_stored_rect(
+    msg: &Grib2Message,
+    rect: StoredRect,
+) -> crate::Result<Vec<f64>> {
+    let nx = msg.grid.nx as usize;
+    let ny = msg.grid.ny as usize;
+    if msg.grid.is_reduced || nx == 0 || ny == 0 {
+        return Err(crate::GribError::Unpack(
+            "a stored rectangle needs a regular grid".to_string(),
+        ));
+    }
+    if rect.rows.0 >= rect.rows.1
+        || rect.rows.1 > ny
+        || rect.columns.0 >= rect.columns.1
+        || rect.columns.1 > nx
+    {
+        return Err(crate::GribError::Unpack(format!(
+            "rows {}..{} and columns {}..{} are not a rectangle of the {nx}x{ny} grid",
+            rect.rows.0, rect.rows.1, rect.columns.0, rect.columns.1
+        )));
+    }
+    let dr = &msg.data_rep;
+    let area = dr.template == 40
+        && msg.bitmap.is_none()
+        && dr.bits_per_value != 0
+        && dr.section5_num_data_points as usize == nx * ny
+        && jpeg2000_main_header_is_reversible(&msg.raw_data);
+    if area {
+        let values = unpack_jpeg2000_area(&msg.raw_data, dr, (nx, ny), rect)
+            .map_err(crate::GribError::Unpack)?;
+        let expected = (rect.rows.1 - rect.rows.0) * (rect.columns.1 - rect.columns.0);
+        if values.len() != expected {
+            return Err(crate::GribError::Unpack(format!(
+                "JPEG2000 decode area returned {} values; the rectangle holds {expected}",
+                values.len()
+            )));
+        }
+        return Ok(values);
+    }
+    let full = unpack_message(msg)?;
+    if full.len() != nx * ny {
+        return Err(crate::GribError::Unpack(format!(
+            "decoded {} values; the grid declares {nx}x{ny}",
+            full.len()
+        )));
+    }
+    let mut values = Vec::with_capacity((rect.rows.1 - rect.rows.0) * (rect.columns.1 - rect.columns.0));
+    for row in rect.rows.0..rect.rows.1 {
+        values.extend_from_slice(&full[row * nx + rect.columns.0..row * nx + rect.columns.1]);
+    }
+    Ok(values)
+}
+
 /// Apply the GRIB2 scaling formula: Y = (R + X * 2^E) * 10^(-D)
 fn apply_scaling(raw: &[i64], dr: &DataRepresentation) -> Vec<f64> {
     let r = dr.reference_value as f64;
@@ -1136,7 +1250,20 @@ fn unpack_complex_spatial(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f6
             dr.section5_num_data_points
         ));
     }
-    let raw = read_group_values(
+    // Spatial differencing runs over the PRESENT cells only.  A cell the
+    // encoder marked missing carries no residual, so integrating across
+    // it does not merely lose that cell: every value after it inherits
+    // the marker.  g2c does the same by packing the present residuals
+    // densely and integrating that sequence.
+    //
+    // The present cells are read straight into that dense sequence, with
+    // the missing ones kept as a position mask, instead of as one tagged
+    // cell per grid point that is then filtered, re-tagged and scaled.
+    // The arithmetic and the order in which every refusal can be raised
+    // are unchanged (see `read_spatial_residuals`); what goes is about two
+    // thirds of the memory traffic, which is what bounded a decode running
+    // on every core: each of those tagged copies is 16 bytes per cell.
+    let (mut present, missing) = read_spatial_residuals(
         &mut greader,
         &group_refs,
         &group_widths,
@@ -1144,40 +1271,14 @@ fn unpack_complex_spatial(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f6
         total_values,
         dr.bits_per_value as usize,
         mode,
+        &initial_values,
+        minimum,
     )?;
 
-    // Spatial differencing runs over the PRESENT cells only.  A cell the
-    // encoder marked missing carries no residual, so integrating across
-    // it does not merely lose that cell: every value after it inherits
-    // the marker.  g2c does the same by packing the present residuals
-    // densely and integrating that sequence.
-    let mut present: Vec<i64> = raw
-        .iter()
-        .filter_map(|value| match value {
-            GroupValue::Present(raw) => Some(*raw),
-            GroupValue::Missing => None,
-        })
-        .collect();
-
-    // The complex-packed groups contain a residual for every present
-    // cell (including the first `order` of them); replace those with the
-    // initial values read from the Section-7 header, which are already
-    // absolute and carry no overall minimum.
-    for (i, &iv) in initial_values.iter().enumerate() {
-        if i < present.len() {
-            present[i] = iv;
-        }
-    }
     // Every step of the integration is checked.  An encoder that ships a
     // descriptor wide enough to hold near-i64 initial values can drive the
     // recurrence past i64; unchecked, that is a debug panic or a release
     // wrap-around, and a wrapped residual is published as physics.
-    for i in order..present.len() {
-        present[i] = present[i].checked_add(minimum).ok_or_else(|| {
-            "spatial-differencing difference overflow while adding minimum".to_string()
-        })?;
-    }
-
     if order == 1 {
         for i in 1..present.len() {
             present[i] = present[i]
@@ -1194,24 +1295,139 @@ fn unpack_complex_spatial(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f6
         }
     }
 
-    let mut reconstructed = Vec::with_capacity(raw.len());
-    let mut present_idx = 0usize;
-    for value in raw {
-        match value {
-            GroupValue::Present(_) => {
-                reconstructed.push(GroupValue::Present(present[present_idx]));
-                present_idx += 1;
+    // `apply_scaling_values`, cell for cell: the same three constants and
+    // the same expression, over the present sequence and the mask.
+    let r = dr.reference_value as f64;
+    let two_e = 2.0_f64.powf(dr.binary_scale as f64);
+    let ten_neg_d = 10.0_f64.powf(-(dr.decimal_scale as f64));
+    let scale = |raw: i64| (r + raw as f64 * two_e) * ten_neg_d;
+    Ok(match missing {
+        None => present.into_iter().map(scale).collect(),
+        Some(missing) => {
+            let mut values = present.into_iter();
+            missing
+                .into_iter()
+                .map(|is_missing| {
+                    if is_missing {
+                        f64::NAN
+                    } else {
+                        values.next().map_or(f64::NAN, scale)
+                    }
+                })
+                .collect()
+        }
+    })
+}
+
+/// The present cells of a spatially differenced field, read DENSELY: the
+/// first `initial_values.len()` present residuals replaced by those
+/// absolute initial values, every later one offset by `minimum`, and the
+/// missing cells as a position mask (`None` when the field cannot carry
+/// in-band missing markers, so there is no mask to keep).
+///
+/// This is `read_group_values` followed by the filter, the initial-value
+/// replacement and the minimum pass that `unpack_complex_spatial` used to
+/// run over it, with every refusal raised in the same order: the constant
+/// group check first, then a truncated payload (the whole stream is read
+/// before anything else is judged), then an overflow while adding the
+/// minimum -- recorded where it happens and raised once the stream has
+/// been read, exactly as the separate pass raised it.
+#[allow(clippy::too_many_arguments)]
+fn read_spatial_residuals(
+    reader: &mut BitReader<'_>,
+    group_refs: &[i64],
+    group_widths: &[usize],
+    group_lengths: &[usize],
+    total_values: usize,
+    bits_per_value: usize,
+    mode: MissingValueMode,
+    initial_values: &[i64],
+    minimum: i64,
+) -> Result<(Vec<i64>, Option<Vec<bool>>), String> {
+    refuse_ambiguous_constant_group(bits_per_value, mode, group_widths)?;
+    let constant_markers = MissingMarkers::for_width(bits_per_value, mode);
+    let mut present: Vec<i64> = Vec::with_capacity(total_values);
+    let mut missing: Option<Vec<bool>> = match mode {
+        MissingValueMode::None => None,
+        _ => Some(Vec::with_capacity(total_values)),
+    };
+    let mut minimum_overflow = false;
+    let mut push = |raw: Option<i64>, present: &mut Vec<i64>| {
+        match raw {
+            Some(raw) => {
+                let index = present.len();
+                let value = if index < initial_values.len() {
+                    initial_values[index]
+                } else {
+                    match raw.checked_add(minimum) {
+                        Some(value) => value,
+                        None => {
+                            minimum_overflow = true;
+                            raw
+                        }
+                    }
+                };
+                present.push(value);
+                if let Some(missing) = missing.as_mut() {
+                    missing.push(false);
+                }
             }
-            GroupValue::Missing => reconstructed.push(GroupValue::Missing),
+            None => {
+                if let Some(missing) = missing.as_mut() {
+                    missing.push(true);
+                }
+            }
+        }
+    };
+
+    for g in 0..group_lengths.len() {
+        let width = group_widths[g];
+        let length = group_lengths[g];
+        let gref = group_refs[g];
+
+        if width == 0 {
+            let value = if constant_markers.marks(gref as u64) { None } else { Some(gref) };
+            for _ in 0..length {
+                push(value, &mut present);
+            }
+            continue;
+        }
+
+        let markers = MissingMarkers::for_width(width, mode);
+        for _ in 0..length {
+            let stored = reader.read_bits_checked(width)?;
+            push(
+                if markers.marks(stored) { None } else { Some(gref + stored as i64) },
+                &mut present,
+            );
         }
     }
-
-    Ok(apply_scaling_values(&reconstructed, dr))
+    drop(push);
+    if minimum_overflow {
+        return Err("spatial-differencing difference overflow while adding minimum".to_string());
+    }
+    if let Some(mask) = missing.as_ref() {
+        if !mask.iter().any(|is_missing| *is_missing) {
+            // No cell is missing: the mask carries nothing.
+            missing = None;
+        }
+    }
+    Ok((present, missing))
 }
 
 /// Template 5.40: JPEG2000 packing (stub for platforms without openjp2).
 #[cfg(not(feature = "jpeg2000"))]
 fn unpack_jpeg2000(_data: &[u8], _dr: &DataRepresentation) -> Result<Vec<f64>, String> {
+    Err("JPEG2000 decoding not available (openjp2 feature disabled)".into())
+}
+
+#[cfg(not(feature = "jpeg2000"))]
+fn unpack_jpeg2000_area(
+    _data: &[u8],
+    _dr: &DataRepresentation,
+    _image: (usize, usize),
+    _area: StoredRect,
+) -> Result<Vec<f64>, String> {
     Err("JPEG2000 decoding not available (openjp2 feature disabled)".into())
 }
 
@@ -1221,6 +1437,30 @@ fn unpack_jpeg2000(_data: &[u8], _dr: &DataRepresentation) -> Result<Vec<f64>, S
 /// GRIB2 JPEG2000 data is always a raw J2K codestream (starts with FF 4F).
 #[cfg(feature = "jpeg2000")]
 fn unpack_jpeg2000(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f64>, String> {
+    decode_jpeg2000(data, dr, None)
+}
+
+/// Template 5.40, only the stored rectangle `area` of an `image` =
+/// (columns, rows) codestream, through OpenJPEG's decode area: the
+/// code-blocks the rectangle does not reach are never entropy-decoded
+/// and the inverse wavelet runs only over the rows and columns the
+/// rectangle needs.
+#[cfg(feature = "jpeg2000")]
+fn unpack_jpeg2000_area(
+    data: &[u8],
+    dr: &DataRepresentation,
+    image: (usize, usize),
+    area: StoredRect,
+) -> Result<Vec<f64>, String> {
+    decode_jpeg2000(data, dr, Some((image, area)))
+}
+
+#[cfg(feature = "jpeg2000")]
+fn decode_jpeg2000(
+    data: &[u8],
+    dr: &DataRepresentation,
+    area: Option<((usize, usize), StoredRect)>,
+) -> Result<Vec<f64>, String> {
     use openjp2::openjpeg::*;
     use std::ffi::c_void;
 
@@ -1344,6 +1584,41 @@ fn unpack_jpeg2000(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f64>, Str
         return Err("Failed to read JPEG2000 header".into());
     }
 
+    if let Some(((columns, rows), rect)) = area {
+        // The codestream must BE the grid: an image of another size is a
+        // bitmap-packed or otherwise reshaped payload, and a rectangle of
+        // grid cells would then name other samples.
+        let img = unsafe { &*image };
+        let geometry_matches = img.x0 == 0
+            && img.y0 == 0
+            && img.x1 as usize == columns
+            && img.y1 as usize == rows
+            && img.numcomps >= 1;
+        let set = geometry_matches
+            && unsafe {
+                opj_set_decode_area(
+                    codec,
+                    image,
+                    rect.columns.0 as i32,
+                    rect.rows.0 as i32,
+                    rect.columns.1 as i32,
+                    rect.rows.1 as i32,
+                )
+            } != 0;
+        if !set {
+            unsafe {
+                opj_destroy_codec(codec);
+                opj_stream_destroy(stream);
+                opj_image_destroy(image);
+            }
+            return Err(format!(
+                "JPEG2000 codestream does not cover the {columns}x{rows} grid, so \
+                 rows {}..{} and columns {}..{} of it cannot be decoded as an area",
+                rect.rows.0, rect.rows.1, rect.columns.0, rect.columns.1
+            ));
+        }
+    }
+
     // Decode
     let ret = unsafe { opj_decode(codec, stream, image) };
     if ret == 0 {
@@ -1374,6 +1649,20 @@ fn unpack_jpeg2000(data: &[u8], dr: &DataRepresentation) -> Result<Vec<f64>, Str
 
     let comp = unsafe { &*img.comps };
     let n = (comp.w * comp.h) as usize;
+    if let Some((_, rect)) = area {
+        let expected = (rect.columns.1 - rect.columns.0, rect.rows.1 - rect.rows.0);
+        if (comp.w as usize, comp.h as usize) != expected {
+            unsafe {
+                opj_destroy_codec(codec);
+                opj_stream_destroy(stream);
+                opj_image_destroy(image);
+            }
+            return Err(format!(
+                "JPEG2000 decode area returned {}x{} samples; the rectangle is {}x{}",
+                comp.w, comp.h, expected.0, expected.1
+            ));
+        }
+    }
     let raw: Vec<i64> = if let Some(data_slice) = comp.data() {
         data_slice.iter().take(n).map(|&v| v as i64).collect()
     } else {
@@ -3254,6 +3543,75 @@ mod tests {
 
         let unpacked = unpack_message(&msg).unwrap();
         assert_eq!(unpacked, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn test_stored_rect_of_a_simple_packed_grid_is_the_crop_of_the_whole_unpack() {
+        use crate::grib2::parser::{GridDefinition, ProductDefinition};
+
+        let msg = Grib2Message {
+            discipline: 0,
+            identification: crate::grib2::parser::Identification::default(),
+            reference_time: chrono::NaiveDate::from_ymd_opt(2026, 9, 29)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap(),
+            grid: GridDefinition {
+                nx: 4,
+                ny: 3,
+                num_data_points: 12,
+                scan_mode: 0x00,
+                ..GridDefinition::default()
+            },
+            product: ProductDefinition::default(),
+            data_rep: DataRepresentation {
+                template: 0,
+                bits_per_value: 8,
+                section5_num_data_points: 12,
+                ..make_default_dr()
+            },
+            bitmap: None,
+            raw_data: (1..=12).collect(),
+        };
+        let full = unpack_message(&msg).unwrap();
+        let rect = StoredRect { rows: (1, 3), columns: (1, 3) };
+        let window = unpack_message_stored_rect(&msg, rect).unwrap();
+        assert_eq!(window, vec![full[5], full[6], full[9], full[10]]);
+        // A rectangle that is not inside the grid is refused, not clipped.
+        for bad in [
+            StoredRect { rows: (0, 4), columns: (0, 1) },
+            StoredRect { rows: (2, 2), columns: (0, 1) },
+            StoredRect { rows: (0, 1), columns: (3, 5) },
+        ] {
+            assert!(unpack_message_stored_rect(&msg, bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// SOC, SIZ (38 bytes of body), COD with `transform`, optional COC,
+    /// then SOT: the main header shape GRIB2 JPEG2000 encoders write.
+    fn j2k_main_header(transform: u8, coc: bool) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0x4F, 0xFF, 0x51, 0x00, 0x29];
+        bytes.resize(bytes.len() + 0x29 - 2, 0u8);
+        bytes.extend([0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x05, 0x04, 0x04, 0x00, transform]);
+        if coc {
+            bytes.extend([0xFF, 0x53, 0x00, 0x09, 0x00, 0x00, 0x05, 0x04, 0x04, 0x00, 0x00]);
+        }
+        bytes.extend([0xFF, 0x90, 0x00, 0x0A, 0, 0, 0, 0, 0, 0, 0, 0]);
+        bytes
+    }
+
+    #[test]
+    fn test_only_a_reversible_main_header_is_trusted_for_an_area_decode() {
+        assert!(jpeg2000_main_header_is_reversible(&j2k_main_header(1, false)));
+        // The irreversible 9/7 wavelet reconstructs in floating point over
+        // another span, so an area of it is not the whole decode's crop.
+        assert!(!jpeg2000_main_header_is_reversible(&j2k_main_header(0, false)));
+        // A COC can restate the transform; it is not read, so not trusted.
+        assert!(!jpeg2000_main_header_is_reversible(&j2k_main_header(1, true)));
+        let mut truncated = j2k_main_header(1, false);
+        truncated.truncate(50);
+        assert!(!jpeg2000_main_header_is_reversible(&truncated));
+        assert!(!jpeg2000_main_header_is_reversible(&[0x00, 0x4F, 0xFF, 0x51]));
     }
 
     #[test]

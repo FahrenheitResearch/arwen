@@ -1038,3 +1038,200 @@ def _one_checkpoint(path: Path) -> None:
     from test_resume import _write_checkpoint
 
     _write_checkpoint(path, grid_id=1)
+
+
+# -- A136: each lead as it posts, and each wait, on `go`'s own stream -------
+
+
+def _posting_fixture(data: Path) -> dict:
+    """The fetch loop's files (A136 3.5): a schedule and one lead marker."""
+
+    posting = data / chain_events.POSTING_DIRNAME
+    posting.mkdir(parents=True)
+    schedule = {
+        "schema": "gpuwm.posting-schedule.v1", "source": "gefs",
+        "member": None, "cycle": "2026-09-30T12", "as_posted": True,
+        "shape": "rolling", "streams": True, "why": "one pair per lead",
+        "late_after_minutes": 60,
+        "start_needs": [{"role": "analysis", "source": "gefs", "lead": 0,
+                         "expected_at": "2026-09-30T15:42:00Z"}],
+        "expected_ready_at": "2026-09-30T15:43:04Z",
+        "expected_final_at": "2026-09-30T15:58:59Z",
+        "table_sha256": "ab" * 32,
+        "leads": [
+            {"lead": 0, "valid_time": "2026-09-30T12:00:00Z",
+             "expected_at": "2026-09-30T15:42:00Z",
+             "late_at": "2026-09-30T16:42:00Z",
+             "first_seen_at": "2026-09-30T15:42:30Z",
+             "fetched_at": "2026-09-30T15:42:41Z", "endpoint": "nomads",
+             "state": "ready"},
+            {"lead": 3, "valid_time": "2026-09-30T15:00:00Z",
+             "expected_at": "2026-09-30T15:43:04Z",
+             "late_at": "2026-09-30T16:43:04Z", "first_seen_at": None,
+             "fetched_at": None, "state": "waiting"},
+        ]}
+    (posting / chain_events.POSTING_SCHEDULE_NAME).write_text(
+        json.dumps(schedule), encoding="utf-8")
+    marker = {"schema": "gpuwm.posted-lead.v1", "lead": 0,
+              "valid_time": "2026-09-30T12:00:00Z",
+              "objects": [{"role": "a", "name": "x", "url": "u",
+                           "endpoint": "nomads", "bytes": 1000,
+                           "sha256": "0" * 64},
+                          {"role": "b", "name": "y", "url": "u",
+                           "endpoint": "nomads", "bytes": 500,
+                           "sha256": "1" * 64}],
+              "expected_at": "2026-09-30T15:42:00Z",
+              "first_seen_at": "2026-09-30T15:42:30Z",
+              "fetched_at": "2026-09-30T15:42:41Z"}
+    (posting / "f000.json").write_text(json.dumps(marker), encoding="utf-8")
+    return schedule
+
+
+def test_go_relays_the_posting_schedule_and_each_lead(tmp_path):
+    from gpuwm.runplan import POSTING_EVENT_FIELDS
+
+    data, run = tmp_path / "data", tmp_path / "run"
+    run.mkdir()
+    _posting_fixture(data)
+    chain = GoChainEvents()
+    chain.open(tmp_path / CHAIN_EVENTS_FILENAME,
+               plan={"data": data, "run": run, "render": None})
+    chain.finish(status="SUCCESS")
+    events = read_chain_events(tmp_path / CHAIN_EVENTS_FILENAME)
+    tags = [record["event"] for record in events]
+    assert tags.count("posting_schedule") == 1
+    assert tags.count("lead_posted") == 1 and tags.count("lead_ready") == 1
+    assert tags.index("lead_posted") < tags.index("lead_ready")
+    for record in events:
+        if record["event"] in POSTING_EVENT_FIELDS:
+            assert set(POSTING_EVENT_FIELDS[record["event"]]) <= set(record)
+    schedule = next(r for r in events if r["event"] == "posting_schedule")
+    assert [row["lead"] for row in schedule["leads"]] == [0, 3]
+    assert schedule["expected_ready_at"] == "2026-09-30T15:43:04Z"
+    posted = next(r for r in events if r["event"] == "lead_posted")
+    assert posted["minutes_after_expected"] == pytest.approx(0.5)
+    assert posted["endpoint"] == "nomads"
+    ready = next(r for r in events if r["event"] == "lead_ready")
+    assert ready["bytes"] == 1500 and ready["fetch_seconds"] == 11.0
+    assert ready["marker_sha256"] == hashlib.sha256(
+        (data / "posting" / "f000.json").read_bytes()).hexdigest()
+
+
+def test_a_lead_already_up_at_its_first_ask_is_relayed_as_a_bound(tmp_path):
+    """A lead the fetch found posted at its first ask (a late launch) says
+    so on ``lead_posted``: its minutes bound its posting from above and are
+    no lateness to re-fit a row by.  The fixture's lead without the key (a
+    fetch before it) relays it as not known."""
+
+    data, run = tmp_path / "data", tmp_path / "run"
+    run.mkdir()
+    schedule = _posting_fixture(data)
+    schedule["leads"][0]["posted_when_first_asked"] = True
+    path = data / chain_events.POSTING_DIRNAME / chain_events.POSTING_SCHEDULE_NAME
+    path.write_text(json.dumps(schedule), encoding="utf-8")
+    chain = GoChainEvents()
+    chain.open(tmp_path / CHAIN_EVENTS_FILENAME,
+               plan={"data": data, "run": run, "render": None})
+    chain.finish(status="SUCCESS")
+    events = read_chain_events(tmp_path / CHAIN_EVENTS_FILENAME)
+    posted = next(r for r in events if r["event"] == "lead_posted")
+    assert posted["posted_when_first_asked"] is True
+    assert posted["minutes_after_expected"] == pytest.approx(0.5)
+
+    bare = tmp_path / "bare"
+    (bare / "run").mkdir(parents=True)
+    _posting_fixture(bare / "data")
+    chain = GoChainEvents()
+    chain.open(bare / CHAIN_EVENTS_FILENAME,
+               plan={"data": bare / "data", "run": bare / "run",
+                     "render": None})
+    chain.finish(status="SUCCESS")
+    posted = next(r for r in read_chain_events(bare / CHAIN_EVENTS_FILENAME)
+                  if r["event"] == "lead_posted")
+    assert "posted_when_first_asked" in posted
+    assert posted["posted_when_first_asked"] is None
+
+
+def test_go_relays_the_forecasts_waits_and_ends_75_on_a_late_lead(tmp_path):
+    """The forecast runs as a subprocess with no stream; its wait log is
+    carried, and a late lead ends the chain with ``source_behind`` then
+    ``failed`` (``SourceBehind``, exit 75)."""
+
+    from gpuwm.ingest.boundary_stream import WAIT_LOG_NAME
+
+    data, run = tmp_path / "data", tmp_path / "run"
+    run.mkdir()
+    data.mkdir()
+    chain = GoChainEvents()
+    chain.open(tmp_path / CHAIN_EVENTS_FILENAME,
+               plan={"data": data, "run": run, "render": None})
+    stamp = int(time.time() * 1000)
+    wait = {"phase": "seam", "source": "gefs", "cycle": "2026-09-30T12",
+            "lead": 30, "valid_time": "2026-10-01T18:00:00Z",
+            "expected_at": "2026-09-30T15:53:00Z",
+            "late_at": "2026-09-30T16:53:00Z", "waited_seconds": 0.0,
+            "model_elapsed_seconds": 97200.0,
+            "model_valid_time": "2026-10-01T15:00:00Z", "interval": 9,
+            "reason": "gefs f030 is not posted yet"}
+    behind = {"source": "gefs", "cycle": "2026-09-30T12", "lead": 30,
+              "valid_time": "2026-10-01T18:00:00Z",
+              "expected_at": "2026-09-30T15:53:00Z",
+              "late_at": "2026-09-30T16:53:00Z", "late_after_minutes": 60,
+              "last_answer": "not_posted", "model_elapsed_seconds": 97200.0,
+              "model_valid_time": "2026-10-01T15:00:00Z", "frames_kept": 28,
+              "checkpoint": "/run/restart.d01"}
+    lines = [{"event": "source_wait_started", **wait},
+             {"event": "source_wait_progress", **wait,
+              "waited_seconds": 60.0},
+             {"event": "source_behind", **behind},
+             # An earlier run's record in the same folder is not this one's.
+             {"event": "boundary_wait_started", "interval": 1,
+              "reason": "old", "cause": "preparation",
+              "model_elapsed_seconds": 0.0, "model_valid_time": None,
+              "emitted_unix_ms": 1}]
+    with (run / WAIT_LOG_NAME).open("w", encoding="utf-8") as stream:
+        for line in lines:
+            line.setdefault("emitted_unix_ms", stamp)
+            stream.write(json.dumps(line) + "\n")
+        # A line still being written is left for the next look.
+        stream.write(json.dumps({"event": "source_wait_finished"})[:12])
+    chain.finish(status="FAILED", exit_code=75)
+    events = read_chain_events(tmp_path / CHAIN_EVENTS_FILENAME)
+    tags = [record["event"] for record in events]
+    assert tags[-3:] == ["source_wait_progress", "source_behind", "failed"]
+    assert "source_wait_started" in tags
+    assert "boundary_wait_started" not in tags
+    assert set(tags) <= set(EVENT_TAGS)
+    failed = events[-1]
+    assert failed["error_class"] == "SourceBehind"
+    assert failed["exit_code"] == 75
+    assert events[-2]["lead"] == 30 and events[-2]["frames_kept"] == 28
+
+
+def test_a_fetch_that_fell_behind_before_the_forecast_says_so(tmp_path):
+    """A start lead late: the fetch loop's failed.json names it."""
+
+    data, run = tmp_path / "data", tmp_path / "run"
+    run.mkdir()
+    (data / "posting").mkdir(parents=True)
+    (data / "posting" / "failed.json").write_text(json.dumps({
+        "code": "source_behind", "source": "gfs", "cycle": "2026-09-30T12",
+        "lead": 1, "expected_at": "2026-09-30T15:35:00Z",
+        "late_at": "2026-09-30T16:35:00Z", "heard": "not_posted"}),
+        encoding="utf-8")
+    chain = GoChainEvents()
+    chain.open(tmp_path / CHAIN_EVENTS_FILENAME,
+               plan={"data": data, "run": run, "render": None})
+    chain.finish(status="FAILED", exit_code=75)
+    events = read_chain_events(tmp_path / CHAIN_EVENTS_FILENAME)
+    assert [r["event"] for r in events][-2:] == ["source_behind", "failed"]
+    assert events[-2]["lead"] == 1 and events[-2]["frames_kept"] == 0
+    assert events[-2]["model_elapsed_seconds"] is None
+    assert events[-2]["last_answer"] == "not_posted"
+    assert events[-1]["error_class"] == "SourceBehind"
+
+
+def test_a_waiting_heartbeat_is_said_in_the_stage_beat_line():
+    assert go_cli._heartbeat_note("waiting:source") == ", waiting on the source"
+    assert (go_cli._heartbeat_note("waiting:preparation")
+            == ", waiting on the preparation")

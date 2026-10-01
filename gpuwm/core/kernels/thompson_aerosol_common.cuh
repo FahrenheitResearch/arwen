@@ -1511,7 +1511,7 @@ __device__ __forceinline__ void thompson_aa_bound_rain_number(
         return;
     }
     lambda = 3.672f / mvd;
-    rain_number = (1.0f / 6.0f) * rain_mass / am_r
+    rain_number = __fdiv_rn((1.0f / 6.0f) * rain_mass, am_r)
         * lambda * lambda * lambda;
     *rain_number_per_kg = rain_number / density;
 }
@@ -1536,11 +1536,11 @@ __device__ __forceinline__ void thompson_aa_bound_ice_number(
     if (diameter < 5.0e-6f) {
         lambda = 4.0 / 5.0e-6;
         ice_number = fminf(999.0e3f,
-            (1.0f / 6.0f) * ice_mass / am_i
+            __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
             * (float)(lambda * lambda * lambda));
     } else if (diameter > 300.0e-6f) {
         lambda = 4.0 / 300.0e-6;
-        ice_number = (1.0f / 6.0f) * ice_mass / am_i
+        ice_number = __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
             * (float)(lambda * lambda * lambda);
     }
     *ice_number_per_kg = fminf(ice_number, 999.0e3f) / density;

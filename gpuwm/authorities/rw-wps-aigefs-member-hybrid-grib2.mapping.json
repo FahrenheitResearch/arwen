@@ -766,6 +766,7 @@
       "snow_water_equivalent": "not_published_in_source_surface_set",
       "snow_depth": "not_published_in_source_surface_set",
       "sea_ice_fraction": "not_published_in_source_surface_set"
-    }
+    },
+    "accept_boundary_interval_multiples": true
   }
 }

@@ -17,7 +17,7 @@ Run the model on a local NVIDIA GPU or a Linux computer connected over SSH.
 | --- | --- |
 | [Windows desktop: GUI and TUI](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.0/ArWen-Desktop-1.0.8-Windows-x64.zip) | x86-64 Windows; compatible NVIDIA GPU and driver; internet for first setup |
 | [Linux desktop: GUI and TUI](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.0/ArWen-Desktop-1.0.8-Linux-x64-pip.tar.gz) | x86-64 Linux, glibc 2.39 or newer, such as Ubuntu 24.04; Python 3.11 or newer; X11 or Wayland with working OpenGL |
-| [Integration kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.0/ArWen-2.8.0-Integration-Kit.zip) | Developer guide, CLI/plan examples, catalogs, and client design notes |
+| [Integration kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.1/ArWen-2.8.1-Integration-Kit.zip) | Developer guide, CLI/plan examples, catalogs, and client design notes |
 
 The desktop archives contain the applications, native map library and map assets.
 Windows includes a graphical setup launcher that downloads a private Python and
@@ -26,7 +26,7 @@ compiler is needed for these binary packages.
 
 The Python package is named **`gpuwm`**. Its Windows and Linux platform wheels
 include the engine, native processing tools, and TUI. The desktop GUI is the
-separate download above. Check [release notes and checksums](https://github.com/FahrenheitResearch/arwen/releases/tag/v2.8.0)
+separate download above. Check [release notes and checksums](https://github.com/FahrenheitResearch/arwen/releases/tag/v2.8.1)
 for the exact artifacts and qualification records.
 
 ## Install the desktop for forecasts on your PC
@@ -170,7 +170,7 @@ for running preprocessing, the simulation and rendering on your own terms.
 ## Integrate ArWen into another application
 
 The [integration guide](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/docs/integration-kit/integration-guide.md)
-and [downloadable kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.0/ArWen-2.8.0-Integration-Kit.zip)
+and [downloadable kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.1/ArWen-2.8.1-Integration-Kit.zip)
 describe the CLI, run-plan documents, catalogs, and companion bridge boundaries.
 The kit contains an example subprocess client and tests. It is a documented
 integration surface, not a separate simulation engine or a replacement for
@@ -191,8 +191,8 @@ input dataset, and hardware. Read the
 [physics documentation](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/docs/public/PHYSICS.md),
 and [2.8 changes](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/CHANGELOG.md).
 
-2.8.0 adds the Weather Library, `gpuwm gui`, ArWen's graphical interface in
-your browser: 17 cited storm events with a best simulation for each card size,
+2.8.0 adds ArWen in your browser, `gpuwm gui`, as a preview beside the desktop
+app: a storm wiki of 17 cited events with a best simulation for each card size,
 New forecast from any past date with a Physics step and a choice of vertical
 levels, a map that places every picture on its own grid while the forecast
 runs, a Machines page that draws a forecast's pictures on this computer or an
@@ -207,11 +207,11 @@ qualifies is its artifact and startup checks, a short GPU forecast, and the
 scoped component evidence the verification records name. Outside that
 qualification: general forecast skill, whole-model parity, the quality of a
 forecast initialised from ICON global, and the assistant's answers, which come
-from whichever model it is given. Two gaps are known and named rather than
-qualified: the memory and time a fine nest adds to a nowcast are not stated
-yet, and the desktop weather map cannot draw ICON global fields, which does
-not affect the forecast. ArWen Desktop keeps shipping with each release, and
-new features arrive in the Weather Library.
+from whichever model it is given. Three gaps are known and named rather than
+qualified: the web GUI is a preview and the desktop app remains the full way to
+run ArWen, what the fine nest costs at the nowcast door is not stated yet, and
+the desktop weather map cannot draw ICON global fields, which does not affect
+the forecast.
 
 - **Resolved scale.** A 500 m nest resolves supercell storm
   structure, cold pools, mesocyclone-scale rotation, and the

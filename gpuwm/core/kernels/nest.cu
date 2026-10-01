@@ -178,6 +178,66 @@ extern "C" __global__ void nest_bdy_interp1(
     bdy_val[slot] = nv;                                        // :2584
 }
 
+// Enumerate the same independent side tables in one launch. Each side keeps
+// its original coordinate decode, SINT expression and stored REAL*8 divisor.
+extern "C" __global__ void nest_bdy_interp1_all_sides(
+    const float* __restrict__ cfld,    // coupled parent @ t+dtp
+    const float* __restrict__ nfld,    // coupled child current
+    float* __restrict__ west_val, float* __restrict__ west_tend,
+    float* __restrict__ east_val, float* __restrict__ east_tend,
+    float* __restrict__ south_val, float* __restrict__ south_tend,
+    float* __restrict__ north_val, float* __restrict__ north_tend,
+    const int* __restrict__ ci_map,    // bdy-wrapper donor maps (ioff =
+    const int* __restrict__ ip_map,    //   MAX((nri-1)/2,1) on stagger,
+    const int* __restrict__ cj_map,    //   interp_fcn.F:2504-2510)
+    const int* __restrict__ jp_map,
+    const float* __restrict__ xig,
+    const float* __restrict__ xjg,
+    float cdt,                         // PARENT step, REAL (:2345/:2472)
+    int sz,
+    int nz, int nyc, int nxc, int nyp, int nxp)
+{
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t ew = (size_t)nz * nyc * sz;
+    size_t ns = (size_t)nz * nxc * sz;
+    if (tid >= 2*(ew + ns)) return;
+    int side;
+    float* bdy_val;
+    float* bdy_tend;
+    if (tid < ew) {
+        side = 0; bdy_val = west_val; bdy_tend = west_tend;
+    } else if (tid < 2*ew) {
+        side = 1; tid -= ew; bdy_val = east_val; bdy_tend = east_tend;
+    } else if (tid < 2*ew + ns) {
+        side = 2; tid -= 2*ew; bdy_val = south_val; bdy_tend = south_tend;
+    } else {
+        side = 3; tid -= 2*ew + ns; bdy_val = north_val; bdy_tend = north_tend;
+    }
+    int longn = (side < 2) ? nyc : nxc;
+    int w = (int)(tid % sz);
+    int l = (int)((tid / sz) % longn);
+    int k = (int)(tid / ((size_t)sz * longn));
+    int ic, jc;
+    size_t slot;
+    if (side == 0) {           // WEST: ni = nids..nids+sz-1 (:2582)
+        ic = w; jc = l; slot = I3(k, l, w, nyc, sz);
+    } else if (side == 1) {    // EAST: width 0 at the edge (:2593-2604)
+        ic = nxc - 1 - w; jc = l; slot = I3(k, l, w, nyc, sz);
+    } else if (side == 2) {    // SOUTH: nj = njds..njds+sz-1 (:2588)
+        ic = l; jc = w; slot = I3(k, w, l, sz, nxc);
+    } else {                   // NORTH: width 0 at the edge (:2606-2617)
+        ic = l; jc = nyc - 1 - w; slot = I3(k, w, l, sz, nxc);
+    }
+    float ax = xig[ip_map[ic]];
+    float ay = xjg[jp_map[jc]];
+    float psca = sint_point(cfld, k, cj_map[jc], ci_map[ic], ax, ay,
+                            nyp, nxp);
+    float nv = nfld[I3(k, jc, ic, nyc, nxc)];
+    double rdt = 1.0 / (double)cdt;                            // :2500
+    bdy_tend[slot] = (float)(rdt * (double)(psca - nv));       // :2583
+    bdy_val[slot] = nv;                                        // :2584
+}
+
 // ---------------------------------------------------------------------------
 // nest_blend_terrain (nest_init_utils.F:712-785): rows <= spec_bdy_width
 // take the parent-interpolated value (:766-769); the next blend_width

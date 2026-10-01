@@ -22,7 +22,7 @@
 #   notice above and its permission notice to travel with every copy; the
 #   permission notice is reproduced in full in the files named above.
 #
-#   FDLIBM -- expm1f, tanhf, atanf and log10f. Developed at SunPro and
+#   FDLIBM -- expm1f, tanhf, atanf, log10f and log1pf. Developed at SunPro and
 #   converted to single precision at Cygnus Support; glibc carries it
 #   substantially unmodified and presents it, in its own LICENSES file, as
 #   Sun's code.  The notice below is the whole of the licence: its one
@@ -143,10 +143,13 @@ __all__ = [
     "log10f",
     "expf",
     "powf",
+    "powf_array",
     "atanf",
     "sqrtf",
     "expm1f",
     "tanhf",
+    "log1pf",
+    "log1pf_array",
 ]
 
 #: The glibc these transcriptions reproduce.  Gates that pin a libm answer
@@ -535,6 +538,207 @@ def powf(x, y) -> np.float32:
     return F(_exp2_core(ylogx, _EXP2F_SHIFT_SCALED, _EXP2F_POLY, sign_bias))
 
 
+_POWF_INVC = np.array([row[0] for row in _POWF_TAB], dtype=np.float64)
+_POWF_LOGC = np.array([row[1] for row in _POWF_TAB], dtype=np.float64)
+_EXP2F_TAB_U64 = np.array(_EXP2F_TAB, dtype=np.uint64)
+_POWF_BIG_TOP = np.uint64(_asuint64(126.0) >> 47)
+
+#: Elements :func:`powf_array` evaluates at a time.  A call allocates one
+#: block of scratch (about 54 bytes per element: three uint32, one index and
+#: four binary64 arrays, 3.4 MiB) and reuses it for every block, so it holds
+#: its float32 result plus that, whatever the field's size, as NumPy's own
+#: float32 ``power`` holds its result.  The equation of state of every CPU
+#: preparation calls it on a whole nested child, and the CPU preparation
+#: host-RAM model (``gpuwm.core.preflight``) prices no per-cell transient
+#: there: evaluated in one piece, a 76 x 480 x 600 child's call held 3.2 GiB
+#: more than NumPy's power did, enough to put a deep nested preparation past
+#: its estimate.  Reusing the scratch, rather than letting each block
+#: allocate its own, also keeps the allocator from returning and refaulting
+#: it every block, which tripled the time on glibc.
+_POWF_ARRAY_BLOCK = 1 << 16
+
+
+def _flat_blocks(array: np.ndarray, shape: tuple, size: int):
+    """``[start, stop)`` of ``array`` broadcast to ``shape`` and flattened in
+    C order, never materializing the broadcast: a contiguous operand is
+    sliced, a one-element operand (a scalar exponent) is repeated once into
+    one block, and any other broadcast is gathered one block at a time."""
+    if array.shape == shape and array.flags.c_contiguous:
+        flat = array.reshape(-1)
+        return lambda start, stop: flat[start:stop]
+    if array.size == 1:
+        repeated = np.repeat(array.reshape(-1), size)
+        return lambda start, stop: repeated[:stop - start]
+    wide = np.broadcast_to(array, shape)
+    return lambda start, stop: wide.flat[start:stop]
+
+
+def powf_array(x, y) -> np.ndarray:
+    """:func:`powf` over NumPy arrays, the same bits element for element.
+
+    NumPy's own float32 ``power`` is whatever the host provides: the MSVC
+    runtime's ``powf`` on Windows, glibc's on Linux, and on an AVX-512 Linux
+    machine NumPy 2.5's vector loop, which rounds differently from both.
+    A value derived through it therefore depends on the machine it was
+    computed on.  This is glibc's algorithm evaluated in binary64 and
+    integer array arithmetic, operation for operation as :func:`powf`
+    evaluates it, so every host gets glibc's answer.  It runs over the
+    flattened operands :data:`_POWF_ARRAY_BLOCK` elements at a time in one
+    reused block of scratch, so its memory is its result plus that block,
+    not a multiple of the field.
+
+    The array path covers a positive normal base with a finite nonzero
+    exponent whose result lies inside the float32 range, which is every
+    element of a physical field.  Any other element (zero, negative,
+    subnormal, infinite or NaN operands, overflow and underflow) goes
+    through :func:`powf` itself.
+    """
+    base = np.asarray(x, dtype=np.float32)
+    exponent = np.asarray(y, dtype=np.float32)
+    out = np.empty(np.broadcast_shapes(base.shape, exponent.shape),
+                   dtype=np.float32)
+    flat_out = out.reshape(-1)
+    if flat_out.size == 0:
+        return out
+    block = min(_POWF_ARRAY_BLOCK, flat_out.size)
+    base_block = _flat_blocks(base, out.shape, block)
+    exponent_block = _flat_blocks(exponent, out.shape, block)
+    work = _PowfScratch(block)
+    for start in range(0, flat_out.size, block):
+        stop = min(start + block, flat_out.size)
+        _powf_block(base_block(start, stop), exponent_block(start, stop),
+                    flat_out[start:stop], work)
+    return out
+
+
+class _PowfScratch:
+    """One block of :func:`_powf_block` scratch, reused block after block."""
+
+    def __init__(self, size: int):
+        self.u32 = np.empty((3, size), dtype=np.uint32)
+        self.index = np.empty(size, dtype=np.intp)
+        self.f64 = np.empty((4, size), dtype=np.float64)
+        self.mask = np.empty((2, size), dtype=bool)
+
+
+def _powf_block(flat_base: np.ndarray, flat_exponent: np.ndarray,
+                out: np.ndarray, work: _PowfScratch) -> None:
+    """:func:`powf` of two contiguous 1-D float32 blocks, into ``out``.
+
+    Every value is the one :func:`powf` computes, by the same binary64 or
+    integer operation on the same operands (each product and sum rounded
+    once, as in the C), written into ``work``; only where the values live,
+    and the order of steps that do not depend on each other, differ from
+    the scalar transcription.
+    """
+    n = flat_base.size
+    ix = flat_base.view(np.uint32)
+    iy = flat_exponent.view(np.uint32)
+    ua, ub, uc = work.u32[:, :n]
+    ordinary, spare = work.mask[:, :n]
+    np.subtract(ix, np.uint32(0x00800000), out=ua)
+    np.less(ua, np.uint32(0x7F800000 - 0x00800000), out=ordinary)
+    np.multiply(iy, np.uint32(2), out=ua)
+    np.subtract(ua, np.uint32(1), out=ua)
+    np.less(ua, np.uint32((2 * 0x7F800000 - 1) & _U32), out=spare)
+    np.logical_and(ordinary, spare, out=ordinary)
+    # A field is ordinary throughout; only a field that is not pays for
+    # gathering its ordinary elements out and scattering them back.
+    if ordinary.all():
+        fast = None
+        ixf, yf = ix, flat_exponent
+    else:
+        fast = np.flatnonzero(ordinary)
+        ixf, yf = ix[fast], flat_exponent[fast]
+    m = ixf.size
+
+    # _powf_log2, vectorized.
+    tmp, i, top = ua[:m], ub[:m], uc[:m]
+    index = work.index[:m]
+    f0, f1, f2, f3 = work.f64[:, :m]
+    np.subtract(ixf, np.uint32(_POWF_OFF), out=tmp)
+    np.right_shift(tmp, np.uint32(23 - 4), out=i)
+    np.bitwise_and(i, np.uint32(15), out=index)
+    np.bitwise_and(tmp, np.uint32(0xFF800000), out=top)
+    iz = tmp
+    np.subtract(ixf, top, out=iz)                      # iz = ix - top
+    k = top.view(np.int32)
+    np.right_shift(k, np.int32(23), out=k)
+    np.copyto(f0, k)                                   # k, exact
+    np.copyto(f1, iz.view(np.float32))                 # z, exact
+    r = f2
+    np.take(_POWF_INVC, index, out=r, mode="clip")
+    np.multiply(f1, r, out=r)
+    np.subtract(r, 1.0, out=r)                         # r = z*invc - 1
+    q = f3
+    np.take(_POWF_LOGC, index, out=q, mode="clip")
+    np.add(q, f0, out=q)                               # y0 = logc + k
+    np.multiply(r, _POWF_A[4], out=f0)
+    np.add(f0, q, out=q)                               # q = A4*r + y0
+    r2 = f1
+    np.multiply(r, r, out=r2)                          # r2 = r*r
+    np.multiply(r, _POWF_A[2], out=f0)
+    np.add(f0, _POWF_A[3], out=f0)                     # p = A2*r + A3
+    np.multiply(f0, r2, out=f0)
+    np.add(f0, q, out=q)                               # q = p*r2 + q
+    np.multiply(r, _POWF_A[0], out=f0)
+    np.add(f0, _POWF_A[1], out=f0)                     # y = A0*r + A1
+    np.multiply(r2, r2, out=r2)                        # r4 = r2*r2
+    np.multiply(f0, r2, out=f0)
+    np.add(f0, q, out=f0)                              # logx = y*r4 + q
+    ylogx = f1
+    np.copyto(ylogx, yf)
+    np.multiply(ylogx, f0, out=ylogx)                  # ylogx = y * logx
+
+    # Overflow and underflow candidates take the scalar branch.
+    top16 = f0.view(np.uint64)
+    np.right_shift(ylogx.view(np.uint64), np.uint64(47), out=top16)
+    np.bitwise_and(top16, np.uint64(0xFFFF), out=top16)
+    inside = spare[:m]
+    np.less(top16, _POWF_BIG_TOP, out=inside)
+    if not inside.all():
+        keep = np.flatnonzero(inside)
+        fast = keep if fast is None else fast[keep]
+        ylogx = ylogx[keep]
+        m = ylogx.size
+        index = index[:m]
+        f0, f2, f3 = f0[:m], f2[:m], f3[:m]
+
+    # _exp2_core with sign_bias 0, vectorized.
+    ki = f0.view(np.uint64)
+    np.add(ylogx, _EXP2F_SHIFT_SCALED, out=f0)         # kd = ylogx + shift
+    kd = f2
+    np.subtract(f0, _EXP2F_SHIFT_SCALED, out=kd)       # kd -= shift
+    r = kd
+    np.subtract(ylogx, kd, out=r)                      # r = ylogx - kd
+    t = f3.view(np.uint64)
+    np.bitwise_and(ki, np.uint64(_EXP2F_N - 1), out=t)
+    np.copyto(index, t, casting="unsafe")              # 0 to 31
+    np.take(_EXP2F_TAB_U64, index, out=t, mode="clip")
+    np.left_shift(ki, np.uint64(52 - 5), out=ki)
+    np.add(t, ki, out=t)                               # t = tab + (ki << 47)
+    s = f3
+    zz = f0
+    np.multiply(r, _EXP2F_POLY[0], out=zz)
+    np.add(zz, _EXP2F_POLY[1], out=zz)                 # z = C0*r + C1
+    r2 = ylogx
+    np.multiply(r, r, out=r2)                          # r2 = r*r
+    yy = r
+    np.multiply(r, _EXP2F_POLY[2], out=yy)
+    np.add(yy, 1.0, out=yy)                            # y = C2*r + 1
+    np.multiply(zz, r2, out=zz)
+    np.add(zz, yy, out=yy)                             # y = z*r2 + y
+    np.multiply(yy, s, out=yy)                         # y * s
+    if fast is None:
+        np.copyto(out, yy)                             # one rounding to f32
+        return
+    out[fast] = yy
+    rest = np.ones(n, dtype=bool)
+    rest[fast] = False
+    for position in np.flatnonzero(rest):
+        out[position] = powf(flat_base[position], flat_exponent[position])
+
+
 # ---------------------------------------------------------------------------
 # atanf -- glibc 2.39 sysdeps/ieee754/flt-32/s_atanf.c, which is still the
 # fdlibm reduction: five argument ranges, one 11-term odd/even polynomial, and
@@ -756,3 +960,296 @@ def tanhf(x) -> np.float32:
     else:
         z = F(one - _EXPM1F_TINY)
     return z if jx >= 0 else F(-z)
+
+
+# ---------------------------------------------------------------------------
+# log1pf -- glibc 2.39 sysdeps/ieee754/flt-32/s_log1pf.c, the FDLIBM routine
+# (float conversion by Ian Lance Taylor, Cygnus Support).  Every operation is
+# FP32: the argument is reduced to 1+f with f in [sqrt(2)/2 - 1, sqrt(2) - 1]
+# and a correction term c, and log(1+f) is the seven-term series in
+# s = f/(2+f).  Arguments in (-0.2929, 0.41422) skip the reduction (k = 0).
+#
+# The CPU equation of state reaches it with hypsometric_opt = 2, as
+# log1p((pfd - pfu)/pfu) (gpuwm.core.diagnostics and the two preparation
+# paths that spell the same operator), and NumPy's float32 ``log1p`` is not
+# one function across hosts: NumPy 2.5 on an AVX-512 Linux machine runs its
+# own vector loop, which returns other words than glibc 2.39 on about a
+# fifth of the ratios the equation of state takes, and glibc 2.41 replaced
+# this routine with CORE-MATH's correctly rounded one, so even NumPy's
+# scalar path moves with the host's glibc.  This is the one log1pf ArWen's
+# CPU paths take, whatever the host.
+#
+# Verified exhaustively on WSL Ubuntu 24.04 (glibc 2.39, NumPy 2.5.3, an
+# AVX-512 CPU): log1pf_array against NumPy's float32 log1p with
+# NPY_DISABLE_CPU_FEATURES="X86_V4 AVX512_ICL" (which is libm's log1pf:
+# 0 of 200,000 random words differ through ctypes) on all 4,294,967,296
+# float32 bit patterns -- 0 mismatching words, NaN words included -- and
+# the same digest over all of them with NumPy's AVX-512 loops on, where
+# NumPy's own log1p differs from glibc on 51,886,787 words, 431,795 of
+# 2,000,000 ratios in [0.0005, 0.2].  log1pf itself matched libm on the
+# 500,028 words of the same session's smoke sweep.
+# ---------------------------------------------------------------------------
+
+_LOG1PF_LN2_HI = _asfloat(0x3F317180)       # 6.9313812256e-01
+_LOG1PF_LN2_LO = _asfloat(0x3717F7D1)       # 9.0580006145e-06
+_LOG1PF_LP = tuple(_asfloat(b) for b in (
+    0x3F2AAAAB,                             # Lp1 = 6.6666668653e-01
+    0x3ECCCCCD,                             # Lp2 = 3.9999997616e-01
+    0x3E924925,                             # Lp3 = 2.8571429849e-01
+    0x3E638E29,                             # Lp4 = 2.2222198546e-01
+    0x3E3A3325,                             # Lp5 = 1.8183572590e-01
+    0x3E1CD04F,                             # Lp6 = 1.5313838422e-01
+    0x3E178897,                             # Lp7 = 1.4798198640e-01
+))
+_LOG1PF_TWO_THIRDS = F(0.66666666666666666)
+#: glibc returns ``(x-x)/(x-x)`` for x < -1 and x = -inf, which on x86-64 is
+#: the default QNaN with the sign bit SET.  Taken as a constant so the answer
+#: is the reference host's word on every host.
+_LOG1PF_INVALID = _asfloat(0xFFC00000)
+
+
+def _log1pf_series(f):
+    """``R`` and ``s`` of s_log1pf.c's main path, in FP32 scalars."""
+    lp1, lp2, lp3, lp4, lp5, lp6, lp7 = _LOG1PF_LP
+    s = F(f / F(F(2.0) + f))
+    z = F(s * s)
+    r = F(z * F(lp1 + F(z * F(lp2 + F(z * F(lp3 + F(z * F(lp4 + F(z * F(
+        lp5 + F(z * F(lp6 + F(z * lp7)))))))))))))
+    return r, s
+
+
+def log1pf(x) -> np.float32:
+    """glibc 2.39 ``log1pf`` (sysdeps/ieee754/flt-32/s_log1pf.c)."""
+    x = F(x)
+    hx = _as_int32(_asuint(x))
+    ax = hx & 0x7FFFFFFF
+    k = 1
+    if hx < 0x3ED413D7:                                 # x < 0.41422
+        if ax >= 0x3F800000:                            # x <= -1.0
+            if x == F(-1.0):
+                return F(-np.inf)
+            if ax > 0x7F800000:
+                return F(x + x)                         # a negative NaN, quiet
+            return _LOG1PF_INVALID
+        if ax < 0x31000000:                             # |x| < 2**-29
+            # glibc returns x below 2**-54 and x - x*x*0.5 above it; the
+            # correction is under a quarter ULP of x, so both are x.
+            return x
+        if hx > 0 or hx <= _as_int32(0xBE95F61F):       # -0.2929 < x < 0.41422
+            k = 0
+            f = x
+            hu = 1
+    elif hx >= 0x7F800000:
+        return F(x + x)                                 # +inf or NaN
+    c = F(0.0)
+    if k != 0:
+        if hx < 0x5A000000:
+            u = F(F(1.0) + x)
+            hu = _as_int32(_asuint(u))
+            k = (hu >> 23) - 127
+            # correction term
+            c = F(F(1.0) - F(u - x)) if k > 0 else F(x - F(u - F(1.0)))
+            c = F(c / u)
+        else:
+            u = x
+            hu = _as_int32(_asuint(u))
+            k = (hu >> 23) - 127
+        hu &= 0x007FFFFF
+        if hu < 0x3504F7:
+            u = _asfloat(hu | 0x3F800000)               # normalize u
+        else:
+            k += 1
+            u = _asfloat(hu | 0x3F000000)               # normalize u/2
+            hu = (0x00800000 - hu) >> 2
+        f = F(u - F(1.0))
+    hfsq = F(F(F(0.5) * f) * f)
+    kf = F(k)
+    if hu == 0:                                         # |f| < 2**-20
+        if f == F(0.0):
+            if k == 0:
+                return F(0.0)
+            c = F(c + F(kf * _LOG1PF_LN2_LO))
+            return F(F(kf * _LOG1PF_LN2_HI) + c)
+        r = F(hfsq * F(F(1.0) - F(_LOG1PF_TWO_THIRDS * f)))
+        if k == 0:
+            return F(f - r)
+        return F(F(kf * _LOG1PF_LN2_HI)
+                 - F(F(r - F(F(kf * _LOG1PF_LN2_LO) + c)) - f))
+    r, s = _log1pf_series(f)
+    if k == 0:
+        return F(f - F(hfsq - F(s * F(hfsq + r))))
+    return F(F(kf * _LOG1PF_LN2_HI)
+             - F(F(hfsq - F(F(s * F(hfsq + r))
+                            + F(F(kf * _LOG1PF_LN2_LO) + c))) - f))
+
+
+#: Elements :func:`log1pf_array` evaluates at a time, through one reused
+#: block of scratch (six float32 and one uint32 array and two masks, about
+#: 30 bytes per element, 1.9 MiB), so a call on a physical field holds its
+#: result plus that block, as NumPy's own float32 ``log1p`` holds its
+#: result.  The same reason as :data:`_POWF_ARRAY_BLOCK`: the CPU equation
+#: of state calls it on a whole nested child, and the CPU preparation
+#: host-RAM model prices no per-cell transient there.
+_LOG1PF_ARRAY_BLOCK = 1 << 16
+
+
+class _Log1pfScratch:
+    """One block of :func:`_log1pf_block` scratch, reused block after block."""
+
+    def __init__(self, size: int):
+        self.u32 = np.empty(size, dtype=np.uint32)
+        self.f32 = np.empty((6, size), dtype=np.float32)
+        self.mask = np.empty((2, size), dtype=bool)
+
+
+def log1pf_array(x) -> np.ndarray:
+    """:func:`log1pf` over a NumPy array, the same bits element for element.
+
+    NumPy's own float32 ``log1p`` is the host's: the C library's
+    ``log1pf`` (glibc 2.39's FDLIBM routine, glibc 2.41 and later a
+    correctly rounded one, the MSVC runtime's on Windows), and on an
+    AVX-512 Linux machine NumPy 2.5's vector loop, which rounds a fifth of
+    physical ratios differently from glibc.  This is glibc 2.39's algorithm
+    as float32 and integer array arithmetic, operation for operation as
+    :func:`log1pf` evaluates it (each operation rounded once, as the C
+    does), so every host gets the same answer.  It runs over the flattened
+    argument :data:`_LOG1PF_ARRAY_BLOCK` elements at a time in one reused
+    block of scratch.
+
+    Arguments in [-0.2929, 0.41422) with magnitude at least 2**-29, which
+    covers every ratio the equation of state takes, are a dozen float32
+    operations each.  The rest of the line is array arithmetic too, and
+    every special argument is a constant or ``x + x``; only the reduced
+    arguments whose mantissa lands on 1 (``hu == 0`` in the C, a handful
+    per binade) go through :func:`log1pf` itself.
+    """
+    values = np.asarray(x, dtype=np.float32)
+    out = np.empty(values.shape, dtype=np.float32)
+    flat_out = out.reshape(-1)
+    if flat_out.size == 0:
+        return out
+    block = min(_LOG1PF_ARRAY_BLOCK, flat_out.size)
+    source = _flat_blocks(values, values.shape, block)
+    work = _Log1pfScratch(block)
+    for start in range(0, flat_out.size, block):
+        stop = min(start + block, flat_out.size)
+        _log1pf_block(source(start, stop), flat_out[start:stop], work)
+    return out
+
+
+def _series_into(f, s, z, r) -> None:
+    """``s = f/(2+f)`` and ``R`` of the seven-term series, into s and r."""
+    lp1, lp2, lp3, lp4, lp5, lp6, lp7 = _LOG1PF_LP
+    np.add(f, F(2.0), out=s)
+    np.divide(f, s, out=s)                             # s = f/(2+f)
+    np.multiply(s, s, out=z)                           # z = s*s
+    np.multiply(z, lp7, out=r)
+    for coefficient in (lp6, lp5, lp4, lp3, lp2):
+        np.add(r, coefficient, out=r)
+        np.multiply(z, r, out=r)
+    np.add(r, lp1, out=r)
+    np.multiply(z, r, out=r)                           # R
+
+
+def _log1pf_k0(f: np.ndarray, out: np.ndarray, rows) -> None:
+    """s_log1pf.c's ``k == 0`` path (``f = x``, no reduction), into out."""
+    m = f.size
+    hfsq, s, z, r = (row[:m] for row in rows[:4])
+    np.multiply(f, F(0.5), out=hfsq)
+    np.multiply(hfsq, f, out=hfsq)                     # hfsq = 0.5*f*f
+    _series_into(f, s, z, r)
+    np.add(hfsq, r, out=r)
+    np.multiply(s, r, out=r)
+    np.subtract(hfsq, r, out=r)
+    np.subtract(f, r, out=out)                         # f-(hfsq-s*(hfsq+R))
+
+
+def _log1pf_block(flat_x: np.ndarray, out: np.ndarray, work) -> None:
+    """:func:`log1pf` of one contiguous 1-D float32 block, into ``out``."""
+    n = flat_x.size
+    hx = flat_x.view(np.uint32)
+    ua = work.u32[:n]
+    ordinary, spare = work.mask[:, :n]
+    # k == 0 and |x| >= 2**-29: 2**-29 <= x < 0.41422 (0x31000000 up to
+    # 0x3ED413D7) or -0.2929 <= x <= -2**-29 (0xB1000000 up to 0xBE95F61F).
+    np.subtract(hx, np.uint32(0x31000000), out=ua)
+    np.less(ua, np.uint32(0x3ED413D7 - 0x31000000), out=ordinary)
+    np.subtract(hx, np.uint32(0xB1000000), out=ua)
+    np.less_equal(ua, np.uint32(0xBE95F61F - 0xB1000000), out=spare)
+    np.logical_or(ordinary, spare, out=ordinary)
+    # A physical field is ordinary throughout; only a block that is not
+    # pays for gathering its elements by path and scattering them back.
+    if ordinary.all():
+        _log1pf_k0(flat_x, out, work.f32)
+        return
+    where = np.flatnonzero(ordinary)
+    if where.size:
+        result = work.f32[5, :where.size]
+        _log1pf_k0(flat_x[where], result, work.f32)
+        out[where] = result
+    rest = np.flatnonzero(~ordinary)
+    out[rest] = _log1pf_outside(flat_x[rest])
+
+
+def _log1pf_outside(x: np.ndarray) -> np.ndarray:
+    """:func:`log1pf` of arguments outside the ``k == 0`` band."""
+    bits = x.view(np.uint32)
+    magnitude = bits & np.uint32(0x7FFFFFFF)
+    negative = bits >= np.uint32(0x80000000)
+    value = np.empty_like(x)
+    tiny = magnitude < np.uint32(0x31000000)
+    value[tiny] = x[tiny]                              # |x| < 2**-29
+    quiet = (magnitude > np.uint32(0x7F800000)) | (
+        bits == np.uint32(0x7F800000))
+    with np.errstate(invalid="ignore"):
+        value[quiet] = x[quiet] + x[quiet]             # NaN, +inf
+    value[bits == np.uint32(0xBF800000)] = F(-np.inf)  # x = -1
+    invalid = negative & (magnitude > np.uint32(0x3F800000)) & (
+        magnitude <= np.uint32(0x7F800000))
+    value[invalid] = _LOG1PF_INVALID                   # x < -1 or -inf
+    # k != 0: u = 1+x with a correction term for 0.41422 <= x < 2**53 and
+    # for -1 < x < -0.2929, u = x for 2**53 <= x < inf.
+    through_sum = (~negative & (bits >= np.uint32(0x3ED413D7))
+                   & (bits < np.uint32(0x5A000000))) | (
+        negative & (bits > np.uint32(0xBE95F61F))
+        & (bits < np.uint32(0xBF800000)))
+    through_x = ~negative & (bits >= np.uint32(0x5A000000)) & (
+        bits < np.uint32(0x7F800000))
+    reduced = through_sum | through_x
+    if reduced.any():
+        value[reduced] = _log1pf_reduced(x[reduced], through_sum[reduced])
+    return value
+
+
+def _log1pf_reduced(x: np.ndarray, through_sum: np.ndarray) -> np.ndarray:
+    """s_log1pf.c's ``k != 0`` path; ``through_sum`` marks ``u = 1+x``."""
+    one = F(1.0)
+    u = np.where(through_sum, x + one, x)
+    hu = u.view(np.int32)
+    k = (hu >> 23) - np.int32(127)
+    # correction term, (k>0) ? 1-(u-x) : x-(u-1), over u; none for u = x.
+    c = np.where(k > 0, one - (u - x), x - (u - one))
+    c = np.where(through_sum, c / u, F(0.0))
+    hu = hu & np.int32(0x007FFFFF)
+    high = hu >= np.int32(0x3504F7)
+    k = k + high.astype(np.int32)
+    u = (hu | np.where(high, np.int32(0x3F000000), np.int32(0x3F800000))
+         ).view(np.float32)                            # u or u/2, normalized
+    hu = np.where(high, (np.int32(0x00800000) - hu) >> 2, hu)
+    f = u - one
+    hfsq = (F(0.5) * f) * f
+    s = np.empty_like(f)
+    z = np.empty_like(f)
+    r = np.empty_like(f)
+    _series_into(f, s, z, r)
+    kf = k.astype(np.float32)
+    t = s * (hfsq + r)
+    # The C tests the reduced k: an argument whose 1+x normalizes with
+    # k = 0 takes the k == 0 return and drops the correction term.
+    value = np.where(
+        k == 0, f - (hfsq - t),
+        kf * _LOG1PF_LN2_HI - ((hfsq - (t + (kf * _LOG1PF_LN2_LO + c))) - f))
+    # |f| < 2**-20, the mantissa landed on 1: the scalar routine's branch.
+    for position in np.flatnonzero(hu == 0):
+        value[position] = log1pf(x[position])
+    return value

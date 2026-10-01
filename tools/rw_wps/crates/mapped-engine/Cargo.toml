@@ -57,7 +57,7 @@ sha2.workspace = true
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_SystemInformation"] }
 
 [[bin]]
 name = "gpuwm_mapped_engine"

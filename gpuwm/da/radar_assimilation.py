@@ -1303,6 +1303,67 @@ def innovation_summary(batches: Sequence[GriddedObs]) -> list[dict]:
 
 
 
+def _letkf_config(cfg: RadarAssimilationConfig,
+                  memory_budget_mib: float) -> LetkfConfig:
+    """The filter configuration this analysis solves with."""
+    return LetkfConfig(
+        localization=cfg.localization,
+        analysis_fields=tuple(cfg.analysis_fields),
+        rtps_alpha=cfg.rtps_alpha,
+        prior_inflation=cfg.prior_inflation,
+        relaxation=cfg.relaxation,
+        chunk_points=cfg.chunk_points,
+        memory_budget_mib=memory_budget_mib,
+        solve_dtype=cfg.solve_dtype,
+        eigensolver=cfg.eigensolver)
+
+
+def analysis_device_price(cfg: RadarAssimilationConfig, *, members: int,
+                          grid, document=None,
+                          extra_localizations: Sequence = ()):
+    """What :func:`assimilate_radar_grid` will hold on the card, or None.
+
+    None when the solve resolves to the host.  Otherwise the price of the
+    batches this configuration builds: the merged reflectivity and
+    clear-air batches and each extra and satellite batch over the whole
+    grid, and one radial-velocity batch per radar on the window
+    ``document`` stores for it.  ``extra_localizations`` holds one entry
+    per extra batch the caller will pass, its localisation or None.  The
+    prior and every batch reach the card as float64: ``_mass_field``
+    builds the prior that way and ``_analysis_attempt`` uploads the
+    batches that way.  The filter configuration and its budget are the
+    ones the solve takes (:func:`_letkf_config`, :func:`_execution_settings`).
+    """
+    from gpuwm.da.letkf import \
+        analysis_device_price as _price  # noqa: PLC0415
+    from gpuwm.da.obs_radar import velocity_batch_points  # noqa: PLC0415
+
+    solve_device, _reason = resolve_solve_device(cfg.solve_device)
+    if solve_device != "cuda":
+        return None
+    budget, _progress, _receipt = _execution_settings(cfg.memory_budget_mib,
+                                                      None)
+    shape = (int(grid.nz), int(grid.ny), int(grid.nx))
+    whole = shape[0] * shape[1] * shape[2]
+    batches = []
+    if cfg.reflectivity:
+        batches.append((whole, cfg.reflectivity_localization))
+    if cfg.clear_air:
+        batches.append((whole, cfg.clear_air_localization))
+    if cfg.velocity and document is not None:
+        batches.extend((points, cfg.velocity_localization)
+                       for points in velocity_batch_points(
+                           document, radars=cfg.radars))
+    batches.extend((whole, loc) for loc in extra_localizations)
+    if cfg.cwp:
+        batches.append((whole, cfg.cwp_localization))
+    float64 = np.dtype(np.float64).itemsize
+    return _price(members=int(members), shape=shape,
+                  fields=len(cfg.analysis_fields), prior_itemsize=float64,
+                  batches=batches, grid=letkf_grid_geometry(grid),
+                  config=_letkf_config(cfg, budget), obs_itemsize=float64)
+
+
 def _resident_memory_failure(exc):
     """Only allocation failures or the owner's explicit capacity condition."""
     from gpuwm.da.letkf import LetkfCapacityError, LetkfError, _is_device_memory_error
@@ -1741,16 +1802,7 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         diagnostics = LetkfDiagnostics()
     execution_budget, progress, execution_receipt = _execution_settings(
         cfg.memory_budget_mib, progress)
-    letkf_cfg = LetkfConfig(
-        localization=cfg.localization,
-        analysis_fields=tuple(cfg.analysis_fields),
-        rtps_alpha=cfg.rtps_alpha,
-        prior_inflation=cfg.prior_inflation,
-        relaxation=cfg.relaxation,
-        chunk_points=cfg.chunk_points,
-        memory_budget_mib=execution_budget,
-        solve_dtype=cfg.solve_dtype,
-        eigensolver=cfg.eigensolver)
+    letkf_cfg = _letkf_config(cfg, execution_budget)
     solve_device, solve_device_reason = resolve_solve_device(cfg.solve_device)
     namespace = np
     if solve_device == 'cuda':

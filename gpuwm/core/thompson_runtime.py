@@ -10,6 +10,7 @@ owner before its simultaneous source and fallout calls.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
 import json
@@ -72,6 +73,10 @@ def _classic_records() -> tuple[TableRecord, ...]:
 
 
 def _payload_sha256(value: np.ndarray) -> str:
+    # A Fortran-ordered array's transpose is C-contiguous with the same
+    # bytes in the same order, so it is hashed in place instead of copied.
+    if value.flags.f_contiguous:
+        return hashlib.sha256(value.T).hexdigest()
     return hashlib.sha256(value.tobytes(order="F")).hexdigest()
 
 
@@ -84,7 +89,25 @@ def _synchronize(backend) -> None:
         synchronize()
 
 
-def _to_host_fortran(backend, value) -> np.ndarray:
+def _pinned_staging(backend, nbytes: int):
+    """One page-locked host buffer for the round trip, or None.
+
+    Copying into page-locked memory is several times faster than CuPy's
+    pageable copy, which also allocates a fresh host array per table.
+    """
+    allocate = getattr(getattr(backend, "cuda", None),
+                       "alloc_pinned_memory", None)
+    if allocate is None:
+        return None
+    return allocate(nbytes)
+
+
+def _to_host_fortran(backend, value, *, staging=None) -> np.ndarray:
+    if staging is not None and hasattr(value, "get"):
+        result = np.ndarray(value.shape, dtype=np.float64,
+                            buffer=staging, order="F")
+        value.get(out=result, blocking=True)
+        return result
     asnumpy = getattr(backend, "asnumpy", None)
     if asnumpy is None:
         result = np.array(value, dtype=np.float64, order="F", copy=True)
@@ -168,7 +191,6 @@ def _upload_table_set(
         raise ValueError(
             f"Thompson table inventory mismatch: missing={missing}, extra={extra}")
 
-    host_hashes: dict[str, str] = {}
     payload_bytes = 0
     for name, record in expected.items():
         value = table_set.arrays[name]
@@ -191,7 +213,11 @@ def _upload_table_set(
                 f"Thompson host table {name} has {value.nbytes} bytes; "
                 f"expected {record.payload_bytes}")
         payload_bytes += value.nbytes
-        host_hashes[name] = _payload_sha256(value)
+    # hashlib releases the GIL while it hashes, so the arrays hash in parallel.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        host_hashes = dict(zip(expected, pool.map(
+            _payload_sha256,
+            (table_set.arrays[name] for name in expected))))
 
     upload_start = perf_counter()
     device_arrays = {
@@ -223,16 +249,24 @@ def _upload_table_set(
     verification_seconds = 0.0
     if verify_roundtrip:
         verify_start = perf_counter()
+        staging = _pinned_staging(backend, max(
+            record.payload_bytes for record in expected.values()))
         for name in expected:
-            returned = _to_host_fortran(backend, device_arrays[name])
+            returned = _to_host_fortran(
+                backend, device_arrays[name], staging=staging)
             if returned.shape != table_set.arrays[name].shape:
                 raise RuntimeError(
                     f"Thompson device round trip changed {name} shape")
             if not returned.flags.f_contiguous:
                 raise RuntimeError(
                     f"Thompson device round trip changed {name} layout")
-            returned_hash = _payload_sha256(returned)
-            if returned_hash != host_hashes[name]:
+            # The returned bytes must equal the uploaded ones word for word
+            # (signed zeros and NaN payloads included); the digest is only
+            # computed to name a mismatch.
+            if not np.array_equal(returned.T.reshape(-1).view(np.uint8),
+                                  table_set.arrays[name].T.reshape(-1).view(
+                                      np.uint8)):
+                returned_hash = _payload_sha256(returned)
                 raise RuntimeError(
                     f"Thompson device round trip changed {name}: "
                     f"{returned_hash} != {host_hashes[name]}")

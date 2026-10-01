@@ -45,6 +45,7 @@ from functools import lru_cache
 import numpy as np
 
 from gpuwm.core import constants as c
+from gpuwm.core import portable_math as pm
 from gpuwm.core.kernels import _preamble
 
 _THREADS = 256
@@ -530,6 +531,16 @@ def bdy_interp1(cfld, nfld, reg: NestRegistration, *,
         _check_table(value, shapes[side], f"{side} value table")
         _check_table(tendency, shapes[side], f"{side} tendency table")
     dev = reg.device_tables(alloc=None)
+    if selected == _SIDES:
+        tables = tuple(array for side in _SIDES for array in out[side])
+        count = 2 * nz * sz * (reg.nyc + reg.nxc)
+        _launch(_kernel("nest_bdy_interp1_all_sides"), count, (
+            c3, n3, *tables,
+            dev["ci"], dev["ip"], dev["cj"], dev["jp"],
+            dev["xig"], dev["xjg"], cdt, np.int32(sz),
+            np.int32(nz), np.int32(reg.nyc), np.int32(reg.nxc),
+            np.int32(nyp), np.int32(nxp)))
+        return out
     for index, side in enumerate(_SIDES):
         if side not in selected:
             continue
@@ -604,10 +615,11 @@ def blend_terrain(ter_interpolated, ter_input, *,
             | (i1 >= ide - sbw) | (j1 >= jde - sbw)
         )
         blended_output = np.where(specified, work_c, blended_output)
-        ter_input[...] = np.asarray(
-            blended_output[0] if squeeze else blended_output,
-            dtype=np.float32,
-        )
+        # Stored in the target's own dtype: an FP32 state array rounds
+        # exactly as before, and a float64 target keeps the float64 blend
+        # (the child base the EOS correction is built from, see
+        # gpuwm.ingest.nest_init._blend_terrain_triple).
+        ter_input[...] = blended_output[0] if squeeze else blended_output
         return ter_input
 
     ci3, ti3 = _as3d(ter_interpolated), _as3d(ter_input)
@@ -650,12 +662,12 @@ def adjust_tempqv(mub, save_mub, c3, c4, p_top, th, pp, qv, *,
         rvord = c.RVOVRD
         p_old = c4_64 + c3_64 * saved64[None] + float(p_top) + pp64
         if use_theta_m == 1:
-            tc = ((th64 + 300.0) * (p_old / 1.0e5) ** (2.0 / 7.0)
+            tc = ((th64 + 300.0) * pm.power(p_old / 1.0e5, 2.0 / 7.0)
                   / (1.0 + rvord * qv64) - 273.15)
         else:
-            tc = ((th64 + 300.0) * (p_old / 1.0e5) ** (2.0 / 7.0)
+            tc = ((th64 + 300.0) * pm.power(p_old / 1.0e5, 2.0 / 7.0)
                   - 273.15)
-        es = 610.78 * np.exp(17.0809 * tc / (234.175 + tc))
+        es = 610.78 * pm.exp(17.0809 * tc / (234.175 + tc))
         rh = (qv64 * p_old / (0.622 + qv64)) / es
         p_new = c4_64 + c3_64 * mub64[None] + float(p_top) + pp64
         if use_theta_m == 1:
@@ -671,9 +683,9 @@ def adjust_tempqv(mub, save_mub, c3, c4, p_top, th, pp, qv, *,
                            - 300.0)
         else:
             adjusted_th = thloc + dth - 300.0
-        tc = ((thloc + dth) * (p_new / 1.0e5) ** (2.0 / 7.0)
+        tc = ((thloc + dth) * pm.power(p_new / 1.0e5, 2.0 / 7.0)
               - 273.15)
-        es = 610.78 * np.exp(17.0809 * tc / (234.175 + tc))
+        es = 610.78 * pm.exp(17.0809 * tc / (234.175 + tc))
         vapor_pressure = rh * es
         adjusted_qv = 0.622 * vapor_pressure / (p_new - vapor_pressure)
         th[...] = np.asarray(adjusted_th, dtype=np.float32)

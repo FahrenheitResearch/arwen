@@ -13,6 +13,7 @@ diagnosis, and all five sedimentation categories, then are scattered once.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import math
 
 import numpy as np
@@ -173,6 +174,29 @@ def _step32(dt_s: float) -> np.float32:
     return converted
 
 
+def _velocity_gamma_table(device_id):
+    """Captured calls use base kernels without creating or caching a table."""
+    import cupy as cp
+
+    if cp.cuda.get_current_stream().is_capturing():
+        return None
+    return _cached_velocity_gamma_table(device_id)
+
+
+@lru_cache(maxsize=None)
+def _cached_velocity_gamma_table(device_id):
+    """Fill with device tgamma once and preserve the cross-stream dependency."""
+    import cupy as cp
+
+    with cp.cuda.Device(device_id):
+        table = cp.empty((2, 120), dtype=cp.float64)
+        kernel = get_kernel("nssl2_driver_support", "nssl2_fill_velocity_gamma")
+        kernel((2,), (64,), (table,))
+        ready = cp.cuda.Event(disable_timing=True)
+        ready.record()
+    return table, ready, kernel
+
+
 def gather_initialize_and_sediment(
         air_density, dz,
         qv, qc, qr, qi, qs, qg, qh,
@@ -296,36 +320,47 @@ def gather_initialize_and_sediment(
         ignored_accumulator[...] = DTYPE(0.0)
     suffix = "64" if nz <= _SHALLOW_KMAX else "256"
 
-    sediment_calls = (
-        (f"nssl2_rain_sediment_{suffix}", _QR, _NR, None, 0),
-        (f"nssl2_ice_sediment_{suffix}", _QI, _NI, None, 1),
-        (f"nssl2_snow_sediment_{suffix}", _QS, _NS, None, 2),
-        (f"nssl2_graupel_sediment_{suffix}", _QG, _NG, _VG, 3),
-        (f"nssl2_hail_sediment_{suffix}", _QH, _NH, _VH, 4),
-    )
-    for kernel_name, mass_index, number_index, volume_index, export_index in (
-            sediment_calls):
-        arguments = [air_density, state[mass_index], state[number_index]]
-        if volume_index is not None:
-            arguments.append(state[volume_index])
-        arguments.extend((
-            dz, ignored_accumulator, category_export[export_index], step,
-            np.int32(nz), np.int32(ny), np.int32(nx),
-        ))
-        get_kernel("nssl2_driver_support", kernel_name)(
-            (column_blocks,), (_COLUMN_TPB,), tuple(arguments))
+    gamma = None
+    if isinstance(state, getattr(cp, "ndarray", ())):
+        gamma = _velocity_gamma_table(cp.cuda.runtime.getDevice())
+    if gamma is not None:
+        gamma_table, gamma_ready, _ = gamma
+        cp.cuda.get_current_stream().wait_event(gamma_ready)
 
-    # Cloud is disjoint from the other category states, so executing it after
-    # the five standard exports is numerically identical to WRF's cloud-first
-    # loop. Its bottom export is diagnosed but intentionally not reduced into
-    # RAINNC, matching the official driver.
-    get_kernel(
-        "nssl2_driver_support", f"nssl2_cloud_sediment_{suffix}",
-    )((column_blocks,), (_COLUMN_TPB,), (
-        air_density, temperature_k, state[_QC], state[_NC], dz,
-        ignored_accumulator, step,
-        np.int32(nz), np.int32(ny), np.int32(nx),
-    ))
+    if gamma is not None and nz <= _SHALLOW_KMAX:
+        get_kernel("nssl2_driver_support", "nssl2_sediment_all_parallel_64")(
+            (ncol, 6), (_COLUMN_TPB,),
+            (air_density, temperature_k, state, dz, ignored_accumulator,
+             category_export, gamma_table, step,
+             np.int32(nz), np.int32(ny), np.int32(nx)))
+    else:
+        dense_suffix = "cached_256" if gamma is not None else suffix
+        sediment_calls = (
+            (f"nssl2_rain_sediment_{suffix}", _QR, _NR, None, 0),
+            (f"nssl2_ice_sediment_{suffix}", _QI, _NI, None, 1),
+            (f"nssl2_snow_sediment_{suffix}", _QS, _NS, None, 2),
+            (f"nssl2_graupel_sediment_{dense_suffix}", _QG, _NG, _VG, 3),
+            (f"nssl2_hail_sediment_{dense_suffix}", _QH, _NH, _VH, 4),
+        )
+        for kernel_name, mass_index, number_index, volume_index, export_index in sediment_calls:
+            arguments = [air_density, state[mass_index], state[number_index]]
+            if volume_index is not None:
+                arguments.append(state[volume_index])
+            arguments.extend((
+                dz, ignored_accumulator, category_export[export_index], step,
+                np.int32(nz), np.int32(ny), np.int32(nx),
+            ))
+            if volume_index is not None and gamma is not None:
+                arguments.append(gamma_table[export_index - 3])
+            get_kernel("nssl2_driver_support", kernel_name)(
+                (column_blocks,), (_COLUMN_TPB,), tuple(arguments))
+
+        # Cloud overwrites the ignored accumulator after the other categories.
+        get_kernel("nssl2_driver_support", f"nssl2_cloud_sediment_{suffix}")(
+            (column_blocks,), (_COLUMN_TPB,),
+            (air_density, temperature_k, state[_QC], state[_NC], dz,
+             ignored_accumulator, step,
+             np.int32(nz), np.int32(ny), np.int32(nx)))
 
     return NSSL2DriverWorkspace(
         state=state, category_surface_export=category_export,

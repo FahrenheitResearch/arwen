@@ -1,11 +1,14 @@
 {
   "boundary_interval_seconds": 21600,
+  "boundary_stream": {
+    "head_sha256": "5d0deb467acf78a09cc1032075eee48a3bda8bd0eafdda5a5cf0fdb93909b5dd"
+  },
   "execution_inputs": {
     "decoders": {
       "gpuwm_mapped_engine": {
-        "bytes": 5887944,
+        "bytes": 5945928,
         "path": "${REPO_ROOT}/tools/rw_wps/target/release/gpuwm_mapped_engine",
-        "sha256": "5ecfaeba806574f61fab39a63b1a5b4da9e58ad4cd9bb823310cdf3f31afa1e1"
+        "sha256": "c1235c932944d4544f1876451eee081f3b5053243ed34f66c0537becf61f3dd2"
       }
     },
     "experiment_config": {
@@ -51,11 +54,11 @@
     "files": {
       "wrfbdy_d01": {
         "bytes": 4387744,
-        "sha256": "95d07c93705d71e1426e4d347c5cf8fcb8943001da7735dd10b0a2f697e699c1"
+        "sha256": "12a8b0f8469e24c29bda9bcefb621176fee678ed280f3898505392211f210920"
       },
       "wrfinput_d01": {
         "bytes": 11270504,
-        "sha256": "fb74b163def597a487f987de5f8f33a43375f946504d7074c69bb562255bdb04"
+        "sha256": "e27eba8b93b5494c2e7f7223fa77bbc2f36395d868f1bf71864516ee447a8833"
       }
     },
     "forcing_hours": [
@@ -85,7 +88,8 @@
             "pbl": "ysu",
             "radiation": "rte-rrtmgp",
             "surface_layer": "classic-mm5",
-            "turbulence": "smagorinsky-2d"
+            "turbulence": "smagorinsky-2d",
+            "urban": "none"
           },
           "governance": {
             "acknowledged": true,
@@ -101,22 +105,23 @@
             "ra_lw_physics": 4,
             "ra_sw_physics": 4,
             "sf_sfclay_physics": 91,
-            "sf_surface_physics": 2
+            "sf_surface_physics": 2,
+            "sf_urban_physics": 0
           }
         }
       },
       "profile": null,
-      "registry_sha256": "cfa65270147f456d9bb40b409e994c475d245637c0becebe02bd0f748216a049",
+      "registry_sha256": "ce43d0f1cb9a2f64c53bbb586d68cf838e26ac59450fbefb844e1a71e585de0a",
       "schema": "gpuwm-front-door-physics-selection-multi-domain-v1"
     },
     "schema": "gpuwm-native-direct-wrf-export-v3",
     "source": {
       "contract_sha256": "3dc8f753e09932971f253f29bce61e254235edd55342c2e89e74ce026ae9bd02",
-      "geometry_receipt_sha256": "00822454c8ed3f6d74c7a6f66e220600fcbfbe3e501dadfbbee45f724e5f73fe",
-      "prepared_content_sha256": "2f0d758cf4a5aab9dc10357b1d36b1e0b9fd62b2da9c19148b388584a9bc8c7c",
-      "prepared_header_sha256": "8a85cae47355c1f43e06b9757233bab97b82c43d675cb82a5d6de406fa7a5aeb",
+      "geometry_receipt_sha256": "d5781bb416e9224470748ef823af25b357a88335c27268b4e10c51776a1d04a4",
+      "prepared_content_sha256": "2f7f7cf96411ded4db64dc877f55b639d91573cacbfb56a09f8969f4d71032ab",
+      "prepared_header_sha256": "4549e8df21d30f39fbb011b28f9386e6013f68614c886056e1a2dd7ace915bc6",
       "resolved_physics_contract_sha256": "f486395516ca9746d8b259f06ccb5913a23210515f3cd0328348f09695cb1366",
-      "static_cache_sha256": "8633d5f7b50d72c9306b5d9e661dd6116c8dae1460731f08dc2d18dce8591a14"
+      "static_cache_sha256": "44f756ab7ebf82ea8808b8072e9cfec627d18a6ddca79cbd406157f8d4a33d17"
     },
     "status": "READY",
     "valid_time": "2026-08-17_00:00:00"
@@ -133,7 +138,7 @@
     "cache": {
       "bytes": 2085978,
       "path": "native-static.npz",
-      "sha256": "8633d5f7b50d72c9306b5d9e661dd6116c8dae1460731f08dc2d18dce8591a14"
+      "sha256": "44f756ab7ebf82ea8808b8072e9cfec627d18a6ddca79cbd406157f8d4a33d17"
     },
     "geometry": {
       "center_lat": 40.0,
@@ -181,6 +186,7 @@
       "truelat2": 60.0
     },
     "schema": "gpuwm-native-static-direct-v1",
+    "static_sampling_contract": "wps-sampling-portable-v1",
     "status": "PASS"
   },
   "moisture_floors": {
@@ -198,7 +204,7 @@
   },
   "prepared_cache": {
     "array_count": 106,
-    "content_sha256": "2f0d758cf4a5aab9dc10357b1d36b1e0b9fd62b2da9c19148b388584a9bc8c7c",
+    "content_sha256": "2f7f7cf96411ded4db64dc877f55b639d91573cacbfb56a09f8969f4d71032ab",
     "path": "prepared-cache",
     "payload_bytes": 17293992,
     "schema": "gpuwm-prepared-real-cache-v1",
@@ -210,7 +216,7 @@
       "abi_version": 1,
       "name": "libgpuwm_preprocess_cpu.so",
       "required_abi_version": 1,
-      "sha256": "186493dab9565fba8bc75224b4e73a524a3bceef66ffdfe02acf50a29a6c91f9"
+      "sha256": "2aca62887c132596ad69f867fcb84815501de785bce092ca5c77c2f3e3939ab7"
     },
     "contracts": {
       "surface_pressure_mapping": {
@@ -223,21 +229,21 @@
         "zap_close_levels_pa": 500.0
       }
     },
-    "host_cpu_count": 64,
+    "host_cpu_count": 24,
     "implementation": "rust-scoped-threads-fp32-v1",
     "implementation_tree": {
       "files": {
         "gpuwm/ingest/atmospheric_window.py": {
-          "bytes": 9830,
-          "sha256": "f2cea1498f7cdd77b79fbc7114ac6e0d36bc82c7c59e7bb2da2a4e2bc72f301a"
+          "bytes": 10659,
+          "sha256": "2bd674f105db513b0cfacc9c7881447f4a805354bef9e42f0d9f90ec65b16acd"
         },
         "gpuwm/ingest/cpu_backend.py": {
-          "bytes": 33759,
-          "sha256": "7af854b3c32aeeccf5a9881223946a33eb9df1760372b417b81dcfab471cf856"
+          "bytes": 82972,
+          "sha256": "961d9d4e7f7b05a360ecd17d5b8248a39bbf70033516ff00972d5f3f4c744c95"
         },
         "gpuwm/ingest/horiz.py": {
-          "bytes": 118190,
-          "sha256": "9c46c83952764ce85511d9a31960edfdafa02a6b64a990b071f4b312f001680d"
+          "bytes": 109477,
+          "sha256": "1eff61ef52e79bdbd212dff7dd118bebe03134388a3bc4b5ad76ae8af25bae3d"
         },
         "gpuwm/ingest/interpolation_support.py": {
           "bytes": 2555,
@@ -248,26 +254,43 @@
           "sha256": "250a97b710e696c650f817be01cad3459495cc1ab20e7e509580c223f6c4a177"
         },
         "gpuwm/ingest/preprocess_backend.py": {
-          "bytes": 29482,
-          "sha256": "6192f153bcc8028833b94d1594f977401380035efef4c909ce16f1d165e2b45b"
+          "bytes": 57936,
+          "sha256": "1ce60d3ccd547d9c90a5efa4c84b8f22c6baf925dc49d002527947f4915d2645"
         },
         "gpuwm/ingest/real.py": {
-          "bytes": 230648,
-          "sha256": "03d44694cd0675d7097835b5e335ca145b5ccbdaeb8230b2a526f6b9a80426ac"
+          "bytes": 250606,
+          "sha256": "8eb3989f1860705cea4df3657413acaa7002aa0dd2267c30d1f29b4719bda1b5"
         },
         "gpuwm/ingest/vert.py": {
           "bytes": 18000,
           "sha256": "bf3d77e20d7e3a2ab4c5fdd651c38e06e26b6e057b4ac139e28bf859704c0c80"
         },
         "gpuwm/ingest/water_temperature.py": {
-          "bytes": 54200,
-          "sha256": "36ec49d56613dc53b43f5652fe2baf30ccc95253216f4dfcaa70c6cb92b7d52b"
+          "bytes": 42305,
+          "sha256": "d7d3c29d09dea0103149999dbc96225abbcce6a19bebd551477d5f6a5f308f19"
         }
       },
       "schema": "gpuwm-preprocess-source-tree-v1",
-      "sha256": "91b5791d5344bb9c97ec18dd20b96a2d670093b63efad4656a8d2e1f523aa471"
+      "sha256": "aeb389cbf2db1b0922d51141d4638ed812ace8217b42b7bd689914eac5b76f8e"
+    },
+    "masked_surface_chain": {
+      "bridge": {
+        "abi_version": 1,
+        "name": "libgpuwm_preprocess_cpu.so",
+        "sha256": "2aca62887c132596ad69f867fcb84815501de785bce092ca5c77c2f3e3939ab7"
+      },
+      "entry": "gpuwm_wps_masked_chain_f64",
+      "implementation": "rust-wps-masked-chain-f64-v2",
+      "stencil_entry": "gpuwm_masked_bilinear_stencil_f64",
+      "stencil_implementation": "rust-masked-bilinear-stencil-f64-v1",
+      "workers": "auto"
     },
     "schema": "gpuwm-preprocess-implementation-v2",
+    "selection": {
+      "backend": "cpu",
+      "reason": "named by the caller",
+      "requested": "cpu"
+    },
     "vertical_interpolation": [
       {
         "backend": "cpu",
@@ -279,7 +302,7 @@
     ],
     "workers": "auto"
   },
-  "proof_content_sha256": "391d07157d285c492a4534f0e99ba38d3192db163269a8b9d61ec7d913135045",
+  "proof_content_sha256": "b94b08dd76740a98c84522c6ef6a310fcc7070cb9b25889de936042c13d36e3d",
   "schema": "gpuwm-mapped-direct-wrf-proof-v1",
   "soil_texture_downscale": {
     "advisory": false,
@@ -462,31 +485,31 @@
     "decoders": {
       "gpuwm_mapped_engine": {
         "path": "${REPO_ROOT}/tools/rw_wps/target/release/gpuwm_mapped_engine",
-        "sha256": "5ecfaeba806574f61fab39a63b1a5b4da9e58ad4cd9bb823310cdf3f31afa1e1"
+        "sha256": "c1235c932944d4544f1876451eee081f3b5053243ed34f66c0537becf61f3dd2"
       }
     },
     "frame_count": 2,
     "frames": [
       {
         "field_count": 17,
-        "header_sha256": "34d14af2029803a2509f53b1eba4f3c774dfb40b35b1e51d6b0387bb4f9ddfe5",
+        "header_sha256": "65dbab69264348f1753c1562222c49b2dcec689f5facae63d546b93f3cab079f",
         "terrain_sha256": "c4d1b51b58194bef3b548ff90a06282303b76c69a36790b29e1ec97e0596aabd"
       },
       {
         "field_count": 17,
-        "header_sha256": "83a8eab007fc73c4b7cb3dd8cd22b7e3bbea468fcbe9dbc9c95c96c4eb54b4b5",
+        "header_sha256": "23e9c5eee5f1c5c29646e2b3593916d1342cd285d22639ac9b788c5147e7f63a",
         "terrain_sha256": "c4d1b51b58194bef3b548ff90a06282303b76c69a36790b29e1ec97e0596aabd"
       }
     ],
     "input_manifest": {
       "path": "${TMPDIR}/mem001-inputs.json",
-      "sha256": "d82de51e6ad39fdb262be8dd0d87a36e956ecddaeb5fbb5181bbb49b383b1010"
+      "sha256": "b8c4ff124d15bc32e8c2420a20dd53d7d8dba2527d1ca06cea303dee2e713a56"
     },
     "mapping": {
       "path": "${REPO_ROOT}/gpuwm/authorities/rw-wps-aigefs-member-hybrid-grib2.mapping.json",
-      "sha256": "c7ede9fa23ca9c9903ffb46be27a36f8a613db8eb3f9d32611fbda0e047d44d7"
+      "sha256": "d34ff39693af3a6cef6d4f3d83a72c7bff1d710470518d986724eae368bde623"
     },
-    "receipt_content_sha256": "646b52eecaee56f49b28364a7279b565ed616d88f67f6ae617f36ee1c0c3afce",
+    "receipt_content_sha256": "1dd7288bdc6e5c6f0576fb4f6c134bf7847f2ad165c4b6499ae58ca5cd025170",
     "schema": "gpuwm-mapped-composition-receipt-v1",
     "soil_layers": {
       "depth_units": "m",
@@ -689,23 +712,23 @@
       "TMN"
     ],
     "path": "native-static.npz",
-    "sha256": "8633d5f7b50d72c9306b5d9e661dd6116c8dae1460731f08dc2d18dce8591a14"
+    "sha256": "44f756ab7ebf82ea8808b8072e9cfec627d18a6ddca79cbd406157f8d4a33d17"
   },
   "status": "READY_NOT_YET_STOCK_WRF_GATED",
   "stock_wrf_export": "optional",
   "timing_seconds": {
-    "decode_and_compose": 58.62492066899995,
-    "direct_wrf_export": 6.688250505000269,
-    "initialize_all_times": 2.1729857539999102,
-    "static": 17.77880594899989,
-    "total": 92.13391883400027,
-    "write_prepared_cache": 0.7018553159996372
+    "decode_and_compose": 4.96526814205572,
+    "direct_wrf_export": 4.4529051900608465,
+    "initialize_all_times": 2.412525148014538,
+    "static": 9.327103109098971,
+    "total": 27.489207473001443,
+    "write_prepared_cache": 0.04337423504330218
   },
   "vertical_coordinate": {
     "derivation": {
       "configured_etac": 0.2,
-      "configured_floor_pa": 46407.925999189145,
-      "configured_floor_terrain_m": 6082.261344564119,
+      "configured_floor_pa": 46407.92599918899,
+      "configured_floor_terrain_m": 6082.26134456414,
       "etac": 0.2,
       "governing_column": {
         "field": "d01 static terrain",
@@ -729,8 +752,8 @@
         }
       ],
       "thinnest_layer": {
-        "configured_fraction": 0.7608561150715982,
-        "fraction": 0.7608561150715982,
+        "configured_fraction": 0.7608561150715989,
+        "fraction": 0.7608561150715989,
         "index": 20,
         "margin_met": true,
         "min_layer_fraction": 0.15

@@ -1,0 +1,177 @@
+ICATE i4 0
+DZR f4 1 4
+DZB f4 1 4
+DZG f4 1 4
+ZR_TBL f4 1 11
+SIGMA_ZED_TBL f4 1 11
+Z0C_TBL f4 1 11
+Z0HC_TBL f4 1 11
+ZDC_TBL f4 1 11
+SVF_TBL f4 1 11
+R_TBL f4 1 11
+RW_TBL f4 1 11
+HGT_TBL f4 1 11
+AH_TBL f4 1 11
+ALH_TBL f4 1 11
+BETR_TBL f4 1 11
+BETB_TBL f4 1 11
+BETG_TBL f4 1 11
+FRC_URB_TBL f4 1 11
+COP_TBL f4 1 11
+BLDAC_FRC_TBL f4 1 11
+COOLED_FRC_TBL f4 1 11
+PWIN_TBL f4 1 11
+BETA_TBL f4 1 11
+SW_COND_TBL i4 1 11
+TIME_ON_TBL f4 1 11
+TIME_OFF_TBL f4 1 11
+TARGTEMP_TBL f4 1 11
+GAPTEMP_TBL f4 1 11
+TARGHUM_TBL f4 1 11
+GAPHUM_TBL f4 1 11
+PERFLO_TBL f4 1 11
+PV_FRAC_ROOF_TBL f4 1 11
+GR_FRAC_ROOF_TBL f4 1 11
+GR_FLAG_TBL i4 0
+GR_TYPE_TBL i4 0
+IRHO_TBL f4 1 24
+HSESF_TBL f4 1 11
+CAPR_TBL f4 1 11
+CAPB_TBL f4 1 11
+CAPG_TBL f4 1 11
+AKSR_TBL f4 1 11
+AKSB_TBL f4 1 11
+AKSG_TBL f4 1 11
+ALBR_TBL f4 1 11
+ALBB_TBL f4 1 11
+ALBG_TBL f4 1 11
+EPSR_TBL f4 1 11
+EPSB_TBL f4 1 11
+EPSG_TBL f4 1 11
+Z0R_TBL f4 1 11
+Z0B_TBL f4 1 11
+Z0G_TBL f4 1 11
+Z0HB_TBL f4 1 11
+Z0HG_TBL f4 1 11
+TRLEND_TBL f4 1 11
+TBLEND_TBL f4 1 11
+TGLEND_TBL f4 1 11
+AKANDA_URBAN_TBL f4 1 11
+NUMDIR_TBL i4 1 11
+STREET_DIRECTION_TBL f4 2 3 11
+STREET_WIDTH_TBL f4 2 3 11
+BUILDING_WIDTH_TBL f4 2 3 11
+NUMHGT_TBL i4 1 11
+HEIGHT_BIN_TBL f4 2 50 11
+HPERCENT_BIN_TBL f4 2 50 11
+BOUNDR_DATA i4 0
+BOUNDB_DATA i4 0
+BOUNDG_DATA i4 0
+CH_SCHEME_DATA i4 0
+TS_SCHEME_DATA i4 0
+AHOPTION i4 0
+AHDIUPRF f4 1 24
+HSEQUIP_TBL f4 1 24
+IMP_SCHEME i4 0
+IRI_SCHEME i4 0
+ALHOPTION i4 0
+GROPTION i4 0
+FGR f4 0
+OASIS f4 0
+DZGR f4 1 4
+ALHSEASON f4 1 4
+ALHDIUPRF f4 1 48
+PORIMP f4 1 3
+DENGIMP f4 1 3
+ivgtyp i4 2 10 1
+tsk_in f4 2 10 1
+tmn_in f4 2 10 1
+tslb_in f4 3 10 4 1
+smois_in f4 3 10 4 1
+frc_in f4 2 10 1
+dims i4 1 18
+frc_urb2d f4 2 10 1
+utype_urb2d i4 2 10 1
+xxxr_urb2d f4 2 10 1
+xxxb_urb2d f4 2 10 1
+xxxg_urb2d f4 2 10 1
+xxxc_urb2d f4 2 10 1
+tr_urb2d f4 2 10 1
+tb_urb2d f4 2 10 1
+tg_urb2d f4 2 10 1
+tc_urb2d f4 2 10 1
+qc_urb2d f4 2 10 1
+sh_urb2d f4 2 10 1
+lh_urb2d f4 2 10 1
+g_urb2d f4 2 10 1
+rn_urb2d f4 2 10 1
+ts_urb2d f4 2 10 1
+trl_urb3d f4 3 10 4 1
+tbl_urb3d f4 3 10 4 1
+tgl_urb3d f4 3 10 4 1
+tgrl_urb3d f4 3 10 4 1
+smr_urb3d f4 3 10 4 1
+cmcr_urb2d f4 2 10 1
+tgr_urb2d f4 2 10 1
+drelr_urb2d f4 2 10 1
+drelb_urb2d f4 2 10 1
+drelg_urb2d f4 2 10 1
+flxhumr_urb2d f4 2 10 1
+flxhumb_urb2d f4 2 10 1
+flxhumg_urb2d f4 2 10 1
+lp_urb2d f4 2 10 1
+lb_urb2d f4 2 10 1
+hgt_urb2d f4 2 10 1
+mh_urb2d f4 2 10 1
+stdh_urb2d f4 2 10 1
+lf_urb2d f4 3 10 4 1
+hi_urb2d f4 3 10 15 1
+trb_urb4d f4 3 10 360 1
+tw1_urb4d f4 3 10 360 1
+tw2_urb4d f4 3 10 360 1
+tgb_urb4d f4 3 10 20 1
+tlev_urb3d f4 3 10 18 1
+qlev_urb3d f4 3 10 18 1
+tw1lev_urb3d f4 3 10 36 1
+tw2lev_urb3d f4 3 10 36 1
+tglev_urb3d f4 3 10 2 1
+tflev_urb3d f4 3 10 34 1
+sf_ac_urb3d f4 2 10 1
+lf_ac_urb3d f4 2 10 1
+cm_ac_urb3d f4 2 10 1
+sfvent_urb3d f4 2 10 1
+lfvent_urb3d f4 2 10 1
+sfwin1_urb3d f4 3 10 36 1
+sfwin2_urb3d f4 3 10 36 1
+sfw1_urb3d f4 3 10 36 1
+sfw2_urb3d f4 3 10 36 1
+sfr_urb3d f4 3 10 36 1
+sfg_urb3d f4 3 10 2 1
+ep_pv_urb3d f4 2 10 1
+t_pv_urb3d f4 3 10 36 1
+trv_urb4d f4 3 10 36 1
+qr_urb4d f4 3 10 36 1
+qgr_urb3d f4 2 10 1
+tgr_urb3d f4 2 10 1
+drain_urb4d f4 3 10 36 1
+draingr_urb3d f4 2 10 1
+sfrv_urb3d f4 3 10 36 1
+lfrv_urb3d f4 3 10 36 1
+dgr_urb3d f4 3 10 36 1
+dg_urb3d f4 3 10 2 1
+lfr_urb3d f4 3 10 36 1
+lfg_urb3d f4 3 10 2 1
+a_u_bep f4 3 10 5 1
+a_v_bep f4 3 10 5 1
+a_t_bep f4 3 10 5 1
+a_q_bep f4 3 10 5 1
+a_e_bep f4 3 10 5 1
+b_u_bep f4 3 10 5 1
+b_v_bep f4 3 10 5 1
+b_t_bep f4 3 10 5 1
+b_q_bep f4 3 10 5 1
+b_e_bep f4 3 10 5 1
+dlg_bep f4 3 10 5 1
+dl_u_bep f4 3 10 5 1
+sf_bep f4 3 10 5 1
+vl_bep f4 3 10 5 1

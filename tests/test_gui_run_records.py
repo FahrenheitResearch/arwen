@@ -217,3 +217,37 @@ def test_a_folder_with_a_colon_lists_and_opens_where_the_file_system_allows_it(g
     assert [row["id"] for row in body["runs"]] == ["2026-09-24T12:00 run"]
     response, _ = request(server, "GET", "/api/runs/" + body["runs"][0]["url"] + "/status")
     assert response.status == 200
+
+
+def test_a_waiting_run_says_what_it_waits_on_and_a_late_lead_says_which(tmp_path):
+    """A136: the run page reads a seam wait off the heartbeat's own wait
+    record, and the lead a run stopped on (exit 75) off its event log."""
+
+    run = make_run(tmp_path, "waiting", pid=os.getpid())
+    wait = {"on": "source", "lead": 30, "expected_at": "2026-09-30T15:53:00Z",
+            "late_at": "2026-09-30T16:53:00Z",
+            "since_utc": "2026-09-30T15:53:10Z"}
+    (run / "run-progress.json").write_text(json.dumps({
+        "status": "waiting:source", "model_elapsed_seconds": 1800.0,
+        "wait": wait}), encoding="utf-8")
+    info = runs.status(run)
+    assert info["state"] == "running"
+    assert info["phase"] == "waiting:source"
+    # The heartbeat's own record, plus where the model stands: the block gained the model time (A136 L8), so the
+    # record's fields are pinned exactly and the model time beside them.
+    assert {key: info["wait"][key] for key in wait} == wait
+    assert info["wait"]["model_elapsed_seconds"] == 1800.0
+    assert info["wait"]["model_valid_time"] == "2026-09-24T00:30:00Z"
+
+    behind = {"event": "source_behind", "source": "gefs",
+              "cycle": "2026-09-30T12", "lead": 30,
+              "valid_time": "2026-10-01T18:00:00Z",
+              "expected_at": "2026-09-30T15:53:00Z",
+              "late_at": "2026-09-30T16:53:00Z", "late_after_minutes": 60,
+              "last_answer": "not_posted", "model_elapsed_seconds": 1800.0,
+              "model_valid_time": "2026-09-24T00:30:00Z", "frames_kept": 2,
+              "checkpoint": None}
+    ended = make_run(tmp_path, "behind", pid=os.getpid(), end=behind)
+    facts = runs.event_facts(ended / "events.jsonl")
+    assert facts["source_behind"]["lead"] == 30
+    assert facts["source_behind"]["frames_kept"] == 2

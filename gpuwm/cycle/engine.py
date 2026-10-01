@@ -24,6 +24,7 @@ cycle_index, parent_record) -> [records]`` carrying geographic keys.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -478,9 +479,33 @@ def build_model_parent_engine(*, root, clock, parent_kind: str, mesh_id: str,
                 # because the kind string looks impressive.
                 "replay_stub": False}
 
+    admission: dict[str, Any] = {}
+
+    def _admit_device() -> None:
+        # Once per process, before the first leg: the worker builds the
+        # mesh's host state and only then the port's device stack, so a
+        # mesh the card cannot hold used to die inside the worker after
+        # the host preparation.  Priced by the port's own model.
+        if admission:
+            return
+        cells, mesh = mpas_bridge.mesh_cells(port_config)
+        admission.update(mpas_bridge.admit_parent_device(
+            port_root=port_root, cells=cells, mesh=mesh,
+            levels=mpas_bridge.mesh_levels(port_config),
+            card=mpas_bridge.probe_card()))
+        if admission.get("sized"):
+            print(f"cycle: device -- {mesh} ({cells:,} cells) needs "
+                  f"{admission['required_mib']:,.0f} MiB of "
+                  f"{admission['free_mib']:,.0f} MiB free on "
+                  f"{admission['card']}", file=sys.stderr, flush=True)
+        else:
+            print(f"cycle: device -- not sized: {admission['reason']}",
+                  file=sys.stderr, flush=True)
+
     def advance(cycle_index: int, anchor_in) -> dict:
         out = work / f"cycle-{int(cycle_index):03d}"
         previous = latest_anchor(root)
+        _admit_device()
 
         if previous is None:
             # Cycle 1 has no analysed state to re-enter, so it cannot

@@ -47,6 +47,13 @@ def _rolling_door(source: str, *, lag_hours: int = 3, dropped=()):
     return probe
 
 
+#: The newest run the stand-in door holds that `latest` reaches at ``NOW``.
+#: ICON-EU's measured publication lag (f000 at + 2 h 40 min, 2026-09-29) now
+#: starts the walk at its 09Z run, which the door holds at + 3 h; the route
+#: used to declare 5 h and so never asked about it.  ICON global declares 5 h.
+_NEWEST = {"icon-global": "2026-09-28T06Z", "icon-eu": "2026-09-28T09Z"}
+
+
 @pytest.mark.parametrize("source,cycle,age", [
     ("icon-global", datetime(2026, 9, 27, 0), 36),
     ("icon-eu", datetime(2026, 9, 27, 6), 30),
@@ -61,7 +68,7 @@ def test_a_cycle_past_the_doors_retention_is_refused_as_gone(source, cycle, age)
                               f"only about the newest 24 h of {source.upper()} cycles and "
                               f"this one is {age} h old, with no archive behind it, so it "
                               "will not appear by waiting; ")
-    assert (f"the newest complete {source.upper()} cycle covering f003 is 2026-09-28T06Z "
+    assert (f"the newest complete {source.upper()} cycle covering f003 is {_NEWEST[source]} "
             "-- pass that, or --cycle latest") in refusal
     assert "not published" not in refusal
     with pytest.raises(RuntimeError, match="is no longer on the server"):
@@ -78,7 +85,7 @@ def test_a_cycle_not_yet_published_is_still_told_to_wait(source):
 
     assert refusal == (f"{source.upper()} cycle 2026-09-28T12Z is not published through "
                        f"f003 yet; the newest complete {source.upper()} cycle covering f003 "
-                       "is 2026-09-28T06Z -- pass that, or --cycle latest to resolve it "
+                       f"is {_NEWEST[source]} -- pass that, or --cycle latest to resolve it "
                        "automatically")
 
 
@@ -92,7 +99,7 @@ def test_an_older_cycle_missing_inside_the_retention_will_not_appear_by_waiting(
 
     assert refusal == ("ICON-EU cycle 2026-09-28T00Z is not on opendata.dwd.de through f003, "
                        "and waiting will not bring it: a newer cycle is already complete; the "
-                       "newest complete ICON-EU cycle covering f003 is 2026-09-28T06Z -- pass "
+                       f"newest complete ICON-EU cycle covering f003 is {_NEWEST['icon-eu']} -- pass "
                        "that, or --cycle latest to resolve it automatically")
 
 

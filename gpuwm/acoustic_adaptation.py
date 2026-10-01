@@ -76,6 +76,51 @@ takes at its shortest steps (:func:`gpuwm.core.adaptive_clock
 .least_sound_steps`) and writes six as ``min_time_step_sound``, the floor
 the clock keeps its derived count at or above, so the six reach the
 dynamics and a domain on gentler ground keeps WRF's derived count.
+
+THE OFF-CENTERING FLOOR.  The substep count cannot rescue a domain whose
+``epssm`` is too small for its ground: past the slope at which six
+substeps were measured stable at that ``epssm`` (0.50 at WRF's default
+0.1), no measured count holds.  A WRF namelist that lists ``epssm`` once
+leaves every nest on WRF's Registry default 0.1, and so does a config that
+never names it.  A user's two-domain mountain namelist did exactly
+that: a 1 km nest whose unsmoothed GMTED2010 30" terrain reads a steepest
+slope of 0.87, under a 3 km parent at ``epssm`` 0.5.  On the same
+``real.exe`` files (WPS v4.7.0 and WRF 4.7.1 on GFS, 2026-09-22 12 UTC):
+
+* WRF 4.7.1 itself stops: the nest's vertical Courant number passes 2
+  at model step 17 on the steepest face and ``wrf.exe`` faults at step
+  19, on WRF's four substeps;
+* gpuwm goes non-finite at nest step 46 on six substeps (this rule's
+  count for that slope), and at step 34 on the same nest prepared from
+  ERA5 with Copernicus GLO-30 terrain and WUDAPT land cover, with the
+  urban canopy on or off;
+* a shorter long step alone does not hold: at 2.5 s gpuwm goes
+  non-finite at nest step 417 and WRF faults within 70 model seconds;
+* ten substeps at 0.1 held three hours in gpuwm where six did not, but
+  the ridge map measured eight no more stable than six, so the floor
+  raises the off-centering, not the count;
+* the nest's ``epssm`` raised to 0.2, 0.3, 0.4 or 0.5 runs three hours
+  in gpuwm; WRF on its four substeps still stops at 0.2 (step 43, same
+  face) and ran the 56 minutes it was given at 0.5 with no Courant
+  breach.
+
+So the real cause is the off-centering over the steepest face, not the
+long step and not the nest's terrain blend (that face sits 26 cells
+inside the nest, past the five-cell blend), and the remedy is the one
+WRF's own guidance gives: an ``epssm`` that exceeds what the slope
+needs.  The floor reads the ridge map, not this one case: its rows were
+measured under 10 to 25 m/s across the ridge, and WRF stopping at 0.2
+here says the least value one calm afternoon tolerates is no floor.
+:func:`offcentering_floor` reads that from the measured map above: the
+least ``epssm`` whose six-substep bound is steeper than the domain's
+ground, and past every row the last row, the most stable off-centering
+measured.  Where the domain's ``epssm`` is the model's choice (unset, the
+``"auto"`` sentinel, or a WRF Registry default the importer carried --
+``ExperimentConfig.auto_epssm``) it is raised to the floor and the run
+says so; on gentler ground, which is every domain the first row holds,
+nothing moves.  An ``epssm`` the user chose below the floor is refused by
+name, with the floor named, because that configuration was measured to
+stop: WRF stops on it too.
 """
 
 from __future__ import annotations
@@ -184,6 +229,27 @@ def steepest_slope(terrain, dx: float, dy: float, *, msfu=None,
     return SlopeReading(label, slope, face)
 
 
+def offcentering_floor(slope: float) -> float | None:
+    """The least ``epssm`` the measured map holds this slope at, if the
+    first row does not.
+
+    ``None`` where WRF's default off-centering, the first row, already
+    holds the slope with six substeps: there no floor applies and nothing
+    moves.  Otherwise the ``epssm`` of the first row whose six-substep
+    bound is steeper than the slope, and past every row the last row's,
+    the most stable off-centering measured (the run then still says its
+    ground is past every stable measurement).
+    """
+
+    slope = float(slope)
+    if slope < STABLE_SLOPE_BY_OFFCENTERING[0][2]:
+        return None
+    for epssm, _four, six in STABLE_SLOPE_BY_OFFCENTERING:
+        if slope < six:
+            return float(epssm)
+    return float(STABLE_SLOPE_BY_OFFCENTERING[-1][0])
+
+
 def stable_slopes(epssm: float) -> tuple[float, float, float]:
     """The measured row that applies at this off-centering.
 
@@ -220,10 +286,33 @@ class AcousticAdaptation:
     four_below: float
     six_below: float
     adaptive: bool = False
+    #: The model-chosen ``epssm`` the off-centering floor raised to
+    #: ``epssm`` (:func:`offcentering_floor`), or ``None`` where the domain
+    #: runs the ``epssm`` it was configured with.
+    configured_epssm: float | None = None
 
     @property
     def adapted(self) -> bool:
         return self.time_step_sound != self.configured
+
+    @property
+    def offcentering_raised(self) -> bool:
+        return self.configured_epssm is not None
+
+    def offcentering_sentence(self) -> str:
+        """The plain line a run prints when the floor raised ``epssm``."""
+
+        reading = self.reading
+        held = ("the least off-centering measured stable on it"
+                if reading.slope < self.six_below
+                else "the most stable off-centering measured")
+        return (
+            f"acoustic off-centering: {reading.label}'s steepest terrain "
+            f"slope is {reading.slope:.2f} ({reading.degrees:.0f} degrees), "
+            f"and its epssm {self.configured_epssm:g} is the default, which "
+            f"no acoustic substep count was measured stable on past "
+            f"{stable_slopes(self.configured_epssm)[2]:.2f}; "
+            f"{reading.label} runs epssm {self.epssm:g}, {held}")
 
     @property
     def beyond_measured(self) -> bool:
@@ -296,6 +385,11 @@ class AcousticAdaptation:
             row["adaptive"] = True
             if self.adapted:
                 row["min_time_step_sound"] = int(self.time_step_sound)
+        if self.offcentering_raised:
+            # Only where the floor raised a model-chosen epssm, so every
+            # other record reads as it did.  "epssm" above is what runs.
+            row["configured_epssm"] = float(self.configured_epssm)
+            row["epssm_basis"] = "measured off-centering floor"
         return row
 
 
@@ -354,6 +448,9 @@ def adapt_experiment_acoustics(
     ``None`` prints nothing.
     """
 
+    auto_epssm = {int(gid) for gid in
+                  (getattr(exp, "auto_epssm", ()) or ())}
+    refusals = []
     adaptations = []
     domains = []
     for dc in exp.domains:
@@ -361,11 +458,26 @@ def adapt_experiment_acoustics(
         if reading is None:
             domains.append(dc)
             continue
-        adaptation = derive_acoustics(dc.grid_id, dc.run, reading)
+        run = dc.run
+        configured_epssm = None
+        floor = offcentering_floor(reading.slope)
+        if floor is not None and float(run.epssm) < floor - 1e-12:
+            if int(dc.grid_id) in auto_epssm:
+                configured_epssm = float(run.epssm)
+                run = replace(run, epssm=floor)
+            else:
+                refusals.append(_explicit_epssm_refusal(
+                    reading, float(run.epssm), floor))
+        adaptation = derive_acoustics(dc.grid_id, run, reading)
+        if configured_epssm is not None:
+            adaptation = replace(adaptation,
+                                 configured_epssm=configured_epssm)
         adaptations.append(adaptation)
-        if adaptation.adapted:
+        if adaptation.adapted or adaptation.offcentering_raised:
             dc = replace(dc, run=adapted_run(
-                dc.run, adaptation.time_step_sound))
+                run, adaptation.time_step_sound))
+        if adaptation.offcentering_raised and announce is not None:
+            announce(adaptation.offcentering_sentence())
         # One line per domain: the caution already names the count it runs.
         if adaptation.beyond_measured:
             if caution is not None:
@@ -373,9 +485,40 @@ def adapt_experiment_acoustics(
         elif adaptation.adapted and announce is not None:
             announce(adaptation.sentence())
         domains.append(dc)
-    if not any(adaptation.adapted for adaptation in adaptations):
+    if refusals:
+        raise ValueError(" ".join(refusals))
+    if not any(adaptation.adapted or adaptation.offcentering_raised
+               for adaptation in adaptations):
         return exp, tuple(adaptations)
     return replace(exp, domains=tuple(domains)), tuple(adaptations)
+
+
+def _explicit_epssm_refusal(reading: SlopeReading, epssm: float,
+                            floor: float) -> str:
+    """Why a chosen ``epssm`` under the floor is refused, and the remedy.
+
+    THE BREAKAGE IT PREVENTS: a domain whose off-centering no measured
+    substep count holds on its ground stops within minutes, in gpuwm and
+    in WRF alike (the user's 1 km mountain nest at 0.1: WRF 4.7.1 faulted at
+    step 19, gpuwm went non-finite at step 46); the run would spend its
+    preparation and then fail without saying why.
+    """
+
+    # The remedy leads: a worker's error reaches the terminal cut to its
+    # first line's head, and the cut must not fall before the fix.
+    return (
+        f"{reading.label}'s epssm {epssm:g} is set explicitly, below "
+        f"{floor:g}, the least measured off-centering that holds its "
+        f"steepest terrain slope {reading.slope:.2f} "
+        f"({reading.degrees:.0f} degrees): set {reading.label}'s epssm to "
+        f"at least {floor:g} (or \"auto\", or leave it unset, and gpuwm "
+        f"takes the measured floor), or smooth its terrain.  epssm "
+        f"{epssm:g} was measured stable with any acoustic substep count "
+        f"only below {stable_slopes(epssm)[2]:.2f}: a 1 km nest over 0.87 "
+        f"at epssm 0.1 stopped within minutes in gpuwm and in WRF 4.7.1 "
+        f"alike.  A TOML written by gpuwm import-namelist before 2.8.1 "
+        f"spells out WRF's default 0.1 even where the namelist left it "
+        f"unset; importing the namelist pair again writes \"auto\".")
 
 
 #: The mechanism behind both lines, printed under ``--explain``.
@@ -387,7 +530,9 @@ _WHY = (
     "waves into the explicit half of the step.  The engine's measured "
     "stability map (gpuwm/acoustic_adaptation.py) gives, for each epssm, "
     "the slope at which four substeps per step fail and the slope six "
-    "hold; more than six holds no more.")
+    "hold; more than six holds no more.  Past the slope six hold at a "
+    "domain's epssm no count holds, so a default epssm is raised to the "
+    "least measured value that holds the slope.")
 
 
 def adapt_experiment_to_terrain(exp, readings: Mapping[int, SlopeReading]):

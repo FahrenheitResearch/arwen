@@ -192,10 +192,13 @@ def test_a_source_outside_the_route_table_downloads_on_its_own_spacing():
 
 def test_a_named_fetch_spacing_is_the_one_judged():
     # ECMWF IFS 00Z and 12Z files are 3-hourly through hour 144 and 6-hourly after (06Z and 18Z stop at 144): a
-    # request that names 6-hourly leads takes the whole week from those two, the default 3-hourly request from none.
+    # request that names 6-hourly leads takes the whole week from those two, one that names 3-hourly from none.
     now = datetime(2026, 9, 26, 20, 28)
-    assert availability("ecmwf-open-data", 168, now=now)["cycle_hours"] == []
+    assert availability("ecmwf-open-data", 168, now=now, cadence=3)["cycle_hours"] == []
     assert availability("ecmwf-open-data", 168, now=now, cadence=6)["cycle_hours"] == [0, 12]
+    # Naming none, the window takes the 6-hourly ladder past hour 144 by itself (A134), as `gpuwm domain` now
+    # writes it; it used to be judged at 3-hourly and offered no cycle at all.
+    assert availability("ecmwf-open-data", 168, now=now)["cycle_hours"] == [0, 12]
 
 
 def test_a_run_whose_files_thin_out_before_the_end_says_how_far_they_go():
@@ -204,8 +207,10 @@ def test_a_run_whose_files_thin_out_before_the_end_says_how_far_they_go():
     said = verdict(availability("icon-eu", 48, now=now), "2026-09-26T03", now=now)
     assert said["state"] == "no" and said["reason"] == "Starts at 00, 06, 12, 18 UTC for a forecast this long, not at 03."
     assert verdict(availability("icon-eu", 48, now=now), "2026-09-26T00", now=now)["state"] == "yes"
-    # ECMWF IFS files come every 3 hours through hour 144 and every 6 after: the download asks for every 3 hours.
-    said = verdict(availability("ecmwf-open-data", 168, now=now), "2026-09-25T00", now=now)
+    # ECMWF IFS files come every 3 hours through hour 144 and every 6 after: a download that names every 3 hours
+    # cannot reach hour 168.  Naming no spacing, the window takes every 6 hours past hour 144 by itself (A134).
+    assert verdict(availability("ecmwf-open-data", 168, now=now), "2026-09-25T00", now=now)["state"] == "yes"
+    said = verdict(availability("ecmwf-open-data", 168, now=now, cadence=3), "2026-09-25T00", now=now)
     assert said["state"] == "no"
     assert said["reason"] == ("Its files come every 3 hours only through hour 144, so a 168-hour forecast cannot be "
                               "downloaded.")

@@ -1,8 +1,8 @@
 """The SR validator's shared-expression roundoff family (1.9.1 D2).
 
 Shipped 1.9.0 granted the proven WRF positive-sum SR roundoff envelope to
-``mp_physics=6`` alone, while wdm6.cu:635 forms SR with the IDENTICAL
-expression as wsm6.cu:402 -- so a healthy WDM6 real case died on its own
+``mp_physics=6`` alone, while wdm6.cu:672 forms SR with the IDENTICAL
+expression as wsm6.cu:406 -- so a healthy WDM6 real case died on its own
 validator at the first frozen-dominated column (accepted_updates=5 on the
 reference case), reporting WRF expression-order behaviour as a defect.
 
@@ -76,9 +76,9 @@ def test_family_membership_is_the_kernel_audit():
     from gpuwm.core.physics import (_SR_EXPRESSION_FAMILY_STEP_SCALINGS,
                                     _sr_roundoff_envelope)
 
-    # wsm6.cu:402 and wdm6.cu:635: identical expression, identical
+    # wsm6.cu:406 and wdm6.cu:672: identical expression, identical
     # floor(dt/120+0.5) minor-loop split; WDM6 carries four extra
-    # post-sum unit scalings per step (wdm6.cu:618-633).
+    # post-sum unit scalings per step (wdm6.cu:655-667).
     assert _SR_EXPRESSION_FAMILY_STEP_SCALINGS == {6: 0, 16: 4}
     # milbrandt2.cu:2340: the same positive-sum quotient once per call.
     assert _sr_roundoff_envelope(9, 60.0)[1] > 0
@@ -130,7 +130,7 @@ def test_wdm6_envelope_is_the_wsm6_bound_with_step_scalings():
     """WDM6's envelope is the exact analytic widening, not a guess.
 
     B16 = B6 * ((1+u)/(1-u))^4 for the four post-sum unit scalings per
-    step (wdm6.cu:618-633), evaluated by the same exact integer
+    step (wdm6.cu:655-667), evaluated by the same exact integer
     floor((B-1)/ULP(1)) selection as the WSM6 bound.
     """
     from gpuwm.core.physics import (_sr_roundoff_envelope,

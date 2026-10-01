@@ -12149,6 +12149,17 @@ def test_the_tree_runner_emits_the_sentence_from_its_own_main(
         "status": "OK", "readiness": "ok",
         "execution_plan": {"plan_id": "p", "domain_count": 2},
         "wall_seconds": 0.0, "output": {"frame_count": 0}})
+    # main's install preflight refuses before the print on an install
+    # without CuPy, for a reason that is not the one under test.  Only
+    # its question is answered; the runtime is not provided, and with
+    # both stages stubbed nothing on this path loads it.
+    from gpuwm import capabilities
+    installed = capabilities.is_installed
+    monkeypatch.setattr(
+        capabilities, "is_installed",
+        lambda module: (str(module).split(".", 1)[0]
+                        == capabilities.GPU_RUNTIME.module
+                        or installed(module)))
 
     prepared = tmp_path / "prepared"
     prepared.mkdir()

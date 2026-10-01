@@ -39,7 +39,7 @@ as printed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 import functools
 import hashlib
@@ -60,6 +60,7 @@ from gpuwm.filesystem_paths import replace_file_with_retry
 # a module of that name inside exactly the function that needs it.
 from gpuwm import progress as progress_mod
 from gpuwm.progress import ByteCounter
+from gpuwm.source_cycles import PublicationRule
 
 
 #: The packaged acquisition-route document, beside the decode authorities
@@ -73,7 +74,18 @@ ROUTE_TABLE_SCHEMA = "gpuwm-fetch-routes-v1"
 #: resolving a key shape nothing was measured against.  Kept in sync by
 #: ``tests/test_fetch_routes.py``.
 ROUTE_TABLE_SHA256 = (
-    "ba839020dfe10f529e3c6e8242fd84ae3ec92398ed148bf97c4b8c1951b8c6af"
+    # Moved by A136 L3: the NOMADS host row's missing_path (403 for a path
+    # under a cycle directory not created yet), merged over the L1
+    # follow-ups' lateness budgets, then the HRRR NOMADS rung's "why",
+    # which named --wait-for on every default as-posted fetch.  Moved by
+    # A159: hrrr-prs, rap, rrfs and icon-d2 offer cadences 1, 3 and 6,
+    # every one a spacing their hourly ladders publish and their mappings
+    # take.  Then A154: the measured publication_lag rows name the posting
+    # watch without the private machine it ran on (a host name in a wheel).
+    # Moved by A173: every row's cadences list is retired (it refused
+    # spacings the publisher posts and the decode takes, naming no
+    # breakage), and cadence_note states the grammar that replaces it.
+    "4d6d6661e3b790ff11bed9a48179d562e8785f8d8f2b58c8dd3ed39063292427"
 )
 
 #: Sources whose acquisition predates the route table and keeps its own
@@ -149,9 +161,11 @@ class FileRow:
     role: str
     path: str
     primary: bool
-    #: ``all`` -- one per requested lead; ``first`` -- only at the window's
-    #: first lead (the once-per-cycle invariants a producer publishes at
-    #: analysis time alone); ``none`` -- lead-independent.
+    #: ``all`` -- one per requested lead; ``step0`` -- one object at the
+    #: CYCLE's step 0 whatever lead the window starts at (the
+    #: once-per-cycle invariants a producer publishes at analysis time
+    #: alone), fetched with the window's first lead and composed into its
+    #: first valid time; ``none`` -- lead-independent.
     leads: str
     axis: str | None
     idx_sidecar: str | None
@@ -194,6 +208,17 @@ class PublicationEra:
     steps: tuple[tuple[int, int], ...] = ()
 
 
+#: One ``publication_lag`` row: the cycle grid's own rule type, so the
+#: table and the ``latest`` walk read one shape.  ``hours`` and
+#: ``per_lead_hours`` are the EARLIEST posting seen on the ladder head
+#: (lead ``L`` at ``hours + per_lead_hours * L`` after the cycle), which
+#: is where the probed walk starts; ``late_hours`` is how much later the
+#: latest posting seen came, which an answer no probe checks waits for;
+#: ``from_lead`` starts a rule part way up the ladder (GEFS's 00Z
+#: extension past f384 posts about a day after the rest).
+LagRule = PublicationRule
+
+
 @dataclass(frozen=True)
 class Route:
     source_id: str
@@ -203,16 +228,20 @@ class Route:
     host_note: str
     coverage_note: str
     cycle_hours: tuple[int, ...]
-    #: MEASURED hours between a nominal cycle time and this producer's
-    #: bytes appearing on the ladder head.  It is what lets ``--cycle
-    #: latest`` start its walk at a cycle that plausibly exists instead
-    #: of HEAD-ing its way down from a cycle nobody has published yet:
-    #: publication lag differs by hours between these producers, and a
-    #: resolver that assumed one producer's timing spent a probe per
-    #: candidate discovering the others'.
-    publication_lag_hours: float
+    #: MEASURED time between a nominal cycle and this producer's bytes
+    #: appearing on the ladder head, per cycle hour and per lead
+    #: (:class:`LagRule`, most specific first).  It is what lets
+    #: ``--cycle latest`` start its walk at a cycle that plausibly exists
+    #: instead of HEAD-ing its way down from a cycle nobody has published
+    #: yet.  One number per producer was the defect it replaces: ECMWF
+    #: posts its 00/12Z runs an hour after its 06/18Z ones, and a single
+    #: 12 h figure made ``latest`` skip a cycle posted five hours earlier.
+    publication_lag: tuple[LagRule, ...]
     ladders: tuple[tuple[tuple[int, ...] | None, tuple[tuple[int, int], ...]], ...]
-    cadences: tuple[int, ...]
+    #: The spacing a window that names no cadence starts from.  Every
+    #: other spacing the ladder publishes and the preparation takes is
+    #: offered too (A173, :func:`window_spacings`): the row carries no
+    #: list of them.
     default_cadence: int
     layout: str
     members: Mapping[str, object] | None
@@ -224,6 +253,28 @@ class Route:
     record_subset_why: str
     prep: Mapping[str, object]
     publication_eras: tuple[PublicationEra, ...] = ()
+    #: How a cycle posts and how long a run waits for a lead
+    #: (:class:`PostingRow`).  Every loaded route has one: the loader
+    #: refuses a row without it.
+    posting: "PostingRow | None" = None
+
+    def lag_rule(self, cycle_hour: int, lead: int = 0) -> LagRule:
+        """The publication rule for one UTC cycle hour and lead."""
+
+        for rule in self.publication_lag:
+            if rule.matches(cycle_hour, lead):
+                return rule
+        raise ValueError(                      # pragma: no cover - load checks
+            f"{self.source_id}: no publication lag for the {int(cycle_hour):02d}Z cycle")
+
+    def publication_lag_hours(self, cycle_hour: int, lead: int = 0, *,
+                              settled: bool = False) -> float:
+        """Hours after a ``cycle_hour`` cycle until its ``lead`` is published.
+
+        The earliest posting seen, or with ``settled`` the latest.
+        """
+
+        return self.lag_rule(cycle_hour, lead).at(lead, settled=settled)
 
     def host(self, name: str | None) -> Host:
         """One named endpoint, or the head of the ladder.
@@ -245,17 +296,379 @@ class Route:
             f"{offered}.  {self.host_note or ''}".strip())
 
 
+#: The lead rules a file row may declare (see :attr:`FileRow.leads`).
+FILE_LEAD_RULES = frozenset({"all", "step0", "none"})
+
+#: Where a route's prep supplement comes from.  ``every_input`` names
+#: every primary file of the window; ``step0`` names the primary rows'
+#: objects at the CYCLE's step 0, fetched in addition (and bound only as
+#: the supplement) when the window starts later -- the shape of a
+#: producer that publishes its statics in the analysis-step object
+#: alone; ``role:NAME`` names a declared file role.  ``first_input`` (the
+#: window's first file) is retired: it equalled the step-0 object only
+#: for a window starting at f000, and AIFS, its one route, found 0 of
+#: 122 messages matching past f000.
+SUPPLEMENT_ORIGINS = frozenset({"every_input", "step0"})
+
+
 def _file_row(raw: Mapping[str, object]) -> FileRow:
+    leads = str(raw.get("leads", "all"))
+    if leads not in FILE_LEAD_RULES:
+        # Named breakage: the planner treats any rule it does not know as
+        # "one object per requested lead", so a misspelt or retired rule
+        # (``first``, which rendered the window's first lead instead of
+        # the analysis step) would plan a 404 at every later start.
+        raise ValueError(
+            f"{ROUTE_TABLE_NAME}: file role {raw.get('role')!r} declares lead "
+            f"rule {leads!r}; the planner reads {sorted(FILE_LEAD_RULES)}")
     return FileRow(
         role=str(raw["role"]),
         path=str(raw["path"]),
         primary=bool(raw.get("primary", False)),
-        leads=str(raw.get("leads", "all")),
+        leads=leads,
         axis=(str(raw["axis"]) if raw.get("axis") else None),
         idx_sidecar=(str(raw["idx_sidecar"]) if raw.get("idx_sidecar")
                      else None),
         magic=str(raw.get("magic", "GRIB")),
     )
+
+
+def _lag_rules(source_id: str, raw: Mapping[str, object]) -> tuple[LagRule, ...]:
+    """A route's ``publication_lag`` rows, checked at load.
+
+    Named breakage: a cycle hour no rule matches would make ``latest``
+    raise inside a page request for that one hour, a negative lag would
+    start the walk at a cycle that has not been run yet, and a rule that
+    an earlier one shadows for every hour it names would read as a
+    measured fact that nothing ever asks.
+    """
+
+    rows = raw.get("publication_lag")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError(
+            f"{ROUTE_TABLE_NAME}: route {source_id} declares no publication_lag "
+            "rows, so `--cycle latest` has no cycle to start its walk at")
+    rules = []
+    for row in rows:
+        hours = row.get("cycle_hours")
+        try:
+            rule = LagRule(
+                cycle_hours=None if hours is None else tuple(int(hour) for hour in hours),
+                hours=float(row["hours"]),
+                per_lead_hours=float(row.get("per_lead_hours", 0.0)),
+                late_hours=float(row.get("late_hours", 0.0)),
+                from_lead=int(row.get("from_lead", 0)),
+                measured=str(row.get("measured", "")))
+        except ValueError as error:
+            raise ValueError(
+                f"{ROUTE_TABLE_NAME}: route {source_id} declares an unreadable "
+                f"or negative publication_lag row ({error})") from None
+        rules.append(rule)
+    for index, rule in enumerate(rules):
+        named = raw["cycle_hours"] if rule.cycle_hours is None else rule.cycle_hours
+        if not any(next(earlier for earlier in rules
+                        if earlier.matches(hour, rule.from_lead)) is rule
+                   for hour in named):
+            raise ValueError(
+                f"{ROUTE_TABLE_NAME}: route {source_id}'s publication_lag row "
+                f"{index} is shadowed by an earlier row for every cycle hour "
+                "it names; put the rule for the later leads first")
+    unmatched = [hour for hour in raw["cycle_hours"]
+                 if not any(rule.matches(hour, 0) for rule in rules)]
+    if unmatched:
+        raise ValueError(
+            f"{ROUTE_TABLE_NAME}: route {source_id} declares no publication "
+            f"lag for its {', '.join(f'{int(h):02d}' for h in unmatched)}Z cycles")
+    return tuple(rules)
+
+
+# --------------------------------------------------------------------------
+# Posting rows: how a source's cycle can be waited on
+# --------------------------------------------------------------------------
+
+#: What a cycle's posting looks like to a reader who wants to run it as
+#: it posts.  ``rolling``: lead by lead, in lead order, so a run can
+#: start on its first leads and wait for the rest.  ``whole_cycle``:
+#: every lead appears at once.  ``donor_gated``: the source's own leads
+#: are out before a same-cycle donor the preparation needs, so the donor
+#: decides the start.  ``archive``: every time already exists or never
+#: will.  ``brokered``: a keyed job produces the file, so there is no
+#: object to ask for.  ``private``: the bytes are not published.
+POSTING_SHAPES = frozenset({
+    "rolling", "whole_cycle", "donor_gated", "archive", "brokered", "private"})
+#: The shapes a run waits on, lead by lead or for the whole cycle: the
+#: ones that need a readiness check, a lateness budget and a poll ceiling.
+WAITED_POSTING_SHAPES = frozenset({"rolling", "whole_cycle", "donor_gated"})
+#: How one lead is asked about.  ``objects``: HEAD 2xx on every object of
+#: the lead, on one host.  ``objects_and_index``: the same plus each
+#: object's declared index sidecar.
+READY_CHECKS = frozenset({"objects", "objects_and_index"})
+#: A readiness check named for a later round (one directory listing per
+#: lead, for the hosts that publish one object per field) and not built.
+LATER_READY_CHECKS = frozenset({"listing"})
+#: The fastest a lead may be asked about again, seconds.  NOMADS answers
+#: a client that polls faster with its rate limiter (``host_policy``).
+MIN_POLL_SECONDS = 5.0
+#: How far past its row's measured late spread (:func:`late_spread_minutes`)
+#: a shipped lateness budget reaches, minutes.  The spreads come from
+#: watches of 5 to 32 cycles over two days, and one late day (30 Sep,
+#: NCEP) set most of them, so a later day can post later than any cycle
+#: seen; the margin keeps that cycle running, at the cost of a lead that
+#: never posts holding its run this much longer before it is called
+#: late.  Each shipped budget is the spread plus this margin, rounded up
+#: to 5 min, and never under the design's adopted budget (60 min; 90
+#: for rrfs, gdas, aigfs and aigefs), which is a floor
+#: (tests/test_source_posting_rows.py holds every row to that rule).
+#: The load check refuses only a budget under the spread itself.
+LATE_BUDGET_MARGIN_MINUTES = 30.0
+
+
+def late_spread_minutes(rules: Sequence[LagRule]) -> float:
+    """The longest a lead of these rules posted after its scheduled line, minutes.
+
+    The largest ``late_hours`` over the rules: how much later than the
+    earliest posting seen (each lead's ``expected_at``, from which the
+    budget counts) the latest posting seen came.
+    """
+
+    return max((float(rule.late_hours) for rule in rules), default=0.0) * 60.0
+
+
+@dataclass(frozen=True)
+class PostingRow:
+    """How one source's cycle posts, and how long a run waits for a lead.
+
+    ``late_after_minutes`` is counted from a lead's scheduled time (the
+    source's ``publication_lag`` rule for that lead); ``poll_seconds`` is
+    the longest a waiting reader leaves between asks once that time has
+    passed.  ``why`` is the evidence for the shape, or the named reason a
+    cycle cannot be waited on lead by lead.
+    """
+
+    shape: str
+    why: str
+    ready_check: str | None = None
+    late_after_minutes: float | None = None
+    poll_seconds: float | None = None
+
+    @property
+    def streams(self) -> bool:
+        """Whether a cycle can be waited on lead by lead."""
+
+        return self.shape == "rolling"
+
+    @property
+    def waited(self) -> bool:
+        """Whether a run waits on this source at all."""
+
+        return self.shape in WAITED_POSTING_SHAPES
+
+    def declaration(self) -> dict[str, object]:
+        return {"shape": self.shape, "streams": self.streams,
+                "ready_check": self.ready_check,
+                "late_after_minutes": self.late_after_minutes,
+                "poll_seconds": self.poll_seconds, "why": self.why}
+
+
+@dataclass(frozen=True)
+class LegacyPosting:
+    """The posting facts of a source whose transport predates the table.
+
+    ``publication_lag`` is the same rule shape a route row carries, read
+    into the source's cycle grid by :func:`gpuwm.source_cycles.cycle_grid_for`;
+    ``idx_sidecar`` is the index suffix its transport's objects carry,
+    which an ``objects_and_index`` check asks for; ``providers`` holds
+    the posting of an alternate provider transport (a keyless archive
+    copy of a keyed job API), which a caller naming that provider reads.
+    """
+
+    source_id: str
+    publication_lag: tuple[LagRule, ...]
+    posting: PostingRow
+    idx_sidecar: str | None = None
+    # A factory, not a shared MappingProxyType({}): Python 3.11's dataclasses
+    # refuse an unhashable default, and a mappingproxy is hashable only from 3.12.
+    providers: Mapping[str, PostingRow] = field(
+        default_factory=lambda: MappingProxyType({}))
+
+
+def _posting_row(owner: str, raw: object, *, rules: Sequence[LagRule],
+                 index_files: Sequence[tuple[str, str | None]],
+                 donors: Sequence[DonorRow], probeable: bool) -> PostingRow:
+    """One ``posting`` block, checked at load.
+
+    Every refusal names the breakage it prevents (DESIGN A136, 2.1).
+    """
+
+    if not isinstance(raw, Mapping):
+        # Load check 1.
+        raise ValueError(
+            f"{ROUTE_TABLE_NAME}: {owner} declares no posting block, so a "
+            "run of it could never wait for its leads as they post and "
+            "nothing would say why")
+    shape = str(raw.get("shape", ""))
+    why = str(raw.get("why", "")).strip()
+    if shape not in POSTING_SHAPES:
+        raise ValueError(
+            f"{ROUTE_TABLE_NAME}: {owner} declares posting shape {shape!r}; "
+            f"the schedule reads {sorted(POSTING_SHAPES)}, and an unknown "
+            "shape would be waited on as if it were one of them")
+    if not why:
+        raise ValueError(
+            f"{ROUTE_TABLE_NAME}: {owner}'s posting block does not say why "
+            "its cycles post as they do; the schedule, the readiness answer "
+            "and progress print that reason, and without it a source that "
+            "cannot stream would say nothing about why")
+
+    def number(key: str) -> float | None:
+        value = raw.get(key)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(
+                f"{ROUTE_TABLE_NAME}: {owner}'s posting {key} is {value!r}, "
+                "not a number")
+        return float(value)
+
+    ready_check = raw.get("ready_check")
+    late = number("late_after_minutes")
+    poll = number("poll_seconds")
+    if shape in WAITED_POSTING_SHAPES:
+        if ready_check in LATER_READY_CHECKS:
+            raise ValueError(
+                f"{ROUTE_TABLE_NAME}: {owner} asks for its leads by "
+                f"{ready_check!r}, which is named for a later round and not "
+                "built; the probe would have nothing to ask")
+        if ready_check not in READY_CHECKS:
+            raise ValueError(
+                f"{ROUTE_TABLE_NAME}: {owner} is waited on ({shape}) but its "
+                f"ready_check is {ready_check!r}; the probe reads "
+                f"{sorted(READY_CHECKS)}, and without one a waiting run "
+                "could not tell a posted lead from a missing one")
+        if late is None or poll is None:
+            raise ValueError(
+                f"{ROUTE_TABLE_NAME}: {owner} is waited on ({shape}) but "
+                "declares no late_after_minutes or poll_seconds, so a lead "
+                "that never posts would hold its run forever")
+        if not probeable:
+            # Load check 4.
+            raise ValueError(
+                f"{ROUTE_TABLE_NAME}: {owner} is waited on ({shape}) but has "
+                "no object a probe can ask for, so every run of it would "
+                "wait out its budget and fail")
+    if shape == "whole_cycle":
+        # Load check 2.
+        sloped = [rule for rule in rules if rule.per_lead_hours]
+        if sloped:
+            raise ValueError(
+                f"{ROUTE_TABLE_NAME}: {owner} posts whole cycles but a "
+                "publication_lag rule gives its leads a per-lead slope, so the "
+                "schedule would promise leads before the cycle posts and "
+                "progress would show a wait no host can end early")
+    if shape == "donor_gated" and not any(donor.cycle == "same"
+                                          for donor in donors):
+        # Load check 3.
+        raise ValueError(
+            f"{ROUTE_TABLE_NAME}: {owner} is gated by a donor but declares no "
+            "same-cycle donor, so the shape would claim a gate the start "
+            "probe never asks about")
+    if ready_check == "objects_and_index":
+        # Load check 5.
+        bare = [role for role, sidecar in index_files if not sidecar]
+        if bare or not index_files:
+            raise ValueError(
+                f"{ROUTE_TABLE_NAME}: {owner} asks for each object's index but "
+                f"{', '.join(bare) or 'its objects'} declare no idx_sidecar, "
+                "so the probe would ask for an index URL the table never built")
+    # Load check 6.
+    if late is not None and late <= 0:
+        raise ValueError(
+            f"{ROUTE_TABLE_NAME}: {owner}'s late_after_minutes is {late:g}; a "
+            "budget of zero or less fails every run whose lead is a second "
+            "past its scheduled time")
+    # Load check 7 (A136 L1 follow-ups): the budget is no shorter than the
+    # row's own measured late spread.
+    spread = late_spread_minutes(rules)
+    if late is not None and shape in WAITED_POSTING_SHAPES and late < spread:
+        raise ValueError(
+            f"{ROUTE_TABLE_NAME}: {owner}'s late_after_minutes is {late:g}, "
+            f"shorter than its own publication_lag rows' late spread: a lead "
+            f"was seen posting {spread:g} min after its scheduled time.  An "
+            "as-posted run of an ordinary late cycle, no later than one "
+            "already seen, would stop with exit 75 (source behind).  The "
+            f"budget must be at least {spread:g} min; the shipped rows carry "
+            f"the spread plus {LATE_BUDGET_MARGIN_MINUTES:g} min")
+    if poll is not None and poll < MIN_POLL_SECONDS:
+        raise ValueError(
+            f"{ROUTE_TABLE_NAME}: {owner}'s poll_seconds is {poll:g}; asking "
+            f"more often than every {MIN_POLL_SECONDS:g} s trips the NOMADS "
+            "rate limiter host_policy names")
+    return PostingRow(shape=shape, why=why,
+                      ready_check=None if ready_check is None else str(ready_check),
+                      late_after_minutes=late, poll_seconds=poll)
+
+
+def _route_posting(route: Route, raw: Mapping[str, object]) -> PostingRow:
+    files = route.files + tuple(
+        row for era in route.publication_eras for row in era.files)
+    return _posting_row(
+        f"route {route.source_id}", raw.get("posting"),
+        rules=route.publication_lag,
+        index_files=tuple((row.role, row.idx_sidecar) for row in files),
+        donors=route.donors,
+        # Every route row plans an object per lead on a declared host,
+        # which is what gpuwm.fetch.cycle_is_probeable answers yes for.
+        probeable=bool(route.hosts) and any(row.leads == "all" for row in files))
+
+
+def _build_legacy_posting() -> Mapping[str, LegacyPosting]:
+    document = _load_table()
+    rows = dict(document.get("legacy_posting", {}))
+    rows.pop("note", None)
+    stray = sorted(set(rows) - set(LEGACY_ROUTE_SOURCES))
+    if stray:
+        raise ValueError(
+            f"{ROUTE_TABLE_NAME}: legacy_posting names {stray}, which have no "
+            "legacy transport; a route row carries its own posting block")
+    ladders = dict(document.get("legacy_ladders", {}))
+    found: dict[str, LegacyPosting] = {}
+    for source_id in LEGACY_ROUTE_SOURCES:
+        raw = rows.get(source_id)
+        owner = f"legacy source {source_id}"
+        if not isinstance(raw, Mapping):
+            raise ValueError(
+                f"{ROUTE_TABLE_NAME}: {owner} declares no legacy_posting row, "
+                "so a run of it could never wait for its leads as they post "
+                "and nothing would say why")
+        rules: tuple[LagRule, ...] = ()
+        if raw.get("publication_lag") is not None:
+            grid = source_adapters.get_source_adapter(source_id).cycle_grid
+            hours = [] if grid is None else list(grid.hours)
+            rules = _lag_rules(source_id, {
+                "cycle_hours": hours, "publication_lag": raw["publication_lag"]})
+        sidecar = (str(raw["idx_sidecar"]) if raw.get("idx_sidecar") else None)
+        # The legacy transports probe exactly the sources that declare an
+        # endpoint ladder here (gpuwm.fetch.cycle_is_probeable); a keyed
+        # job API declares none.
+        probeable = isinstance(ladders.get(source_id), list)
+        posting = _posting_row(
+            owner, raw.get("posting"), rules=rules,
+            index_files=(("objects", sidecar),), donors=(),
+            probeable=probeable)
+        if posting.waited and not rules:
+            raise ValueError(
+                f"{ROUTE_TABLE_NAME}: {owner} is waited on ({posting.shape}) "
+                "but declares no publication_lag rows, so its leads would "
+                "have no scheduled time to wait from")
+        providers = {
+            str(name): _posting_row(
+                f"{owner} provider {name}", dict(entry).get("posting"),
+                rules=(), index_files=(), donors=(), probeable=False)
+            for name, entry in dict(raw.get("providers", {})).items()}
+        found[source_id] = LegacyPosting(
+            source_id=source_id, publication_lag=rules, posting=posting,
+            idx_sidecar=sidecar, providers=MappingProxyType(providers))
+    return MappingProxyType(found)
 
 
 def _build_routes() -> Mapping[str, Route]:
@@ -274,9 +687,8 @@ def _build_routes() -> Mapping[str, Route]:
             host_note=str(raw.get("host_note", "")),
             coverage_note=str(raw.get("coverage_note", "")),
             cycle_hours=tuple(int(hour) for hour in raw["cycle_hours"]),
-            publication_lag_hours=float(raw["publication_lag_hours"]),
+            publication_lag=_lag_rules(source_id, raw),
             ladders=ladders,
-            cadences=tuple(int(value) for value in raw["cadences"]),
             default_cadence=int(raw["default_cadence"]),
             layout=str(raw.get("layout", "flat")),
             members=(MappingProxyType(dict(raw["members"]))
@@ -341,6 +753,24 @@ def _build_routes() -> Mapping[str, Route]:
                 raise ValueError(
                     f"{ROUTE_TABLE_NAME}: route {route.source_id} file "
                     f"{row.role} spells unknown token(s) {list(bad)}")
+        supplement = route.prep.get("supplement")
+        if supplement:
+            origin = str(supplement.get("from", ""))
+            roles = {row.role for row in files}
+            if not (origin in SUPPLEMENT_ORIGINS
+                    or (origin.startswith("role:")
+                        and origin.split(":", 1)[1] in roles)):
+                # Named breakage: an origin the planner cannot resolve
+                # used to surface only when a request was planned, so a
+                # table typo shipped and refused the first user's fetch.
+                raise ValueError(
+                    f"{ROUTE_TABLE_NAME}: route {route.source_id} takes its "
+                    f"supplement from {origin!r}; the planner reads "
+                    f"{sorted(SUPPLEMENT_ORIGINS)} or role:NAME of a "
+                    f"declared file role ({sorted(roles)})")
+    for source_id, raw in dict(document["routes"]).items():
+        routes[source_id] = replace(
+            routes[source_id], posting=_route_posting(routes[source_id], raw))
     return MappingProxyType(routes)
 
 
@@ -447,6 +877,53 @@ def _build_refusals() -> Mapping[str, Mapping[str, object]]:
 
 _ROUTES = _build_routes()
 _REFUSALS = _build_refusals()
+_LEGACY_POSTING = _build_legacy_posting()
+
+
+def legacy_posting(source: str) -> LegacyPosting | None:
+    """The ``legacy_posting`` row of a source outside the route table, or None."""
+
+    return _LEGACY_POSTING.get(_canonical(source))
+
+
+def legacy_publication_lag(source: str) -> tuple[LagRule, ...]:
+    """A legacy source's ``publication_lag`` rules; empty where it declares none.
+
+    :func:`gpuwm.source_cycles.cycle_grid_for` reads them into the
+    source's cycle grid, so a legacy source answers when a lead is due
+    through the same :meth:`~gpuwm.source_cycles.CycleGrid.delay` a
+    route does.
+    """
+
+    row = legacy_posting(source)
+    return () if row is None else row.publication_lag
+
+
+def posting_for(source: str, provider: str | None = None) -> PostingRow:
+    """How ``source``'s cycles post: its route's block or its legacy row.
+
+    ``provider`` names an alternate provider transport a legacy row
+    declares (ERA5's keyless archive copy); an unnamed or undeclared one
+    reads the source's own block.  A source with neither a route nor a
+    legacy row is refused with the reason the table gives for it.
+    """
+
+    source_id = _canonical(source)
+    route = _ROUTES.get(source_id)
+    if route is not None and route.posting is not None:
+        return route.posting
+    row = _LEGACY_POSTING.get(source_id)
+    if row is not None:
+        return row.providers.get(provider or "", row.posting)
+    route_for(source_id)              # refuses in the table's own words
+    raise ValueError(                 # pragma: no cover - route_for refuses
+        f"--source {source_id}: no posting row")
+
+
+def posting_sources() -> tuple[str, ...]:
+    """Every source with a posting row: the routes, then the legacy sources."""
+
+    return tuple(_ROUTES) + tuple(_LEGACY_POSTING)
 
 
 def route_ids() -> tuple[str, ...]:
@@ -779,23 +1256,155 @@ def resolve_cycle(route: Route, cycle: datetime) -> datetime:
     return cycle
 
 
+def _is_whole_hours(cadence: object) -> bool:
+    """A cadence is a whole number of hours between boundary times, at least 1."""
+
+    return (not isinstance(cadence, bool) and isinstance(cadence, int)
+            and cadence >= 1)
+
+
+def _window_ladders(route: Route, cycle: datetime | None
+                    ) -> tuple[frozenset[int], ...]:
+    """CYCLE's published leads, or every planning cycle's when it is None."""
+
+    cycles = (cycle,) if cycle is not None else planning_cycles(route)
+    ladders = []
+    for each in cycles:
+        try:
+            ladders.append(frozenset(ladder_for(route, each)))
+        except ValueError:
+            continue
+    return tuple(ladders)
+
+
+def _preparation_target(route: Route) -> tuple[str, Mapping[str, object]] | None:
+    """The route's packaged mapping profile and target, or None.
+
+    None for a route whose preparation is not a packaged mapped profile:
+    nothing here can say what it takes, so it is never named as a reason.
+    """
+
+    row = source_adapters.get_source_adapter(
+        canonical_source(str(route.prep.get("source", route.source_id))))
+    if row.runner != "mapped_composition_v1" or not row.packaged_profile:
+        return None
+    from gpuwm.source_authorities import packaged_mapping_target
+
+    return row.packaged_profile, packaged_mapping_target(row.packaged_profile)
+
+
+def window_spacings(route: Route, start_hour: int, hours: int, *,
+                    cycle: datetime | None = None, floor: int = 1,
+                    round_up: bool = False, first: bool = False
+                    ) -> tuple[int, ...]:
+    """Every spacing ROUTE offers over a whole window, finest first.
+
+    A173: a table route's cadence is any whole multiple of the spacing its
+    publisher posts.  A spacing is offered when it is a whole multiple of
+    ``floor``, the cycle's ladder (``cycle``'s, or any planning cycle's
+    when it is None) publishes every lead of the window at it, and the
+    route's packaged preparation takes it.  Those are the only two things
+    that can break a spacing: a lead the publisher never posts, and a
+    decode that refuses the series after the download.  The per-route
+    ``cadences`` list this replaces left out spacings that broke neither
+    (2 h on an hourly publisher, 12 h on every global) and said so.
+
+    ``round_up`` extends ``hours`` to a whole number of steps the way the
+    domain door writes ``[fetch]``; without it only spacings that divide
+    ``hours`` are offered.  ``first`` stops at the finest one.
+    """
+
+    floor = int(floor)
+    if floor < 1:
+        raise ValueError(f"a spacing floor is a whole number of hours, not {floor}")
+    ladders = _window_ladders(route, cycle)
+    if not ladders:
+        return ()
+    from gpuwm.source_authorities import boundary_interval_refusal
+
+    start, hours = int(start_hour), int(hours)
+    prepared = _preparation_target(route)
+    # A spacing past the farthest lead serves only a window of one lead,
+    # which the floor itself already serves.
+    limit = max(floor, max(max(published) for published in ladders) - start)
+    offered: list[int] = []
+    for cadence in range(floor, limit + 1, floor):
+        if round_up:
+            span = max(cadence, -(-hours // cadence) * cadence)
+        elif hours % cadence:
+            continue
+        else:
+            span = hours
+        wanted = range(start, start + span + 1, cadence)
+        if not any(all(lead in published for lead in wanted)
+                   for published in ladders):
+            continue
+        if prepared is not None and boundary_interval_refusal(
+                prepared[1], cadence * 3600) is not None:
+            continue
+        offered.append(cadence)
+        if first:
+            break
+    return tuple(offered)
+
+
+def window_cadence(route: Route, start_hour: int, hours: int, *,
+                   cycle: datetime | None = None, floor: int | None = None,
+                   round_up: bool = False) -> int | None:
+    """The finest spacing the route offers over a whole window, or None.
+
+    The ladder rows ARE the source's cadence by lead: IFS's 00/12Z row
+    says every 3 h to f144 and every 6 h to f360, GEFS's every 3 h to
+    f240 and every 6 h past it.  A window that runs past the lead where
+    the finer spacing ends cannot be taken at that spacing, and the
+    boundary series a forecast reads is one uniform spacing, so the
+    window takes the coarsest spacing it crosses into, from its start.
+    That used to be a flag every caller had to know to pass (``--cadence
+    6`` for a 240 h IFS run), and the default refused the window with
+    "does not publish f147".
+
+    Only whole multiples of ``floor`` (the route's default) are tried,
+    finest first (:func:`window_spacings`), so a window the default
+    serves keeps it and a window that names no cadence never lands on a
+    spacing finer than, or off the grid of, the default.  ``cycle`` asks
+    one cycle's ladder; without it, any cycle hour whose ladder serves
+    the window answers.  ``round_up`` is :func:`window_spacings`'s.  None
+    means no spacing serves the window, and the caller's own refusal
+    names why.
+    """
+
+    floor = route.default_cadence if floor is None else int(floor)
+    spacings = window_spacings(route, start_hour, hours, cycle=cycle,
+                               floor=floor, round_up=round_up, first=True)
+    return spacings[0] if spacings else None
+
+
 def resolve_leads(route: Route, cycle: datetime, hours: int, *,
                   cadence: int | None = None,
                   start_hour: int = 0) -> tuple[int, ...]:
-    """The ordered leads a window asks for, checked against the ladder."""
+    """The ordered leads a window asks for, checked against the ladder.
+
+    With no ``cadence`` the window takes :func:`window_cadence`: the
+    route's default spacing where the cycle's ladder publishes it over
+    the whole window, and the coarser spacing it runs into otherwise.  A
+    named cadence is any whole number of hours (A173), refused only for
+    what breaks it: a final time the spacing would omit, a lead the
+    cycle's ladder does not publish, or a series the route's packaged
+    preparation would refuse after the download.
+    """
 
     if isinstance(hours, bool) or not isinstance(hours, int) or hours < 0:
         raise ValueError("--hours must be a nonnegative integer")
     if (isinstance(start_hour, bool) or not isinstance(start_hour, int)
             or start_hour < 0):
         raise ValueError("--forecast-start-hour must be a nonnegative integer")
-    cadence = route.default_cadence if cadence is None else cadence
-    if (isinstance(cadence, bool) or not isinstance(cadence, int)
-            or cadence not in route.cadences):
-        offered = ", ".join(str(value) for value in route.cadences)
-        raise ValueError(
-            f"--cadence {cadence}: --source {route.source_id} publishes at "
-            f"{offered} h spacing (default {route.default_cadence}).")
+    named = cadence is not None
+    if cadence is None:
+        cadence = (window_cadence(route, start_hour, hours, cycle=cycle)
+                   or route.default_cadence)
+    if not _is_whole_hours(cadence):
+        raise ValueError(cadence_refusal(
+            route, cadence, cycle=cycle, start_hour=start_hour))
     if hours % cadence:
         raise ValueError(
             f"--hours must be an exact multiple of the {cadence} h cadence; "
@@ -822,15 +1431,72 @@ def resolve_leads(route: Route, cycle: datetime, hours: int, *,
     missing = [lead for lead in range(start_hour, last + 1, cadence)
                if lead not in set(ladder)]
     if missing:
+        served = (window_cadence(route, start_hour, hours, cycle=cycle,
+                                 floor=1)
+                  if named else None)
+        remedy = ""
+        if served is not None and served != cadence:
+            # Worded for every door that names a cadence: the flag, and
+            # the [fetch] key a configuration or a saved setup carries.
+            remedy = (f"\n  remedy: cadence {served} (--cadence {served}, or "
+                      f"cadence = {served} in [fetch]) is published over this "
+                      "whole window; a window that names no cadence takes the "
+                      "spacing its ladder publishes by itself.")
         raise ValueError(
             f"--source {route.source_id}: the {cycle:%H}Z cycle does not "
-            f"publish f{missing[0]:03d}; its ladder runs "
-            f"{_ladder_words(route, cycle)}.")
+            f"publish f{missing[0]:03d}"
+            + (f" at --cadence {cadence}" if named else "")
+            + f"; its ladder runs {_ladder_words(route, cycle)}.{remedy}")
+    refusal = cadence_refusal(route, cadence, cycle=cycle,
+                              start_hour=start_hour)
+    if refusal is not None:
+        raise ValueError(refusal)
     if not wanted:
         raise ValueError(
             f"--source {route.source_id}: the requested window resolves to "
             "no forecast lead at all")
     return tuple(wanted)
+
+
+def cadence_refusal(route: Route, cadence: object, *, cycle: datetime,
+                    start_hour: int = 0) -> str | None:
+    """Why ROUTE cannot take CADENCE whatever the window, or None.
+
+    The window-free half of :func:`resolve_leads`'s check, by the
+    breakage each refusal prevents: a cadence that is not a whole number
+    of hours names no boundary times at all, and a spacing the route's
+    packaged preparation refuses would be downloaded whole and then
+    refused by the decode.  A lead the cycle's ladder does not publish is
+    the window's question, answered by :func:`resolve_leads` in the
+    ladder's words.  A173 retired the third reason this used to give,
+    "the route's own row" leaving out a spacing the publisher posts and
+    the decode takes: a refusal that names no breakage does not exist.
+    """
+
+    head = (f"--cadence {cadence}: --source {route.source_id} takes any whole "
+            "number of hours at which the cycle's ladder publishes every "
+            f"lead of the window (default {route.default_cadence} h).")
+    remedy = ("\n  remedy: name another (--cadence N, or cadence = N in "
+              "[fetch]), or name none: a window that names no cadence takes "
+              f"{route.default_cadence} h, or the coarser spacing its ladder "
+              "runs into.")
+    if not _is_whole_hours(cadence):
+        return (head + "\n  why: a cadence is a whole number of hours between "
+                "boundary times, at least 1." + remedy)
+    prepared = _preparation_target(route)
+    if prepared is None:
+        return None
+    from gpuwm.source_authorities import (
+        boundary_interval_refusal, boundary_interval_takes)
+
+    profile, target = prepared
+    if boundary_interval_refusal(target, cadence * 3600) is None:
+        return None
+    takes = boundary_interval_takes(target)
+    return (head + f"\n  why: {route.source_id}'s preparation (the packaged "
+            f"{profile} mapping) takes {takes}, so a {cadence} h series "
+            "would be downloaded whole and then refused by the decode."
+            + remedy.replace("name another", "name a spacing it takes", 1))
 
 
 def _ladder_words(route: Route, cycle: datetime) -> str:
@@ -1119,6 +1785,13 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
     objects: list[PlannedObject] = []
     by_role: dict[str, list[tuple[int, str]]] = {}
     seen: set[str] = set()
+    supplement_spec = route.prep.get("supplement")
+    supplement_origin = (str(supplement_spec["from"]) if supplement_spec
+                         else None)
+    #: Objects planned only because the supplement is the cycle's step-0
+    #: object and the window starts later: fetched, bound as the
+    #: supplement, never an input of the forcing series.
+    step0_only: list[str] = []
 
     def emit(row: FileRow, lead: int | None) -> None:
         lead_context = dict(context)
@@ -1142,6 +1815,9 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
     # Lead-major, so the pool's in-order admitted prefix is a contiguous
     # run of COMPLETE valid times: an interrupted fetch leaves a series a
     # shorter window can still be prepared from, never half of every hour.
+    # A step-0 object belongs to the window's FIRST valid time, whatever
+    # lead that is: its statics are what that time (and every later one)
+    # is prepared with, so it travels in the first lead's group.
     for row in files:
         if row.leads == "none":
             emit(row, None)
@@ -1149,10 +1825,21 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
         for row in files:
             if row.leads == "none":
                 continue
-            if row.leads == "first" and lead != leads[0]:
+            if row.leads == "step0":
+                if lead == leads[0]:
+                    emit(row, 0)
                 continue
             emit(row, lead)
+        if (lead == leads[0] and lead != 0
+                and supplement_origin == "step0"):
+            for row in files:
+                if row.primary and row.leads == "all":
+                    before = len(objects)
+                    emit(row, 0)
+                    step0_only.extend(
+                        obj.relpath for obj in objects[before:])
 
+    step0_roles = {row.role for row in files if row.leads == "step0"}
     compose: list[ComposeStep] = []
     for row in route.compose:
         for lead in leads:
@@ -1160,8 +1847,8 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
                 ComposePart(role=role, relpath=relpath)
                 for role in row.roles
                 for entry_lead, relpath in by_role.get(role, ())
-                if entry_lead == lead
-                or (entry_lead == leads[0] and lead == leads[0]))
+                if (entry_lead == lead and role not in step0_roles)
+                or (role in step0_roles and lead == leads[0]))
             if not parts:
                 continue
             lead_context = dict(context)
@@ -1181,19 +1868,26 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
     else:
         primary = tuple(
             Path(obj.relpath) for obj in objects
-            if any(row.primary and row.role == obj.role for row in files))
+            if obj.relpath not in step0_only
+            and any(row.primary and row.role == obj.role for row in files))
 
-    supplement_spec = route.prep.get("supplement")
     supplements: tuple[Path, ...] = ()
     supplement_role: str | None = None
     if supplement_spec:
         supplement_role = str(supplement_spec["role"])
-        origin = str(supplement_spec["from"])
+        origin = str(supplement_origin)
         select = supplement_spec.get("select")
         if origin == "every_input":
             supplements = primary
-        elif origin == "first_input":
-            supplements = primary[:1]
+        elif origin == "step0":
+            # The cycle's step-0 object of every primary row: the first
+            # inputs when the window starts there, the objects planned
+            # beside the window otherwise.
+            supplements = tuple(
+                Path(obj.relpath) for obj in objects
+                if obj.lead == 0
+                and any(row.primary and row.leads == "all"
+                        and row.role == obj.role for row in files))
         elif origin.startswith("role:"):
             role = origin.split(":", 1)[1]
             supplements = tuple(
@@ -1706,7 +2400,8 @@ def _quarantine(out: Path, progress) -> Path | None:
 
 def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
              file_workers: int | None = None, progress=print,
-             opener=None, downloader=None, probe=None) -> dict:
+             opener=None, downloader=None, probe=None,
+             lead_gate=None, on_lead=None) -> dict:
     """Move the planned objects, compose the primaries, write the receipts.
 
     Every file rides :mod:`gpuwm.fetch_pool`, so a table route is
@@ -1719,6 +2414,20 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
     with -- ``url -> bool``, defaulting to one governed HEAD.  It runs
     ahead of the transfers, through the same pool, and only for the
     objects this run has still to download.
+
+    The as-posted fetch (``gpuwm fetch --as-posted``, DESIGN A136 2.3)
+    passes two hooks.  ``lead_gate`` is called with an object's lead
+    group before it moves and blocks until one host holds that whole
+    lead, returning the rung that does (which then heads the object's
+    ladder); it raises when the lead passes its late time, and its
+    ``refetch(lead, error)`` is asked when a transfer did not verify, to
+    wait a round and name the rung to fetch it from again.  The ahead
+    probe is not run under it: it would ask hosts about leads not yet
+    due.  ``on_lead(lead, entries, composed)`` fires in lead order once
+    every object of a lead group is admitted, after that lead's
+    composition and after the manifest is republished for the verified
+    prefix with ``complete: false``; the last manifest says
+    ``complete: true``.  Without the hooks nothing here changes.
     """
 
     out = _io_path(Path(out))
@@ -1772,9 +2481,24 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
     # AHEAD of the transfers, not behind them: the throughput rung is
     # asked which of the pending objects it already holds, and each one
     # that it does takes it.  See _probe_transfer_ladders.
-    promoted, probe_receipt = _probe_transfer_ladders(
-        plan, pending, workers=workers, progress=progress,
-        probe=(fetch_endpoints.object_available if probe is None else probe))
+    if lead_gate is None:
+        promoted, probe_receipt = _probe_transfer_ladders(
+            plan, pending, workers=workers, progress=progress,
+            probe=(fetch_endpoints.object_available if probe is None
+                   else probe))
+    else:
+        promoted, probe_receipt = {}, None
+    # The lead each object is fetched and published with: a lead-free
+    # object and a step-0 object travel with the window's first lead,
+    # as the plan orders them.
+    groups = [obj.lead if obj.lead in plan.leads else plan.leads[0]
+              for obj in plan.objects]
+
+    def _headed(rungs, name):
+        if not name:
+            return rungs
+        return (tuple(rung for rung in rungs if rung.name == name)
+                + tuple(rung for rung in rungs if rung.name != name))
 
     reused = len(reuse)
     jobs = []
@@ -1798,10 +2522,26 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
         rungs = promoted.get(obj.relpath, ladder)
 
         def _get(obj=obj, dest=dest, magic=magic, relpath=obj.relpath,
-                 role=obj.role, lead=obj.lead, rungs=rungs) -> dict:
-            entry = _download_along_ladder(
-                plan, obj, dest, magic=magic, fetch=fetch, opener=opener,
-                progress=progress, ladder=rungs)
+                 role=obj.role, lead=obj.lead, rungs=rungs,
+                 group=groups[len(jobs)]) -> dict:
+            if lead_gate is not None:
+                rungs = _headed(rungs, lead_gate(group))
+            while True:
+                try:
+                    entry = _download_along_ladder(
+                        plan, obj, dest, magic=magic, fetch=fetch,
+                        opener=opener, progress=progress, ladder=rungs)
+                except ValueError as error:
+                    # A payload that did not verify, or every rung
+                    # refusing it once its own retries are spent.  A
+                    # HEAD can answer before the server has finished
+                    # writing, so under the gate it is asked again next
+                    # round until the lead's late time.
+                    if lead_gate is None:
+                        raise
+                    rungs = _headed(rungs, lead_gate.refetch(group, error))
+                    continue
+                break
             entry = {**entry, "relpath": relpath, "role": role, "lead": lead,
                      "reused": False}
             _write_json(_recovery_path(out, obj), {
@@ -1850,14 +2590,56 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
     _landed = _admission_reporter(f"fetch {plan.source_id}", total=len(jobs),
                                   progress=progress)
 
+    admitted: list[dict] = []
+    composed_so_far: list[dict] = []
+    remaining: dict[int, int] = {}
+    for group in groups:
+        remaining[group] = remaining.get(group, 0) + 1
+
+    def _admitted(index: int, entry: dict) -> None:
+        _landed(index, entry)
+        if on_lead is None:
+            return
+        admitted.append(entry)
+        group = groups[index]
+        remaining[group] -= 1
+        if remaining[group]:
+            return
+        from dataclasses import replace as _replace
+
+        lead_steps = tuple(step for step in plan.compose if step.lead == group)
+        composed_now = (_run_compose(_replace(plan, compose=lead_steps), out,
+                                     progress=progress)
+                        if lead_steps else [])
+        composed_so_far.extend(composed_now)
+        _write_json(out / MANIFEST_NAME, _plan_manifest(
+            plan, list(admitted), list(composed_so_far), None,
+            complete=False))
+        _write_sha256sums(out, admitted, composed_so_far)
+        on_lead(group, [item for item, owner in zip(admitted, groups)
+                        if owner == group], composed_now)
+
     try:
         entries, receipt = fetch_pool.run_transfers(
-            jobs, workers=workers, on_admitted=_landed, monitor=monitor)
+            jobs, workers=workers, on_admitted=_admitted, monitor=monitor)
     finally:
         monitor.close()
         counter.close()
 
-    composed = _run_compose(plan, out, progress=progress)
+    composed = (composed_so_far if on_lead is not None
+                else _run_compose(plan, out, progress=progress))
+    payload = _plan_manifest(plan, entries, composed, receipt,
+                             probe_receipt=probe_receipt,
+                             complete=True if on_lead is not None else None)
+    _write_json(out / MANIFEST_NAME, payload)
+    _write_sha256sums(out, entries, composed)
+    return payload
+
+
+def _plan_manifest(plan: FetchPlan, entries, composed, receipt, *,
+                   probe_receipt=None, complete: bool | None = None) -> dict:
+    """The route manifest for ``entries``; ``complete`` only on an as-posted fetch."""
+
     payload = {
         "schema": ROUTE_MANIFEST_SCHEMA,
         "route_table_sha256": packaged_route_table_sha256(),
@@ -1886,8 +2668,10 @@ def run_plan(plan: FetchPlan, *, out: Path, force: bool = False,
                                  for path in plan.supplement_files],
         },
     }
-    _write_json(out / MANIFEST_NAME, payload)
-    _write_sha256sums(out, entries, composed)
+    if complete is not None:
+        # The as-posted fetch republishes this file as each lead lands;
+        # a reader tells the verified prefix from the whole window here.
+        payload["complete"] = bool(complete)
     return payload
 
 
@@ -2232,7 +3016,13 @@ __all__ = [
     "PREP_ARGUMENTS_NAME", "PREP_ARGUMENTS_SCHEMA",
     "PREP_COMMAND_NAME", "PlannedObject", "PublicationEra", "ROUTE_MANIFEST_SCHEMA",
     "ROUTE_TABLE_NAME", "ROUTE_TABLE_SCHEMA", "ROUTE_TABLE_SHA256", "Route",
-    "SHA256SUMS_NAME", "all_fetchable_sources", "check_prior_request",
+    "SHA256SUMS_NAME", "all_fetchable_sources", "cadence_refusal",
+    "window_cadence", "window_spacings",
+    "check_prior_request",
+    "LATER_READY_CHECKS", "LegacyPosting", "MIN_POLL_SECONDS", "POSTING_SHAPES",
+    "LATE_BUDGET_MARGIN_MINUTES", "late_spread_minutes",
+    "PostingRow", "READY_CHECKS", "WAITED_POSTING_SHAPES", "legacy_posting",
+    "legacy_publication_lag", "posting_for", "posting_sources",
     "endpoint_ladder", "first_preparable_cycle", "handoff_lines", "ladder_for",
     "member_tokens", "named_flags", "packaged_route_table_sha256", "planning_cycles",
     "prep_handoff_lines", "publication_era", "refusal_ids", "render_prep_command",

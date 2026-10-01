@@ -17,6 +17,10 @@
 #define __device__
 #define __forceinline__ inline
 #define __global__
+// A146: the device divides by constants through __fdiv_rn (NVRTC
+// rewrites a plain constant division on Blackwell); on the host it
+// is the IEEE quotient the compiler already gives.
+static inline float __fdiv_rn(float a, float b) { return a / b; }
 #endif
 
 #ifndef WSM6_KMAX
@@ -369,7 +373,7 @@ __device__ void wsm6_column_impl(
 
     rainncv[col] = 0.0f; snowncv[col] = 0.0f; graupelncv[col] = 0.0f;
     sr[col] = 0.0f;
-    int loops = (int)floorf(delt / 120.0f + 0.5f);
+    int loops = (int)floorf(__fdiv_rn(delt, 120.0f) + 0.5f);
     if (loops < 1) loops = 1;
     float dtcld = delt / (float)loops;
 
@@ -417,7 +421,7 @@ __device__ void wsm6_column_impl(
                 float vf = venfac(p[id], temp[k], rho[k]);
                 if (qss[k] > 0.0f) {
                     float coeres = ss.r2 * sqrtf(ss.r * ss.rb);
-                    float melt = xka(temp[k], rho[k]) / 3.5e5f
+                    float melt = __fdiv_rn(xka(temp[k], rho[k]), 3.5e5f)
                         * (273.15f - temp[k]) * 1.57079632679f * n0sfac
                         * (5.2e6f * ss.r2 + 1.86818719e7f * vf * coeres)
                         / rho[k];
@@ -427,7 +431,7 @@ __device__ void wsm6_column_impl(
                 }
                 if (qgg[k] > 0.0f) {
                     float coeres = gg.r2 * sqrtf(gg.r * gg.rb);
-                    float melt = xka(temp[k], rho[k]) / 3.5e5f
+                    float melt = __fdiv_rn(xka(temp[k], rho[k]), 3.5e5f)
                         * (273.15f - temp[k])
                         * (gc.precg1 * gg.r2 + gc.precg2 * vf * coeres)
                         / rho[k];
@@ -449,8 +453,8 @@ __device__ void wsm6_column_impl(
             }
             if (supcol > 0.0f && qcc[k] > 1.0e-15f) {
                 float sc = fminf(supcol, 50.0f);
-                float freeze = fminf(100.0f * (expf(0.66f * sc) - 1.0f)
-                    * rho[k] / 1000.0f / 3.0e8f * qcc[k] * qcc[k] * dtcld,
+                float freeze = fminf(__fdiv_rn(__fdiv_rn(100.0f * (expf(0.66f * sc) - 1.0f)
+                    * rho[k], 1000.0f), 3.0e8f) * qcc[k] * qcc[k] * dtcld,
                     qcc[k]);
                 qii[k] += freeze; qcc[k] -= freeze;
                 temp[k] += xlf / cpm[k] * freeze;
@@ -556,9 +560,9 @@ __device__ void wsm6_column_impl(
                 pgacr=fminf(pgacr,qrr[k]/dtcld);}
             pgacs=0.0f;
             if(supcol<=0){
-                if(qss[k]>0)pseml=fminf(fmaxf(4190.0f*supcol*(paacw+psacr)/3.5e5f,
+                if(qss[k]>0)pseml=fminf(fmaxf(__fdiv_rn(4190.0f*supcol*(paacw+psacr), 3.5e5f),
                                                -qss[k]/dtcld),0.0f);
-                if(qgg[k]>0)pgeml=fminf(fmaxf(4190.0f*supcol*(paacw+pgacr)/3.5e5f,
+                if(qgg[k]>0)pgeml=fminf(fmaxf(__fdiv_rn(4190.0f*supcol*(paacw+pgacr), 3.5e5f),
                                                -qgg[k]/dtcld),0.0f);
             }
             if(supcol>0){

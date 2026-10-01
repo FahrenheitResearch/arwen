@@ -57,6 +57,19 @@ _EXPECTED_HEADERS = {
     "rrtmgp_rte": ("rrtmgp_planck_common.cuh",),
     "gf": ("glibc_flt32.cuh",),
     "ntiedtke": ("glibc_flt32.cuh",),
+    # A new module, so no pre-hook source to stay identical to; its WRF
+    # v4.7.1 parity suites grade it bitwise.
+    "urban_ucm": ("glibc_flt32.cuh",),
+    "urban_bep": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
+    "urban_bep_couple": ("glibc_flt32.cuh",),
+    "myjurb": ("glibc_flt32.cuh",),
+    # The UW moist-turbulence PBL: a new module, so no existing unit moves.
+    "uwpbl": ("glibc_flt64.cuh", "uwpbl_common.cuh", "uwpbl_wvsat.cuh",
+              "uwpbl_vdiff.cuh", "uwpbl_zisocl.cuh", "uwpbl_caleddy.cuh",
+              "uwpbl_eddy.cuh", "uwpbl_driver.cuh"),
+    # A new module; the WRF v4.7.1 Noah mosaic column oracle grades it
+    # bitwise.
+    "noah_mosaic": ("glibc_flt32.cuh",),
 }
 
 
@@ -204,3 +217,13 @@ def test_the_noahmp_runtime_route_assembles_the_loader_source_byte_for_byte():
         assert name not in kernel_loader.EXTRA_HEADERS, (
             f"{name} joined the header allow-list; the Noah-MP runtime unit "
             "must carry the same header or the loader must stop routing it")
+
+
+def test_mosaic_ucm_composes_one_header_and_unchanged_ucm():
+    from gpuwm.core.noah_mosaic import mosaic_ucm_source
+    source = mosaic_ucm_source()
+    assert source == ("#define NOAH_MOSAIC_UCM 1\n"
+                      + kernel_loader.module_source("urban_ucm") + "\n"
+                      + (_KDIR / "noah_mosaic.cu").read_text(encoding="utf-8"))
+    assert source.count("struct UcmCol {") == 1
+    assert "NOAH_MOSAIC_UCM" not in kernel_loader.module_source("urban_ucm")

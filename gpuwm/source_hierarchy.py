@@ -32,12 +32,16 @@ from gpuwm.ingest.horiz import (_regular_coordinates, source_axis_space,
 from gpuwm.ingest.nest_init import NestedInputCatalog, ParentInitView
 from gpuwm.ingest.source_metadata import snapshot_metadata
 from gpuwm.progress import prep_stage
+from gpuwm.static.terrain_smoothing import selection_carrier_kwargs
 from gpuwm.native_hierarchy import (
     NativeHierarchyExportResult,
+    export_native_hierarchy,
     initialize_and_export_native_hierarchy,
+    initialize_native_hierarchy_children,
 )
 from gpuwm.static.corridor import (
     STATICS_CORRIDOR_DIRNAME,
+    copy_statics_corridor_set,
     emit_statics_corridor_set,
     validated_corridor_selection,
 )
@@ -491,6 +495,164 @@ def _spatial_coverage_receipt(
     return receipt
 
 
+def _hierarchy_preconditions(exp, grids, *, statics_corridor, workers,
+                             preprocess_backend):
+    """The tree's argument checks, before any source is read.
+
+    Returns ``(grids, topology_receipt, backend)``.
+    """
+
+    grids = tuple(grids)
+    # Resolved HERE as well as inside the emitter, and deliberately: the
+    # emission happens after the whole join, so a mistyped grid id would
+    # otherwise refuse an hour of work that had already succeeded.  Same
+    # pure function, same inputs, same answer.
+    validated_corridor_selection(exp, statics_corridor)
+    topology_receipt = _validated_static_one_way_topology(exp, grids)
+    if (isinstance(workers, bool) or not isinstance(workers, int)
+            or not 1 <= workers <= 32):
+        raise ValueError("hierarchy workers must be an integer in [1, 32]")
+    backend = preprocess_backend.strip().lower()
+    if backend not in {"cpu", "cuda"}:
+        raise ValueError(
+            "hierarchy preprocessing backend must be explicit cpu or cuda")
+    if backend != "cpu" and workers != 1:
+        raise ValueError(
+            "CUDA hierarchy preprocessing is deterministic only with "
+            "workers=1")
+    return grids, topology_receipt, backend
+
+
+def _validated_hierarchy_series(exp, grids, snapshots, *, forcing_hours,
+                                forcing_offsets_seconds, source_name,
+                                source_inventory, source_units,
+                                source_orography):
+    """The forcing series checks, before any static work.
+
+    Returns ``(snapshots, offsets, times, interval, inventory, units,
+    orography_receipt, source_coverage_receipt)``.
+    """
+
+    with prep_stage("hierarchy_metadata", label="Validate hierarchy source metadata"):
+        snapshots, offsets, times, interval = _validated_forcing_series(
+            exp, snapshots, forcing_hours, forcing_offsets_seconds)
+        # Production ExperimentConfig carries the exact rational domain clocks.
+        # Lightweight source-adapter unit fixtures intentionally do not.
+        if hasattr(exp, "dt_exact") and hasattr(exp, "domain_start_offset_exact"):
+            from gpuwm.experiment import validate_boundary_timing
+            validate_boundary_timing(
+                exp, interval, source=f"{source_name} hierarchy forcing")
+        inventory = tuple(source_inventory)
+        units = dict(source_units or {})
+        if "SOILGEO" in inventory and str(
+                units.get("SOILGEO", "")).replace(" ", "") not in {
+                    "m2s-2", "m^2s^-2", "m**2s**-2"}:
+            raise ValueError(
+                "SOILGEO hierarchy forcing requires geopotential units "
+                "m2 s-2")
+        orography_receipt = _validate_source_orography(
+            exp, snapshots, source_orography, inventory)
+        source_coverage_receipt = _spatial_coverage_receipt(
+            snapshots, grids, exp, source_name)
+    return (snapshots, offsets, times, interval, inventory, units,
+            orography_receipt, source_coverage_receipt)
+
+
+def _hierarchy_catalog(exp, snapshots, *, wps_namelist, geog_root,
+                       source_name, source_manifest_sha256,
+                       orography_receipt, source_coverage_receipt,
+                       preprocess_selection, inventory, units,
+                       soil_texture_downscale, water_temperature_policy,
+                       static_highres):
+    """The verified static catalog and the children's input catalog.
+
+    Returns ``(static_catalog, static_receipt, catalog)``.
+    """
+
+    with prep_stage("hierarchy_static", label="Verify hierarchy static fields"):
+        static_catalog, static_receipt = verified_static_catalog(
+            Path(wps_namelist), Path(geog_root),
+            [domain.grid_id for domain in exp.domains],
+            **selection_carrier_kwargs(static_highres),
+        )
+        catalog_provenance = {
+            "adapter": f"{source_name.lower()}-regular-grid-hierarchy-v1",
+            "source_manifest_sha256": source_manifest_sha256,
+            "static_catalog_receipt": static_receipt,
+            "source_orography": orography_receipt,
+            "source_coverage": source_coverage_receipt,
+        }
+        if preprocess_selection:
+            catalog_provenance["preprocess_selection"] = dict(
+                preprocess_selection)
+        catalog = NestedInputCatalog(
+            snapshots=snapshots,
+            static_catalog=static_catalog,
+            inventory=inventory,
+            files=tuple(static_catalog.files),
+            units=units,
+            provenance=catalog_provenance,
+            soil_texture_downscale=bool(soil_texture_downscale),
+            water_temperature_policy=water_temperature_policy,
+            static_highres=static_highres,
+        )
+    return static_catalog, static_receipt, catalog
+
+
+def _hierarchy_input_provenance(input_provenance, *, source_name, times,
+                                offsets, static_receipt, orography_receipt,
+                                source_coverage_receipt, topology_receipt,
+                                implementation_sha256) -> dict:
+    """``input_provenance`` with the hierarchy's own records added."""
+
+    provenance = dict(input_provenance or {})
+    provenance.update({
+        "regular_source_adapter": source_name.lower(),
+        "regular_source_forcing_times": [value.isoformat() for value in times],
+        "regular_source_forcing_offsets_seconds": list(offsets),
+        "regular_source_static_catalog": static_receipt,
+        "regular_source_orography": orography_receipt,
+        "regular_source_coverage": source_coverage_receipt,
+        "regular_source_topology": topology_receipt,
+        "regular_source_hierarchy_implementation_sha256": (
+            implementation_sha256),
+    })
+    return provenance
+
+
+def _bound_hierarchy_identity(source_identity, *, orography_receipt,
+                              implementation_sha256) -> dict:
+    """``source_identity`` with the two keys the hierarchy binds."""
+
+    bound_source_identity = dict(source_identity)
+    reserved_identity = {
+        "nested_source_orography", "hierarchy_implementation_sha256"}
+    conflict = reserved_identity & set(bound_source_identity)
+    if conflict:
+        raise ValueError(
+            f"source_identity overrides reserved hierarchy keys "
+            f"{sorted(conflict)}")
+    bound_source_identity["nested_source_orography"] = orography_receipt
+    bound_source_identity["hierarchy_implementation_sha256"] = (
+        implementation_sha256)
+    return bound_source_identity
+
+
+def _emit_hierarchy_corridor(exp, grids, static_catalog, artifact_output,
+                             statics_corridor, static_highres):
+    # AFTER the artifact join: the hierarchy tree is already atomic and
+    # sealed on its own terms, and the corridor set lands beside it
+    # inside the caller's staging directory, bound by its own receipt
+    # (which the caller embeds in the preparation document).  Through
+    # the corridor module's own emitter, which the HRRR hierarchy stage
+    # calls too -- one emission for both chains, because one runner
+    # consumes both bundles.
+    return emit_statics_corridor_set(
+        exp=exp, grids=grids, static_catalog=static_catalog,
+        directory=Path(artifact_output) / STATICS_CORRIDOR_DIRNAME,
+        statics_corridor=statics_corridor, static_highres=static_highres)
+
+
 def initialize_and_export_regular_source_hierarchy(
         *, exp, grids, snapshots: Sequence[object],
         forcing_hours: Sequence[int] | None = None,
@@ -535,107 +697,52 @@ def initialize_and_export_regular_source_hierarchy(
     ids covers exactly those children.  The set receipt is returned on
     the result for the source front door to bind into its preparation
     document.
+
+    A chained tree runs the same steps in two calls,
+    :func:`prepare_regular_source_hierarchy_head` at its head and
+    :func:`seal_regular_source_hierarchy` at its seal.
     """
 
-    grids = tuple(grids)
-    # Resolved HERE as well as inside the emitter, and deliberately: the
-    # emission happens after the whole join, so a mistyped grid id would
-    # otherwise refuse an hour of work that had already succeeded.  Same
-    # pure function, same inputs, same answer.
-    validated_corridor_selection(exp, statics_corridor)
-    topology_receipt = _validated_static_one_way_topology(exp, grids)
-    if (isinstance(workers, bool) or not isinstance(workers, int)
-            or not 1 <= workers <= 32):
-        raise ValueError("hierarchy workers must be an integer in [1, 32]")
-    backend = preprocess_backend.strip().lower()
-    if backend not in {"cpu", "cuda"}:
-        raise ValueError(
-            "hierarchy preprocessing backend must be explicit cpu or cuda")
-    if backend != "cpu" and workers != 1:
-        raise ValueError(
-            "CUDA hierarchy preprocessing is deterministic only with "
-            "workers=1")
-
-    with prep_stage("hierarchy_metadata", label="Validate hierarchy source metadata"):
-        snapshots, offsets, times, interval = _validated_forcing_series(
-            exp, snapshots, forcing_hours, forcing_offsets_seconds)
-        # Production ExperimentConfig carries the exact rational domain clocks.
-        # Lightweight source-adapter unit fixtures intentionally do not.
-        if hasattr(exp, "dt_exact") and hasattr(exp, "domain_start_offset_exact"):
-            from gpuwm.experiment import validate_boundary_timing
-            validate_boundary_timing(
-                exp, interval, source=f"{source_name} hierarchy forcing")
-        inventory = tuple(source_inventory)
-        units = dict(source_units or {})
-        if "SOILGEO" in inventory and str(
-                units.get("SOILGEO", "")).replace(" ", "") not in {
-                    "m2s-2", "m^2s^-2", "m**2s**-2"}:
-            raise ValueError(
-                "SOILGEO hierarchy forcing requires geopotential units "
-                "m2 s-2")
-        orography_receipt = _validate_source_orography(
-            exp, snapshots, source_orography, inventory)
-        source_coverage_receipt = _spatial_coverage_receipt(
-            snapshots, grids, exp, source_name)
+    grids, topology_receipt, backend = _hierarchy_preconditions(
+        exp, grids, statics_corridor=statics_corridor, workers=workers,
+        preprocess_backend=preprocess_backend)
+    (snapshots, offsets, times, interval, inventory, units,
+     orography_receipt, source_coverage_receipt) = _validated_hierarchy_series(
+        exp, grids, snapshots, forcing_hours=forcing_hours,
+        forcing_offsets_seconds=forcing_offsets_seconds,
+        source_name=source_name, source_inventory=source_inventory,
+        source_units=source_units, source_orography=source_orography)
 
     state = root_initial_result.state
     if getattr(state, "lateral_boundaries", None) is not root_boundaries:
         raise ValueError(
             "prepared root state does not carry its complete external LBC "
             "sequence")
-    with prep_stage("hierarchy_static", label="Verify hierarchy static fields"):
-        static_catalog, static_receipt = verified_static_catalog(
-            Path(wps_namelist), Path(geog_root),
-            [domain.grid_id for domain in exp.domains],
-        )
-        catalog_provenance = {
-            "adapter": f"{source_name.lower()}-regular-grid-hierarchy-v1",
-            "source_manifest_sha256": source_manifest_sha256,
-            "static_catalog_receipt": static_receipt,
-            "source_orography": orography_receipt,
-            "source_coverage": source_coverage_receipt,
-        }
-        root_preprocessing = (input_provenance or {}).get("preprocessing", {})
-        if root_preprocessing.get("selection"):
-            catalog_provenance["preprocess_selection"] = dict(
-                root_preprocessing["selection"])
-        catalog = NestedInputCatalog(
-            snapshots=snapshots,
-            static_catalog=static_catalog,
-            inventory=inventory,
-            files=tuple(static_catalog.files),
-            units=units,
-            provenance=catalog_provenance,
-            soil_texture_downscale=bool(soil_texture_downscale),
-            water_temperature_policy=water_temperature_policy,
-            static_highres=static_highres,
-        )
+    static_catalog, static_receipt, catalog = _hierarchy_catalog(
+        exp, snapshots, wps_namelist=wps_namelist, geog_root=geog_root,
+        source_name=source_name,
+        source_manifest_sha256=source_manifest_sha256,
+        orography_receipt=orography_receipt,
+        source_coverage_receipt=source_coverage_receipt,
+        preprocess_selection=(input_provenance or {}).get(
+            "preprocessing", {}).get("selection"),
+        inventory=inventory, units=units,
+        soil_texture_downscale=soil_texture_downscale,
+        water_temperature_policy=water_temperature_policy,
+        static_highres=static_highres)
     root = ParentInitView(
         cfg=exp.root, grid=grids[0], state=state)
-    provenance = dict(input_provenance or {})
     implementation_sha256 = _implementation_sha256()
-    provenance.update({
-        "regular_source_adapter": source_name.lower(),
-        "regular_source_forcing_times": [value.isoformat() for value in times],
-        "regular_source_forcing_offsets_seconds": list(offsets),
-        "regular_source_static_catalog": static_receipt,
-        "regular_source_orography": orography_receipt,
-        "regular_source_coverage": source_coverage_receipt,
-        "regular_source_topology": topology_receipt,
-        "regular_source_hierarchy_implementation_sha256": (
-            implementation_sha256),
-    })
-    bound_source_identity = dict(source_identity)
-    reserved_identity = {
-        "nested_source_orography", "hierarchy_implementation_sha256"}
-    conflict = reserved_identity & set(bound_source_identity)
-    if conflict:
-        raise ValueError(
-            f"source_identity overrides reserved hierarchy keys "
-            f"{sorted(conflict)}")
-    bound_source_identity["nested_source_orography"] = orography_receipt
-    bound_source_identity["hierarchy_implementation_sha256"] = (
-        implementation_sha256)
+    provenance = _hierarchy_input_provenance(
+        input_provenance, source_name=source_name, times=times,
+        offsets=offsets, static_receipt=static_receipt,
+        orography_receipt=orography_receipt,
+        source_coverage_receipt=source_coverage_receipt,
+        topology_receipt=topology_receipt,
+        implementation_sha256=implementation_sha256)
+    bound_source_identity = _bound_hierarchy_identity(
+        source_identity, orography_receipt=orography_receipt,
+        implementation_sha256=implementation_sha256)
     hierarchy = initialize_and_export_native_hierarchy(
         exp=exp,
         root_node=root,
@@ -667,17 +774,9 @@ def initialize_and_export_regular_source_hierarchy(
         artifact_manifest_reference=artifact_manifest_reference,
         stock_wrf_export=stock_wrf_export,
     )
-    # AFTER the artifact join: the hierarchy tree is already atomic and
-    # sealed on its own terms, and the corridor set lands beside it
-    # inside the caller's staging directory, bound by its own receipt
-    # (which the caller embeds in the preparation document).  Through
-    # the corridor module's own emitter, which the HRRR hierarchy stage
-    # calls too -- one emission for both chains, because one runner
-    # consumes both bundles.
-    corridor_receipt = emit_statics_corridor_set(
-        exp=exp, grids=grids, static_catalog=static_catalog,
-        directory=Path(artifact_output) / STATICS_CORRIDOR_DIRNAME,
-        statics_corridor=statics_corridor, static_highres=static_highres)
+    corridor_receipt = _emit_hierarchy_corridor(
+        exp, grids, static_catalog, artifact_output, statics_corridor,
+        static_highres)
     return RegularSourceHierarchyResult(
         hierarchy=hierarchy,
         static_catalog_receipt=static_receipt,
@@ -689,7 +788,249 @@ def initialize_and_export_regular_source_hierarchy(
     )
 
 
+@dataclass
+class RegularSourceHierarchyHead:
+    """Everything a regular-source tree knows at its start time.
+
+    The children are prepared (they need only the start time and the
+    root's initial state), the static catalog and its receipt are bound,
+    and every receipt the tree's proof carries from the start time is
+    here.  :func:`seal_regular_source_hierarchy` finishes the tree once
+    the root's whole boundary set exists.
+    """
+
+    exp: object
+    grids: tuple
+    forcing_hours: tuple | None
+    forcing_offsets_seconds: tuple | None
+    offsets: tuple
+    times: tuple
+    interval: int
+    orography_receipt: Mapping[str, object]
+    source_coverage_receipt: Mapping[str, object]
+    topology_receipt: Mapping[str, object]
+    static_catalog: object
+    static_receipt: Mapping[str, object]
+    implementation_sha256: Mapping[str, str]
+    child_results: tuple
+    child_initialization_seconds: float
+    source_name: str
+    statics_corridor: object
+    static_highres: object
+    #: The statics corridor set built into the head
+    #: (``head_artifacts`` of :func:`prepare_regular_source_hierarchy_head`),
+    #: or ``None`` when the head built none and the seal emits it.
+    statics_corridor_receipt: Mapping[str, object] | None = None
+
+    def bound_source_identity(self, source_identity) -> dict:
+        """``source_identity`` with the two keys the hierarchy binds."""
+
+        return _bound_hierarchy_identity(
+            source_identity, orography_receipt=self.orography_receipt,
+            implementation_sha256=self.implementation_sha256)
+
+    def input_provenance(self, input_provenance) -> dict:
+        """``input_provenance`` with the hierarchy's own records added."""
+
+        return _hierarchy_input_provenance(
+            input_provenance, source_name=self.source_name,
+            times=self.times, offsets=self.offsets,
+            static_receipt=self.static_receipt,
+            orography_receipt=self.orography_receipt,
+            source_coverage_receipt=self.source_coverage_receipt,
+            topology_receipt=self.topology_receipt,
+            implementation_sha256=self.implementation_sha256)
+
+    @property
+    def forcing_identity(self) -> dict:
+        """The forcing axis keyword the artifact writers take."""
+
+        if self.forcing_hours is not None:
+            return {"forcing_hours": tuple(self.forcing_hours)}
+        return {"forcing_offsets_seconds": self.offsets}
+
+
+def prepare_regular_source_hierarchy_head(
+        *, exp, grids, snapshots: Sequence[object],
+        forcing_hours: Sequence[int] | None = None,
+        forcing_offsets_seconds: Sequence[int] | None = None,
+        wps_namelist: Path, geog_root: Path, source_name: str,
+        root_initial_result,
+        source_orography: SourceOrographyDeclaration | None = None,
+        source_inventory: Sequence[str] = (),
+        source_units: Mapping[str, str] | None = None,
+        workers: int = 8, preprocess_backend: str = "cpu",
+        cpu_bridge=None, sfcp_to_sfcp: bool = True,
+        water_temperature_policy=None,
+        soil_layer_contract=None,
+        preprocess_selection: Mapping[str, object] | None = None,
+        source_manifest_sha256: str,
+        statics_corridor=None,
+        soil_texture_downscale: bool = True, static_highres=None,
+        head_artifacts: Path | None = None,
+) -> RegularSourceHierarchyHead:
+    """Bind the tree and prepare every child from the start time.
+
+    The first half of :func:`initialize_and_export_regular_source_hierarchy`
+    for a chained tree, whose root boundaries do not exist yet: the same
+    checks, catalog and child preparation
+    (:func:`gpuwm.native_hierarchy.initialize_native_hierarchy_children`).
+    The series is validated whole, as the one-shot tree validates it,
+    because a chained tree's inputs all exist when its head is built.
+    ``source_manifest_sha256`` is recorded in the child catalog's
+    provenance only (no child array depends on it).
+
+    ``head_artifacts`` is the head's artifact folder (``hierarchy-head/``
+    in the staging tree).  Given, the selected statics corridor set is
+    built there now, through the one-shot tree's own emitter, and its
+    receipt is kept on the head: a corridor is child-resolution statics
+    over the ground a moving nest can reach, which needs the geography and
+    the tree but no boundary time, and a forecast bound to the head moves
+    its nest over it.  The seal then copies that set into the one-shot
+    tree (:func:`seal_regular_source_hierarchy`).
+    """
+
+    grids, topology_receipt, backend = _hierarchy_preconditions(
+        exp, grids, statics_corridor=statics_corridor, workers=workers,
+        preprocess_backend=preprocess_backend)
+    (snapshots, offsets, times, interval, inventory, units,
+     orography_receipt, source_coverage_receipt) = _validated_hierarchy_series(
+        exp, grids, snapshots, forcing_hours=forcing_hours,
+        forcing_offsets_seconds=forcing_offsets_seconds,
+        source_name=source_name, source_inventory=source_inventory,
+        source_units=source_units, source_orography=source_orography)
+    static_catalog, static_receipt, catalog = _hierarchy_catalog(
+        exp, snapshots, wps_namelist=wps_namelist, geog_root=geog_root,
+        source_name=source_name,
+        source_manifest_sha256=source_manifest_sha256,
+        orography_receipt=orography_receipt,
+        source_coverage_receipt=source_coverage_receipt,
+        preprocess_selection=preprocess_selection,
+        inventory=inventory, units=units,
+        soil_texture_downscale=soil_texture_downscale,
+        water_temperature_policy=water_temperature_policy,
+        static_highres=static_highres)
+    root = ParentInitView(
+        cfg=exp.root, grid=grids[0], state=root_initial_result.state)
+    implementation_sha256 = _implementation_sha256()
+    child_results, child_seconds = initialize_native_hierarchy_children(
+        exp=exp, root_node=root, catalog=catalog,
+        root_initial_result=root_initial_result,
+        source_orography=source_orography, workers=workers,
+        preprocess_backend=backend, cpu_bridge=cpu_bridge,
+        sfcp_to_sfcp=sfcp_to_sfcp, soil_layer_contract=soil_layer_contract)
+    corridor_receipt = (
+        None if head_artifacts is None else _emit_hierarchy_corridor(
+            exp, grids, static_catalog, head_artifacts, statics_corridor,
+            static_highres))
+    return RegularSourceHierarchyHead(
+        exp=exp, grids=grids,
+        forcing_hours=(None if forcing_hours is None
+                       else tuple(forcing_hours)),
+        forcing_offsets_seconds=(None if forcing_offsets_seconds is None
+                                 else tuple(forcing_offsets_seconds)),
+        offsets=tuple(offsets), times=tuple(times), interval=int(interval),
+        orography_receipt=orography_receipt,
+        source_coverage_receipt=source_coverage_receipt,
+        topology_receipt=topology_receipt,
+        static_catalog=static_catalog, static_receipt=static_receipt,
+        implementation_sha256=implementation_sha256,
+        child_results=tuple(child_results),
+        child_initialization_seconds=float(child_seconds),
+        source_name=source_name, statics_corridor=statics_corridor,
+        static_highres=static_highres,
+        statics_corridor_receipt=corridor_receipt)
+
+
+def seal_regular_source_hierarchy(
+        head: RegularSourceHierarchyHead, *, artifact_output: Path,
+        wrf_output: Path, root_initial_result, root_met, root_soil,
+        root_static_fields, root_boundaries, bridge_manifest_sha256: str,
+        source_manifest_sha256: str, namelist_sha256: str,
+        source_identity: Mapping[str, object],
+        root_metadata: Mapping[str, object] | None = None,
+        input_provenance: Mapping[str, object] | None = None,
+        artifact_manifest_reference: str | None = None,
+        stock_wrf_export: str = "required",
+        head_artifacts: Path | None = None,
+) -> RegularSourceHierarchyResult:
+    """Write the one-shot artifact tree, its WRF companions and corridor.
+
+    The second half of :func:`initialize_and_export_regular_source_hierarchy`,
+    called once the root's boundary set is complete: the root with its
+    whole boundary set and the children the head prepared are joined
+    into the atomic artifact tree
+    (:func:`gpuwm.native_hierarchy.export_native_hierarchy`), then the
+    statics corridor is written, exactly as the one-shot tree writes them.
+
+    A head that built its corridor set (``head.statics_corridor_receipt``)
+    has it copied from ``head_artifacts`` (the published ``hierarchy-head/``)
+    byte for byte, each cache held to the head's receipt, instead of built
+    a second time.
+    """
+
+    exp = head.exp
+    state = root_initial_result.state
+    if getattr(state, "lateral_boundaries", None) is not root_boundaries:
+        raise ValueError(
+            "prepared root state does not carry its complete external LBC "
+            "sequence")
+    root = ParentInitView(cfg=exp.root, grid=head.grids[0], state=state)
+    hierarchy = export_native_hierarchy(
+        exp=exp,
+        root_node=root,
+        artifact_output=Path(artifact_output),
+        wrf_output=Path(wrf_output),
+        root_initial_result=root_initial_result,
+        root_met=root_met,
+        root_soil=root_soil,
+        root_static_fields=root_static_fields,
+        root_boundaries=root_boundaries,
+        child_results=head.child_results,
+        child_initialization_seconds=head.child_initialization_seconds,
+        bridge_manifest_sha256=bridge_manifest_sha256,
+        source_manifest_sha256=source_manifest_sha256,
+        namelist_sha256=namelist_sha256,
+        forcing_hours=head.forcing_hours,
+        forcing_offsets_seconds=(
+            head.offsets if head.forcing_offsets_seconds is not None
+            else None),
+        source_identity=head.bound_source_identity(source_identity),
+        boundary_interval_seconds=head.interval,
+        root_metadata=root_metadata,
+        input_provenance=head.input_provenance(input_provenance),
+        artifact_manifest_reference=artifact_manifest_reference,
+        stock_wrf_export=stock_wrf_export,
+    )
+    if head.statics_corridor_receipt is not None:
+        if head_artifacts is None:
+            raise ValueError(
+                "the head built this tree's statics corridor, and the seal "
+                "copies it from the head's artifact folder, which was not "
+                "given")
+        corridor_receipt = copy_statics_corridor_set(
+            Path(head_artifacts) / STATICS_CORRIDOR_DIRNAME,
+            Path(artifact_output) / STATICS_CORRIDOR_DIRNAME,
+            receipt=head.statics_corridor_receipt)
+    else:
+        corridor_receipt = _emit_hierarchy_corridor(
+            exp, head.grids, head.static_catalog, artifact_output,
+            head.statics_corridor, head.static_highres)
+    return RegularSourceHierarchyResult(
+        hierarchy=hierarchy,
+        static_catalog_receipt=head.static_receipt,
+        source_coverage_receipt=head.source_coverage_receipt,
+        topology_receipt=head.topology_receipt,
+        forcing_times=head.times,
+        boundary_interval_seconds=head.interval,
+        statics_corridor_receipt=corridor_receipt,
+    )
+
+
 __all__ = [
+    "RegularSourceHierarchyHead",
     "RegularSourceHierarchyResult",
     "initialize_and_export_regular_source_hierarchy",
+    "prepare_regular_source_hierarchy_head",
+    "seal_regular_source_hierarchy",
 ]

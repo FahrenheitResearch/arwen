@@ -826,11 +826,13 @@ def preprocess_ruc_soil(
         downscale_receipt["soil_table"] = "STAS-RUC"
 
     # real.exe's TSLB reasonableness rebuild on RUC's column: the land
-    # columns the Noah call above rebuilt (the same samples, lapse and
-    # land) are held at TSK through the remap and rebuilt TSK-to-TMN on
-    # RUC's own levels after it (gpuwm.ingest.soil.
-    # unreasonable_land_soil_columns).  The Noah call announced them.
-    from gpuwm.ingest.soil import (soil_temperature_repair_receipt,
+    # columns the Noah call above rebuilt (the same samples, lapse, land,
+    # skin and snow) are held at TSK through the remap and rebuilt
+    # TSK-to-TMN on RUC's own levels after it (gpuwm.ingest.soil.
+    # unreasonable_land_soil_columns and snow_soil_below_skin_columns).
+    # The Noah call announced them.
+    from gpuwm.ingest.soil import (snow_soil_below_skin_columns,
+                                   soil_temperature_repair_receipt,
                                    tsk_tmn_soil_profile,
                                    unreasonable_land_soil_columns)
 
@@ -838,9 +840,14 @@ def preprocess_ruc_soil(
                    else _host(fields["LANDSEA"])) >= 0.5
     if lake_mask is not None:
         repair_land = repair_land & ~_host(lake_mask).astype(bool)
-    rebuilt_columns = unreasonable_land_soil_columns(temperature, repair_land)
+    band_columns = unreasonable_land_soil_columns(temperature, repair_land)
+    snow_columns = snow_soil_below_skin_columns(
+        temperature, repair_land, skin=_host(surface.tsk),
+        snow_water=_host(surface.snow_water))
+    rebuilt_columns = band_columns | snow_columns
     temperature_repair = soil_temperature_repair_receipt(
-        temperature, rebuilt_columns, repair_land)
+        temperature, band_columns, repair_land, snow_columns=snow_columns,
+        skin=_host(surface.tsk))
     if temperature_repair:
         temperature = np.array(temperature, copy=True)
         temperature[:, rebuilt_columns] = _host(surface.tsk)[rebuilt_columns]

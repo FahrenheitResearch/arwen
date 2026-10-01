@@ -126,12 +126,18 @@ def test_the_rows_give_the_engines_own_figure_on_the_routes_it_was_run_on():
     estimate = download_budget.compose_scratch_estimate(
         None, chain="prepared:staged", source="gem-gdps", forcing_times=17)
     # The 48 hour window the refusal was measured on: 17 three-hourly times.
-    assert estimate["bytes"] == estimate["min_bytes"] == 17 * 4_842_432_000
+    # With no target to place, the whole stream is the estimate.  Only its
+    # 12 surface and soil layers are certain whatever the target: since
+    # A135 the atmospheric window crops a global source too, wherever the
+    # target is clear of the ring's stored cut (this pin was bytes ==
+    # min_bytes while a global source's window never cropped).
+    assert estimate["bytes"] == estimate["max_bytes"] == 17 * 4_842_432_000
+    assert estimate["min_bytes"] == 17 * 2_882_400 * 12 * 8
     assert round(estimate["bytes"] / 1e9) == 82
 
 
 def test_a_regional_row_prices_the_grid_its_coverage_window_declares():
-    """The window crops a regional source; a global one keeps its whole representation."""
+    """A regional row's window is its coverage window; a global row's is its ring's own axes."""
     from gpuwm.source_adapters import source_coverage_window
 
     for source, row in _section()["sources"].items():
@@ -141,6 +147,14 @@ def test_a_regional_row_prices_the_grid_its_coverage_window_declares():
             assert "grid_points" not in row and row["windowed_layers"] == 0, source
             document = json.loads((AUTHORITIES / row["normalization"]).read_text(encoding="utf-8"))
             assert document["source_id"] == source, source
+        elif row.get("global_axes"):
+            # A whole ring: no coverage window, and the axes are the grid.
+            axes = row["global_axes"]
+            assert window is None and row["windowed_layers"] > 0, source
+            assert axes["nx"] * axes["ny"] == row["grid_points"], source
+            assert axes["nx"] * axes["step_degrees"] == pytest.approx(360.0), source
+            assert (axes["ny"] - 1) * axes["step_degrees"] == pytest.approx(180.0), source
+            assert (axes["longitude_first"], axes["latitude_first"]) == (-180.0, -90.0), source
         elif row["windowed_layers"]:
             assert window is not None and window.nx * window.ny == row["grid_points"], source
         else:
@@ -202,8 +216,63 @@ def test_a_regional_stream_is_priced_over_the_targets_footprint():
     assert estimate["min_bytes"] < estimate["bytes"] < estimate["max_bytes"]
 
 
-def _gdps_config(tmp_path: Path) -> Path:
-    """The GFS fixture's 206 x 204 root, forced from GEM GDPS over its 24 hours."""
+def test_a_global_stream_is_priced_over_the_footprint_clear_of_its_stored_cut():
+    """A135: the window crops a global source wherever the target is clear of the ring's cut.
+
+    Named breakage: every global row priced its whole ring, so run-plan
+    refused a GDPS 48 hour run on a disk that held its stream about 17
+    times over.  The price is held to the window the preparation itself
+    takes (atmospheric_window_for_grids on the ring's canonical axes).
+    """
+    import numpy as np
+
+    from gpuwm.domain_wizard import _root_grid
+    from gpuwm.ingest.atmospheric_window import atmospheric_window_for_grids
+    from gpuwm.ingest.grib import Era5Snapshot
+    from gpuwm.ingest.source_metadata import SourceSnapshotMetadata
+
+    row = _section()["sources"]["gem-gdps"]
+    axes = row["global_axes"]
+    whole = row["grid_points"] * row["layers_per_valid_time"] * 8
+    fixed = row["grid_points"] * (row["layers_per_valid_time"] - row["windowed_layers"]) * 8
+    layout = _regional_layout(200, 200, 3000.0, 35.5, -97.5)
+    clear = download_budget.compose_scratch_estimate(
+        layout, chain="prepared:staged", source="gem-gdps", forcing_times=7)
+    assert clear["min_bytes"] == 7 * fixed and clear["max_bytes"] == 7 * whole
+    assert clear["min_bytes"] < clear["bytes"] < clear["max_bytes"] // 10
+    kept = (clear["per_valid_time"] - fixed) // (row["windowed_layers"] * 8)
+    step = axes["step_degrees"]
+    metadata = SourceSnapshotMetadata(
+        Era5Snapshot, axes["latitude_first"] + step * np.arange(axes["ny"]),
+        axes["longitude_first"] + step * np.arange(axes["nx"]))
+    projection = vars(layout.projection)
+    grid = _root_grid({key: projection[key] for key in ("map_proj", "ref_lat", "ref_lon", "truelat1",
+                                                        "truelat2", "stand_lon")}, 200, 200, 3000.0)
+    window = atmospheric_window_for_grids(metadata, (grid,))
+    assert window is not None
+    taken = window.shape[0] * window.shape[1]
+    # The price never counts fewer points than the window keeps, and
+    # stays within its three-cell margin of it.
+    assert taken <= kept <= (window.shape[0] + 6) * (window.shape[1] + 6)
+    # The same root on the antimeridian reaches the stored cut: the ring
+    # is kept whole there, and that is certain.
+    on_cut = download_budget.compose_scratch_estimate(
+        _regional_layout(200, 200, 3000.0, 52.0, 180.0), chain="prepared:staged",
+        source="gem-gdps", forcing_times=7)
+    assert on_cut["bytes"] == on_cut["min_bytes"] == on_cut["max_bytes"] == 7 * whole
+    assert "stored longitude cut" in on_cut["basis"]
+    grid = _root_grid({**{key: projection[key] for key in ("map_proj", "truelat1", "truelat2")},
+                       "ref_lat": 52.0, "ref_lon": 180.0, "stand_lon": 180.0}, 200, 200, 3000.0)
+    assert atmospheric_window_for_grids(metadata, (grid,)) is None
+
+
+def _gdps_config(tmp_path: Path, *, on_cut: bool = False) -> Path:
+    """The GFS fixture's 206 x 204 root, forced from GEM GDPS over its 24 hours.
+
+    ``on_cut`` moves the root onto the antimeridian, where it reaches the
+    GDPS ring's stored longitude cut: the preparation keeps that ring
+    whole, so its whole stream (about 40 GiB) is staged.
+    """
 
     text = (FIXTURES / "gfs-3km.toml").read_text(encoding="utf-8")
     text = text.replace("start_time = 2026-09-26T06:00:00", "start_time = 2026-09-26T00:00:00")
@@ -211,17 +280,23 @@ def _gdps_config(tmp_path: Path) -> Path:
     text = text.replace('cycle = "2026-09-26T06"', 'cycle = "2026-09-26T00"')
     text = text.replace('area = "17.61,-116.54,53.24,-79.36"\n', "")
     assert 'source = "gem-gdps"' in text and "area =" not in text
+    if on_cut:
+        for name, value in (("ref_lat", "35.45"), ("ref_lon", "-97.95000000000005"),
+                            ("stand_lon", "-97.95000000000005")):
+            assert f"{name} = {value}\n" in text
+            text = text.replace(f"{name} = {value}\n",
+                                f"{name} = {'52.0' if name == 'ref_lat' else '180.0'}\n")
     config = tmp_path / "gdps-3km.toml"
     config.write_text(text, encoding="utf-8")
     return config
 
 
-def _plan(tmp_path: Path) -> Path:
+def _plan(tmp_path: Path, *, on_cut: bool = False) -> Path:
     from gpuwm.runplan import PLAN_SCHEMA
 
     path = tmp_path / "plan.json"
     path.write_text(json.dumps({"schema": PLAN_SCHEMA, "name": "gdps", "route": "prepared",
-                                "config": {"path": str(_gdps_config(tmp_path))},
+                                "config": {"path": str(_gdps_config(tmp_path, on_cut=on_cut))},
                                 "output_root": str(tmp_path / "run")}), encoding="utf-8")
     return path
 
@@ -232,12 +307,26 @@ def test_the_review_prices_the_frame_stream_the_preparation_stages(tmp_path, cap
 
     monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")
     monkeypatch.delenv("GPUWM_COMPOSE_SCRATCH", raising=False)
-    plan = _plan(tmp_path)
-    assert run_plan_main(build_parser().parse_args(["run-plan", "--estimate", str(plan)])) == 0
-    disk = json.loads(capsys.readouterr().out)["disk"]
-    assert disk["compose_scratch_bytes"] == 9 * 4_842_432_000
-    assert disk["bytes"] >= disk["download_bytes"] + disk["preparation_bytes"] + disk["compose_scratch_bytes"]
-    assert "compose scratch" not in disk["unpriced"]
+    row = _section()["sources"]["gem-gdps"]
+    fixed = row["grid_points"] * (row["layers_per_valid_time"] - row["windowed_layers"]) * 8
+    disks = {}
+    for on_cut in (False, True):
+        folder = tmp_path / f"cut-{on_cut}"
+        folder.mkdir()
+        plan = _plan(folder, on_cut=on_cut)
+        assert run_plan_main(build_parser().parse_args(["run-plan", "--estimate", str(plan)])) == 0
+        disk = disks[on_cut] = json.loads(capsys.readouterr().out)["disk"]
+        assert disk["bytes"] >= (disk["download_bytes"] + disk["preparation_bytes"]
+                                 + disk["compose_scratch_bytes"])
+        assert "compose scratch" not in disk["unpriced"]
+    # Over Oklahoma the window keeps the root's footprint of the 198
+    # atmospheric layers (a 618 km root: fewer than 60 x 60 of the ring's
+    # 0.15 degree points), beside the 12 surface and soil layers whole.
+    windowed = disks[False]["compose_scratch_bytes"] - 9 * fixed
+    assert 0 < windowed < 9 * row["windowed_layers"] * 8 * 60 * 60
+    # On the antimeridian the ring is kept whole: the stream the
+    # scratch-disk refusal measured.
+    assert disks[True]["compose_scratch_bytes"] == 9 * 4_842_432_000
 
 
 def _execute(plan_path: Path, monkeypatch, free) -> tuple[list, list]:
@@ -258,13 +347,16 @@ def _execute(plan_path: Path, monkeypatch, free) -> tuple[list, list]:
 
 
 def test_go_refuses_before_the_download_a_stream_its_disk_cannot_hold(tmp_path, capsys, monkeypatch):
-    """Room for the download, the preparation and the forecast, not for the stream: refused, nothing fetched."""
+    """Room for the download, the preparation and the forecast, not for the stream: refused, nothing fetched.
+
+    The root sits on the antimeridian, where the GDPS ring is kept whole.
+    """
     from gpuwm.cli import build_parser
     from gpuwm.runplan import run_plan_main
 
     monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")
     monkeypatch.delenv("GPUWM_COMPOSE_SCRATCH", raising=False)
-    plan = _plan(tmp_path)
+    plan = _plan(tmp_path, on_cut=True)
     assert run_plan_main(build_parser().parse_args(["run-plan", "--estimate", str(plan)])) == 0
     disk = json.loads(capsys.readouterr().out)["disk"]
     forecast = disk["history_bytes"] + disk["checkpoint_bytes"] + disk["picture_bytes"]
@@ -287,7 +379,7 @@ def test_a_scratch_folder_on_another_disk_is_measured_on_that_disk(tmp_path, cap
     monkeypatch.setenv("GPUWM_COMPOSE_SCRATCH", str(scratch))
     monkeypatch.setattr(disk_budget, "same_disk",
                         lambda first, second: scratch not in (Path(first), Path(second)))
-    plan = _plan(tmp_path)
+    plan = _plan(tmp_path, on_cut=True)
 
     def free(path):
         return 10 * GIB if Path(path) == scratch else 10 ** 15
@@ -300,7 +392,7 @@ def test_a_scratch_folder_on_another_disk_is_measured_on_that_disk(tmp_path, cap
     # With room there, the same run is not refused for its stream.
     again = tmp_path / "again"
     again.mkdir()
-    events, fetched = _execute(_plan(again), monkeypatch, lambda path: 10 ** 15)
+    events, fetched = _execute(_plan(again, on_cut=True), monkeypatch, lambda path: 10 ** 15)
     assert fetched == ["chain"]
     assert not any("frame stream" in str(event.get("message")) for event in events)
 
@@ -368,10 +460,10 @@ def test_run_plan_says_a_stream_that_may_not_fit_before_the_download_and_goes_on
         tmp_path, capsys, monkeypatch):
     """The one disk admission hands run-plan its warning: an event before the chain, not a refusal.
 
-    The GDPS stream is a global source's, certain whole; it is priced here
-    as a regional one would be, a tenth of it certain and the rest over the
-    target's footprint, so the disk can hold the certain part and not the
-    estimate.
+    The GDPS stream of a root on the antimeridian is certain whole (the
+    ring is not windowed there); it is priced here as a windowed one would
+    be, a tenth of it certain and the rest over the target's footprint, so
+    the disk can hold the certain part and not the estimate.
     """
     from gpuwm.cli import build_parser
     from gpuwm.runplan import run_plan_main
@@ -387,7 +479,7 @@ def test_run_plan_says_a_stream_that_may_not_fit_before_the_download_and_goes_on
         return estimate
 
     monkeypatch.setattr(download_budget, "compose_scratch_estimate", regional)
-    plan = _plan(tmp_path)
+    plan = _plan(tmp_path, on_cut=True)
     assert run_plan_main(build_parser().parse_args(["run-plan", "--estimate", str(plan)])) == 0
     disk = json.loads(capsys.readouterr().out)["disk"]
     stream = disk["compose_scratch_bytes"]

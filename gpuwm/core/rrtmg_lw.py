@@ -3725,7 +3725,70 @@ def _gpu_source():
                   encoding="utf-8").read()]
     for path in sorted(_glob.glob(_os.path.join(kdir, "rrtmg_lw_*.cu"))):
         parts.append(open(path, encoding="utf-8").read())
+    # Insert each device helper beside its standalone body, before local
+    # coefficient indexing macros are undefined. Statements stay verbatim.
+    for index, part in enumerate(parts):
+        for band in range(1, 17):
+            marker = 'extern "C" __global__ void rlw_taugb%d(' % band
+            if marker not in part:
+                continue
+            start = part.index(marker)
+            brace = part.index("{", start)
+            depth, end = 1, brace + 1
+            while depth:
+                depth += (part[end] == "{") - (part[end] == "}")
+                end += 1
+            helper = part[start:end].replace(
+                'extern "C" __global__ void rlw_taugb%d' % band,
+                '__device__ __forceinline__ void rlw_band%d' % band, 1)
+            ghelper = helper.replace("rlw_band%d(" % band, "rlw_gband%d(" % band, 1)
+            ghelper = ghelper.replace("TAUGB_PROLOGUE", "TAUGB_GPOINT_PROLOGUE")
+            ghelper = ghelper.replace(
+                "for (int ig = 1; ig <= ng%d; ++ig)" % band,
+                "for (int ig = gpoint; ig <= ng%d; ig += 16)" % band)
+            part = part[:end] + "\n" + helper + "\n" + ghelper + part[end:]
+        parts[index] = part
     return "\n".join(parts)
+
+
+#: First line of kernels/rrtmg_lw_chain_coalesced.cu, the committed output of
+#: :func:`_lw_coalesced_source` over kernels/rrtmg_lw_chain.cu (the sorted
+#: ``rrtmg_lw_*.cu`` glob above puts it right after the chain it twins).
+_LW_COALESCED_HEADER = (
+    "// GENERATED from rrtmg_lw_chain.cu by "
+    "gpuwm.core.rrtmg_lw._lw_coalesced_source\n")
+
+
+def _lw_coalesced_source(chain):
+    """The address-only twin of the chain kernels (committed as
+    kernels/rrtmg_lw_chain_coalesced.cu): kernel names gain ``_coalesced``
+    and every (column, g-point, layer) slab index becomes (column, layer,
+    g-point), so the batched one-thread-per-(column, g-point) kernels touch
+    consecutive words across a warp.  No arithmetic statement changes; the
+    unsuffixed kernels keep the single-column ABI and its oracle gates."""
+    import re
+    chain = re.sub(r"\brlw_(inatm|cldprmc|taut|rtrn_\w+)\b",
+                   lambda m: m.group(0) + "_coalesced", chain)
+    for lane in ("(ig - 1)", "(igc - 1)", "(lane)", "lane"):
+        for layer in ("((l) - 1)", "(lay - 1)", "(lev - 1)", "(lev)", "lev", "0"):
+            old = "((long long)col * NGPTLW + " + lane + ") * nl"
+            pattern = re.escape(old) + r"\s*\+ " + re.escape(layer)
+            new = "((long long)col * nl + " + layer + ") * NGPTLW + " + lane
+            chain = re.sub(pattern, lambda m: new, chain)
+    return chain
+
+
+def _write_coalesced_twin():
+    """Regenerate kernels/rrtmg_lw_chain_coalesced.cu from the chain,
+    keeping its committed header (everything up to the first blank line)."""
+    from pathlib import Path
+    kdir = Path(__file__).resolve().parent / "kernels"
+    target = kdir / "rrtmg_lw_chain_coalesced.cu"
+    text = target.read_text(encoding="utf-8")
+    header = text[:text.index("\n\n") + 2]
+    chain = (kdir / "rrtmg_lw_chain.cu").read_text(encoding="utf-8")
+    with open(target, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(header + _lw_coalesced_source(chain))
 
 
 def _gpu_module():
@@ -4318,7 +4381,8 @@ def __getattr__(name):
 LW_GPU_KERNEL_NAMES = (
     "rlw_probe", "rlw_inatm", "rlw_cldprmc", "rlw_setcoef", "rlw_taut",
     "rlw_rtrn_secdiff", "rlw_rtrn_prol", "rlw_rtrn_march",
-    "rlw_rtrn_accum", "rlw_rtrn_final",
+    "rlw_rtrn_accum", "rlw_rtrn_final", "rlw_taumol_batched",
+    "rlw_rtrn_accum_rows", "rlw_rtrn_prol_gpoints",
 ) + tuple("rlw_taugb%d" % b for b in range(1, 17))
 
 
@@ -4336,6 +4400,10 @@ def gpu_local_frame_bytes():
         fn = _gpu_kernel(name)
         out[name] = int(driver.funcGetAttribute(
             driver.CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, fn.ptr))
+        if name in ("rlw_cldprmc", "rlw_rtrn_prol", "rlw_rtrn_march", "rlw_rtrn_accum"):
+            twin = _gpu_kernel(name + "_coalesced")
+            out[name] = max(out[name], int(driver.funcGetAttribute(
+                driver.CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, twin.ptr)))
     return out
 
 
@@ -4362,11 +4430,14 @@ def lw_batched_const_bytes(C):
         total += _r512(np.asarray(C[key]).size * 4)
     total += _r512(NGPTLW * 4) + _r512(NBNDLW * 4)     # ngb, ngs
     total += 3 * _r512(NBNDLW * 4)                     # a0, a1, a2
-    return total
+    return total + _r512(16 * 8)
 
 
-def lw_batched_vram_bytes(ncol_chunk, nlay, ncol_total=None):
+def lw_batched_vram_bytes(ncol_chunk, nlay, ncol_total=None, *, mcica_layout="gpoint"):
     """Peak transient device bytes of ONE chunk of the batched LW chain.
+
+    ``mcica_layout="column"`` prices resident contiguous float32 slabs;
+    their caller-owned storage is outside this transient estimate.
 
     Derived from exactly the shapes gpu_rrtmg_lw_batched_device allocates,
     as the max over its three allocation high-water stages (upload/inatm/
@@ -4378,6 +4449,9 @@ def lw_batched_vram_bytes(ncol_chunk, nlay, ncol_total=None):
     0.5*estimate).  The per-call constant tables are NOT included: add
     lw_batched_const_bytes(C) (~2-3 MiB) for the full preflight term.
     """
+    if mcica_layout not in ("gpoint", "column"):
+        raise ValueError("mcica_layout must be gpoint or column")
+    copied = mcica_layout == "gpoint"
     nc = int(ncol_chunk)
     nl = int(nlay)
     nt = nc if ncol_total is None else int(ncol_total)
@@ -4390,11 +4464,12 @@ def lw_batched_vram_bytes(ncol_chunk, nlay, ncol_total=None):
     s_lnb = _r512(nc * nl * NBNDLW * f)      # planklay / taua
     s_lnb1 = _r512(nc * (nl + 1) * NBNDLW * f)  # planklev
     # batch-level outputs, alive for the whole call
-    out_b = 4 * _r512(nt * (nl + 1) * f) + 2 * _r512(nt * nl * f)
+    out_b = (4 * _r512(nt * (nl + 1) * f) + 2 * _r512(nt * nl * f)
+             + _r512(((nt + nc - 1) // nc) * 4))
     # tiny per-column vectors kept alive across the whole chunk
     tiny = 5 * s_col + _r512(4)              # tsfc pwvcm laytrop ncb + err
     # stage U: all uploads + inatm outputs + cldprmc flags
-    stage_u = (5 * s140                      # cldfmc taucmc ciwp clwp cswp
+    stage_u = (5 * copied * s140              # copied cldfmc taucmc ciwp clwp cswp
                + _r512(nc * MXMOL * nl * f)  # wkl
                + _r512(nc * MAXXSEC * nl * f)  # wx
                + 2 * s_nl                    # play tlay
@@ -4406,7 +4481,7 @@ def lw_batched_vram_bytes(ncol_chunk, nlay, ncol_total=None):
                + tiny + out_b)
     # stage B: band kernels (ice/liq/snow slabs freed; fs/isv/planks/
     # taug/fracs live; play/tlay/tlev/wkl/wbrodl/coldry freed)
-    stage_b = (2 * s140                      # cldfmc taucmc
+    stage_b = (2 * copied * s140              # copied cldfmc taucmc
                + 2 * s140                    # taug fracs
                + _r512(len(GPU_FSLOTS) * nc * nl * f)   # fs
                + _r512(len(GPU_ISLOTS) * nc * nl * f)   # isv
@@ -4417,7 +4492,7 @@ def lw_batched_vram_bytes(ncol_chunk, nlay, ncol_total=None):
                + tiny + out_b)
     # stage M: rtrn march (the peak): cldfmc + fracs/taut + odcld/efclfrac
     # + 4 radiance profiles + iclddn (u8) + sfc lanes + planks + secdiff
-    stage_m = (s140                          # cldfmc
+    stage_m = (copied * s140                  # copied cldfmc
                + 2 * s140                    # fracs taut
                + 2 * s140                    # odcld efclfrac
                + 4 * s140                    # radld radclrd radlu radclru
@@ -4428,7 +4503,9 @@ def lw_batched_vram_bytes(ncol_chunk, nlay, ncol_total=None):
                + _r512(nc * nl * f)          # icldlyr
                + s_nl1 + s_b                 # plev emis
                + tiny + out_b)
-    return max(stage_u, stage_b, stage_m)
+    held = (4 * s140 + _r512(nc * NGPTLW * nl)
+            + 2 * _r512(nc * NGPTLW * f))
+    return max(stage_u + held, stage_b + held, stage_m)
 
 
 def _lw_dev_chunk(cp, a, rows, cols=None):
@@ -4448,22 +4525,89 @@ def _lw_dev_chunk(cp, a, rows, cols=None):
                                                       dtype=np.float32)))
 
 
-def _lw_dev_mcica(cp, a, c0, c1, nl):
-    """(NGPTLW, ncol, nlay) input -> (nc, NGPTLW, nl) contiguous device
+def _lw_dev_mcica(cp, a, c0, c1, nl, layout="gpoint"):
+    """(NGPTLW, ncol, nlay) input -> (nc, nl, NGPTLW) contiguous device
     chunk (transpose is data movement only; same bits per column as the
     per-column wrappers' np.ascontiguousarray(a[:, ip, :]))."""
+    if layout == "column":
+        return _lw_dev_chunk(cp, a, slice(c0, c1), (slice(None, nl), slice(None)))
     sub = a[:, c0:c1, :nl]
     if isinstance(sub, cp.ndarray):
         if sub.dtype == cp.float32:
-            return cp.ascontiguousarray(sub.transpose(1, 0, 2))
+            return cp.ascontiguousarray(sub.transpose(1, 2, 0))
         sub = cp.asnumpy(sub)
     sub = np.asarray(sub, dtype=np.float32)
-    return cp.asarray(np.ascontiguousarray(sub.transpose(1, 0, 2)))
+    return cp.asarray(np.ascontiguousarray(sub.transpose(1, 2, 0)))
 
+
+# Each march thread writes every layer of all five profile slots and both
+# surface slots before accum reads them. No slot needs an initial memset.
+LW_EMPTY_SLOTS = {
+    "coldry_d": "inatm writes every layer",
+    "wbrodl_d": "inatm writes every layer",
+    "pwvcm_d": "inatm writes every column",
+    "planklay": "setcoef writes every layer and band",
+    "planklev": "setcoef writes every interface and band",
+    "plankbnd": "setcoef writes every surface band",
+    "taug_d": "all sixteen band kernels cover every layer and g-point",
+    "fracs_d": "all sixteen band kernels cover every layer and g-point",
+    "taut_d": "taut writes every layer and g-point",
+    "secdiff": "secdiff writes every column and band",
+    "odcld": "prol writes both cloudy and clear branches",
+    "efclfrac": "prol writes both cloudy and clear branches",
+    "totuflux": "accum writes every interface",
+    "totdflux": "accum writes every interface",
+    "totuclfl": "accum writes every interface",
+    "totdclfl": "accum writes every interface",
+    "fnet": "final writes every interface before its layer difference",
+    "fnetc": "final writes every interface before its layer difference",
+    "htr": "final writes every layer and the trailing zero",
+    "htrc": "final writes every layer and the trailing zero",
+}
+# Keep wkl zeroed for unused species, conditional setcoef slabs fs/isv
+# zeroed for their unwritten entries, and ncb/icldlyr flags zeroed.
+
+LW_SCRATCH_SLOTS = {
+    "radld_p": "march downward loop writes every layer",
+    "radclrd_p": "march downward loop writes every layer",
+    "radlu_p": "march upward loop writes every layer",
+    "radclru_p": "march upward loop writes every layer",
+    "iclddn_p": "march downward loop writes every layer",
+    "radlu_sfc": "march writes surface before upward loop",
+    "radclru_sfc": "march writes surface before upward loop",
+}
+
+
+class LWBatchScratch:
+    """Call-owned march slots reused across chunks, including a short tail."""
+    def __init__(self, cp):
+        self.cp = cp
+        self.buffers = {}
+
+    def take(self, name, shape, dtype):
+        if name not in LW_SCRATCH_SLOTS:
+            raise KeyError(name)
+        size = int(np.prod(shape))
+        key = (name, np.dtype(dtype).str)
+        buf = self.buffers.get(key)
+        if buf is None or buf.size < size:
+            buf = self.cp.empty(size, dtype=dtype)
+            self.buffers[key] = buf
+        return buf[:size].reshape(shape)
+
+
+_LW_CONST_CACHE = {}
 
 def _lw_dev_consts(cp, C):
-    """Upload the chunk-independent constants once per batched call.
-    Sizes priced by lw_batched_const_bytes -- keep the two in step."""
+    """Reuse chunk-independent constants for the current object and device.
+    Sizes priced by lw_batched_const_bytes -- keep the two in step.
+    The current coefficient object is retained per device; replacement
+    drops that device cache. Coefficients must remain immutable."""
+    device = int(cp.cuda.runtime.getDevice())
+    cached = _LW_CONST_CACHE.get(device)
+    if cached is not None and cached[0] is C:
+        return cached[1]
+
     def up(a, dt=np.float32, forder=False):
         h = np.asarray(a, dtype=dt)
         if forder:
@@ -4473,6 +4617,9 @@ def _lw_dev_consts(cp, C):
     K = {"band": {}}
     for band in range(1, 17):
         K["band"][band] = gpu_band_tabs(band, C)   # (arrays, ptr table)
+    K["bandptrs"] = cp.asarray(np.asarray(
+        [K["band"][band][1].data.ptr for band in range(1, 17)],
+        dtype=np.uint64))
     K["chi"] = up(C["ref/chi_mls"], forder=True)
     K["totplnk"] = up(C["wvn/totplnk"], forder=True)
     K["totplk16"] = up(C["wvn/totplk16"])
@@ -4497,6 +4644,7 @@ def _lw_dev_consts(cp, C):
     K["avogad"] = np.float32(C["con/avogad"])
     K["fluxfac"] = np.float32(C["con/fluxfac"])
     K["heatfac"] = np.float32(C["con/heatfac"])
+    _LW_CONST_CACHE[device] = (C, K)
     return K
 
 
@@ -4507,7 +4655,8 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
                                 iceflglw, liqflglw, cldfmcl, taucmcl,
                                 ciwpmcl, clwpmcl, cswpmcl, reicmcl,
                                 relqmcl, resnmcl, tauaer, C,
-                                column_chunk=None, _stage_probe=None):
+                                column_chunk=None, _stage_probe=None, *,
+                                mcica_layout="gpoint"):
     """Batched full LW chain, device-resident: same kernels, same compile
     path, same launch-side numerics as gpu_rrtmg_lw -- the only changes
     are grid sizes (ncol > 1) and host plumbing.  Inputs numpy or cupy
@@ -4515,10 +4664,15 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
     (uflx/dflx/hr/uflxc/dflxc/hrc + zeroed uflxcln/dflxcln), fetch host
     copies via lw_batched_to_host.  ``column_chunk`` bounds the transient
     VRAM of the internal pipeline (lw_batched_vram_bytes prices it); the
-    only mid-chunk host sync is the 4-byte cldprmc error-flag check.
+    cloud error flag is read once after all chunks.
+    ``mcica_layout="column"`` explicitly accepts the five McICA slabs
+    as (ncol, nlay, NGPTLW), avoiding their layout copies. The default
+    remains (NGPTLW, ncol, nlay).
     ``_stage_probe`` is test instrumentation (called at the allocation
     high-water stages); it must not affect results.
     """
+    if mcica_layout not in ("gpoint", "column"):
+        raise ValueError("mcica_layout must be gpoint or column")
     import cupy as cp
     gpu_preflight()
     if icld < 1:
@@ -4546,6 +4700,8 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
     fslot = {name: i for i, name in enumerate(GPU_FSLOTS)}
     islot = {name: i for i, name in enumerate(GPU_ISLOTS)}
 
+    scratch = LWBatchScratch(cp)
+    err_flags = cp.zeros((ncol + chunk - 1) // chunk, dtype=cp.int32)
     for c0 in range(0, ncol, chunk):
         c1 = min(c0 + chunk, ncol)
         nc = c1 - c0
@@ -4570,11 +4726,11 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
                           (4, cfc22vmr)):
             wx_d[:, slot - 1, :] = _lw_dev_chunk(cp, arr, rows,
                                                  (slice(0, nl),))
-        cldfmc_d = _lw_dev_mcica(cp, cldfmcl, c0, c1, nl)
-        taucmc_d = _lw_dev_mcica(cp, taucmcl, c0, c1, nl)
-        ciwpmc_d = _lw_dev_mcica(cp, ciwpmcl, c0, c1, nl)
-        clwpmc_d = _lw_dev_mcica(cp, clwpmcl, c0, c1, nl)
-        cswpmc_d = _lw_dev_mcica(cp, cswpmcl, c0, c1, nl)
+        cldfmc_d = _lw_dev_mcica(cp, cldfmcl, c0, c1, nl, mcica_layout)
+        taucmc_d = _lw_dev_mcica(cp, taucmcl, c0, c1, nl, mcica_layout)
+        ciwpmc_d = _lw_dev_mcica(cp, ciwpmcl, c0, c1, nl, mcica_layout)
+        clwpmc_d = _lw_dev_mcica(cp, clwpmcl, c0, c1, nl, mcica_layout)
+        cswpmc_d = _lw_dev_mcica(cp, cswpmcl, c0, c1, nl, mcica_layout)
         reicmc_d = _lw_dev_chunk(cp, reicmcl, rows, (slice(0, nl),))
         relqmc_d = _lw_dev_chunk(cp, relqmcl, rows, (slice(0, nl),))
         resnmc_d = _lw_dev_chunk(cp, resnmcl, rows, (slice(0, nl),))
@@ -4582,9 +4738,9 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
                                (slice(0, nl), slice(0, NBNDLW)))
 
         # ---- inatm derived quantities ----------------------------------
-        coldry_d = cp.zeros((nc, nl), dtype=cp.float32)
-        wbrodl_d = cp.zeros((nc, nl), dtype=cp.float32)
-        pwvcm_d = cp.zeros(nc, dtype=cp.float32)
+        coldry_d = cp.empty((nc, nl), dtype=cp.float32)
+        wbrodl_d = cp.empty((nc, nl), dtype=cp.float32)
+        pwvcm_d = cp.empty(nc, dtype=cp.float32)
         _gpu_kernel("rlw_inatm")(
             ((nc + 31) // 32,), (32,),
             (i32(nc), i32(nl), plev_d, K["grav"], K["avogad"],
@@ -4592,22 +4748,17 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
 
         # ---- cldprmc ----------------------------------------------------
         ncb_flag = cp.zeros(nc, dtype=cp.int32)
-        err_flag = cp.zeros(1, dtype=cp.int32)
         total = nc * NGPTLW
-        _gpu_kernel("rlw_cldprmc")(
+        _gpu_kernel("rlw_cldprmc_coalesced")(
             ((total + 127) // 128,), (128,),
             (i32(nc), i32(nl), i32(inflglw), i32(iceflglw), i32(liqflglw),
              cldfmc_d, ciwpmc_d, clwpmc_d, cswpmc_d,
              reicmc_d, relqmc_d, resnmc_d,
              K["absice1"], K["absice2"], K["absice3"], K["absice0"],
              K["absliq1"], K["absliq0"], K["ngb"],
-             taucmc_d, ncb_flag, err_flag))
+             taucmc_d, ncb_flag, err_flags[c0 // chunk:c0 // chunk + 1]))
         if _stage_probe is not None:
             _stage_probe("upload")
-        err = int(cp.asnumpy(err_flag)[0])
-        if err:
-            raise ValueError(f"rlw_cldprmc device abort, code {err} "
-                             "(bounds violation, mirrors the Fortran stop)")
         del ciwpmc_d, clwpmc_d, cswpmc_d, reicmc_d, relqmc_d, resnmc_d
 
         # ---- setcoef, writing straight into the frozen taumol slabs ----
@@ -4616,9 +4767,9 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
         fs_d[fslot["pavel"]] = play_d
         fs_d[fslot["coldry"]] = coldry_d
         laytrop_d = cp.zeros(nc, dtype=cp.int32)
-        planklay = cp.zeros((nc, nl, NBNDLW), dtype=cp.float32)
-        planklev = cp.zeros((nc, nl + 1, NBNDLW), dtype=cp.float32)
-        plankbnd = cp.zeros((nc, NBNDLW), dtype=cp.float32)
+        planklay = cp.empty((nc, nl, NBNDLW), dtype=cp.float32)
+        planklev = cp.empty((nc, nl + 1, NBNDLW), dtype=cp.float32)
+        plankbnd = cp.empty((nc, NBNDLW), dtype=cp.float32)
 
         def FV(name):
             return fs_d[fslot[name]]
@@ -4651,22 +4802,20 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
         del play_d, tlay_d, tlev_d, wkl_d, wbrodl_d, coldry_d
 
         # ---- taumol: the 16 band kernels --------------------------------
-        taug_d = cp.zeros((nc, nl, NGPTLW), dtype=cp.float32)
-        fracs_d = cp.zeros((nc, nl, NGPTLW), dtype=cp.float32)
+        taug_d = cp.empty((nc, nl, NGPTLW), dtype=cp.float32)
+        fracs_d = cp.empty((nc, nl, NGPTLW), dtype=cp.float32)
         total = nc * nl
-        blocks = (total + 127) // 128
-        for band in range(1, 17):
-            _gpu_kernel("rlw_taugb%d" % band)(
-                (blocks,), (128,),
-                (i32(nc), i32(nl), laytrop_d, fs_d, isv_d, wx_d,
-                 K["chi"], K["oneminus"], K["band"][band][1],
-                 taug_d, fracs_d))
+        blocks = (total * 16 + 127) // 128
+        _gpu_kernel("rlw_taumol_batched")(
+            (blocks, 16), (128,),
+            (i32(nc), i32(nl), laytrop_d, fs_d, isv_d, wx_d,
+             K["chi"], K["oneminus"], K["bandptrs"], taug_d, fracs_d))
         if _stage_probe is not None:
             _stage_probe("bands")
         del fs_d, isv_d, wx_d
 
         # ---- taut --------------------------------------------------------
-        taut_d = cp.zeros((nc, nl, NGPTLW), dtype=cp.float32)
+        taut_d = cp.empty((nc, nl, NGPTLW), dtype=cp.float32)
         total = nc * nl * NGPTLW
         _gpu_kernel("rlw_taut")(
             ((total + 127) // 128,), (128,),
@@ -4674,30 +4823,30 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
         del taug_d, taua_d
 
         # ---- rtrnmc pipeline ----------------------------------------------
-        secdiff = cp.zeros((nc, NBNDLW), dtype=cp.float32)
+        secdiff = cp.empty((nc, NBNDLW), dtype=cp.float32)
         _gpu_kernel("rlw_rtrn_secdiff")(
             ((nc + 63) // 64,), (64,),
             (i32(nc), pwvcm_d, K["a0"], K["a1"], K["a2"], secdiff))
 
-        odcld = cp.zeros((nc, NGPTLW, nl), dtype=cp.float32)
-        efclfrac = cp.zeros((nc, NGPTLW, nl), dtype=cp.float32)
+        odcld = cp.empty((nc, nl, NGPTLW), dtype=cp.float32)
+        efclfrac = cp.empty((nc, nl, NGPTLW), dtype=cp.float32)
         icldlyr = cp.zeros((nc, nl), dtype=cp.int32)
         total = nc * nl
-        _gpu_kernel("rlw_rtrn_prol")(
-            ((total + 127) // 128,), (128,),
+        _gpu_kernel("rlw_rtrn_prol_gpoints")(
+            (total,), (128,),
             (i32(nc), i32(nl), cldfmc_d, taucmc_d, secdiff, K["ngb"],
              odcld, efclfrac, icldlyr))
         del taucmc_d
 
-        radld_p = cp.zeros((nc, NGPTLW, nl), dtype=cp.float32)
-        radclrd_p = cp.zeros((nc, NGPTLW, nl), dtype=cp.float32)
-        radlu_p = cp.zeros((nc, NGPTLW, nl), dtype=cp.float32)
-        radclru_p = cp.zeros((nc, NGPTLW, nl), dtype=cp.float32)
-        iclddn_p = cp.zeros((nc, NGPTLW, nl), dtype=cp.uint8)
-        radlu_sfc = cp.zeros((nc, NGPTLW), dtype=cp.float32)
-        radclru_sfc = cp.zeros((nc, NGPTLW), dtype=cp.float32)
+        radld_p = scratch.take("radld_p", (nc, nl, NGPTLW), dtype=cp.float32)
+        radclrd_p = scratch.take("radclrd_p", (nc, nl, NGPTLW), dtype=cp.float32)
+        radlu_p = scratch.take("radlu_p", (nc, nl, NGPTLW), dtype=cp.float32)
+        radclru_p = scratch.take("radclru_p", (nc, nl, NGPTLW), dtype=cp.float32)
+        iclddn_p = scratch.take("iclddn_p", (nc, nl, NGPTLW), dtype=cp.uint8)
+        radlu_sfc = scratch.take("radlu_sfc", (nc, NGPTLW), dtype=cp.float32)
+        radclru_sfc = scratch.take("radclru_sfc", (nc, NGPTLW), dtype=cp.float32)
         total = nc * NGPTLW
-        _gpu_kernel("rlw_rtrn_march")(
+        _gpu_kernel("rlw_rtrn_march_coalesced")(
             ((total + 127) // 128,), (128,),
             (i32(nc), i32(nl), cldfmc_d, odcld, efclfrac, icldlyr,
              secdiff, emis_d, planklay, planklev, plankbnd,
@@ -4710,13 +4859,13 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
         del (cldfmc_d, odcld, efclfrac, fracs_d, taut_d, planklay,
              planklev, plankbnd, secdiff, icldlyr)
 
-        totuflux = cp.zeros((nc, nl + 1), dtype=cp.float32)
-        totdflux = cp.zeros((nc, nl + 1), dtype=cp.float32)
-        totuclfl = cp.zeros((nc, nl + 1), dtype=cp.float32)
-        totdclfl = cp.zeros((nc, nl + 1), dtype=cp.float32)
+        totuflux = cp.empty((nc, nl + 1), dtype=cp.float32)
+        totdflux = cp.empty((nc, nl + 1), dtype=cp.float32)
+        totuclfl = cp.empty((nc, nl + 1), dtype=cp.float32)
+        totdclfl = cp.empty((nc, nl + 1), dtype=cp.float32)
         total = nc * (nl + 1)
-        _gpu_kernel("rlw_rtrn_accum")(
-            ((total + 127) // 128,), (128,),
+        _gpu_kernel("rlw_rtrn_accum_rows")(
+            ((total + 63) // 64,), (64,),
             (i32(nc), i32(nl), radld_p, radclrd_p, radlu_p, radclru_p,
              iclddn_p, radlu_sfc, radclru_sfc,
              K["ngs"], K["delwave"], WTDIFF,
@@ -4724,10 +4873,10 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
         del (radld_p, radclrd_p, radlu_p, radclru_p, iclddn_p,
              radlu_sfc, radclru_sfc)
 
-        fnet = cp.zeros((nc, nl + 1), dtype=cp.float32)
-        fnetc = cp.zeros((nc, nl + 1), dtype=cp.float32)
-        htr = cp.zeros((nc, nl + 1), dtype=cp.float32)
-        htrc = cp.zeros((nc, nl + 1), dtype=cp.float32)
+        fnet = cp.empty((nc, nl + 1), dtype=cp.float32)
+        fnetc = cp.empty((nc, nl + 1), dtype=cp.float32)
+        htr = cp.empty((nc, nl + 1), dtype=cp.float32)
+        htrc = cp.empty((nc, nl + 1), dtype=cp.float32)
         _gpu_kernel("rlw_rtrn_final")(
             ((nc + 63) // 64,), (64,),
             (i32(nc), i32(nl), plev_d, K["fluxfac"], K["heatfac"],
@@ -4746,7 +4895,12 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
         del (totuflux, totdflux, totuclfl, totdclfl, fnet, fnetc, htr,
              htrc)
 
-    cp.cuda.runtime.deviceSynchronize()
+    errors = cp.asnumpy(err_flags)
+    failed = np.flatnonzero(errors)
+    err = int(errors[failed[0]]) if failed.size else 0
+    if err:
+        raise ValueError(f"rlw_cldprmc device abort, code {err} "
+                         "(bounds violation, mirrors the Fortran stop)")
     return {
         "uflx": uflx, "dflx": dflx, "hr": hr,
         "uflxc": uflxc, "dflxc": dflxc, "hrc": hrc,

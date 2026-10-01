@@ -55,6 +55,12 @@ from hrrr_single_domain_benchmark import (  # noqa: E402
 #: 1.8 flipped the default.
 PROFILE = ROUTE_DEFAULT_PHYSICS_PROFILE
 
+#: That default is a Thompson suite, so every bundle binds the Thompson
+#: table authority; on a development tree the tables resolve to the
+#: checkout's pinned set whatever the installed gpuwm-data carries, and
+#: elsewhere to the machine's staged set (tests/conftest.py says why).
+pytestmark = pytest.mark.usefixtures("pinned_thompson_tables")
+
 CYCLE = datetime(2026, 8, 5, 4)
 SOURCE_HOURS = (0, 1, 2)
 NZ = 8

@@ -98,15 +98,15 @@ SAMPLE_SIZE = 400
 USER_REPORT_TUPLES: tuple[tuple[dict[str, str], str | None], ...] = (
     (dict(cumulus="off", land_surface="noah", microphysics="thompson-mp8",
           pbl="mynn", radiation="rte-rrtmgp", surface_layer="mynn",
-          turbulence="smagorinsky-2d"), None),
+          turbulence="smagorinsky-2d", urban="none"), None),
     (dict(cumulus="new-tiedtke", land_surface="ruc-lsm",
           microphysics="milbrandt2mom-mp9", pbl="ysu",
           radiation="rte-rrtmgp", surface_layer="classic-mm5",
-          turbulence="smagorinsky-2d"), None),
+          turbulence="smagorinsky-2d", urban="none"), None),
     (dict(cumulus="new-tiedtke", land_surface="noah",
           microphysics="milbrandt2mom-mp9", pbl="ysu",
           radiation="rte-rrtmgp", surface_layer="classic-mm5",
-          turbulence="smagorinsky-2d"), "rrtmg_legacy"),
+          turbulence="smagorinsky-2d", urban="none"), "rrtmg_legacy"),
 )
 
 #: Small and legal for every invariant the run door checks; nz sits inside

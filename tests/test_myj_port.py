@@ -732,7 +732,7 @@ def test_a_half_myj_suite_is_refused_at_load(sfclay, pbl):
 #: SASE (900) is not here: it states its own moist requirement, for its own
 #: reason (saturated-N2 stability and condensate rows), at plan review and
 #: again at the driver, and it is its own audit item.
-_DRY_PBL_SLOT = ((1, 1), (2, 2), (5, 5), (11, 1))
+_DRY_PBL_SLOT = ((1, 1), (2, 2), (5, 5), (9, 1), (11, 1))
 
 
 def test_a_dry_pbl_config_is_admitted_by_both_config_doors():
@@ -809,8 +809,15 @@ def test_a_dry_pbl_run_reaches_the_driver_and_mixes(pbl, sfclay):
     assert state.qv is None, "the fixture is not dry"
     state.u[...] = cp.asarray(
         np.full(tuple(state.u.shape), 6.0), dtype=state.u.dtype)
+    # A sunlit surface (swdown 900 W m-2), so the column is heated from
+    # below and every scheme in the slot has turbulence to produce.  Under
+    # swdown = 0 Noah cools the skin at once, the column is stable and
+    # shear-free, and the diffusivity bar below measured only YSU's 0.01
+    # m2 s-1 background floor; the UW scheme (bl_pbl_physics = 9) has no
+    # such floor and returns WRF's exact zero there, so a night fixture
+    # could not tell coupling from a floor for any of them.
     driver = initialize_physics(state, cfg, landmask=1.0, tsk=305.0,
-                                glw=DECLARED_CONSTANT_GLW_WM2, swdown=0.0)
+                                glw=DECLARED_CONSTANT_GLW_WM2, swdown=900.0)
 
     run_steps(state, cfg, 10)
 

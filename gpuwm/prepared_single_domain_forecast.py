@@ -43,7 +43,7 @@ if str(REPO) not in sys.path:
 
 from gpuwm.core import streaming  # noqa: E402
 from gpuwm import __version__  # noqa: E402
-from gpuwm.config import radiation_scheme_ids  # noqa: E402
+from gpuwm.config import EPSSM_AUTO, radiation_scheme_ids  # noqa: E402
 from gpuwm.core.nssl2_contract import (  # noqa: E402
     CONTRACT_ID as NSSL2_CONTRACT_ID,
     MP_PHYSICS as NSSL2_MP_PHYSICS,
@@ -87,6 +87,7 @@ from gpuwm.ingest.prepared_cache import (  # noqa: E402
     PreparedCacheReader,
     PreparedHeadReader,
     prepared_cache_identity,
+    undelayed_identity_defaults,
 )
 from gpuwm.native_wrf_contract import (  # noqa: E402
     NATIVE_LANDUSE_IDENTITY,
@@ -97,6 +98,7 @@ from gpuwm.native_wrf_contract import (  # noqa: E402
 )
 from gpuwm.progress_log import (  # noqa: E402
     ProgressOptions, add_progress_arguments)
+from gpuwm.ingest.memory_refusal import InitializationMemoryRefused  # noqa: E402
 from gpuwm.receipt_paths import receipt_basename  # noqa: E402
 from gpuwm.supervisor import atomic_write_json  # noqa: E402
 from gpuwm.physics_compat import (  # noqa: E402
@@ -124,6 +126,7 @@ from gpuwm.physics_compat import (  # noqa: E402
     WSM6_PROFILE_ID,
     acknowledgement_delivery,
     identify_single_domain_profile,
+    physics_selection_differences,
     selection_values_one_spelling,
     single_domain_physics_selection,
     single_domain_runtime_switches,
@@ -507,6 +510,9 @@ _MATERIALIZED_PHYSICS_KEYS = frozenset({
     "cudt_minutes", "num_soil_layers", "terrain_opt", "km_opt",
     "diff_6th_opt", "diff_6th_factor", "diff_6th_slopeopt",
     "nest_microphysics_transition",
+    # The urban canopy selector every profile states since the urban models
+    # joined the registry (none = 0); a physics switch, not a descriptor.
+    "sf_urban_physics", "use_wudapt_lcz", "num_urban_hi",
 })
 #: The nest-transition rule every materialized authority states.  No
 #: profile switch table carries it, so it is pinned here, once, and read
@@ -620,6 +626,10 @@ MAPPED_HIERARCHY_PROOF_KEYS = frozenset({
     "root_static", "root_geometry", "static_catalog", "source_coverage",
     "artifact_receipt", "moisture_floors_by_domain", "wrf_manifest",
     "timing_seconds", "proof_content_sha256",
+    # The prepared head a chained tree's seal names.  A tree prepared in
+    # one piece (chaining off, or a CUDA tree) carries none and is still
+    # accepted.
+    "boundary_stream",
 })
 #: The moisture-floor receipt keys, by document.  Named as a pair because
 #: the discard below has to know which one a given schema expects, and
@@ -648,9 +658,16 @@ MAPPED_VERTICAL_COORDINATE_KEYS = frozenset({"vertical_coordinate"})
 #: the source files carried fewer levels than the mapping declares (an
 #: era ladder), so a full-ladder bundle's proof is unchanged.
 #: ``soil_temperature_repair`` likewise: written only when real.exe's TSLB
-#: reasonableness rebuild touched a land column of the root.
+#: reasonableness rebuild, or the snow-covered rebuild beside it, touched
+#: a land column of the root.  ``initial_perturbation`` likewise: written
+#: only on a tree whose experiment carries a [perturbation] block, which
+#: the tree runner applies at start (gpuwm.experiment
+#: deferred_initial_perturbation).
+#: ``posting`` likewise: written only by a preparation made as its leads
+#: posted (DESIGN A136 2.4 item 6), the leads it waited for.
 MAPPED_OPTIONAL_PROOF_KEYS = frozenset({
-    "statics_corridor", "source_vertical_ladder", "soil_temperature_repair"})
+    "statics_corridor", "source_vertical_ladder", "soil_temperature_repair",
+    "initial_perturbation", "posting"})
 _SOURCE_ADAPTER = {
     # The generic mapped adapter, truthfully: a packaged profile is
     # prepared by `gpuwm.mapped_direct` with nothing model-specific in
@@ -1452,6 +1469,10 @@ class PreparedForecastInputs:
     #: The preflight's own arguments, kept so the seal can run the same
     #: preflight again against the sealed tree.
     preflight_arguments: Mapping[str, object] | None = None
+    #: What the long-step derivation read before it chose this run's
+    #: clock, kept for a head-bound run only
+    #: (:class:`gpuwm.ingest.boundary_stream.ClockBasis`).
+    clock_basis: object | None = None
 
 
 @dataclass(frozen=True)
@@ -1498,14 +1519,28 @@ def _history_period_count(run_seconds: float, cadence_seconds: float) -> int:
 def _history_output_schedule(
         *, start_time: datetime, run_seconds: float, cadence_seconds: float,
         domain_id: int = 1, after_seconds: float | None = None,
+        begin_seconds: float = 0.0, end_seconds: float | None = None,
 ) -> tuple[tuple[float, datetime, str], ...]:
-    """Resolve exact model-relative offsets, valid times, and WRF filenames."""
+    """Resolve exact model-relative offsets, valid times, and WRF filenames.
 
-    periods = _history_period_count(run_seconds, cadence_seconds)
+    ``begin_seconds`` / ``end_seconds`` are the domain's history window
+    (WRF's history_begin / history_end), the begin already on the step
+    lattice (:func:`gpuwm.core.clock._history_window_ticks`): frames at
+    begin + k * cadence, none after the end.  The defaults are the start
+    frame and every cadence to the stop, the schedule every run had
+    before the window existed.
+    """
+
+    begin = Fraction(float(begin_seconds))
+    periods = _history_period_count(float(Fraction(float(run_seconds))
+                                          - begin), cadence_seconds)         if begin else _history_period_count(run_seconds, cadence_seconds)
     cadence = Fraction(float(cadence_seconds))
     records = []
     for index in range(periods + 1):
-        offset_seconds = float(index * cadence)
+        if (end_seconds is not None
+                and begin + index * cadence > Fraction(float(end_seconds))):
+            break
+        offset_seconds = float(begin + index * cadence)
         valid_time = start_time + timedelta(seconds=offset_seconds)
         if valid_time.microsecond != 0:
             raise ValueError(
@@ -1522,6 +1557,19 @@ def _history_output_schedule(
         raise ValueError("history cadence produces duplicate WRF filenames")
     return tuple(record for record in records
                  if after_seconds is None or record[0] > after_seconds)
+
+
+def _root_history_window(exp) -> tuple[float, float | None]:
+    """The root's history window in seconds, begin on the step lattice."""
+    from gpuwm.core.clock import _history_window_ticks
+
+    domain = exp.root
+    dt = exp.dt_exact(domain.grid_id)
+    den = dt.denominator
+    begin_ticks, end_ticks = _history_window_ticks(
+        domain, int(dt * den), den)
+    return (float(Fraction(begin_ticks, den)),
+            None if end_ticks is None else float(Fraction(end_ticks, den)))
 
 
 def _validate_hash_bound_history_cadence(
@@ -1545,17 +1593,21 @@ def _validate_hash_bound_history_cadence(
         raise ValueError(
             "hash-bound history cadence is not a positive whole number of "
             "exact model time steps")
+    begin_s, end_s = _root_history_window(exp)
     schedule = _history_output_schedule(
         start_time=exp.start_time, run_seconds=exp.run_seconds,
-        cadence_seconds=experiment_cadence)
+        cadence_seconds=experiment_cadence,
+        begin_seconds=begin_s, end_seconds=end_s)
     periods = len(schedule) - 1
     first = schedule[0][1]
     last_offset, last_scheduled, _name = schedule[-1]
-    run_end = first + timedelta(seconds=float(exp.run_seconds))
+    run_end = exp.start_time + timedelta(seconds=float(exp.run_seconds))
     last_equals_run_end = (
-        Fraction(periods) * Fraction(experiment_cadence)
-        == Fraction(float(exp.run_seconds)))
-    return {
+        Fraction(float(last_offset)) == Fraction(float(exp.run_seconds)))
+    window = ({} if (begin_s, end_s) == (0.0, None) else {
+        "history_begin_seconds": begin_s,
+        "history_end_seconds": end_s})
+    return {**window,
         "schema": "gpuwm-hash-bound-history-cadence-v1",
         "requested_seconds": requested,
         "experiment_seconds": experiment_cadence,
@@ -1568,7 +1620,7 @@ def _validate_hash_bound_history_cadence(
         "run_end_offset_seconds": float(exp.run_seconds),
         "run_end_valid_time": run_end.isoformat(),
         "last_scheduled_equals_run_end": last_equals_run_end,
-        "initial_frame_required": True,
+        "initial_frame_required": not begin_s,
         "run_end_frame_scheduled": last_equals_run_end,
     }
 
@@ -1836,6 +1888,12 @@ def _declared_physics_conflicts(
             if key not in governed:
                 continue
             if key in _RADIATION_SELECTION_KEYS and radiation_ok:
+                continue
+            if key == "epssm" and table[key] == EPSSM_AUTO:
+                # "auto" is the documented spelling of leaving epssm unset
+                # (A171's importer writes it), and an unset key is the
+                # profile's to supply: counting it as a conflict refused
+                # every re-imported namelist pair run under a profile.
                 continue
             if _physics_values_agree(table[key], governed[key]):
                 continue
@@ -2594,11 +2652,16 @@ def _preparation_binding_refusal(args) -> str | None:
             return ("--prepared-head-sha256 binds the preparation by its "
                     "head; pass it alone, or pass --proof-sha256 with "
                     "--prepared-content-sha256 for a sealed preparation")
+        # Whether the head needs --source-manifest-sha256 is the head's to
+        # say (an as-posted head binds its plan): the preflight reads it.
         return None
     if any(value is None for value in sealed):
         return ("a forecast binds its preparation with "
                 "--prepared-head-sha256, or with both --proof-sha256 and "
                 "--prepared-content-sha256")
+    # A sealed binding without --source-manifest-sha256 is refused by the
+    # preflight, before any file is read (``source-manifest-sha256 must be
+    # a lowercase SHA-256 digest``).
     return None
 
 
@@ -3828,9 +3891,17 @@ def _mapped_composition_manifest_file_specs(
 
 def _manifest_file_specs(
         source: str, manifest: Mapping[str, object], exp,
-        proof: Mapping[str, object],
+        proof: Mapping[str, object], *,
+        pending=frozenset(),
 ) -> tuple[dict[str, dict[str, object]], Mapping[str, object] | None]:
-    """Normalized role specs, plus the GFS source receipt when there is one."""
+    """Normalized role specs, plus the GFS source receipt when there is one.
+
+    ``pending`` names the roles whose digest an as-posted head's input
+    plan leaves unknown (each lead's payload and what is written from the
+    lead rows): each carries ``sha256`` ``None`` until the seal writes the
+    manifest, which is held to the plan and to each lead's posted marker
+    (:func:`gpuwm.ingest.boundary_stream.verify_as_posted_seal`).
+    """
 
     if source == "20crv3":
         return _twentycrv3_manifest_file_specs(manifest), None
@@ -3861,8 +3932,10 @@ def _manifest_file_specs(
                 f"portable source manifest role {role!r} has an unsafe name")
         normalized[role] = {
             "name": name,
-            "sha256": _require_digest(
-                spec.get("sha256"), f"source manifest {role} sha256"),
+            "sha256": (None if role in pending and spec.get("sha256") is None
+                       else _require_digest(
+                           spec.get("sha256"),
+                           f"source manifest {role} sha256")),
         }
     common = {"bridge", "experiment_config", "wps_namelist"}
     if source == "hrrr":
@@ -4194,14 +4267,26 @@ def _validate_front_door_physics_proof(
     THE profile-agnostic invariant of this route: the physics executed
     is the physics prepared.  The preparation proof records the front
     door's selection receipt, and this recomputes the same receipt from
-    the same hash-bound experiment config and requires byte equality.
-    The proof's own receipt says which of the two selection spellings
-    the preparation used -- a named-profile receipt or the per-domain
-    config-derived one -- and the recomputation follows it; both are
-    pure functions of (config, registry, acknowledgements), so equality
-    still proves the prepared selection came from THIS config under
-    THIS registry.  The runner's own ``--physics-profile``, when named,
-    is separately enforced against the config by ``_validate_physics``.
+    the same hash-bound experiment config and requires them to be the
+    same selection: every field equal except the record-only ones
+    (:data:`gpuwm.physics_compat.SELECTION_RECEIPT_RECORD_ONLY_FIELDS`:
+    the registry document digest and the maturity label), and the
+    registry physics equal part by part, so a preparation made under a
+    registry that differs only in citations, warnings, labels or
+    admission rules resolves and one whose options, knobs, tables or
+    kernel identities differ is refused naming the part (A153).  Physics
+    added since the preparation (a component, option, knob or template
+    entry) resolves where this config leaves it at its off value and is
+    refused, named, where it selects it.  An
+    admission rule that no longer admits the configuration refuses in
+    the recomputation itself, naming the rule.  The proof's own receipt
+    says which of the two selection spellings the preparation used -- a
+    named-profile receipt or the per-domain config-derived one -- and the
+    recomputation follows it; both are pure functions of (config,
+    registry, acknowledgements), so equality still proves the prepared
+    selection came from THIS config under THIS registry's physics.  The
+    runner's own ``--physics-profile``, when named, is separately
+    enforced against the config by ``_validate_physics``.
     """
 
     # HRRR joins this gate at its FIRST schema rather than a later one:
@@ -4253,10 +4338,20 @@ def _validate_front_door_physics_proof(
             proof_profile, config=cfg,
             expert_acknowledgements=tuple(acknowledgements),
             acknowledgement_provenance=acknowledgement_provenance)
-    if selected != expected:
+    # Compared by identity, not bytes (A153): the receipt's registry
+    # document digest moved with every citation edit and refused
+    # byte-identical forecasts.  What differs is named.  The config is
+    # passed so physics added since the preparation resolves where this
+    # config leaves it off, and is named where it does not.
+    differences = physics_selection_differences(
+        selected, expected, settings=cfg)
+    if differences:
+        shown = "; ".join(differences[:8]) + (
+            f"; and {len(differences) - 8} more" if len(differences) > 8
+            else "")
         raise ValueError(
             f"{label} v3 preparation proof physics selection differs from "
-            "the hash-bound experiment/profile")
+            f"the hash-bound experiment/profile: {shown}")
     return expected
 
 
@@ -4482,6 +4577,41 @@ def mapped_composition_receipt_keys(
     return keys
 
 
+def _mapped_boundary_spacings(
+        proof: Mapping[str, object], manifest: Mapping[str, object], *,
+        member_manifest: bool,
+) -> tuple[int, ...]:
+    """Every boundary spacing, in seconds, a mapped preparation was made at.
+
+    Read off the decoded frames' valid times (the series the mapping's
+    target contract held at decode) and the proof's declared interval, so a
+    preparation whose bound mapping resolves by its decode identity is
+    still held to the spacings the packaged target takes (A166).
+    """
+
+    receipt = proof.get("source_composition")
+    times = (manifest.get("valid_times") if member_manifest
+             else receipt.get("valid_times") if isinstance(receipt, Mapping)
+             else None)
+    parsed = []
+    for value in times if isinstance(times, list) else ():
+        try:
+            parsed.append(datetime.fromisoformat(
+                str(value).replace("Z", "+00:00")))
+        except ValueError:
+            raise ValueError(
+                f"mapped preparation valid time {value!r} cannot be read, so "
+                "its boundary spacing cannot be held to the packaged "
+                "mapping") from None
+    spacings = {int((later - earlier).total_seconds())
+                for earlier, later in zip(parsed, parsed[1:])}
+    declared = proof.get("boundary_interval_seconds")
+    if (isinstance(declared, int) and not isinstance(declared, bool)
+            and declared > 0):
+        spacings.add(declared)
+    return tuple(sorted(spacings))
+
+
 def _validate_packaged_mapped_evidence(
         *, prepared_root: Path, proof: Mapping[str, object],
         manifest: Mapping[str, object], manifest_sha256: str,
@@ -4496,7 +4626,8 @@ def _validate_packaged_mapped_evidence(
     The historical function name remains for existing callers.
     """
 
-    from gpuwm.source_authorities import packaged_authority_sha256
+    from gpuwm.source_authorities import (bound_mapping_refusal,
+                                          packaged_authority_sha256)
 
     profile_id = _MAPPED_PACKAGED_PROFILE.get(source)
     if source not in _MAPPED_SOURCES:
@@ -4568,6 +4699,23 @@ def _validate_packaged_mapped_evidence(
                 manifest.get("composition_sha256"),
                 "mapped manifest composition sha256"),
         })
+    if profile_id:
+        # A release that adds an admission-only declaration to a packaged
+        # mapping (A159's whole multiples) moves its pin while every frame
+        # stays the same bytes; the preparation's own bound digest then
+        # stands for the packaged mapping in every check below (A166).
+        mapping_bytes = mapping_path.read_bytes()
+        bound_mapping_sha256 = hashlib.sha256(mapping_bytes).hexdigest()
+        if bound_mapping_sha256 != expected_authority_sha256["mapping"]:
+            refusal = bound_mapping_refusal(
+                profile_id, mapping_bytes,
+                spacings_seconds=_mapped_boundary_spacings(
+                    proof, manifest, member_manifest=member_manifest))
+            if refusal is not None:
+                raise ValueError(
+                    f"mapped preparation does not use the packaged {source} "
+                    f"authorities ({profile_id}): {refusal}")
+            expected_authority_sha256["mapping"] = bound_mapping_sha256
     if (_sha256(mapping_path) != expected_authority_sha256["mapping"]
             or _sha256(composition_path)
             != expected_authority_sha256["composition"]):
@@ -5023,12 +5171,16 @@ def _validate_packaged_mapped_evidence(
         _require_digest(
             frame.get("terrain_sha256"),
             f"mapped {source} frame {index} terrain sha256")
+    from gpuwm.mapped_composition import composition_receipt_identity_sha256
     return MappingProxyType({
         "mapped_mapping": mapping_path,
         "mapped_composition": composition_path,
         **provenance_paths,
     }), MappingProxyType({
         "receipt_content_sha256": expected_receipt_sha256,
+        # What a cache written since A151 binds instead: the receipt less
+        # where the run's files sat.
+        "receipt_identity_sha256": composition_receipt_identity_sha256(receipt),
         "mapping_sha256": expected_authority_sha256["mapping"],
         "composition_sha256": expected_authority_sha256["composition"],
         "decoder_sha256": decoder_sha256,
@@ -5153,12 +5305,36 @@ def _validate_hrrr_source_identity(
     if "static_highres" in identity or "static_highres" in proof:
         if identity.get("static_highres") != proof.get("static_highres"):
             raise ValueError("prepared cache high-resolution settings differ from preparation proof")
-        from gpuwm.static.highres_production import parse_static_table
-        parse_static_table({"highres": identity.get("static_highres")},
-                           source="prepared high-resolution identity", base_dir=Path("."))
+        if identity.get("static_highres") is None:
+            raise ValueError(
+                "prepared cache names a high-resolution identity with no "
+                "settings in it, so nothing records which statics it was "
+                "prepared with; rebuild the preparation")
+        from gpuwm.static.highres_production import parse_sealed_static_highres
+        parse_sealed_static_highres(identity.get("static_highres"),
+                                    source="prepared high-resolution identity",
+                                    base_dir=Path("."))
     if identity.get("trace_gas_overrides") != proof.get("trace_gas_overrides"):
         raise ValueError("prepared cache trace-gas settings differ from preparation proof")
     return identity
+
+
+def _require_preprocessing_binding(bound, receipt) -> None:
+    """Hold a cache's bound preprocessing to its proof's receipt.
+
+    The cache binds the receipt less what the preparation measured
+    (:func:`gpuwm.ingest.preprocess_backend.preprocess_identity`, A138);
+    a cache written before that bound the whole receipt and still
+    restores.  Anything else was prepared by other code or another
+    backend than the proof names, and restoring it would integrate
+    arrays the proof does not describe.
+    """
+
+    from gpuwm.ingest.preprocess_backend import preprocess_identity_matches
+
+    if not preprocess_identity_matches(bound, receipt):
+        raise ValueError(
+            "prepared cache preprocessing identity differs from the proof")
 
 
 def _validate_source_identity(
@@ -5179,14 +5355,22 @@ def _validate_source_identity(
             "mapping_sha256": mapped_authority["mapping_sha256"],
             "composition_sha256": mapped_authority["composition_sha256"],
             "input_manifest_sha256": manifest_sha256,
-            "composition_receipt_sha256": mapped_authority[
-                "receipt_content_sha256"],
-            "preprocessing": mapped_authority["preprocessing"],
         }
         if any(identity.get(key) != value for key, value in expected.items()):
             raise ValueError(
                 "prepared cache source identity differs from the mapped authorities")
-        allowed = set(expected)
+        # The receipt less where the run's files sat since A151, the whole
+        # receipt's digest before; either names this proof's composition.
+        bound_receipt = identity.get("composition_receipt_sha256")
+        if bound_receipt not in (
+                mapped_authority["receipt_content_sha256"],
+                mapped_authority.get("receipt_identity_sha256")):
+            raise ValueError(
+                "prepared cache source identity differs from the mapped authorities")
+        expected["composition_receipt_sha256"] = bound_receipt
+        _require_preprocessing_binding(
+            identity.get("preprocessing"), mapped_authority["preprocessing"])
+        allowed = set(expected) | {"preprocessing"}
         if "static_highres" in identity:
             # Shared preflight below compares this owner-normalized block
             # with the exact experiment authority for every source family.
@@ -5248,9 +5432,8 @@ def _validate_source_identity(
             != expected_decoder["sha256"]:
         raise ValueError(
             "prepared cache decoder identity differs from proof/manifest")
-    if identity.get("preprocessing") != proof.get("preprocessing"):
-        raise ValueError(
-            "prepared cache preprocessing identity differs from the proof")
+    _require_preprocessing_binding(
+        identity.get("preprocessing"), proof.get("preprocessing"))
     if source == "gfs":
         if (identity.get("implementation_sha256")
                 != proof.get("implementation_sha256")
@@ -5313,21 +5496,36 @@ def _validate_cache_metadata(
         expected_user.update({
             "source_adapter": source,
             "boundary_interval_seconds": boundary_interval_seconds,
-            "preprocessing": proof.get("preprocessing"),
         })
-    elif layout == "mapped-direct-d01-v1":
-        expected_user.update({
-            "source_adapter": "mapped",
-            "boundary_interval_seconds": boundary_interval_seconds,
-            "composition_receipt_sha256": proof.get(
-                "source_composition", {}).get("receipt_content_sha256"),
-        })
-    elif layout == "mapped-hierarchy-d01-v1":
-        expected_user.update({
-            "composition_receipt_sha256": proof.get(
-                "source_composition", {}).get("receipt_content_sha256"),
-            "mapped_target_contract": proof.get("target_contract"),
-        })
+        # The receipt less its measurements since A138, the whole receipt
+        # before; either is this proof's preparation.
+        bound = user.get("preprocessing") if isinstance(user, dict) else None
+        _require_preprocessing_binding(bound, proof.get("preprocessing"))
+        expected_user["preprocessing"] = bound
+    elif layout in ("mapped-direct-d01-v1", "mapped-hierarchy-d01-v1"):
+        # The receipt less where the run's files sat since A151, the whole
+        # receipt's digest before; either is this proof's composition.
+        from gpuwm.mapped_composition import (
+            composition_receipt_binding_matches)
+
+        receipt = proof.get("source_composition") or {}
+        bound = (user.get("composition_receipt_sha256")
+                 if isinstance(user, dict) else None)
+        if not composition_receipt_binding_matches(bound, receipt):
+            # Another composition's digest: the exact comparison below
+            # refuses it, naming the metadata as it always did.
+            bound = receipt.get("receipt_content_sha256")
+        if layout == "mapped-direct-d01-v1":
+            expected_user.update({
+                "source_adapter": "mapped",
+                "boundary_interval_seconds": boundary_interval_seconds,
+                "composition_receipt_sha256": bound,
+            })
+        else:
+            expected_user.update({
+                "composition_receipt_sha256": bound,
+                "mapped_target_contract": proof.get("target_contract"),
+            })
     # Preparation receipts the preparer binds only when they fired.  The
     # comparison below is exact, so a receipt the writer recorded and this
     # list omitted made the front door refuse ITS OWN cache -- the SMCDRY
@@ -5364,6 +5562,7 @@ def _validate_cache_metadata(
     if not isinstance(intervals, list) or len(intervals) != len(forcing_hours) - 1:
         raise ValueError("prepared cache LBC interval count differs from forcing")
     admitted_fields = _lbc_field_inventories(cfg)
+    from gpuwm.boundary_fields import admissible_boundary_inventory
     scheme_id = int(getattr(cfg, "mp_physics", 0))
     for index, interval in enumerate(intervals):
         window = {
@@ -5378,12 +5577,54 @@ def _validate_cache_metadata(
                 f"where the forcing has {window['start_seconds']:g}-"
                 f"{window['end_seconds']:g} s; re-prepare against this forcing")
         fields = recorded.get("fields")
-        if not isinstance(fields, list) or fields not in admitted_fields:
+        if (not isinstance(fields, list) or fields != sorted(fields)
+                or not set(_LBC_DYNAMICS_FIELDS) <= set(fields)
+                or not admissible_boundary_inventory(
+                    cfg, [name for name in fields
+                          if name not in _LBC_DYNAMICS_FIELDS])):
             raise ValueError(
                 f"prepared cache LBC interval {index} carries fields "
                 f"{fields} where mp_physics={scheme_id} forces "
-                f"{' or '.join(str(f) for f in admitted_fields)}; re-prepare "
-                "with this configuration")
+                f"{' or '.join(str(f) for f in admitted_fields)}, with the "
+                "analysed hydrometeors its source publishes and the numbers "
+                "seeded from them; re-prepare with this configuration")
+    _announce_vapour_only_boundaries(metadata, intervals)
+
+
+def _announce_vapour_only_boundaries(metadata, intervals) -> None:
+    """Name a cache whose boundary predates the hydrometeor boundary.
+
+    A cache sealed before the root's specified boundary carried the
+    analysed hydrometeors (gpuwm.boundary_fields) still RUNS, on its
+    water-vapour-only boundary: refusing it would strand every prepared
+    cache a pipeline holds from 2.8.0 on an upgrade, including its
+    many GFS and ERA5 caches whose boundaries did not change.  It runs
+    with this one line, because run silently it looks fixed and still
+    drains the analysed cloud and snow out of its edges.  Read off the
+    cache's own receipts: its start state installed nonzero analysed
+    hydrometeors, its boundary tables carry none, and its hydrometeor
+    receipt predates ``lateral_boundary_species``.
+    """
+    from gpuwm.boundary_fields import BOUNDARY_HYDROMETEOR_MASSES
+
+    receipt = metadata.get("hydrometeor_initialization")
+    if not isinstance(receipt, dict) or "lateral_boundary_species" in receipt:
+        return
+    first = intervals[0] if intervals and isinstance(intervals[0], dict) else {}
+    if set(first.get("fields") or ()) & set(BOUNDARY_HYDROMETEOR_MASSES):
+        return
+    installed = receipt.get("initialized_state_species")
+    analysed = sorted(
+        name for name, fingerprint in (
+            installed.items() if isinstance(installed, dict) else ())
+        if isinstance(fingerprint, dict)
+        and int(fingerprint.get("nonzero_count") or 0) > 0)
+    if analysed:
+        warn(
+            "this prepared cache was sealed before lateral boundaries "
+            "carried hydrometeors: its boundary carries water vapour only, "
+            f"so the analysed {', '.join(analysed)} drain out of its edges; "
+            "prepare it again to carry them")
 
 
 def _validate_hierarchy_d01_artifacts(
@@ -5607,6 +5848,46 @@ def _tolerated_absent_run_fields(
     return overrides
 
 
+def _tolerated_absent_domain_fields(
+        observed: Mapping[str, object], domain: dict,
+        not_in_use: Mapping[str, object] | None) -> list[dict]:
+    """The top-level half of :func:`_tolerated_absent_run_fields`.
+
+    The same table's DomainConfig members (``history_begin_s`` and
+    ``history_end_s`` among them) under the same two conditions: absent
+    from the prepared header, and holding the not-in-use value the
+    caller read from ``undelayed_identity_defaults``.  Without this, the
+    history window joining the document refused every bundle prepared
+    before it on this route.  No map, no tolerance.
+    """
+    from gpuwm.ingest.prepared_cache import DEFAULT_TOLERANT_IDENTITY_FIELDS
+
+    if not not_in_use:
+        return []
+    observed_domain = {}
+    if isinstance(observed, Mapping) and isinstance(
+            observed.get("domain_config"), Mapping):
+        observed_domain = observed["domain_config"]
+    overrides = []
+    for name in sorted(path for path in DEFAULT_TOLERANT_IDENTITY_FIELDS
+                       if "." not in path):
+        if (name in observed_domain or name not in domain
+                or name not in not_in_use
+                or domain[name] != not_in_use[name]):
+            continue
+        overrides.append({
+            "field": f"domain_config.{name}",
+            "prepared_identity": "field-absent",
+            "current_loader_default": domain.pop(name),
+            "model_state_or_physics_changed": False,
+            "reason": (
+                "the field joined DomainConfig after this bundle was "
+                "prepared and holds its not-in-use value, which no code "
+                "read at preparation time"),
+        })
+    return overrides
+
+
 def _dropped_preparation_inert_run_fields(
         observed: Mapping[str, object], run: dict
 ) -> tuple[Mapping[str, object], list[dict]]:
@@ -5673,6 +5954,7 @@ def _dropped_preparation_inert_run_fields(
 def _resolve_cache_identity_compatibility(
         *, source: str, observed: Mapping[str, object],
         expected: Mapping[str, object],
+        not_in_use: Mapping[str, object] | None = None,
 ) -> tuple[Mapping[str, object], Mapping[str, object]]:
     if observed == expected:
         return expected, MappingProxyType({
@@ -5687,6 +5969,8 @@ def _resolve_cache_identity_compatibility(
     observed_cmp, inert = _dropped_preparation_inert_run_fields(
         observed, run)
     absent = _tolerated_absent_run_fields(observed_cmp, run)
+    absent += _tolerated_absent_domain_fields(
+        observed_cmp, compatible.get("domain_config", {}), not_in_use)
     if (absent or inert) and observed_cmp == compatible:
         return observed, MappingProxyType({
             "schema": "gpuwm-prepared-cache-identity-compatibility-v1",
@@ -5712,7 +5996,11 @@ def _resolve_cache_identity_compatibility(
     # NAME WHAT DIFFERS.  The sentence above stood alone, and a user
     # reading it could not tell an upgrade from a changed configuration --
     # measured on a bundle prepared one commit earlier, where the whole
-    # difference was twelve fields that had not existed yet.
+    # difference was twelve fields that had not existed yet.  The legacy
+    # field goes back first: popped only to test the allowance above, it
+    # was named as differing on a bundle whose header carries it equal.
+    if removed is not None:
+        run["nest_microphysics_transition"] = removed
     raise ValueError(
         "prepared cache identity differs from the requested source, static "
         "data, configuration, namelist, or allowed legacy default: "
@@ -5743,13 +6031,19 @@ def _describe_identity_difference(observed, expected, limit: int = 8) -> str:
     return "; ".join(lines)
 
 
-def _terrain_derivations(exp, static, grid, reader, physics_receipt):
+def _terrain_derivations(exp, static, grid, reader, physics_receipt, *,
+                         basis_out: dict | None = None):
     """The experiment with the substeps and long step this domain's ground
     and crest-level wind need, each derivation recorded in the receipt.
 
     The substep count reads the static terrain; the long step reads the
     same slope, the static crest and the strongest crest-level wind the
-    prepared cache's start state and boundary data carry.
+    prepared cache's start state and boundary data carry.  ``basis_out``,
+    when given, receives ``basis``: what the long-step derivation read
+    before it chose a clock (:class:`gpuwm.ingest.boundary_stream
+    .ClockBasis`), which a head-bound forecast asks again as each boundary
+    interval arrives (:class:`gpuwm.prepared_domain_tree_forecast
+    .StreamedClockGuard`).
     """
 
     root = int(exp.root.grid_id)
@@ -5757,10 +6051,125 @@ def _terrain_derivations(exp, static, grid, reader, physics_receipt):
         exp, readings_from_static(exp, {root: static},
                                   grids_by_grid_id={root: grid}))
     physics_receipt["acoustic_substeps"] = acoustic_receipt(acoustic)
+    if basis_out is not None:
+        from gpuwm.ingest.boundary_stream import ClockBasis
+
+        basis_out["basis"] = ClockBasis(
+            experiment=exp, acoustic=acoustic,
+            readers=MappingProxyType({root: reader}),
+            statics=MappingProxyType({root: static}), reach=None)
     exp, clock = clock_for_prepared_cache(
         exp, acoustic, readers={root: reader}, statics={root: static})
     physics_receipt["terrain_clock"] = clock_receipt(clock)
     return exp
+
+
+def _as_posted_head_binding(source: str, as_posted: Mapping[str, object],
+                            source_manifest_sha256: str | None) -> str:
+    """What an as-posted head binds where a sealed one binds its manifest.
+
+    The head binds the input plan (every lead, every object name and
+    every other input; DESIGN A136 2.4 item 5 and the L3 design ruling),
+    which its head digest covers, and its cache identity carries the
+    plan's placeholder where the seal writes the manifest's digest.  So
+    the head preflight reads that placeholder in the manifest digest's
+    place, and the seal preflight reads the sealed manifest's digest
+    (:func:`_sealed_arguments`).
+    """
+
+    from gpuwm.ingest.boundary_stream import (
+        as_posted_placeholder, input_plan_sha256,
+    )
+
+    if source in _MAPPED_SOURCES:
+        # Breakage it prevents: this forecast checks a mapped preparation's
+        # evidence (composition receipt, alignment, vertical ladder) at its
+        # head, and no mapped preparation writes that evidence before its
+        # seal, so the head would be checked against files it lacks.
+        raise ValueError(
+            f"an as-posted {source} head is not bound here: a mapped "
+            "preparation's evidence is checked at the head, and an "
+            "as-posted mapped preparation writes it only at its seal; bind "
+            "the sealed preparation (--proof-sha256)")
+    if source_manifest_sha256 is not None:
+        # Breakage it prevents: the digest names a manifest this head cannot
+        # hold, so it would be accepted and checked against nothing.
+        raise ValueError(
+            "--source-manifest-sha256 names an input manifest, and this "
+            "prepared head is as posted: it binds its input plan, and its "
+            "seal writes the manifest, held to that plan; omit the flag")
+    plan = as_posted.get("input_plan")
+    digest = as_posted.get("input_plan_sha256")
+    if not isinstance(plan, Mapping) or input_plan_sha256(plan) != digest:
+        raise ValueError(
+            "the as-posted head's input plan is not the plan its digest "
+            "names")
+    return as_posted_placeholder(str(digest))
+
+
+def _as_posted_pending_roles(as_posted, manifest) -> frozenset:
+    """The manifest roles an as-posted head's plan leaves undigested."""
+
+    if as_posted is None:
+        return frozenset()
+    from gpuwm.ingest.boundary_stream import lead_payload_lead
+
+    prefix = str(as_posted.get("lead_role_prefix") or "")
+    files = manifest.get("files") if isinstance(manifest, Mapping) else None
+    leads = {str(role) for role in (files or {})
+             if lead_payload_lead(role, prefix) is not None}
+    return frozenset(leads | {str(role) for role in
+                              as_posted.get("derived_roles") or ()})
+
+
+def _sealed_arguments(inputs, sealed: Mapping[str, object]) -> dict:
+    """The preflight arguments that bind a head's seal.
+
+    The head's own, with the sealed proof and content digests; for an
+    as-posted head also the digest of the manifest its seal wrote, which
+    :func:`gpuwm.ingest.boundary_stream.verify_seal` has held to the head's
+    input plan and to every lead's posted marker.
+    """
+
+    arguments = {**dict(inputs.preflight_arguments),
+                 "proof_sha256": sealed["proof_sha256"],
+                 "prepared_content_sha256": sealed["content_sha256"]}
+    posted = sealed.get("as_posted")
+    if posted is not None:
+        arguments["source_manifest_sha256"] = posted["input_manifest_sha256"]
+    return arguments
+
+
+def _require_sealed_identity(inputs, sealed_inputs, head) -> None:
+    """The sealed cache identity is the head's, or an as-posted head's allowed change.
+
+    An as-posted head's identity carries its plan's placeholder where the
+    seal writes the input manifest's digest; exactly those keys may change,
+    and only to that digest (the L3 design ruling,
+    :func:`gpuwm.ingest.boundary_stream.check_as_posted_identity`).
+    """
+
+    posted = (head or {}).get("basis", {}).get("as_posted")
+    if posted is None:
+        if sealed_inputs.cache_identity != inputs.cache_identity:
+            raise RuntimeError(
+                "the sealed preparation differs from the head this forecast "
+                "started from")
+        return
+    from gpuwm.ingest.boundary_stream import (
+        BoundaryStreamError, check_as_posted_identity,
+    )
+
+    try:
+        check_as_posted_identity(
+            inputs.cache_identity, sealed_inputs.cache_identity,
+            plan_sha256=posted["input_plan_sha256"],
+            manifest_sha256=sealed_inputs.file_sha256["source_manifest"],
+            manifest_bound=posted["manifest_bound_identity_keys"])
+    except BoundaryStreamError as error:
+        raise RuntimeError(
+            "the sealed preparation differs from the as-posted head this "
+            f"forecast started from: {error}") from None
 
 
 def preflight_prepared_forecast(
@@ -5813,6 +6222,9 @@ def preflight_prepared_forecast(
         history_interval_seconds=history_interval_seconds,
         domain_bundle=domain_bundle, tiles=tiles))
     head = None
+    #: An as-posted head's block (``basis.as_posted``): the head binds the
+    #: input plan, and the manifest does not exist until its seal.
+    as_posted = None
     if prepared_head_sha256 is not None:
         if proof_sha256 is not None or prepared_content_sha256 is not None:
             raise ValueError(
@@ -5823,8 +6235,6 @@ def preflight_prepared_forecast(
         proof_sha256 = _require_digest(proof_sha256, "proof-sha256")
         prepared_content_sha256 = _require_digest(
             prepared_content_sha256, "prepared-content-sha256")
-    source_manifest_sha256 = _require_digest(
-        source_manifest_sha256, "source-manifest-sha256")
     prepared_root = _require_directory(prepared_root, "prepared root")
     if prepared_head_sha256 is not None:
         # THE HEAD BINDING (chained preparation).  Everything the start time
@@ -5835,6 +6245,14 @@ def preflight_prepared_forecast(
         from gpuwm.ingest.boundary_stream import bind_head
 
         head = bind_head(prepared_root, prepared_head_sha256)
+        as_posted = head["basis"].get("as_posted")
+    if as_posted is not None:
+        source_manifest_sha256 = _as_posted_head_binding(
+            source, as_posted, source_manifest_sha256)
+    else:
+        source_manifest_sha256 = _require_digest(
+            source_manifest_sha256, "source-manifest-sha256")
+    if head is not None:
         named = head["basis"].get("input_manifest_sha256")
         if named is not None and named != source_manifest_sha256:
             raise ValueError(
@@ -5844,7 +6262,9 @@ def preflight_prepared_forecast(
     else:
         proof_path = _require_file(prepared_root / "proof.json",
                                    "preparation proof")
-    source_manifest_path = _require_file(
+    # An as-posted head has no manifest file yet: it reads the manifest its
+    # plan names (every row, each lead's payload digest not yet known).
+    source_manifest_path = None if as_posted is not None else _require_file(
         prepared_root / (
             "source-evidence/input-manifest.json"
             if source in _MAPPED_SOURCES
@@ -5858,13 +6278,17 @@ def preflight_prepared_forecast(
         if actual_proof_sha256 != proof_sha256:
             raise _proof_digest_refusal(
                 proof_path, proof_sha256, actual_proof_sha256)
-    if _sha256(source_manifest_path) != source_manifest_sha256:
+    if source_manifest_path is not None and \
+            _sha256(source_manifest_path) != source_manifest_sha256:
         raise ValueError(
             "portable source manifest SHA differs from "
             "--source-manifest-sha256")
     proof = (dict(head["basis"]["proof_head"]) if head is not None
              else _load_json_object(proof_path, "preparation proof"))
-    manifest = _load_json_object(source_manifest_path, "portable source manifest")
+    manifest = (dict(as_posted["input_plan"]["manifest"])
+                if as_posted is not None
+                else _load_json_object(source_manifest_path,
+                                       "portable source manifest"))
     source_exp = load_experiment(experiment_config)
     # THE COORDINATE THE PREPARED INPUTS CARRY, before anything derived
     # from the configuration's own etac exists (see
@@ -5933,7 +6357,8 @@ def preflight_prepared_forecast(
         source_exp=source_exp, executed_exp=exp, profile=physics_profile,
         history_interval_seconds=history_interval_seconds)
     manifest_files, source_manifest_receipt = _manifest_file_specs(
-        source, manifest, source_exp, proof)
+        source, manifest, source_exp, proof,
+        pending=_as_posted_pending_roles(as_posted, manifest))
     mapped_paths: Mapping[str, Path] = MappingProxyType({})
     mapped_authority: Mapping[str, object] | None = None
     source_member: str | None = None
@@ -6076,7 +6501,10 @@ def preflight_prepared_forecast(
                 "20CRv3 exact-member manifest cadence/coverage differs from "
                 "proof forcing")
 
-    if source not in _MAPPED_SOURCES \
+    # An as-posted head's proof leaves the manifest's digest and rows to
+    # its seal (the head's seal-authored proof keys), where the sealed
+    # preflight checks them against the sealed manifest.
+    if as_posted is None and source not in _MAPPED_SOURCES \
             and proof.get("input_manifest_sha256") != source_manifest_sha256:
         raise ValueError("preparation proof input manifest hash differs")
     if layout.kind in {"portable-single-domain-v2", HRRR_DIRECT_LAYOUT}:
@@ -6085,7 +6513,8 @@ def preflight_prepared_forecast(
             "manifest_sha256": source_manifest_sha256,
             "files": manifest.get("files"),
         }
-        if proof.get("source_inputs") != expected_source_inputs:
+        if as_posted is None \
+                and proof.get("source_inputs") != expected_source_inputs:
             raise ValueError(
                 "preparation proof source inputs differ from manifest")
         grid = validate_native_lambert_contract(
@@ -6124,7 +6553,14 @@ def preflight_prepared_forecast(
         if source_identity["ingest"] != expected_ingest:
             raise ValueError("prepared cache ingest settings differ from experiment authority")
     from gpuwm.static.highres_production import (
-        load_static_highres, prepared_highres_settings_match)
+        load_static_highres, prepared_highres_settings_match,
+        require_sealed_urban_legend)
+    if source_identity.get("static_highres") is not None:
+        # Named before the whole-carrier comparison below, which would
+        # refuse the same mismatch without saying which setting moved.
+        require_sealed_urban_legend(
+            source_identity["static_highres"], exp.root.run,
+            source="the prepared cache")
     requested_highres = load_static_highres(experiment_config)
     if ("static_highres" in source_identity
             or (requested_highres is not None and requested_highres.enabled)):
@@ -6184,7 +6620,8 @@ def preflight_prepared_forecast(
     cache_identity, cache_identity_compatibility = (
         _resolve_cache_identity_compatibility(
             source=source, observed=header_identity,
-            expected=expected_identity))
+            expected=expected_identity,
+            not_in_use=undelayed_identity_defaults(exp)))
     if head is None:
         reader = PreparedCacheReader(
             prepared_cache_path, expected_identity=cache_identity)
@@ -6322,8 +6759,18 @@ def preflight_prepared_forecast(
                     != exp.start_time.strftime("%Y-%m-%d_%H:%M:%S")):
                 raise ValueError(
                     "proof direct-WRF export identity differs from the run")
+            # One preparation writes the export and the proof, so the
+            # export repeats the receipt the proof recorded byte for byte.
+            # It is held to that RECORDED receipt, which the identity check
+            # above resolved against this build, and not to this build's
+            # recomputation, whose registry document digest moves with every
+            # citation edit (A153).  A mapped proof's recorded receipt is
+            # the export's own.
+            recorded_physics = (export.get("physics")
+                                if source in _MAPPED_SOURCES
+                                else proof.get("physics"))
             if expected_export_schema.endswith("-v3") \
-                    and export.get("physics") != front_door_physics:
+                    and export.get("physics") != recorded_physics:
                 raise ValueError(
                     f"{source.upper()} v3 export physics receipt differs from "
                     "the preparation proof")
@@ -6370,7 +6817,9 @@ def preflight_prepared_forecast(
     authority_paths = MappingProxyType({
         **({"proof": proof_path} if head is None else {
             "prepared_head": prepared_root / "boundary-stream" / "head.json"}),
-        "source_manifest": source_manifest_path,
+        # Not at an as-posted head: its seal writes the manifest.
+        **({} if source_manifest_path is None
+           else {"source_manifest": source_manifest_path}),
         "static": static_path,
         "geometry_receipt": geometry_receipt_path,
         **({"cache_header": cache_header_path} if head is None else {}),
@@ -6385,7 +6834,8 @@ def preflight_prepared_forecast(
         name: _sha256(path) for name, path in authority_paths.items()
     })
     if ((head is None and file_sha256["proof"] != proof_sha256)
-            or file_sha256["source_manifest"] != source_manifest_sha256):
+            or ("source_manifest" in file_sha256
+                and file_sha256["source_manifest"] != source_manifest_sha256)):
         raise RuntimeError("preparation authorities changed during preflight")
     # THE ACOUSTIC SUBSTEPS THIS DOMAIN'S OWN GROUND NEEDS, after every
     # identity comparison above (the count binds no prepared artifact) and
@@ -6393,7 +6843,13 @@ def preflight_prepared_forecast(
     # the adaptive clock's floor and the dycore all read one count.
     # THE LONG STEP its ground and crest-level wind allow comes with it,
     # read from the prepared start state and boundary data.
-    exp = _terrain_derivations(exp, static, grid, reader, physics_receipt)
+    # A forecast bound to a head reads only the head's boundary data here
+    # (none), so the clock it steps on is checked again as each interval
+    # arrives (run_prepared_forecast's clock guard).
+    clock_basis: dict = {}
+    exp = _terrain_derivations(
+        exp, static, grid, reader, physics_receipt,
+        basis_out=clock_basis if head is not None else None)
     if tiles is not None:
         # LAST, after every identity comparison above.  [tiles] is not a
         # domain field and could not move one of them, but an execution
@@ -6441,6 +6897,7 @@ def preflight_prepared_forecast(
         source_member=source_member,
         stream_head=(None if head is None else MappingProxyType(head)),
         preflight_arguments=preflight_arguments,
+        clock_basis=clock_basis.get("basis"),
     )
 
 
@@ -6472,17 +6929,27 @@ def _seal_streamed_inputs(inputs: PreparedForecastInputs, *,
     sealed = verify_seal(inputs.prepared_root, head=head,
                          consumed=stream.consumed_markers())
     sealed_inputs = preflight_prepared_forecast(
-        **dict(inputs.preflight_arguments),
-        proof_sha256=sealed["proof_sha256"],
-        prepared_content_sha256=sealed["content_sha256"])
+        **_sealed_arguments(inputs, sealed))
+    # The cache identity may change only where an as-posted head's seal
+    # writes the manifest digest; every authority both preflights hashed
+    # must be unchanged (an as-posted head hashes no manifest).
+    _require_sealed_identity(inputs, sealed_inputs, head)
     shared = set(inputs.file_sha256) & set(sealed_inputs.file_sha256)
-    if (sealed_inputs.cache_identity != inputs.cache_identity
-            or sealed_inputs.forcing_hours != inputs.forcing_hours
+    if (sealed_inputs.forcing_hours != inputs.forcing_hours
             or {key: inputs.file_sha256[key] for key in shared}
             != {key: sealed_inputs.file_sha256[key] for key in shared}):
         raise RuntimeError(
             "the sealed preparation differs from the head this forecast "
             "started from")
+    from gpuwm.ingest.boundary_stream import derived_clock
+
+    if (derived_clock(sealed_inputs.physics_receipt.get("terrain_clock"))
+            != derived_clock(inputs.physics_receipt.get("terrain_clock"))):
+        # Every interval passed the clock guard as it loaded, so this is
+        # a seal whose boundaries are not the ones the forecast read.
+        raise RuntimeError(
+            "the sealed preparation derives a different terrain clock than "
+            "the one this forecast stepped on")
     return replace(sealed_inputs, stream_head=head)
 
 
@@ -6858,6 +7325,42 @@ def _free_device_bytes() -> tuple[int, int]:
     from gpuwm.core.preflight import device_free_and_total_bytes
 
     return device_free_and_total_bytes()
+
+
+def _retained_interval_count(reader) -> int | None:
+    """How many lateral boundary intervals this prepared cache retains.
+
+    ``None`` when the reader carries no readable inventory, and the resident
+    admission then prices the configured schedule instead.
+    """
+    try:
+        count = len(reader.header["metadata"]["lbc"]["intervals"])
+    except (AttributeError, KeyError, TypeError):
+        return None
+    return count or None
+
+
+def _priced_boundary_source(reader, source):
+    """What a door prices the root's boundary tables from, before the restore.
+
+    The hydrometeor masses the cache it is about to restore carries
+    (:func:`gpuwm.boundary_fields.sealed_boundary_species`), read off the
+    same retained interval inventory as :func:`_retained_interval_count`;
+    ``source``'s own row when the reader carries no readable inventory.
+    Priced by the source NAME, a forecast from a user's own mapping
+    (``--source mapped``, whose row publishes nothing) was weighed on water
+    vapour alone while its cache held every mass the mapping declares, and
+    a HRRR cache sealed before its boundary carried them was weighed on
+    tables it does not hold.
+    """
+    from gpuwm.boundary_fields import sealed_boundary_species
+
+    try:
+        intervals = reader.header["metadata"]["lbc"]["intervals"]
+    except (AttributeError, KeyError, TypeError):
+        intervals = None
+    carried = sealed_boundary_species(intervals)
+    return source if carried is None else carried
 
 
 def _choose_stream_init_road(mode: str, *, decision, reader, cfg=None,
@@ -7415,13 +7918,21 @@ def _single_checkpoint_identity(inputs, runtime_source_identity):
     # binds it (the head at launch, or the sealed proof that names it), so
     # a checkpoint written before or after the seal resumes under either
     # binding.  The head binds the cache: the seal is checked against it.
+    # An as-posted head binds its input plan and its seal writes the
+    # manifest, held to that plan, so the manifest is the seal's too.
+    sealed_only = {"proof", "cache_header", "prepared_head"}
+    posting = dict(getattr(inputs, "proof", {}) or {}).get("posting")
+    if ((stream_head is not None
+         and stream_head["basis"].get("as_posted") is not None)
+            or (isinstance(posting, Mapping) and posting.get("as_posted"))):
+        sealed_only |= {"source_manifest"}
     return {
         "schema": "gpuwm.prepared-single-checkpoint.v1",
         "source": inputs.source,
         "prepared_head_sha256": head_sha256,
         "authority_sha256": {
             name: digest for name, digest in inputs.file_sha256.items()
-            if name not in {"proof", "cache_header", "prepared_head"}},
+            if name not in sealed_only},
         "runtime_source_identity": runtime_source_identity,
     }
 
@@ -7445,6 +7956,77 @@ def _checkpoint_restore_resources(writers, step_log):
 #: The attribute a forecast failure carries its model clock on, from the
 #: integration that raised it to the report writer in :func:`main`.
 _FAILURE_CLOCK_ATTRIBUTE = "gpuwm_model_elapsed_seconds"
+
+
+def _require_next_interval(intervals, elapsed: float, *, writers, exp) -> None:
+    """Wait for the interval the next step needs, between two steps.
+
+    Called after each committed step (every history frame and checkpoint
+    of that instant already written), so a wait for a lead that has not
+    posted happens with the model at a clean seam rather than inside a
+    step.  The interval is loaded exactly as the step would load it (the
+    same cached object), so nothing the model computes changes.  A lead
+    that passes its late time stops the run here: the frames through the
+    seam are drained to disk first, and the refusal says where it stopped.
+    """
+
+    from gpuwm.ingest.boundary_stream import SourceBehind
+    from gpuwm.ingest.lateral_bc import interval_index
+
+    index = interval_index(intervals, float(elapsed))
+    try:
+        intervals[index]
+    except SourceBehind as behind:
+        try:
+            writers.drain()
+        except Exception:  # noqa: BLE001 - the refusal is what matters
+            pass
+        valid = exp.start_time + timedelta(seconds=float(elapsed))
+        stopped = behind.at(
+            model_elapsed_seconds=float(elapsed),
+            model_valid_time=valid.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        stopped.at_seam = True
+        raise stopped from None
+
+
+def _stop_at_seam(error, *, model, node, exp, schedule, restart_handler,
+                  checkpoint_ticks, checkpoints, seam_waits):
+    """A late source lead ended the run: checkpoint the seam, say where.
+
+    A stop raised between two steps (:func:`_require_next_interval`)
+    leaves the model at a clean seam, so its state is checkpointed there
+    (one write) and a relaunch resumes exactly at the seam; an instant
+    already checkpointed is not written twice.  A stop raised anywhere
+    else keeps the latest hourly checkpoint and writes none, because a
+    state caught mid-step is not a restart state.
+    """
+
+    if seam_waits is not None:
+        # The wait ended because the lead is late, not because it came.
+        seam_waits.abandon()
+    checkpoint = checkpoints[-1] if checkpoints else None
+    if getattr(error, "at_seam", False):
+        ticks = int(node.clock.ticks)
+        checkpoint = checkpoint_ticks.get(ticks)
+        if checkpoint is None and float(error.details.get(
+                "model_elapsed_seconds") or 0.0) > 0.0:
+            try:
+                restart_handler(model, ticks)
+                checkpoint = checkpoints[-1]
+            except Exception as failure:  # noqa: BLE001 - keep the refusal
+                print("prepared forecast: the checkpoint at the seam could "
+                      f"not be written ({type(failure).__name__}: "
+                      f"{failure}); the latest hourly checkpoint stands",
+                      file=sys.stderr, flush=True)
+                checkpoint = checkpoints[-1] if checkpoints else None
+    elif int(node.clock.ticks) > 0:
+        elapsed = float(node.clock.ticks / schedule.clock.tick_den)
+        valid = exp.start_time + timedelta(seconds=elapsed)
+        error = error.at(model_elapsed_seconds=elapsed,
+                         model_valid_time=valid.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    stopped = error.at(checkpoint=checkpoint)
+    stopped.at_seam = getattr(error, "at_seam", False)
+    return stopped
 
 
 def _mark_failure_clock(error: BaseException, clock) -> None:
@@ -7622,6 +8204,10 @@ def run_prepared_forecast(
     tiles_options = streaming.options_for_domain(
         exp.root, getattr(exp, "tiles", None))
     planning_machine = streaming.cold_planning_machine(exp)
+    # The card a resident or a pinned road is admitted on, read before the
+    # restore: the planning machine when the planner already read it.
+    admission_machine = streaming.cold_admission_machine(
+        planning_machine, options=tiles_options)
     # THE SHARED ADMISSION, not a second one.  This door used to price
     # from the restored cache's own retained lateral-boundary interval
     # count, which is the run's LEDGER question rather than the
@@ -7630,22 +8216,51 @@ def run_prepared_forecast(
     # the two the review admitted a domain this door then refused with
     # the cache already restored.  Same function, same estimate, same
     # budget as gpuwm check and gpuwm run, and the same one guard over
-    # whether an estimate is consulted at all.
+    # whether an estimate is consulted at all.  Its boundary tables are
+    # the ones the cache about to be restored carries.
+    priced_boundary = _priced_boundary_source(inputs.cache_reader,
+                                              inputs.source)
     resident_estimate = streaming.cold_single_domain_admission(
-        exp, machine=planning_machine, options=tiles_options)
+        exp, machine=planning_machine, options=tiles_options,
+        source=priced_boundary)
     stream_decision = (streaming.cold_single_domain_decision(
         exp, machine=planning_machine, cfg=cfg, options=tiles_options,
         estimate=resident_estimate)
                        if tiles_options.enabled else None)
+    # A PINNED TILING IS PRICED ON THIS CARD, before its buffers exist: the
+    # decision above takes it from the configuration alone, and buffers
+    # that cannot fit stopped in a CUDA out-of-memory while being built.
+    streaming.admit_pinned_road(cfg, tiles_options, stream_decision,
+                                machine=admission_machine)
     init_road, init_receipt = _choose_stream_init_road(
         stream_init, decision=stream_decision, reader=inputs.cache_reader,
         cfg=cfg)
     if init_receipt is not None:
         print(f"prepared forecast: {init_receipt['why']}", flush=True)
+    if init_road != "store":
+        # A RESIDENT RELOAD IS ADMITTED TOO, before a byte is restored.  With
+        # no [tiles] block (mode 'off') nothing above priced this domain, so
+        # a cache too big for the card went straight into its constructor and
+        # stopped in a CUDA out-of-memory.  Priced at the retained forcing
+        # interval count this cache carries (one slot on a streamed head),
+        # state and physics together; a decision that already admitted
+        # itself (auto, a streamed tiling) passes untouched.
+        streaming.admit_resident_road(
+            exp, stream_decision, machine=admission_machine,
+            forcing_intervals=(
+                1 if getattr(inputs, "stream_head", None) is not None
+                else _retained_interval_count(inputs.cache_reader)),
+            source=priced_boundary,
+            what="this prepared forecast, held resident on the card")
 
     boundary_source = None
     boundary_stream_receipt = None
+    clock_guard = None
     stream_head = getattr(inputs, "stream_head", None)
+    #: The model time of this process's last completed step (``None``
+    #: before the first), which dates a seam wait.
+    stepped = {"model_elapsed_seconds": None}
+    seam_waits = None
     if stream_head is not None and init_road == "store":
         # The store road reads the whole sealed cache one slab at a time,
         # so a forecast bound to a head waits for the seal here and runs
@@ -7655,59 +8270,75 @@ def run_prepared_forecast(
               file=sys.stderr, flush=True)
         inputs = _seal_streamed_inputs(inputs)
     elif stream_head is not None:
-        from gpuwm.ingest.boundary_stream import streamed_boundaries
+        from gpuwm.ingest.boundary_stream import (
+            PRODUCER_NAME, SeamWaits, WAIT_LOG_NAME, stream_dir,
+            streamed_boundaries,
+        )
 
         head_started = time.perf_counter()
-        waits_open = {}
         events = getattr(observer, "events", None)
 
-        def emit(event, **fields):
-            # A hosting run-plan's stream; telemetry never fails a run.
-            if events is None:
-                return
-            try:
-                events.emit(event, **fields)
-            except Exception:  # noqa: BLE001
-                pass
+        def wait_where(index):
+            # Where the model stands while it waits: before its first
+            # step in this process (``start``), or at a seam, with the
+            # model time it reached.
+            elapsed = stepped["model_elapsed_seconds"]
+            if elapsed is None:
+                return {"phase": "start", "interval": None,
+                        "model_elapsed_seconds": None,
+                        "model_valid_time": None}
+            valid = exp.start_time + timedelta(seconds=float(elapsed))
+            return {"phase": "seam", "interval": index,
+                    "model_elapsed_seconds": float(elapsed),
+                    "model_valid_time": valid.strftime("%Y-%m-%dT%H:%M:%SZ")}
 
-        def boundary_wait(waiting):
-            # The model is at a seam and interval k is not prepared yet.
-            # The progress heartbeat keeps moving with the reason, so a
-            # supervisor does not read the wait as a hang.
-            if waiting is None:
-                for index, since in list(waits_open.items()):
-                    waited = time.perf_counter() - since
-                    print(f"prepared forecast: boundary interval {index} "
-                          f"arrived after {waited:.1f} s",
-                          file=sys.stderr, flush=True)
-                    emit("boundary_wait_finished", interval=index,
-                         seconds=round(waited, 3))
-                    waits_open.pop(index)
-                return
-            index = waiting.get("interval")
-            if index is not None and index not in waits_open:
-                waits_open[index] = time.perf_counter()
-                print(f"prepared forecast: waiting: {waiting['reason']}",
-                      file=sys.stderr, flush=True)
-                emit("boundary_wait_started", interval=index,
-                     reason=waiting["reason"])
-            start = (0.0 if index is None
-                     else boundary_source.intervals.bounds[index][0])
-            _atomic_json(progress_path, {
+        def publish_wait(block):
+            # The progress file carries the wait while it lasts and drops
+            # it the moment it ends, so a reader never sees a stale wait
+            # beside a stepping model.
+            elapsed = stepped["model_elapsed_seconds"]
+            payload = {
                 "schema": PROGRESS_SCHEMA,
-                "status": "INTEGRATING",
+                "status": "INTEGRATING" if block is not None else "RUNNING",
                 "source": inputs.source,
-                "model_elapsed_seconds": float(start),
+                "model_elapsed_seconds": float(elapsed or 0.0),
                 "requested_run_seconds": float(exp.run_seconds),
-                "waiting": {
-                    "reason": waiting["reason"],
-                    "waited_seconds": float(waiting["waited_seconds"]),
-                },
-            }, heartbeat=True)
+            }
+            if block is not None:
+                payload["waiting"] = block
+            _atomic_json(progress_path, payload, heartbeat=True)
 
+        def say(line):
+            print(line, file=sys.stderr, flush=True)
+
+        # The model is at a seam and interval k is not there yet.  The
+        # wait is said on the event stream, in progress.json and on the
+        # supervisor heartbeat, with its cause (a source lead or the
+        # preparation), so a watchdog times it by its own bound and a
+        # reader sees what it waits for.
+        seam_waits = SeamWaits(
+            emit=None if events is None else events.emit,
+            observer=observer, publish=publish_wait, model_time=wait_where,
+            say=say, log_path=outdir / WAIT_LOG_NAME,
+            producer_path=stream_dir(inputs.prepared_root) / PRODUCER_NAME)
+        # The long step was derived from the head, which holds no boundary
+        # interval, while a sealed run reads the crest-level winds of every
+        # one (terrain_clock.clock_for_prepared_cache).  Each interval is
+        # folded into that reading as it loads; one that moves the clock
+        # ends this attempt (StreamedClockChanged) and main() runs the
+        # forecast again on the seal.  The same guard as the tree runner's.
+        if inputs.clock_basis is not None:
+            from gpuwm.prepared_domain_tree_forecast import StreamedClockGuard
+
+            clock_guard = StreamedClockGuard(
+                inputs.clock_basis,
+                run_clock=inputs.physics_receipt.get("terrain_clock"),
+                root_grid_id=int(exp.root.grid_id),
+                run_seconds=float(exp.run_seconds))
         boundary_source = streamed_boundaries(
             inputs.prepared_root, head=stream_head,
-            on_wait=boundary_wait)
+            on_wait=seam_waits, validate=clock_guard,
+            start_time=exp.start_time)
         boundary_stream_receipt = {
             "chained": True,
             "head_sha256": stream_head["head_sha256"],
@@ -7784,6 +8415,15 @@ def run_prepared_forecast(
             reader=(inputs.cache_reader if boundary_source is not None
                     else None),
             boundary_source=boundary_source)
+        if clock_guard is not None:
+            from gpuwm.ingest.boundary_stream import keep_interval_check
+
+            # The attachment above installs its own per-interval layout
+            # check as the series' hook, replacing the clock guard handed
+            # to the stream, so without this only interval 0 (read before
+            # the attachment) was folded into the clock.  Measured on a
+            # 6-interval GFS head-bound run: clock_intervals_checked 1.
+            keep_interval_check(boundary_source.intervals, clock_guard)
         timing["restore_prepared_cache"] = time.perf_counter() - started
         step_log.phase("restore_prepared_cache",
                        timing["restore_prepared_cache"], road="resident")
@@ -8001,6 +8641,9 @@ def run_prepared_forecast(
             observer(**event)
         outer_step = int(event["outer_step"])
         elapsed = float(event["model_elapsed_seconds"])
+        if not str(event.get("phase", "")).startswith("stepping:"):
+            # A committed step, not the announcement of the first one.
+            stepped["model_elapsed_seconds"] = elapsed
         if outer_step == 1 or outer_step % 60 == 0 \
                 or elapsed == float(exp.run_seconds):
             memory_watch.sample()
@@ -8020,6 +8663,16 @@ def run_prepared_forecast(
                     None if not durable_paths
                     else str(durable_paths[-1].resolve())),
             }, heartbeat=True)
+        if seam_waits is not None and elapsed < float(exp.run_seconds):
+            if clock_guard is not None:
+                from gpuwm.ingest.boundary_stream import keep_interval_check
+
+                # Chained again after any later re-attachment (a no-op
+                # while it is still in place), before the next interval
+                # loads.
+                keep_interval_check(boundary_source.intervals, clock_guard)
+            _require_next_interval(boundary_source.intervals, elapsed,
+                                   writers=writers, exp=exp)
 
     # Here and not at the writers' construction above: the closure this
     # binds reads `writers.paths`, so it cannot exist before the writers
@@ -8153,6 +8806,7 @@ def run_prepared_forecast(
                     f"prepared forecast restored health failed: {initial_health}")
 
     checkpoints = []
+    checkpoint_ticks = {}
 
     def restart_handler(tree, ticks):
         from gpuwm.io.restart import write_tree_restart
@@ -8166,6 +8820,7 @@ def run_prepared_forecast(
                 work_bytes=runtime._checkpoint_work_bytes(tree)):
             tree._last_checkpoint = write_tree_restart(outdir, tree, valid)
         checkpoints.append(str(Path(tree._last_checkpoint).resolve()))
+        checkpoint_ticks[int(ticks)] = checkpoints[-1]
         step_log.restart_written(
             domain=exp.root.grid_id, valid_time=valid,
             path=tree._last_checkpoint, wall_seconds=time.perf_counter() - started)
@@ -8214,12 +8869,26 @@ def run_prepared_forecast(
             time.perf_counter() - forecast_started)
     except BaseException as error:
         _mark_failure_clock(error, node.clock)
+        from gpuwm.ingest.boundary_stream import SourceBehind
+        stopped = None
+        if isinstance(error, SourceBehind):
+            # The same refusal, now carrying the seam checkpoint and where
+            # the model stopped; it is the one `main` reports.
+            stopped = _stop_at_seam(
+                error, model=model, node=node, exp=exp, schedule=schedule,
+                restart_handler=restart_handler,
+                checkpoint_ticks=checkpoint_ticks, checkpoints=checkpoints,
+                seam_waits=seam_waits)
+            _mark_failure_clock(stopped, node.clock)
         # The last line a driving script reads has to say what happened.
         # Closed here, before the exception continues to `main`'s report
         # writer, because that writer can itself fail and the log must
         # still have terminated.
+        said = error if stopped is None else stopped
         step_log.close(status="FAIL",
-                       error=f"{type(error).__name__}: {error}")
+                       error=f"{type(said).__name__}: {said}")
+        if stopped is not None:
+            raise stopped from error
         raise
     finally:
         # A forecast that never reached step 1 must not leave a timer
@@ -8235,9 +8904,11 @@ def run_prepared_forecast(
     cadence_seconds = float(exp.root.history_interval_s)
     cadence_receipt = _validate_hash_bound_history_cadence(
         exp, cadence_seconds)
+    begin_s, end_s = _root_history_window(exp)
     output_schedule = _history_output_schedule(
         start_time=exp.start_time, run_seconds=exp.run_seconds,
-        cadence_seconds=cadence_seconds, after_seconds=restored_seconds)
+        cadence_seconds=cadence_seconds, after_seconds=restored_seconds,
+        begin_seconds=begin_s, end_seconds=end_s)
     expected_frames = len(output_schedule)
     if len(wrfout_paths) != expected_frames:
         raise RuntimeError(
@@ -8363,6 +9034,8 @@ def run_prepared_forecast(
             "proof_sha256": inputs.file_sha256["proof"],
             "prepared_content_sha256": inputs.cache_reader.content_sha256,
             "restore_to_seal_seconds": time.perf_counter() - head_started,
+            "clock_intervals_checked": (
+                None if clock_guard is None else clock_guard.checked),
         })
     runtime._finalizing_progress(observer, "verify-inputs",
         work_bytes=inputs.cache_reader.payload_bytes + sum(
@@ -8848,7 +9521,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--proof-sha256", default=None,
         help=("sha256 of the sealed preparation's proof.json; with "
               "--prepared-content-sha256, binds a finished preparation"))
-    parser.add_argument("--source-manifest-sha256", required=True)
+    parser.add_argument(
+        "--source-manifest-sha256", default=None,
+        help=("sha256 of the preparation's portable source manifest; "
+              "required, except with --prepared-head-sha256 naming an "
+              "as-posted head, which binds its input plan instead (its "
+              "seal writes the manifest, held to that plan)"))
     parser.add_argument("--prepared-content-sha256", default=None)
     parser.add_argument(
         "--prepared-head-sha256", default=None,
@@ -8941,6 +9619,13 @@ def build_parser() -> argparse.ArgumentParser:
         help=("`gpuwm render --section`'s own value: the line every xsec: "
               "product in --render-products is cut along.  Ignored "
               "without --render-products"))
+    parser.add_argument(
+        "--no-memory-gate", action="store_true", dest="no_memory_gate",
+        help=("restore a forecast whose priced peak envelope exceeds this "
+              "card's free memory anyway, as `gpuwm go --no-memory-gate` "
+              "does: the envelope is an upper bound and the card's own "
+              "allocation then decides; a model state too big to build at "
+              "all is still refused"))
     # The per-step progress surface, registered from one place so this
     # door and the tree runner's cannot drift in spelling or in help.
     add_progress_arguments(parser)
@@ -9011,6 +9696,98 @@ def _streaming_options_argument(text: str | None):
         raise ValueError(
             f"--tiles must be a JSON object, got {type(payload).__name__}")
     return streaming.StreamingOptions.from_mapping(payload, source="--tiles")
+
+
+def _sealed_binding(inputs: PreparedForecastInputs, *, outdir: Path,
+                    observer) -> PreparedForecastInputs:
+    """Wait for a head's seal, check it against that head, bind it as sealed.
+
+    The binding a launch on the sealed proof makes, after the seal is held
+    to the head this forecast was pinned to
+    (:func:`gpuwm.ingest.boundary_stream.verify_seal`).  Not through
+    :func:`_seal_streamed_inputs`, which also holds the sealed clock to the
+    head's and so refuses exactly the preparation this binding is for.
+    The wait is said as the tree runner's seal wait is said
+    (:func:`gpuwm.prepared_domain_tree_forecast._start_seal_waits`): on the
+    events, the wait log and the supervisor heartbeat, so ``gpuwm go``'s
+    watchdog reads a wait, not a worker standing still.
+    """
+
+    from gpuwm.ingest.boundary_stream import (
+        BoundaryStreamError, StreamedIntervals, verify_seal,
+    )
+    from gpuwm.prepared_domain_tree_forecast import _start_seal_waits
+
+    head = inputs.stream_head
+    stream = StreamedIntervals(
+        inputs.prepared_root, head=head,
+        on_wait=_start_seal_waits(outdir, inputs.prepared_root, observer))
+    if not stream.sealed():
+        print("prepared forecast: waiting for the preparation to seal "
+              f"({inputs.prepared_root})", file=sys.stderr, flush=True)
+    try:
+        stream.wait_sealed()
+        sealed = verify_seal(inputs.prepared_root, head=head)
+    except BoundaryStreamError as error:
+        raise ValueError(str(error)) from None
+    return preflight_prepared_forecast(**_sealed_arguments(inputs, sealed))
+
+
+def _rerun_on_seal(args, inputs: PreparedForecastInputs, reason: str, *,
+                   outdir: Path, observer, first_products, started):
+    """Set a head-bound attempt aside and bind the sealed preparation.
+
+    A later boundary interval moved the terrain-derived clock
+    (``StreamedClockChanged``), so the attempt stepped on a clock the
+    sealed preparation does not choose and is not this forecast.  Its
+    outputs are kept, named, in their own folder; the supervisor heartbeat
+    stays where the supervisor reads it
+    (:data:`gpuwm.prepared_domain_tree_forecast.KEPT_IN_PLACE`) and
+    publishes the restart record
+    (:func:`gpuwm.supervisor.restart_attempt`), so ``gpuwm go``'s
+    watchdog reads the steps starting again as a new attempt rather than
+    a regression.  Returns the sealed inputs, the re-armed first products
+    and the checkpoint to resume from (none: a checkpoint the attempt
+    resumed from was stepped on the head's clock).  The same recovery as
+    the tree runner's.
+    """
+
+    from gpuwm.first_products import halt_renders_and_wait
+    from gpuwm.prepared_domain_tree_forecast import (
+        _release_attempt_memory, _set_aside_streamed_attempt,
+    )
+    from gpuwm.supervisor import restart_attempt
+
+    rearm = first_products is not None
+    if rearm:
+        # Ended, and waited for, before its folder moves: nothing is
+        # published into a picture folder that has moved, and on Windows
+        # a folder with a file open in it does not move.
+        if not halt_renders_and_wait(first_products):
+            print("prepared forecast: a render of the head-bound attempt "
+                  "was still running after it was killed",
+                  file=sys.stderr, flush=True)
+        first_products = None
+    _release_attempt_memory()
+    # Said before anything of the new attempt is published; a hosting
+    # observer ends the renders it owns here too.
+    restart_attempt(observer, reason)
+    attempt = _set_aside_streamed_attempt(outdir)
+    print(f"prepared forecast: {reason}; the head-bound attempt is kept in "
+          f"{attempt} and the forecast starts again on the sealed "
+          "preparation", file=sys.stderr, flush=True)
+    rerun_args = args
+    if args.restart is not None:
+        print("prepared forecast: the checkpoint this attempt resumed from "
+              f"({args.restart}) was stepped on the head's clock, so the "
+              "sealed forecast runs from its start time",
+              file=sys.stderr, flush=True)
+        rerun_args = argparse.Namespace(**{**vars(args), "restart": None})
+    sealed = _sealed_binding(inputs, outdir=outdir, observer=observer)
+    if rearm:
+        first_products = _route_owned_first_products(
+            rerun_args, outdir=outdir, observer=observer, started=started)
+    return sealed, first_products, rerun_args.restart
 
 
 def _route_owned_first_products(args, *, outdir: Path, observer,
@@ -9297,13 +10074,35 @@ def main(argv=None, *, observer=None) -> int:
             # warn-not-block; detail lives in the receipt).
             print(f"prepared forecast: {verification['sentence']}",
                   file=sys.stderr)
-        report = run_prepared_forecast(
-            inputs, output_directory=outdir, observer=observer,
-            first_products=first_products, stream_init=args.stream_init,
-            progress_options=ProgressOptions.from_args(args),
-            preflight_seconds=preflight_seconds,
-            kernel_cache_census=kernel_cache_census,
-            restart=args.restart, health_debug=args.health_debug)
+        # --no-memory-gate skips the resident envelope admission inside,
+        # as it skips `gpuwm go`'s own gate; the constructor floor stays.
+        from gpuwm.core.resident_admission import memory_gate_override
+
+        from gpuwm.ingest.boundary_stream import StreamedClockChanged
+
+        def run(bound, products, restart):
+            with memory_gate_override(args.no_memory_gate):
+                return run_prepared_forecast(
+                    bound, output_directory=outdir, observer=observer,
+                    first_products=products, stream_init=args.stream_init,
+                    progress_options=ProgressOptions.from_args(args),
+                    preflight_seconds=preflight_seconds,
+                    kernel_cache_census=kernel_cache_census,
+                    restart=restart, health_debug=args.health_debug)
+
+        clock_changed = None
+        try:
+            report = run(inputs, first_products, args.restart)
+        except StreamedClockChanged as changed:
+            # Only the reason leaves this handler: the traceback holds the
+            # attempt's frames and, through them, its state on the card.
+            clock_changed = str(changed)
+        if clock_changed is not None:
+            inputs, first_products, restart = _rerun_on_seal(
+                args, inputs, clock_changed, outdir=outdir,
+                observer=observer, first_products=first_products,
+                started=started)
+            report = run(inputs, first_products, restart)
     except BaseException as error:
         # A forecast that fails before its preparation seals leaves the
         # producer running: the sealed preparation is what a retry reuses
@@ -9346,8 +10145,20 @@ def main(argv=None, *, observer=None) -> int:
                 "inventory_error": inventory_error,
             },
         }
+        from gpuwm.ingest.boundary_stream import (
+            SOURCE_BEHIND_EXIT_CODE, WAIT_LOG_NAME, SeamWaits, SourceBehind,
+        )
+        behind = None
+        if isinstance(error, SourceBehind):
+            # A source lead passed its late time: the frames through the
+            # seam and the checkpoint there are kept, and the record says
+            # which lead, so the door exits 75 naming it.
+            behind = error.at(frames_kept=len(durable_inventory))
+            behind.details.setdefault("checkpoint", None)
+            failure["source_behind"] = dict(behind.details)
+            failure["exit_code"] = SOURCE_BEHIND_EXIT_CODE
         _atomic_json(outdir / "report.json", failure)
-        _atomic_json(outdir / "progress.json", {
+        progress_failure = {
             "schema": PROGRESS_SCHEMA,
             "status": "FAIL",
             "source": args.source,
@@ -9358,7 +10169,22 @@ def main(argv=None, *, observer=None) -> int:
             "last_durable_wrfout": (
                 None if not durable_inventory
                 else durable_inventory[-1]["path"]),
-        }, heartbeat=True)
+        }
+        if behind is not None:
+            progress_failure["source_behind"] = dict(behind.details)
+        _atomic_json(outdir / "progress.json", progress_failure,
+                     heartbeat=True)
+        if behind is not None:
+            # A hosting door says `source_behind` from this record just
+            # before `failed`; `gpuwm go` relays it from the wait log.
+            SeamWaits(log_path=outdir / WAIT_LOG_NAME).record_source_behind(
+                behind)
+            hook = getattr(observer, "source_behind", None)
+            if hook is not None:
+                try:
+                    hook(dict(behind.details))
+                except Exception:  # noqa: BLE001 - the refusal stands
+                    pass
         if first_products is not None:
             # The renders of a run that did not finish.  A stop draws
             # nothing more (the desktop kills a run 5 s after asking); a
@@ -9376,6 +10202,14 @@ def main(argv=None, *, observer=None) -> int:
                 print("prepared_single_domain_forecast: joining the "
                       f"renders failed: {type(render_error).__name__}: "
                       f"{render_error}", file=sys.stderr)
+        if isinstance(error, InitializationMemoryRefused):
+            # Refused before the first device allocation: this forecast
+            # does not fit the card it was about to be restored onto.  The
+            # failure report above records it; the terminal gets the one
+            # sentence with the terms and the remedy, not a traceback.
+            print(f"prepared_single_domain_forecast: {error}",
+                  file=sys.stderr)
+            return 2
         if isinstance(error, PreparationProofDigestMismatch):
             # A run that never started, not one that failed: the door
             # check above catches every command-line spelling of this,
@@ -9385,6 +10219,12 @@ def main(argv=None, *, observer=None) -> int:
             print(f"prepared_single_domain_forecast: {error}",
                   file=sys.stderr)
             return 2
+        if behind is not None:
+            # Not a failure of this run: the source is later than its
+            # budget.  The sentence names the lead and what to do.
+            print(f"prepared_single_domain_forecast: {behind}",
+                  file=sys.stderr)
+            return SOURCE_BEHIND_EXIT_CODE
         raise
     print(json.dumps({
         "schema": report["schema"],

@@ -1697,6 +1697,8 @@ def _compose_through_engine(
     member_identity: str | None = None,
     scratch_destination: Path | None = None,
     atmospheric_grids=(),
+    workers: int | None = None,
+    lead_batch: bool = False,
 ) -> MappedSourceBundle:
     """Compose on the Rust engine, keeping every policy check on this side.
 
@@ -1751,6 +1753,8 @@ def _compose_through_engine(
                 input_manifest_sha256=manifest_sha256,
                 engine=engine,
                 atmospheric_grids=atmospheric_grids,
+                threads=workers,
+                lead_batch=lead_batch,
             )
         except ScratchDiskRefusal as refusal:
             raise scratch_disk_refusal(refusal, scratch_base) from refusal
@@ -1766,7 +1770,8 @@ def _compose_through_engine(
                 contributing=contributing, contract=contract, bindings=bindings,
                 terrain_spec=terrain_spec, decoders=decoders, snapshots=snapshots,
                 before=before, member=member, member_identity=member_identity,
-                scratch_destination=scratch_destination).frames
+                scratch_destination=scratch_destination, workers=workers,
+                lead_batch=lead_batch).frames
         frames = mapped_engine_bridge.open_frameset(
             directory, retain=work,
             **({"full_fallback": full_fallback} if atmospheric_grids else {}))
@@ -1940,6 +1945,8 @@ def decode_composed_source(
     grib2_dump: str | Path | None = None,
     scratch_destination: str | Path | None = None,
     atmospheric_grids=(),
+    workers: int | None = None,
+    lead_batch: bool = False,
 ) -> MappedSourceBundle:
     """Decode a complete mapped source with scientifically sourced terrain.
 
@@ -1962,6 +1969,18 @@ def decode_composed_source(
     quota error.  ``GPUWM_COMPOSE_SCRATCH`` overrides it; omitted
     entirely, the system temp remains the documented fallback for
     callers with no real output directory.
+
+    ``workers`` is the most threads the Rust engine decodes with
+    (``--preprocess-workers``); ``None`` lets it use every core it may
+    run on.  Either way a GRIB2 decode narrows to what its first valid
+    time fits beside in free memory, before that time is decoded, with
+    as many valid times in flight as memory allows.
+
+    ``lead_batch`` decodes some of a window's leads (an as-posted
+    preparation's batch, which may be one lead): the window's series rules,
+    at least two times on one uniform cadence that the target's boundary
+    interval accepts, are the caller's to hold over every batch's times
+    together, and every other check is the same.
     """
 
     composition_path = Path(composition_path).resolve()
@@ -2177,6 +2196,8 @@ def decode_composed_source(
                 None if scratch_destination is None
                 else Path(scratch_destination)),
             atmospheric_grids=atmospheric_grids,
+            workers=workers,
+            lead_batch=lead_batch,
         )
     combined = _decode_partition(
         _partition_mapping(mapping, terrain_only=False), primary, decoders,
@@ -2293,7 +2314,7 @@ def decode_composed_source(
     }
     frames = _materialize_frames(
         union, combined, mapping_sha256=before[str(mapping_path)],
-        input_sha256=input_hashes,
+        input_sha256=input_hashes, lead_batch=lead_batch,
     )
     for snapshot in snapshots.values():
         _require_authority_snapshot(snapshot)
@@ -2459,6 +2480,60 @@ def mapped_composition_receipt(bundle: MappedSourceBundle) -> dict[str, object]:
     return payload
 
 
+#: The receipt keys that say where a file sat in this run's folders.  Each
+#: sits beside the sha256 of the same file, which is what the receipt
+#: binds; the location is this run's, not the source's.
+_RECEIPT_PATH_KEYS = frozenset({"path", "provenance_path"})
+
+
+def _without_paths(value):
+    if isinstance(value, Mapping):
+        return {key: _without_paths(item) for key, item in value.items()
+                if key not in _RECEIPT_PATH_KEYS}
+    if isinstance(value, (list, tuple)):
+        return [_without_paths(item) for item in value]
+    return value
+
+
+def composition_receipt_identity(receipt: Mapping[str, object]) -> dict:
+    """What a prepared cache's identity binds of a composition receipt.
+
+    The receipt less every file's location (its ``path`` and
+    ``provenance_path`` keys) and less its own content digest: each file
+    stays bound by the sha256 recorded beside it, and the frames, times
+    and alignment are kept whole.  The proof keeps the whole receipt.
+
+    The breakage this prevents (A151): the receipt records where this run
+    found its input manifest and data, so two preparations of the same
+    bytes into different run folders bound different cache identities and
+    content digests although every array was byte-equal.
+    """
+
+    body = {key: value for key, value in receipt.items()
+            if key != "receipt_content_sha256"}
+    return _without_paths(body)
+
+
+def composition_receipt_identity_sha256(receipt: Mapping[str, object]) -> str:
+    """The digest a prepared cache binds a composition receipt by (A151)."""
+
+    return _canonical_sha256(composition_receipt_identity(receipt))
+
+
+def composition_receipt_binding_matches(bound, receipt) -> bool:
+    """Whether a cache's bound receipt digest names this proof's receipt.
+
+    A cache written since A151 binds :func:`composition_receipt_identity_sha256`;
+    one written before bound the whole receipt's ``receipt_content_sha256``
+    and still restores.  Anything else names another composition.
+    """
+
+    if not isinstance(receipt, Mapping) or not isinstance(bound, str):
+        return False
+    return bound in (composition_receipt_identity_sha256(receipt),
+                     receipt.get("receipt_content_sha256"))
+
+
 def _derive_absent_terrain(
     mapping: Mapping[str, object],
     operation: Mapping[str, object],
@@ -2567,8 +2642,324 @@ def decoded_vertical_ladder(
     }
 
 
+# ---------------------------------------------------------------------------
+# As posted: one composition decoded lead batch by lead batch (DESIGN A136
+# 2.4 item 3).  Each batch is one ``decode_composed_source`` over the leads
+# posted so far and not yet decoded, bound by its own sub-manifest; the
+# seal reads every batch as one frameset and writes the whole receipt.
+# ---------------------------------------------------------------------------
+
+
+class PostedCompositionRefusal(ValueError):
+    """A composition this window cannot decode lead batch by lead batch."""
+
+
+class PostedFrames(_ABCSequence):
+    """The frames of a window's lead batches, read as one frameset.
+
+    ``valid_times`` are the window's planned times; ``locate(index)``
+    returns the batch frames that hold time ``index`` and its position
+    there, decoding the batch (and waiting for its leads) first when it has
+    not been.  Every reader a composed bundle and its regular snapshots use
+    is answered from the batch's own frameset, one valid time at a time.
+    """
+
+    def __init__(self, valid_times, locate):
+        self._valid_times = tuple(valid_times)
+        self._locate = locate
+        self._parts: list = []
+
+    def __len__(self) -> int:
+        return len(self._valid_times)
+
+    @property
+    def valid_times(self) -> tuple:
+        return self._valid_times
+
+    def add_part(self, frames) -> None:
+        self._parts.append(frames)
+
+    @property
+    def parts(self) -> tuple:
+        return tuple(self._parts)
+
+    @property
+    def members(self) -> tuple:
+        return tuple(member for part in self._parts
+                     for member in getattr(part, "members", ()))
+
+    @property
+    def mapping_sha256s(self) -> tuple:
+        return tuple(digest for part in self._parts
+                     for digest in getattr(part, "mapping_sha256s", ()))
+
+    def _part(self, index):
+        position = int(index)
+        if position < 0:
+            position += len(self)
+        if not 0 <= position < len(self):
+            raise IndexError(index)
+        return self._locate(position)
+
+    def field_names(self, index) -> tuple:
+        frames, local = self._part(index)
+        reader = getattr(frames, "field_names", None)
+        return (reader(local) if reader is not None
+                else tuple(frames[local].fields))
+
+    def field_digest(self, index, name) -> str:
+        frames, local = self._part(index)
+        reader = getattr(frames, "field_digest", None)
+        if reader is not None:
+            return reader(local, name)
+        return _array_sha256(frames[local].fields[name].values)
+
+    def field_count(self, index) -> int:
+        frames, local = self._part(index)
+        reader = getattr(frames, "field_count", None)
+        return (reader(local) if reader is not None
+                else len(frames[local].fields))
+
+    def header(self, index):
+        frames, local = self._part(index)
+        reader = getattr(frames, "header", None)
+        return reader(local) if callable(reader) else frames[local].header
+
+    def coordinates(self, index):
+        frames, local = self._part(index)
+        reader = getattr(frames, "coordinates", None)
+        if reader is not None:
+            return reader(local)
+        frame = frames[local]
+        return frame.latitude, frame.longitude
+
+    def pressure_levels_hpa(self, index):
+        frames, local = self._part(index)
+        reader = getattr(frames, "pressure_levels_hpa", None)
+        if reader is not None:
+            return reader(local)
+        pressure = frames[local].fields["air_pressure"].values
+        return np.median(np.asarray(pressure), axis=(1, 2)) / 100.0
+
+    def field(self, index, name):
+        frames, local = self._part(index)
+        reader = getattr(frames, "field", None)
+        return (reader(local, name) if reader is not None
+                else frames[local].fields[name])
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[position]
+                    for position in range(*index.indices(len(self)))]
+        frames, local = self._part(index)
+        return frames[local]
+
+    def fieldwise_frame(self, index):
+        frames, local = self._part(index)
+        reader = getattr(frames, "fieldwise_frame", None)
+        return reader(local) if reader is not None else frames[local]
+
+    def release_frame(self, frame) -> None:
+        for part in self._parts:
+            release = getattr(part, "release_frame", None)
+            if release is not None:
+                release(frame)
+
+    def close(self) -> None:
+        for part in self._parts:
+            close = getattr(part, "close", None)
+            if close is not None:
+                close()
+
+
+#: Alignment receipt keys that list valid times or cycles.  A batch lists
+#: its own; the whole decode lists every batch's in order.  A list every
+#: batch carries whole (a supplement or donor posted once) is kept once.
+_BATCH_TIME_LIST_KEYS = frozenset({
+    "matched_primary_valid_times", "broadcast_primary_valid_times",
+    "supplement_valid_times", "donor_valid_times", "donor_source_cycles",
+})
+#: Alignment receipt keys the whole decode takes from its first valid time
+#: (``plan_bound_fields`` hashes the first valid time's subset only).
+_FIRST_TIME_KEYS = frozenset({"field_subset_sha256"})
+
+
+def merge_batch_alignment(receipts: Sequence[Mapping[str, object]], *,
+                          label: str) -> dict[str, object]:
+    """The alignment receipt one decode of every batch's times would write.
+
+    A key every batch agrees on is kept; a time list is the batches' lists
+    in batch order (each batch composed only its own times), and must then
+    name each time once, in order; a key the receipt takes from the first
+    valid time is the first batch's.  Anything else that differs is refused
+    by name, because the one-shot receipt could not be written from it.
+    """
+
+    first = dict(receipts[0])
+    for receipt in receipts[1:]:
+        if set(receipt) != set(first):
+            raise PostedCompositionRefusal(
+                f"the lead batches' {label} receipts carry different keys "
+                f"({sorted(set(receipt) ^ set(first))}); one decode of the "
+                "window would write one receipt")
+    merged: dict[str, object] = {}
+    for key in first:
+        values = [receipt[key] for receipt in receipts]
+        if all(value == values[0] for value in values):
+            merged[key] = values[0]
+        elif key in _FIRST_TIME_KEYS:
+            merged[key] = values[0]
+        elif key in _BATCH_TIME_LIST_KEYS and all(
+                isinstance(value, list) for value in values):
+            joined = [item for value in values for item in value]
+            if joined != sorted(set(joined)):
+                raise PostedCompositionRefusal(
+                    f"the lead batches' {label} {key} overlap or run out of "
+                    f"order ({joined}); each batch composes its own times")
+            merged[key] = joined
+        else:
+            raise PostedCompositionRefusal(
+                f"the lead batches' {label} receipts disagree on {key!r}, "
+                "which one decode of the window writes once; this source "
+                "cannot be decoded lead batch by lead batch")
+    return merged
+
+
+def _identical(values, what: str):
+    first = values[0]
+    for value in values[1:]:
+        if value != first:
+            raise PostedCompositionRefusal(
+                f"the lead batches decoded under different {what}")
+    return first
+
+
+def _role_holding(supplement_files, paths) -> str | None:
+    wanted = {str(Path(path).resolve()) for path in paths}
+    for role, inventory in supplement_files.items():
+        if wanted and wanted <= {str(Path(path).resolve())
+                                 for path in inventory}:
+            return role
+    return None
+
+
+def posted_composition_bundle(
+    batches: Sequence[MappedSourceBundle], frames: PostedFrames, *,
+    input_manifest_path: Path, input_manifest_sha256: str,
+    supplement_files: Mapping[str, Sequence[Path]],
+    shared_primary: bool,
+) -> MappedSourceBundle:
+    """The bundle one decode of the whole window would have returned.
+
+    ``batches`` are the lead batches' bundles in order and ``frames``
+    reads all of their frames as one frameset.  What every batch decoded
+    the same (the mapping, composition, decoders, terrain provenance and
+    soil contract) is kept, and refused if a batch differs; the input
+    manifest is the window's sealed one; the terrain products and each
+    contributing source's data are the window's whole inventory, in its
+    order, with the digests the batches read; the alignment receipts are
+    merged by :func:`merge_batch_alignment`.  ``shared_primary`` says a
+    primary object (a cycle-invariant field) was decoded by every batch, in
+    which case record alias counts cannot be summed and are refused.
+    """
+
+    digests: dict[str, str] = {}
+    for batch in batches:
+        for path, digest in zip(batch.terrain_data_paths,
+                                batch.terrain_data_sha256):
+            digests[str(path)] = str(digest)
+        for record in batch.contributing_sources:
+            for row in record["data"]:
+                digests[str(row["path"])] = str(row["sha256"])
+
+    def whole(role: str) -> tuple[tuple[Path, ...], tuple[str, ...]]:
+        paths = tuple(Path(path).resolve() for path in supplement_files[role])
+        missing = [str(path) for path in paths if str(path) not in digests]
+        if missing:
+            raise PostedCompositionRefusal(
+                f"supplement role {role!r} names {missing}, which no lead "
+                "batch decoded")
+        return paths, tuple(digests[str(path)] for path in paths)
+
+    first = batches[0]
+    terrain_role = _role_holding(supplement_files, first.terrain_data_paths)
+    if terrain_role is None:
+        raise PostedCompositionRefusal(
+            "no supplement role holds the terrain the first lead batch "
+            "decoded")
+    terrain_paths, terrain_sha = whole(terrain_role)
+    contributing = []
+    for index, record in enumerate(first.contributing_sources):
+        records = [batch.contributing_sources[index] for batch in batches]
+        for key in ("binding", "source_id", "mapping", "provenance", "fields"):
+            _identical([item[key] for item in records],
+                       f"{record['binding']} {key}")
+        role = _role_holding(supplement_files,
+                             [row["path"] for row in record["data"]])
+        if role is None:
+            raise PostedCompositionRefusal(
+                f"no supplement role holds contributing source "
+                f"{record['binding']}'s data")
+        paths, shas = whole(role)
+        contributing.append({
+            **dict(record),
+            "data": [{"path": str(path), "sha256": digest}
+                     for path, digest in zip(paths, shas)],
+            "alignment": merge_batch_alignment(
+                [item["alignment"] for item in records],
+                label=f"{record['binding']} binding"),
+        })
+    aliases = [dict(batch.record_aliases or {}) for batch in batches]
+    record_aliases = None
+    if any(aliases):
+        if shared_primary:
+            raise PostedCompositionRefusal(
+                "the primary's files spell records the way an earlier "
+                "publication did, and every lead batch decoded the same "
+                "cycle-invariant objects, so the whole window's alias count "
+                "cannot be summed from the batches")
+        record_aliases = {}
+        for counts in aliases:
+            for name, count in counts.items():
+                record_aliases[name] = record_aliases.get(name, 0) + int(count)
+    alignment = merge_batch_alignment(
+        [batch.alignment_receipt for batch in batches], label="terrain")
+    return MappedSourceBundle(
+        frames=frames,
+        mapping_path=_identical([b.mapping_path for b in batches], "mappings"),
+        mapping_sha256=_identical([b.mapping_sha256 for b in batches],
+                                  "mappings"),
+        composition_path=_identical([b.composition_path for b in batches],
+                                    "compositions"),
+        composition_sha256=_identical([b.composition_sha256 for b in batches],
+                                      "compositions"),
+        input_manifest_path=Path(input_manifest_path),
+        input_manifest_sha256=str(input_manifest_sha256),
+        decoder_paths=_identical([dict(b.decoder_paths) for b in batches],
+                                 "decoders"),
+        decoder_sha256=_identical([dict(b.decoder_sha256) for b in batches],
+                                  "decoders"),
+        terrain_data_paths=terrain_paths,
+        terrain_data_sha256=terrain_sha,
+        terrain_provenance_path=_identical(
+            [b.terrain_provenance_path for b in batches], "terrain provenance"),
+        terrain_provenance_sha256=_identical(
+            [b.terrain_provenance_sha256 for b in batches],
+            "terrain provenance"),
+        soil_layer_contract=_identical(
+            [dict(b.soil_layer_contract) for b in batches], "soil contracts"),
+        alignment_receipt=alignment,
+        contributing_sources=tuple(contributing),
+        record_aliases=record_aliases,
+    )
+
+
 __all__ = [
     "COMPOSITION_SCHEMA", "INPUT_MANIFEST_SCHEMA", "RECEIPT_SCHEMA",
-    "MappedSourceBundle", "decode_composed_source", "decoded_vertical_ladder",
+    "MappedSourceBundle", "PostedCompositionRefusal", "PostedFrames",
+    "composition_receipt_binding_matches", "merge_batch_alignment",
+    "posted_composition_bundle",
+    "composition_receipt_identity", "composition_receipt_identity_sha256",
+    "decode_composed_source", "decoded_vertical_ladder",
     "load_composition", "mapped_composition_receipt",
 ]

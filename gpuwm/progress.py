@@ -268,6 +268,13 @@ class ForecastProgress:
                        "simulated; " + write_phase_words(stage))
         elif heartbeat.status == "failed":
             message = "Forecast worker reported a failure; reading diagnostics"
+        elif heartbeat.status.startswith("waiting:"):
+            wait = heartbeat.wait or {}
+            on = heartbeat.status.removeprefix("waiting:")
+            message = (f"Forecast: {format_elapsed(heartbeat.model_elapsed_seconds)} "
+                       f"simulated; waiting on the {on}")
+            if wait.get("lead") is not None:
+                message += f" (lead {wait['lead']}, late at {wait.get('late_at')})"
         else:
             stage = heartbeat.status.removeprefix("preparing:")
             label = {

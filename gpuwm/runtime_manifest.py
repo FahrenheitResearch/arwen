@@ -46,7 +46,7 @@ import os
 from pathlib import Path
 import subprocess
 
-from gpuwm import DISTRIBUTION_NAME, __version__
+from gpuwm import DISTRIBUTION_NAMES, __version__
 
 #: The sealed-runtime manifest schema.  Declared here rather than in
 #: :mod:`gpuwm.native_wrf_distribution` so the validator is importable
@@ -75,8 +75,10 @@ IDENTITY_SOURCES = (
 #: Distributions that may publish the ``gpuwm`` package.  ``rw-wps`` is
 #: the preprocessing-only wheel; it ships the same package directory
 #: under a different distribution name, so the identity lookup has to
-#: recognise both rather than assuming the public one.
-_CANDIDATE_DISTRIBUTIONS = (DISTRIBUTION_NAME, "rw-wps")
+#: recognise both rather than assuming the public one.  The table is the
+#: package's own (:data:`gpuwm.DISTRIBUTION_NAMES`), where its version is
+#: read too.
+_CANDIDATE_DISTRIBUTIONS = DISTRIBUTION_NAMES
 
 _GIT_TIMEOUT_S = 30
 
@@ -319,24 +321,23 @@ def _git(root: Path, *arguments: str) -> str:
 def installed_distribution(package: str = "gpuwm"):
     """The distribution that installed ``package`` here, or None.
 
-    Resolved by asking each candidate distribution to locate the package
-    file that is actually imported, rather than by taking the first name
+    Resolved by asking each candidate distribution whether its own files
+    install the package file that is actually imported
+    (:func:`gpuwm.installs_package`), rather than by taking the first name
     that has metadata: two distributions publish this package directory,
     and a stale ``.dist-info`` for the other one must not be mistaken
-    for the identity of the code that is running.
+    for the identity of the code that is running.  Every distribution of
+    each name on the path is asked, not the first one: a second install
+    of the same name (a venv's beside a ``--user`` one) is found where it
+    serves the import, and ``gpuwm.__version__`` reads that distribution
+    too (:func:`gpuwm.owning_distribution`).
     """
 
+    from gpuwm import candidate_distributions, installs_package
+
     anchor = (Path(__file__).resolve().parent / "__init__.py")
-    for name in _CANDIDATE_DISTRIBUTIONS:
-        try:
-            dist = metadata.distribution(name)
-        except metadata.PackageNotFoundError:
-            continue
-        try:
-            located = Path(dist.locate_file(f"{package}/__init__.py")).resolve()
-        except (OSError, ValueError):
-            continue
-        if located == anchor:
+    for dist in candidate_distributions():
+        if installs_package(dist, anchor, entry=f"{package}/__init__.py"):
             return dist
     return None
 

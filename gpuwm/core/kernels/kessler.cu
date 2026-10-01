@@ -78,7 +78,7 @@ void kessler_column(real* __restrict__ t,          // (nz, ny, nx) theta (K)
         rdzk[k] = 1.0f / (z[IDX3(k + 1, j, i)] - z[IDX3(k, j, i)]);
     rdzk[nz - 1] = 1.0f / (z[IDX3(nz - 1, j, i)] - z[IDX3(nz - 2, j, i)]);
 
-    int nfall = max(1, (int)floorf(0.5f + crmax / max_cr_sedimentation
+    int nfall = max(1, (int)floorf(0.5f + __fdiv_rn(crmax, max_cr_sedimentation)
                                    + 0.5f));                  // Fortran NINT
     real dtfall = dt / (real)nfall;
     real time_sediment = dt;
@@ -87,7 +87,7 @@ void kessler_column(real* __restrict__ t,          // (nz, ny, nx) theta (K)
     while (nfall > 0) {
         time_sediment -= dtfall;
 
-        real ppt = rhok[0] * prodk[0] * vt[0] * dtfall / RHOWATER;
+        real ppt = __fdiv_rn(rhok[0] * prodk[0] * vt[0] * dtfall, RHOWATER);
         rainncv[(size_t)j * nx + i] = ppt * 1000.0f;
         rainnc[(size_t)j * nx + i] += ppt * 1000.0f;          // mm
 
@@ -111,8 +111,8 @@ void kessler_column(real* __restrict__ t,          // (nz, ny, nx) theta (K)
                 real rdzw = 1.0f / dz8w[IDX3(k, j, i)];
                 crmax = fmaxf(vt[k] * time_sediment * rdzw, crmax);
             }
-            int nfall_new = max(1, (int)floorf(0.5f + crmax
-                                               / max_cr_sedimentation
+            int nfall_new = max(1, (int)floorf(0.5f + __fdiv_rn(crmax,
+                                               max_cr_sedimentation)
                                                + 0.5f));
             if (nfall_new != nfall) {
                 nfall = nfall_new;

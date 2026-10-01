@@ -45,6 +45,8 @@ from __future__ import annotations
 
 from typing import Mapping, NamedTuple, Sequence
 
+from gpuwm.core.noahmp_slab_libm import copy_slab_slots, split_slab_slots
+
 import numpy as np
 
 from gpuwm.core import noahmp_bareflux_gpu as _bare
@@ -201,18 +203,22 @@ def pack_vege_flux_slab(fields: Mapping[str, object],
     parameter object.  Names VEGE_FLUX accepts but never packs (``thair``,
     ``fsno``, ``latheag``, ``q2``, ``qc``, ``p``) are ignored if present.
     """
+    _slots_inputs = []
+    _slots_params = []
     cp = _cupy()
     n = _check_size(n)
     _check_options(fields, "VEGE_FLUX", _VEGE_OPTIONS)
 
     inputs = cp.empty((n, _vege.N_INPUT), dtype=cp.float32)
     for slot, name in enumerate(_vege.INPUT_NAMES):
-        inputs[:, slot] = _column(cp, fields, name, n, "VEGE_FLUX")
+        _slots_inputs.append((slot, _column(cp, fields, name, n, "VEGE_FLUX")))
 
     params = cp.empty((n, len(_vege.PARAMETER_NAMES)), dtype=cp.float32)
     for slot, name in enumerate(_vege.PARAMETER_NAMES):
-        params[:, slot] = _column(cp, fields, name, n, "VEGE_FLUX")
+        _slots_params.append((slot, _column(cp, fields, name, n, "VEGE_FLUX")))
 
+    copy_slab_slots(params, _slots_params)
+    copy_slab_slots(inputs, _slots_inputs)
     return VegeFluxSlabInputs(
         inputs=inputs,
         params=params,
@@ -265,23 +271,25 @@ def pack_bare_flux_slab(fields: Mapping[str, object], n: int):
     reduced to the ``iurban`` slot by the same truthiness test the per-column
     packer applies; ``iurban`` is accepted as a spelling of it.
     """
+    _slots_inputs = []
+    _slots_ints = []
     cp = _cupy()
     n = _check_size(n)
     _check_options(fields, "BARE_FLUX", _BARE_OPTIONS)
 
     inputs = cp.empty((n, _bare.N_INPUT), dtype=cp.float32)
     for slot, name in enumerate(_bare.SCALAR_NAMES):
-        inputs[:, slot] = _column(cp, fields, name, n, "BARE_FLUX")
+        _slots_inputs.append((slot, _column(cp, fields, name, n, "BARE_FLUX")))
     base = len(_bare.SCALAR_NAMES)
     for name in _bare.ARRAY_NAMES:
-        inputs[:, base:base + NLAYER] = _layers(cp, fields, name, n,
-                                                "BARE_FLUX")
+        _slots_inputs.append((base, _layers(cp, fields, name, n,
+                                                "BARE_FLUX")))
         base += NLAYER
 
     ints = cp.empty((n, _bare.N_INT), dtype=cp.int32)
     for slot, name in enumerate(_bare.INT_NAMES):
         if name != "iurban":
-            ints[:, slot] = _int_column(cp, fields, name, n, "BARE_FLUX")
+            _slots_ints.append((slot, _int_column(cp, fields, name, n, "BARE_FLUX")))
             continue
         flag = fields["urban_flag"] if "urban_flag" in fields else _field(
             fields, "iurban", "BARE_FLUX")
@@ -290,7 +298,9 @@ def pack_bare_flux_slab(fields: Mapping[str, object], n: int):
             raise ValueError(
                 f"BARE_FLUX slab field 'urban_flag' has shape "
                 f"{tuple(column.shape)}; expected ({n},) or a scalar")
-        ints[:, slot] = (column != 0).astype(cp.int32)
+        _slots_ints.append((slot, (column != 0).astype(cp.int32)))
+    copy_slab_slots(ints, _slots_ints)
+    copy_slab_slots(inputs, _slots_inputs)
     return inputs, ints
 
 

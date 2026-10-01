@@ -25,8 +25,8 @@ __device__ __forceinline__ real mynn_psim_unstable_full(real z)
                - 2.0f * atanf(x) + 2.0f * atanf(1.0f);
     real ym = powf(1.0f - 10.0f * z, 0.33f);
     real rt3 = sqrtf(3.0f);
-    real psimc = 1.5f * logf((ym * ym + ym + 1.0f) / 3.0f)
-               - rt3 * atanf((2.0f * ym + 1.0f) / rt3)
+    real psimc = 1.5f * logf(__fdiv_rn((ym * ym + ym + 1.0f), 3.0f))
+               - rt3 * atanf(__fdiv_rn((2.0f * ym + 1.0f), rt3))
                + 4.0f * atanf(1.0f) / rt3;
     return (psimk + z * z * psimc) / (1.0f + z * z);
 }
@@ -37,8 +37,8 @@ __device__ __forceinline__ real mynn_psih_unstable_full(real z)
     real psihk = 2.0f * logf((1.0f + y) / 2.0f);
     real yh = powf(1.0f - 34.0f * z, 0.33f);
     real rt3 = sqrtf(3.0f);
-    real psihc = 1.5f * logf((yh * yh + yh + 1.0f) / 3.0f)
-               - rt3 * atanf((2.0f * yh + 1.0f) / rt3)
+    real psihc = 1.5f * logf(__fdiv_rn((yh * yh + yh + 1.0f), 3.0f))
+               - rt3 * atanf(__fdiv_rn((2.0f * yh + 1.0f), rt3))
                + 4.0f * atanf(1.0f) / rt3;
     return (psihk + z * z * psihc) / (1.0f + z * z);
 }
@@ -149,10 +149,10 @@ __device__ __forceinline__ void mynn_zilitinkevich_land(
 __device__ __forceinline__ real mynn_charnock_1955(
     real ustar, real wsp, real visc, real zu)
 {
-    real wsp10 = wsp * logf(10.0f / 1.0e-4f) / logf(zu / 1.0e-4f);
+    real wsp10 = wsp * logf(10.0f / 1.0e-4f) / logf(__fdiv_rn(zu, 1.0e-4f));
     real czc = 0.011f + 0.007f
         * fminf(fmaxf((wsp10 - 10.0f) / 8.0f, 0.0f), 1.0f);
-    real z0 = czc * ustar * ustar / 9.81f
+    real z0 = __fdiv_rn(czc * ustar * ustar, 9.81f)
             + 0.11f * visc / fmaxf(ustar, 0.05f);
     return fminf(fmaxf(z0, 1.27e-7f), 2.85e-3f);
 }
@@ -161,8 +161,8 @@ __device__ __forceinline__ real mynn_charnock_1955(
 // Fortran takes no wind speed.
 __device__ __forceinline__ real mynn_davis_etal_2008(real ustar)
 {
-    real zw = fminf(powf(ustar / 1.06f, 0.3f), 1.0f);
-    real zn1 = 0.011f * ustar * ustar / 9.81f + 1.59e-5f;
+    real zw = fminf(powf(__fdiv_rn(ustar, 1.06f), 0.3f), 1.0f);
+    real zn1 = __fdiv_rn(0.011f * ustar * ustar, 9.81f) + 1.59e-5f;
     real zn2 = 10.0f * expf(-9.5f * powf(ustar, -0.3333f))
              + 0.11f * 1.5e-5f / fmaxf(ustar, 0.01f);
     real z0 = (1.0f - zw) * zn1 + zw * zn2;
@@ -175,7 +175,7 @@ __device__ __forceinline__ real mynn_taylor_yelland_2001(real wsp)
 {
     real hs = 0.0248f * powf(wsp, 2.0f);
     real tp = 0.729f * fmaxf(wsp, 0.1f);
-    real lp = 9.81f * (tp * tp) / (2.0f * 3.14159265f);
+    real lp = __fdiv_rn(9.81f * (tp * tp), (2.0f * 3.14159265f));
     real z0 = 1200.0f * hs * powf(hs / lp, 4.5f);
     return fminf(fmaxf(z0, 1.27e-7f), 2.85e-3f);
 }
@@ -205,7 +205,7 @@ __device__ __forceinline__ void mynn_garratt_1992(
         zq = fmaxf(fminf(zq, 5.5e-5f), 2.0e-9f);
         zt = fmaxf(fminf(zt, 5.5e-5f), 2.0e-9f);
     } else {
-        zq = z0 / powf(2.71828183f, 2.0f);
+        zq = __fdiv_rn(z0, powf(2.71828183f, 2.0f));
         zt = zq;
     }
 }
@@ -234,8 +234,8 @@ __device__ __forceinline__ void mynn_andreas_snow(
     real visc, real ustar, real &zt, real &zq)
 {
     real zntsno = 0.135f * visc / ustar
-        + 0.035f * ustar * ustar / 9.8f
-        * (5.0f * expf(-powf((ustar - 0.18f) / 0.1f, 2.0f)) + 1.0f);
+        + __fdiv_rn(0.035f * ustar * ustar, 9.8f)
+        * (5.0f * expf(-powf(__fdiv_rn((ustar - 0.18f), 0.1f), 2.0f)) + 1.0f);
     real ren = fminf(ustar * zntsno / visc, 1000.0f);
     real log_ren = logf(ren);
     real bt0, bt1, bt2, bq0, bq1, bq2;
@@ -306,9 +306,9 @@ void mynn_surface_column(
     real qsfc = qsfc_a[idx], ust = ust_a[idx], xland = xland_a[idx];
     real snowh = snowh_a[idx], mol = mol_a[idx], ustm = ustm_a[idx];
 
-    real psfc = psfcpa / 1000.0f;
+    real psfc = __fdiv_rn(psfcpa, 1000.0f);
     real thgb = tsk * powf(100.0f / psfc, rovcp);
-    real pl = p1 / 1000.0f;
+    real pl = __fdiv_rn(p1, 1000.0f);
     real th1 = t1 * powf(100.0f / pl, rovcp);
     real tc1 = t1 - 273.15f;
     real qvsh = qv1 / (1.0f + qv1);
@@ -356,14 +356,14 @@ void mynn_surface_column(
     real tvcon_gb = __fadd_rn(1.0f, __fmul_rn(ep1, qsfc));
     real thvgb = __fmul_rn(thgb, tvcon_gb);
     real dthvdz = thv1 - thvgb;
-    real fluxc = fmaxf(hfx / rho1 / cp + ep1 * thvgb * qfx / rho1, 0.0f);
+    real fluxc = fmaxf(__fdiv_rn(hfx / rho1, cp) + __fdiv_rn(ep1 * thvgb * qfx, rho1), 0.0f);
     // module_sf_mynn.F:573 spells the :532 predicate a second time, but it runs
     // after the :533 saturation update, so a land column that entered with
     // QSFC<=0 now takes the LAND height scale.
     bool wstar_water = xland > 1.5f || qsfc <= 0.0f;
     real height = wstar_water ? pblh : fminf(1.5f * pblh, 4000.0f);
     real wstar = vconvc * powf(grav / tsk * height * fluxc, 0.33f);
-    real vsgd = 0.32f * powf(fmaxf(dx / 5000.0f - 1.0f, 0.0f), 0.33f);
+    real vsgd = 0.32f * powf(fmaxf(__fdiv_rn(dx, 5000.0f) - 1.0f, 0.0f), 0.33f);
     wsp = fmaxf(sqrtf(wsp * wsp + wstar * wstar + vsgd * vsgd), wmin);
     real br = govrth * za * dthvdz / (wsp * wsp);
     real limit = itimestep == 1 ? 2.0f : 4.0f;
@@ -513,7 +513,7 @@ void mynn_surface_column(
     if ((th1 > thgb && !(th2 >= thgb && th2 <= th1))
         || (th1 < thgb && !(th2 >= th1 && th2 <= thgb)))
         th2 = thgb + 2.0f * (th1 - thgb) / za;
-    real t2 = th2 * powf(psfc / 100.0f, rovcp);
+    real t2 = th2 * powf(__fdiv_rn(psfc, 100.0f), rovcp);
     real q2 = qsfcmr + (qv1 - qsfcmr) * psiq2 / psiq;
     q2 = fmaxf(q2, fminf(qsfcmr, qv1));
     q2 = fminf(q2, 1.05f * qv1);

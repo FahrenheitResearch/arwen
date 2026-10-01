@@ -31,7 +31,8 @@ import json
 from pathlib import Path
 
 import pytest
-from test_provenance import _dist_info, _git_init, _package, _pyproject
+from test_provenance import (_dist_info, _git_init, _package, _pip_install,
+                             _pyproject)
 
 from gpuwm import provenance_gate
 from gpuwm.bridge_assets import SOURCE_REV_MARKER
@@ -213,6 +214,75 @@ def test_the_diagnostic_commands_are_never_refused(tmp_path):
         provenance_gate.require_consistent_version(command, prov)
     with pytest.raises(ValueError, match="REFUSING"):
         provenance_gate.require_consistent_version("run", prov)
+
+
+#: The modules ``import gpuwm`` and this gate's verdict run, copied into a
+#: throwaway checkout so the verdict is measured on a real interpreter
+#: with nothing of this machine's own installs in play.
+_GATE_MODULES = ("__init__.py", "cupy_windows_warning.py", "explain.py",
+                 "provenance.py", "provenance_gate.py", "runtime_manifest.py")
+
+
+@pytest.mark.parametrize("owned", [False, True],
+                         ids=["no-install-provides-it", "installed"])
+def test_a_stranger_gpuwm_on_the_path_refuses_only_where_nothing_owns_the_code(
+        tmp_path, owned):
+    """Reading the owning install's version launders no borrowed number.
+
+    A stranger's gpuwm .dist-info stands FIRST on the path.  A checkout no
+    distribution provides still wears the stranger's number, because
+    ``gpuwm.__version__`` falls back to the first by name, so this gate
+    must still call it borrowed and refuse it against the checkout's own
+    pyproject.toml.  The same code installed by its own .dist-info reads
+    its own version and runs: it used to read the stranger's too, and was
+    refused as disagreeing with the distribution that provides it.  A
+    real interpreter under ``-S``: only these two directories are on its
+    path.
+    """
+
+    import os
+    import subprocess
+    import sys
+
+    source = Path(__file__).resolve().parents[1] / "gpuwm"
+    files = {name: (source / name).read_bytes() for name in _GATE_MODULES}
+    checkout = tmp_path / "checkout"
+    if owned:
+        _pip_install(checkout, version="7.7.7", files=files)
+    else:
+        for name, payload in files.items():
+            (checkout / "gpuwm").mkdir(parents=True, exist_ok=True)
+            (checkout / "gpuwm" / name).write_bytes(payload)
+    _pyproject(checkout, version="7.7.7")
+    _pip_install(tmp_path / "user-site", version="0.0.1", files={})
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (str(tmp_path / "user-site"), str(checkout)))
+    program = (
+        "import json, gpuwm;"
+        "from gpuwm import provenance_gate as g;"
+        "p = g.resolve();"
+        "print(json.dumps({'version': gpuwm.__version__,"
+        " 'file': gpuwm.__file__, 'borrowed': p.metadata_is_borrowed,"
+        " 'refusal': g.version_identity_refusal(p)}))")
+    completed = subprocess.run(
+        [sys.executable, "-S", "-P", "-c", program], capture_output=True,
+        text=True, cwd=str(tmp_path), env=environment, timeout=120)
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert Path(payload["file"]).resolve() == (
+        checkout / "gpuwm" / "__init__.py").resolve()
+    if owned:
+        assert payload["version"] == "7.7.7"
+        assert payload["borrowed"] is False
+        assert payload["refusal"] is None
+    else:
+        assert payload["version"] == "0.0.1"
+        assert payload["borrowed"] is True
+        assert payload["refusal"] is not None
+        assert "REFUSING" in payload["refusal"]
+        assert "'0.0.1'" in payload["refusal"]
+        assert "'7.7.7'" in payload["refusal"]
 
 
 # ---------------------------------------------------------------------------

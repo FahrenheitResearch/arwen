@@ -102,8 +102,9 @@ producer on a thread of the same process that ends without writing it
 (a full disk) ends it too; a producer in another process that stops
 refreshing `producer.json` ends it by name. A forecast that fails leaves
 the producer running to its seal, so a retry reuses the complete
-preparation; only an interrupt of the chain writes `stop.json`, and the
-producer then exits unsealed. The next preparation into the same output
+preparation, and under `gpuwm run-plan` the run's `run-progress.json`
+says `waiting:preparation` until the producer ends; only an interrupt of
+the chain writes `stop.json`, and the producer then exits unsealed. The next preparation into the same output
 root removes such an unfinished tree and builds it again.
 
 The head is published early only when the forecast and the producer fit
@@ -116,13 +117,33 @@ builds took above what it keeps must fit the available RAM with 10%
 headroom. A GPU preparation must also fit the card: the forecast's
 estimate plus the memory the start time's build took, with 10%
 headroom. Otherwise the preparation prints the numbers and publishes at
-the seal, and the run starts after it, as before. A domain tree, the
-native HRRR route, met_em, the `gpuwm run` experiment route, the
-downscale route and an ERA5 preparation with a water-temperature overlay
-(its receipt covers every forcing time and is part of the cache
-identity) prepare sealed. Each of them but the downscale route, whose
-forcing is its parent run's history, says so in one `prepare:` line on
-stderr as it starts building its forcing.
+the seal, and the run starts after it, as before. A single native HRRR
+domain chains: its head waits for the decoder to seal every source hour,
+since the portable bundle binds that seal. Met_em, the `gpuwm run`
+experiment route, the downscale route and a
+native HRRR or ERA5 preparation with a water-temperature overlay (its
+receipt covers every forcing time and is part of the cache identity)
+prepare sealed. Each of them but the
+downscale route, whose forcing is its parent run's history, says so in
+one `prepare:` line on stderr as it starts building its forcing.
+
+A domain tree from a mapped source or the GFS series chains on the CPU or the card: its
+nests are prepared into the head (`hierarchy-head/`), the root's later
+intervals stream as above, and the tree runner starts the forecast on
+the head. A native HRRR domain tree chains on its root preparation's
+head: the hierarchy stage prepares the nests into its own head once the
+root's head exists, passes each root interval on as the root writes it,
+and seals after the root seals. A tree whose nests follow a storm (a `gpuwm cyclone-setup`
+configuration included) has its statics corridor built into the head, so
+it starts there too, and a moving nest waits only at the root's intervals.
+A tree whose root streams from a host store under `[tiles]` starts after
+the seal: always with `mode = "on"`, and with `auto` only when the root
+does not fit the card, which the forecast asks of the card as it binds
+the head. A
+time step derived from the terrain reads the root's boundary winds over
+the whole run, so a later interval can move it; the forecast so far is
+then kept in `streamed-attempt/` and the forecast runs again on the
+sealed tree in the same process, so its output is the sealed tree's.
 
 Chained preparation is on by default. A chained forecast writes the same
 history files as one started after a sealed preparation. For diagnosis,
@@ -266,8 +287,8 @@ Each runner validates the preparation, the scientific configuration and the
 checkpoint's identity before it restores anything. A single-domain bundle binds
 its complete configuration and stop time, so its continuation finishes the same
 forecast. The tree runner's existing permitted changes to forecast length,
-output/restart cadence and adaptive-controller targets still apply to a
-hierarchy, and `--sealed-forcing-extension` writes or restores under its
+output/restart cadence, history window and adaptive-controller targets still
+apply to a hierarchy, and `--sealed-forcing-extension` writes or restores under its
 append-only forcing-prefix contract; a single bundle refuses that flag.
 Selecting `--runner tree` does not turn a single-domain bundle into a
 hierarchy. `--print-command` includes every operand. The original run

@@ -619,15 +619,15 @@ __device__ float gfd_satvap(float temp2)
 // through untouched and he is still assigned (guard is itest .le. 0).
 __device__ void gfd_cup_env(GfColC z, GfColC t, GfColC q,
                             GfColC p, GfCol qes, GfCol he, GfCol hes,
-                            int nz)
+                            int nz, int start = 1)
 {
-    for (int k = 1; k <= nz; k++) {
+    for (int k = start; k <= nz; k++) {
         float e = gfd_satvap(t[k]);
         qes[k] = FDIV(FMUL(K_P622, e), GMAX(K_E1M8, FSUB(p[k], e)));
         if (qes[k] <= K_E1M16) qes[k] = K_E1M16;
         if (qes[k] < q[k]) qes[k] = q[k];
     }
-    for (int k = 1; k <= nz; k++) {
+    for (int k = start; k <= nz; k++) {
         he[k] = FADD(FADD(FMUL(K_LIT_G, z[k]), FMUL(K_LIT_CP, t[k])),
                      FMUL(K_LIT_XLV, q[k]));
         hes[k] = FADD(FADD(FMUL(K_LIT_G, z[k]), FMUL(K_LIT_CP, t[k])),
@@ -642,14 +642,16 @@ __device__ void gfd_cup_env_clev(GfColC t, GfColC qes,
     GfColC q, GfColC he, GfColC hes, GfColC z,
     GfColC p, float psur, float z1, int nz,
     GfCol qes_cup, GfCol q_cup, GfCol he_cup, GfCol hes_cup,
-    GfCol z_cup, GfCol p_cup, GfCol gamma_cup, GfCol t_cup)
+    GfCol z_cup, GfCol p_cup, GfCol gamma_cup, GfCol t_cup, int start = 1)
 {
-    for (int k = 0; k < GF_KP; k++) {
-        qes_cup[k] = K_ZERO; q_cup[k] = K_ZERO; he_cup[k] = K_ZERO;
-        hes_cup[k] = K_ZERO; z_cup[k] = K_ZERO; p_cup[k] = K_ZERO;
-        gamma_cup[k] = K_ZERO; t_cup[k] = K_ZERO;
+    if (start == 1) {
+        for (int k = 0; k < GF_KP; k++) {
+            qes_cup[k] = K_ZERO; q_cup[k] = K_ZERO; he_cup[k] = K_ZERO;
+            hes_cup[k] = K_ZERO; z_cup[k] = K_ZERO; p_cup[k] = K_ZERO;
+            gamma_cup[k] = K_ZERO; t_cup[k] = K_ZERO;
+        }
     }
-    for (int k = 2; k <= nz; k++) {
+    for (int k = IMAX(2, start); k <= nz; k++) {
         qes_cup[k] = FMUL(K_HALF, FADD(qes[k - 1], qes[k]));
         q_cup[k] = FMUL(K_HALF, FADD(q[k - 1], q[k]));
         hes_cup[k] = FMUL(K_HALF, FADD(hes[k - 1], hes[k]));
@@ -663,19 +665,21 @@ __device__ void gfd_cup_env_clev(GfColC t, GfColC qes,
                  FDIV(K_XLV, FMUL(FMUL(K_RV, t_cup[k]), t_cup[k]))),
             qes_cup[k]);
     }
-    qes_cup[1] = qes[1];
-    q_cup[1] = q[1];
-    hes_cup[1] = FADD(FADD(FMUL(K_LIT_G, z1), FMUL(K_LIT_CP, t[1])),
-                      FMUL(K_LIT_XLV, qes[1]));
-    he_cup[1] = FADD(FADD(FMUL(K_LIT_G, z1), FMUL(K_LIT_CP, t[1])),
-                     FMUL(K_LIT_XLV, q[1]));
-    z_cup[1] = z1;
-    p_cup[1] = psur;
-    t_cup[1] = t[1];
-    gamma_cup[1] = FMUL(
-        FMUL(K_XLV_OVER_CP,
-             FDIV(K_XLV, FMUL(FMUL(K_RV, t_cup[1]), t_cup[1]))),
-        qes_cup[1]);
+    if (start == 1) {
+        qes_cup[1] = qes[1];
+        q_cup[1] = q[1];
+        hes_cup[1] = FADD(FADD(FMUL(K_LIT_G, z1), FMUL(K_LIT_CP, t[1])),
+                          FMUL(K_LIT_XLV, qes[1]));
+        he_cup[1] = FADD(FADD(FMUL(K_LIT_G, z1), FMUL(K_LIT_CP, t[1])),
+                         FMUL(K_LIT_XLV, q[1]));
+        z_cup[1] = z1;
+        p_cup[1] = psur;
+        t_cup[1] = t[1];
+        gamma_cup[1] = FMUL(
+            FMUL(K_XLV_OVER_CP,
+                 FDIV(K_XLV, FMUL(FMUL(K_RV, t_cup[1]), t_cup[1]))),
+                qes_cup[1]);
+    }
 }
 
 // module_cu_gf_deep.F:3670-3693.  A 3-point mean below k22.
@@ -1768,8 +1772,24 @@ __device__ void gfd_deep_column(
     GfCol qeso = GFWS_AT(gfws, 14);
     GfCol heo = GFWS_AT(gfws, 15);
     GfCol heso = GFWS_AT(gfws, 16);
-    gfd_cup_env(z, t, q, po, qes, he, hes, nz);
-    gfd_cup_env(zo, tn, qo, po, qeso, heo, heso, nz);
+    int env_nz = nz;
+    if (!LEVB.p && !SCAB.p && !ISCB.p) {
+        // kbmax below, from the zo_cup values cup_env_clev will form.
+        for (int k = 1; k <= ktf; k++) {
+            float height = (k == 1) ? z1
+                : FMUL(K_HALF, FADD(zo[k - 1], zo[k]));
+            if (height > FADD(zkbmax, z1)) {
+                // The trigger reads through kbmax + 3; rejected columns
+                // need no upper environment.  A column with no level above
+                // zkbmax keeps the full environment, because the kbmax
+                // search below then reads zo_cup through ktf.
+                env_nz = IMIN(nz, k + 3);
+                break;
+            }
+        }
+    }
+    gfd_cup_env(z, t, q, po, qes, he, hes, env_nz);
+    gfd_cup_env(zo, tn, qo, po, qeso, heo, heso, env_nz);
     GfCol qes_cup = GFWS_AT(gfws, 17);
     GfCol q_cup = GFWS_AT(gfws, 18);
     GfCol he_cup = GFWS_AT(gfws, 19);
@@ -1778,7 +1798,7 @@ __device__ void gfd_deep_column(
     GfCol p_cup = GFWS_AT(gfws, 22);
     GfCol gamma_cup = GFWS_AT(gfws, 23);
     GfCol t_cup = GFWS_AT(gfws, 24);
-    gfd_cup_env_clev(t, qes, q, he, hes, z, po, psur, z1, nz, qes_cup, q_cup,
+    gfd_cup_env_clev(t, qes, q, he, hes, z, po, psur, z1, env_nz, qes_cup, q_cup,
                      he_cup, hes_cup, z_cup, p_cup, gamma_cup, t_cup);
     GfCol qeso_cup = GFWS_AT(gfws, 25);
     GfCol qo_cup = GFWS_AT(gfws, 26);
@@ -1788,7 +1808,7 @@ __device__ void gfd_deep_column(
     GfCol po_cup = GFWS_AT(gfws, 30);
     GfCol gammao_cup = GFWS_AT(gfws, 31);
     GfCol tn_cup = GFWS_AT(gfws, 32);
-    gfd_cup_env_clev(tn, qeso, qo, heo, heso, zo, po, psur, z1, nz, qeso_cup,
+    gfd_cup_env_clev(tn, qeso, qo, heo, heso, zo, po, psur, z1, env_nz, qeso_cup,
                      qo_cup, heo_cup, heso_cup, zo_cup, po_cup, gammao_cup,
                      tn_cup);
     CAPL(LEV_qes, qes); CAPL(LEV_he, he); CAPL(LEV_hes, hes);
@@ -1849,6 +1869,32 @@ __device__ void gfd_deep_column(
     ISCB[ISCA_kbcon_1] = kbcon;
     ISCB[ISCA_k22_1] = k22;
     ISCB[ISCA_ierr_1] = ierr;
+
+    // Rejected production columns have zero outputs; later work only captures
+    // diagnostics or clears scratch that no caller reads. Keep the capture path.
+    if (ierr != 0 && !LEVB.p && !SCAB.p && !ISCB.p) {
+        for (int k = 0; k < GF_KP; k++) {
+            outt[k] = K_ZERO; outq[k] = K_ZERO; outqc[k] = K_ZERO;
+            outu[k] = K_ZERO; outv[k] = K_ZERO; cupclw[k] = K_ZERO;
+        }
+        *pre_out = K_ZERO;
+        *ktop_out = 0;
+        *kbcon_out = kbcon;
+        *k22_out = k22;
+        *ierr_out = ierr;
+        return;
+    }
+
+    if (env_nz < nz) {
+        gfd_cup_env(z, t, q, po, qes, he, hes, nz, env_nz + 1);
+        gfd_cup_env(zo, tn, qo, po, qeso, heo, heso, nz, env_nz + 1);
+        gfd_cup_env_clev(t, qes, q, he, hes, z, po, psur, z1, nz,
+                         qes_cup, q_cup, he_cup, hes_cup, z_cup, p_cup,
+                         gamma_cup, t_cup, env_nz + 1);
+        gfd_cup_env_clev(tn, qeso, qo, heo, heso, zo, po, psur, z1, nz,
+                         qeso_cup, qo_cup, heo_cup, heso_cup, zo_cup, po_cup,
+                         gammao_cup, tn_cup, env_nz + 1);
+    }
 
     // ---- :657-659 ---------------------------------------------------------
     int kstabi = gfd_cup_minimi(heso_cup, kbcon, kstabm, ierr);
@@ -3787,7 +3833,15 @@ enum {
     GF_DRV_NISCA
 };
 
-extern "C" __global__ void gf_gfdrv_stage(
+// The host oracle includes this source without CUDA attributes.
+#if defined(__CUDACC__) || defined(__CUDACC_RTC__)
+#define GF_DRV_LAUNCH_BOUNDS __launch_bounds__(64, 8)
+#else
+#define GF_DRV_LAUNCH_BOUNDS
+#endif
+
+// The bound permits eight resident blocks without changing column arithmetic.
+extern "C" __global__ GF_DRV_LAUNCH_BOUNDS void gf_gfdrv_stage(
     const float *__restrict__ lvin,   // (n, GF_DRV_NIN_LEV, nz)
     const float *__restrict__ scin,   // (n, GF_DRV_NIN_SCA)
     const int *__restrict__ iin,      // (n, 3)

@@ -454,7 +454,7 @@ class NestCoupler:
         self._geometry_bound = True
 
     def _coupled_parent_field(self, kind: str):
-        """Overwrite and return F16's one full-parent arena prefix.
+        """Couple every readable footprint cell in F16's full-parent arena.
 
         ``couple_nest_field`` reads exactly two things that MOVE: the field
         itself and ``mup`` (the coupling mass, read at neighbouring points
@@ -488,10 +488,9 @@ class NestCoupler:
             # touches is geography the transport never scatters.  So the
             # pull is two windows, not two fields -- O(child footprint) per
             # kind per parent step where it was O(parent).  The coupled
-            # values OUTSIDE the window are computed from whatever the
-            # state held (attach-time air); they are never read, because
-            # the donor maps cannot reach past the stencil the halo
-            # bounds.  ``tilestream/test_nest_executor.py`` holds the
+            # values OUTSIDE the window are left untouched. The donor maps
+            # cannot reach past the stencil the halo bounds.
+            # ``tilestream/test_nest_executor.py`` holds the
             # bitwise proof and the halo-starved negative control.
             self.force_sync_bytes += _sync_in(
                 parent_state, ("mup", _state_attr(kind)),
@@ -507,7 +506,9 @@ class NestCoupler:
                 self.microphysics_transition, parent_state, kind,
                 out=out, coupled=True)
         else:
-            couple_nest_field(parent_state, kind, out=out)
+            couple_nest_field(
+                parent_state, kind, out=out,
+                window=parent_footprint_window(self.child_node.cfg))
         return out
 
     def transition_receipt(self):
@@ -595,14 +596,14 @@ class NestCoupler:
         ``bdy_interp1``.  This also supports valid skinny grids where U or V
         is larger than W.
 
-        ``frame=True`` is the FORCE path on a STREAMED child, and it is the
-        child-side mirror of the parent corridor's footprint window:
+        ``frame=True`` is the FORCE reader and couples only its boundary
+        strips. On a STREAMED child it also narrows the store pull:
         ``bdy_interp1`` reads the child only inside its boundary zone, so
         the store pull is four frame strips
         (:func:`gpuwm.core.nest_stream.child_frame_windows`), not a domain
         -- O(perimeter) per kind per parent step where a streamed child is
         large by definition.  The coupled values OUTSIDE the strips are
-        computed from whatever the state held and are never read.  The
+        left untouched and are never read.  The
         FEEDBACK path deliberately does not window: the restriction reads
         the whole child interior, so its whole-field pull is the accurate
         cost of two-way feedback, not a miss.
@@ -622,7 +623,16 @@ class NestCoupler:
         if count > backing.size:
             raise RuntimeError("child field exceeds F16 arena capacity")
         out = backing.reshape(-1)[:count].reshape(shape)
-        couple_nest_field(state, kind, out=out)
+        if frame:
+            from gpuwm.core.nest_interp import bdy_width
+
+            run = self.child_node.cfg.run
+            couple_nest_field(
+                state, kind, out=out,
+                frame_width=bdy_width(
+                    run.spec_zone, run.relax_zone, run.spec_bdy_width))
+        else:
+            couple_nest_field(state, kind, out=out)
         return out
 
     def _raw_child_field(self, kind: str):

@@ -107,6 +107,7 @@ _RRTMG_LEGACY_MODULES = (
     "gpuwm.core.rrtmg_lw",
     "gpuwm.core.rrtmg_sw",
     "gpuwm.core.rrtmg_legacy_prep",
+    "gpuwm.core.rrtmg_legacy_device",
     "gpuwm.core.rrtmg_legacy",
 )
 
@@ -126,12 +127,16 @@ _RRTMG_LEGACY_ASSETS = (
     "data/wrf_radiation/rrtmg_lw_statics.npz",
     "core/kernels/rrtmg_lw.cu",
     "core/kernels/rrtmg_lw_chain.cu",
+    "core/kernels/rrtmg_lw_chain_coalesced.cu",
+    "core/kernels/rrtmg_lw_zbatched.cu",
     "core/kernels/rrtmg_lw_taugb02_10_11_12.cu",
     "core/kernels/rrtmg_lw_taugb03_05.cu",
     "core/kernels/rrtmg_lw_taugb06_09.cu",
     "core/kernels/rrtmg_lw_taugb13_16.cu",
     "core/kernels/rrtmg_mcica_wrf.cu",
     "core/kernels/rrtmg_sw.cu",
+    "core/kernels/rrtmg_legacy_adapter.cu",
+    "core/kernels/rrtmg_legacy_prep.cu",
 )
 
 
@@ -2314,7 +2319,8 @@ def validate_single_domain_physics_profile(
     blocker rather than being hidden behind a profile-name mismatch.
     """
 
-    from gpuwm.physics_registry import physics_registry, registry_sha256
+    from gpuwm.physics_registry import (
+        physics_registry, registry_physics_receipt, registry_sha256)
 
     registry = physics_registry()
     template = registry["templates"].get(profile)
@@ -2395,6 +2401,8 @@ def validate_single_domain_physics_profile(
         "schema": "gpuwm-front-door-physics-selection-v1",
         "profile": profile,
         "registry_sha256": registry_sha256(registry),
+        "registry_physics": registry_physics_receipt(
+            registry, options=resolved_components, profile=profile),
         "components": resolved_components,
         "selectors": selectors,
         "resolved": expected,
@@ -2674,7 +2682,11 @@ def single_domain_physics_selection(
 # and the template-route-evidence WARNING at plan review.  A future
 # per-source land-surface refusal must key on a runtime REQUIREMENT -- a
 # field the scheme reads that this source does not carry, named in the
-# message -- and never on template membership.
+# message -- and never on template membership.  The one that exists does:
+# gpuwm.physics_menu.source_soil_blocker asks the source's declared soil
+# geometry the question RUC's soil ingest asks at preparation, so a RUC
+# suite on a source that publishes one soil layer is refused before the
+# download, in that ingest's own words.
 #
 # The registry is the one authority on which land surfaces a route
 # offers: ``runner_routes.<route>.allowed_component_options.land_surface``,
@@ -2755,7 +2767,8 @@ def multi_domain_physics_selection(
     product tells a user to write.
     """
 
-    from gpuwm.physics_registry import physics_registry, registry_sha256
+    from gpuwm.physics_registry import (
+        physics_registry, registry_physics_receipt, registry_sha256)
 
     registry = physics_registry()
     selector_keys = tuple(
@@ -2828,14 +2841,207 @@ def multi_domain_physics_selection(
             acknowledgement_provenance=acknowledgement_provenance)
     used, provenance = _acknowledgement_receipt(
         acknowledged, acknowledged, acknowledgement_provenance)
+    selected_options: dict[str, list[str]] = {}
+    for domain in domains.values():
+        for component_id, option_id in (domain["components"] or {}).items():
+            if option_id not in selected_options.setdefault(
+                    component_id, []):
+                selected_options[component_id].append(option_id)
     return {
         "schema": MULTI_DOMAIN_SELECTION_SCHEMA,
         "profile": profile,
         "registry_sha256": registry_sha256(registry),
+        "registry_physics": registry_physics_receipt(
+            registry, options=selected_options, profile=profile),
         "domains": domains,
         "acknowledgements": used,
         "acknowledgement_provenance": provenance,
     }
+
+
+#: Selection-receipt fields a preparation's receipt is NOT compared on
+#: when this build checks it (A153), each with why it cannot describe a
+#: physics difference.  Every other field is compared as written.
+SELECTION_RECEIPT_RECORD_ONLY_FIELDS: Mapping[str, str] = MappingProxyType({
+    "registry_sha256": (
+        "the registry DOCUMENT digest, which moves with any citation, "
+        "warning or label; the physics it bound is registry_physics"),
+    "registry_physics": (
+        "compared part by part instead, a receipt written before it existed "
+        "resolving through gpuwm/physics_registry_history.json"),
+    "maturity": (
+        "the named profile's conformance evidence label; a promotion changes "
+        "what is claimed about a run, not what runs"),
+})
+
+
+def _receipt_value_text(value: object) -> str:
+    if value is _MISSING:
+        return "absent"
+    text = repr(value)
+    # A string is a sentence (a registry blocker names the rule that no
+    # longer admits the configuration after its registry pointer), so it
+    # is shown whole up to a bound; a structure is shown in outline.
+    limit = 400 if isinstance(value, str) else 60
+    return text if len(text) <= limit else text[:limit - 3] + "..."
+
+
+#: Selection-receipt maps keyed by a SETTING (each value is the setting's
+#: value) and by a COMPONENT (each value is its option id), by field name,
+#: at the top level of a named receipt and under each domain of a
+#: per-domain one.  A key a preparation's receipt lacks is compared with
+#: the setting's or component's off value (A153).
+SELECTION_RECEIPT_SETTING_MAPS = frozenset({"selectors", "resolved"})
+SELECTION_RECEIPT_COMPONENT_MAPS = frozenset({"components"})
+
+
+def physics_selection_differences(
+        recorded: object, expected: Mapping[str, object], *,
+        settings: Mapping[str, object] | object | None = None,
+) -> list[str]:
+    """What differs between a recorded selection receipt and this build's.
+
+    ``expected`` is the receipt this build computes for the same config;
+    ``recorded`` is the one a preparation wrote, possibly under an earlier
+    build; ``settings`` is the configuration ``expected`` was computed
+    from.  Returns one named difference per differing field or registry
+    physics part; empty means the prepared physics selection is this
+    build's.  The fields in :data:`SELECTION_RECEIPT_RECORD_ONLY_FIELDS`
+    are not compared as written; the registry physics is compared part by
+    part, so a citation, warning, label or maturity edit resolves and a
+    changed option, parameter, table or kernel identity is named.
+
+    Physics this build ADDED since the preparation counts as equal where
+    the configuration resolves it to its off value, from the registry and
+    ``RunConfig`` defaults (:func:`gpuwm.physics_registry.setting_off_value`
+    and :func:`gpuwm.physics_registry.component_off_option`): a receipt
+    field the preparation lacks in a setting or component map
+    (:data:`SELECTION_RECEIPT_SETTING_MAPS`,
+    :data:`SELECTION_RECEIPT_COMPONENT_MAPS`), a component or option part
+    its registry lacked where the selection resolves the component to its
+    off option, and a knob part its registry lacked (or did not implement)
+    where ``settings`` holds the knob at its off value or omits it, or does
+    not read the knob at all because a setting its declaration's
+    ``read_when`` names does not hold
+    (:func:`gpuwm.physics_registry.registry_knob_is_read`: a tile count
+    with the tiles off).  None of that ran in the preparation and none of
+    it runs here.  Any other value of an added setting, component or knob
+    is named; without ``settings`` a knob's value is unknown, so an added
+    knob is named.
+    """
+
+    from gpuwm.physics_registry import (
+        NO_OFF_VALUE, REGISTRY_PHYSICS_IDENTITY_SCHEMA, component_off_option,
+        physics_registry, recorded_registry_physics_parts,
+        registry_knob_is_read, same_setting_value, setting_off_value)
+
+    if not isinstance(recorded, Mapping):
+        return ["the recorded physics receipt is missing"]
+    registry = physics_registry()
+    differences: list[str] = []
+
+    def added_at_off_value(container: object, key: object,
+                           current: object) -> bool:
+        if not isinstance(key, str):
+            return False
+        if container in SELECTION_RECEIPT_SETTING_MAPS:
+            return same_setting_value(
+                current, setting_off_value(key, registry))
+        if container in SELECTION_RECEIPT_COMPONENT_MAPS:
+            off = component_off_option(key, registry)
+            return off is not None and current == off
+        return False
+
+    def walk(prepared: object, current: object, path: str,
+             key: object = None, container: object = None) -> None:
+        if isinstance(prepared, Mapping) and isinstance(current, Mapping):
+            for child in sorted(set(prepared) | set(current), key=str):
+                if not path and child in SELECTION_RECEIPT_RECORD_ONLY_FIELDS:
+                    continue
+                walk(prepared.get(child, _MISSING),
+                     current.get(child, _MISSING),
+                     f"{path}.{child}" if path else str(child), child, key)
+            return
+        if prepared is _MISSING and added_at_off_value(
+                container, key, current):
+            return
+        if prepared != current:
+            differences.append(
+                f"{path} (prepared {_receipt_value_text(prepared)}, this "
+                f"build {_receipt_value_text(current)})")
+
+    walk(recorded, expected, "")
+    physics = expected.get("registry_physics")
+    expected_parts = (physics.get("parts") if isinstance(physics, Mapping)
+                      else None)
+    if not isinstance(expected_parts, Mapping):
+        differences.append("this build's receipt carries no registry physics")
+        return differences
+    recorded_parts = recorded_registry_physics_parts(recorded)
+    if recorded_parts is None:
+        differences.append(
+            "registry physics: the preparation names registry document "
+            f"{str(recorded.get('registry_sha256'))[:12]}, which is not in "
+            "this build's registry history, so its physics cannot be "
+            "established; prepare again")
+        return differences
+
+    selected_options: dict[str, set[str]] = {}
+    for name in expected_parts:
+        kind, _, rest = str(name).partition(".")
+        component, separator, option = rest.partition(".options.")
+        if kind == "components" and separator:
+            selected_options.setdefault(component, set()).add(option)
+
+    def knob_at_off_value(knob: str) -> bool:
+        if settings is None:
+            return False
+        # A knob this configuration does not read runs nothing, whatever
+        # value it holds (mosaic_cat with sf_surface_mosaic = 0).
+        if not registry_knob_is_read(knob, settings, registry):
+            return True
+        off = setting_off_value(knob, registry)
+        if off is NO_OFF_VALUE:
+            return False
+        value = _selection_value_or_absent(settings, knob)
+        # A configuration that omits the knob runs its off value.
+        return value is _ABSENT or same_setting_value(value, off)
+
+    def part_added_at_off_value(name: str) -> bool:
+        kind, _, rest = name.partition(".")
+        if kind == "components":
+            component, separator, option = rest.partition(".options.")
+            off = component_off_option(component, registry)
+            if off is None:
+                return False
+            if separator:
+                return option == off
+            return selected_options.get(component) == {off}
+        if kind == "parameters" and rest:
+            return knob_at_off_value(rest)
+        return False
+
+    # A receipt written before registry_physics existed (or in another
+    # identity schema) resolves to every part its document had; the
+    # selection's own scope is then this build's.  A receipt's own parts
+    # are compared both ways.
+    names = set(expected_parts)
+    own = recorded.get("registry_physics")
+    if (isinstance(own, Mapping)
+            and own.get("schema") == REGISTRY_PHYSICS_IDENTITY_SCHEMA):
+        names |= set(recorded_parts)
+    for name in sorted(names):
+        if recorded_parts.get(name) == expected_parts.get(name):
+            continue
+        if (name not in recorded_parts and name in expected_parts
+                and part_added_at_off_value(name)):
+            continue
+        where = ("absent from the prepared registry"
+                 if name not in recorded_parts else
+                 "absent from this build's registry"
+                 if name not in expected_parts else "changed")
+        differences.append(f"registry physics of {name} ({where})")
+    return differences
 
 
 def _tree_tuple_registry_governance(

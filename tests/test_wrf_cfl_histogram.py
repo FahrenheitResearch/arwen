@@ -50,6 +50,7 @@ def _run(ww_host: np.ndarray) -> np.ndarray:
          g(np.zeros((nz, ny, nx + 1))), g(np.zeros((nz, ny + 1, nx))),
          g(np.ones((ny, nx + 1))), g(np.ones((ny + 1, nx))),
          out, DT(1.0), DT(1.0), DT(1.0),
+         DT(1.0),                  # w_damp_on: w_beta, the default onset
          np.int32(nz), np.int32(ny), np.int32(nx)))
     return cp.asnumpy(out)
 

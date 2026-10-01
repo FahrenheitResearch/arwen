@@ -2955,6 +2955,8 @@ class CudaSW:
                       module=self.module)
         self.tab_gpu = cp.asarray(packed)
         self.ngb_gpu = cp.asarray(np.asarray(tab.ngb, dtype=np.int32))
+        self._laysolfr_spec_gpu = cp.asarray(
+            np.asarray(self._laysolfr_band_spec(), dtype=np.int32))
         self.max_nlay = None  # retained API attribute: workspace has no fixed layer ceiling
         #: Per-chunk device workspace of the batched chain (Section 11):
         #: every slot is allocated once and reused across the chunks of a
@@ -3073,7 +3075,7 @@ class CudaSW:
         host scans :func:`_laysolfr_lower` / :func:`_laysolfr_upper`.
 
         Both scans are pure INTEGER comparisons over jp with no floating
-        point anywhere, so the vectorised form is bit-exact by
+        point anywhere, so the CUDA scan is bit-exact by
         construction rather than by tolerance.  Reproduced exactly:
 
         lower  laysolfr = laytrop; for lay = 1..laytrop, if
@@ -3092,43 +3094,12 @@ class CudaSW:
         never observable.
         """
         cp = self.cp
-        layreffr_h, is_upper_h, has_lr_h = self._laysolfr_band_spec()
-        nlayers = int(nlayers)
-
-        lay = cp.arange(1, nlayers + 1, dtype=cp.int32)      # (nlayers,)
-        jp_a = jp_d                                          # jp[lay-1]
-        jp_b = jp_d[:, cp.minimum(lay, nlayers - 1)]         # jp[lay]
-        jp_c = jp_d[:, (lay - 2) % nlayers]                  # jp[lay-2]
-
-        lr = cp.asarray(layreffr_h)[None, :, None]           # (1,nb,1)
-        upper = cp.asarray(is_upper_h)[None, :, None]
-        has_lr = cp.asarray(has_lr_h)[None, :]               # (1,nb)
-        trop = laytrop_d[:, None, None]                      # (nc,1,1)
-        layb = lay[None, None, :]                            # (1,1,nl)
-
-        a = jp_a[:, None, :]
-        b = jp_b[:, None, :]
-        c = jp_c[:, None, :]
-        cond = cp.where(
-            upper,
-            (layb >= trop + 1) & (c < lr) & (a >= lr),
-            (layb <= trop) & (a < lr) & (b >= lr),
-        )                                                    # (nc,nb,nl)
-
-        found = cond.any(axis=2)
-        # index of the LAST satisfying layer along the layer axis
-        last = (nlayers - 1) - cp.ascontiguousarray(
-            cond[:, :, ::-1]).argmax(axis=2).astype(cp.int32)
-        lay_last = (last + 1).astype(cp.int32)               # (nc,nb)
-
-        trop2 = laytrop_d[:, None]
-        lower_result = cp.where(
-            found, cp.minimum(lay_last + 1, trop2), trop2)
-        upper_result = cp.where(found, lay_last, cp.int32(nlayers))
-        result = cp.where(
-            cp.asarray(is_upper_h)[None, :], upper_result, lower_result)
-        # band 26 carries no layreffr: laysolfr = laytrop
-        return cp.where(has_lr, result, trop2).astype(cp.int32)
+        nc = int(jp_d.shape[0])
+        result = cp.empty((nc, NBNDSW), dtype=cp.int32)
+        self._k("rsw_laysolfr_b")(((nc * NBNDSW + 127) // 128,), (128,),
+            (np.int32(nc), np.int32(nlayers), jp_d, laytrop_d,
+             self._laysolfr_spec_gpu, result))
+        return result
 
     def taumol(self, nlayers, sc):
         cp = self.cp
@@ -3384,7 +3355,8 @@ class CudaSW:
                                 cldfmcl, taucmcl, ssacmcl, asmcmcl,
                                 fsfcmcl, ciwpmcl, clwpmcl, cswpmcl,
                                 reicmcl, relqmcl, resnmcl, aer_opt=0,
-                                column_chunk=None, _stage_probe=None):
+                                column_chunk=None, _stage_probe=None,
+                                mcica_layout="gpoint"):
         """Batched full SW chain, device-resident: the ``_b`` re-indexing
         twins of Section 10's kernels, same compile path, same per-thread
         statement order -- the only changes are grid sizes (ncol > 1) and
@@ -3400,7 +3372,10 @@ class CudaSW:
         discarded (2026-07-27 SW transcription audit, item 1).
 
         Layout (see the Section 11 header below): per-column arrays carry
-        a leading ncol axis; McICA arrays are (NGPTSW, ncol, nlay);
+        a leading ncol axis; McICA arrays default to (NGPTSW, ncol, nlay).
+        ``mcica_layout="column"`` accepts (ncol, nlay, NGPTSW) and may
+        read and write caller slabs through views, matching intent(inout).
+        Callers must not reuse these slabs after this call.  The arrays
         tsfc/coszen/adjes/scon and the albedo splits asdir/asdif/aldir/
         aldif are (ncol,); icld/inflgsw/iceflgsw/liqflgsw/dyofyr are
         python ints SHARED by the batch (callers with mixed flags split
@@ -3412,13 +3387,15 @@ class CudaSW:
         Returns a dict of device (cupy) arrays; fetch host copies (and
         the three derived ``*dif`` outputs) via :func:`sw_batched_to_host`.
         ``column_chunk`` bounds the transient VRAM of the internal
-        pipeline (:func:`sw_batched_vram_bytes` prices it).  Mid-chunk
-        host syncs: the 4-byte cldprmc error flag, and the jp/laytrop
-        download that feeds the same host-side integer laysolfr scans the
+        pipeline (:func:`sw_batched_vram_bytes` prices it). The abort flag
+        is read once after all chunks. The device
+        laysolfr scan matches the same host-side integer scans the
         per-column driver runs (data movement, no FP).  ``_stage_probe``
         is test instrumentation called at the allocation high-water
         stages; it must not affect results.
         """
+        if mcica_layout not in ("gpoint", "column"):
+            raise ValueError("mcica_layout must be gpoint or column")
         cp = self.cp
         if aer_opt != 0:
             # Same fail-closed contract as the per-column CUDA entry: the
@@ -3499,6 +3476,8 @@ class CudaSW:
         # zeroed per chunk; constant kernel inputs are ``scratch.constant``
         # and are filled once.  SW_SCRATCH_SLOTS lists every slot with
         # the kernel fact that puts it in its class.
+        # Shared atomic abort word is cleared once for the entire call.
+        err_d = scratch.zeros("err", (1,), i32)
         for c0 in range(0, ncol, chunk):
             c1 = min(c0 + chunk, ncol)
             nc = c1 - c0
@@ -3526,19 +3505,19 @@ class CudaSW:
             del plev_d, vmr_d
 
             # ---- McICA uploads + cldprmc ----------------------------
-            cldfmc_d = _sw_dev_mcica(cp, cldfmcl, c0, c1, nlayers)
-            taucmc_d = _sw_dev_mcica(cp, taucmcl, c0, c1, nlayers)
-            ssacmc_d = _sw_dev_mcica(cp, ssacmcl, c0, c1, nlayers)
-            asmcmc_d = _sw_dev_mcica(cp, asmcmcl, c0, c1, nlayers)
-            fsfcmc_d = _sw_dev_mcica(cp, fsfcmcl, c0, c1, nlayers)
-            ciwpmc_d = _sw_dev_mcica(cp, ciwpmcl, c0, c1, nlayers)
-            clwpmc_d = _sw_dev_mcica(cp, clwpmcl, c0, c1, nlayers)
+            cldfmc_d = _sw_dev_mcica(cp, cldfmcl, c0, c1, nlayers, mcica_layout)
+            taucmc_d = _sw_dev_mcica(cp, taucmcl, c0, c1, nlayers, mcica_layout)
+            ssacmc_d = _sw_dev_mcica(cp, ssacmcl, c0, c1, nlayers, mcica_layout)
+            asmcmc_d = _sw_dev_mcica(cp, asmcmcl, c0, c1, nlayers, mcica_layout)
+            fsfcmc_d = _sw_dev_mcica(cp, fsfcmcl, c0, c1, nlayers, mcica_layout)
+            ciwpmc_d = _sw_dev_mcica(cp, ciwpmcl, c0, c1, nlayers, mcica_layout)
+            clwpmc_d = _sw_dev_mcica(cp, clwpmcl, c0, c1, nlayers, mcica_layout)
             reicmc_d = _sw_dev_chunk(cp, reicmcl, rows,
                                      (slice(0, nlayers),))
             relqmc_d = _sw_dev_chunk(cp, relqmcl, rows,
                                      (slice(0, nlayers),))
             if iceflg == 5:
-                cswpmc_d = _sw_dev_mcica(cp, cswpmcl, c0, c1, nlayers)
+                cswpmc_d = _sw_dev_mcica(cp, cswpmcl, c0, c1, nlayers, mcica_layout)
                 resnmc_d = _sw_dev_chunk(cp, resnmcl, rows,
                                          (slice(0, nlayers),))
             else:
@@ -3551,8 +3530,7 @@ class CudaSW:
                     "resnmc0", (nc, nlayers), f32, 0.0)
             taormc_d = taucmc_d.copy()
             # The abort flag is written by the kernel only on failure
-            # and read back unconditionally: it must enter at zero.
-            err_d = scratch.zeros("err", (1,), i32)
+            # and checked once after all chunks.
             total = nc * nlayers * NGPTSW
             self._k("rsw_cldprmc_b")(
                 ((total + 127) // 128,), (128,),
@@ -3564,12 +3542,8 @@ class CudaSW:
                  err_d))
             if _stage_probe is not None:
                 _stage_probe("upload")
-            err = int(cp.asnumpy(err_d)[0])
-            if err:
-                raise ValueError(f"rsw_cldprmc device abort, code {err} "
-                                 "(mirrors the Fortran STOPs)")
             del (ciwpmc_d, clwpmc_d, cswpmc_d, fsfcmc_d, reicmc_d,
-                 relqmc_d, resnmc_d, err_d)
+                 relqmc_d, resnmc_d)
 
             # ---- setcoef (every output written per (column, layer)) --
             ints_d = {k: scratch.take(k, (nc, nlayers), i32)
@@ -3602,8 +3576,8 @@ class CudaSW:
 
             # ---- taumol + sfluxzen (one write per thread, every
             # (column, g-point, layer) and (column, g-point) covered) ---
-            taug_d = scratch.take("taug", (nc, NGPTSW, nlayers), f32)
-            taur_d = scratch.take("taur", (nc, NGPTSW, nlayers), f32)
+            taug_d = scratch.take("taug", (nc, nlayers, NGPTSW), f32)
+            taur_d = scratch.take("taur", (nc, nlayers, NGPTSW), f32)
             total = nc * nlayers * NGPTSW
             self._k("rsw_taumol_b")(
                 ((total + 127) // 128,), (128,),
@@ -3631,20 +3605,10 @@ class CudaSW:
                 _stage_probe("coef")
             del ints_d, reals_d, laytrop_d, laysolfr_d
 
-            # ---- transposition to the spcvmc (nl, 112)/(nl, 14) frames
-            # (elementwise device copies: data movement only, and the 2-D
-            # cuBLAS path cp.asfortranarray(x.T) would take is avoided
-            # exactly as in the per-column driver) ---------------------
-            def t201(slot, src):
-                dst = scratch.take(slot, (nc, NGPTSW, nlayers), f32)
-                dst[...] = src.transpose(0, 2, 1)
-                return dst
-
-            zcldfmc_d = t201("zcldfmc", cldfmc_d); del cldfmc_d
-            ztaucmc_d = t201("ztaucmc", taucmc_d); del taucmc_d
-            ztaormc_d = t201("ztaormc", taormc_d); del taormc_d
-            zasycmc_d = t201("zasycmc", asmcmc_d); del asmcmc_d
-            zomgcmc_d = t201("zomgcmc", ssacmc_d); del ssacmc_d
+            # Cloud optics already has the coalesced (column, layer, g-point) layout.
+            zcldfmc_d, ztaucmc_d, ztaormc_d = cldfmc_d, taucmc_d, taormc_d
+            zasycmc_d, zomgcmc_d = asmcmc_d, ssacmc_d
+            del cldfmc_d, taucmc_d, taormc_d, asmcmc_d, ssacmc_d
             # Zero-aerosol optics (aer_opt = 0 is the validated
             # precondition): const inputs of rsw_spcvmc_gpt_b, filled once.
             ztaua_d = scratch.constant(
@@ -3660,11 +3624,14 @@ class CudaSW:
             cossza_d = cp.asarray(cossza_h[rows])
 
             # ---- spcvmc ---------------------------------------------
-            # wk/wkc: each thread carves its own RSW_SPCVMC_WK x n1 /
-            # RSW_SPCVMC_WKC x n1 slice and writes every entry it later
-            # reads (kernels/rrtmg_sw.cu rsw_spcvmc_body, rsw_reftra,
-            # rsw_vrtqdr), so the workspace enters each chunk as it left
-            # the last.  The six outputs and zincflx are written for
+            # wk: each thread owns RSW_SPCVMC_WK x n1 entries, plus
+            # a zero-byte wkc ABI placeholder, interleaved across the nthr
+            # threads of the launch (entry j of array a for thread t at
+            # (a * n1 + j) * nthr + t, kernels/rrtmg_sw.cu RswStrided, so
+            # a warp's accesses coalesce; the constants price its geometry),
+            # and writes every entry it later reads (rsw_spcvmc_body,
+            # fused layer pass, rsw_vrtqdr), so workspace enters each chunk
+            # as it left the last.  The six outputs and zincflx are written for
             # every (column, g-point[, level]) before rsw_spc_accum_b
             # reads them.
             nthr = nc * NGPTSW
@@ -3672,7 +3639,7 @@ class CudaSW:
             wkc_d = scratch.take("wkc", (nthr, SPCVMC_WKC_ARRAYS * nl1),
                                  np.uint8)
             zincflx_d = scratch.take("zincflx", (nc, NGPTSW), f32)
-            zouts = [scratch.take(slot, (nc, NGPTSW, nl1), f32)
+            zouts = [scratch.take(slot, (nc, nl1, NGPTSW), f32)
                      for slot in SPCVMC_OUT_SLOTS]
             zcd_d, zcu_d, zfd_d, zfu_d, ztn_d, ztcn_d = zouts
             self._k("rsw_spcvmc_gpt_b")(
@@ -3697,14 +3664,15 @@ class CudaSW:
                    for k in SPC_ACCUM_SLOTS}
             total = nc * nl1
             self._k("rsw_spc_accum_b")(
-                ((total + 63) // 64,), (64,),
+                (nc, (nl1 + 31) // 32), (32,),
                 (i32(nc), i32(nlayers), self.ngb_gpu, zincflx_d,
                  zcd_d, zcu_d, zfd_d, zfu_d, ztn_d, ztcn_d,
                  acc["pbbfd"], acc["pbbfu"], acc["pbbcd"], acc["pbbcu"],
                  acc["pbbfddir"], acc["pbbcddir"],
                  acc["puvfd"], acc["puvcd"], acc["puvfddir"],
                  acc["puvcddir"], acc["pnifd"], acc["pnicd"],
-                 acc["pnifddir"], acc["pnicddir"]))
+                 acc["pnifddir"], acc["pnicddir"]),
+                shared_mem=6 * 8 * 32 * 4)
             del zincflx_d, zcd_d, zcu_d, zfd_d, zfu_d, ztn_d, ztcn_d
 
             swhr_d = scratch.take("swhr", (nc, nlayers), f32)
@@ -3735,6 +3703,10 @@ class CudaSW:
             del acc, pdp_d, swhr_d, swhrc_d
 
         self.cp.cuda.runtime.deviceSynchronize()
+        err = int(cp.asnumpy(err_d)[0])
+        if err:
+            raise ValueError(f"rsw_cldprmc device abort, code {err} "
+                             "(mirrors the Fortran STOPs)")
         O["swhr"] = swhr
         O["swhrc"] = swhrc
         # The clean-sky-no-aerosol pair IS zero by the aer_opt = 0
@@ -3870,8 +3842,8 @@ def __getattr__(name):
 #: SPCVMC_WK_ARRAYS float32 arrays and SPCVMC_WKC_ARRAYS uint8 arrays of
 #: (nlayers + 1) entries.  KEEP IN STEP with RSW_SPCVMC_WK /
 #: RSW_SPCVMC_WKC in kernels/rrtmg_sw.cu.
-SPCVMC_WK_ARRAYS = 35
-SPCVMC_WKC_ARRAYS = 2
+SPCVMC_WK_ARRAYS = 16
+SPCVMC_WKC_ARRAYS = 0
 
 #: Slot names of the batched chain's per-chunk workspace, by class.
 SETCOEF_INT_SLOTS = ("jp", "jt", "jt1", "indself", "indfor", "tflag",
@@ -3888,9 +3860,10 @@ SPC_ACCUM_SLOTS = ("pbbfd", "pbbfu", "pbbcd", "pbbcu", "pbbfddir",
 #: The slots the kernels READ BEFORE WRITING, zeroed per chunk
 #: (``SWBatchScratch.zeros``): wkl because rsw_inatm_layers_b scales all
 #: RSW_NMOL species after writing only six of them (species 4 is read
-#: unwritten); err because rsw_cldprmc_b writes it only on abort and the
-#: host reads it unconditionally.
-SW_CHUNK_ZEROED_SLOTS = ("wkl", "err")
+#: unwritten). The call-zeroed err slot is written only on abort by
+#: rsw_cldprmc_b and read once by the host after all chunks.
+SW_CHUNK_ZEROED_SLOTS = ("wkl",)
+SW_CALL_ZEROED_SLOTS = ("err",)
 
 #: The slots that are constant kernel inputs, filled once when
 #: allocated (``SWBatchScratch.constant``): the zero-aerosol optics
@@ -3909,12 +3882,9 @@ SW_TAKE_SLOTS = (
     ("taug", "rsw_taumol_b, every (column, g-point, layer)"),
     ("taur", "rsw_taumol_b, every (column, g-point, layer)"),
     ("sflux", "rsw_sfluxzen_b, every (column, g-point)"),
-    *((k, "elementwise transpose copy of the McICA slab")
-      for k in ("zcldfmc", "ztaucmc", "ztaormc", "zasycmc", "zomgcmc")),
     ("wk", "rsw_spcvmc_body: every entry read is written earlier by the "
-           "same thread (rsw_reftra and rsw_vrtqdr included)"),
-    ("wkc", "rsw_spcvmc_body: lrtchkclr/lrtchkcld[0..klev-1] written in "
-            "the first layer loop, read by rsw_reftra"),
+           "same thread (fused layer pass and rsw_vrtqdr included)"),
+    ("wkc", "zero-byte ABI placeholder; layer checks live in registers"),
     ("zincflx", "rsw_spcvmc_body, every (column, g-point)"),
     *((k, "rsw_spcvmc_body, every (column, g-point, level)")
       for k in SPCVMC_OUT_SLOTS),
@@ -3929,7 +3899,8 @@ SW_TAKE_SLOTS = (
 SW_SCRATCH_SLOTS = (
     tuple((k, "take", why) for k, why in SW_TAKE_SLOTS)
     + tuple((k, "constant", "const kernel input") for k in SW_CONSTANT_SLOTS)
-    + tuple((k, "zeros", "read before write") for k in SW_CHUNK_ZEROED_SLOTS)
+    + tuple((k, "zeros", "read before write")
+            for k in SW_CHUNK_ZEROED_SLOTS + SW_CALL_ZEROED_SLOTS)
 )
 
 
@@ -4009,7 +3980,7 @@ SW_GPU_KERNEL_NAMES = (
     "rsw_spcvmc_gpt", "rsw_spc_accum", "rsw_inatm_layers", "rsw_post",
     "rsw_setcoef_b", "rsw_taumol_b", "rsw_sfluxzen_b", "rsw_cldprmc_b",
     "rsw_spcvmc_gpt_b", "rsw_spc_accum_b", "rsw_inatm_layers_b",
-    "rsw_post_b",
+    "rsw_post_b", "rsw_laysolfr_b",
 )
 
 
@@ -4035,10 +4006,12 @@ def _sw_dev_chunk(cp, a, rows, cols=None):
                                                       dtype=np.float32)))
 
 
-def _sw_dev_mcica(cp, a, c0, c1, nl):
+def _sw_dev_mcica(cp, a, c0, c1, nl, layout="gpoint"):
     """(NGPTSW, ncol, nlay) input -> (nc, nl, NGPTSW) contiguous device
     chunk whose per-column slab is exactly the (NGPTSW, nl) F-order frame
     the single-column kernels index (transpose is data movement only)."""
+    if layout == "column":
+        return _sw_dev_chunk(cp, a, slice(c0, c1), (slice(None, nl), slice(None)))
     sub = a[:, c0:c1, :nl]
     if isinstance(sub, cp.ndarray):
         if sub.dtype == cp.float32:
@@ -4071,7 +4044,6 @@ def sw_batched_scratch_bytes(ncol_chunk, nlay):
             + s_gnl + s_nl                   # cswpmc0 resnmc0 (or upload)
             + 23 * s_nl                      # 7 int + 16 real setcoef
             + 2 * s_gnl + s_g                # taug taur sflux
-            + 5 * s_gnl                      # z* transposed inputs
             + 3 * s_bnl                      # ztaua zasya zomga
             + wk + wkc
             + s_g                            # zincflx
@@ -4084,7 +4056,8 @@ def sw_batched_memset_bytes(ncol, nlay, column_chunk=None):
     """Device bytes the batched SW chain zeroes for ``ncol`` columns
     walked in chunks of ``column_chunk`` (default: all in one): the
     read-before-write slots only (SW_CHUNK_ZEROED_SLOTS: wkl per chunk
-    and the 4-byte abort flag per chunk) plus the two clean-sky output
+    and SW_CALL_ZEROED_SLOTS: the 4-byte abort flag per call) plus the two
+    clean-sky output
     slabs that are zero by contract.  Unrounded, so it equals the
     ``SWBatchScratch.zeroed_bytes`` a call adds plus the two slabs."""
     ncol = int(ncol)
@@ -4093,12 +4066,15 @@ def sw_batched_memset_bytes(ncol, nlay, column_chunk=None):
     total = 0
     for c0 in range(0, ncol, chunk):
         nc = min(chunk, ncol - c0)
-        total += nc * nl * MXMOL * 4 + 4
-    return total + 2 * ncol * (nl + 1) * 4
+        total += nc * nl * MXMOL * 4
+    return total + 4 + 2 * ncol * (nl + 1) * 4
 
 
-def sw_batched_vram_bytes(ncol_chunk, nlay, ncol_total=None):
+def sw_batched_vram_bytes(ncol_chunk, nlay, ncol_total=None, *, mcica_layout="gpoint"):
     """Peak transient device bytes of ONE chunk of the batched SW chain.
+
+    ``mcica_layout="column"`` prices resident contiguous float32 slabs;
+    their caller-owned storage is outside this transient estimate.
 
     Derived from exactly the shapes rrtmg_sw_batched_device allocates:
     the workspace slots the scratch holds for the whole call
@@ -4113,6 +4089,9 @@ def sw_batched_vram_bytes(ncol_chunk, nlay, ncol_total=None):
     constants (packed table buffer + ngb, a few MiB) are allocated at
     construction, before any batched call, and are NOT included.
     """
+    if mcica_layout not in ("gpoint", "column"):
+        raise ValueError("mcica_layout must be gpoint or column")
+    copied = mcica_layout == "gpoint"
     nc = int(ncol_chunk)
     nl = int(nlay)
     n1 = nl + 1
@@ -4131,16 +4110,15 @@ def sw_batched_vram_bytes(ncol_chunk, nlay, ncol_total=None):
                + 2 * s_nl                    # play tlay
                + 6 * s_nl                    # vmr x6
                + s_m                         # wkl (zeroed per chunk)
-               + 8 * s_gnl                   # 7 mcica + taormc
+               + (7 * copied + 1) * s_gnl    # copied mcica + taormc
                + 2 * s_nl                    # reicmc relqmc
                + _r512(4))                   # err flag
     # stage S: the kept McICA slabs + laytrop + laysolfr (play/tlay/
     # coldry/wkl freed before the band kernels launch)
-    stage_s = (5 * s_gnl                     # cldfmc taucmc ssacmc asmcmc taormc
+    stage_s = ((4 * copied + 1) * s_gnl       # copied cloud slabs + taormc
                + s_c + _r512(nc * NBNDSW * f))  # laytrop + laysolfr
-    # stage P: the per-column host uploads (transpose sources freed one
-    # by one before the launch)
-    stage_p = 3 * s_b + s_c                  # albdif albdir adjflux cossza
+    # stage P: cloud slabs stay alive through spcvmc along with scalar uploads.
+    stage_p = (4 * copied + 1) * s_gnl + 3 * s_b + s_c
     return (sw_batched_scratch_bytes(nc, nl)
             + max(stage_u, stage_s, stage_p) + out_b)
 

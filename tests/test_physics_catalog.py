@@ -729,7 +729,8 @@ def test_the_physics_steps_advisories_are_plain_sentences():
     for request_, name in (({"choices": {"cumulus": "kain-fritsch"}, "dx_km": 3}, "Kain-Fritsch"),
                            ({"choices": {"cumulus": "kain-fritsch"}, "dx_km": 6}, "Kain-Fritsch"),
                            ({"choices": {"cumulus": "grell-freitas"}, "dx_km": 3}, "Grell-Freitas"),
-                           ({"choices": {"microphysics": "nssl2-mp18"}, "dx_km": 0.5}, "YSU PBL")):
+                           # Below 1 km the picks change the sub-km default, whose boundary layer is MYNN.
+                           ({"choices": {"microphysics": "nssl2-mp18"}, "dx_km": 0.5}, "MYNN PBL")):
         verdict = pc.check({**request_, "source": "gfs"})
         assert verdict["advisories"], request_
         for row in verdict["advisories"]:

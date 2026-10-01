@@ -602,6 +602,27 @@ def plan_tiles(nx: int, ny: int, tile_nx: int, tile_ny: int,
     return specs
 
 
+def redundancy(nx: int, ny: int, tile_nx: int, tile_ny: int,
+               halo: int) -> float:
+    """Work done divided by work needed, for this tiling.
+
+    ``plan_tiles`` gives EVERY tile the same ``(tile + 2*halo)`` compute
+    window and lets only the trailing interiors shrink, so a ragged tiling
+    pays for a full window and gets a part-tile of interior out of it.  That
+    is why this counts windows rather than interiors, and why raggedness needs
+    no separate penalty term here.
+
+    It lives beside ``plan_tiles`` and not in the planner because a PINNED
+    tiling states its redundancy too, and a pinned tiling consults no
+    planner: ``gpuwm.core.streaming.tiling_shape`` reads it from here, and
+    ``tilestream.autoplan.redundancy`` is this same function (A177).
+    """
+    ntx = -(-int(nx) // int(tile_nx))
+    nty = -(-int(ny) // int(tile_ny))
+    return (ntx * (tile_nx + 2 * halo) * nty * (tile_ny + 2 * halo)
+            / float(nx * ny))
+
+
 def edge_band_unowned(n: int, tile_n: int, halo: int, band: int) -> bool:
     """Whether some tile's interior, widened by its halo, reaches within
     ``band`` cells of a domain edge that tile's compute window does not

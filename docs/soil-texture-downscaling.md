@@ -283,3 +283,38 @@ Two instruments, both in `tests/test_soil_downscale.py`:
 `test_instrument_detects_the_defect_it_is_meant_to_detect` runs both
 directions on the same fixture: the instrument must trip on the unfixed
 field and stay quiet on one that genuinely carries sub-cell structure.
+
+## Soil temperature a source analysed wrong
+
+Two rules rebuild a land column's soil temperature linear in depth from
+the skin temperature at 0 m to the deep soil temperature at 3 m, keeping
+its soil moisture (`gpuwm/ingest/soil.py`, on Noah's layers and on RUC's
+levels alike, on every route):
+
+* **real.exe's band.** Any source sample outside 170 to 400 K
+  (`unreasonable_land_soil_columns`, following
+  `dyn_em/module_initialize_real.F:3521-3596` with its deep-temperature
+  sign corrected).
+* **Under snow.** A snow-covered land column (at least 10 kg m-2 of snow
+  water, the threshold real.exe itself sets `SNOWC` at) whose top source
+  sample is more than 30 K below its skin temperature
+  (`snow_soil_below_skin_columns`, `SNOW_SOIL_SKIN_DEFICIT_K`). A snowpack
+  insulates the ground: in the cold season heat flows up out of the soil
+  through the snow, so the soil top is warmer than the snow surface and
+  falls below it only while a warming surface has not yet reached it.
+  The band lets through what HRRRv2 carried under western snowpack in
+  2017, top soils of 170 to 243 K under a skin near 268 K. This rule
+  goes beyond real.exe, and it is the default because it wins against
+  observations: on 2017-01-19 15Z over Idaho (native `--source hrrr`,
+  150 x 120 cells at 3 km, 3 h) the 2 m temperature at 13 ASOS stations
+  on snow-covered land had a mean absolute error of 3.76 K and a bias of
+  -2.51 K over hours 1 to 3 without it, and 1.65 K and -0.15 K with it.
+  A healthy HRRRv4 analysis over the same ground (2024-01-19 15Z) never
+  puts its top soil more than 10 K below the skin under snow, so the rule
+  does not touch it.
+
+The preparation prints one line per rule with the count, the range and
+where, and the proof's `soil_temperature_repair` receipt records every
+rebuilt column (`repaired_land_columns`, `bounding_box`) and each rule's
+own count and box (`outside_band`, `snow_top_soil_below_skin`). A
+preparation that rebuilt nothing carries no receipt.

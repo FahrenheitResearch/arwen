@@ -319,6 +319,11 @@ def _distinct_accepted_matching(walk: dict, selectors: dict[str, int]) -> int:
     """Count unique receipt labels explicitly satisfying every selector."""
     from tools.report_physics_composition_walk import _TAG
 
+    if not set(selectors) <= set(_TAG):
+        # The walk never varies this selector (sf_urban_physics, whose four
+        # options it does not sweep), so no receipt label names it and
+        # nothing can satisfy it explicitly.
+        return 0
     tags = {_TAG[name]: value for name, value in selectors.items()}
     return sum(all(_key_fields(key).get(tag) == value for tag, value in tags.items())
                for key in set(walk["accepted_combinations"]))

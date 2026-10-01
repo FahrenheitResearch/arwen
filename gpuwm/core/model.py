@@ -354,7 +354,13 @@ RESTART_TOLERATED_EXPERIMENT_FIELDS = (
     # tape -- so a trimmed run resumes a full run's checkpoints and back
     # again.  Same law as "tiles" above.
     "output")
-RESTART_TOLERATED_DOMAIN_FIELDS = ("history_interval_s",)
+#: The history window (history_begin_s / history_end_s) is output-only
+#: like the cadence beside it: it decides which instants reach the history
+#: tape and changes no number the model integrates, so a resume may move
+#: it -- and every fingerprint written before the fields existed keeps its
+#: value because they leave the payload unconditionally.
+RESTART_TOLERATED_DOMAIN_FIELDS = (
+    "history_interval_s", "history_begin_s", "history_end_s")
 RESTART_TOLERATED_RUN_FIELDS = (
     "run_seconds", "output_interval_s", "restart_interval_s")
 
@@ -509,6 +515,15 @@ def restart_identity_payload(exp) -> dict:
     # other's checkpoints -- and every pre-feature fingerprint stays
     # byte-identical because the key is simply absent, as it always was.
     experiment.pop("auto_mix_isotropic", None)
+    # The off-centering provenance label leaves for the same reason: the
+    # epssm that runs (raised by the measured floor or not) binds on
+    # run.epssm, and an "auto" 0.1 resumes a written 0.1's checkpoints.
+    experiment.pop("auto_epssm", None)
+    # WRF's smooth_cg_topo, absent-stays-absent: off it is how every root
+    # terrain was built before the key existed; on, it binds, because the
+    # blended root terrain is what the whole run integrates.
+    if not experiment.get("smooth_cg_topo", False):
+        experiment.pop("smooth_cg_topo", None)
     for domain in experiment.get("domains", ()):
         for name in RESTART_TOLERATED_DOMAIN_FIELDS:
             domain.pop(name, None)
@@ -592,6 +607,17 @@ def restart_identity_payload(exp) -> dict:
             run.pop("relax_timescale_s", None)
         if not run.get("relax_w"):
             run.pop("relax_w", None)
+        # The urban canopy keys, on the same convention: with
+        # sf_urban_physics = 0 (WRF's default and every experiment written
+        # before the urban models existed) all three drop out, so no
+        # pre-urban fingerprint or checkpoint moves; a selected urban model
+        # binds all three, because each decides what the urban columns
+        # integrate.  gpuwm/io/restart.py's configuration digest drops the
+        # same three on the same condition (_URBAN_DIGEST_FIELDS).
+        if not run.get("sf_urban_physics"):
+            for name in ("sf_urban_physics", "use_wudapt_lcz",
+                         "num_urban_hi"):
+                run.pop(name, None)
         # Scheme-scoped knobs leave the identity of every domain that does
         # not select their scheme (:data:`SCHEME_SCOPED_RUN_FIELDS`).
         selected = run.get("mp_physics")
@@ -654,6 +680,40 @@ def restart_identity_payload(exp) -> dict:
         else:
             for name in ADAPTIVE_POLICY_RUN_FIELDS:
                 run.pop(name, None)
+        # An absent key and the default describe the original clock.
+        if not run.get("adaptive_nest_lattice", False):
+            run.pop("adaptive_nest_lattice", None)
+        # WRF's slope_rad / topo_shading / shadlen, absent-stays-absent:
+        # off, none of the three is read, so every fingerprint written
+        # before they existed keeps its value; a domain that turns the
+        # slope flux on binds all three, because together they are the
+        # shortwave its land surface integrates.
+        if not run.get("slope_rad", 0):
+            for name in ("slope_rad", "topo_shading", "shadlen"):
+                run.pop(name, None)
+        elif not run.get("topo_shading", 0):
+            run.pop("topo_shading", None)
+            run.pop("shadlen", None)
+        # ... and the original explicit vertical advection (A158).
+        if not run.get("zadvect_implicit", 0):
+            run.pop("zadvect_implicit", None)
+        # ... and w_damp measured from Courant 1, WRF's default (A165).
+        if float(run.get("w_crit_cfl", 1.0)) == 1.0:
+            run.pop("w_crit_cfl", None)
+        # Noah mosaic, absent-stays-absent: off (WRF's default), no tile is
+        # integrated and none of the three keys is read, so every
+        # fingerprint written before mosaic existed keeps its value.  On,
+        # the switch and tile count bind; the urban canopy rule binds when
+        # it is not WRF's ("dominant"), because the town rule gives towns in
+        # rural cells an urban fraction WRF's rule leaves at zero.
+        # gpuwm/io/restart.py's header and digest drop them on the same
+        # conditions.
+        if not run.get("sf_surface_mosaic", 0):
+            for name in ("sf_surface_mosaic", "mosaic_cat",
+                         "mosaic_urban_canopy"):
+                run.pop(name, None)
+        elif run.get("mosaic_urban_canopy") == "dominant":
+            run.pop("mosaic_urban_canopy", None)
     return experiment
 
 
@@ -1131,7 +1191,80 @@ def _ask_the_checkpoints_question(node) -> None:
     ask_checkpoint_physics_identity(node.state, node.cfg.run)
 
 
-def _release_startup_build(model, node, validators) -> None:
+#: The activation price's terms, in the words a refusal prints.
+_ACTIVATION_TERM_NAMES = (
+    ("model_state", "model state"), ("physics", "physics"),
+    ("forcing_analysis", "forcing analysis on the nest's grid"),
+    ("vertical_setup", "vertical setup"),
+    ("setup_residual", "setup temporaries"),
+    ("pool_headroom", "allocator headroom"))
+
+
+def _admit_nest_activation(node, catalog, exp, *, streamed_owner=None):
+    """``gpuwm run``'s activation door: a delayed nest's rebuild, priced first.
+
+    On this route a delayed nest is initialized again at its start from the
+    catalog's analysis at that time (:func:`gpuwm.ingest.nest_init
+    .initialize_child`): a new state and physics driver, the analysis
+    interpolated onto the nest's grid, and the vertical setup beside them.
+    The run's admission prices the steady tree, and no admission priced
+    this rebuild, so a tree that fitted its steady state could stop in a
+    CUDA out-of-memory at the nest's start, hours into the forecast.  It is
+    priced here from the DECODED analysis the rebuild reads
+    (:func:`gpuwm.ingest.preparation_price.price_nest_activation`) against
+    what the card has free once the startup build is released, and refused
+    by name before the rebuild allocates.  The figure is an upper bound, so
+    ``--no-memory-gate`` skips it.  MEASURED on an RTX 5070 Ti, a 3 km 168
+    x 132 x 49 nest starting 6 h into a 9 km ERA5 root: priced 0.48 GiB,
+    the rebuild itself peaked 0.23 GiB over the released startup build.
+
+    ``streamed_owner`` is the stepper a streamed nest is re-attached with
+    after the rebuild.  Its replacement tile buffers are allocated inside
+    this same activation, from bytes the free figure counts because the
+    close handed the old buffers back, so their claim is priced here too
+    (:func:`gpuwm.core.streaming.reattach_claim_terms`): on that nest the
+    re-attachment took the peak to 0.85 GiB, over the 0.48 GiB the rebuild
+    alone was priced at.
+
+    The shared admission estimate carries no such term: the prepared route
+    restores its delayed nests from their prepared caches instead.  A
+    catalog with no analysis at the nest's start prices nothing here, and
+    ``initialize_child`` refuses it by name.
+    """
+    import math
+
+    from gpuwm.core.ozone_contract import cam_ozone_domain_ids
+    from gpuwm.core.preflight import physics_array_shapes
+    from gpuwm.core.resident_admission import admit
+    from gpuwm.ingest.nest_init import _initial_snapshot
+    from gpuwm.ingest.preparation_price import price_nest_activation
+
+    dc = node.cfg
+    try:
+        snapshot = _initial_snapshot(catalog, dc.start_time)
+    except ValueError:
+        return None
+    physics = sum(4 * math.prod(shape) for shape in physics_array_shapes(
+        dc.run, cam_ozone=int(dc.grid_id) in cam_ozone_domain_ids(exp)
+    ).values())
+    price = price_nest_activation(dc.run, snapshot, physics_bytes=physics)
+    terms = {text: int(price.terms.get(key, 0))
+             for key, text in _ACTIVATION_TERM_NAMES}
+    if streamed_owner is not None:
+        from gpuwm.core.streaming import reattach_claim_terms
+        terms.update(reattach_claim_terms(streamed_owner, node))
+    return admit(
+        f"nest d{int(dc.grid_id):02d} starting at "
+        f"{exp.domain_start_time(dc.grid_id):%Y-%m-%d %H:%M}, rebuilt from "
+        "the analysis at its start",
+        terms, stage=price.stage, envelope=True,
+        remedy=("start the nest with the forecast, so it is built with the "
+                "tree the run was admitted on; free card memory (close "
+                "other programs using the GPU); or use a smaller nest"))
+
+
+def _release_startup_build(model, node, validators, *,
+                           streamed_owner=None) -> None:
     """Drop every owner of a delayed child's startup build before its rebuild.
 
     ``build_experiment`` gives a delayed child a complete state and a
@@ -1156,21 +1289,60 @@ def _release_startup_build(model, node, validators) -> None:
     its reference cycle with the driver, so the allocator hands the same
     bytes back to the rebuild.  The emptied state object stays on the node
     until the rebuild replaces it, so nothing that walks the tree meets a
-    missing state.  A streamed startup build lives in its host store and
-    is left to its own stepper, which the route rebinds at activation.
+    missing state.  A streamed startup build that a route restores into a
+    new host store is left to that route's initializer, which closes and
+    rebinds its own stepper and lets its outgoing store go (the prepared
+    domain-tree forecast).  That startup state is a
+    :class:`gpuwm.core.streamed_state.CanonicalStoreState`, a view of the
+    store that refuses every resident read, its radiation included, so
+    nothing here reads its physics: that route builds a nest's startup
+    radiation from its prepared cache with no
+    :class:`gpuwm.core.rrtmg_legacy.ParentOzoneProvider`, so no waiting
+    child reads it either.
+    ``streamed_owner`` is the stepper of a streamed child the DEFAULT road
+    rebuilds resident (``gpuwm run``): that road attached the stepper to a
+    resident startup build, so its tile buffers are closed here and the
+    startup state's arrays released like a resident child's, and
+    :func:`gpuwm.core.streaming.reattach_rebuilt_domain` binds it to the
+    rebuilt state once that exists.
     The collector runs once here, for this activation only, so a cycle no
     release contract names cannot keep the first build alive either.
     """
     import gc
 
     from gpuwm.core.nest_relocation import release_state_arrays
+    from gpuwm.core.streamed_state import CanonicalStoreState
 
     grid_id = int(node.cfg.grid_id)
     validators.pop(grid_id, None)
     model._prepared_by_grid_id.pop(grid_id, None)
-    try:
-        streamed = node.state._streamed_domain is not None
-    except AttributeError:
+    # Decided before any read of the startup state: a canonical host view
+    # refuses a read of its physics with CanonicalStateRefused, and its
+    # route restores it (see the docstring).
+    restored_by_route = isinstance(node.state, CanonicalStoreState)
+    if restored_by_route:
+        streamed = True
+    else:
+        try:
+            streamed = node.state._streamed_domain is not None
+        except AttributeError:
+            streamed = False
+        try:
+            outgoing = node.state.physics.radiation_callable
+        except AttributeError:
+            outgoing = None
+        if outgoing is not None:
+            # A legacy-RRTMG child still waiting for its start reads its
+            # ozone through this outgoing radiation, and that link alone
+            # would keep it alive until the child starts.
+            from gpuwm.core.rrtmg_legacy import release_waiting_ozone_links
+            release_waiting_ozone_links(
+                outgoing,
+                [child for child in node.children if not child._started])
+    if streamed_owner is not None:
+        from gpuwm.core.streaming import release_outgoing_store
+        streamed_owner.tiled_run.close()
+        release_outgoing_store(streamed_owner)
         streamed = False
     if not streamed:
         node.coupler = None
@@ -1502,9 +1674,22 @@ def execute_experiment(
         # child initializes from the analysis at its ACTIVATION time,
         # after the perturbation instant, and the receipts already say
         # so (build_experiment's delayed-start row).
-        _release_startup_build(model, node, validators)
+        #
+        # A STREAMED child on the default road (`gpuwm run`) was attached
+        # from a resident startup build, and the rebuild below replaces
+        # that state: its stepper is closed here, before the rebuild
+        # allocates, and re-attached to the rebuilt state after it.  A
+        # route with its own initializer rebinds its own owner.
+        rebound = (_streamed(grid_id) if delayed_child_initializer is None
+                   else None)
+        _release_startup_build(model, node, validators,
+                               streamed_owner=rebound)
         if delayed_child_initializer is None:
             data = context["case_data"]
+            # After the release above, so the card's free figure includes
+            # the startup build this rebuild replaces.
+            _admit_nest_activation(node, model._input_catalog, exp,
+                                   streamed_owner=rebound)
             initialized = initialize_child(
                 node.cfg, node.parent, model._input_catalog, exp.vertical,
                 source_orography=data.source_orography,
@@ -1542,6 +1727,11 @@ def execute_experiment(
             node.coupler.feedback_prepare(node, initial)
             node.coupler.feedback_commit(node)
             node.coupler.feedback_finalize(node)
+        if rebound is not None:
+            # After the feedback seed, as build_experiment's t = 0 children
+            # are seeded before the route attaches their steppers.
+            from gpuwm.core.streaming import reattach_rebuilt_domain
+            reattach_rebuilt_domain(rebound, node)
         if validate_state:
             from gpuwm.core.health import health_validator_for_domain
             validators[grid_id] = health_validator_for_domain(model, node)

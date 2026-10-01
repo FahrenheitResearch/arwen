@@ -1,0 +1,30 @@
+
+/lib/x86_64-linux-gnu/libm.so.6:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+000000000005d810 <__acos_finite@GLIBC_2.15>:
+   5d810:	f3 0f 1e fa          	endbr64
+   5d814:	48 8b 15 b5 77 0c 00 	mov    0xc77b5(%rip),%rdx        # 124fd0 <f32subf64x@@GLIBC_2.28+0x8c2b0>
+   5d81b:	f6 82 9d 00 00 00 10 	testb  $0x10,0x9d(%rdx)
+   5d822:	74 10                	je     5d834 <__acos_finite@GLIBC_2.15+0x24>
+   5d824:	48 8d 05 25 06 04 00 	lea    0x40625(%rip),%rax        # 9de50 <f32subf64x@@GLIBC_2.28+0x5130>
+   5d82b:	f6 82 b8 00 00 00 20 	testb  $0x20,0xb8(%rdx)
+   5d832:	75 19                	jne    5d84d <__acos_finite@GLIBC_2.15+0x3d>
+   5d834:	f6 82 de 00 00 00 01 	testb  $0x1,0xde(%rdx)
+   5d83b:	48 8d 05 6e bd 03 00 	lea    0x3bd6e(%rip),%rax        # 995b0 <f32subf64x@@GLIBC_2.28+0x890>
+   5d842:	48 8d 15 a7 f7 ff ff 	lea    -0x859(%rip),%rdx        # 5cff0 <__acosh_finite@GLIBC_2.15+0xd90>
+   5d849:	48 0f 44 c2          	cmove  %rdx,%rax
+   5d84d:	c3                   	ret
+   5d84e:	66 90                	xchg   %ax,%ax
+   5d850:	f3 0f 1e fa          	endbr64
+   5d854:	66 48 0f 7e ce       	movq   %xmm1,%rsi
+   5d859:	55                   	push   %rbp
+   5d85a:	66 0f 28 d0          	movapd %xmm0,%xmm2
+   5d85e:	48 89 f2             	mov    %rsi,%rdx
+   5d861:	48 c1 fa 20          	sar    $0x20,%rdx
+   5d865:	41 89 d0             	mov    %edx,%r8d
+   5d868:	48 89 e5             	mov    %rsp,%rbp
+   5d86b:	48 83 ec 10          	sub    $0x10,%rsp
+   5d86f:	64                   	fs

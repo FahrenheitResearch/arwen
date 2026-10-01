@@ -274,6 +274,91 @@ MYJ_SFCLAY_FIELDS_2D = tuple(dict.fromkeys((
 #: list; the estimate used to omit both, 2*nz planes per domain.
 MYJ_PBL_STATE_3D = ("tke_myj", "el_myj")
 
+#: The UW moist-turbulence PBL's (``bl_pbl_physics = 9``) persistent fields,
+#: allocated by ``initialize_physics`` for that selector only and priced by
+#: the VRAM estimate from these same tuples.  Interface fields carry nz+1
+#: levels, as WRF's kms:kme arrays do for this scheme.
+#:
+#: * carried, (nz+1): WRF's EXCH_M / EXCH_H through kte+1, read back as
+#:   kvm_in/kvh_in on every step after the first
+#:   (module_bl_camuwpbl_driver.F:436-441, :551-556);
+#: * carried, (ny, nx): the residual surface stress TAURESX2D/TAURESY2D
+#:   (driver.F:465-470, :621-622);
+#: * published, (nz+1): TKE_PBL, TURBTYPE3D, SMAW3D (driver.F:742-748);
+#: * published, (ny, nx): TPERT2D, QPERT2D, WPERT2D (driver.F:754-756);
+#: * held, (nz): the radiation step's CLDFRA, which WRF's radiation driver
+#:   writes on due steps and the scheme reads on every PBL step
+#:   (module_radiation_driver.F:1309-1332, module_pbl_driver.F:1940).
+UWPBL_STATE_FULL = ("uw_kvm", "uw_kvh")
+UWPBL_STATE_2D = ("tauresx2d", "tauresy2d")
+UWPBL_DIAGNOSTICS_FULL = ("tke_pbl", "turbtype3d", "smaw3d")
+UWPBL_DIAGNOSTICS_2D = ("tpert2d", "qpert2d", "wpert2d")
+UWPBL_HELD_3D = ("uw_cldfra",)
+
+#: The UW launcher's per-call output roster (gpuwm/core/uwpbl.py
+#: ``uwpbl_step``), held HERE so the launcher allocates from it and the
+#: preflight prices from it: one copy, nothing to drift.  Mass-level (nz)
+#: float32 tendencies; the interface (nz+1) outputs are
+#: :data:`UWPBL_DIAGNOSTICS_FULL`; the surface (ny, nx) float32 outputs,
+#: plus the int32 ``kpbl2d`` (WRF's KPBL, one-based).
+UWPBL_MASS_OUTPUTS = ("rublten", "rvblten", "rthblten", "rqvblten",
+                      "rqcblten", "rqiblten", "rqniblten")
+UWPBL_SURFACE_OUTPUTS = ("tpert2d", "qpert2d", "wpert2d", "pblh2d")
+
+#: Threads per block of the UW column launch.
+UWPBL_BLOCK = 64
+
+#: CAM's automatic arrays, per column, in binary64 and int32 slots per
+#: interface level (nk + 1).  Every allocation in the device transcription
+#: is taken at the top of its routine, unconditionally (uwpbl_eddy.cuh,
+#: uwpbl_caleddy.cuh, uwpbl_zisocl.cuh, uwpbl_vdiff.cuh and the column
+#: driver), so the high-water mark is a function of the level count alone.
+#: MEASURED 2026-09-30 with a counting build of the same headers over every
+#: column of the oracle fixtures: 109 * (nk + 1) - 74 binary64 slots and
+#: 5 * (nk + 1) - 2 int32 slots at nk = 35, 44 and 61, the branch-probe
+#: columns included.  The coefficients are those slopes with the negative
+#: intercepts dropped, so the pool is never short; the device still
+#: reports an overflow and the launcher refuses it by name.
+UWPBL_R8_SLOTS_PER_LEVEL = 109
+UWPBL_I4_SLOTS_PER_LEVEL = 5
+
+#: Device bytes one launch's two pools may hold before the domain is walked
+#: in column chunks.  At 50 levels one column costs 45.5 KB, so a chunk is
+#: about 17,000 columns.
+UWPBL_WORKSPACE_BUDGET_BYTES = 768 * 1024 * 1024
+
+
+def uwpbl_workspace_slots(nk: int) -> tuple[int, int]:
+    """``(r8_slots, i4_slots)`` one column of ``nk`` mass levels needs."""
+    levels = int(nk) + 1
+    return (UWPBL_R8_SLOTS_PER_LEVEL * levels,
+            UWPBL_I4_SLOTS_PER_LEVEL * levels)
+
+
+def uwpbl_chunk_columns(nk: int, ncols: int,
+                        budget_bytes: int = UWPBL_WORKSPACE_BUDGET_BYTES
+                        ) -> int:
+    """Columns per UW launch so the two pools fit ``budget_bytes``."""
+    r8, i4 = uwpbl_workspace_slots(nk)
+    per_column = 8 * r8 + 4 * i4
+    chunk = max(1, int(budget_bytes) // per_column)
+    if chunk >= UWPBL_BLOCK:
+        chunk = chunk // UWPBL_BLOCK * UWPBL_BLOCK
+    return int(min(chunk, max(int(ncols), 1)))
+
+
+def uwpbl_workspace_bytes(nk: int, ncols: int,
+                          budget_bytes: int = UWPBL_WORKSPACE_BUDGET_BYTES
+                          ) -> int:
+    """Device bytes the UW launcher's pools hold for one call.
+
+    The pools are sized to one chunk and reused across the domain's
+    chunks, plus the one int32 overflow word.
+    """
+    r8, i4 = uwpbl_workspace_slots(nk)
+    chunk = uwpbl_chunk_columns(nk, ncols, budget_bytes)
+    return int(chunk * (8 * r8 + 4 * i4) + 4)
+
 
 # Hoisted from gpuwm.core.microphysics (module-scope cupy) for the
 # same reason as the tables above: the preflight scratch registry
@@ -328,6 +413,38 @@ def ring_guard_state_fields() -> tuple[str, ...]:
             if name not in names:
                 names.append(name)
     return tuple(names)
+
+
+def spec_zone_ring_slices(ny: int, nx: int, sz: int):
+    """Non-overlapping index tuples covering exactly the ring WRF's
+    clipped microphysics tiles exclude.
+
+    WRF (1-based, ide/jde staggered ends): tiles run
+    ``its = ids+sz .. ide-1-sz``, ``jts = jds+sz .. jde-1-sz``
+    (solve_em.F:3631-3639, :4040-4048;
+    module_microphysics_driver.F:870-879).  On gpuwm's 0-based (ny, nx)
+    mass grid the surviving tile is ``sz .. nx-1-sz`` x ``sz .. ny-1-sz``
+    and the excluded ring is ``i < sz or i > nx-1-sz or j < sz or
+    j > ny-1-sz``.  The leading Ellipsis makes each tuple apply to
+    (ny, nx) and (nz, ny, nx) arrays alike.  Degenerate domains
+    (``2*sz >= ny`` or ``nx`` -- WRF's clip leaves an empty tile) are
+    covered without overlap.
+
+    Hoisted from :mod:`gpuwm.core.microphysics` (module-scope cupy), which
+    re-exports it: a moving nest's host-side accumulation carry
+    (:mod:`gpuwm.core.physics_continuation`) reads the same ring and must
+    import on an install with no GPU runtime.
+    """
+    n_lo = min(sz, ny)
+    n_hi = max(ny - sz, n_lo)
+    e_lo = min(sz, nx)
+    e_hi = max(nx - sz, e_lo)
+    return (
+        (Ellipsis, slice(0, n_lo), slice(None)),          # south rows
+        (Ellipsis, slice(n_hi, ny), slice(None)),         # north rows
+        (Ellipsis, slice(n_lo, n_hi), slice(0, e_lo)),    # west columns
+        (Ellipsis, slice(n_lo, n_hi), slice(e_hi, nx)),   # east columns
+    )
 
 
 def spec_zone_ring_save_slots(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
@@ -429,13 +546,32 @@ def ysu_workspace_floats(nz: int, columns: int) -> int:
     return blocks * YSUWS_SLOTS * (int(nz) + 1) * YSU_BLOCK
 
 
+# These constants mirror the kernel geometry for runtime-free memory pricing.
+SHWS_SLOTS = 50
+SHINHONG_BLOCK = 32
+SHINHONG_TILE_BLOCKS_PER_SM = 16
+
+
+def shinhong_workspace_floats(nz: int, columns: int) -> int:
+    """Floats for whole blocks with 1-based levels and a top sentinel."""
+    blocks = (int(columns) + SHINHONG_BLOCK - 1) // SHINHONG_BLOCK
+    return blocks * SHWS_SLOTS * (int(nz) + 2) * SHINHONG_BLOCK
+
+
 __all__ = [
-    "spec_zone_ring_save_slots",
+    "spec_zone_ring_save_slots", "spec_zone_ring_slices",
     "MYJ_PBL_STATE_3D", "MYJ_SFCLAY_FIELDS_2D", "MYJ_SFCLAY_INOUT",
+    "UWPBL_STATE_FULL", "UWPBL_STATE_2D", "UWPBL_DIAGNOSTICS_FULL",
+    "UWPBL_DIAGNOSTICS_2D", "UWPBL_HELD_3D", "UWPBL_MASS_OUTPUTS",
+    "UWPBL_SURFACE_OUTPUTS", "UWPBL_BLOCK", "UWPBL_R8_SLOTS_PER_LEVEL",
+    "UWPBL_I4_SLOTS_PER_LEVEL", "UWPBL_WORKSPACE_BUDGET_BYTES",
+    "uwpbl_workspace_slots", "uwpbl_chunk_columns", "uwpbl_workspace_bytes",
     "MYJ_SFCLAY_OUTPUTS",
     "MYNN_PBL_DIAGNOSTICS_2D", "MYNN_PBL_DIAGNOSTICS_INT_2D",
     "MYNN_PBL_STATE_3D", "MYNN_SURFACE_OUTPUTS",
     "PBL_RQI_MICROPHYSICS", "SFCLAY_OUTPUTS",
+    "SHWS_SLOTS", "SHINHONG_BLOCK", "SHINHONG_TILE_BLOCKS_PER_SM",
+    "shinhong_workspace_floats",
     "YSUWS_SLOTS", "YSU_BLOCK", "YSU_TILE_BLOCKS_PER_SM",
     "hmix_k_diag_names",
     "microphysics_scratch_slots", "physics_driver_required",

@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from conftest import requires_gpu
+from _toolchain_rows import toolchain_row
 
 import cupy as cp
 
@@ -38,6 +39,28 @@ _PROFILE_BUDGET = {
 _COLUMN_BUDGET = {
     "pblh": 1, "rmol": 0, "maxwidth": 0, "maxmf": 2, "ztop_plume": 0,
 }
+
+#: ``_PROFILE_BUDGET`` per compiler where a compiler reads it differently,
+#: keyed on (compute capability, NVRTC major.minor), the pair measured.
+#: A146: NVRTC had compiled every float division by a compile-time constant
+#: as a multiply by the rounded reciprocal on Blackwell, and the kernels now
+#: spell those divisions ``__fdiv_rn``, the IEEE quotient.  On sm_120 that
+#: moves rvblten against the CPU driver from 205 to 819 ULP (rublten's
+#: budget); every other field reads at or below its budget, most far below
+#: (exch_h 5, tsq 10, cov 7 against 144, 283, 208).  MEASURED 2026-09-30 on
+#: the RTX 5070 Ti (sm_120, NVRTC 13.4.92) over both fixture steps.
+_PROFILE_BUDGET_BY_TOOLCHAIN = {
+    ("120", (13, 4)): {**_PROFILE_BUDGET, "rvblten": 819},
+}
+#: A167: NVRTC 12.9.86, the compiler of the default gpuwm[gpu] extra
+#: (cupy-cuda12x), reads the sm_120 row A146 re-recorded under 13.4: every
+#: reading this file's tests take, and the device result behind each, is
+#: bit-identical under the two compilers.  Before this row 12.9.86 failed
+#: here by name (tests/_toolchain_rows.py).  MEASURED 2026-10-01 on node-4's
+#: RTX 5070 Ti and node-2's RTX 5090, two processes per compiler, at
+#: integrate/2.8 9dbb4a2db.
+_PROFILE_BUDGET_BY_TOOLCHAIN[("120", (12, 9))] = (
+    _PROFILE_BUDGET_BY_TOOLCHAIN[("120", (13, 4))])
 
 
 def _worst(device, host) -> int:
@@ -130,7 +153,9 @@ def test_device_driver_stays_within_the_measured_leaf_residue(step):
     device = mynn_bl_driver_cuda(
         _device(values), initflag=initflag, delt=delt, flag_qs=True)
 
-    for name, budget in _PROFILE_BUDGET.items():
+    profile = toolchain_row(_PROFILE_BUDGET_BY_TOOLCHAIN, _PROFILE_BUDGET,
+                            "_PROFILE_BUDGET_BY_TOOLCHAIN")
+    for name, budget in profile.items():
         worst = _worst(device[name], host[name])
         assert worst <= budget, f"{name}: {worst} ULP (budget {budget})"
     for name, budget in _COLUMN_BUDGET.items():
@@ -158,7 +183,9 @@ def test_device_driver_supplies_snow_within_the_existing_wrf_leaf_budgets():
     for name in ("qc_bl", "qi_bl", "cldfra_bl"):
         want = np.asarray(
             [np.float32(row[name]) for row in blocks[index]], dtype=np.float32)
-        assert _worst(supplied[name][index], want) <= _PROFILE_BUDGET[name]
+        assert _worst(supplied[name][index], want) <= (
+            toolchain_row(_PROFILE_BUDGET_BY_TOOLCHAIN, _PROFILE_BUDGET,
+                          "_PROFILE_BUDGET_BY_TOOLCHAIN")[name])
         got = cp.asnumpy(supplied[name][index])
         without = cp.asnumpy(withheld[name][index])
         changed += int(np.count_nonzero(got != without))

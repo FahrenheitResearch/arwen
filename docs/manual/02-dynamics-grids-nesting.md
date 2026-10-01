@@ -7,17 +7,17 @@ Runge-Kutta outer integration wrapping split-explicit acoustic steps
 (forward-backward horizontal, implicit vertical, recoupled to the large step), on a
 hybrid terrain-following dry-mass vertical coordinate, FP32 on CUDA
 [docs/gpuwm-project-history.md:65; README.md:33-34]. The RK stage table is a
-config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:678].
+config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:739].
 
 Advection is WRF's stencils, hardcoded where WRF hardcodes behavior: horizontal
 momentum is the WRF flux5 (5th-order) stencil, vertical momentum and scalars the
 flux3 (3rd-order) stencil (`gpuwm/core/kernels/advection.cu`)
-[docs/public/CONFIGURATION.md:407-408]. Transported-scalar stencils are fixed
+[docs/public/CONFIGURATION.md:730-731]. Transported-scalar stencils are fixed
 5th/3rd order, so the importer accepts only the Registry default
 `h_sca_adv_order = 5`; the configurable `h_sca_adv_order` (legacy default 2) feeds
-the geopotential equation only [docs/public/CONFIGURATION.md:372]. Moist transport
+the geopotential equation only [docs/public/CONFIGURATION.md:417]. Moist transport
 runs WRF option 1 (positive-definite limiter) with `scalar_adv_opt` required to
-match [docs/public/CONFIGURATION.md:373, 686].
+match [docs/public/CONFIGURATION.md:418, 747].
 
 Lateral boundaries use specified/relaxation zones with Davies-style weighting;
 `spec_bdy_width` defaults to 5 and must be at least `spec_zone + relax_zone`
@@ -56,7 +56,7 @@ Eta levels are explicit, not generated: `eta_levels` is required for real runs,
 automatic level generation (`auto_levels_opt`, `max_dz`, `dzbot`,
 `dzstretch_s/u`) is not implemented, and with explicit `eta_levels` those keys
 are inert in WRF too, so they import as dropped. `p_top` defaults on import to
-the Registry's 5000 Pa [docs/public/CONFIGURATION.md:139].
+the Registry's 5000 Pa [docs/public/CONFIGURATION.md:140].
 
 Two hard properties a WRF user must plan around:
 
@@ -267,7 +267,7 @@ one line naming the ratio and the limit, and reported by the preflight checker
 `gpuwm check` (section 8.5) as what the run will do. A config that writes
 `mix_isotropic = 0` keeps it, in the danger zone
 too, and gets the advisory carrying the override state
-[docs/public/LES.md:430-442; docs/public/CONFIGURATION.md:218]. Because
+[docs/public/LES.md:430-442; docs/public/CONFIGURATION.md:394]. Because
 `mix_isotropic` is inside the restart fingerprint, a checkpoint written under the
 old anisotropic default does not bit-continue under the auto-selected isotropic
 form. A guard test fails if any shipped config arrives on the exposed path, and the

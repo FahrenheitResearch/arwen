@@ -1,0 +1,35 @@
+provenance: WARNING -- gpuwm '2.8.1' is a borrowed version: it came from the editable install of gpuwm '2.8.1' declared at <engine> (metadata in <venv>/lib/python3.12/site-packages), which does not provide the code executing at <tree>; the numbers agree, so the run continues
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0
+rootdir: <tree>
+configfile: pyproject.toml
+plugins: xdist-3.8.0
+collected 594 items / 1 deselected / 593 selected
+
+tests/test_noah_mosaic_config.py .....................                   [  3%]
+tests/test_noah_mosaic_doors.py ...................                      [  6%]
+tests/test_kernel_loader_inert.py .........s...............s.......s.... [ 13%]
+.................s...............s..........ssssss..s.ss...............s [ 25%]
+...............s.......s.....................s...............s.......... [ 37%]
+ssssss..s.ss...............                                              [ 41%]
+tests/test_kernel_source_freeze_per_module.py .......................... [ 46%]
+........................................................................ [ 58%]
+.............                                                            [ 60%]
+tests/test_kernel_frame_recordings.py ..........s.                       [ 62%]
+tests/test_licence_notices_ship.py ..s.................................  [ 68%]
+tests/test_preflight.py ................................................ [ 76%]
+.................................................ss.........ss.ssssssss. [ 89%]
+.............................................................            [ 99%]
+tests/test_config_freeze.py ....                                         [100%]
+
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: RuntimeWarning: numpy.ndarray size changed, may indicate binary incompatibility. Expected 16 from C header, got 96 from PyObject
+
+tests/test_noah_mosaic_doors.py: 14 warnings
+  <tree>/gpuwm/core/rrtmgp.py:1045: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    values = chartostring(variable[:])
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+==== 551 passed, 42 skipped, 1 deselected, 15 warnings in 108.68s (0:01:48) ====

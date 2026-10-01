@@ -68,6 +68,33 @@ FORECAST_STAGE = "forecast"
 #: the stream hears of them.
 LIVE_RELAY_SECONDS = 1.0
 
+#: The fetch loop's per-lead record inside the fetch output folder, when
+#: a window is fetched as its source posts (``gpuwm fetch --as-posted``):
+#: ``schedule.json`` (``gpuwm.posting-schedule.v1``: ``source``,
+#: ``member``, ``cycle``, ``as_posted``, ``shape``, ``streams``, ``why``,
+#: ``late_after_minutes``, ``start_needs``, ``expected_ready_at``,
+#: ``expected_final_at``, ``table_sha256`` and one row per lead with
+#: ``lead``, ``valid_time``, ``expected_at``, ``late_at``,
+#: ``first_seen_at``, ``fetched_at``, ``endpoint`` and ``state``), one
+#: ``fNNN.json`` marker per verified lead (``gpuwm.posted-lead.v1``) and
+#: ``failed.json`` when a lead passed its late time.
+POSTING_DIRNAME = "posting"
+POSTING_SCHEDULE_NAME = "schedule.json"
+POSTING_FAILED_NAME = "failed.json"
+
+#: The events the forecast runner records in its wait log
+#: (:data:`gpuwm.ingest.boundary_stream.WAIT_LOG_NAME`) that this stream
+#: carries: `go` runs the forecast as a subprocess with no stream of its
+#: own, and a wait said only there reached no reader of ``events.jsonl``.
+RELAYED_WAIT_EVENTS = frozenset({
+    "source_wait_started", "source_wait_progress", "source_wait_finished",
+    "boundary_wait_started", "boundary_wait_finished", "source_behind",
+})
+
+#: How far before this stream opened a posting file may have been written
+#: and still be this run's (a filesystem's mtime is coarser than the clock).
+POSTING_FRESH_SLACK_MS = 2000
+
 #: The stage that covers everything before the first subprocess: the
 #: CLI's own boot and imports, the config, the capability gate, the
 #: memory gate and the geography gate.  MEASURED: 1.5 s warm, 1.7 s
@@ -218,6 +245,19 @@ class GoChainEvents:
 
         self._prep_words = PrepProgress()
         self._said_lock = threading.Lock()
+        # The posting and wait relay (:meth:`relay_posting`,
+        # :meth:`relay_waits`), from the stream's opening to its end.
+        self._posting_thread: threading.Thread | None = None
+        self._posting_stop = threading.Event()
+        self._posting_lock = threading.Lock()
+        self._posting_since_ms: int | None = None
+        self._schedule_said: tuple | None = None
+        self._leads_posted: set[tuple] = set()
+        self._leads_ready: set[tuple] = set()
+        self._wait_offset = 0
+        self._source_behind_said = False
+        #: The open ``phase: start`` source wait (:meth:`_relay_start_wait`).
+        self._start_wait: dict[str, Any] | None = None
 
     # -- lifecycle -----------------------------------------------------
 
@@ -253,12 +293,14 @@ class GoChainEvents:
                    started_unix_ms=self._launch_unix_ms)
         self._finish(BOOT_STAGE, wall_seconds=boot, ok=True, exit_code=0,
                      started_unix_ms=self._launch_unix_ms)
+        self._start_posting_relay(int(time.time() * 1000))
 
     def close(self) -> None:
         # A chain that ended inside its forecast stage (an interrupt, a
         # failure raised past the stage) still carries every frame the
-        # runner drew before it ended.
+        # runner drew before it ended, and every lead and wait.
         self._stop_live_relay()
+        self._stop_posting_relay()
         events, self._events = self._events, None
         if events is not None:
             try:
@@ -434,6 +476,325 @@ class GoChainEvents:
         thread.join(LIVE_RELAY_SECONDS * 5)
         self.relay_live_products()
 
+    # -- each lead as it posts, and each wait, as they happen ------------
+
+    def _fresh(self, path: Path) -> bool:
+        since = self._posting_since_ms
+        try:
+            stamp = int(path.stat().st_mtime * 1000)
+        except OSError:
+            return False
+        return since is None or stamp >= since - POSTING_FRESH_SLACK_MS
+
+    def relay_posting(self) -> int:
+        """Carry the fetch loop's schedule and each lead as it posts.
+
+        Read from the loop's own files (module docstring): the schedule
+        once (``posting_schedule``), each lead once when a host first held
+        it (``lead_posted``, from its schedule row or its marker) and once
+        when it was fetched and verified (``lead_ready``, from its
+        marker).  Only files written since this stream opened are this
+        run's.  Returns how many events this call carried; never raises.
+        """
+
+        directory = self._data_dir
+        if directory is None or self._events is None:
+            return 0
+        folder = Path(directory) / POSTING_DIRNAME
+        carried = 0
+        with self._posting_lock:
+            try:
+                schedule_path = folder / POSTING_SCHEDULE_NAME
+                schedule = (_read_json_object(schedule_path)
+                            if self._fresh(schedule_path) else None)
+                if schedule is not None:
+                    carried += self._relay_schedule(schedule, schedule_path)
+                markers = sorted(folder.glob("f[0-9][0-9][0-9]*.json"))
+            except OSError:
+                return carried
+            for path in markers:
+                if not self._fresh(path):
+                    continue
+                marker = _read_json_object(path)
+                if marker is None:
+                    continue
+                carried += self._relay_marker(marker, path, schedule or {})
+        return carried
+
+    def _relay_schedule(self, schedule: Mapping[str, Any],
+                        path: Path) -> int:
+        carried = 0
+        key = (schedule.get("source"), schedule.get("member"),
+               schedule.get("cycle"))
+        rows = [row for row in schedule.get("leads") or []
+                if isinstance(row, dict)]
+        if self._schedule_said != key:
+            self._schedule_said = key
+            fields = {name: schedule.get(name) for name in (
+                "source", "member", "cycle", "as_posted", "shape", "streams",
+                "why", "late_after_minutes", "start_needs",
+                "expected_ready_at", "expected_final_at")}
+            self._emit("posting_schedule", **fields,
+                       leads=[{name: row.get(name) for name in (
+                           "lead", "valid_time", "expected_at", "late_at")}
+                           for row in rows],
+                       schedule_path=str(path),
+                       table_sha256=schedule.get("table_sha256"))
+            carried += 1
+        for row in rows:
+            if row.get("first_seen_at"):
+                carried += self._lead_posted(schedule, row)
+        carried += self._relay_start_wait(schedule, rows)
+        return carried
+
+    def _relay_start_wait(self, schedule: Mapping[str, Any],
+                          rows: list[dict[str, Any]]) -> int:
+        """Say the run's ``phase: start`` source wait (DESIGN A136 3.5, 3.7).
+
+        Before its head the run waits on its start needs, and only the
+        fetch's schedule can say so: the preparation waits on lead markers
+        before the boundary stream (and its producer heartbeat) exists, so
+        the forecast's seam waits never cover it.  The breakage this
+        prevents: a run launched by the site rule (at ``expected_ready_at``,
+        or on a readiness answer of 75) waited minutes for its first leads
+        with no ``source_wait_*`` on its stream, so a reader of
+        ``events.jsonl`` could not tell the wait from a hang, and the GUI's
+        wait block had no phase or reason.
+
+        The wait is the start-need lead :func:`start_wait_row` names;
+        ``source_wait_progress`` every :data:`SOURCE_WAIT_PROGRESS_SECONDS`
+        while it lasts, and ``source_wait_finished`` (with the lead's
+        ``first_seen_at``) once the lead has posted.  A wait that ends any
+        other way (the lead late, the run stopped) is said no more, as a
+        seam wait ended by a refusal is not: ``source_behind`` or the
+        terminal event says it.
+        """
+
+        from gpuwm.ingest.boundary_stream import (
+            SOURCE_WAIT_PROGRESS_SECONDS, source_wait_reason,
+        )
+
+        row = start_wait_row(schedule)
+        key = (None if row is None else
+               (schedule.get("source"), schedule.get("cycle"), row.get("lead")))
+        now = time.monotonic()
+        carried = 0
+        opened = self._start_wait
+        if opened is not None and opened["key"] != key:
+            self._start_wait = None
+            lead = opened["fields"]["lead"]
+            done = next((item for item in rows if item.get("lead") == lead), {})
+            if done.get("first_seen_at") or done.get("state") in ("posted",
+                                                                  "ready"):
+                fields = opened["fields"]
+                self._emit("source_wait_finished", phase="start",
+                           source=fields["source"], cycle=fields["cycle"],
+                           lead=lead,
+                           waited_seconds=round(now - opened["since"], 3),
+                           first_seen_at=done.get("first_seen_at"),
+                           model_elapsed_seconds=None, model_valid_time=None)
+                carried += 1
+        if row is None:
+            return carried
+        if self._start_wait is None:
+            fields = {
+                "phase": "start", "source": schedule.get("source"),
+                "cycle": schedule.get("cycle"), "lead": row.get("lead"),
+                "valid_time": row.get("valid_time"),
+                "expected_at": row.get("expected_at"),
+                "late_at": row.get("late_at"),
+                "model_elapsed_seconds": None, "model_valid_time": None,
+                "interval": None,
+                "reason": source_wait_reason({**row, "source":
+                                              schedule.get("source")}),
+            }
+            self._start_wait = {"key": key, "since": now, "said": now,
+                                "fields": fields}
+            self._emit("source_wait_started", **fields, waited_seconds=0.0)
+            return carried + 1
+        opened = self._start_wait
+        if now - opened["said"] >= SOURCE_WAIT_PROGRESS_SECONDS:
+            opened["said"] = now
+            self._emit("source_wait_progress", **opened["fields"],
+                       waited_seconds=round(now - opened["since"], 3))
+            carried += 1
+        return carried
+
+    def _lead_posted(self, schedule: Mapping[str, Any],
+                     row: Mapping[str, Any]) -> int:
+        key = (schedule.get("source"), schedule.get("cycle"), row.get("lead"))
+        if key in self._leads_posted:
+            return 0
+        self._leads_posted.add(key)
+        expected = _instant_ms(row.get("expected_at"))
+        seen = _instant_ms(row.get("first_seen_at"))
+        endpoint = row.get("endpoint")
+        if endpoint is None:
+            objects = [item for item in row.get("objects") or []
+                       if isinstance(item, dict)]
+            endpoint = objects[0].get("endpoint") if objects else None
+        self._emit(
+            "lead_posted", source=schedule.get("source"),
+            cycle=schedule.get("cycle"), lead=row.get("lead"),
+            valid_time=row.get("valid_time"),
+            expected_at=row.get("expected_at"),
+            first_seen_at=row.get("first_seen_at"),
+            # Negative when the lead posted before its row says it would,
+            # which is the signal to re-fit the row.
+            minutes_after_expected=(
+                None if expected is None or seen is None
+                else round((seen - expected) / 60000.0, 3)),
+            # True when the lead was already up at the fetch's first ask
+            # (a late launch, a past cycle): the minutes then bound its
+            # posting from above and are no lateness to re-fit a row by.
+            posted_when_first_asked=row.get("posted_when_first_asked"),
+            endpoint=endpoint)
+        return 1
+
+    def _relay_marker(self, marker: Mapping[str, Any], path: Path,
+                      schedule: Mapping[str, Any]) -> int:
+        owner = {"source": marker.get("source", schedule.get("source")),
+                 "cycle": marker.get("cycle", schedule.get("cycle"))}
+        key = (owner["source"], owner["cycle"], marker.get("lead"))
+        if key in self._leads_ready:
+            return 0
+        carried = 0
+        if marker.get("first_seen_at"):
+            carried += self._lead_posted(owner, marker)
+        self._leads_ready.add(key)
+        import hashlib
+
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            digest = None
+        sizes = [item.get("bytes") for item in marker.get("objects") or []
+                 if isinstance(item, dict)]
+        seen = _instant_ms(marker.get("first_seen_at"))
+        fetched = _instant_ms(marker.get("fetched_at"))
+        self._emit(
+            "lead_ready", source=owner["source"], cycle=owner["cycle"],
+            lead=marker.get("lead"), valid_time=marker.get("valid_time"),
+            bytes=(sum(int(size) for size in sizes)
+                   if sizes and all(isinstance(size, int) for size in sizes)
+                   else None),
+            fetch_seconds=(None if seen is None or fetched is None
+                           else round((fetched - seen) / 1000.0, 3)),
+            marker_sha256=digest)
+        return carried + 1
+
+    def relay_waits(self) -> int:
+        """Carry each wait the forecast runner recorded in its wait log.
+
+        The runner writes one JSON object per wait event it says (its
+        own stream is absent under `go`); each whole line written since
+        this stream opened is carried once, under its own tag and fields.
+        Returns how many events this call carried; never raises.
+        """
+
+        from gpuwm.ingest.boundary_stream import WAIT_LOG_NAME
+
+        if self._run_dir is None or self._events is None:
+            return 0
+        path = Path(self._run_dir) / WAIT_LOG_NAME
+        carried = 0
+        with self._posting_lock:
+            try:
+                with path.open("rb") as stream:
+                    stream.seek(self._wait_offset)
+                    chunk = stream.read()
+            except OSError:
+                return 0
+            end = chunk.rfind(b"\n")
+            if end < 0:
+                return 0
+            self._wait_offset += end + 1
+            since = self._posting_since_ms
+            for raw in chunk[:end].splitlines():
+                try:
+                    record = json.loads(raw.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError):
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                event = record.pop("event", None)
+                stamp = record.pop("emitted_unix_ms", None)
+                if event not in RELAYED_WAIT_EVENTS:
+                    continue
+                if (since is not None and isinstance(stamp, int)
+                        and stamp < since - POSTING_FRESH_SLACK_MS):
+                    continue
+                if event == "source_behind":
+                    self._say_source_behind(record)
+                else:
+                    self._emit(event, **record)
+                carried += 1
+        return carried
+
+    def _say_source_behind(self, details: Mapping[str, Any]) -> None:
+        from gpuwm.runplan import source_behind_fields
+
+        if self._source_behind_said:
+            return
+        self._source_behind_said = True
+        self._emit("source_behind", **source_behind_fields(details))
+
+    def _source_behind_from_artifacts(self) -> None:
+        """Say ``source_behind`` from the run or the fetch, if not said.
+
+        The forecast's own record when it stopped at a seam; otherwise
+        the fetch loop's ``failed.json``, for a lead late before the
+        forecast started (no model time, no frames).
+        """
+
+        if self._source_behind_said:
+            return
+        if self._run_dir is not None:
+            progress = _read_json_object(Path(self._run_dir) / "progress.json")
+            record = (progress or {}).get("source_behind")
+            if isinstance(record, dict):
+                self._say_source_behind(record)
+                return
+        if self._data_dir is not None:
+            failed = _read_json_object(
+                Path(self._data_dir) / POSTING_DIRNAME / POSTING_FAILED_NAME)
+            if (isinstance(failed, dict)
+                    and failed.get("code") == "source_behind"):
+                self._say_source_behind({
+                    **failed, "frames_kept": 0, "checkpoint": None,
+                    "last_answer": failed.get("last_answer", failed.get(
+                        "heard"))})
+
+    def _start_posting_relay(self, since_unix_ms: int) -> None:
+        self._stop_posting_relay()
+        if self._events is None or (self._data_dir is None
+                                    and self._run_dir is None):
+            return
+        self._posting_since_ms = int(since_unix_ms)
+        stop = threading.Event()
+        self._posting_stop = stop
+
+        def _watch() -> None:
+            while not stop.wait(LIVE_RELAY_SECONDS):
+                self.relay_posting()
+                self.relay_waits()
+
+        thread = threading.Thread(target=_watch, name="gpuwm-go-posting-relay",
+                                  daemon=True)
+        self._posting_thread = thread
+        thread.start()
+
+    def _stop_posting_relay(self) -> None:
+        """End the watch, then carry what landed since its last look."""
+
+        thread, self._posting_thread = self._posting_thread, None
+        if thread is None:
+            return
+        self._posting_stop.set()
+        thread.join(LIVE_RELAY_SECONDS * 5)
+        self.relay_posting()
+        self.relay_waits()
+
     def arm_first_products(self, render_plan) -> None:
         # `go` offers every observer the chance to render the first
         # frame as it lands.  Taking it would mean hosting the forecast
@@ -578,11 +939,21 @@ class GoChainEvents:
                     published_unix_ms=early["published_unix_ms"],
                     seconds_from_launch=early["seconds_from_launch"],
                     pictures_still_original=early["pictures_still_original"])
+        # Every lead and wait lands before the terminal event.
+        self._stop_posting_relay()
+        from gpuwm.ingest.boundary_stream import SOURCE_BEHIND_EXIT_CODE
+
+        extra: dict[str, Any] = {}
+        if status != "SUCCESS" and int(exit_code) == SOURCE_BEHIND_EXIT_CODE:
+            # A lead later than its budget: `source_behind` then `failed`.
+            self._source_behind_from_artifacts()
+            if self._source_behind_said:
+                extra["error_class"] = "SourceBehind"
         if status == "SUCCESS":
             self._emit("completed", **summary)
         else:
             self._emit("failed", status=str(status), exit_code=int(exit_code),
-                       **summary)
+                       **extra, **summary)
         self.close()
         return summary
 
@@ -642,6 +1013,79 @@ class GoChainEvents:
             self._events.emit(event, **fields)
         except Exception:  # noqa: BLE001 - telemetry never fails a chain
             pass
+
+
+def start_wait_row(schedule: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The fetch schedule's row of the start need the run waits on now, or ``None``.
+
+    A run cannot start without its start needs (DESIGN A136 3.3, the
+    schedule's ``start_needs``), so a start-need lead of the window's own
+    source in state ``waiting`` (the fetch announced it as not posted yet)
+    is the run's ``phase: start`` wait.  Any other lead the fetch waits for
+    is not: the fetch polls later leads while the preparation builds the
+    head from start needs that are in, and calling that a source wait hid
+    the preparation's own progress behind a false one.  A donor's lead is
+    not this window's row of the same number.  The heartbeat
+    (:class:`gpuwm.runplan._GoObserver`) and the stream (:class:`GoChainEvents`)
+    both read the wait here, so they cannot disagree about it.
+    """
+
+    source = schedule.get("source")
+    needs = {row.get("lead") for row in schedule.get("start_needs") or ()
+             if isinstance(row, Mapping) and row.get("lead") is not None
+             and row.get("source") in (None, source)}
+    return next((dict(row) for row in schedule.get("leads") or ()
+                 if isinstance(row, Mapping) and row.get("lead") in needs
+                 and row.get("state") == "waiting"), None)
+
+
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _instant_ms(text) -> int | None:
+    from datetime import datetime, timezone
+
+    try:
+        instant = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    return int(instant.timestamp() * 1000)
+
+
+class HostedPostingRelay:
+    """`go`'s posting relay, into the stream of the run that hosts `go`.
+
+    ``gpuwm run-plan`` hosts the GFS chain with its own observer and its
+    own ``events.jsonl``, so no :class:`GoChainEvents` stream is open and
+    nothing carried the as-posted fetch's schedule and leads onto the
+    run's stream: its run page and GUI export had no ``posting`` while the
+    fetch ran beside the preparation.  This carries exactly what `go`'s
+    own stream carries from the fetch's ``posting/`` folder
+    (``posting_schedule``, ``lead_posted``, ``lead_ready``) into
+    ``events``; the hosted forecast says its own waits there already.
+    """
+
+    def __init__(self, events, *, data_dir) -> None:
+        self._relay = GoChainEvents()
+        self._relay._events = events
+        self._relay._data_dir = Path(data_dir)
+
+    def start(self, *, since_unix_ms: int) -> None:
+        """Watch from ``since_unix_ms`` (the fetch's launch) on."""
+
+        self._relay._start_posting_relay(int(since_unix_ms))
+
+    def stop(self) -> None:
+        """End the watch after carrying what landed since its last look."""
+
+        self._relay._stop_posting_relay()
 
 
 def read_chain_events(path) -> list[dict[str, Any]]:

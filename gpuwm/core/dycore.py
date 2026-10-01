@@ -47,6 +47,8 @@ from gpuwm.core.advection import (add_advection_tendencies,
                                   launch_flux_div_v, launch_flux_div_w)
 from gpuwm.core.diagnostics import update_diagnostics
 from gpuwm.core.diffusion import add_diffusion_tendencies
+from gpuwm.core import ieva
+from gpuwm.core.ieva import stage_face_masses
 from gpuwm.core.kernels import get_kernel
 from gpuwm.core.microphysics import apply as apply_microphysics
 from gpuwm.core.moist import (SPECIES, WRF_MOIST_ARRAY_SPECIES,
@@ -67,6 +69,83 @@ _PROGNOSTICS = ("u", "v", "w", "thp", "php", "mup")
 
 #: Slow-tendency accumulators zeroed at the start of every RK stage.
 _TENDENCIES = ("ru_t", "rv_t", "rw_t", "rth_t", "rph_t", "rmu_t")
+
+
+def _prepare_bookkeeping(state, pairs, *, zero=False):
+    """Cache word-copy descriptors, refreshing when a state buffer changes."""
+    if not pairs or len(pairs) > 64:
+        return None
+    arrays = tuple(a for pair in pairs for a in pair)
+    if any(not isinstance(a, cp.ndarray) or a.dtype != np.dtype(np.float32)
+           or not a.flags.c_contiguous for a in arrays):
+        return None
+    if any(src.shape != dst.shape for src, dst in pairs):
+        return None
+    key = tuple((a.data.ptr, a.size) for a in arrays)
+    attr = '_rk_zero_launch' if zero else '_rk_copy_launch'
+    cached = getattr(state, attr, None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    # Cross-array overlap needs the original ordered assignments.
+    ranges = [(a.data.ptr, a.data.ptr + a.nbytes) for a in arrays]
+    for i, (_, dst) in enumerate(pairs):
+        lo, hi = ranges[2 * i + 1]
+        for j, (other_lo, other_hi) in enumerate(ranges):
+            if j == 2 * i + 1 or (zero and j == 2 * i):
+                continue
+            if lo < other_hi and other_lo < hi:
+                return None
+    rows = np.zeros((64, 3), dtype=np.uint64)
+    rows[:len(pairs)] = [(src.data.ptr, dst.data.ptr, dst.size)
+                        for src, dst in pairs]
+    # A by-value parameter avoids device metadata allocation and upload.
+    table = rows.reshape(-1).view(np.dtype(('V', rows.nbytes)))[0]
+    kernel = get_kernel('rk_bookkeeping',
+                        'rk_zero_words' if zero else 'rk_copy_words')
+    grid = (max(1, (max(dst.size for _, dst in pairs) + _TPB - 1) // _TPB),
+            len(pairs))
+    block = (_TPB,)
+    args = (table,)
+
+    def launch():
+        kernel(grid, block, args)
+
+    # The table holds only pointers and sizes, all of which are in the key,
+    # so a hit rebuilds nothing; no array is retained, because holding the
+    # previous buffers would keep them alive across a relocation's swap.
+    setattr(state, attr, (key, launch))
+    return launch
+
+
+def _save_time_t(state):
+    names = list(_PROGNOSTICS)
+    if state.qv is not None:
+        names.extend(SPECIES)
+        if getattr(state, 'qi', None) is not None:
+            names.extend(extra_moist_species(state))
+    if getattr(state, 'tke', None) is not None:
+        names.append('tke')
+    pairs = tuple((getattr(state, name), getattr(state, name + '0'))
+                  for name in names)
+    launch = _prepare_bookkeeping(state, pairs)
+    if launch is None:
+        for src, dst in pairs:
+            dst[...] = src
+    else:
+        launch()
+
+
+def _prepare_tendency_zero(state):
+    arrays = tuple(getattr(state, name) for name in _TENDENCIES)
+    launch = _prepare_bookkeeping(state, tuple((a, a) for a in arrays),
+                                  zero=True)
+    if launch is not None:
+        return launch
+
+    def clear():
+        for a in arrays:
+            a[...] = 0
+    return clear
 
 #: WRF turbulent Prandtl number (share/module_model_constants.F:
 #: prandtl = 1./3.0) -- scalars mix with K_h = K_m/prandtl = 3*K_m.
@@ -261,17 +340,11 @@ def stage_fluxes(state: DomainState, cfg: RunConfig
     """
     nz, ny, nx = state.p.shape
     mu = state.total_mu()                              # (ny, nx) t* mass
-    mux = mu_at_u_faces(mu)
-    muy = mu_at_v_faces(mu)
     # Open boundaries: the boundary-face column mass is the boundary CELL's
     # (WRF's muu/muv under the zero-gradient mu ghost copy), not the
-    # periodic wrap average.
-    if _boundary_x(cfg):
-        mux[:, 0] = mu[:, 0]
-        mux[:, -1] = mu[:, -1]
-    if _boundary_y(cfg):
-        muy[0, :] = mu[0, :]
-        muy[-1, :] = mu[-1, :]
+    # periodic wrap average.  One rule, shared with the IEVA column mass
+    # (gpuwm.core.ieva.column_mass_new), which must read these same faces.
+    mux, muy = stage_face_masses(state, cfg, mu)
     ru = state.scratch((nz, ny, nx + 1), "rk_ru")
     rv = state.scratch((nz, ny + 1, nx), "rk_rv")
     kernel = _couple_momentum_kernel(state.has_msf)    # WRF couple_momentum:
@@ -643,7 +716,7 @@ def _launch_slow_geopotential_vertical(state: DomainState,
 
 def _add_slow_tendencies(state: DomainState, cfg: RunConfig,
                          ru: cp.ndarray, rv: cp.ndarray,
-                         ww: cp.ndarray, *, cq=None) -> None:
+                         ww: cp.ndarray, *, cq=None, implicit=None) -> None:
     """Accumulate the RK stage forcings R^t* into the coupled tendencies.
 
     General hybrid/terrain reduction of WRF ``rk_tendency``: flux-form
@@ -664,7 +737,14 @@ def _add_slow_tendencies(state: DomainState, cfg: RunConfig,
     Coriolis+curvature kernel joins the slot when rotation is enabled.
     With the default map factors every msf branch is skipped and the step
     is bitwise Phase 2 (regression-pinned).
+
+    ``implicit`` (a :class:`gpuwm.core.ieva.DynamicsSplit`, the last RK
+    substep with ``zadvect_implicit = 1``) runs WRF's IEVA order instead:
+    see :func:`_add_slow_tendencies_ieva`.
     """
+    if implicit is not None:
+        _add_slow_tendencies_ieva(state, cfg, ru, rv, ww, implicit, cq=cq)
+        return
     launch_flux_div_scalar(state.total_theta(), ru, rv, ww, state.rth_t,
                            state, cfg.dx, cfg.dy,
                            open_x=_boundary_x(cfg), open_y=_boundary_y(cfg),
@@ -707,6 +787,74 @@ def _add_slow_tendencies(state: DomainState, cfg: RunConfig,
     # --- Coriolis + curvature (Task 3; WRF rk_tendency's coriolis and
     # curvature calls, kernels/coriolis_map.cu): no-op unless rotation is
     # enabled (set_map_coriolis with nonzero f/e or non-uniform msf).
+    if state.rotational:
+        add_coriolis_curvature(state, cfg, ru, rv)
+
+
+def _add_slow_tendencies_ieva(state: DomainState, cfg: RunConfig,
+                              ru: cp.ndarray, rv: cp.ndarray,
+                              ww: cp.ndarray, ctx, *, cq=None) -> None:
+    """WRF ``rk_tendency`` on an IEVA substep (module_em.F:436-745).
+
+    The explicit operators advect with the explicit share of the eta mass
+    flux ``ctx.wwE``; then each advective tendency is replaced by its
+    column solve against the implicit share ``ctx.wwI``, in WRF's order:
+    u and v, theta, ``rhs_ph`` (its vertical term on wwE) and the
+    geopotential solve, then w, whose lower boundary reads the u/v
+    tendencies after their solves and whose upper boundary reads the
+    geopotential tendency after its solve.  Only then do the pressure
+    gradient and buoyancy join ru_t/rv_t/rw_t, as they do in WRF, so the
+    solves see advection alone.
+
+    Theta is advected and solved as WRF's ``t_2 = theta - t0``; the t0
+    constant then rejoins ``rth_t`` with the FULL flux ``ww``, the share
+    of the default path's full-theta tendency the acoustic mass update
+    balances (:mod:`gpuwm.core.ieva`, THETA).  Every other tendency array
+    receives the same sequence of adds it does on the default path.
+    """
+    wwE = ctx.wwE
+
+    def theta_flux(field, ru_, rv_, w_, tend):
+        launch_flux_div_scalar(field, ru_, rv_, w_, tend,
+                               state, cfg.dx, cfg.dy,
+                               open_x=_boundary_x(cfg),
+                               open_y=_boundary_y(cfg),
+                               msf=state.msft, has_msf=state.has_msf,
+                               spec=_boundary_forced(cfg))
+
+    theta_t = ieva.theta_minus_t0(state)
+    theta_flux(theta_t, ru, rv, wwE, state.rth_t)
+    launch_flux_div_u(state.u, ru, rv, wwE, state.ru_t, state, cfg.dx, cfg.dy,
+                      open_x=_boundary_x(cfg), open_y=_boundary_y(cfg),
+                      msf=state.msfu, has_msf=state.has_msf,
+                      spec=_boundary_forced(cfg))
+    launch_flux_div_v(state.v, ru, rv, wwE, state.rv_t, state, cfg.dx, cfg.dy,
+                      open_x=_boundary_x(cfg), open_y=_boundary_y(cfg),
+                      msf=state.msfv, has_msf=state.has_msf,
+                      spec=_boundary_forced(cfg))
+    launch_flux_div_w(state.w, ru, rv, wwE, state.rw_t, state, cfg.dx, cfg.dy,
+                      open_x=_boundary_x(cfg), open_y=_boundary_y(cfg),
+                      msf=state.msft, has_msf=state.has_msf,
+                      spec=_boundary_forced(cfg))
+    ieva.solve_u(state, cfg, ctx)
+    ieva.solve_v(state, cfg, ctx)
+    ieva.solve_theta(state, cfg, ctx)
+    ieva.add_theta_offset_flux(state, cfg, theta_t, ru, rv, ww, theta_flux)
+    del theta_t
+
+    try:
+        _validate_geopotential_config(cfg, state.p.shape[2], state.p.shape[1])
+    except (ValueError, NotImplementedError):
+        _launch_slow_geopotential_vertical(state, wwE)
+        raise
+    _launch_slow_geopotential(state, cfg, wwE, add_vertical=True)
+    ieva.solve_ph(state, cfg, ctx)
+    ieva.solve_w(state, cfg, ctx)
+
+    if cq is None:
+        cq = prepare_moist_cq(state, cfg)
+    _launch_slow_pgf(state, cfg, cq=cq)
+    _launch_slow_buoyancy(state, cfg)
     if state.rotational:
         add_coriolis_curvature(state, cfg, ru, rv)
 
@@ -758,6 +906,35 @@ def capture_advective_theta_forcing(state: DomainState) -> None:
 
 
 def add_h_diabatic_tendency(state: DomainState) -> None:
+    """Fold held heating with every eager FP32 operation boundary retained."""
+    if type(state) is not DomainState:
+        _add_h_diabatic_tendency_eager(state)
+        return
+    arrays = (state.rth_t, state.h_diabatic, state.mub2d, state.mup,
+              state.c1h, state.c2h, state.msft)
+    if any(not isinstance(a, cp.ndarray) or a.dtype != np.dtype(np.float32)
+           or not a.flags.c_contiguous for a in arrays):
+        _add_h_diabatic_tendency_eager(state)
+        return
+    nz, ny, nx = state.rth_t.shape
+    if (state.h_diabatic.shape != state.rth_t.shape
+            or state.rth_t.size == 0
+            or state.mub2d.shape != (ny, nx) or state.mup.shape != (ny, nx)
+            or state.msft.shape != (ny, nx)
+            or state.c1h.shape != (nz,) or state.c2h.shape != (nz,)):
+        _add_h_diabatic_tendency_eager(state)
+        return
+    lo, hi = state.rth_t.data.ptr, state.rth_t.data.ptr + state.rth_t.nbytes
+    if any(lo < a.data.ptr + a.nbytes and a.data.ptr < hi for a in arrays[1:]):
+        _add_h_diabatic_tendency_eager(state)
+        return
+    kernel = get_kernel('held_heating', 'add_held_heating')
+    kernel(((state.rth_t.size + _TPB - 1) // _TPB,), (_TPB,),
+           (*arrays, np.uint64(state.rth_t.size), np.int32(ny * nx),
+            np.int32(state.has_msf)))
+
+
+def _add_h_diabatic_tendency_eager(state: DomainState) -> None:
     """ADD the retained microphysics heating to the coupled theta tendency.
 
     WRF ``rk_addtend_dry`` (module_em.F:1076-1080): ``t_tend = t_tend +
@@ -2273,6 +2450,29 @@ def _zero_open_strips(buf: cp.ndarray, cfg: RunConfig, width: int,
 
 
 def set_w_surface(state: DomainState, cfg: RunConfig) -> None:
+    """Set the kinematic surface value with the eager FP32 operation order."""
+    arrays = (state.u, state.v, state.ht, state.w,
+              getattr(state, 'msft', None))
+    if (any(not isinstance(a, cp.ndarray) or a.dtype != np.dtype(np.float32)
+            or not a.flags.c_contiguous for a in arrays)
+            or any(not isinstance(value, np.float32)
+                   for value in (state.cf1, state.cf2, state.cf3))
+            or isinstance(cfg.dx, np.generic) or isinstance(cfg.dy, np.generic)
+            or state.u.shape[0] < 3 or state.v.shape[0] < 3
+            or min(state.ht.shape) < 2):
+        _set_w_surface_eager(state, cfg)
+        return
+    ny, nx = state.ht.shape
+    kernel = get_kernel('surface_w', 'set_surface_w')
+    kernel(((ny * nx + _TPB - 1) // _TPB,), (_TPB,),
+           (state.u, state.v, state.ht, state.msft, state.w,
+            DTYPE(state.cf1), DTYPE(state.cf2), DTYPE(state.cf3),
+            DTYPE(0.5 / cfg.dx), DTYPE(0.5 / cfg.dy),
+            np.int32(state.has_msf), np.int32(_boundary_x(cfg)),
+            np.int32(_boundary_y(cfg)), np.int32(ny), np.int32(nx)))
+
+
+def _set_w_surface_eager(state: DomainState, cfg: RunConfig) -> None:
     """Kinematic lower boundary condition on the uncoupled w (WRF
     ``set_w_surface``, module_bc_em.F): ``w(sfc) = u.grad(ht)`` with the
     cf1..cf3-weighted three lowest half levels of u/v, periodic in x/y.
@@ -2346,16 +2546,34 @@ def apply_open_radiative_bc(state: DomainState, cfg: RunConfig) -> None:
                 np.int32(nz), np.int32(ny), np.int32(nx)))
 
 
+#: WRF ``w_beta`` (share/module_model_constants.F:89): the vertical Courant
+#: number where ``w_damp`` starts when ``zadvect_implicit`` is off.
+W_DAMP_BETA = 1.0
+
+
+def w_damp_onset(cfg: RunConfig) -> float:
+    """The vertical Courant number above which ``w_damp`` acts.
+
+    WRF 4.7.1 ``w_damp`` (module_big_step_utilities_em.F:2601-2607):
+    ``w_damp_on = w_crit_cfl`` when ``zadvect_implicit > 0``, else
+    ``w_beta``.  The excess is measured from ``w_crit_cfl`` in both cases.
+    """
+    if int(getattr(cfg, "zadvect_implicit", 0) or 0) > 0:
+        return float(cfg.w_crit_cfl)
+    return W_DAMP_BETA
+
+
 def apply_w_damping(state: DomainState, cfg: RunConfig,
                     ww: cp.ndarray) -> None:
     """WRF ``w_damp`` (module_big_step_utilities_em.F), ``w_damping = 1``.
 
     Where the vertical Courant number ``|ww/(c1f*mu+c2f)*rdnw*dt|`` of the
     stage's diagnosed eta mass flux ``ww`` exceeds the activation value
-    (w_beta = 1), the coupled w tendency is pushed against the vertical
-    motion by ``w_alpha*(vert_cfl - w_crit_cfl)`` — a limiter, not physics
-    (WRF adds it for robustness at marginal CFL).  Interior w levels only;
-    no-op unless ``cfg.w_damping == 1``.
+    (:func:`w_damp_onset`: w_beta = 1, or ``w_crit_cfl`` under
+    ``zadvect_implicit``), the coupled w tendency is pushed against the
+    vertical motion by ``w_alpha*(vert_cfl - w_crit_cfl)`` — a limiter, not
+    physics (WRF adds it for robustness at marginal CFL).  Interior w
+    levels only; no-op unless ``cfg.w_damping == 1``.
     """
     if cfg.w_damping != 1:
         return
@@ -2365,6 +2583,7 @@ def apply_w_damping(state: DomainState, cfg: RunConfig,
     kernel((blocks,), (_BC_THREADS,),
            (state.rw_t, ww, state.w, state.mup, state.mub2d,
             state.c1f, state.c2f, state.rdnw, DTYPE(cfg.dt),
+            DTYPE(w_damp_onset(cfg)), DTYPE(cfg.w_crit_cfl),
             np.int32(nz), np.int32(ny), np.int32(nx)))
 
 
@@ -2554,6 +2773,7 @@ def record_wrf_vertical_cfl(state: DomainState, cfg: RunConfig,
     args = (ww, state.mup, state.mub2d, state.c1f, state.c2f, state.rdnw,
             state.u, state.v, state.msfu, state.msfv,
             buf[slot], DTYPE(cfg.dt), DTYPE(1.0 / cfg.dx), DTYPE(1.0 / cfg.dy),
+            DTYPE(w_damp_onset(cfg)),
             np.int32(nz), np.int32(ny), np.int32(nx))
     if window is not None:
         args += tuple(np.int32(v) for v in window)
@@ -3032,16 +3252,8 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
         raise NotImplementedError(
             "non-timesplit physics requires the acoustic RK3 path "
             "(step(acoustic=False) is the Phase-1 dry advection test path)")
-    for name in _PROGNOSTICS:                         # device time-t copies
-        getattr(state, name + "0")[...] = getattr(state, name)
-    if state.qv is not None:
-        for name in SPECIES:
-            getattr(state, name + "0")[...] = getattr(state, name)
-        if getattr(state, "qi", None) is not None:
-            for name in extra_moist_species(state):
-                getattr(state, name + "0")[...] = getattr(state, name)
-    if getattr(state, "tke", None) is not None:       # km_opt=2 carrier
-        state.tke0[...] = state.tke
+    _save_time_t(state)
+    zero_tendencies = _prepare_tendency_zero(state)
 
     # WRF solve_em: non-timesplit physics is evaluated once during the
     # first RK pass and held fixed for all three passes.  EOS/phy_prep must
@@ -3074,8 +3286,7 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
                 "Phase-1 dry advection test path)")
         for istage, dt_eff in enumerate((cfg.dt / 3.0, cfg.dt / 2.0,
                                          cfg.dt)):
-            for name in _TENDENCIES:
-                getattr(state, name)[...] = 0
+            zero_tendencies()
             update_diagnostics(state, cfg.hypsometric_opt)
             add_advection_tendencies(state, cfg)
             if cfg.km_opt == 1:
@@ -3119,14 +3330,19 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
         launch_small_step_finish, launch_small_step_finish,
         launch_small_step_finish_final)
     for istage, (nsub, dtau) in enumerate(stages):
-        for name in _TENDENCIES:
-            getattr(state, name)[...] = 0
+        zero_tendencies()
         update_diagnostics(state, cfg.hypsometric_opt)  # p, al, alt at t*
         ru, rv, ww = stage_fluxes(state, cfg)
         # WRF calc_cq is fixed at the RK-stage reference state and shared by
         # horizontal_pressure_gradient plus every acoustic substep.
         stage_cq = prepare_moist_cq(state, cfg)
-        _add_slow_tendencies(state, cfg, ru, rv, ww, cq=stage_cq)
+        # zadvect_implicit = 1: WRF CHK_IEVA is true on the last substep.
+        if ieva.active_stage(cfg, istage, len(stages)):
+            _add_slow_tendencies(state, cfg, ru, rv, ww, cq=stage_cq,
+                                 implicit=ieva.prepare_dynamics(
+                                     state, cfg, ww))
+        else:
+            _add_slow_tendencies(state, cfg, ru, rv, ww, cq=stage_cq)
         if istage == 0:
             # WRF RTHFTEN for the cumulus schemes that take it.  THIS LINE
             # is the whole contract: rth_t holds the stage reference
@@ -3212,6 +3428,15 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
             # against the acoustic mu update (SK2008 D11).
             _sumflux_launch(
                 "finish_sumflux", (ru_m, rv_m, ww_m), (ru, rv, ww), nsub)
+            # rk_scalar_tend's IEVA split (module_em.F:1216-1242): ww_m
+            # with the time-n winds and the post-acoustic column mass,
+            # shared by every transported scalar of this substep.
+            # The keyword is passed only when on, so the default call is
+            # the call it always was.
+            scalar_implicit = {}
+            if ieva.active_stage(cfg, istage, len(stages)):
+                scalar_implicit["implicit"] = ieva.split_scalar_omega(
+                    state, cfg, ww_m, state.mub2d + state.mup, nsub * dtau)
             if moist:
                 advance_scalars_stage(
                     state, cfg, ru_m, rv_m, ww_m, nsub * dtau,
@@ -3222,14 +3447,16 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
                     # WRF RQVFTEN, the qv half of the cumulus advective
                     # forcing pair.  Stage 1, where the non-PD branch runs
                     # and the tendency is still pure advection.
-                    export_advective_forcing=(istage == 0))
+                    export_advective_forcing=(istage == 0),
+                    **scalar_implicit)
             if getattr(state, "tke", None) is not None:
                 from gpuwm.core.moist import advance_tke_stage
                 advance_tke_stage(
                     state, cfg, ru_m, rv_m, ww_m, nsub * dtau,
                     final=(istage == len(stages) - 1),
                     fixed_tendency=state.scratch(
-                        state.p.shape, "smag_rtke"))
+                        state.p.shape, "smag_rtke"),
+                    **scalar_implicit)
         apply_open_zero_gradient(state, cfg)          # radiative-open BCs
     # km_opt=2 budget: one device reduction over the completed step, taken
     # here because state.mup is still the mass the final RK scalar update

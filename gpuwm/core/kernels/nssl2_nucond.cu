@@ -8,7 +8,7 @@
 
 __device__ __forceinline__ int nssl2_sat_index(float temperature)
 {
-    int index = (int)((temperature - 163.15f) / 0.002f + 1.5f);
+    int index = (int)(__fdiv_rn((temperature - 163.15f), 0.002f) + 1.5f);
     if (index < 1) index = 1;
     if (index > 1000001) index = 1000001;
     return index;
@@ -246,7 +246,7 @@ extern "C" __global__ void nssl2_nucond_default(
             cloud_number = rho * cloud / cloud_mean_mass;
         } else if (cloud > qxmin_cloud) {
             cloud_number = fmaxf(
-                cxmin, rho * cloud / cloud_max_mass);
+                cxmin, __fdiv_rn(rho * cloud, cloud_max_mass));
             cloud_mean_mass = fminf(
                 cloud_max_mass,
                 fmaxf(cloud_min_mass, rho * cloud / cloud_number));
@@ -261,13 +261,13 @@ extern "C" __global__ void nssl2_nucond_default(
                 rho * rain / (1000.0f * fmaxf(1.0e-9f, rain_number));
             if (rain_mean_volume > rain_max_volume) {
                 rain_mean_volume = rain_max_volume;
-                rain_number = rho * rain / (rain_max_volume * 1000.0f);
+                rain_number = __fdiv_rn(rho * rain, (rain_max_volume * 1000.0f));
             } else if (rain_mean_volume < rain_min_volume) {
                 rain_mean_volume = rain_min_volume;
-                rain_number = rho * rain / (rain_min_volume * 1000.0f);
+                rain_number = __fdiv_rn(rho * rain, (rain_min_volume * 1000.0f));
             }
             // imurain=1, alphar=0: 6*xv/[pi*(3*2*1)] = xv/pi.
-            rain_diameter = powf(rain_mean_volume / pi, 1.0f / 3.0f);
+            rain_diameter = powf(__fdiv_rn(rain_mean_volume, pi), 1.0f / 3.0f);
         }
 
         const float bounded_temperature =
@@ -313,11 +313,11 @@ extern "C" __global__ void nssl2_nucond_default(
                    && cloud > qxmin_cloud && cloud_number >= 1.0f) {
             const float dynamic_viscosity =
                 1.832e-5f * (416.16f / (temperature + 120.0f))
-                * powf(temperature / 296.0f, 1.5f);
+                * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
             const float thermal_conductivity =
-                2.43e-2f * dynamic_viscosity / 1.718e-5f;
+                __fdiv_rn(2.43e-2f * dynamic_viscosity, 1.718e-5f);
             const float vapor_diffusivity =
-                2.11e-5f * powf(temperature / 273.15f, 1.94f)
+                2.11e-5f * powf(__fdiv_rn(temperature, 273.15f), 1.94f)
                 * (101325.0f / pressure);
             const float vapor_pressure =
                 610.78f * nssl2_sat_table(temperature);
@@ -490,7 +490,7 @@ extern "C" __global__ void nssl2_nucond_default(
                            0.3461538553237915f);
                 activated = fminf(activated, ccn_number);
                 activated = fminf(
-                    activated, 0.5f * cloud_increment / cloud_min_mass);
+                    activated, __fdiv_rn(0.5f * cloud_increment, cloud_min_mass));
                 activated = fminf(
                     activated,
                     fmaxf(0.0f, nucleation_pool - diagnosed_activated));
@@ -530,13 +530,13 @@ extern "C" __global__ void nssl2_nucond_default(
                     * (4.0e-6f * 4.0e-6f * 4.0e-6f);
                 activated = fminf(
                     background_ccn,
-                    fmaxf(activated, rho * cloud / four_micron_mass));
+                    fmaxf(activated, __fdiv_rn(rho * cloud, four_micron_mass)));
                 activated = fminf(activated, ccn_number);
                 ccn_number = fmaxf(0.0f, ccn_number - activated);
                 cloud_number = fmaxf(cloud_number, activated);
                 cloud_number = fminf(
-                    cloud_number, rho * fmaxf(cloud, 0.0f)
-                        / cloud_min_mass);
+                    cloud_number, __fdiv_rn(rho * fmaxf(cloud, 0.0f),
+                        cloud_min_mass));
             }
         }
 
@@ -605,7 +605,7 @@ extern "C" __global__ void nssl2_nucond_default(
                 && retained_ice + retained_snow < 1.0e-13f) {
             ccn_number = background_ccn
                 - fmaxf(0.0f, background_ccn - ccn_number)
-                    * expf(-dt / 3600.0f);
+                    * expf(__fdiv_rn(-dt, 3600.0f));
         }
     }
 

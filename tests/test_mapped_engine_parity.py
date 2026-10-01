@@ -321,6 +321,13 @@ STAGED_SOURCES: dict[str, dict[str, object]] = {
         "files": _files("aifs", "20260817000000-0h-oper-fc.grib2",
                         "20260817000000-6h-oper-fc.grib2"),
     },
+    # The AIFS step-0 donor decoded on its own, over the one object it
+    # is ever handed: the cycle's f000, whose land mask and surface
+    # geopotential every lead of the composition borrows.
+    "aifs-single-step0-donor": {
+        "mapping": "rw-wps-aifs-single-step0-donor.mapping.json",
+        "files": _files("aifs", "20260817000000-0h-oper-fc.grib2"),
+    },
     # The same shape from a different producer, split pressure/surface.
     # The NOMADS files, because the NOMADS mapping's selectors resolve
     # against NOMADS bytes: the same cycle re-published on S3 carries a
@@ -1019,13 +1026,12 @@ COMPOSE_DIGEST_SCHEMA = "gpuwm-mapped-compose-parity-digest-v2"
 
 #: How a row's supplement inventory is drawn from its primary inputs.
 #:
-#: These are the four shapes the shipped route table already declares
+#: These are the three shapes the shipped route table declares
 #: (``prep.supplement.from`` in ``rw-wps-fetch-routes.v1.json``): terrain
-#: in every input, terrain in the first input only, terrain in a separate
-#: invariant object, and no terrain supplement at all because a
-#: cross-source binding supplies it.
+#: in every input, terrain in a separate invariant object, and no terrain
+#: supplement at all because a cross-source binding supplies it (a
+#: same-cycle donor, or the cycle's own step-0 object).
 _SUPPLEMENT_EVERY = "every_primary"
-_SUPPLEMENT_FIRST = "first_primary"
 _SUPPLEMENT_NAMED = "named"
 _SUPPLEMENT_DONOR = "donor"
 
@@ -1076,12 +1082,16 @@ COMPOSED_SOURCES: dict[str, dict[str, object]] = {
                           "20260816000000-3h-oper-fc.grib2"),
         "supplement": _SUPPLEMENT_EVERY,
     },
-    # The same broadcast from an AI model whose DECODE refuses: compose
-    # is where its terrain arrives, so the two verdicts differ by design.
+    # An AI model whose DECODE refuses: its land mask and terrain ride
+    # the step-0 object alone, so compose binds both from the cycle's
+    # own f000 (the donor) and carries them to every lead.  This window
+    # starts at f000, so the donor is also the first primary: f000 is
+    # matched and f006 carried.
     "aifs": {
         "primary": _files("aifs", "20260817000000-0h-oper-fc.grib2",
                           "20260817000000-6h-oper-fc.grib2"),
-        "supplement": _SUPPLEMENT_FIRST,
+        "supplement": _SUPPLEMENT_DONOR,
+        "donor_files": _files("aifs", "20260817000000-0h-oper-fc.grib2"),
     },
     # A 0.15-degree global grid published one field per file, terrain in
     # its own invariant object.
@@ -1204,8 +1214,6 @@ def _composed_files(source: str) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     kind = str(entry["supplement"])
     if kind == _SUPPLEMENT_EVERY:
         return primary, primary
-    if kind == _SUPPLEMENT_FIRST:
-        return primary, primary[:1]
     if kind == _SUPPLEMENT_NAMED:
         return primary, tuple(entry["supplement_files"])
     if kind == _SUPPLEMENT_DONOR:

@@ -656,6 +656,63 @@ def _window_points(exp, source: str, grid_points: int) -> int:
     return min(grid_points, span(x, int(window.nx)) * span(y, int(window.ny)))
 
 
+def _global_window_points(exp, axes: Mapping[str, Any], grid_points: int, *,
+                          ring: bool = True) -> int | None:
+    """Points of a whole-globe source the atmospheric window keeps for ``exp``'s root.
+
+    ``axes`` is the row's ``global_axes``: the canonical axes the engine
+    publishes a whole ring on (ascending latitude from ``latitude_first``,
+    longitude from ``longitude_first``, one ``step_degrees`` apart).  The
+    window is granted only where every stencil of the target is clear of
+    the ring's stored cut (:func:`gpuwm.ingest.horiz.global_ring_cut`, the
+    rule :func:`gpuwm.ingest.atmospheric_window.atmospheric_window_for_grids`
+    applies), and then it is the target's footprint on those axes.  None
+    when the target's stencils reach the cut: the preparation re-cuts the
+    ring and keeps it whole.  With ``ring`` false (a transport that
+    downloads only an area, whose crop has no cut) the footprint is taken
+    as it is.  A target this cannot place is priced at ``grid_points``.
+    """
+
+    import numpy as np
+
+    projection = getattr(exp, "projection", None)
+    if projection is None:
+        return grid_points
+    try:
+        from gpuwm.domain_wizard import _root_grid
+        from gpuwm.ingest.horiz import global_ring_cut
+
+        root = exp.root.run
+        grid = _root_grid(
+            {"map_proj": projection.map_proj, "ref_lat": projection.ref_lat,
+             "ref_lon": projection.ref_lon, "truelat1": projection.truelat1,
+             "truelat2": projection.truelat2, "stand_lon": projection.stand_lon},
+            int(root.nx), int(root.ny), float(root.dx))
+        pairs = (grid.latlon_mass(), grid.latlon_u(), grid.latlon_v())
+        step = float(axes["step_degrees"])
+        nx, ny = int(axes["nx"]), int(axes["ny"])
+        west = float(axes["longitude_first"])
+        longitude_axis = west + step * np.arange(nx, dtype=np.float64)
+        longitudes = [np.asarray(longitude, dtype=np.float64) for _, longitude in pairs]
+        if ring and global_ring_cut(longitude_axis, *longitudes) is not None:
+            return None
+        latitude = np.concatenate([np.asarray(lat, dtype=np.float64).ravel() for lat, _ in pairs])
+        longitude = np.concatenate([values.ravel() for values in longitudes])
+        x = np.mod(longitude - west, 360.0) / step
+        y = (latitude - float(axes["latitude_first"])) / step
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return grid_points
+    if not (np.isfinite(x).all() and np.isfinite(y).all()):
+        return grid_points
+
+    def span(values, size: int) -> int:
+        low = max(0, int(np.floor(float(np.min(values)))) - WINDOW_MARGIN_CELLS)
+        high = min(size, int(np.ceil(float(np.max(values)))) + WINDOW_MARGIN_CELLS + 1)
+        return max(0, high - low)
+
+    return min(grid_points, span(x, nx) * span(y, ny))
+
+
 def _normalized_points(exp, document: str) -> int | None:
     """Points of the regular window a normalized source is composed on, for ``exp``.
 
@@ -696,23 +753,29 @@ def compose_scratch_estimate(exp, *, chain: str | None, source: str | None,
     A chain that composes through the mapped engine stages every decoded
     valid time on disk before the preparation reads it back: every field
     the source's mapping publishes, on the source's own grid, as 8-byte
-    values.  The stream scales with the SOURCE grid, not the target, so
-    none of the other figures reaches it: a GDPS 48 hour window stages
-    about 82 GB for a domain of any size.  It lives while the preparation
-    runs and is removed when the preparation ends.
+    values, except the layers the atmospheric window crops.  The stream
+    scales with the SOURCE grid, not the target, so none of the other
+    figures reaches it: a GDPS 48 hour window whose target reaches the
+    globe's stored longitude cut stages about 82 GB for a domain of any
+    size.  It lives while the preparation runs and is removed when the
+    preparation ends.
 
     The figures are rows of the packaged table's ``compose_scratch``
     section: per source, the grid points, the layers each valid time
     publishes, the bytes per value, and how many of those layers the
-    atmospheric window may crop.  A global source's window never crops
-    (its representation stays whole), so its stream is exact.  A regional
-    source's cropped layers are priced over the target's footprint on the
-    source grid.  ``points`` is the request's own crop, when its transport
+    atmospheric window may crop.  Those layers are priced over the
+    target's footprint on the source grid: a regional source's from its
+    coverage window, a global source's from the row's ``global_axes``.  A
+    global source takes the window only where the target's stencils are
+    clear of its stored longitude cut (:func:`_global_window_points`); a
+    target on the cut keeps the ring whole, and the whole stream is then
+    certain.  ``points`` is the request's own crop, when its transport
     downloads only an area: the frames then cover only that area.
 
     The answer carries ``bytes`` (the estimate), ``min_bytes`` (the part
     that does not depend on the window: the whole stream for a global
-    source), ``max_bytes`` (no window at all), ``valid_times``,
+    source whose target reaches its stored cut), ``max_bytes`` (no window
+    at all), ``valid_times``,
     ``per_valid_time``, ``source``, ``composes`` (whether the chain
     stages a stream at all, priced or not) and a ``basis``.  ``bytes`` is
     None when the chain composes and the table has no row for the source.
@@ -746,7 +809,17 @@ def compose_scratch_estimate(exp, *, chain: str | None, source: str | None,
     layers = int(row["layers_per_valid_time"])
     windowed = int(row.get("windowed_layers", 0))
     per_value = int(row["bytes_per_value"])
-    kept = grid_points if not windowed else _window_points(exp, source, grid_points)
+    on_cut = False
+    if not windowed:
+        kept = grid_points
+    elif row.get("global_axes"):
+        kept = _global_window_points(exp, row["global_axes"], grid_points, ring=not points)
+        if kept is None:
+            # The target's stencils reach the ring's stored cut: the ring
+            # is re-cut and kept whole, and that is certain.
+            on_cut, windowed, kept = True, 0, grid_points
+    else:
+        kept = _window_points(exp, source, grid_points)
     whole = grid_points * layers * per_value
     fixed = grid_points * (layers - windowed) * per_value
     per_time = fixed + kept * windowed * per_value
@@ -760,6 +833,9 @@ def compose_scratch_estimate(exp, *, chain: str | None, source: str | None,
     if windowed:
         basis += (f", {windowed} of those layers cropped to the {kept:,} points the target's "
                   "footprint keeps on the source grid")
+    elif on_cut:
+        basis += (", all of them whole: the target reaches the global grid's stored "
+                  "longitude cut, so the atmospheric window is not taken")
     basis += f" ({row.get('measured')})"
     return {"bytes": per_time * times, "min_bytes": fixed * times, "max_bytes": whole * times,
             "valid_times": times, "per_valid_time": per_time, "source": source,

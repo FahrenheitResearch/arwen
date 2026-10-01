@@ -224,6 +224,17 @@ class SourceAdapter:
     #: not declared: it would read as available to the seeder and fail at
     #: the one place a seed is supposed to be dependable.
     seed_fields: tuple[str, ...] = ()
+    #: The analysed hydrometeor masses (state names: qc, qr, qi, qs, qg)
+    #: this row's own route decodes on EVERY forcing frame, which the
+    #: root's specified lateral boundary therefore carries
+    #: (:mod:`gpuwm.boundary_fields`).  The same seam as ``seed_fields``: a
+    #: row that names a ``packaged_profile`` states it in that profile's
+    #: mapping (its declared hydrometeor fields) and declares nothing
+    #: here, and :func:`gpuwm.boundary_fields.source_boundary_species`
+    #: reads the two as one set.  So this column carries the NATIVE
+    #: routes, whose inventory is in their decoder rather than in a JSON
+    #: mapping.  Empty keeps the boundary at water vapour only.
+    boundary_species: tuple[str, ...] = ()
     # Selection metadata for regional initial and boundary conditions. The
     # source registry owns product/time semantics independently of transport.
     time_axis: str | None = None
@@ -327,6 +338,7 @@ def _adapter(
     record: str = "forecast",
     notes: str = "",
     seed_fields: tuple[str, ...] = (),
+    boundary_species: tuple[str, ...] = (),
     time_axis: str | None = None,
     selection_owner: str | None = None,
     forecast_time_owner: str | None = None,
@@ -376,6 +388,7 @@ def _adapter(
         credentials=tuple(credentials),
         notes=notes,
         seed_fields=tuple(seed_fields),
+        boundary_species=tuple(boundary_species),
         time_axis=time_axis, selection_owner=selection_owner,
         forecast_time_owner=forecast_time_owner,
         forecast_time_cycle_argument=forecast_time_cycle_argument,
@@ -468,6 +481,13 @@ _ERA5_ARCO_ARCHIVE = ArchiveWindow(
     bounds_url=("https://storage.googleapis.com/gcp-public-data-arco-era5/ar/"
                 "full_37-1h-0p25deg-chunk-1.zarr-v3/.zattrs"),
     bounds_stop_keys=("valid_time_stop_era5t", "valid_time_stop"),
+    # MEASURED 2026-09-30: the store's valid_time_stop_era5t read
+    # 2026-09-23 at 01Z and 2026-09-24 at 04Z, so its last hour trailed
+    # real time by 125 to 146 h across one daily refresh, a day behind the
+    # CDS's five.  Seven days also covers one missed refresh.  Used only
+    # when the bounds document above cannot be read; when it can, its
+    # own last hour is the answer.
+    publication_lag_hours=168.0,
 )
 
 _ERA5_ARCHIVE = ArchiveWindow(
@@ -607,6 +627,10 @@ _ADAPTERS = (
         # to the 850 hPa vorticity rung with "MSLP is not declared".
         seed_fields=('air_pressure', 'air_temperature', 'eastward_wind',
                      'northward_wind', 'mean_sea_level_pressure'),
+        # The native decoder reads all five masses from every wrfnat
+        # frame (gpuwm/ingest/hrrr.py _ATMOSPHERE_3D), so the root's
+        # boundary carries them as the start state does.
+        boundary_species=("qc", "qr", "qi", "qs", "qg"),
         archives=(_HRRR_NATIVE_ARCHIVE,),
         name="HRRR (native hybrid levels)",
         default_product="sfc",
@@ -642,11 +666,10 @@ _ADAPTERS = (
             # table states a horizon in; held in step with
             # gpuwm.hrrr_forecast's constants by a test.
             horizons=(((0, 6, 12, 18), 48), (None, 18)),
-            # Measured on the public mirror for every cycle of
-            # 2026-09-24..26: a synoptic run's f048 lands 1 h 47 min to
-            # 1 h 49 min after its start, an off-synoptic run's f018
-            # 1 h 25 min to 1 h 26 min after.  Three hours is the fetch
-            # route table's measured lag for hrrr-prs.
+            # The measured lead-by-lead times are the hrrr row of the
+            # route table's legacy_posting; this is past that row's
+            # latest posting seen of every cycle's last lead
+            # (tests/test_source_posting_rows.py holds it there).
             usual_delay_hours=3.0,
             basis="HRRR initializes every hour; publication is "
                   "decided by the per-object completeness probe, "
@@ -1231,8 +1254,9 @@ _ADAPTERS = (
             "ladder are admitted-and-ignored, and specific humidity is "
             "not published there), the surface/2 m/10 m fields and the "
             "two-layer ordinal soil column; the land mask and surface "
-            "geopotential ride the 0-hour file alone and are declared "
-            "cycle-invariant.  THREE limits a reader must know.  (1) The "
+            "geopotential ride the 0-hour file alone, so every lead takes "
+            "them from its cycle's 0-hour file, which a later start "
+            "fetches too.  THREE limits a reader must know.  (1) The "
             "soil column reaches 0.28 m: Noah's four layers are WRF's own "
             "shallow-column interpolation bracketed by the skin "
             "temperature at 0 m and the static deep-soil temperature at "

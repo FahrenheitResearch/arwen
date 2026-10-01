@@ -225,7 +225,7 @@ def _relative_to(root: Path, path: Path, label: str) -> str:
             f"{label} {path} is outside the bundle root {root}") from None
 
 
-def publish_hrrr_prepared_bundle(
+def publish_hrrr_bundle_head(
         *,
         output_root: Path,
         prepared_cache: Path,
@@ -242,44 +242,44 @@ def publish_hrrr_prepared_bundle(
         preprocessing: Mapping[str, object],
         source_identity: Mapping[str, object],
         physics_profile: str | None,
+        cache_user_metadata: Mapping[str, object],
         expert_acknowledgements: Sequence[str] = (),
         static_receipt: Path | None = None,
         domain_spec: Path | None = None,
         namelist_extension_invariant: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    """Write the portable authorities and return the pins to bind them by.
+    """Write the portable authorities; return the proof without its seal keys.
 
-    The return value is the whole handoff: three digests
-    (``proof_sha256``, ``source_manifest_sha256``,
-    ``prepared_content_sha256``) and the two paths a forecast stage has
-    to pass beside them.  Those are exactly
-    ``preflight_prepared_forecast``'s pinned arguments, so a caller
-    never has to hash a file by hand to run the case it just prepared.
+    Everything the proof says that the start time already knows: the
+    authorities a forecast binds (``namelist.wps``, ``namelist.input``,
+    ``source-input-manifest.json``), their digests, the physics and the
+    preprocessing receipt.  What only the sealed cache knows (the cache
+    receipt, the initialization artifacts and the export contract, which
+    all name the cache's content digest) is added by
+    :func:`seal_hrrr_bundle_proof`, and those are exactly keys of
+    :data:`gpuwm.ingest.boundary_stream.SEAL_ONLY_PROOF_KEYS`, so a
+    chained native preparation publishes this as its head proof and the
+    seal adds the rest.  ``cache_user_metadata`` is the prepared cache's
+    ``metadata.user``, which the head already holds.
 
-    ``experiment_config`` must already be inside the bundle and must be
-    the document the preparation published for itself
-    (:func:`gpuwm.experiment_document.publish_experiment_document`).
-    Requiring it rather than rendering it here keeps the rendering with
-    the only process that holds the tables -- the preparer -- and keeps
-    this writer to the one job of binding files it can hash.
+    Returns ``{"proof_head", "stock_refusal", "paths", "handoff"}``; the
+    handoff is :func:`publish_hrrr_prepared_bundle`'s return value without
+    the two digests only the seal has (``proof_sha256``,
+    ``prepared_content_sha256``), which :func:`sealed_handoff` adds.
     """
 
     from gpuwm.experiment import load_experiment
     from gpuwm.ingest.prepared_cache import SOIL_PREPARATION_RECEIPTS
     from gpuwm.prepared_single_domain_forecast import (
-        _resolved_wrf_direct_contract_sha256,
         single_domain_physics_selection,
         validate_single_domain_physics_profile,
     )
-    from gpuwm.wrf_direct import (
-        StockWrfExportUnsupported, stock_wrf_export_refused)
     from gpuwm.wrf_physics_inventory import stock_wrf_physics_inventory
 
     root = Path(output_root).resolve()
     if not root.is_dir():
         raise HrrrBundleError(f"bundle root does not exist: {root}")
     cache_path = Path(prepared_cache).resolve()
-    header = _cache_header(cache_path)
 
     config_path = Path(experiment_config).resolve()
     if config_path.parent != root:
@@ -305,6 +305,12 @@ def publish_hrrr_prepared_bundle(
         raise HrrrBundleError(
             f"experiment start {experiment.start_time.isoformat()} is not "
             f"cycle f{source_hours[0]:03d} ({start_time.isoformat()})")
+    # Checked before anything is written, so a bundle that cannot be
+    # published leaves no authority behind claiming it was.
+    cache_relative = _relative_to(root, cache_path, "prepared cache")
+    static_relative = _relative_to(root, Path(static_cache), "static cache")
+    geometry_relative = _relative_to(
+        root, Path(geometry_receipt), "geometry receipt")
 
     # ---- the authorities the front door hashes -------------------------
     # ``wps_namelist=None`` is the ROUTE's own case, not a shortcut: the
@@ -360,19 +366,6 @@ def publish_hrrr_prepared_bundle(
             physics_profile, config=cfg,
             expert_acknowledgements=acknowledgements)
 
-    boundary_interval_seconds = 3600
-    cache_relative = _relative_to(root, cache_path, "prepared cache")
-    static_relative = _relative_to(root, Path(static_cache), "static cache")
-    geometry_relative = _relative_to(
-        root, Path(geometry_receipt), "geometry receipt")
-    cache_receipt = {
-        "schema": header.get("schema"),
-        "status": "BUILT",
-        "path": cache_relative,
-        "content_sha256": header.get("content_sha256"),
-        "array_count": len(header.get("arrays") or {}),
-        "payload_bytes": header.get("payload_bytes"),
-    }
     # The export slot binds the stock-WRF physics contract, and a scheme
     # with no stock-WRF package contract (WDM6, Kessler, Milbrandt-Yau)
     # has none to bind.  That is a fact about exporting a wrfinput for an
@@ -386,36 +379,10 @@ def publish_hrrr_prepared_bundle(
     try:
         stock_wrf_physics_inventory(mp_physics)
     except ValueError as error:
-        stock_refusal = StockWrfExportUnsupported(
-            str(error), unsupported={"mp_physics": mp_physics})
+        stock_refusal = str(error)
     else:
         stock_refusal = None
-    if stock_refusal is None:
-        export = {
-            "schema": EXPORT_SCHEMA,
-            "status": "READY",
-            "forcing_hours": forcing_hours,
-            "boundary_interval_seconds": boundary_interval_seconds,
-            "dimensions": {"nx": int(cfg.nx), "ny": int(cfg.ny),
-                           "nz": int(cfg.nz)},
-            "valid_time": start_time.strftime("%Y-%m-%d_%H:%M:%S"),
-            "source": {
-                "contract_sha256": _sha256(
-                    Path(__file__).resolve().parent
-                    / "wrf_direct_v461_contract.json"),
-                "geometry_receipt_sha256": _sha256(geometry_receipt),
-                "prepared_content_sha256": header.get("content_sha256"),
-                "prepared_header_sha256": _sha256(
-                    cache_path / "header.json"),
-                "resolved_physics_contract_sha256": (
-                    _resolved_wrf_direct_contract_sha256(mp_physics)),
-                "static_cache_sha256": _sha256(static_cache),
-            },
-            "physics": physics,
-        }
-    else:
-        export = stock_wrf_export_refused(stock_refusal, schema=EXPORT_SCHEMA)
-    proof = {
+    proof_head = {
         "schema": PROOF_SCHEMA,
         "status": "READY_NOT_YET_STOCK_WRF_GATED",
         # HRRR's two lead vocabularies, both named, never conflated:
@@ -429,7 +396,7 @@ def publish_hrrr_prepared_bundle(
         "forcing_times": [
             (start_time + timedelta(hours=hour)).isoformat()
             for hour in forcing_hours],
-        "boundary_interval_seconds": boundary_interval_seconds,
+        "boundary_interval_seconds": HRRR_BOUNDARY_INTERVAL_SECONDS,
         "input_manifest_sha256": manifest_digest,
         "decoder_sha256": files["bridge"]["sha256"],
         "preprocessing": dict(preprocessing),
@@ -444,24 +411,10 @@ def publish_hrrr_prepared_bundle(
             "manifest_sha256": manifest_digest,
             "files": files,
         },
-        "initialization_artifacts": {
-            "source_manifest": _artifact(manifest_path, SOURCE_MANIFEST_NAME),
-            "static_cache": _artifact(Path(static_cache), static_relative),
-            "geometry_receipt": _artifact(
-                Path(geometry_receipt), geometry_relative),
-            "prepared_cache": {
-                "path": cache_relative,
-                "content_sha256": header.get("content_sha256"),
-                "payload_bytes": header.get("payload_bytes"),
-            },
-            "wrf_files": {},
-        },
-        "prepared_cache": cache_receipt,
         "physics": physics,
-        "export": export,
     }
     if stock_refusal is not None:
-        proof["stock_wrf_export"] = "optional"
+        proof_head["stock_wrf_export"] = "optional"
     # The cache owns these declared scientific settings. The forecast reader
     # compares each present field to both this proof and the experiment; losing
     # one at publication makes a valid native preparation impossible to run.
@@ -469,33 +422,216 @@ def publish_hrrr_prepared_bundle(
     # value from a default or a named profile here.
     for key in ("ingest", "static_highres", "trace_gas_overrides"):
         if key in source_identity:
-            proof[key] = source_identity[key]
+            proof_head[key] = source_identity[key]
     # These are outcomes recorded by the actual preparation, including a
     # texture treatment that was considered but did not apply at this spacing.
-    # Relay only the registered receipts present in the sealed cache.
-    user_metadata = header.get("metadata", {}).get("user", {})
+    # Relay only the registered receipts present in the cache.
     for key in SOIL_PREPARATION_RECEIPTS:
-        if key in user_metadata:
-            proof[key] = user_metadata[key]
+        if key in cache_user_metadata:
+            proof_head[key] = cache_user_metadata[key]
     if namelist_extension_invariant is not None:
-        proof["namelist_extension_invariant"] = dict(
+        proof_head["namelist_extension_invariant"] = dict(
             namelist_extension_invariant)
-    proof_path = root / PROOF_NAME
-    _write_json(proof_path, proof)
 
     return {
-        "schema": "gpuwm-hrrr-portable-bundle-handoff-v1",
-        "prepared_root": str(root),
+        "proof_head": proof_head,
+        "stock_refusal": stock_refusal,
+        "mp_physics": mp_physics,
+        "dimensions": {"nx": int(cfg.nx), "ny": int(cfg.ny),
+                       "nz": int(cfg.nz)},
+        "paths": {
+            "cache": cache_relative, "static": static_relative,
+            "geometry_receipt": geometry_relative,
+        },
+        "handoff": {
+            "schema": "gpuwm-hrrr-portable-bundle-handoff-v1",
+            "prepared_root": str(root),
+            "proof": str(root / PROOF_NAME),
+            "source_manifest": str(manifest_path),
+            "source_manifest_sha256": manifest_digest,
+            "experiment_config": str(config_path),
+            "wps_namelist": str(wps_path),
+            "namelist_input": str(namelist_path),
+            "physics_profile": physics_profile,
+        },
+    }
+
+
+#: The native route's forcing cadence: HRRR posts hourly and the native
+#: preparation builds contiguous hourly leads (gpuwm.hrrr_forecast).
+HRRR_BOUNDARY_INTERVAL_SECONDS = 3600
+
+
+def seal_hrrr_bundle_proof(head: Mapping[str, object], *,
+                           output_root: Path, prepared_cache: Path,
+                           static_cache: Path,
+                           geometry_receipt: Path) -> dict[str, object]:
+    """The sealed proof: the head's proof plus what the sealed cache names.
+
+    ``head`` is :func:`publish_hrrr_bundle_head`'s return value.  Every key
+    added here is a seal-only key (``prepared_cache``,
+    ``initialization_artifacts``, ``export``), so the sealed proof equals
+    the head proof outside them, which is what the chained writer checks
+    before it publishes.
+    """
+
+    from gpuwm.prepared_single_domain_forecast import (
+        _resolved_wrf_direct_contract_sha256,
+    )
+    from gpuwm.wrf_direct import (
+        StockWrfExportUnsupported, stock_wrf_export_refused)
+
+    root = Path(output_root).resolve()
+    cache_path = Path(prepared_cache).resolve()
+    header = _cache_header(cache_path)
+    proof_head = dict(head["proof_head"])
+    paths = head["paths"]
+    mp_physics = int(head["mp_physics"])
+    cache_receipt = {
+        "schema": header.get("schema"),
+        "status": "BUILT",
+        "path": paths["cache"],
+        "content_sha256": header.get("content_sha256"),
+        "array_count": len(header.get("arrays") or {}),
+        "payload_bytes": header.get("payload_bytes"),
+    }
+    if head.get("stock_refusal") is None:
+        export = {
+            "schema": EXPORT_SCHEMA,
+            "status": "READY",
+            "forcing_hours": list(proof_head["forcing_hours"]),
+            "boundary_interval_seconds": proof_head[
+                "boundary_interval_seconds"],
+            "dimensions": dict(head["dimensions"]),
+            "valid_time": datetime.fromisoformat(
+                str(proof_head["model_start_time"])).strftime(
+                    "%Y-%m-%d_%H:%M:%S"),
+            "source": {
+                "contract_sha256": _sha256(
+                    Path(__file__).resolve().parent
+                    / "wrf_direct_v461_contract.json"),
+                "geometry_receipt_sha256": _sha256(geometry_receipt),
+                "prepared_content_sha256": header.get("content_sha256"),
+                "prepared_header_sha256": _sha256(
+                    cache_path / "header.json"),
+                "resolved_physics_contract_sha256": (
+                    _resolved_wrf_direct_contract_sha256(mp_physics)),
+                "static_cache_sha256": _sha256(static_cache),
+            },
+            "physics": proof_head["physics"],
+        }
+    else:
+        export = stock_wrf_export_refused(
+            StockWrfExportUnsupported(
+                str(head["stock_refusal"]),
+                unsupported={"mp_physics": mp_physics}),
+            schema=EXPORT_SCHEMA)
+    return {
+        **proof_head,
+        "initialization_artifacts": {
+            "source_manifest": _artifact(
+                root / SOURCE_MANIFEST_NAME, SOURCE_MANIFEST_NAME),
+            "static_cache": _artifact(Path(static_cache), paths["static"]),
+            "geometry_receipt": _artifact(
+                Path(geometry_receipt), paths["geometry_receipt"]),
+            "prepared_cache": {
+                "path": paths["cache"],
+                "content_sha256": header.get("content_sha256"),
+                "payload_bytes": header.get("payload_bytes"),
+            },
+            "wrf_files": {},
+        },
+        "prepared_cache": cache_receipt,
+        "export": export,
+    }
+
+
+def sealed_handoff(head: Mapping[str, object], *, proof_path: Path,
+                   content_sha256) -> dict[str, object]:
+    """The handoff once ``proof.json`` exists: the head's plus two digests."""
+
+    handoff = dict(head["handoff"])
+    return {
+        "schema": handoff["schema"],
+        "prepared_root": handoff["prepared_root"],
         "proof": str(proof_path),
         "proof_sha256": _sha256(proof_path),
-        "source_manifest": str(manifest_path),
-        "source_manifest_sha256": manifest_digest,
-        "prepared_content_sha256": header.get("content_sha256"),
-        "experiment_config": str(config_path),
-        "wps_namelist": str(wps_path),
-        "namelist_input": str(namelist_path),
-        "physics_profile": physics_profile,
+        "source_manifest": handoff["source_manifest"],
+        "source_manifest_sha256": handoff["source_manifest_sha256"],
+        "prepared_content_sha256": content_sha256,
+        "experiment_config": handoff["experiment_config"],
+        "wps_namelist": handoff["wps_namelist"],
+        "namelist_input": handoff["namelist_input"],
+        "physics_profile": handoff["physics_profile"],
     }
+
+
+def publish_hrrr_prepared_bundle(
+        *,
+        output_root: Path,
+        prepared_cache: Path,
+        static_cache: Path,
+        geometry_receipt: Path,
+        bridge_manifest: Path,
+        namelist_input: Path,
+        source_manifest: Path,
+        wps_namelist: Path | None = None,
+        experiment_config: Path,
+        source_cycle: datetime,
+        source_forecast_hours: Sequence[int],
+        model_forcing_hours: Sequence[int],
+        preprocessing: Mapping[str, object],
+        source_identity: Mapping[str, object],
+        physics_profile: str | None,
+        expert_acknowledgements: Sequence[str] = (),
+        static_receipt: Path | None = None,
+        domain_spec: Path | None = None,
+        namelist_extension_invariant: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Write the portable authorities and return the pins to bind them by.
+
+    The return value is the whole handoff: three digests
+    (``proof_sha256``, ``source_manifest_sha256``,
+    ``prepared_content_sha256``) and the two paths a forecast stage has
+    to pass beside them.  Those are exactly
+    ``preflight_prepared_forecast``'s pinned arguments, so a caller
+    never has to hash a file by hand to run the case it just prepared.
+
+    ``experiment_config`` must already be inside the bundle and must be
+    the document the preparation published for itself
+    (:func:`gpuwm.experiment_document.publish_experiment_document`).
+    Requiring it rather than rendering it here keeps the rendering with
+    the only process that holds the tables -- the preparer -- and keeps
+    this writer to the one job of binding files it can hash.
+
+    The two halves are :func:`publish_hrrr_bundle_head` and
+    :func:`seal_hrrr_bundle_proof`: a chained native preparation calls
+    them at its head and its seal (tools/hrrr_single_domain_benchmark.py),
+    and this is both in one go over a cache already sealed.
+    """
+
+    header = _cache_header(Path(prepared_cache).resolve())
+    head = publish_hrrr_bundle_head(
+        output_root=output_root, prepared_cache=prepared_cache,
+        static_cache=static_cache, geometry_receipt=geometry_receipt,
+        bridge_manifest=bridge_manifest, namelist_input=namelist_input,
+        source_manifest=source_manifest, wps_namelist=wps_namelist,
+        experiment_config=experiment_config, source_cycle=source_cycle,
+        source_forecast_hours=source_forecast_hours,
+        model_forcing_hours=model_forcing_hours,
+        preprocessing=preprocessing, source_identity=source_identity,
+        physics_profile=physics_profile,
+        cache_user_metadata=header.get("metadata", {}).get("user", {}),
+        expert_acknowledgements=expert_acknowledgements,
+        static_receipt=static_receipt, domain_spec=domain_spec,
+        namelist_extension_invariant=namelist_extension_invariant)
+    proof = seal_hrrr_bundle_proof(
+        head, output_root=output_root, prepared_cache=prepared_cache,
+        static_cache=static_cache, geometry_receipt=geometry_receipt)
+    proof_path = Path(output_root).resolve() / PROOF_NAME
+    _write_json(proof_path, proof)
+    return sealed_handoff(head, proof_path=proof_path,
+                          content_sha256=header.get("content_sha256"))
 
 
 __all__ = [
@@ -508,6 +644,10 @@ __all__ = [
     "SOURCE_MANIFEST_SCHEMA",
     "WPS_NAMELIST_NAME",
     "WRF_NAMELIST_NAME",
+    "HRRR_BOUNDARY_INTERVAL_SECONDS",
+    "publish_hrrr_bundle_head",
     "publish_hrrr_prepared_bundle",
     "render_wps_namelist",
+    "seal_hrrr_bundle_proof",
+    "sealed_handoff",
 ]

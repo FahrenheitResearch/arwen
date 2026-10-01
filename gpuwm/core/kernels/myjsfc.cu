@@ -149,7 +149,7 @@ extern "C" __global__ void myjsfc_column(
     if (ntsd == 1) ust = 0.1f;            // :186-203 (ARW branch)
     real seamask = xland_a[col] - 1.0f;   // :231
     real psfc = psfc_a[col];
-    real thsk = tsk_a[col] / powf(psfc / MYJ_P1000MB, SFC_CAPA);  // :227
+    real thsk = tsk_a[col] / powf(__fdiv_rn(psfc, MYJ_P1000MB), SFC_CAPA);  // :227
 
     // PBLH scan (:263-277): lpbl is the myj (top-down, 1-based) index of
     // the first weak-TKE level above the lowest layer; PBLH=ZHK(LPBL).
@@ -194,7 +194,7 @@ extern "C" __global__ void myjsfc_column(
     real ulow = u1_a[col];
     real vlow = v1_a[col];
     real zsl = dz_a[col] * 0.5f;
-    real apesfc = powf(psfc / MYJ_P1000MB, SFC_CAPA);
+    real apesfc = powf(__fdiv_rn(psfc, MYJ_P1000MB), SFC_CAPA);
     real tz0 = (ntsd == 1) ? tsk_a[col] : thz0_a[col] * apesfc;  // :296-305
 
     // ---- SFCDIF (:361-1056) ----
@@ -349,7 +349,7 @@ extern "C" __global__ void myjsfc_column(
         real zzil;
         if (dthv > 0.0f) {
             if (rib < SFC_RIC) {
-                zzil = zilfc * (1.0f + (rib / SFC_RIC) * (rib / SFC_RIC)
+                zzil = zilfc * (1.0f + (__fdiv_rn(rib, SFC_RIC)) * (__fdiv_rn(rib, SFC_RIC))
                                 * czetmax);
             } else {
                 zzil = zilfc * (1.0f + czetmax);

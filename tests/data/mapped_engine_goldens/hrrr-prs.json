@@ -844,7 +844,7 @@
     "header_rule": "gpuwm-portable-frame-header-v1",
     "mapping": {
       "name": "rw-wps-hrrr-prs-grib2.mapping.json",
-      "sha256": "a639c5bb7a540bb50bf658672ff2f9e02a4a96786283e034fe81d2634b2ce117"
+      "sha256": "1bb2dd3f91bb0c645d4256cc23d7827bd7f6ba17eaf8da4d4fa4caa590ac8d61"
     },
     "schema": "gpuwm-mapped-parity-digest-v2",
     "source": "hrrr-prs",
@@ -2562,7 +2562,7 @@
       ],
       "mapping": {
         "name": "rw-wps-hrrr-prs-grib2.mapping.json",
-        "sha256": "a639c5bb7a540bb50bf658672ff2f9e02a4a96786283e034fe81d2634b2ce117"
+        "sha256": "1bb2dd3f91bb0c645d4256cc23d7827bd7f6ba17eaf8da4d4fa4caa590ac8d61"
       },
       "materialization": {
         "frame_count": 2,

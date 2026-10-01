@@ -71,30 +71,36 @@ def test_host_impossible_streaming_can_keep_that_domain_resident(tmp_path):
     # The 63x63 child's every tiling does more than 4x the necessary work.
     # Auto keeps the redundancy limit (since the 1,190-tile road of
     # 2026-09-26), so with the root held resident by its host store there
-    # is no streamed road left, and the card's 22 GiB holds the tree: it
-    # runs resident inside the external margin and says so.
+    # is no streamed road left, and the card's 21.75 GiB holds the tree: it
+    # runs resident inside the external margin and says so.  (22 GiB until
+    # A163: the measured forecast margin is 1.13 of the subtotal, not the
+    # plan's 1.15, which prices this 15.71 GiB-subtotal tree at 21.59 GiB,
+    # and at 22 GiB that fits outright.)
     assert st._inbound_stream_tiling(st._config_tree_nodes(exp.domains)[1],
                                      exp.tiles) is None
-    result, rows = _walk(exp, free_gib=22)
+    result, rows = _walk(exp, free_gib=21.75)
     assert not rows[1].stream and not rows[2].stream
     assert "inside the" in rows[2].reason and "redundancy limit" in rows[2].reason
     # The road this test is about -- the host-blocked root resident beside
     # a streamed child -- is the one the explicit knob asks for by name.
     exp = replace(exp, tiles=replace(exp.tiles, max_redundancy=False))
-    result, rows = _walk(exp, free_gib=22)
+    result, rows = _walk(exp, free_gib=21.75)
     assert not rows[1].stream and rows[2].stream
-    assert result.configured_mixed_envelope_bytes <= int(21.5 * GIB)
+    assert result.configured_mixed_envelope_bytes <= int(21.25 * GIB)
     assert result.host_spent_bytes <= exp.tiles.host_budget_bytes
 
 
 def test_two_shadow_stores_are_required_while_ring_alternative_remains(tmp_path):
+    # 23.5 GiB free: this tree prices 23.27 GiB resident at A163's measured
+    # 1.13 forecast margin, so on the 24 GiB this test used before it no
+    # longer needs a streamed road at all.
     ring = _experiment(tmp_path, 3, host_gib=6, root_off=True)
-    result, rows = _walk(ring)
+    result, rows = _walk(ring, free_gib=23.5)
     assert not rows[1].stream and any(row.stream for row in rows.values())
     assert result.host_spent_bytes <= 6 * GIB
     shadow = replace(ring, tiles=replace(ring.tiles, write_mode="shadow"))
     with pytest.raises(st.StreamingRefused, match="must remain resident"):
-        _walk(shadow)
+        _walk(shadow, free_gib=23.5)
 
 
 def test_ample_host_preserves_the_existing_fitting_alternative(tmp_path):

@@ -330,20 +330,36 @@ def test_a_stray_table_is_still_refused():
 # the decision
 # --------------------------------------------------------------------------
 
-def test_off_decides_without_importing_the_planner(monkeypatch):
-    """``mode = "off"`` must not need a card, a planner or cupy."""
+def _hide_the_planner(monkeypatch):
+    """Make ``tilestream.autoplan`` unreachable, whatever ran before.
+
+    ``sys.modules[name] = None`` alone stops ``import tilestream.autoplan``
+    but not ``from tilestream import autoplan`` once anything earlier in the
+    process imported the planner, because that form reads the package
+    attribute first.  So the attribute goes too: the tests below then mean
+    the same thing alone, under xdist and after the planner was imported,
+    instead of passing or failing by import order (A177).
+    """
     import sys
 
+    import tilestream
+
     monkeypatch.setitem(sys.modules, "tilestream.autoplan", None)
+    monkeypatch.delattr(tilestream, "autoplan", raising=False)
+
+
+def test_off_decides_without_importing_the_planner(monkeypatch):
+    """``mode = "off"`` must not need a card, a planner or cupy."""
+    _hide_the_planner(monkeypatch)
     got = decide(_cfg(), OFF)
     assert got.stream is False
     assert "off" in got.explain()
 
 
 def test_a_pinned_tiling_consults_no_planner(monkeypatch):
-    import sys
+    from tilestream import spec
 
-    monkeypatch.setitem(sys.modules, "tilestream.autoplan", None)
+    _hide_the_planner(monkeypatch)
     got = decide(_cfg(), StreamingOptions(mode="on", tile_nx=512,
                                           tile_ny=256, nbuffers=3))
     assert (got.stream, got.tile_nx, got.tile_ny, got.nbuffers) == \
@@ -351,6 +367,17 @@ def test_a_pinned_tiling_consults_no_planner(monkeypatch):
     # The halo is taken from harness.halo_radius and NEVER configured: it is
     # 10 + 3*time_step_sound//2 and a smaller one is silent and faster.
     assert got.halo == 10 + 3 * _cfg().time_step_sound // 2
+    # The pinned road still states its tile count and redundancy, from the
+    # tile geometry rather than the planner.
+    assert got.ntiles == 1
+    assert got.redundancy == spec.redundancy(256, 192, 512, 256, got.halo)
+
+
+def test_the_planner_and_a_pinned_tiling_share_one_redundancy():
+    """One function, not a copy that could drift from the planner's."""
+    from tilestream import autoplan, spec
+
+    assert autoplan.redundancy is spec.redundancy
 
 
 def test_a_short_halo_warns_loudly():

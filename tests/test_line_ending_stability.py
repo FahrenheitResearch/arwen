@@ -193,8 +193,10 @@ _CRLF_DEBT = frozenset({
     # file that is: CHANGELOG.md and pyproject.toml were flipped by the
     # 2.4 line and are LF again.
     ".gitignore",
-    # gpuwm/ -- the wheel's own sources
-    "gpuwm/core/kernels/shinhong.cu",
+    # gpuwm/ -- the wheel's own sources.  gpuwm/core/kernels/shinhong.cu
+    # left this list at A146: its constant-divisor rewrite (a98f2482e) wrote
+    # the file back LF, and restoring the CR bytes is a commit the line-ending
+    # hook refuses, so the file stays normalized.
     "gpuwm/core/landuse.py",
     "gpuwm/core/rrtm_taumol.py",
     "gpuwm/da/letkf.py",

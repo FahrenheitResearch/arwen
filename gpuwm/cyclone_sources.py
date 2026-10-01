@@ -148,6 +148,25 @@ def resolve_start_hour(start_hour, *, source: str, moment: datetime,
     return start_hour
 
 
+def window_cadence_hours(source: str, *, moment: datetime, start_hour: int,
+                         hours: int) -> int | None:
+    """The file spacing this door fetches a window at, or None.
+
+    The domain door's rule (:func:`gpuwm.domain_wizard._fetch_cadence_h`)
+    asked of the one cycle this door names: the source's usual spacing
+    where that cycle's ladder publishes it over the whole window, and the
+    coarser spacing the window runs into otherwise (IFS past f144, GEFS
+    past f240).  Passing the usual spacing, this door refused those
+    windows while `gpuwm fetch` and `gpuwm domain` took them.  ONE
+    function, because the fetch table and the boundary interval the
+    configuration is priced and namelisted with must read the same one.
+    """
+    from gpuwm import domain_wizard as dw
+
+    return dw._fetch_cadence_h(source_adapter(source).source_id, start_hour,
+                               hours, cycle=moment)
+
+
 def fetch_hints(*, source: str, moment: datetime, hours: int,
                 projection: dict, dims: tuple[int, int], dx_m: float,
                 member: str | None = None, start_hour: int = 0) -> dict:
@@ -178,7 +197,15 @@ def fetch_hints(*, source: str, moment: datetime, hours: int,
     rounded = int(math.ceil(hours / interval_h) * interval_h)
     start_hour = resolve_start_hour(start_hour, source=source, moment=moment,
                                     hours=rounded)
-    cadence = dw._fetch_cadence_h(source, start_hour)
+    cadence = window_cadence_hours(source, moment=moment,
+                                   start_hour=start_hour, hours=rounded)
+    if cadence is not None and rounded % cadence:
+        # Whole steps of the spacing the cycle's ladder publishes past the
+        # lead where the finer one ends, and that longer window is the one
+        # the horizon is judged on.
+        rounded = max(cadence, int(math.ceil(rounded / cadence)) * cadence)
+        start_hour = resolve_start_hour(start_hour, source=source,
+                                        moment=moment, hours=rounded)
     if source in route_ids():
         resolve_leads(route_for(source), moment, rounded, cadence=cadence,
                       start_hour=start_hour)
@@ -319,6 +346,23 @@ def source_options() -> list[dict]:
                         # reader to a launch refusal.
                         "follow_statics": moving["delivery"]})
     return options
+
+
+def plan_route(source: str) -> str:
+    """The run-plan route that runs the configuration this source's cyclone setup writes.
+
+    Read from the source's row, as :func:`declared_case_data` reads it: a
+    row that declares a case-data file gets a ``[case_data]`` table, which
+    the config-driven route decodes (``experiment``); every other row's
+    configuration carries only ``[fetch]``, and the config-driven route
+    refuses it as belonging to the prepared route (``prepared``, what
+    ``gpuwm go`` runs).  The breakage this prevents (A152): a
+    storm-following plan written with one route for every source, which
+    ``gpuwm run-plan`` refused for a GFS storm.
+    """
+
+    return ("experiment" if source_adapter(source).case_data_file is not None
+            else "prepared")
 
 
 def declared_case_data(source: str, hints: dict, config_path: str) -> dict | None:

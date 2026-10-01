@@ -34,26 +34,25 @@ against the byte-unmodified module.
 
 Where the column runs
 ---------------------
-On the CARD, in FP32.  :func:`ruc_lsm_step` passes
-:data:`gpuwm.core.ruc_gpu.RUC_SFCTMP_DEVICE_LEAVES` and
-:data:`gpuwm.core.ruc_gpu.RUC_SFCTMP_DEVICE_STAGES` into the driver, so the
-four ``sfctmp`` branches and the snow-preparation prologue -- which together
-are the whole of RUC's column arithmetic -- run as CUDA kernels.  There is no
-switch that selects the host set: it exists for the oracle suite, which runs
-on a machine with no card, and a forecast that quietly took it would be a
-thousand times slower with no signal that it had.
+On the CARD, in FP32.  :func:`ruc_lsm_step` runs :mod:`gpuwm.core.ruc_fused`:
+six full-width kernels per call (the WRF surface-driver seam and LSMRUC's
+prologue, the three ``sfctmp`` stages, the epilogue with SFCDIAGS, and a
+commit that writes the fields only when no check failed), one read of the
+flag words at the end, and SFCDIAGS's two power expressions on the host,
+through glibc's ``powf`` on every host (:func:`sfcdiags_exner_powers`).  The ``sfctmp`` stages are generated from the array
+orchestration by ``tools/ruc_fused/gen_sfctmp.py`` and call ``ruc.cu``'s
+leaves as device functions, so the column arithmetic has one source.
 
-That wiring is not a detail.  Until it landed the device leaves had ZERO
-importers under ``gpuwm/`` -- the same failure mode the RUC soil ingest had --
-so every published RUC forecast cost ran the host loop no matter what the
-leaves could do.  ``tests/test_ruc_runtime.py`` gates the import edge
-directly so it cannot rot back.
-
-What still runs on the host is ``LSMRUC``'s own prologue and epilogue and the
-``sfctmp`` dispatch's masking and mosaic recombination, all of them evaluated
-over the whole column axis rather than column by column.  The cost is measured
-in :mod:`tests.test_ruc_admission` and published in the registry warnings
-rather than estimated.
+:func:`_ruc_lsm_step_reference` keeps that orchestration (the masked
+``sfctmp`` dispatch over :data:`gpuwm.core.ruc_gpu.RUC_SFCTMP_DEVICE_LEAVES`
+with the prologue and epilogue as whole-axis array code) as the oracle every
+output word of the fused call is tested against, call after call, at both
+soil geometries (``tests/test_ruc_lsm_fused.py``,
+``tests/test_ruc_sfctmp_fused.py``).  There is no switch that selects the
+host leaf set: it exists for the oracle suite, which runs on a machine with
+no card, and a forecast that quietly took it would be a thousand times
+slower with no signal that it had.  ``tests/test_ruc_runtime.py`` gates the
+import edge directly so it cannot rot back.
 
 The published option identity
 -----------------------------
@@ -71,6 +70,7 @@ from collections.abc import Mapping
 
 import numpy as np
 
+from gpuwm.core.noahmp_libm import powf_array
 from gpuwm.core.ruc import (RUC_DRIVER_ARW_FORCING,
                             RUC_DRIVER_COLUMN_FORCING,
                             RUC_DRIVER_COLUMN_STATE,
@@ -715,6 +715,68 @@ def ruc_lsm_step(
             "gpuwm.ingest.ruc_soil.remap_soil_to_ruc_levels"
             "(moisture_adjustment=True)")
 
+    from gpuwm.core.ruc_fused import step
+
+    return step(fields, atmosphere, params=params, precipitation=precipitation,
+                dt=dt, itimestep=itimestep)
+
+
+def _ruc_lsm_step_reference(
+    fields,
+    atmosphere: Mapping[str, object],
+    *,
+    params: RucRuntimeParameters,
+    precipitation: SurfacePrecipitationForcing,
+    dt: float,
+    itimestep: int,
+    mosaic_lu: int,
+    mosaic_soil: int,
+    flag_sm_adj: int,
+    spp_lsm: int,
+) -> dict[str, int]:
+    """One ``CASE (RUCLSMSCHEME)`` arm.  Mutates ``fields`` in place.
+
+    Returns a small census -- land, water, lake and sea-ice column counts --
+    so a test can tell "RUC ran" apart from "RUC ran on any land".  The
+    counts are reconstructed from the same masks the driver dispatches on
+    (``module_sf_ruclsm.F:823-826``, ``:828`` and ``:855``).
+    """
+    import cupy as cp
+
+    if int(itimestep) < 1:
+        raise ValueError("LSMRUC ktau is one-based and starts at 1")
+    # Second line behind validate_run_config, at the seam that consumes each
+    # value, so the registry's citation of this file is true for all four.
+    if int(mosaic_lu) != 0 or int(mosaic_soil) != 0:
+        raise ValueError(
+            f"mosaic_lu={mosaic_lu}, mosaic_soil={mosaic_soil}: SOILVEGIN's "
+            "mosaic arms are fail-closed in gpuwm.core.ruc, so LSMRUC's "
+            "irrigation block is unreachable and neither is transcribed")
+    if int(spp_lsm) != 0:
+        # :446-450 assigns rstoch from pattern_spp_lsm, which is an OPTIONAL
+        # argument present only under #if (EM_CORE==1).  spp_lsm=1 in the
+        # pinned object would dereference an absent optional.
+        raise ValueError(
+            f"spp_lsm={spp_lsm}: LSMRUC:446-450 reads pattern_spp_lsm, an "
+            "optional argument that exists only under EM_CORE==1, so a "
+            "perturbed RUC run is not expressible in the pinned object")
+    if int(flag_sm_adj) != 0:
+        # Not a runtime knob at all: share/module_soil_pre.F:2063 reads it
+        # inside init_soil_3_real, i.e. in real.exe.  It is refused here
+        # rather than accepted-and-ignored so a plan that asks for it is told,
+        # and it stays refused now that a RUC ingest exists -- LSMRUC is a
+        # timestep, and by the time it runs the adjustment has either already
+        # happened at setup or never will.  It belongs to
+        # gpuwm.ingest.ruc_soil.remap_soil_to_ruc_levels, whose
+        # moisture_adjustment argument implements it at max_ulp 0.
+        raise ValueError(
+            f"flag_sm_adj={flag_sm_adj}: this is a real.exe knob "
+            "(share/module_soil_pre.F:2063, RUC soil-moisture adjustment "
+            "from a Noah initial state) and not an LSMRUC argument.  Ask for "
+            "it at setup, through "
+            "gpuwm.ingest.ruc_soil.remap_soil_to_ruc_levels"
+            "(moisture_adjustment=True)")
+
     names_2d = tuple(RUC_STATE_BINDING) + (
         "swdown", "glw", "chs", "chs2", "cqs2", "flqc", "flhc", "cpm",
         "qgh",
@@ -846,25 +908,34 @@ def ruc_lsm_step(
     # :3587.  RUC's own 2-m diagnostic, not SFCDIAGS.
     #
     # This is the ONE thing on this seam that stays on the host, and it stays
-    # deliberately.  _sfcdiags_ruclsm raises (1e5/psfc) to R/cp with np.power
-    # on a float32 array, and numpy's float32 power and CUDA's powf are two
-    # different non-glibc functions -- the exact divergence class that put
-    # 2 ULP into hfx on this lane and cost a session to find.  Moving it to
-    # the card is a TRANSCENDENTAL POLICY decision (see
+    # deliberately.  _sfcdiags_ruclsm raises (1e5/psfc) to R/cp through
+    # sfcdiags_exner_powers, glibc's powf on every host, and CUDA's powf is
+    # a different function -- the exact divergence class that put 2 ULP
+    # into hfx on this lane and cost a session to find.  Moving it to the
+    # card is a TRANSCENDENTAL POLICY decision (see
     # _RUC_PROVISIONAL_TRANSCENDENTALS in gpuwm.core.ruc), not a performance
     # one, and the answer must not change to make a call faster.  So exactly
     # the fields it reads come down and the three it writes go back up, which
     # is a bounded and named cost instead of the whole slab.
     diagnostic_inputs = ("psfc", "chs2", "cqs2", "tsk", "hfx", "qfx", "qsfc")
-    host = {name: np.ascontiguousarray(cp.asnumpy(device[name]))
-            for name in diagnostic_inputs}
+    # These fields share the horizontal shape and dtype. Packing preserves
+    # their bits and drains the stream once instead of once per field.
+    inputs = ([device[name] for name in diagnostic_inputs]
+              + [temperature, qv, rho, p_mid, cqs])
+    if any(value.dtype != inputs[0].dtype or value.shape != inputs[0].shape
+           for value in inputs):
+        diagnostic_slab = [np.ascontiguousarray(cp.asnumpy(value))
+                           for value in inputs]
+    else:
+        diagnostic_slab = cp.asnumpy(cp.stack(inputs))
+    host = {name: diagnostic_slab[index]
+            for index, name in enumerate(diagnostic_inputs)}
+    t_host, q_host, rho_host, p_host, cqs_host = (
+        diagnostic_slab[len(diagnostic_inputs):])
     _sfcdiags_ruclsm(
         host,
-        t3d=np.ascontiguousarray(cp.asnumpy(temperature)),
-        qv3d=np.ascontiguousarray(cp.asnumpy(qv)),
-        rho3d=np.ascontiguousarray(cp.asnumpy(rho)),
-        p3d=np.ascontiguousarray(cp.asnumpy(p_mid)),
-        cqs=np.ascontiguousarray(cp.asnumpy(cqs)))
+        t3d=t_host, qv3d=q_host, rho3d=rho_host, p3d=p_host,
+        cqs=cqs_host)
     for name in ("t2", "th2", "q2"):
         device[name] = cp.asarray(host[name])
 
@@ -878,10 +949,12 @@ def ruc_lsm_step(
              & ~lake)
     seaice = (~water & ~lake) & (
         device["xice"] >= np.float32(XICE_THRESHOLD))
-    return {"land": int(cp.count_nonzero(~water & ~seaice & ~lake)),
-            "water": int(cp.count_nonzero(water)),
-            "lake": int(cp.count_nonzero(lake)),
-            "sea_ice": int(cp.count_nonzero(seaice))}
+    populations = cp.asnumpy(cp.stack([
+        cp.count_nonzero(~water & ~seaice & ~lake),
+        cp.count_nonzero(water), cp.count_nonzero(lake),
+        cp.count_nonzero(seaice)]))
+    return dict(zip(("land", "water", "lake", "sea_ice"),
+                    map(int, populations)))
 
 
 # --------------------------------------------------------------------------
@@ -939,6 +1012,30 @@ def _saturation_mixing_ratio(pressure, temperature):
                     _rslf(pressure, temperature)).astype(np.float32)
 
 
+#: ``ROVCP`` as the surface driver hands it to ``SFCDIAGS_RUCLSM``: R/cp.
+SFCDIAGS_ROVCP = np.float32(287.0 / 1004.5)
+
+
+def sfcdiags_exner_powers(psfc) -> tuple[np.ndarray, np.ndarray]:
+    """``(1.E5/PSFC)**ROVCP`` and ``(1.E-5*PSFC)**ROVCP``, ``:61-77``.
+
+    The two host-side transcendentals of RUC's 2-m diagnostic: every T2
+    and TH2 word is a float32 product of one of them.  They are REAL
+    ``**`` in the source, which gfortran lowers to glibc's ``powf``, and
+    they are taken here from :func:`gpuwm.core.noahmp_libm.powf_array`,
+    glibc 2.39's ``powf`` as whole-array arithmetic, so every host gets
+    that answer.  NumPy's own float32 ``power`` (what these were before)
+    is the host's: glibc's on Linux, the MSVC runtime's on Windows, and
+    NumPy 2.5's AVX-512 vector loop on an AVX-512 Linux machine such as
+    the product boxes, which rounds other words, so T2 and TH2 moved with
+    the CPU that ran the forecast.
+    """
+    pressure = np.asarray(psfc, dtype=np.float32)
+    scale = powf_array(np.float32(1.0e5) / pressure, SFCDIAGS_ROVCP)
+    inverse = powf_array(np.float32(1.0e-5) * pressure, SFCDIAGS_ROVCP)
+    return scale, inverse
+
+
 def _sfcdiags_ruclsm(host, *, t3d, qv3d, rho3d, p3d, cqs) -> None:
     """``SFCDIAGS_RUCLSM``, ``module_sf_sfcdiags_ruclsm.F:7-146``.
 
@@ -953,14 +1050,12 @@ def _sfcdiags_ruclsm(host, *, t3d, qv3d, rho3d, p3d, cqs) -> None:
     ``:97-99`` says is deliberate for densely vegetated columns; it is then
     clamped between QSFCmr and qlev1 and saturation-capped at T2.
     """
-    rovcp = np.float32(287.0 / 1004.5)
     cp_air = np.float32(1004.5)
     rho = rho3d
     # :56.  "Assume that 2-m pressure also equal to PSFC".
     psfc = host["psfc"]
     t1 = t3d
-    scale = np.power(np.float32(1.0e5) / psfc, rovcp).astype(np.float32)
-    inverse = np.power(np.float32(1.0e-5) * psfc, rovcp).astype(np.float32)
+    scale, inverse = sfcdiags_exner_powers(psfc)
 
     # :61-77.  T2 through TH2, then the bracket clamp, then TH2 again.
     stable = host["chs2"] < np.float32(1.0e-5)

@@ -112,7 +112,10 @@ def capability(source: str) -> dict:
                 credentials=[_plain(asdict(row)) for row in adapter.credentials],
                 acquisition_contract=None if route is None else dict(
                     cycle_hours=list(route.cycle_hours), ladders=_plain(route.ladders),
-                    cadences=list(route.cadences), members=_plain(route.members),
+                    # A173: any whole multiple of the ladder's spacing the
+                    # preparation takes; the row lists none.
+                    cadences="whole_multiples", default_cadence=route.default_cadence,
+                    members=_plain(route.members),
                     files=[asdict(row) for row in route.files], axes=_plain(route.axes),
                     compose=[_plain(asdict(row)) for row in route.compose],
                     donors=[_plain(asdict(row)) for row in route.donors], prep=_plain(route.prep)),
@@ -334,7 +337,14 @@ def plan(source: str, *, init: datetime, now: datetime, run_seconds: float,
     while (first - candidate).total_seconds() <= grid.search_hours * 3600:
         start = int((init - candidate).total_seconds() / 3600)
         end = math.ceil((start + duration / 3600) / cadence) * cadence
-        lag = legacy.lag_seconds(end) if legacy else grid.delay_hours * 3600
+        # When the window's last lead is due, on its row's expected line:
+        # this lag is the answer wherever no probe checks the objects.  A
+        # cycle running later than that is waited for by the run's fetch
+        # until its row calls the lead late (expected time plus a budget
+        # no shorter than the row's measured late spread); planning on the
+        # latest posting seen instead put every plan behind the cycle that
+        # was out (A136 L1 follow-ups).
+        lag = legacy.lag_seconds(end) if legacy else grid.delay(candidate, end) * 3600
         try:
             if start % cadence:
                 raise ValueError("Requested initialization is absent from the source's selected boundary cadence")

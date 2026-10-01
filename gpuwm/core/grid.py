@@ -29,6 +29,7 @@ from typing import Callable
 import numpy as np
 
 from gpuwm.core import constants as c
+from gpuwm.core import portable_math as pm
 
 #: Sounding: maps height z (m) -> potential temperature theta (K).
 Sounding = Callable[[np.ndarray], np.ndarray]
@@ -79,22 +80,46 @@ class VerticalCoord:
     c4h: np.ndarray | None = None  # (nz,)
 
 
+def hybrid_b_closed_form(etac: float) -> tuple[float, float, float, float,
+                                                float]:
+    """WRF's closed-form Klemp cubic constants ``(B1, B2, B3, B4, B5)``.
+
+    Transcribed from WRF v4.6.1 ``compute_vcoord_1d_coeffs``
+    (dyn_em/nest_init_utils.F:1076-1080; the same lines in
+    module_initialize_ideal.F), ``B(eta) = (B1 + B2*eta + B3*eta**2 +
+    B4*eta**3) / B5``, in plain float64 with every power written as
+    products in the order gfortran expands the integer powers.  Only
+    IEEE-rounded ``+ - * /`` are used, so the constants are the same bits
+    on every host: the 4x4 ``np.linalg.solve`` this replaces followed the
+    CPU kernel OpenBLAS picks (etac 0.2 gave b1 = 0x1.4p-3 on one host and
+    0x1.3ffffffffffe0p-3 on an AVX-512 host), A130.
+    """
+    e = float(etac)
+    e2 = e * e
+    e3 = e2 * e
+    b1 = 2.0 * e2 * (1.0 - e)
+    b2 = -(e * (4.0 - 3.0 * e - e3))
+    b3 = 2.0 * (1.0 - e3)
+    b4 = -(1.0 - e2)
+    t = 1.0 - e
+    t2 = t * t
+    b5 = t2 * t2
+    return b1, b2, b3, b4, b5
+
+
 def hybrid_b_poly(etac: float) -> np.ndarray:
     """Coefficients (b1, b2, b3, b4) of the WRF v4 hybrid cubic B(eta).
 
     ``B(eta) = b1 + b2*eta + b3*eta^2 + b4*eta^3`` is uniquely determined by
-    B(1) = 1, B'(1) = 1, B(etac) = 0, B'(etac) = 0 (ARW v4 Tech Note sec. 2);
-    solved as a 4x4 linear system in float64.  The closed form in WRF v4.6.1
-    (module_initialize_ideal.F B1..B5) satisfies the same four constraints;
-    the test suite cross-checks the two constructions.
+    B(1) = 1, B'(1) = 1, B(etac) = 0, B'(etac) = 0 (ARW v4 Tech Note sec. 2).
+    These are WRF's closed-form ``B1..B4`` each divided by ``B5``
+    (:func:`hybrid_b_closed_form`), plain float64 and so host-independent.
+    ``compute_hybrid_coeffs`` evaluates WRF's own spelling (the division
+    last), not this normalized one; the test suite checks both against the
+    four constraints.
     """
-    e = float(etac)
-    A = np.array([[1.0, 1.0, 1.0, 1.0],          # B(1)  = 1
-                  [0.0, 1.0, 2.0, 3.0],          # B'(1) = 1
-                  [1.0, e, e * e, e ** 3],       # B(etac)  = 0
-                  [0.0, 1.0, 2.0 * e, 3.0 * e * e]], dtype=np.float64)
-    rhs = np.array([1.0, 1.0, 0.0, 0.0], dtype=np.float64)
-    return np.linalg.solve(A, rhs)
+    b1, b2, b3, b4, b5 = hybrid_b_closed_form(etac)
+    return np.array([b1 / b5, b2 / b5, b3 / b5, b4 / b5], dtype=np.float64)
 
 
 def compute_hybrid_coeffs(znw: np.ndarray, hybrid_opt: int, etac: float,
@@ -115,8 +140,15 @@ def compute_hybrid_coeffs(znw: np.ndarray, hybrid_opt: int, etac: float,
     if hybrid_opt in (0, 1):
         c3f = znw.copy()
     elif hybrid_opt == 2:
-        b1, b2, b3, b4 = hybrid_b_poly(etac)
-        c3f = b1 + b2 * znw + b3 * znw ** 2 + b4 * znw ** 3
+        # WRF's ( B1 + B2*znw + B3*znw**2 + B4*znw**3 ) / B5 in the same
+        # order, the powers as products: ``znw ** 3`` is NumPy's pow, whose
+        # AVX-512 loop and C library round differently from host to host,
+        # so the coordinate (and every base state built on it) did too
+        # (A130).  Products and one division round the same everywhere.
+        b1, b2, b3, b4, b5 = hybrid_b_closed_form(etac)
+        znw2 = znw * znw
+        znw3 = znw2 * znw
+        c3f = (b1 + b2 * znw + b3 * znw2 + b4 * znw3) / b5
         c3f[znw < etac] = 0.0
         c3f[0] = 1.0
         c3f[-1] = 0.0
@@ -237,7 +269,7 @@ def analytic_base_terrain_height(surface_pressure: float,
     """
 
     ratio = float(base_temp) / _BASE_LAPSE_K
-    inner = np.log(float(surface_pressure) / c.P0) + ratio
+    inner = float(pm.log(float(surface_pressure) / c.P0)) + ratio
     return float((ratio ** 2 - inner ** 2) * _BASE_LAPSE_K * c.RD
                  / (2.0 * c.G))
 
@@ -286,7 +318,7 @@ def analytic_base_pressure_field(height, base_temp: float = 290.0):
     inner = ratio ** 2 - 2.0 * c.G * z / (_BASE_LAPSE_K * c.RD)
     with np.errstate(invalid="ignore"):
         root = np.sqrt(np.where(inner < 0.0, np.nan, inner))
-    return c.P0 * np.exp(-ratio + root)
+    return c.P0 * pm.exp(-ratio + root)
 
 
 def base_layer_depths(znw: np.ndarray, hybrid_opt: int, etac: float,

@@ -98,12 +98,12 @@ RECEIPT_SCHEMA = "gpuwm-provenance-receipt-v1"
 def executing_version(prov: Provenance | None = None) -> str:
     """The version of the code that is RUNNING, not the version claimed.
 
-    ``gpuwm.__version__`` asks distribution metadata BY NAME, so a
-    process whose code no distribution provides still receives a
-    confident number from some other ``.dist-info``.  Anything stamped
-    onto an artifact has to prefer the code's own declaration over that
-    borrowed one, because the stamp is what a reader quotes back months
-    later when they ask why two runs differ.
+    ``gpuwm.__version__`` falls back to asking distribution metadata BY
+    NAME when no distribution provides its code, so such a process
+    still receives a confident number from some other ``.dist-info``.
+    Anything stamped onto an artifact has to prefer the code's own
+    declaration over that borrowed one, because the stamp is what a
+    reader quotes back months later when they ask why two runs differ.
 
     The order is "closest to the bytes first":
 
@@ -216,16 +216,16 @@ def version_identity_refusal(prov: Provenance | None = None) -> str | None:
             f"installed copy, or bind this tree to its own metadata "
             f"with: pip install -e {prov.source_root}")
         why = (
-            "gpuwm.__version__ asks importlib.metadata for the version of "
-            "the DISTRIBUTION NAMED 'gpuwm', not for the version of the "
-            "package that was imported.  When the two are different trees "
-            "the call still succeeds and still returns a confident "
-            "number, which then travels into every receipt and every "
-            "stamped artifact this run writes.  It is at its most "
-            "dangerous when the digits happen to match, which is why the "
-            "check is on provenance rather than on digits, and why it "
-            "only refuses when they DIFFER -- a borrowed number that "
-            "agrees is recorded in the receipt and allowed to run.")
+            "gpuwm.__version__ reads the distribution whose files provide "
+            "the imported package, and when none does, the first "
+            "DISTRIBUTION NAMED 'gpuwm' (or 'rw-wps') on the path.  That "
+            "is a different tree, yet the call still succeeds and still "
+            "returns a confident number, which then travels into every "
+            "receipt and every stamped artifact this run writes.  It is "
+            "at its most dangerous when the digits happen to match, which "
+            "is why the check is on provenance rather than on digits, and "
+            "why it only refuses when they DIFFER -- a borrowed number "
+            "that agrees is recorded in the receipt and allowed to run.")
     else:
         action = (
             f"the distribution providing this code "
@@ -272,22 +272,22 @@ def borrowed_version_origin() -> str | None:
 
     Only meaningful when provenance found the version BORROWED: the
     resolver proved no distribution provides the executing code, yet a
-    number arrived anyway, so it came from whatever distribution answers
-    to the package's published name.  This asks the exact question
-    ``gpuwm/__init__.py`` asked -- ``importlib.metadata`` by
-    ``DISTRIBUTION_NAME`` -- and names where THAT answer lives, so the
-    warning can say whose number is being worn.  Never raises; ``None``
-    means the origin could not be named, and the warning degrades to
-    saying so.
+    number arrived anyway, so it came from the first distribution on the
+    path answering to one of the package's published names.  This asks
+    the exact question ``gpuwm/__init__.py`` asked --
+    :func:`gpuwm.version_distribution` -- and names where THAT answer
+    lives, so the warning can say whose number is being worn.  Never
+    raises; ``None`` means the origin could not be named, and the warning
+    degrades to saying so.
     """
 
     try:
-        from importlib import metadata
+        from gpuwm import DISTRIBUTION_NAME, version_distribution
 
-        from gpuwm import DISTRIBUTION_NAME
-
-        dist = metadata.distribution(DISTRIBUTION_NAME)
+        dist = version_distribution()
     except Exception:                                   # noqa: BLE001
+        return None
+    if dist is None:
         return None
     from gpuwm.provenance import direct_url
 
@@ -300,9 +300,13 @@ def borrowed_version_origin() -> str | None:
     except Exception:                                   # noqa: BLE001
         location = None
     try:
-        named = f"{DISTRIBUTION_NAME} {str(dist.metadata['Version'])!r}"
+        name = str(dist.metadata["Name"] or DISTRIBUTION_NAME)
     except Exception:                                   # noqa: BLE001
-        named = DISTRIBUTION_NAME
+        name = DISTRIBUTION_NAME
+    try:
+        named = f"{name} {str(dist.metadata['Version'])!r}"
+    except Exception:                                   # noqa: BLE001
+        named = name
     if url:
         suffix = f" (metadata in {location})" if location else ""
         return f"the editable install of {named} declared at {url}{suffix}"

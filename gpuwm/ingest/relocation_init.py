@@ -576,12 +576,12 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
     def initialize(new_dc, parent_node, *, scratch_arena=None,
                    dycore_state_workspace=None, window=None, footprint=None):
         from gpuwm.ingest.nest_init import (_adjust_and_rederive, _as_like,
+                                            _blend_terrain_triple,
                                             _capture_parent_blend_fields,
                                             _child_grid,
                                             _shared_vertical_coord,
                                             parent_only_init,
                                             seed_rk_time_t_copies)
-        from gpuwm.core.nest_interp import blend_terrain
         from gpuwm.ingest.real import _make_real_base
 
         footprint = prepare_footprint(new_dc, parent_node) if footprint is None else footprint
@@ -650,9 +650,13 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
         if window is not None:
             blend_args.update(domain_shape=(cfg.ny, cfg.nx),
                               origin=(window[0].start, window[1].start))
-        blend_terrain(ht_int, state.ht, **blend_args)
-        blend_terrain(mub_int, state.mub2d, **blend_args)
-        blend_terrain(phb_int, state.phb, **blend_args)
+        # In float64 on the analytic fine base (_blend_terrain_triple), so
+        # the relocated child keeps the EOS correction its FP32 store drops
+        # exactly as the t=0 child does; outside both blend frames the
+        # triple is that fine base, the placement invariant the
+        # donor-alignment instrument reads.
+        blended = _blend_terrain_triple(
+            state, (ht_int, mub_int, phb_int), fine, **blend_args)
         # A MOVE IS NOT AN INITIALIZATION.  WRF blends the same terrain
         # triple here that `med_nest_initial` does, and then stops:
         # `adjust_tempqv` is absent from `share/mediation_nest_move.F`
@@ -668,11 +672,11 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
         # `mub` in the frame injects an anomaly into fields that were
         # right.
         _adjust_and_rederive(state, cfg, coord, save_mub,
-                             static_fields["HGT_M"],
+                             static_fields["HGT_M"], blended=blended,
                              column_mass_correction=False)
         undershoot = clamp_interpolation_undershoot(state)
         seed_rk_time_t_copies(state)
-        del ht_int, mub_int, phb_int, save_mub
+        del ht_int, mub_int, phb_int, save_mub, blended
         adjust_seconds = time.perf_counter() - adjust_started
 
         receipt = {

@@ -129,6 +129,95 @@ pub fn initial_condition_disclosure() -> Option<String> {
         .and_then(|slot| slot.clone())
 }
 
+/// The global attribute in which a wrfout-shaped file names the model
+/// that produced it, for the model token of a plot's metadata row.
+///
+/// A wrfout-shaped file imports under the store identity `wrf`, so every
+/// one of them was labelled `WRF`, including files no WRF model wrote: a
+/// variable-resolution mesh forecast resampled onto a regular grid
+/// (`rw_mpas_convert`) and a global spectral model's export tape.  Their
+/// maps said `WRF` beside a source label naming the real model.  The
+/// producer knows what it is, so it says so in the file, and the renderer
+/// prints that name instead.  A file without the attribute (stock WRF, a
+/// regional run, every file written before it existed) renders exactly as
+/// before.
+pub const MODEL_LABEL_ATTRIBUTE: &str = "GPUWM_MODEL_LABEL";
+
+/// The longest model label the metadata row takes, in characters.  The
+/// row already carries the init time, lead, valid time and grid spacing,
+/// and a longer name would push those out of a narrow frame.
+pub const MODEL_LABEL_MAX_CHARS: usize = 32;
+
+static MODEL_LABEL: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// A file's model label as the metadata row may print it, or the reason
+/// it may not.  Runs of whitespace collapse to one space; a label that is
+/// blank, too long, holds a control character or holds `|` (the row's own
+/// separator, which would split one name into two tokens) is refused.
+pub fn checked_model_label(raw: &str) -> Result<Option<String>, String> {
+    let label = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if label.is_empty() {
+        return Ok(None);
+    }
+    if label.chars().count() > MODEL_LABEL_MAX_CHARS {
+        return Err(format!(
+            "{MODEL_LABEL_ATTRIBUTE} {label:?} is longer than {MODEL_LABEL_MAX_CHARS} characters"
+        ));
+    }
+    if label.chars().any(|ch| ch.is_control() || ch == '|') {
+        return Err(format!(
+            "{MODEL_LABEL_ATTRIBUTE} {label:?} holds a control character or '|', the metadata row's separator"
+        ));
+    }
+    Ok(Some(label))
+}
+
+/// The one label a set of inputs agrees on.  Several inputs render as one
+/// run, so a name only some of them carry, or two different names, would
+/// be a claim about the whole run that is false for part of it: such a
+/// set keeps the store identity, the same answer a mixed set gets for its
+/// domain token.
+pub fn agreed_model_label(labels: &[Option<String>]) -> Option<String> {
+    let first = labels.first()?.clone()?;
+    labels
+        .iter()
+        .all(|label| label.as_deref() == Some(first.as_str()))
+        .then_some(first)
+}
+
+/// Record the model label of the run being drawn, or clear it with `None`.
+/// Process-wide for the reason the disclosure above is: one invocation
+/// renders one run, and every product lane spells the metadata row at the
+/// one place the model token is spelled ([`model_token`]).
+pub fn set_model_label(label: Option<String>) {
+    let value = label.and_then(|text| checked_model_label(&text).ok().flatten());
+    if let Ok(mut slot) = MODEL_LABEL.write() {
+        *slot = value;
+    }
+}
+
+/// The model label in force, if any.
+pub fn model_label() -> Option<String> {
+    MODEL_LABEL.read().ok().and_then(|slot| slot.clone())
+}
+
+/// The model token of the metadata row: the run's own model label for a
+/// wrfout-shaped import that carries one, otherwise the store identity in
+/// capitals (`WRF`, `HRRR`).
+pub fn model_token(model: ModelId) -> String {
+    model_token_with(model, model_label().as_deref())
+}
+
+/// [`model_token`] over an explicit label.  Only the generic wrfout
+/// identity is replaced: a label can only come from a wrfout-shaped file,
+/// and a GRIB model drawn later in the same process keeps its own name.
+pub fn model_token_with(model: ModelId, label: Option<&str>) -> String {
+    match label {
+        Some(label) if model == ModelId::WrfGdex => label.to_string(),
+        _ => model.to_string().to_ascii_uppercase(),
+    }
+}
+
 /// A command line's answer on wind streamlines, when it gave one.
 ///
 /// `None` means "nobody asked", which leaves `RUSTWX_WIND_STREAMLINES`
@@ -198,7 +287,7 @@ pub fn model_time_subtitle_with_lead_label<S: AsRef<str>>(
         disclosure,
         lead_label.as_ref(),
         valid,
-        model.to_string().to_ascii_uppercase()
+        model_token(model)
     )
 }
 
@@ -587,6 +676,51 @@ mod tests {
         set_initial_condition_disclosure(Some("   ".to_string()));
         assert_eq!(model_time_subtitle(ModelId::WrfGdex, "20260808", 6, 0), plain);
         set_initial_condition_disclosure(None);
+    }
+
+    /// A hex frame and a global tape import as `wrf`; the name their file
+    /// carries replaces `WRF` in the metadata row, and nothing else moves.
+    #[test]
+    fn a_model_label_replaces_the_generic_wrfout_identity_only() {
+        assert_eq!(model_token_with(ModelId::WrfGdex, None), "WRF");
+        assert_eq!(model_token_with(ModelId::WrfGdex, Some("WOOF Hex")), "WOOF Hex");
+        // A GRIB model keeps its own name even if a wrfout label is in force.
+        assert_eq!(model_token_with(ModelId::Hrrr, Some("WOOF Hex")), "HRRR");
+        assert_eq!(model_token_with(ModelId::Gfs, None), "GFS");
+    }
+
+    /// `rw_mpas_convert` writes this exact name (rw-mpas pins the same
+    /// literal), and so do the producers outside this workspace.
+    #[test]
+    fn the_model_label_attribute_name_is_pinned() {
+        assert_eq!(MODEL_LABEL_ATTRIBUTE, "GPUWM_MODEL_LABEL");
+    }
+
+    #[test]
+    fn a_model_label_is_checked_before_it_reaches_the_row() {
+        assert_eq!(
+            checked_model_label("  ArWen   Global ").unwrap().as_deref(),
+            Some("ArWen Global")
+        );
+        assert_eq!(checked_model_label("   ").unwrap(), None);
+        let split = checked_model_label("Hex | F001").unwrap_err();
+        assert!(split.contains("separator"), "{split}");
+        let long = checked_model_label(&"x".repeat(MODEL_LABEL_MAX_CHARS + 1)).unwrap_err();
+        assert!(long.contains("longer than"), "{long}");
+        assert!(checked_model_label("Hex\u{7}").is_err());
+    }
+
+    #[test]
+    fn inputs_that_disagree_on_a_model_label_keep_the_store_identity() {
+        let hex = Some("WOOF Hex".to_string());
+        assert_eq!(agreed_model_label(&[hex.clone(), hex.clone()]), hex);
+        assert_eq!(agreed_model_label(&[hex.clone(), None]), None);
+        assert_eq!(agreed_model_label(&[None, hex.clone()]), None);
+        assert_eq!(
+            agreed_model_label(&[hex.clone(), Some("WOOF Global".to_string())]),
+            None
+        );
+        assert_eq!(agreed_model_label(&[]), None);
     }
 
     #[test]

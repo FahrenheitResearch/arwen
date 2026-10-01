@@ -575,7 +575,9 @@ def test_forecast_path_never_runs_numpy_leaves(adapter, env, baseline,
 @pytest.mark.parametrize("target", [
     ("gpuwm.core.rrtmg_mcica", "gpu_generate_lw_subcolumns"),
     ("gpuwm.core.rrtmg_mcica", "gpu_generate_sw_subcolumns"),
-    ("gpuwm.core.rrtmg_lw", "gpu_rrtmg_lw_batched"),
+    # The device-resident adapter calls the engine's device entry and keeps
+    # its results on the card; the host-fetch wrapper gpu_rrtmg_lw_batched
+    # is no longer on the forecast path, so it is not a withholding target.
     ("gpuwm.core.rrtmg_lw", "gpu_rrtmg_lw_batched_device"),
 ])
 def test_withholding_device_entries_fails_the_call(adapter, env,
@@ -591,8 +593,8 @@ def test_withholding_device_entries_fails_the_call(adapter, env,
 def test_withholding_the_sw_engine_fails_the_call(adapter, env,
                                                   monkeypatch):
     from gpuwm.core import rrtmg_sw
-    monkeypatch.setattr(rrtmg_sw.CudaSW, "rrtmg_sw_batched",
-                        _raiser("CudaSW.rrtmg_sw_batched"))
+    monkeypatch.setattr(rrtmg_sw.CudaSW, "rrtmg_sw_batched_device",
+                        _raiser("CudaSW.rrtmg_sw_batched_device"))
     with pytest.raises(Tripwire):
         _call(adapter, env)
 

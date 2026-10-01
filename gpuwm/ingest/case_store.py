@@ -101,10 +101,13 @@ def write_case_store_input(request, *, cfg, vertical, times, initial_result,
         'forcing_times': [time.isoformat() for time in times],
         'preprocess_backend': request.backend,
     }
+    # The admissions (the card's budget and the host's free bytes read
+    # for this run) ride the initialization receipt's ``memory`` block,
+    # not the cache: in its hashed metadata they made the same case's
+    # store differ in content digest by the free memory alone (A138).
     receipt = write_prepared_cache(
         request.path, identity=identity, initial_result=initial_result,
-        met=met, boundaries=boundaries, surface=canonical_noah_surface(soil),
-        metadata={"initialization_memory": request.admissions})
+        met=met, boundaries=boundaries, surface=canonical_noah_surface(soil))
     context = CasePhysicsContext(
         vertical=vertical, reconciled_soil_type=_host(reconciled_soil_type),
         sst=_host(soil_fields.get('SST', soil.tsk)),

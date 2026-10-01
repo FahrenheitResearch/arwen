@@ -122,13 +122,15 @@ from pathlib import Path
 import numpy as np
 
 from gpuwm.core.mynn_radiation import (
-    merge_mynn_bl_clouds,
+    MERGE_CLDFRA_BL_ABOVE,
+    MERGE_QC_BELOW,
+    MERGE_QI_BELOW,
     mynn_bl_cloud_active,
-    mynn_bl_cloud_supplied,
     wrf_itimestep,
 )
 
 from gpuwm.core import rrtmg_legacy_prep as _prep
+from gpuwm.core import rrtmg_legacy_device as _prep_device
 from gpuwm.core import rrtmg_lw as _lw
 from gpuwm.core import rrtmg_mcica as _mcica
 from gpuwm.core import rrtmg_sw as _sw
@@ -203,6 +205,16 @@ def calc_coszen(julian, xtime, gmt, xlat, xlon, declin):
     ``xtime + radt*0.5`` for the interval-midpoint hour angle while
     ``julian``/``declin`` stay at call time; driver lines 1206-1208).
     """
+    return calc_coszen_hrang(julian, xtime, gmt, xlat, xlon, declin)[0]
+
+
+def calc_coszen_hrang(julian, xtime, gmt, xlat, xlon, declin):
+    """WRF ``calc_coszen``'s two outputs, ``(coszen, hrang)``, float32.
+
+    HRANG is the hour angle WRF stores beside COSZEN (grid%hrang,
+    module_radiation_driver.F:3534); the slope-radiation adjustment reads
+    both (module_surface_driver.F TOPO_RAD_ADJ).
+    """
     j = F(julian)
     xt = F(xtime)
     g = F(gmt)
@@ -222,7 +234,8 @@ def calc_coszen(julian, xtime, gmt, xlat, xlon, declin):
     xxlat = xlat * _DEGRAD
     coszen = (np.sin(xxlat) * np.sin(d)
               + (np.cos(xxlat) * np.cos(d)) * np.cos(hrang))
-    return np.minimum(np.maximum(coszen, F(-1.0)), F(1.0)).astype(np.float32)
+    return (np.minimum(np.maximum(coszen, F(-1.0)), F(1.0)).astype(np.float32),
+            np.asarray(hrang, dtype=np.float32))
 
 
 # ---------------------------------------------------------------------------
@@ -542,9 +555,22 @@ def legacy_cloud_fraction_flags(mp_physics: int) -> tuple[bool, bool]:
 
 
 def legacy_radius_meters(effective_radius_microns):
-    """Apply the RRTMG wrapper's micron-to-meter conversion exactly once."""
+    """Apply the RRTMG wrapper's micron-to-meter conversion exactly once.
 
-    return (effective_radius_microns * F(1.0e-6)).astype(np.float32)
+    A float32 CuPy array is scaled by the glue unit's unflushed multiply
+    (radii can be FP32 subnormals, which a CuPy ufunc would flush); the
+    result is the NumPy expression's bits either way."""
+
+    x = effective_radius_microns
+    if type(x).__module__.split(".")[0] == "cupy" and x.dtype == np.float32:
+        import cupy as cp
+        adapter_gpu_preflight()
+        x = cp.ascontiguousarray(x)
+        out = cp.empty_like(x)
+        _adapter_kernel("rla_scale")(
+            *_grid_launch(x.size), (np.int64(x.size), x, F(1.0e-6), out))
+        return out
+    return (x * F(1.0e-6)).astype(np.float32)
 
 
 def unsized_mynn_radii(re_cloud, re_ice, supplied_liquid, supplied_ice, *,
@@ -584,7 +610,7 @@ def _r512(nbytes):
 def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
                                 ncol_day=None, lw_coefficients=None,
                                 longwave=True, shortwave=True,
-                                resident_threads=None):
+                                resident_threads=None, o3input=2):
     """Peak transient device bytes of ONE adapter call.
 
     Composes the engines' own accurate pricing functions
@@ -593,13 +619,16 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
     (``mcica_device_vram_bytes``) with the adapter-held device arrays the
     engine functions do not price: the McICA output slabs and radii
     pass-throughs that stay alive as engine inputs.  The LW and SW
-    pipelines run sequentially per adapter chunk with everything freed
+    pipelines run sequentially per adapter chunk with chunk storage freed
     in between, so the estimate is the max over the four allocation
     phases (LW generate, LW engine, SW generate, SW engine).  The CudaSW
     instance constants (uploaded at adapter construction) and the tiny
     host->device cldfra staging are not included, mirroring the engines'
     own gates.  ``ncol_day`` bounds the SW day-column count (default:
     ``ncol``, the preflight upper bound).
+
+    Whole-call result storage and the reusable ozone grid are priced
+    separately. SWDOWN is allocated after the engines.
 
     ``resident_threads`` lets a host-side estimator use its already measured
     device profile without opening a CUDA context. Zero means an unknown
@@ -627,12 +656,19 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
         s_mcl = _r512(nc_lw * _lw.NGPTLW * nlay_lw * f)
         s_nl = _r512(nc_lw * nlay_lw * f)
         held_lw = 5 * s_mcl + 3 * s_nl        # mcl slabs + rei/rel/res
+        # The device-resident prep outputs the engine reads, alive for the
+        # whole engine call: play tlay and the ten gas profiles (nlay),
+        # plev tlev (nlay+1), emis (16), tauaer (nlay x 16), tsfc.
+        held_lw += (12 * s_nl + 2 * _r512(nc_lw * (nlay_lw + 1) * f)
+                    + _r512(nc_lw * _lw.NBNDLW * f)
+                    + _r512(nc_lw * nlay_lw * _lw.NBNDLW * f)
+                    + _r512(nc_lw * f))
         lw_gen = (held_lw + 5 * s_nl          # play cldfrac ciwp clwp cswp
                   + _r512(_mcica.NBNDLW * nc_lw * nlay_lw * f)   # tauc
                   + _mcica.mcica_device_vram_bytes(
                       min(nc_lw, _mcica.MCICA_DEVICE_COLUMN_CHUNK),
                       nlay_lw, _lw.NGPTLW))
-        lw_eng = (held_lw + _lw.lw_batched_vram_bytes(nc_lw, nlay_lw)
+        lw_eng = (held_lw + _lw.lw_batched_vram_bytes(nc_lw, nlay_lw, mcica_layout="column")
                   + _lw.lw_batched_const_bytes(C))
         estimate = max(lw_gen, lw_eng)
 
@@ -640,14 +676,23 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
         s_mcl_s = _r512(nc_sw * _sw.NGPTSW * nlay_sw * f)
         s_nl_s = _r512(nc_sw * nlay_sw * f)
         held_sw = 8 * s_mcl_s + 3 * s_nl_s
+        # The device-resident prep outputs the engine reads: play tlay and
+        # six gas profiles (nlay), plev tlev (nlay+1), and the per-column
+        # tsfc, four albedos, coszen and scon.
+        held_sw += (8 * s_nl_s + 2 * _r512(nc_sw * (nlay_sw + 1) * f)
+                    + 7 * _r512(nc_sw * f))
         sw_gen = (held_sw + 5 * s_nl_s
                   + 4 * _r512(_mcica.NBNDSW * nc_sw * nlay_sw * f)
                   + _mcica.mcica_device_vram_bytes(
                       min(nc_sw, _mcica.MCICA_DEVICE_COLUMN_CHUNK),
                       nlay_sw, _sw.NGPTSW))
-        sw_eng = held_sw + _sw.sw_batched_vram_bytes(nc_sw, nlay_sw)
+        sw_eng = held_sw + _sw.sw_batched_vram_bytes(nc_sw, nlay_sw, mcica_layout="column")
         estimate = max(estimate, sw_gen, sw_eng)
-    return estimate
+    # Whole-call storage is separate from the per-chunk McICA terms.
+    # SWDOWN is allocated after the engines and does not raise this peak.
+    result_bytes = 2 * _r512(nz * ncol * f) + 3 * _r512(ncol * f)
+    ozone_bytes = _r512(nz * ncol * f) if int(o3input) == 2 else 0
+    return estimate + result_bytes + ozone_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -828,6 +873,179 @@ def _cuda_sw(tab):
 
 
 # ---------------------------------------------------------------------------
+# Device-resident adapter glue (kernels/rrtmg_legacy_adapter.cu).
+#
+# The adapter used to download every field, pack host columns, run the
+# wrapper glue in NumPy and upload the results.  The kernels below are the
+# same float32 statements on the device, in the same order, so the call
+# returns the same bits without the round trips.  The unit compiles through
+# NVRTC directly with --ftz=false and writes its arithmetic as unflushed PTX
+# (see the .cu header); adapter_gpu_preflight proves both on the live device.
+# ---------------------------------------------------------------------------
+
+_ADAPTER_MODULE = None
+_ADAPTER_KERNELS = {}
+_ADAPTER_PREFLIGHTED = False
+_ADAPTER_BLOCK = 256
+
+
+def _adapter_module():
+    """Compile kernels/rrtmg_legacy_adapter.cu via NVRTC directly (the
+    route and the missing ``-arch`` follow ``rrtmg_lw._gpu_module``)."""
+    global _ADAPTER_MODULE
+    if _ADAPTER_MODULE is None:
+        import cupy as cp
+        from cupy.cuda import compiler as _cc
+        path = (Path(__file__).resolve().parent / "kernels"
+                / "rrtmg_legacy_adapter.cu")
+        ptx, _mapping = _cc.compile_using_nvrtc(
+            path.read_text(encoding="utf-8"),
+            ("-std=c++17", "--ftz=false"),
+            None, "rrtmg_legacy_adapter.cu")
+        mod = cp.cuda.function.Module()
+        mod.load(ptx.encode() if isinstance(ptx, str) else ptx)
+        _ADAPTER_MODULE = mod
+    return _ADAPTER_MODULE
+
+
+def _adapter_kernel(name):
+    if name not in _ADAPTER_KERNELS:
+        _ADAPTER_KERNELS[name] = _adapter_module().get_function(name)
+    return _ADAPTER_KERNELS[name]
+
+
+def adapter_gpu_preflight(force=False):
+    """Prove on the live device that the glue unit keeps FP32 subnormals:
+    a subnormal product and quotient survive and a subnormal compares
+    greater than zero, bitwise equal to NumPy."""
+    global _ADAPTER_PREFLIGHTED
+    if _ADAPTER_PREFLIGHTED and not force:
+        return
+    import cupy as cp
+    x = np.array([1.0e-30, 1.0e-10, 1.0e-40, 1.0e-38, 4.0], np.float32)
+    o = cp.zeros(3, dtype=cp.float32)
+    _adapter_kernel("rla_probe")((1,), (32,), (cp.asarray(x), o))
+    got = cp.asnumpy(o)
+    want = np.array([x[0] * x[1], 1.0 if x[2] > F(0.0) else 0.0,
+                     x[3] / x[4]], np.float32)
+    if got.view(np.uint32).tolist() != want.view(np.uint32).tolist():
+        raise RuntimeError(
+            "rrtmg_legacy adapter GPU preflight failed: got %r want %r "
+            "(subnormal flush on this toolchain)" % (got, want))
+    _ADAPTER_PREFLIGHTED = True
+
+
+#: Prep outputs that are WRF-level extras, not engine inputs; the device
+#: adapter drops them before the engine call so they are not held through
+#: the engine phase (see legacy_radiation_vram_bytes).
+_LW_PREP_EXTRAS = ("o31d", "hgt", "cldfrac", "pdel")
+_SW_PREP_EXTRAS = ("o31d", "pdel", "coszr", "mcica_inputs")
+
+
+def _grid_launch(n):
+    return ((int(n) + _ADAPTER_BLOCK - 1) // _ADAPTER_BLOCK,), (_ADAPTER_BLOCK,)
+
+
+def _device_grid(a, nk):
+    """(nk, ny, nx) field -> device float32 (nk, ncol), C-contiguous.
+
+    A float32 device field is reshaped in place (data movement only);
+    anything else is cast on the host with NumPy semantics first, exactly
+    as the host packing did."""
+    import cupy as cp
+    if isinstance(a, cp.ndarray) and a.dtype == cp.float32:
+        return cp.ascontiguousarray(a.reshape(nk, -1))
+    h = np.asarray(RRTMGLegacyRadiation._host(a), np.float32)
+    return cp.asarray(np.ascontiguousarray(h.reshape(nk, -1)))
+
+
+def _device_flat(a):
+    """(ny, nx) field -> device float32 (ncol,)."""
+    import cupy as cp
+    if isinstance(a, cp.ndarray) and a.dtype == cp.float32:
+        return cp.ascontiguousarray(a.reshape(-1))
+    h = np.asarray(RRTMGLegacyRadiation._host(a), np.float32)
+    return cp.asarray(np.ascontiguousarray(h.reshape(-1)))
+
+
+def _device_columns(grid, sel):
+    """Rows ``sel`` (a slice or a device index array over columns) of a
+    (nk, ncol) device grid as a C-contiguous (nc, nk) column block."""
+    import cupy as cp
+    return cp.ascontiguousarray(grid[:, sel].T)
+
+
+class _ColumnGather:
+    """Column blocks of several (nk, ncol) device grids, one launch a chunk.
+
+    Built once per radiation call over the grids the chunks read; each call
+    returns (nc, nk) C-contiguous blocks that are views of one packed buffer
+    allocated for that chunk (so, like the separate gathers it replaces, it
+    lives only while the chunk's prep inputs do).  Data movement only."""
+
+    def __init__(self, grids, ncol):
+        import cupy as cp
+        self.cp = cp
+        self.grids = list(grids)
+        self.ncol = int(ncol)
+        self.nk = [int(g.shape[0]) for g in self.grids]
+        for g in self.grids:
+            if g.dtype != cp.float32 or not g.flags.c_contiguous or                     g.shape[1] != self.ncol:
+                raise ValueError("gathered grids must be C-contiguous float32 "
+                                 "(nk, ncol) device arrays")
+        self.src = cp.asarray(np.asarray([g.data.ptr for g in self.grids],
+                                         dtype=np.uint64))
+        self.nk_d = cp.asarray(np.asarray(self.nk, dtype=np.int32))
+
+    def __call__(self, sel):
+        cp = self.cp
+        if isinstance(sel, slice):
+            c0, nc, idx = int(sel.start), int(sel.stop) - int(sel.start), None
+        else:
+            c0, nc, idx = 0, int(sel.size), sel
+        total = nc * sum(self.nk)
+        buf = cp.empty(total, dtype=cp.float32)
+        _adapter_kernel("rla_gather")(
+            *_grid_launch(total),
+            (np.int32(len(self.grids)), np.int32(nc), np.int64(self.ncol),
+             np.int64(c0), np.uint64(0) if idx is None else idx, self.src,
+             self.nk_d, buf))
+        out, base = [], 0
+        for nk in self.nk:
+            out.append(buf[base:base + nc * nk].reshape(nc, nk))
+            base += nc * nk
+        return out
+
+
+def _radius_meters_blocks(blocks):
+    """Convert the present radius blocks in one unflushed launch."""
+    import cupy as cp
+    present = [(key, block) for key, block in blocks.items()
+               if block is not None]
+    result = dict.fromkeys(blocks)
+    if not present:
+        return result
+    n = present[0][1].size
+    buf = cp.empty(n * len(present), dtype=cp.float32)
+    pointers = [block for key, block in present]
+    pointers += [np.uint64(0)] * (3 - len(pointers))
+    _adapter_kernel("rla_scale_radii")(
+        *_grid_launch(buf.size),
+        (np.int64(n), np.int32(len(present)), *pointers, F(1.0e-6), buf))
+    for i, (key, block) in enumerate(present):
+        result[key] = buf[i*n:(i+1)*n].reshape(block.shape)
+    return result
+
+
+def _f32_positive(a):
+    """``a > 0`` for float32 ``a`` decided on the bits, so a subnormal
+    counts as positive whatever the compile route of the comparison."""
+    import cupy as cp
+    bits = a.view(cp.int32)
+    return (bits > 0) & (bits <= 0x7F800000)
+
+
+# ---------------------------------------------------------------------------
 # Ozone nest routing: the child side of WRF's root-only o3rad evaluation.
 # ---------------------------------------------------------------------------
 
@@ -849,8 +1067,30 @@ class ParentOzoneProvider:
     def __init__(self, parent, registration):
         self.parent = parent
         self.registration = registration
+        self.released = False
+
+    def release(self) -> None:
+        """Drop the parent adapter: the build this provider feeds is superseded.
+
+        A nest waiting for a delayed start holds a startup build whose
+        radiation reads its PARENT's adapter through this provider.  When
+        the parent is itself a delayed nest and activates, its startup
+        adapter is replaced, and this link was the one reference that kept
+        the outgoing adapter (and what it holds) alive until the waiting
+        nest activated in turn.  The waiting nest is rebuilt at its own
+        start against the parent's new adapter, so the startup build never
+        radiates through this provider again.
+        """
+        self.parent = None
+        self.released = True
 
     def __call__(self):
+        if self.released:
+            raise RuntimeError(
+                "child rrtmg_legacy radiation called through an ozone "
+                "provider released with its superseded startup build; a "
+                "nest waiting for its start is rebuilt against its "
+                "parent's current radiation before it radiates")
         import cupy as cp
 
         from gpuwm.core import nest_interp as _nest
@@ -868,6 +1108,48 @@ class ParentOzoneProvider:
         nz = child.shape[0]
         return np.ascontiguousarray(
             child.transpose(1, 2, 0).reshape(-1, nz))
+
+
+def release_waiting_ozone_links(outgoing, waiting) -> None:
+    """Unlink nests waiting for their start from a parent's outgoing radiation.
+
+    A nest's ozone reads its parent's radiation through a
+    :class:`ParentOzoneProvider`, so a child of a delayed nest that has not
+    started yet holds the parent's STARTUP radiation through its own
+    startup build.  When that parent activates and its startup build is
+    released, this link kept the outgoing radiation (and everything it
+    holds) alive until the child activated as well.  ``outgoing`` is the
+    parent's startup ``radiation_callable`` and ``waiting`` its child nodes
+    that have not started.  A waiting child's startup build never radiates
+    before it starts, and it is rebuilt against the parent's new radiation
+    then, so each of its providers that reads ``outgoing`` is released.
+    Every other provider, a started child's and the CAM carrier's
+    :class:`gpuwm.core.cam_ozone.DriverOzoneProvider` among them, is left
+    alone.
+
+    A waiting child whose state is a
+    :class:`gpuwm.core.streamed_state.CanonicalStoreState` (a nest the
+    prepared domain-tree forecast streams through a host store) is
+    skipped: that view refuses a read of its radiation with
+    ``CanonicalStateRefused``, which stopped the run at the parent's
+    start, and that route builds a nest's startup radiation from its
+    prepared cache with no provider of this class, so there is no link to
+    release.
+    """
+    from gpuwm.core.radiation_composition import radiation_adapters
+    from gpuwm.core.streamed_state import CanonicalStoreState
+
+    for child in waiting:
+        state = getattr(child, "state", None)
+        if isinstance(state, CanonicalStoreState):
+            continue
+        physics = getattr(state, "physics", None)
+        radiation = getattr(physics, "radiation_callable", None)
+        for adapter in radiation_adapters(radiation):
+            provider = getattr(adapter, "_ozone_provider", None)
+            if (isinstance(provider, ParentOzoneProvider)
+                    and provider.parent is outgoing):
+                provider.release()
 
 
 # ---------------------------------------------------------------------------
@@ -1148,6 +1430,27 @@ class RRTMGLegacyRadiation:
                 "lane's restart migration; rrtmg_legacy will not silently "
                 "rescale or radiate at clip floors")
 
+    def _validate_radii_micron_device(self, name, eff_um, q):
+        """:meth:`_validate_radii_micron` on (nz, ncol) device grids: the
+        same mask (``q > 0`` and ``eff > 0``, decided on the float32 bits
+        so a subnormal counts) and the same verdict, with one host read.
+        An absent species (``q is None``) is the host path's zero column,
+        whose mask is empty."""
+        import cupy as cp
+        if q is None:
+            return
+        mask = _f32_positive(q) & _f32_positive(eff_um)
+        top = float(cp.where(mask, eff_um, cp.float32(-np.inf)).max())
+        if top != -np.inf and top < 1.0e-3:
+            raise ValueError(
+                f"state.{name} looks meter-scale (every value on cloudy "
+                f"points is < 1e-3, max {top:.3e}) "
+                "but the gpuwm radii contract is MICRONS: this state was "
+                "almost surely written before the Thompson radii-units "
+                "fix.  Resuming it requires the cloud-radiation seam "
+                "lane's restart migration; rrtmg_legacy will not silently "
+                "rescale or radiate at clip floors")
+
     def _latitude_ozone(self):
         """The CAM cache for the current latitude, including reused buffers."""
         from gpuwm.core.geography_cache import geography_cache
@@ -1203,24 +1506,28 @@ class RRTMGLegacyRadiation:
         f_qi, f_qs = legacy_cloud_fraction_flags(mp_physics)
         sf_surface_physics = int(getattr(cfg, "sf_surface_physics", 2))
 
-        # ---- host column packing (pure data movement) -----------------
-        p3d = self._cols(pressure, nz)
-        p8w = self._cols(atmosphere["p_interface"], nz + 1)
-        t3d = self._cols(atmosphere["temperature"], nz)
-        pi3d = self._cols(atmosphere["exner"], nz)
-        dz8w = self._cols(atmosphere["dz"], nz)
-        z_at_w = self._cols(atmosphere["z_interface"], nz + 1)
+        adapter_gpu_preflight()
+        blk = _grid_launch
 
-        zeros_cols = np.zeros((ncol, nz), np.float32)
-        moist = {}
+        # ---- device grids: every (nk, ny, nx) field as (nk, ncol) on the
+        # device; column blocks are gathered per chunk below (data
+        # movement only), so no field makes a host round trip. -----------
+        g_p3d = _device_grid(pressure, nz)
+        g_p8w = _device_grid(atmosphere["p_interface"], nz + 1)
+        g_t3d = _device_grid(atmosphere["temperature"], nz)
+        g_pi3d = _device_grid(atmosphere["exner"], nz)
+        g_dz8w = _device_grid(atmosphere["dz"], nz)
+        g_zw = _device_grid(atmosphere["z_interface"], nz + 1)
+
+        g_moist = {}
         f_flags = {}
         for name in ("qv", "qc", "qr", "qi", "qs", "qg"):
             value = getattr(state, name, None)
             if value is None:
-                moist[name] = zeros_cols
+                g_moist[name] = None
                 f_flags[name] = False
             else:
-                moist[name] = self._cols(value, nz)
+                g_moist[name] = _device_grid(value, nz)
                 f_flags[name] = True
 
         # ---- radii: MICRON state contract -> meters for the wrapper ---
@@ -1243,7 +1550,7 @@ class RRTMGLegacyRadiation:
         # or throw away the two radii P3 does predict.
         has_reqc, has_reqi, has_reqs = legacy_scheme_has_req(
             mp_physics, getattr(cfg, "use_mp_re", 1))
-        radii = {}
+        g_radii = {}
         has_req = {}
         for name, key, q, scheme_declares in (
                 ("effc", "re_cloud", "qc", has_reqc),
@@ -1253,7 +1560,7 @@ class RRTMGLegacyRadiation:
             if not scheme_declares:
                 # WRF semantics: the wrapper never reads scheme radii
                 # for this mp; relcalc/reicalc take over inside prep.
-                radii[key] = None
+                g_radii[key] = None
                 has_req[name] = 0
                 continue
             if value is None:
@@ -1263,57 +1570,39 @@ class RRTMGLegacyRadiation:
                     f"state.{name} is missing -- the microphysics radii "
                     "contract is broken; refusing to radiate fallback "
                     "radii silently")
-            eff_um = self._cols(value, nz)
-            self._validate_radii_micron(name, eff_um, moist[q])
-            radii[key] = legacy_radius_meters(eff_um)
+            eff_um = _device_grid(value, nz)
+            self._validate_radii_micron_device(name, eff_um, g_moist[q])
+            g_radii[key] = eff_um
             has_req[name] = 1
 
-        surf = {name: self._flat(fields[name])
+        surf = {name: _device_flat(fields[name])
                 for name in ("tsk", "emiss", "albedo", "xland", "xice",
                              "snow")}
         lat_flat = self.latitude_deg.reshape(-1)
         lon_flat = self.longitude_deg.reshape(-1)
+        lat_d = cp.asarray(lat_flat)
+        fnm_d = cp.asarray(np.ascontiguousarray(
+            np.asarray(self._host(state.fnm), np.float32)))
+        fnp_d = cp.asarray(np.ascontiguousarray(
+            np.asarray(self._host(state.fnp), np.float32)))
 
-        # ---- t8w: phy_prep transcription (dossier section 4) ----------
-        t8w = _t8w_columns(t3d, z_at_w,
-                           self._host(state.fnm), self._host(state.fnp))
-
-        # ---- cldfra: cal_cldfra1 (icloud=1), the WRF transcription
-        # already gated on the RTE+RRTMGP path -- imported, not copied.
-        cldfra = self._host(_rrtmgp.cal_cldfra1(
-            cp.asarray(moist["qv"]), cp.asarray(moist["qc"]),
-            cp.asarray(moist["qi"]), cp.asarray(moist["qs"]),
-            cp.asarray(t3d), cp.asarray(p3d),
-            f_qc=True, f_qi=f_qi, f_qs=f_qs))
         active_bl = mynn_bl_cloud_active(
             getattr(cfg, "bl_pbl_physics", 0), getattr(cfg, "icloud_bl", 0))
         if active_bl:
-            # Absent species share ``zeros_cols`` above.  The WRF merge writes
-            # QC/QI only, so give those two the same independent storage real
-            # Registry moist arrays have before applying it.
-            moist["qc"] = moist["qc"].copy()
-            moist["qi"] = moist["qi"].copy()
-        qc_bl = self._cols(fields["qc_bl"], nz) if active_bl else None
-        qi_bl = self._cols(fields["qi_bl"], nz) if active_bl else None
-        cldfra_bl = (
-            self._cols(fields["cldfra_bl"], nz) if active_bl else None)
-        # Read before the merge, which writes qc/qi in place.
-        supplied_liquid, supplied_ice = mynn_bl_cloud_supplied(
-            moist["qc"], moist["qi"],
-            qc_bl=qc_bl, qi_bl=qi_bl, cldfra_bl=cldfra_bl,
-            bl_pbl_physics=getattr(cfg, "bl_pbl_physics", 0),
-            icloud_bl=getattr(cfg, "icloud_bl", 0))
-        moist["qc"], moist["qi"], cldfra = merge_mynn_bl_clouds(
-            moist["qc"], moist["qi"], cldfra,
-            qc_bl=qc_bl, qi_bl=qi_bl, cldfra_bl=cldfra_bl,
-            bl_pbl_physics=getattr(cfg, "bl_pbl_physics", 0),
-            icloud_bl=getattr(cfg, "icloud_bl", 0),
-            itimestep=(wrf_itimestep(state.elapsed_seconds, cfg.dt)
-                       if active_bl else 1),
-        )
-        radii["re_cloud"], radii["re_ice"] = unsized_mynn_radii(
-            radii["re_cloud"], radii["re_ice"], supplied_liquid,
-            supplied_ice, ice_rule=bool(has_req["effs"]))
+            g_bl = {}
+            for name in ("qc_bl", "qi_bl", "cldfra_bl"):
+                if fields.get(name) is None:
+                    raise ValueError(
+                        "MYNN radiation coupling requires QC_BL, QI_BL, "
+                        "and CLDFRA_BL")
+                g_bl[name] = _device_grid(fields[name], nz)
+            itimestep = wrf_itimestep(state.elapsed_seconds, cfg.dt)
+            if type(itimestep) is not int or itimestep < 1:
+                raise ValueError(
+                    "MYNN radiation itimestep must be a positive int")
+        else:
+            g_bl = None
+            itimestep = 1
 
         # ---- calendar / solar (dossier sections 4, 9.1) ---------------
         valid_time = (self.start_time
@@ -1335,13 +1624,17 @@ class RRTMGLegacyRadiation:
         xt_mid = xtime + radt_minutes * F(0.5)
         coszen = calc_coszen(julian, xt_mid, gmt, lat_flat, lon_flat,
                              declin)
+        coszen_d = cp.asarray(coszen)
 
         # ---- o33d: WRF's root-compute + parent->child routing ----------
+        # Keep the interpolated grid for all chunk gathers. The retained
+        # host field remains the provider and restart contract.
+        grid_o3 = None
         if self.o3input == 0:
             # The wrapper ignores o33d in this mode and builds O3DATA from
-            # pressure and latitude.  Shape-correct zeros retain one batch
+            # pressure and latitude.  Shape-correct zeros keep one batch
             # contract for both modes.
-            o33d = np.zeros((ncol, nz), np.float32)
+            self._o33d_grid = None
         elif self._ozone_provider is not None:
             driver = getattr(state, "physics", None)
             owner = getattr(driver, "cam_ozone", None)
@@ -1356,16 +1649,41 @@ class RRTMGLegacyRadiation:
                 raise ValueError(
                     f"ozone_parent provider returned shape {o33d.shape}; "
                     f"this child grid needs ({ncol}, {nz})")
+            # Retain for child domains (their providers read this field,
+            # so a nest's ozone updates exactly when its parent's does).
+            self._o33d_grid = np.ascontiguousarray(
+                o33d.reshape(ny, nx, nz).transpose(2, 0, 1))
+            grid_o3 = cp.asarray(self._o33d_grid.reshape(nz, ncol))
         else:
-            ozmixt = self._ozone.ozn_time_int(julday, julian,
-                                              self._latitude_ozone())
-            o33d = self._ozone.ozn_p_int(p3d, self._ozone_climo.plev,
-                                         ozmixt)
-        # Retain for child domains (their providers read this field, so a
-        # nest's ozone updates exactly when its parent's does).
-        self._o33d_grid = (
-            None if self.o3input == 0 else np.ascontiguousarray(
-                o33d.reshape(ny, nx, nz).transpose(2, 0, 1)))
+            ozmixt = np.asarray(self._ozone.ozn_time_int(
+                julday, julian, self._latitude_ozone()))
+            pin = np.asarray(self._ozone_climo.plev)
+            if pin.dtype != np.float32 or pin.ndim != 1:
+                raise ValueError("pin must be float32 (levsiz,)")
+            if not np.all(np.diff(pin) > 0):
+                # WRF's runtime guard (ozn_p_int's kount > ncol check).
+                raise ValueError("OZN_P_INT: Bad ozone data: "
+                                 "non-monotonicity suspected")
+            if (ozmixt.dtype != np.float32
+                    or ozmixt.shape != (ncol, pin.size)):
+                raise ValueError("ozmixt must be float32 (ncol, levsiz)")
+            ozmixt = np.ascontiguousarray(ozmixt)
+            pin_d = cp.asarray(pin)
+            levsiz = int(pin.size)
+            # ozn_p_int on the device over the (nz, ncol) grid, once, for
+            # the field children and restarts retain and chunks reuse.
+            grid_o3 = cp.empty((nz, ncol), dtype=cp.float32)
+            ozmixt_d = cp.asarray(ozmixt)
+            _adapter_kernel("rla_ozn_p_int")(
+                ((ncol + 127) // 128,), (128,),
+                (np.int32(ncol), np.int32(nz), np.int32(levsiz),
+                 g_p3d, np.int64(ncol), np.int64(1), pin_d, ozmixt_d,
+                 grid_o3, np.int64(ncol), np.int64(1)))
+            del ozmixt_d
+            # Retain for child domains (their providers read this field,
+            # so a nest's ozone updates exactly when its parent's does).
+            self._o33d_grid = cp.asnumpy(grid_o3).reshape(nz, ny, nx)
+            del pin_d
 
         shared = dict(
             icloud=1, warm_rain=warm_rain, cldovrlp=2, idcor=0,
@@ -1375,40 +1693,131 @@ class RRTMGLegacyRadiation:
             f_qr=f_flags["qr"], f_qi=f_flags["qi"], f_qs=f_flags["qs"],
             f_qg=f_flags["qg"], yr=yr, julian=julian,
             mp_physics=mp_physics)
+        ice_rule = bool(has_req["effs"])
 
-        def chunk_inputs(idx):
-            sel = dict(
-                p3d=p3d[idx], p8w=p8w[idx], t3d=t3d[idx], t8w=t8w[idx],
-                dz8w=dz8w[idx], qv3d=moist["qv"][idx],
-                qc3d=moist["qc"][idx], qr3d=moist["qr"][idx],
-                qi3d=moist["qi"][idx], qs3d=moist["qs"][idx],
-                qg3d=moist["qg"][idx], cldfra3d=cldfra[idx],
-                o33d=o33d[idx], tsk=surf["tsk"][idx],
-                xland=surf["xland"][idx], xice=surf["xice"][idx],
-                snow=surf["snow"][idx], xlat=lat_flat[idx])
+        # Every grid a chunk reads, gathered in one launch per chunk.
+        gather_grids = {"p3d": g_p3d, "t3d": g_t3d, "zw": g_zw,
+                        "p8w": g_p8w, "dz8w": g_dz8w}
+        if grid_o3 is not None:
+            gather_grids["o33d"] = grid_o3
+        gather_grids.update((name, g) for name, g in g_moist.items()
+                            if g is not None)
+        gather_grids.update((key, g) for key, g in g_radii.items()
+                            if g is not None)
+        if active_bl:
+            gather_grids.update(g_bl)
+        gather_names = list(gather_grids)
+        gather = _ColumnGather(gather_grids.values(), ncol)
+
+        def chunk_inputs(sel):
+            """The prep keyword set for columns ``sel`` (a slice or a device
+            index array), built
+            on the device in the host adapter's order:
+            columns, t8w, cal_cldfra1 on the raw moisture, radii in meters,
+            then the MYNN merge (supplied masks first, then fraction, mass
+            and radii).  Every step is per column, so a chunk equals the
+            same columns of a whole-grid evaluation bitwise."""
+            blocks = dict(zip(gather_names, gather(sel)))
+            p3d = blocks["p3d"]
+            nc = p3d.shape[0]
+            t3d = blocks["t3d"]
+            zw = blocks["zw"]
+            t8w = cp.empty((nc, nz + 1), dtype=cp.float32)
+            _adapter_kernel("rla_t8w")(
+                *blk(nc * (nz + 1)),
+                (np.int32(nc), np.int32(nz), t3d, zw, fnm_d, fnp_d, t8w))
+            del zw
+            moist = {}
+            for name in ("qv", "qc", "qr", "qi", "qs", "qg"):
+                g = g_moist[name]
+                moist[name] = (cp.zeros((nc, nz), dtype=cp.float32)
+                               if g is None else blocks[name])
+            # cal_cldfra1 (icloud=1), the WRF transcription already gated
+            # on the RTE+RRTMGP path -- imported, not copied; fed the raw
+            # moisture before the MYNN merge writes qc/qi.
+            cldfra = _rrtmgp.cal_cldfra1(
+                moist["qv"], moist["qc"], moist["qi"], moist["qs"], t3d,
+                p3d, f_qc=True, f_qi=f_qi, f_qs=f_qs)
+            radii = _radius_meters_blocks({
+                key: None if g is None else blocks[key]
+                for key, g in g_radii.items()})
+            if active_bl:
+                bl = {k: blocks[k] for k in g_bl}
+                n = moist["qc"].size
+                null = np.uint64(0)
+                _adapter_kernel("rla_mynn")(
+                    *blk(n),
+                    (np.int64(n), moist["qc"], moist["qi"], bl["qc_bl"],
+                     bl["qi_bl"], bl["cldfra_bl"], cldfra,
+                     np.int32(1 if itimestep != 1 else 0),
+                     null if radii["re_cloud"] is None else radii["re_cloud"],
+                     null if radii["re_ice"] is None else radii["re_ice"],
+                     np.int32(1 if ice_rule else 0),
+                     F(MERGE_QC_BELOW), F(MERGE_QI_BELOW),
+                     F(MERGE_CLDFRA_BL_ABOVE)))
+                del bl
+            o33d = (blocks["o33d"] if grid_o3 is not None else
+                    cp.zeros((nc, nz), dtype=cp.float32))
+            sel_kw = dict(
+                p3d=p3d, p8w=blocks["p8w"], t3d=t3d, t8w=t8w,
+                dz8w=blocks["dz8w"], qv3d=moist["qv"],
+                qc3d=moist["qc"], qr3d=moist["qr"], qi3d=moist["qi"],
+                qs3d=moist["qs"], qg3d=moist["qg"], cldfra3d=cldfra,
+                o33d=o33d, tsk=surf["tsk"][sel], xland=surf["xland"][sel],
+                xice=surf["xice"][sel], snow=surf["snow"][sel],
+                xlat=lat_d[sel])
             for key in ("re_cloud", "re_ice", "re_snow"):
                 if radii[key] is not None:
-                    sel[key] = radii[key][idx]
-            return sel
+                    sel_kw[key] = radii[key]
+            return sel_kw
 
         from gpuwm.core.trace_gases import LEGACY_LW_GASES, LEGACY_SW_GASES, trace_gas_subset
         lw_gases = trace_gas_subset(self.trace_gas_overrides, LEGACY_LW_GASES) or None
         sw_gases = trace_gas_subset(self.trace_gas_overrides, LEGACY_SW_GASES) or None
+        day_seconds = F(86400.0)
 
         # ---- LW: all columns, adapter chunk == engine chunk -----------
         chunk_lw = self.column_chunk or _lw.LW_BATCH_COLUMN_CHUNK
-        rthratenlw = np.zeros((ncol, nz), np.float32)
-        glw = np.zeros(ncol, np.float32)
-        olr = np.zeros(ncol, np.float32)
+        # Result grids live on the device for the whole call. Night SW
+        # columns retain the driver's positive zero initialization.
+        rthratenlw = cp.zeros((nz, ncol), dtype=cp.float32)
+        glw = cp.zeros(ncol, dtype=cp.float32)
+        olr = cp.zeros(ncol, dtype=cp.float32)
+        rthratensw = cp.zeros((nz, ncol), dtype=cp.float32)
+        gsw = cp.zeros(ncol, dtype=cp.float32)
+        # SWDDIR/SWDDIF, rrtmg_swrad's swdkdir/swdkdif at the surface
+        # (module_ra_rrtmg_sw.F, the driver's jararias 2013 arm;
+        # swdkdif(1) = swdflx(1) - swdkdir(1), :9526, :11524), zero at night
+        # as the radiation driver zeroes them (:1724-1726).  SWDDIR is built
+        # only when BEP+BEM (sf_urban_physics = 3) allocated it in the
+        # surface fields; SWDDIF also when slope_rad asks for it
+        # (gpuwm.core.topo_radiation).  Off, nothing is allocated.
+        swddir = swddif = None
+        if self.shortwave and "swddir" in fields:
+            swddir = cp.zeros(ncol, dtype=cp.float32)
+        if self.shortwave and (swddir is not None or getattr(
+                self, "surface_diffuse_requested", False)):
+            swddif = cp.zeros(ncol, dtype=cp.float32)
         for c0 in range(0, ncol if self.longwave else 0, chunk_lw):
-            idx = slice(c0, min(c0 + chunk_lw, ncol))
-            pl = _prep.lwrad_prep_batch(
-                **chunk_inputs(idx), emiss=surf["emiss"][idx],
+            c1 = min(c0 + chunk_lw, ncol)
+            sel = slice(c0, c1)
+            kw = chunk_inputs(sel)
+            # The wrapper glue on the device: rrtmg_legacy_device holds
+            # lwrad_prep_batch's statements bitwise
+            # (tests/test_rrtmg_legacy_prep_device.py).
+            pl = _prep_device.lwrad_prep_batch_device(
+                **kw, emiss=surf["emiss"][sel],
                 nlayers=nlayers, trace_gas_overrides=lw_gases,
                 subcolumn_generator=self._mcica_generator(
                     _mcica.gpu_generate_lw_subcolumns),
                 **shared)
-            res = _lw.gpu_rrtmg_lw_batched(
+            del kw
+            # The WRF-level extras are not engine inputs: drop them before
+            # the engine runs (legacy_radiation_vram_bytes prices what the
+            # engine phase holds).
+            for extra in _LW_PREP_EXTRAS:
+                pl.pop(extra, None)
+            res = _lw.gpu_rrtmg_lw_batched_device(
                 pl["ncol"], pl["nlay"], pl["icld"], pl["play"],
                 pl["plev"], pl["tlay"], pl["tlev"], pl["tsfc"],
                 pl["h2ovmr"], pl["o3vmr"], pl["co2vmr"], pl["ch4vmr"],
@@ -1418,21 +1827,20 @@ class RRTMGLegacyRadiation:
                 pl["liqflglw"], pl["cldfmcl"], pl["taucmcl"],
                 pl["ciwpmcl"], pl["clwpmcl"], pl["cswpmcl"],
                 pl["reicmcl"], pl["relqmcl"], pl["resnmcl"],
-                pl["tauaer"], self._C, column_chunk=chunk_lw,
+                pl["tauaer"], self._C, column_chunk=chunk_lw, mcica_layout="column",
                 _stage_probe=self._stage_probe)
             del pl
-            outs = _prep.lwrad_outputs_batch(
-                uflx=res["uflx"], dflx=res["dflx"], hr=res["hr"],
-                uflxc=res["uflxc"], dflxc=res["dflxc"], hrc=res["hrc"],
-                pi3d=pi3d[idx])
-            rthratenlw[idx] = outs["rthratenlw"]
-            glw[idx] = outs["glw"]
-            olr[idx] = outs["olr"]
-            del res, outs
+            nc = c1 - c0
+            nl = int(res["hr"].shape[1])
+            # Map directly into the global grids and read Exner there.
+            _adapter_kernel("rla_lw_out_grid")(
+                *blk(nc * nz),
+                (np.int32(nc), np.int32(nz), np.int32(nl), res["hr"],
+                 res["uflx"], res["dflx"], g_pi3d, day_seconds,
+                 np.int64(ncol), np.int64(c0), rthratenlw, glw, olr))
+            del res
 
         # ---- SW: driver-level zeroing (dossier section 3) + day gather
-        rthratensw = np.zeros((ncol, nz), np.float32)
-        gsw = np.zeros(ncol, np.float32)
         day_idx = np.nonzero(coszen > F(0.0))[0]
         night_idx = np.nonzero(coszen <= F(0.0))[0]
         if self.shortwave and night_idx.size:
@@ -1445,22 +1853,27 @@ class RRTMGLegacyRadiation:
             self._night_outputs = None
         # The engine sizes the chunk to this device once per layer count
         # (swrad_prep_batch's nlay is kte + 1 = nz + 1, as the pricing
-        # above assumes); an explicit column_chunk is untouched.
+        # assumes); an explicit column_chunk is untouched.
         chunk_sw = (self.column_chunk
                     or (self._cuda_sw.batch_column_chunk(nz + 1)
                         if self.shortwave else _sw.SW_BATCH_COLUMN_CHUNK))
+        day_idx_d = cp.asarray(day_idx.astype(np.int64))
         for c0 in range(0, day_idx.size if self.shortwave else 0, chunk_sw):
-            idx = day_idx[c0:c0 + chunk_sw]
-            ps = _prep.swrad_prep_batch(
-                **chunk_inputs(idx), albedo=surf["albedo"][idx],
-                xcoszen=coszen[idx], solcon=solcon,
+            sel = day_idx_d[c0:c0 + chunk_sw]
+            kw = chunk_inputs(sel)
+            ps = _prep_device.swrad_prep_batch_device(
+                **kw, albedo=surf["albedo"][sel],
+                xcoszen=coszen_d[sel], solcon=solcon,
                 sf_surface_physics=sf_surface_physics, trace_gas_overrides=sw_gases,
                 subcolumn_generator=self._mcica_generator(
                     _mcica.gpu_generate_sw_subcolumns),
                 **shared)
+            del kw
+            for extra in _SW_PREP_EXTRAS:
+                ps.pop(extra, None)
             nc = int(ps["ncol"])
             adjes = np.full(nc, ps["adjes"], np.float32)
-            res = self._cuda_sw.rrtmg_sw_batched(
+            res = self._cuda_sw.rrtmg_sw_batched_device(
                 nc, ps["nlay"], ps["icld"], ps["play"], ps["plev"],
                 ps["tlay"], ps["tlev"], ps["tsfc"], ps["h2ovmr"],
                 ps["o3vmr"], ps["co2vmr"], ps["ch4vmr"], ps["n2ovmr"],
@@ -1471,16 +1884,22 @@ class RRTMGLegacyRadiation:
                 ps["ssacmcl"], ps["asmcmcl"], ps["fsfcmcl"],
                 ps["ciwpmcl"], ps["clwpmcl"], ps["cswpmcl"],
                 ps["reicmcl"], ps["relqmcl"], ps["resnmcl"], aer_opt=0,
-                column_chunk=chunk_sw, _stage_probe=self._stage_probe)
+                column_chunk=chunk_sw, _stage_probe=self._stage_probe, mcica_layout="column")
             del ps
-            # Column-vectorized swrad_option4_outputs for exactly the
-            # fields the driver contract consumes: each line is the same
-            # single-rounded FP32 op sequence as the scalar mapping, one
-            # column per lane (bitwise-equal per column).
-            gsw[idx] = (res["swdflx"][:, 0]
-                        - res["swuflx"][:, 0]).astype(np.float32)
-            tten = (res["swhr"][:, :nz] / F(86400.0)).astype(np.float32)
-            rthratensw[idx] = (tten / pi3d[idx]).astype(np.float32)
+            if swddif is not None:
+                swddif[sel] = res["swdflx"][:, 0] - res["swdkdir"][:, 0]
+            nlay_sw = int(res["swhr"].shape[1])
+            if int(res["swdflx"].shape[1]) != nlay_sw + 1:
+                raise ValueError("SW engine flux/heating-rate layer counts "
+                                 "disagree")
+            _adapter_kernel("rla_sw_out_grid")(
+                *blk(nc * nz),
+                (np.int32(nc), np.int32(nz), np.int32(nlay_sw),
+                 res["swdflx"], res["swuflx"], res["swhr"], g_pi3d,
+                 day_seconds, np.int64(ncol), sel, rthratensw, gsw))
+            if swddir is not None:
+                # SWDDIR at the surface for BEP+BEM: rrtmg_swrad's swdkdir.
+                swddir[sel] = res["swdkdir"][:, 0]
             del res
         if self.shortwave:
             # The engine's per-chunk workspace served every chunk of this
@@ -1491,16 +1910,20 @@ class RRTMGLegacyRadiation:
             self._cuda_sw.release_scratch()
 
         # ---- driver-level SWDOWN = GSW/(1-ALBEDO) (driver line 2877) --
-        swdown = (gsw / (F(1.0) - surf["albedo"]).astype(
-            np.float32)).astype(np.float32)
+        swdown = cp.empty(ncol, dtype=cp.float32)
+        _adapter_kernel("rla_swdown")(
+            *blk(ncol), (np.int64(ncol), gsw, surf["albedo"], swdown))
 
         self.update_count += 1
         return RadiationResult(
-            rthratenlw=self._grid3(rthratenlw, nz, ny, nx),
-            rthratensw=self._grid3(rthratensw, nz, ny, nx),
-            swdown=self._grid2(swdown, ny, nx),
-            glw=(self._grid2(glw, ny, nx) if self.longwave
+            rthratenlw=rthratenlw.reshape(nz, ny, nx),
+            rthratensw=rthratensw.reshape(nz, ny, nx),
+            swdown=swdown.reshape(ny, nx),
+            glw=(glw.reshape(ny, nx) if self.longwave
                  else fields["glw"]),
-            gsw=self._grid2(gsw, ny, nx),
-            coszen=self._grid2(coszen, ny, nx),
-            olr=(self._grid2(olr, ny, nx) if self.longwave else None))
+            gsw=gsw.reshape(ny, nx),
+            coszen=coszen_d.reshape(ny, nx),
+            olr=(olr.reshape(ny, nx) if self.longwave
+                 else None),
+            swddir=(None if swddir is None else swddir.reshape(ny, nx)),
+            swddif=(None if swddif is None else swddif.reshape(ny, nx)))

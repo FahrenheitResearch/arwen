@@ -1,0 +1,912 @@
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+sea-ice at point, I and J =    15    1
+sea-ice at point, I and J =    15    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+sea-ice at point, I and J =    15    1
+sea-ice at point, I and J =    15    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+sea-ice at point, I and J =    15    1
+sea-ice at point, I and J =    15    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+sea-ice at point, I and J =    15    1
+sea-ice at point, I and J =    15    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+sea-ice at point, I and J =    15    1
+sea-ice at point, I and J =    15    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+sea-ice at point, I and J =    15    1
+sea-ice at point, I and J =    15    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+sea-ice at point, I and J =    15    1
+sea-ice at point, I and J =    15    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     1    1.00    0.00   -99    17
+ BEFORE MOSAIC_INIT
+BEFORE MOSAIC_INIT
+I,J,xland,xice,mosaic_cat_index,ivgtyp =      9     2    1.00    0.00   -99    17
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     1     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      8     2     7    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.this is fine as long as we change our calculation so that the dominant land use category isstwiched back to not water.
+land use category has been switched, before and after values are     17     1
+new dominant and second dominant cat are      1     7
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     1    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =      9     2    17    1.00    0.00
+xland < 1.5 but the dominant land use category based on our calculation is water.In addition, the dominant land use category based on the geogrid calculation is water, this must be wrong
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     1    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     10     2    17    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.however, the dominant land use category based on the geogrid calculation is water
+This is fine. We do not need to do anyting because in the noaddrv, we use xland as a criterion for whether usingmosaic or not when xland > 1.5, no mosaic will be used anyway
+sea-ice at point, I and J =    11    1
+sea-ice at point, I and J =    11    2
+sea-ice at point, I and J =    12    1
+sea-ice at point, I and J =    12    2
+sea-ice at point, I and J =    15    1
+sea-ice at point, I and J =    15    2
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     1     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+IN MOSAIC_INIT
+I,J,IVGTYP,XLAND,XICE =     16     2     7    2.00    0.00
+xland > 1.5 but the dominant land use category based on our calculation is not water.in addition, the dominant land use category based on the geogrid calculation is not water,this must be wrong.
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     1     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     13     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     13     2     7     1     2
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     1    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     1     1     2     3
+the total land surface fraction is less than  0.1E-04
+some landusef values at i,j are     18     2    0.00    0.00    0.00    0.00
+some mosaic cat values at i,j are     18     2     1     2     3
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     1    1.00    0.00    17    17
+After MOSAIC_INIT
+weird xland,xice,mosaic_cat_index and ivgtyp at I,J =      9     2    1.00    0.00    17    17

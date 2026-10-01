@@ -197,6 +197,21 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         'launch_diff6': 2,
         'reset': 1,
     },
+    # Grell-Freitas.  Scanned since 5ef5d7dba (lane speed-default-pieces),
+    # whose one-pass output validation is the module's first get_kernel
+    # call; the nine sites predate it and the lane added none.  All are
+    # per-call transients of GF's packed GFDRV call, each scaling with the
+    # column count: the rthraten sum when no driver holds the radiation
+    # rates ((nz, ny, nx) float32), the zeros lane for absent auxiliary
+    # forcing ((ncol, nz)), the packed inputs lvin (ncol, 15, nz), scin
+    # (ncol, 9) and iin (ncol, 3) int32, the outputs lev (ncol, 16, nz),
+    # sca (ncol, 9) and isc (ncol, 6) int32, and the tile workspace ws,
+    # gf_workspace_floats(nz, tile) * 4 bytes, priced by
+    # preflight.gf_column_workspace_bytes.  Bound: at most 132 B per cell
+    # plus 108 B per column, freed when the call returns.
+    'gpuwm/core/gf.py': {
+        '__call__': 9,
+    },
     'gpuwm/core/health.py': {},
     # ``w0avg`` moved out of ``update_trigger_history`` and into
     # ``ensure_trigger_history`` when [tiles] landed.  The count is the same
@@ -300,6 +315,10 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         '_allocate_result': 1,
         '_surface_array': 1,
     },
+    # ``_urban_args``' two placeholder sites (one-word int32/float32 arrays
+    # bound to the urban pointer slots when no urban model ran) are gone: the
+    # default path launches noah_column, which takes no urban argument, so
+    # nothing is bound when no urban model runs.
     'gpuwm/core/noah.py': {},
     # ---- the four Noah-MP leaf batches -----------------------------------
     # Entered 2026-07-27, having been committed unlisted since at least
@@ -387,7 +406,13 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     },
     'gpuwm/core/nssl2.py': {},
     'gpuwm/core/nssl2_diagnostics.py': {},
+    # _cached_velocity_gamma_table (c7abbdc55, lane speed-two-moment): the
+    # graupel and hail fall-speed gamma table the device fills once, (2, 120)
+    # float64 = 1,920 B, cached per device for the life of the process
+    # (lru_cache), so it is allocated once and never per step.  It replaces
+    # tgamma calls the sedimentation kernel made on every call.
     'gpuwm/core/nssl2_driver_support.py': {
+        '_cached_velocity_gamma_table': 1,
         'gather_initialize_and_sediment': 4,
     },
     'gpuwm/core/nssl2_fused_gs.py': {},
@@ -397,14 +422,48 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     'gpuwm/core/nssl2_qvexcess.py': {},
     'gpuwm/core/nssl2_radiation.py': {},
     'gpuwm/core/refl.py': {},
+    # WRF v4.7.1 slope_rad / topo_shading (lane 281-namelist-gaps), only on a
+    # domain that turns slope_rad on.  ``__init__`` allocates the carrier's
+    # held planes once per domain -- diffuse_frac, topo_coszen, hrang and
+    # SWNORM (four (ny, nx) float32) -- beside ``slope_geometry``'s two
+    # static planes (slope, slp_azi) and, with topo_shading, the int32
+    # shadow mask and ht_shad that ``terrain_shadow`` builds from the
+    # edge-extended (ny+4, nx+4) terrain.  Per radiation call:
+    # ``diffuse_fraction`` one (ny, nx) plane and ``after_radiation`` the
+    # one-word declination; per land call ``before_land`` saves SWDOWN and
+    # GSW (two planes) and ``adjust_surface_shortwave`` writes two.  Bound:
+    # about a dozen (ny, nx) float32 planes per domain with slope_rad on,
+    # none otherwise.
+    'gpuwm/core/topo_radiation.py': {
+        '__init__': 4,
+        'adjust_surface_shortwave': 2,
+        'after_radiation': 1,
+        'before_land': 2,
+        'diffuse_fraction': 1,
+        'slope_geometry': 2,
+        'terrain_shadow': 2,
+    },
     'gpuwm/core/rrtmgp.py': {
-        # Four flux arrays still allocate once each per call. Independent
-        # LW/SW switches add mutually exclusive zero-initializer branches
-        # beside their four empty-initializer branches: eight AST sites,
-        # four executed allocations, plus the two existing hydrometeor
-        # defaults. All four float32 (ncol, nz+1) flux arrays remain priced
-        # as columns/{lw_up,lw_dn,sw_up,sw_dn} by rrtmgp_column_shapes.
-        '__call__': 10,
+        # Four flux arrays still allocate once each per call. The LW switch
+        # adds mutually exclusive zero-initializer branches beside lw_up's
+        # and lw_dn's empty-initializer branches (four AST sites), and
+        # sw_up and sw_dn allocate through ``sw_allocate = cp.empty_like
+        # if every column is daylit else cp.zeros_like`` (7f4d1a2b3, the
+        # shortwave pass skips dark columns), one alias call each, which
+        # the scanner reads as a site since it resolves allocator aliases.
+        # Plus the two existing hydrometeor defaults, and chunk_up and
+        # chunk_dn: one (chunk_ncol, nz+1) float32 pair per shortwave chunk
+        # on the compacted-daylight path only, bounded by column_chunk
+        # rather than by the domain.  All four float32 (ncol, nz+1) flux
+        # arrays remain priced as columns/{lw_up,lw_dn,sw_up,sw_dn} by
+        # rrtmgp_column_shapes.  The eleventh is the surface direct beam
+        # BEP+BEM reads as SWDDIR (sf_urban_physics = 3): one float32 per
+        # column, (ncol,), allocated only when the surface fields carry
+        # SWDDIR or the driver asked for the surface diffuse flux WRF's
+        # slope_rad reads (topo_radiation.request_surface_diffuse; lane
+        # 281-namelist-gaps), beside the four (ncol, nz+1) flux arrays.
+        # Both consumers share that one plane, so the count stays 11.
+        '__call__': 11,
         '_cloud_optics': 1,
         '_finalize_cloud_optics': 2,
         '_gas_optics': 5,
@@ -447,6 +506,27 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         # ``for`` loop over fdlibm's reduction that this replaced.
         'ruc_tanhf_glibc': 1,
         'ruc_transpiration_cuda': 2,
+        # lane/speed-ruc.  58e52d010 (the full-width sfctmp reference
+        # contract): one float32 output per RucSurfaceTemperatureStep field
+        # scattered back to the full RUC batch; the reference a fused kernel
+        # is graded against, reached from tests/test_ruc_sfctmp_fused.py and
+        # not from the forecast.
+        'ruc_sfctmp_full_width_reference': 1,
+        # 1a0b7dccf (one RUC call is six kernels).  _sfctmp_scratch builds
+        # the fused sfctmp's working set once per (device, stream, batch
+        # width, soil levels) and caches it in _SFCTMP_SCRATCH: one float32
+        # slab of (nzs x profile slots + scalar slots) x n, the device
+        # pointer table, the uint64 check flags and an n-byte alive mask.
+        # It scales with the RUC land batch, once per domain shape, never
+        # per step.
+        '_sfctmp_scratch': 4,
+        # One per-call site builds the outputs (one array per
+        # _SFCTMP_OUTPUTS field, (nzs, n) or (n,)), which the orchestration
+        # it replaced also returned fresh.  The other seven are refusal
+        # placeholders, reached only when an input is missing or malformed
+        # so the refusal can be recorded in the device flags and raised
+        # with the orchestration's first message.
+        'ruc_sfctmp_full_width_fused': 8,
     },
     'gpuwm/core/sfclay.py': {
         '_allocate_result': 1,
@@ -458,8 +538,24 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # the 2-D ones), all raw allocations, priced when Phase D wires the
     # scheme into the driver/preflight the way ysu_output_transient_shapes
     # prices YSU's.
+    #
+    # The sixth is the column workspace of the frame move (878435c39,
+    # lane speed-default-pieces): ws = cp.empty in launch_shinhong, bound
+    # shinhong_workspace_floats(nz, tile) * 4 bytes for the columns in
+    # flight, priced by preflight.shinhong_column_workspace_bytes.  It
+    # replaces a 17,160 B per-thread local frame the driver charged at the
+    # card's full resident-thread capacity.
     'gpuwm/core/shinhong.py': {
-        'launch_shinhong': 5,
+        'launch_shinhong': 6,
+    },
+    # Not a physics scheme: DomainState became a kernel-launching module
+    # at lane/speed-dycore-host 66af318bc, when mu_at_u_faces and
+    # mu_at_v_faces moved to one face_mass launch.  The one site is that
+    # launch's 2-D (ny, nx + 1) or (ny + 1, nx) float32 output, one per
+    # call, which replaces the roll/add/multiply/concatenate chain's
+    # temporaries of the same shape.  Bound: one surface face array.
+    'gpuwm/core/state.py': {
+        '_mass_faces_device': 1,
     },
     'gpuwm/core/thompson.py': {},
     # THE SIX mp_physics=28 MODULES.  Entered here by the commit that merged
@@ -546,6 +642,38 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # (proof/node-reds-276).
     'gpuwm/core/wdm6.py': {'launch_wdm6': 1},
     'gpuwm/core/wsm6.py': {},
+    # ---- the urban canopy models (sf_urban_physics 1-3), 2026-09-30 --------
+    # MYJURB (MYJ under BEP/BEM): ``launch_myjurb``'s per-call bundle, the MYJ
+    # roster plus EXCH_M -- eight (nz, ny, nx) outputs from one comprehension,
+    # PBLH/MIXHT/KPBL planes, RQIBLTEN's published zero and HT when a caller
+    # passes none (physics.py passes the state's).  Priced by preflight's
+    # myj_output_transient_shapes under sf_urban_physics 2/3, held to the
+    # launcher by tests/test_myjurb_wrf471_parity.py.
+    'gpuwm/core/myjurb.py': {
+        'launch_myjurb': 6,
+    },
+    # BEP: ``_class_for_table`` builds the class tables once per (device,
+    # table) and caches them (CLASS_BYTES, 11 x 795 view words and the
+    # 11 x 8,192 x 32-word view-factor scratch, 11 MiB, priced as
+    # bep_class_scratch); ``launch_bep_columns`` allocates any output a caller
+    # did not pass and the column workspace, capped at BEP_WORKSPACE_BYTES
+    # (256 MiB, priced as bep_column_workspace); ``_bep_out`` is the four
+    # surface planes and the error-flag plane, held on the urban state and
+    # allocated once.
+    'gpuwm/core/urban_bep.py': {
+        '_bep_out': 2,
+        '_class_for_table': 3,
+        'launch_bep_columns': 2,
+    },
+    'gpuwm/core/urban_bep_couple.py': {},
+    # UCM: ``_status_word`` is one uint32 per urban state, allocated once and
+    # zeroed on the device per call; ``run_columns`` is the oracle-test
+    # entry (``ucm_column_test``), not the forecast path, and sizes to the
+    # columns a test hands it.
+    'gpuwm/core/urban_ucm.py': {
+        '_status_word': 1,
+        'run_columns': 2,
+    },
     'gpuwm/core/ysu.py': {
         # The precedent this rule follows and the reason it is a ratchet
         # rather than a ban: YSU's nine per-call outputs are raw allocations,
@@ -614,17 +742,78 @@ def _physics_gpu_modules() -> tuple[str, ...]:
     return tuple(found)
 
 
+def _allocator_names(node) -> tuple[str, ...]:
+    """The ``cp`` allocators an expression can evaluate to, if any.
+
+    ``cp.empty_like`` is one, and ``cp.empty_like if full else
+    cp.zeros_like`` is either; a call through a name bound to it allocates
+    once whichever branch ran.
+    """
+    if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+            and node.value.id in ("cp", "cupy") and node.attr in _ALLOCATORS):
+        return (node.attr,)
+    if isinstance(node, ast.IfExp):
+        return tuple(sorted(set(_allocator_names(node.body)
+                                + _allocator_names(node.orelse))))
+    return ()
+
+
+def _scope_bindings(scope) -> dict[str, tuple[str, ...]]:
+    """Every plain name ``scope``'s own body binds, with its allocators.
+
+    Nested functions and classes are their own scopes and are left out.  A
+    name bound to anything else maps to ``()``, so it shadows an allocator
+    alias of the same name in an enclosing scope.
+    """
+    bound: dict[str, tuple[str, ...]] = {}
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        arguments = scope.args
+        for argument in (arguments.posonlyargs + arguments.args
+                         + arguments.kwonlyargs
+                         + [arguments.vararg, arguments.kwarg]):
+            if argument is not None:
+                bound[argument.arg] = ()
+    pending = list(ast.iter_child_nodes(scope))
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target])
+            names = (_allocator_names(node.value)
+                     if node.value is not None else ())
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    bound[target.id] = tuple(sorted(
+                        set(bound.get(target.id, ()) + names)))
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.ClassDef, ast.Lambda)):
+            pending.extend(ast.iter_child_nodes(node))
+    return bound
+
+
 def _allocation_sites(source: str, rel: str):
-    """Every ``cp.<allocator>(...)`` call in ``source``, with its function."""
+    """Every ``cp.<allocator>(...)`` call in ``source``, with its function.
+
+    A call through a local alias of an allocator counts as a site too,
+    labelled with every allocator the alias can be.  7f4d1a2b3 (the
+    RTE-RRTMGP shortwave pass skips dark columns) allocated ``sw_up`` and
+    ``sw_dn`` through ``sw_allocate = cp.empty_like if ... else
+    cp.zeros_like``, and a scanner that read only ``cp.<allocator>(...)``
+    lost both per-call arrays while they still allocated.
+    """
     found = []
+    tree = ast.parse(source)
 
     class Visitor(ast.NodeVisitor):
         def __init__(self):
             self.stack = ["<module>"]
+            self.bindings = [_scope_bindings(tree)]
 
         def _scoped(self, node):
             self.stack.append(node.name)
+            self.bindings.append(_scope_bindings(node))
             self.generic_visit(node)
+            self.bindings.pop()
             self.stack.pop()
 
         visit_FunctionDef = _scoped
@@ -632,6 +821,12 @@ def _allocation_sites(source: str, rel: str):
 
         def visit_ClassDef(self, node):
             self._scoped(node)
+
+        def _alias(self, name: str) -> tuple[str, ...]:
+            for scope in reversed(self.bindings):
+                if name in scope:
+                    return scope[name]
+            return ()
 
         def visit_Call(self, node):
             func = node.func
@@ -641,9 +836,13 @@ def _allocation_sites(source: str, rel: str):
                     and func.attr in _ALLOCATORS):
                 found.append((rel, self.stack[-1], func.attr, node.lineno,
                               node))
+            elif isinstance(func, ast.Name) and self._alias(func.id):
+                found.append((rel, self.stack[-1],
+                              "|".join(self._alias(func.id)), node.lineno,
+                              node))
             self.generic_visit(node)
 
-    Visitor().visit(ast.parse(source))
+    Visitor().visit(tree)
     return found
 
 
@@ -716,6 +915,41 @@ def test_the_ast_gate_catches_a_raw_allocation():
         ysu_anchor, ysu_anchor + "        extra = cp.zeros_like(theta)\n", 1)
     grown = _inventory(ysu_injected, "gpuwm/core/ysu.py")
     assert grown != recorded, "the ratchet did not see an added allocation"
+
+
+def test_the_ast_gate_sees_an_allocation_behind_an_alias():
+    """A call through an allocator alias is a site, one per call.
+
+    The form 7f4d1a2b3 used for rrtmgp's sw_up/sw_dn, injected into ysu
+    beside an existing site: the count must grow by exactly the two alias
+    calls, and a same-named plain function in a nested scope must not be
+    read as the alias.  Then the real rrtmgp ``__call__`` must show its two.
+    """
+    rel = "gpuwm/core/ysu.py"
+    source = (ROOT / rel).read_text(encoding="utf-8")
+    recorded = _PHYSICS_ALLOCATION_INVENTORY[rel]
+    anchor = "        rthraten = cp.zeros_like(theta)\n"
+    assert anchor in source
+    function = next(site[1] for site in _allocation_sites(source, rel)
+                    if site[3] == source[:source.index(anchor)].count("\n") + 1)
+    injected = source.replace(anchor, anchor + (
+        "        grow = cp.empty_like if theta.size else cp.zeros_like\n"
+        "        extra_a = grow(theta)\n"
+        "        extra_b = grow(theta)\n"
+        "        def _shadow(grow=len):\n"
+        "            return grow(theta)\n"), 1)
+    grown = _inventory(injected, rel)
+    assert grown == {**recorded, function: recorded[function] + 2}
+    labels = {site[2] for site in _allocation_sites(injected, rel)
+              if site[1] == function}
+    assert "empty_like|zeros_like" in labels
+
+    rrtmgp = "gpuwm/core/rrtmgp.py"
+    aliased = [site for site in _allocation_sites(
+        (ROOT / rrtmgp).read_text(encoding="utf-8"), rrtmgp)
+        if site[1] == "__call__" and site[2] == "empty_like|zeros_like"]
+    assert [ast.unparse(site[4]) for site in aliased] == [
+        "sw_allocate(lw_up)", "sw_allocate(lw_up)"]
 
 
 def test_no_physics_gpu_module_allocates_outside_its_workspace():

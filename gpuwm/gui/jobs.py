@@ -339,6 +339,22 @@ class Runner:
         except ValueError as error:
             raise Refused("The command did not answer with JSON.") from error
 
+    def answer(self, argv: list[str], *, cwd: Path | None = None, codes: tuple[int, ...] = (0,),
+               timeout: float = QUERY_TIMEOUT_S) -> tuple[int, dict[str, Any]]:
+        """Run a query whose exit code is part of its answer; returns ``(code, document)``.
+
+        For a question such as ``--readiness``, which prints its document at
+        each of its ``codes`` (0 ready, 75 not yet, 2 refused).  Any other
+        exit is refused as :meth:`query` refuses it.
+        """
+
+        code, stdout, stderr = self._complete(argv, cwd, timeout)
+        document = _json_object(stdout)
+        if code in codes and document is not None:
+            return code, document
+        lines = [line for line in stderr.splitlines() if line.strip() and "installed wheel at" not in line]
+        raise Refused("\n".join(lines[-12:]) or f"The command exited {code}.", document)
+
     def launch(self, rundir: Path, argv: list[str], owner_file: str | None = None) -> dict[str, Any]:
         """Launch one run detached; returns the job document.
 

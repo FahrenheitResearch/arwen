@@ -545,6 +545,17 @@ __device__ real mynn_phih(real zet)
 // merely phim/phih on top of them -- are bitwise right on the device.
 // Without them a mis-folded table entry could hide inside an arm no sweep
 // argument reaches.
+// Column views address level-major storage without changing arithmetic.
+template<class T> struct MynnColumn {
+    T* p;
+    size_t stride;
+    __device__ operator MynnColumn<const T>() const { return {p, stride}; }
+    __device__ T& operator[](size_t i) const { return p[i * stride]; }
+    __device__ MynnColumn operator+(size_t i) const {
+        return {p + i * stride, stride};
+    }
+};
+
 extern "C" __global__
 void mynn_glibc_libm_probe(const real* __restrict__ x,
                            const real* __restrict__ y,
@@ -685,8 +696,8 @@ void mynn_level2_pairs(
 
 extern "C" __global__
 void mynn_pblh_scale_columns(
-    const real* __restrict__ thetav, const real* __restrict__ qke,
-    const real* __restrict__ zw, const real* __restrict__ dz,
+    const real* __restrict__ thetav_raw, const real* __restrict__ qke_raw,
+    const real* __restrict__ zw_raw, const real* __restrict__ dz_raw,
     const real* __restrict__ landsea, const real* __restrict__ dx,
     real* __restrict__ zi_o, int* __restrict__ kzi_o,
     real* __restrict__ psig_bl_o, real* __restrict__ psig_shcu_o,
@@ -694,8 +705,12 @@ void mynn_pblh_scale_columns(
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
-    int base = column * nz;
-    int zbase = column * (nz + 1);
+    MynnColumn<const real> thetav = {thetav_raw + column, (size_t)ncol};
+    MynnColumn<const real> qke = {qke_raw + column, (size_t)ncol};
+    MynnColumn<const real> zw = {zw_raw + column, (size_t)ncol};
+    MynnColumn<const real> dz = {dz_raw + column, (size_t)ncol};
+    int base = 0;
+    int zbase = 0;
 
     real minthv = 9.0e9f;
     int k = 1;  // zero-based WRF kts+1.
@@ -718,7 +733,7 @@ void mynn_pblh_scale_columns(
     }
 
     real maxqke = fmaxf(qke[base], 0.0f);
-    real tkeeps = fmaxf(maxqke / 40.0f, 0.02f);
+    real tkeeps = fmaxf(__fdiv_rn(maxqke, 40.0f), 0.02f);
     real pblh_tke = 0.0f;
     for (k = 1; k < nz - 1; ++k) {
         real qtke = fmaxf(qke[base + k] / 2.0f, 0.0f);
@@ -735,7 +750,7 @@ void mynn_pblh_scale_columns(
     }
     pblh_tke = fminf(pblh_tke, zi + 350.0f);
     pblh_tke = fmaxf(pblh_tke, fmaxf(zi - 350.0f, 10.0f));
-    real weight = 0.5f * tanhf((zi - 200.0f) / 400.0f) + 0.5f;
+    real weight = 0.5f * tanhf(__fdiv_rn((zi - 200.0f), 400.0f)) + 0.5f;
     if (maxqke > 0.05f) zi = pblh_tke * (1.0f - weight) + zi * weight;
 
     int kzi = 2;
@@ -760,26 +775,42 @@ void mynn_pblh_scale_columns(
 
 extern "C" __global__
 void mynn_mixlength_default_columns(
-    const real* __restrict__ dz, const real* __restrict__ zw,
-    const real* __restrict__ u, const real* __restrict__ v,
-    const real* __restrict__ qke, const real* __restrict__ dtv,
-    const real* __restrict__ theta, const real* __restrict__ edmf_w,
-    const real* __restrict__ edmf_a, const real* __restrict__ rmo,
+    const real* __restrict__ dz_raw, const real* __restrict__ zw_raw,
+    const real* __restrict__ u_raw, const real* __restrict__ v_raw,
+    const real* __restrict__ qke_raw, const real* __restrict__ dtv_raw,
+    const real* __restrict__ theta_raw, const real* __restrict__ edmf_w_raw,
+    const real* __restrict__ edmf_a_raw, const real* __restrict__ rmo,
     const real* __restrict__ fltv, const real* __restrict__ zi,
-    const real* __restrict__ psig_bl, real* __restrict__ el,
-    real* __restrict__ qkw, real* __restrict__ qtke,
-    real* __restrict__ thetaw, real* __restrict__ elblavg,
-    real* __restrict__ dlu, real* __restrict__ dld,
+    const real* __restrict__ psig_bl, real* __restrict__ el_raw,
+    real* __restrict__ qkw_raw, real* __restrict__ qtke_raw,
+    real* __restrict__ thetaw_raw, real* __restrict__ elblavg_raw,
+    real* __restrict__ dlu_raw, real* __restrict__ dld_raw,
     int nz, int ncol)
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
-    int base = column * nz;
-    int zbase = column * (nz + 1);
+    MynnColumn<const real> dz = {dz_raw + column, (size_t)ncol};
+    MynnColumn<const real> zw = {zw_raw + column, (size_t)ncol};
+    MynnColumn<const real> u = {u_raw + column, (size_t)ncol};
+    MynnColumn<const real> v = {v_raw + column, (size_t)ncol};
+    MynnColumn<const real> qke = {qke_raw + column, (size_t)ncol};
+    MynnColumn<const real> dtv = {dtv_raw + column, (size_t)ncol};
+    MynnColumn<const real> theta = {theta_raw + column, (size_t)ncol};
+    MynnColumn<const real> edmf_w = {edmf_w_raw + column, (size_t)ncol};
+    MynnColumn<const real> edmf_a = {edmf_a_raw + column, (size_t)ncol};
+    MynnColumn<real> el = {el_raw + column, (size_t)ncol};
+    MynnColumn<real> qkw = {qkw_raw + column, (size_t)ncol};
+    MynnColumn<real> qtke = {qtke_raw + column, (size_t)ncol};
+    MynnColumn<real> thetaw = {thetaw_raw + column, (size_t)ncol};
+    MynnColumn<real> elblavg = {elblavg_raw + column, (size_t)ncol};
+    MynnColumn<real> dlu = {dlu_raw + column, (size_t)ncol};
+    MynnColumn<real> dld = {dld_raw + column, (size_t)ncol};
+    int base = 0;
+    int zbase = 0;
     const real gtr = 9.81f / 300.0f;
 
     real ugrid = hypotf(u[base], v[base]);
-    real wt_u = 1.0f - fminf(fmaxf(ugrid - 15.0f, 0.0f) / 30.0f, 0.5f);
+    real wt_u = 1.0f - fminf(__fdiv_rn(fmaxf(ugrid - 15.0f, 0.0f), 30.0f), 0.5f);
     real alp3 = 2.5f * wt_u;
     real zi2 = fmaxf(zi[column], 300.0f);
     real h1 = fminf(fmaxf(0.3f * zi2, 300.0f), 600.0f);
@@ -833,9 +864,9 @@ void mynn_mixlength_default_columns(
                         if (bbb != 0.0f) {
                             real value = gtr * (thetaw[base + izz]
                                 - thetaw[base + iz]);
-                            tl = (-value + sqrtf(fmaxf(0.0f, value * value
+                            tl = __fdiv_rn((-value + sqrtf(fmaxf(0.0f, value * value
                                 + 2.0f * bbb * gtr
-                                * (qtke[base + iz] - zup_inf)))) / bbb / gtr;
+                                * (qtke[base + iz] - zup_inf)))) / bbb, gtr);
                         } else if (thetaw[base + izz] != thetaw[base + iz]) {
                             tl = (qtke[base + iz] - zup_inf)
                                 / (gtr * (thetaw[base + izz] - thetaw[base + iz]));
@@ -868,9 +899,9 @@ void mynn_mixlength_default_columns(
                         if (bbb != 0.0f) {
                             real value = gtr * (thetaw[base + izz]
                                 - thetaw[base + iz]);
-                            tl = (value + sqrtf(fmaxf(0.0f, value * value
+                            tl = __fdiv_rn((value + sqrtf(fmaxf(0.0f, value * value
                                 + 2.0f * bbb * gtr
-                                * (qtke[base + iz] - zdo_sup)))) / bbb / gtr;
+                                * (qtke[base + iz] - zdo_sup)))) / bbb, gtr);
                         } else if (thetaw[base + izz] != thetaw[base + iz]) {
                             tl = (qtke[base + iz] - zdo_sup)
                                 / (gtr * (thetaw[base + izz] - thetaw[base + iz]));
@@ -886,7 +917,7 @@ void mynn_mixlength_default_columns(
         real up = fmaxf(0.1f, fminf(dlu[base + iz], 1000.0f));
         real down = fmaxf(0.1f, fminf(dld[base + iz], 1000.0f));
         elblavg[base + iz] = sqrtf(up * down);
-        elblavg[base + iz] /= 1.0f + elblavg[base + iz] / 2000.0f;
+        elblavg[base + iz] /= 1.0f + __fdiv_rn(elblavg[base + iz], 2000.0f);
         if (iz == nz - 1) elblavg[base + iz] = elblavg[base + iz - 1];
     }
 
@@ -941,7 +972,8 @@ void mynn_turbulence_default_interfaces(
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= count) return;
-    int k = idx % nz;
+    int ld = count / nz;
+    int k = idx / ld;
     if (k == 0) return;
 
     // module_bl_mynn.F:279-298.  gfortran folds this parameter chain with
@@ -976,7 +1008,7 @@ void mynn_turbulence_default_interfaces(
     const real e4c = MYNN_MUL(MYNN_MUL(MYNN_MUL(12.0f, a1), a2), cc2);
     const real e5c = MYNN_MUL(MYNN_MUL(6.0f, a1), a1);
 
-    real dzk = 0.5f * (dz[idx] + dz[idx - 1]);
+    real dzk = 0.5f * (dz[idx] + dz[idx - ld]);
     double elsq = (double)(el[idx] * el[idx]);
     double q3sq = (double)(qkw[idx] * qkw[idx]);
     real source = sm[idx] * gm[idx] + sh[idx] * gh[idx];
@@ -987,8 +1019,8 @@ void mynn_turbulence_default_interfaces(
     // path, where sh is scaled rather than recomputed.
     sh[idx] = fmaxf(sh[idx], 1.0e-5f);
 
-    real du = u[idx] - u[idx - 1];
-    real dv = v[idx] - v[idx - 1];
+    real du = u[idx] - u[idx - ld];
+    real dv = v[idx] - v[idx - ld];
     real duz = (du * du + dv * dv) / (dzk * dzk);
     real ri = -gh[idx] / fmaxf(duz, 1.0e-10f);
     real a2fac = 1.0f / (1.0f + fmaxf(ri, 0.0f));
@@ -1036,7 +1068,7 @@ void mynn_turbulence_default_interfaces(
 
     sh[idx] = fminf(fmaxf(sh[idx], 0.0f), 4.0f);
     sm[idx] = fminf(sm[idx], 5.0f * fmaxf(sh[idx], 0.02f));
-    real cldavg = 0.5f * (cldfra[idx - 1] + cldfra[idx]);
+    real cldavg = 0.5f * (cldfra[idx - ld] + cldfra[idx]);
     if (edmf_a[idx] > 0.001f || cldavg > 0.02f) {
         real plume_floor = 0.03f
             * fminf(10.0f * edmf_a[idx] * edmf_w[idx], 1.0f);
@@ -1064,26 +1096,51 @@ void mynn_turbulence_default_interfaces(
 // sequential within a column; independent columns run in parallel.
 extern "C" __global__
 void mynn_predict_default_columns(
-    const real* __restrict__ dz, const real* __restrict__ rho,
-    const real* __restrict__ dfq, const real* __restrict__ pdk,
-    const real* __restrict__ pdt, const real* __restrict__ pdq,
-    const real* __restrict__ pdc, const real* __restrict__ el,
-    const real* __restrict__ s_aw, const real* __restrict__ ust,
+    const real* __restrict__ dz_raw, const real* __restrict__ rho_raw,
+    const real* __restrict__ dfq_raw, const real* __restrict__ pdk_raw,
+    const real* __restrict__ pdt_raw, const real* __restrict__ pdq_raw,
+    const real* __restrict__ pdc_raw, const real* __restrict__ el_raw,
+    const real* __restrict__ s_aw_raw, const real* __restrict__ ust,
     const real* __restrict__ pmz, const real* __restrict__ phh,
-    const real* __restrict__ delt, const real* __restrict__ qke_in,
-    const real* __restrict__ qsq_in, real* __restrict__ qke_out,
-    real* __restrict__ tsq_out, real* __restrict__ qsq_out,
-    real* __restrict__ cov_out, real* __restrict__ qkw,
-    real* __restrict__ rhoinv, real* __restrict__ kqdz,
-    real* __restrict__ kmdz, real* __restrict__ a,
-    real* __restrict__ b, real* __restrict__ c,
-    real* __restrict__ d, real* __restrict__ cp,
-    real* __restrict__ dp, int nz, int ncol)
+    const real* __restrict__ delt, const real* __restrict__ qke_in_raw,
+    const real* __restrict__ qsq_in_raw, real* __restrict__ qke_out_raw,
+    real* __restrict__ tsq_out_raw, real* __restrict__ qsq_out_raw,
+    real* __restrict__ cov_out_raw, real* __restrict__ qkw_raw,
+    real* __restrict__ rhoinv_raw, real* __restrict__ kqdz_raw,
+    real* __restrict__ kmdz_raw, real* __restrict__ a_raw,
+    real* __restrict__ b_raw, real* __restrict__ c_raw,
+    real* __restrict__ d_raw, real* __restrict__ cp_raw,
+    real* __restrict__ dp_raw, int nz, int ncol)
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
-    int base = column * nz;
-    int zbase = column * (nz + 1);
+    MynnColumn<const real> dz = {dz_raw + column, (size_t)ncol};
+    MynnColumn<const real> rho = {rho_raw + column, (size_t)ncol};
+    MynnColumn<const real> dfq = {dfq_raw + column, (size_t)ncol};
+    MynnColumn<const real> pdk = {pdk_raw + column, (size_t)ncol};
+    MynnColumn<const real> pdt = {pdt_raw + column, (size_t)ncol};
+    MynnColumn<const real> pdq = {pdq_raw + column, (size_t)ncol};
+    MynnColumn<const real> pdc = {pdc_raw + column, (size_t)ncol};
+    MynnColumn<const real> el = {el_raw + column, (size_t)ncol};
+    MynnColumn<const real> s_aw = {s_aw_raw + column, (size_t)ncol};
+    MynnColumn<const real> qke_in = {qke_in_raw + column, (size_t)ncol};
+    MynnColumn<const real> qsq_in = {qsq_in_raw + column, (size_t)ncol};
+    MynnColumn<real> qke_out = {qke_out_raw + column, (size_t)ncol};
+    MynnColumn<real> tsq_out = {tsq_out_raw + column, (size_t)ncol};
+    MynnColumn<real> qsq_out = {qsq_out_raw + column, (size_t)ncol};
+    MynnColumn<real> cov_out = {cov_out_raw + column, (size_t)ncol};
+    MynnColumn<real> qkw = {qkw_raw + column, (size_t)ncol};
+    MynnColumn<real> rhoinv = {rhoinv_raw + column, (size_t)ncol};
+    MynnColumn<real> kqdz = {kqdz_raw + column, (size_t)ncol};
+    MynnColumn<real> kmdz = {kmdz_raw + column, (size_t)ncol};
+    MynnColumn<real> a = {a_raw + column, (size_t)ncol};
+    MynnColumn<real> b = {b_raw + column, (size_t)ncol};
+    MynnColumn<real> c = {c_raw + column, (size_t)ncol};
+    MynnColumn<real> d = {d_raw + column, (size_t)ncol};
+    MynnColumn<real> cp = {cp_raw + column, (size_t)ncol};
+    MynnColumn<real> dp = {dp_raw + column, (size_t)ncol};
+    int base = 0;
+    int zbase = 0;
     real step = delt[column];
 
     for (int k = 0; k < nz; ++k) {
@@ -1239,7 +1296,7 @@ __device__ __forceinline__ real mynn_qsat_blend(real t, real p)
     real esi = fminf(mynn_esat_ice(xc), ceiling);
     real rslf = 0.622f * esl / fmaxf(p - esl, 1.0e-5f);
     real rsif = 0.622f * esi / fmaxf(p - esi, 1.0e-5f);
-    real chi = (t0cm6 - t) / (t0cm6 - tice);
+    real chi = __fdiv_rn((t0cm6 - t), (t0cm6 - tice));
     return (1.0f - chi) * rslf + chi * rsif;
 }
 
@@ -1265,7 +1322,7 @@ __device__ __forceinline__ real mynn_xl_blend(real t)
     if (t <= tice) return 2.85e6f + cpv_cice * (t - t0c);
     real xlvt = 2.5e6f + cpv_cliq * (t - t0c);
     real xlst = 2.85e6f + cpv_cice * (t - t0c);
-    real chi = (t0c - t) / (t0c - tice);
+    real chi = __fdiv_rn((t0c - t), (t0c - tice));
     return (1.0f - chi) * xlvt + chi * xlst;
 }
 
@@ -1276,20 +1333,37 @@ __device__ __forceinline__ real mynn_xl_blend(real t)
 // never reads them, so they are not plumbed into this kernel.
 extern "C" __global__
 void mynn_condensation_default_columns(
-    const real* __restrict__ dz, const real* __restrict__ th,
-    const real* __restrict__ qw, const real* __restrict__ qc,
-    const real* __restrict__ qi, const real* __restrict__ qs,
-    const real* __restrict__ p, const real* __restrict__ exner,
-    const real* __restrict__ qsq, const real* __restrict__ rstoch,
+    const real* __restrict__ dz_raw, const real* __restrict__ th_raw,
+    const real* __restrict__ qw_raw, const real* __restrict__ qc_raw,
+    const real* __restrict__ qi_raw, const real* __restrict__ qs_raw,
+    const real* __restrict__ p_raw, const real* __restrict__ exner_raw,
+    const real* __restrict__ qsq_raw, const real* __restrict__ rstoch_raw,
     const real* __restrict__ xland, const real* __restrict__ pblh,
-    const real* __restrict__ sgm_in, real* __restrict__ qc_bl,
-    real* __restrict__ qi_bl, real* __restrict__ cldfra,
-    real* __restrict__ vt, real* __restrict__ vq,
-    real* __restrict__ sgm, int nz, int ncol)
+    const real* __restrict__ sgm_in_raw, real* __restrict__ qc_bl_raw,
+    real* __restrict__ qi_bl_raw, real* __restrict__ cldfra_raw,
+    real* __restrict__ vt_raw, real* __restrict__ vq_raw,
+    real* __restrict__ sgm_raw, int nz, int ncol)
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
-    int base = column * nz;
+    MynnColumn<const real> dz = {dz_raw + column, (size_t)ncol};
+    MynnColumn<const real> th = {th_raw + column, (size_t)ncol};
+    MynnColumn<const real> qw = {qw_raw + column, (size_t)ncol};
+    MynnColumn<const real> qc = {qc_raw + column, (size_t)ncol};
+    MynnColumn<const real> qi = {qi_raw + column, (size_t)ncol};
+    MynnColumn<const real> qs = {qs_raw + column, (size_t)ncol};
+    MynnColumn<const real> p = {p_raw + column, (size_t)ncol};
+    MynnColumn<const real> exner = {exner_raw + column, (size_t)ncol};
+    MynnColumn<const real> qsq = {qsq_raw + column, (size_t)ncol};
+    MynnColumn<const real> rstoch = {rstoch_raw + column, (size_t)ncol};
+    MynnColumn<const real> sgm_in = {sgm_in_raw + column, (size_t)ncol};
+    MynnColumn<real> qc_bl = {qc_bl_raw + column, (size_t)ncol};
+    MynnColumn<real> qi_bl = {qi_bl_raw + column, (size_t)ncol};
+    MynnColumn<real> cldfra = {cldfra_raw + column, (size_t)ncol};
+    MynnColumn<real> vt = {vt_raw + column, (size_t)ncol};
+    MynnColumn<real> vq = {vq_raw + column, (size_t)ncol};
+    MynnColumn<real> sgm = {sgm_raw + column, (size_t)ncol};
+    int base = 0;
 
     const real rd = 287.0f, rv = 461.6f;
     const real cpd = 7.0f * rd / 2.0f, cpv = 4.0f * rv;
@@ -1307,9 +1381,9 @@ void mynn_condensation_default_columns(
         real theta1 = th[base + level - 1];
         real theta2 = th[base + level + 1];
         real ht1 = 44307.692f
-            * (1.0f - powf(p[base + level - 1] / 101325.0f, 0.190f));
+            * (1.0f - powf(__fdiv_rn(p[base + level - 1], 101325.0f), 0.190f));
         real ht2 = 44307.692f
-            * (1.0f - powf(p[base + level + 1] / 101325.0f, 0.190f));
+            * (1.0f - powf(__fdiv_rn(p[base + level + 1], 101325.0f), 0.190f));
         real slope = (theta2 - theta1) / (ht2 - ht1);
         if (slope < 10.0f / 1500.0f && ht1 < 19000.0f && ht1 > 4000.0f) {
             found = level;
@@ -1346,28 +1420,28 @@ void mynn_condensation_default_columns(
         double r3sq = (double)fmaxf(qsq[idx], 0.0f);
         real sgm_k = (real)sqrt(r3sq);
         sgm_k = fminf(sgm_k, qsat_tk * 0.666f);
-        real wt = fmaxf(500.0f - fmaxf(dz[idx] - 100.0f, 0.0f), 0.0f) / 500.0f;
+        real wt = __fdiv_rn(fmaxf(500.0f - fmaxf(dz[idx] - 100.0f, 0.0f), 0.0f), 500.0f);
         sgm_k = sgm_k + sgm_k * 0.2f * (1.0f - wt);
         real qpct = qpct_pbl * wt + qpct_trp * (1.0f - wt);
-        qpct = fminf(qpct, fmaxf(qpct_sfc, qpct_pbl * zagl / 500.0f));
+        qpct = fminf(qpct, fmaxf(qpct_sfc, __fdiv_rn(qpct_pbl * zagl, 500.0f)));
         sgm_k = fmaxf(sgm_k, qsat_tk * qpct);
         sgm[idx] = sgm_k;
 
         real q1 = qmq / sgm_k;
-        real wt2 = fminf(fmaxf(zagl - pblh2, 0.0f) / 300.0f, 1.0f);
+        real wt2 = fminf(__fdiv_rn(fmaxf(zagl - pblh2, 0.0f), 300.0f), 1.0f);
         real frozen = qi[idx] + qs[idx];
         if (frozen > 1.0e-9f && zagl > pblh2) {
             real rh_hack = fminf(
                 rhmax, rhcrit + wt2 * 0.045f * (9.0f + log10f(frozen)));
             rh = fmaxf(rh, rh_hack);
-            real q1_rh = -3.0f + 3.0f * (rh - rhcrit) / (1.0f - rhcrit);
+            real q1_rh = -3.0f + __fdiv_rn(3.0f * (rh - rhcrit), (1.0f - rhcrit));
             q1 = fmaxf(q1_rh, q1);
         }
         if (qc[idx] > 1.0e-6f && zagl > pblh2) {
             real rh_hack = fminf(
                 rhmax, rhcrit + wt2 * 0.08f * (6.0f + log10f(qc[idx])));
             rh = fmaxf(rh, rh_hack);
-            real q1_rh = -3.0f + 3.0f * (rh - rhcrit) / (1.0f - rhcrit);
+            real q1_rh = -3.0f + __fdiv_rn(3.0f * (rh - rhcrit), (1.0f - rhcrit));
             q1 = fmaxf(q1_rh, q1);
         }
 
@@ -1395,7 +1469,7 @@ void mynn_condensation_default_columns(
             cldfra_k = 0.0f;
         }
 
-        real liq_frac = fminf(1.0f, fmaxf(0.0f, (t - tice) / (tliq - tice)));
+        real liq_frac = fminf(1.0f, fmaxf(0.0f, __fdiv_rn((t - tice), (tliq - tice))));
         qc_bl[idx] = liq_frac * ql_water;
         qi_bl[idx] = (1.0f - liq_frac) * ql_ice;
         if (k + 1 >= k_tropo) {
@@ -1420,12 +1494,12 @@ void mynn_condensation_default_columns(
         real bb = b * t / th[idx];
         real qww = 1.0f + 0.61f * qw[idx];
         real alpha = 0.61f * th[idx];
-        real beta = (th[idx] / t) * (xl / cpd) - 1.61f * th[idx];
+        real beta = (th[idx] / t) * (__fdiv_rn(xl, cpd)) - 1.61f * th[idx];
         vt[idx] = qww - cfmax * beta * bb * fng - 1.0f;
         vq[idx] = alpha + cfmax * beta * a * fng - tv0;
 
         real fac_damp = fminf(zagl * 0.0025f, 1.0f);
-        real excess = fmaxf(0.0f, rh - 0.92f) / 0.145f;
+        real excess = __fdiv_rn(fmaxf(0.0f, rh - 0.92f), 0.145f);
         real cld_factor = 1.0f + fac_damp * fminf(excess * excess, 0.37f);
         cldfra[idx] = fminf(1.0f, cld_factor * cldfra_k);
     }
@@ -1481,10 +1555,10 @@ void mynn_denormal_probe(const real* __restrict__ a,
 // vectors.  x must not alias cpw or dpw; it may alias d, because the forward
 // sweep finishes before the back substitution writes anything.
 __device__ void mynn_tridiag2_column(
-    const real* __restrict__ a, const real* __restrict__ b,
-    const real* __restrict__ c, const real* __restrict__ d,
-    real* __restrict__ cpw, real* __restrict__ dpw,
-    real* __restrict__ x, int n)
+    MynnColumn<const real> a, MynnColumn<const real> b,
+    MynnColumn<const real> c, MynnColumn<const real> d,
+    MynnColumn<real> cpw, MynnColumn<real> dpw,
+    MynnColumn<real> x, int n)
 {
     cpw[0] = MYNN_DIV(c[0], b[0]);
     dpw[0] = MYNN_DIV(d[0], b[0]);
@@ -1505,11 +1579,11 @@ __device__ void mynn_tridiag2_column(
 // spread over every layer still holding more than 2*qvmin.  The caller hands
 // thl to the ``th`` argument, which is what WRF does at line 5020.
 __device__ void mynn_moisture_check_column(
-    real delt, const real* __restrict__ dp, const real* __restrict__ exner,
-    real* __restrict__ qv, real* __restrict__ qc, real* __restrict__ qi,
-    real* __restrict__ qs, real* __restrict__ th, real* __restrict__ dqv,
-    real* __restrict__ dqc, real* __restrict__ dqi, real* __restrict__ dqs,
-    real* __restrict__ dth, int nz)
+    real delt, MynnColumn<const real> dp, MynnColumn<const real> exner,
+    MynnColumn<real> qv, MynnColumn<real> qc, MynnColumn<real> qi,
+    MynnColumn<real> qs, MynnColumn<real> th, MynnColumn<real> dqv,
+    MynnColumn<real> dqc, MynnColumn<real> dqi, MynnColumn<real> dqs,
+    MynnColumn<real> dth, int nz)
 {
     // module_bl_mynn.F:5162-5164 floors.
     const real qvmin = 1.0e-20f, qcmin = 0.0f, qimin = 0.0f;
@@ -1584,48 +1658,113 @@ __device__ void mynn_moisture_check_column(
 // onoff=0.0f and an all-zero forcing, which the host gate enforces there.
 extern "C" __global__
 void mynn_tendencies_columns(
-    const real* __restrict__ dz, const real* __restrict__ rho,
-    const real* __restrict__ u, const real* __restrict__ v,
-    const real* __restrict__ th, const real* __restrict__ tk,
-    const real* __restrict__ qv, const real* __restrict__ p,
-    const real* __restrict__ exner, const real* __restrict__ thl_in,
-    const real* __restrict__ sqv, const real* __restrict__ sqc,
-    const real* __restrict__ sqi, const real* __restrict__ sqs,
-    const real* __restrict__ ozone, const real* __restrict__ tcd,
-    const real* __restrict__ qcd, const real* __restrict__ dfm,
-    const real* __restrict__ dfh, const real* __restrict__ diss_heat,
-    const real* __restrict__ sub_thl, const real* __restrict__ sub_sqv,
-    const real* __restrict__ sub_u, const real* __restrict__ sub_v,
-    const real* __restrict__ det_thl, const real* __restrict__ det_sqv,
-    const real* __restrict__ det_sqc, const real* __restrict__ det_u,
-    const real* __restrict__ det_v,
-    const real* __restrict__ s_aw, const real* __restrict__ s_awthl,
-    const real* __restrict__ s_awqv, const real* __restrict__ s_awqc,
-    const real* __restrict__ s_awu, const real* __restrict__ s_awv,
-    const real* __restrict__ sd_aw, const real* __restrict__ sd_awthl,
-    const real* __restrict__ sd_awqv, const real* __restrict__ sd_awqc,
-    const real* __restrict__ sd_awu, const real* __restrict__ sd_awv,
+    const real* __restrict__ dz_raw, const real* __restrict__ rho_raw,
+    const real* __restrict__ u_raw, const real* __restrict__ v_raw,
+    const real* __restrict__ th_raw, const real* __restrict__ tk_raw,
+    const real* __restrict__ qv_raw, const real* __restrict__ p_raw,
+    const real* __restrict__ exner_raw, const real* __restrict__ thl_in_raw,
+    const real* __restrict__ sqv_raw, const real* __restrict__ sqc_raw,
+    const real* __restrict__ sqi_raw, const real* __restrict__ sqs_raw,
+    const real* __restrict__ ozone_raw, const real* __restrict__ tcd_raw,
+    const real* __restrict__ qcd_raw, const real* __restrict__ dfm_raw,
+    const real* __restrict__ dfh_raw, const real* __restrict__ diss_heat_raw,
+    const real* __restrict__ sub_thl_raw, const real* __restrict__ sub_sqv_raw,
+    const real* __restrict__ sub_u_raw, const real* __restrict__ sub_v_raw,
+    const real* __restrict__ det_thl_raw, const real* __restrict__ det_sqv_raw,
+    const real* __restrict__ det_sqc_raw, const real* __restrict__ det_u_raw,
+    const real* __restrict__ det_v_raw,
+    const real* __restrict__ s_aw_raw, const real* __restrict__ s_awthl_raw,
+    const real* __restrict__ s_awqv_raw, const real* __restrict__ s_awqc_raw,
+    const real* __restrict__ s_awu_raw, const real* __restrict__ s_awv_raw,
+    const real* __restrict__ sd_aw_raw, const real* __restrict__ sd_awthl_raw,
+    const real* __restrict__ sd_awqv_raw, const real* __restrict__ sd_awqc_raw,
+    const real* __restrict__ sd_awu_raw, const real* __restrict__ sd_awv_raw,
     const real* __restrict__ delt_col, const real* __restrict__ psfc_col,
     const real* __restrict__ ust_col, const real* __restrict__ wspd_col,
     const real* __restrict__ uoce_col, const real* __restrict__ voce_col,
     const real* __restrict__ flt_col, const real* __restrict__ flqv_col,
     const real* __restrict__ flqc_col,
-    real* __restrict__ du, real* __restrict__ dv, real* __restrict__ dth,
-    real* __restrict__ dqv, real* __restrict__ dqc, real* __restrict__ dqi,
-    real* __restrict__ dqs, real* __restrict__ dozone,
-    real* __restrict__ thl,
-    real* __restrict__ dtz, real* __restrict__ rhoinv,
-    real* __restrict__ delp, real* __restrict__ khdz,
-    real* __restrict__ kmdz, real* __restrict__ a, real* __restrict__ b,
-    real* __restrict__ c, real* __restrict__ d, real* __restrict__ cpw,
-    real* __restrict__ dpw, real* __restrict__ sqv2,
-    real* __restrict__ sqc2, real* __restrict__ sqi2,
-    real* __restrict__ sqs2, real onoff, int nz, int ncol)
+    real* __restrict__ du_raw, real* __restrict__ dv_raw, real* __restrict__ dth_raw,
+    real* __restrict__ dqv_raw, real* __restrict__ dqc_raw, real* __restrict__ dqi_raw,
+    real* __restrict__ dqs_raw, real* __restrict__ dozone_raw,
+    real* __restrict__ thl_raw,
+    real* __restrict__ dtz_raw, real* __restrict__ rhoinv_raw,
+    real* __restrict__ delp_raw, real* __restrict__ khdz_raw,
+    real* __restrict__ kmdz_raw, real* __restrict__ a_raw, real* __restrict__ b_raw,
+    real* __restrict__ c_raw, real* __restrict__ d_raw, real* __restrict__ cpw_raw,
+    real* __restrict__ dpw_raw, real* __restrict__ sqv2_raw,
+    real* __restrict__ sqc2_raw, real* __restrict__ sqi2_raw,
+    real* __restrict__ sqs2_raw, real onoff, int nz, int ncol)
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
-    const int base = column * nz;
-    const int zbase = column * (nz + 1);
+    MynnColumn<const real> dz = {dz_raw + column, (size_t)ncol};
+    MynnColumn<const real> rho = {rho_raw + column, (size_t)ncol};
+    MynnColumn<const real> u = {u_raw + column, (size_t)ncol};
+    MynnColumn<const real> v = {v_raw + column, (size_t)ncol};
+    MynnColumn<const real> th = {th_raw + column, (size_t)ncol};
+    MynnColumn<const real> tk = {tk_raw + column, (size_t)ncol};
+    MynnColumn<const real> qv = {qv_raw + column, (size_t)ncol};
+    MynnColumn<const real> p = {p_raw + column, (size_t)ncol};
+    MynnColumn<const real> exner = {exner_raw + column, (size_t)ncol};
+    MynnColumn<const real> thl_in = {thl_in_raw + column, (size_t)ncol};
+    MynnColumn<const real> sqv = {sqv_raw + column, (size_t)ncol};
+    MynnColumn<const real> sqc = {sqc_raw + column, (size_t)ncol};
+    MynnColumn<const real> sqi = {sqi_raw + column, (size_t)ncol};
+    MynnColumn<const real> sqs = {sqs_raw + column, (size_t)ncol};
+    MynnColumn<const real> ozone = {ozone_raw + column, (size_t)ncol};
+    MynnColumn<const real> tcd = {tcd_raw + column, (size_t)ncol};
+    MynnColumn<const real> qcd = {qcd_raw + column, (size_t)ncol};
+    MynnColumn<const real> dfm = {dfm_raw + column, (size_t)ncol};
+    MynnColumn<const real> dfh = {dfh_raw + column, (size_t)ncol};
+    MynnColumn<const real> diss_heat = {diss_heat_raw + column, (size_t)ncol};
+    MynnColumn<const real> sub_thl = {sub_thl_raw + column, (size_t)ncol};
+    MynnColumn<const real> sub_sqv = {sub_sqv_raw + column, (size_t)ncol};
+    MynnColumn<const real> sub_u = {sub_u_raw + column, (size_t)ncol};
+    MynnColumn<const real> sub_v = {sub_v_raw + column, (size_t)ncol};
+    MynnColumn<const real> det_thl = {det_thl_raw + column, (size_t)ncol};
+    MynnColumn<const real> det_sqv = {det_sqv_raw + column, (size_t)ncol};
+    MynnColumn<const real> det_sqc = {det_sqc_raw + column, (size_t)ncol};
+    MynnColumn<const real> det_u = {det_u_raw + column, (size_t)ncol};
+    MynnColumn<const real> det_v = {det_v_raw + column, (size_t)ncol};
+    MynnColumn<const real> s_aw = {s_aw_raw + column, (size_t)ncol};
+    MynnColumn<const real> s_awthl = {s_awthl_raw + column, (size_t)ncol};
+    MynnColumn<const real> s_awqv = {s_awqv_raw + column, (size_t)ncol};
+    MynnColumn<const real> s_awqc = {s_awqc_raw + column, (size_t)ncol};
+    MynnColumn<const real> s_awu = {s_awu_raw + column, (size_t)ncol};
+    MynnColumn<const real> s_awv = {s_awv_raw + column, (size_t)ncol};
+    MynnColumn<const real> sd_aw = {sd_aw_raw + column, (size_t)ncol};
+    MynnColumn<const real> sd_awthl = {sd_awthl_raw + column, (size_t)ncol};
+    MynnColumn<const real> sd_awqv = {sd_awqv_raw + column, (size_t)ncol};
+    MynnColumn<const real> sd_awqc = {sd_awqc_raw + column, (size_t)ncol};
+    MynnColumn<const real> sd_awu = {sd_awu_raw + column, (size_t)ncol};
+    MynnColumn<const real> sd_awv = {sd_awv_raw + column, (size_t)ncol};
+    MynnColumn<real> du = {du_raw + column, (size_t)ncol};
+    MynnColumn<real> dv = {dv_raw + column, (size_t)ncol};
+    MynnColumn<real> dth = {dth_raw + column, (size_t)ncol};
+    MynnColumn<real> dqv = {dqv_raw + column, (size_t)ncol};
+    MynnColumn<real> dqc = {dqc_raw + column, (size_t)ncol};
+    MynnColumn<real> dqi = {dqi_raw + column, (size_t)ncol};
+    MynnColumn<real> dqs = {dqs_raw + column, (size_t)ncol};
+    MynnColumn<real> dozone = {dozone_raw + column, (size_t)ncol};
+    MynnColumn<real> thl = {thl_raw + column, (size_t)ncol};
+    MynnColumn<real> dtz = {dtz_raw + column, (size_t)ncol};
+    MynnColumn<real> rhoinv = {rhoinv_raw + column, (size_t)ncol};
+    MynnColumn<real> delp = {delp_raw + column, (size_t)ncol};
+    MynnColumn<real> khdz = {khdz_raw + column, (size_t)ncol};
+    MynnColumn<real> kmdz = {kmdz_raw + column, (size_t)ncol};
+    MynnColumn<real> a = {a_raw + column, (size_t)ncol};
+    MynnColumn<real> b = {b_raw + column, (size_t)ncol};
+    MynnColumn<real> c = {c_raw + column, (size_t)ncol};
+    MynnColumn<real> d = {d_raw + column, (size_t)ncol};
+    MynnColumn<real> cpw = {cpw_raw + column, (size_t)ncol};
+    MynnColumn<real> dpw = {dpw_raw + column, (size_t)ncol};
+    MynnColumn<real> sqv2 = {sqv2_raw + column, (size_t)ncol};
+    MynnColumn<real> sqc2 = {sqc2_raw + column, (size_t)ncol};
+    MynnColumn<real> sqi2 = {sqi2_raw + column, (size_t)ncol};
+    MynnColumn<real> sqs2 = {sqs2_raw + column, (size_t)ncol};
+    const int base = 0;
+    const int zbase = 0;
     const int top = base + nz - 1;
 
     const real p608 = RV / RD - 1.0f;
@@ -2139,10 +2278,10 @@ __device__ __forceinline__ real mynn_powf(real x, real y)
 // module_bl_mynn.F:2417-2567 boulac_length, keeping only the elBLavg branch
 // that mym_length CASE(1) consumes.  dlu/dld are caller-owned scratch.
 __device__ void mynn_boulac_elblavg(
-    const real* __restrict__ zw, const real* __restrict__ dz,
-    const real* __restrict__ qtke, const real* __restrict__ thetaw,
-    real* __restrict__ dlu, real* __restrict__ dld,
-    real* __restrict__ elblavg, int nz)
+    MynnColumn<const real> zw, MynnColumn<const real> dz,
+    MynnColumn<const real> qtke, MynnColumn<const real> thetaw,
+    MynnColumn<real> dlu, MynnColumn<real> dld,
+    MynnColumn<real> elblavg, int nz)
 {
     const real beta = MYNN_DIV(9.81f, 300.0f);
     for (int iz = 0; iz < nz; ++iz) {
@@ -2245,15 +2384,15 @@ __device__ void mynn_boulac_elblavg(
 // flt, flq, vt, vq, cldfra_bl1D and rstoch_col reach the Fortran but CASE(1)
 // never reads them; dtv(kts) is likewise never read.
 __device__ void mynn_mym_length_column(
-    const real* __restrict__ dz, const real* __restrict__ zw,
-    const real* __restrict__ u, const real* __restrict__ v,
-    const real* __restrict__ qke, const real* __restrict__ dtv,
-    const real* __restrict__ theta, const real* __restrict__ edmf_w,
-    const real* __restrict__ edmf_a, real rmo, real fltv, real zi,
-    real psig_bl, real* __restrict__ el, real* __restrict__ qkw,
-    real* __restrict__ qtke, real* __restrict__ thetaw,
-    real* __restrict__ elblavg, real* __restrict__ dlu,
-    real* __restrict__ dld, int nz)
+    MynnColumn<const real> dz, MynnColumn<const real> zw,
+    MynnColumn<const real> u, MynnColumn<const real> v,
+    MynnColumn<const real> qke, MynnColumn<const real> dtv,
+    MynnColumn<const real> theta, MynnColumn<const real> edmf_w,
+    MynnColumn<const real> edmf_a, real rmo, real fltv, real zi,
+    real psig_bl, MynnColumn<real> el, MynnColumn<real> qkw,
+    MynnColumn<real> qtke, MynnColumn<real> thetaw,
+    MynnColumn<real> elblavg, MynnColumn<real> dlu,
+    MynnColumn<real> dld, int nz)
 {
     const real gtr = MYNN_DIV(9.81f, 300.0f);
     real ugrid = sqrtf(MYNN_ADD(MYNN_MUL(u[0], u[0]), MYNN_MUL(v[0], v[0])));
@@ -2336,11 +2475,11 @@ __device__ void mynn_mym_length_column(
 // untouched.  vt and vq are mym_initialize locals zeroed at :1552-1556, so the
 // two interpolation terms are written against a literal zero here.
 __device__ void mynn_mym_level2_column(
-    const real* __restrict__ dz, const real* __restrict__ u,
-    const real* __restrict__ v, const real* __restrict__ thl,
-    const real* __restrict__ qw, real* __restrict__ dtl,
-    real* __restrict__ dqw, real* __restrict__ dtv, real* __restrict__ gm,
-    real* __restrict__ gh, real* __restrict__ sm, real* __restrict__ sh,
+    MynnColumn<const real> dz, MynnColumn<const real> u,
+    MynnColumn<const real> v, MynnColumn<const real> thl,
+    MynnColumn<const real> qw, MynnColumn<real> dtl,
+    MynnColumn<real> dqw, MynnColumn<real> dtv, MynnColumn<real> gm,
+    MynnColumn<real> gh, MynnColumn<real> sm, MynnColumn<real> sh,
     int nz)
 {
     // Constants through the helpers for the reason mynn_level2_pairs records:
@@ -2431,40 +2570,60 @@ __device__ void mynn_mym_level2_column(
 
 extern "C" __global__
 void mynn_initialize_default_columns(
-    const real* __restrict__ dz, const real* __restrict__ zw,
-    const real* __restrict__ u, const real* __restrict__ v,
-    const real* __restrict__ thl, const real* __restrict__ qw,
-    const real* __restrict__ theta, const real* __restrict__ edmf_w,
-    const real* __restrict__ edmf_a, const real* __restrict__ sm_in,
-    const real* __restrict__ sh_in, const real* __restrict__ qke_in,
+    const real* __restrict__ dz_raw, const real* __restrict__ zw_raw,
+    const real* __restrict__ u_raw, const real* __restrict__ v_raw,
+    const real* __restrict__ thl_raw, const real* __restrict__ qw_raw,
+    const real* __restrict__ theta_raw, const real* __restrict__ edmf_w_raw,
+    const real* __restrict__ edmf_a_raw, const real* __restrict__ sm_in_raw,
+    const real* __restrict__ sh_in_raw, const real* __restrict__ qke_in_raw,
     const real* __restrict__ rmo, const real* __restrict__ ust,
     const real* __restrict__ zi, const real* __restrict__ psig_bl,
-    real* __restrict__ el_o, real* __restrict__ qke_o,
-    real* __restrict__ tsq_o, real* __restrict__ qsq_o,
-    real* __restrict__ cov_o, real* __restrict__ sm_o,
-    real* __restrict__ sh_o, real* __restrict__ scratch,
+    real* __restrict__ el_o_raw, real* __restrict__ qke_o_raw,
+    real* __restrict__ tsq_o_raw, real* __restrict__ qsq_o_raw,
+    real* __restrict__ cov_o_raw, real* __restrict__ sm_o_raw,
+    real* __restrict__ sh_o_raw, real* __restrict__ scratch_raw,
     int initialize_qke, int nz, int ncol)
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
-    size_t base = (size_t)column * nz;
-    size_t zbase = (size_t)column * (nz + 1);
-    real* work = scratch + (size_t)column * MYNN_INITIALIZE_SCRATCH * nz;
-    real* qkw = work;
-    real* qtke = work + nz;
-    real* thetaw = work + 2 * nz;
-    real* elblavg = work + 3 * nz;
-    real* dlu = work + 4 * nz;
-    real* dld = work + 5 * nz;
-    real* dtl = work + 6 * nz;
-    real* dqw = work + 7 * nz;
-    real* dtv = work + 8 * nz;
-    real* gm = work + 9 * nz;
-    real* gh = work + 10 * nz;
-    real* pdk = work + 11 * nz;
-    real* pdt = work + 12 * nz;
-    real* pdq = work + 13 * nz;
-    real* pdc = work + 14 * nz;
+    MynnColumn<const real> dz = {dz_raw + column, (size_t)ncol};
+    MynnColumn<const real> zw = {zw_raw + column, (size_t)ncol};
+    MynnColumn<const real> u = {u_raw + column, (size_t)ncol};
+    MynnColumn<const real> v = {v_raw + column, (size_t)ncol};
+    MynnColumn<const real> thl = {thl_raw + column, (size_t)ncol};
+    MynnColumn<const real> qw = {qw_raw + column, (size_t)ncol};
+    MynnColumn<const real> theta = {theta_raw + column, (size_t)ncol};
+    MynnColumn<const real> edmf_w = {edmf_w_raw + column, (size_t)ncol};
+    MynnColumn<const real> edmf_a = {edmf_a_raw + column, (size_t)ncol};
+    MynnColumn<const real> sm_in = {sm_in_raw + column, (size_t)ncol};
+    MynnColumn<const real> sh_in = {sh_in_raw + column, (size_t)ncol};
+    MynnColumn<const real> qke_in = {qke_in_raw + column, (size_t)ncol};
+    MynnColumn<real> el_o = {el_o_raw + column, (size_t)ncol};
+    MynnColumn<real> qke_o = {qke_o_raw + column, (size_t)ncol};
+    MynnColumn<real> tsq_o = {tsq_o_raw + column, (size_t)ncol};
+    MynnColumn<real> qsq_o = {qsq_o_raw + column, (size_t)ncol};
+    MynnColumn<real> cov_o = {cov_o_raw + column, (size_t)ncol};
+    MynnColumn<real> sm_o = {sm_o_raw + column, (size_t)ncol};
+    MynnColumn<real> sh_o = {sh_o_raw + column, (size_t)ncol};
+    MynnColumn<real> scratch = {scratch_raw + column, (size_t)ncol};
+    size_t base = 0;
+    size_t zbase = 0;
+    MynnColumn<real> work = scratch + 0;
+    MynnColumn<real> qkw = work;
+    MynnColumn<real> qtke = work + nz;
+    MynnColumn<real> thetaw = work + 2 * nz;
+    MynnColumn<real> elblavg = work + 3 * nz;
+    MynnColumn<real> dlu = work + 4 * nz;
+    MynnColumn<real> dld = work + 5 * nz;
+    MynnColumn<real> dtl = work + 6 * nz;
+    MynnColumn<real> dqw = work + 7 * nz;
+    MynnColumn<real> dtv = work + 8 * nz;
+    MynnColumn<real> gm = work + 9 * nz;
+    MynnColumn<real> gh = work + 10 * nz;
+    MynnColumn<real> pdk = work + 11 * nz;
+    MynnColumn<real> pdt = work + 12 * nz;
+    MynnColumn<real> pdq = work + 13 * nz;
+    MynnColumn<real> pdc = work + 14 * nz;
 
     // module_bl_mynn.F:279-280, :306 and module_bl_mynn_common.F:68-69.
     const real b1 = 24.0f, b2 = 15.0f, karman = 0.4f, qkemin = 1.0e-3f;
@@ -2479,13 +2638,13 @@ void mynn_initialize_default_columns(
     real zic = zi[column];
     real psig = psig_bl[column];
 
-    real* sm = sm_o + base;
-    real* sh = sh_o + base;
-    real* qke = qke_o + base;
-    real* el = el_o + base;
-    real* tsq = tsq_o + base;
-    real* qsq = qsq_o + base;
-    real* cov = cov_o + base;
+    MynnColumn<real> sm = sm_o + base;
+    MynnColumn<real> sh = sh_o + base;
+    MynnColumn<real> qke = qke_o + base;
+    MynnColumn<real> el = el_o + base;
+    MynnColumn<real> tsq = tsq_o + base;
+    MynnColumn<real> qsq = qsq_o + base;
+    MynnColumn<real> cov = cov_o + base;
     for (int k = 0; k < nz; ++k) {
         sm[k] = sm_in[base + k];
         sh[k] = sh_in[base + k];
@@ -2728,58 +2887,97 @@ __device__ void mynn_condensation_edmf(
 
 extern "C" __global__
 void mynn_dmp_mf_columns(
-    const real* __restrict__ dz, const real* __restrict__ p,
-    const real* __restrict__ rho, const real* __restrict__ u,
-    const real* __restrict__ v, const real* __restrict__ w,
-    const real* __restrict__ th, const real* __restrict__ thl,
-    const real* __restrict__ thv, const real* __restrict__ tk,
-    const real* __restrict__ qt, const real* __restrict__ qv,
-    const real* __restrict__ qc, const real* __restrict__ exner,
-    const real* __restrict__ rstoch, const real* __restrict__ qc_bl_in,
-    const real* __restrict__ cldfra_bl_in, const real* __restrict__ vt_in,
-    const real* __restrict__ vq_in, const real* __restrict__ zw,
+    const real* __restrict__ dz_raw, const real* __restrict__ p_raw,
+    const real* __restrict__ rho_raw, const real* __restrict__ u_raw,
+    const real* __restrict__ v_raw, const real* __restrict__ w_raw,
+    const real* __restrict__ th_raw, const real* __restrict__ thl_raw,
+    const real* __restrict__ thv_raw, const real* __restrict__ tk_raw,
+    const real* __restrict__ qt_raw, const real* __restrict__ qv_raw,
+    const real* __restrict__ qc_raw, const real* __restrict__ exner_raw,
+    const real* __restrict__ rstoch_raw, const real* __restrict__ qc_bl_in_raw,
+    const real* __restrict__ cldfra_bl_in_raw, const real* __restrict__ vt_in_raw,
+    const real* __restrict__ vq_in_raw, const real* __restrict__ zw_raw,
     const real* __restrict__ flt_a, const real* __restrict__ fltv_a,
     const real* __restrict__ flq_a, const real* __restrict__ pblh_a,
     const real* __restrict__ dx_a, const real* __restrict__ landsea_a,
     const real* __restrict__ ts_a, const real* __restrict__ psig_shcu_a,
-    real* __restrict__ edmf_a_o, real* __restrict__ edmf_w_o,
-    real* __restrict__ edmf_qt_o, real* __restrict__ edmf_thl_o,
-    real* __restrict__ edmf_ent_o, real* __restrict__ edmf_qc_o,
-    real* __restrict__ qc_bl_o, real* __restrict__ cldfra_bl_o,
-    real* __restrict__ vt_o, real* __restrict__ vq_o,
-    real* __restrict__ s_aw_o, real* __restrict__ s_awthl_o,
-    real* __restrict__ s_awqt_o, real* __restrict__ s_awqv_o,
-    real* __restrict__ s_awqc_o, real* __restrict__ s_awu_o,
-    real* __restrict__ s_awv_o, real* __restrict__ maxwidth_o,
+    real* __restrict__ edmf_a_o_raw, real* __restrict__ edmf_w_o_raw,
+    real* __restrict__ edmf_qt_o_raw, real* __restrict__ edmf_thl_o_raw,
+    real* __restrict__ edmf_ent_o_raw, real* __restrict__ edmf_qc_o_raw,
+    real* __restrict__ qc_bl_o_raw, real* __restrict__ cldfra_bl_o_raw,
+    real* __restrict__ vt_o_raw, real* __restrict__ vq_o_raw,
+    real* __restrict__ s_aw_o_raw, real* __restrict__ s_awthl_o_raw,
+    real* __restrict__ s_awqt_o_raw, real* __restrict__ s_awqv_o_raw,
+    real* __restrict__ s_awqc_o_raw, real* __restrict__ s_awu_o_raw,
+    real* __restrict__ s_awv_o_raw, real* __restrict__ maxwidth_o,
     int* __restrict__ ktop_o, real* __restrict__ ztop_o,
-    real* __restrict__ maxmf_o, real* __restrict__ plume_scratch,
+    real* __restrict__ maxmf_o, real* __restrict__ plume_scratch_raw,
     real* __restrict__ up_a_pre_o, real* __restrict__ psig_w_o, // MF-EXPORT
     int* __restrict__ plume_active_o, // MF-EXPORT
     real* __restrict__ limiter_adjustment_o, // MF-EXPORT
-    real* __restrict__ work_scratch, int nz, int ncol)
+    real* __restrict__ work_scratch_raw, int nz, int ncol)
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
+    MynnColumn<const real> dz = {dz_raw + column, (size_t)ncol};
+    MynnColumn<const real> p = {p_raw + column, (size_t)ncol};
+    MynnColumn<const real> rho = {rho_raw + column, (size_t)ncol};
+    MynnColumn<const real> u = {u_raw + column, (size_t)ncol};
+    MynnColumn<const real> v = {v_raw + column, (size_t)ncol};
+    MynnColumn<const real> w = {w_raw + column, (size_t)ncol};
+    MynnColumn<const real> th = {th_raw + column, (size_t)ncol};
+    MynnColumn<const real> thl = {thl_raw + column, (size_t)ncol};
+    MynnColumn<const real> thv = {thv_raw + column, (size_t)ncol};
+    MynnColumn<const real> tk = {tk_raw + column, (size_t)ncol};
+    MynnColumn<const real> qt = {qt_raw + column, (size_t)ncol};
+    MynnColumn<const real> qv = {qv_raw + column, (size_t)ncol};
+    MynnColumn<const real> qc = {qc_raw + column, (size_t)ncol};
+    MynnColumn<const real> exner = {exner_raw + column, (size_t)ncol};
+    MynnColumn<const real> rstoch = {rstoch_raw + column, (size_t)ncol};
+    MynnColumn<const real> qc_bl_in = {qc_bl_in_raw + column, (size_t)ncol};
+    MynnColumn<const real> cldfra_bl_in = {cldfra_bl_in_raw + column, (size_t)ncol};
+    MynnColumn<const real> vt_in = {vt_in_raw + column, (size_t)ncol};
+    MynnColumn<const real> vq_in = {vq_in_raw + column, (size_t)ncol};
+    MynnColumn<const real> zw = {zw_raw + column, (size_t)ncol};
+    MynnColumn<real> edmf_a_o = {edmf_a_o_raw + column, (size_t)ncol};
+    MynnColumn<real> edmf_w_o = {edmf_w_o_raw + column, (size_t)ncol};
+    MynnColumn<real> edmf_qt_o = {edmf_qt_o_raw + column, (size_t)ncol};
+    MynnColumn<real> edmf_thl_o = {edmf_thl_o_raw + column, (size_t)ncol};
+    MynnColumn<real> edmf_ent_o = {edmf_ent_o_raw + column, (size_t)ncol};
+    MynnColumn<real> edmf_qc_o = {edmf_qc_o_raw + column, (size_t)ncol};
+    MynnColumn<real> qc_bl_o = {qc_bl_o_raw + column, (size_t)ncol};
+    MynnColumn<real> cldfra_bl_o = {cldfra_bl_o_raw + column, (size_t)ncol};
+    MynnColumn<real> vt_o = {vt_o_raw + column, (size_t)ncol};
+    MynnColumn<real> vq_o = {vq_o_raw + column, (size_t)ncol};
+    MynnColumn<real> s_aw_o = {s_aw_o_raw + column, (size_t)ncol};
+    MynnColumn<real> s_awthl_o = {s_awthl_o_raw + column, (size_t)ncol};
+    MynnColumn<real> s_awqt_o = {s_awqt_o_raw + column, (size_t)ncol};
+    MynnColumn<real> s_awqv_o = {s_awqv_o_raw + column, (size_t)ncol};
+    MynnColumn<real> s_awqc_o = {s_awqc_o_raw + column, (size_t)ncol};
+    MynnColumn<real> s_awu_o = {s_awu_o_raw + column, (size_t)ncol};
+    MynnColumn<real> s_awv_o = {s_awv_o_raw + column, (size_t)ncol};
+    MynnColumn<real> plume_scratch = {plume_scratch_raw + column, (size_t)ncol};
+    MynnColumn<real> work_scratch = {work_scratch_raw + column, (size_t)ncol};
     const int nup = MYNN_DMP_NUP;
-    size_t base = (size_t)column * nz;
-    size_t zbase = (size_t)column * (nz + 1);
-    size_t ibase = (size_t)column * (nz + 1);
-    real* plume = plume_scratch
-        + (size_t)column * MYNN_DMP_PLUME_VECTORS * nup * (nz + 1);
-    real* up_w = plume;
-    real* up_thl = plume + (size_t)nup * (nz + 1);
-    real* up_thv = plume + (size_t)2 * nup * (nz + 1);
-    real* up_qt = plume + (size_t)3 * nup * (nz + 1);
-    real* up_qc = plume + (size_t)4 * nup * (nz + 1);
-    real* up_a = plume + (size_t)5 * nup * (nz + 1);
-    real* up_u = plume + (size_t)6 * nup * (nz + 1);
-    real* up_v = plume + (size_t)7 * nup * (nz + 1);
-    real* work = work_scratch
-        + (size_t)column * (MYNN_DMP_WORK_VECTORS * nz + (size_t)nup * nz);
-    real* rhoz = work;
-    real* dzi = work + nz;
-    real* edmf_th = work + 2 * nz;
-    real* ent = work + 3 * nz;
+    size_t base = 0;
+    size_t zbase = 0;
+    size_t ibase = 0;
+    MynnColumn<real> plume = plume_scratch
+        + 0;
+    MynnColumn<real> up_w = plume;
+    MynnColumn<real> up_thl = plume + (size_t)nup * (nz + 1);
+    MynnColumn<real> up_thv = plume + (size_t)2 * nup * (nz + 1);
+    MynnColumn<real> up_qt = plume + (size_t)3 * nup * (nz + 1);
+    MynnColumn<real> up_qc = plume + (size_t)4 * nup * (nz + 1);
+    MynnColumn<real> up_a = plume + (size_t)5 * nup * (nz + 1);
+    MynnColumn<real> up_u = plume + (size_t)6 * nup * (nz + 1);
+    MynnColumn<real> up_v = plume + (size_t)7 * nup * (nz + 1);
+    MynnColumn<real> work = work_scratch
+        + 0;
+    MynnColumn<real> rhoz = work;
+    MynnColumn<real> dzi = work + nz;
+    MynnColumn<real> edmf_th = work + 2 * nz;
+    MynnColumn<real> ent = work + 3 * nz;
 
     // module_bl_mynn.F:279 p608 comes from module_model_constants.
     const real p608 = RV / RD - 1.0f;
@@ -3310,22 +3508,34 @@ void mynn_dmp_mf_columns(
 // max per level.
 extern "C" __global__
 void mynn_driver_prep_columns(
-    const real* __restrict__ dz, const real* __restrict__ exner,
-    const real* __restrict__ sqv, const real* __restrict__ sqc,
-    const real* __restrict__ sqi, const real* __restrict__ th,
+    const real* __restrict__ dz_raw, const real* __restrict__ exner_raw,
+    const real* __restrict__ sqv_raw, const real* __restrict__ sqc_raw,
+    const real* __restrict__ sqi_raw, const real* __restrict__ th_raw,
     const real* __restrict__ ust,
-    real* __restrict__ zw, real* __restrict__ qv1,
-    real* __restrict__ sqw, real* __restrict__ thl,
-    real* __restrict__ thetav, real* __restrict__ qke_seed,
+    real* __restrict__ zw_raw, real* __restrict__ qv1_raw,
+    real* __restrict__ sqw_raw, real* __restrict__ thl_raw,
+    real* __restrict__ thetav_raw, real* __restrict__ qke_seed_raw,
     int nz, int ncol)
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
+    MynnColumn<const real> dz = {dz_raw + column, (size_t)ncol};
+    MynnColumn<const real> exner = {exner_raw + column, (size_t)ncol};
+    MynnColumn<const real> sqv = {sqv_raw + column, (size_t)ncol};
+    MynnColumn<const real> sqc = {sqc_raw + column, (size_t)ncol};
+    MynnColumn<const real> sqi = {sqi_raw + column, (size_t)ncol};
+    MynnColumn<const real> th = {th_raw + column, (size_t)ncol};
+    MynnColumn<real> zw = {zw_raw + column, (size_t)ncol};
+    MynnColumn<real> qv1 = {qv1_raw + column, (size_t)ncol};
+    MynnColumn<real> sqw = {sqw_raw + column, (size_t)ncol};
+    MynnColumn<real> thl = {thl_raw + column, (size_t)ncol};
+    MynnColumn<real> thetav = {thetav_raw + column, (size_t)ncol};
+    MynnColumn<real> qke_seed = {qke_seed_raw + column, (size_t)ncol};
     const real xlvcp = XLV / CP;
     const real xlscp = (XLV + 3.50e5f) / CP;
     const real p608 = RV / RD - 1.0f;
-    const int base = column * nz;
-    const int wbase = column * (nz + 1);
+    const int base = 0;
+    const int wbase = 0;
 
     zw[wbase] = 0.0f;
     for (int k = 0; k < nz; ++k)
@@ -3363,8 +3573,8 @@ void mynn_driver_prep_columns(
 // scalars per column and belongs where its input already is.
 extern "C" __global__
 void mynn_driver_surface_columns(
-    const real* __restrict__ rho, const real* __restrict__ exner,
-    const real* __restrict__ dz, const real* __restrict__ qv1,
+    const real* __restrict__ rho_raw, const real* __restrict__ exner_raw,
+    const real* __restrict__ dz_raw, const real* __restrict__ qv1_raw,
     const real* __restrict__ ust, const real* __restrict__ hfx,
     const real* __restrict__ qfx, const real* __restrict__ ts,
     real* __restrict__ flt, real* __restrict__ fltv,
@@ -3376,10 +3586,14 @@ void mynn_driver_surface_columns(
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
+    MynnColumn<const real> rho = {rho_raw + column, (size_t)ncol};
+    MynnColumn<const real> exner = {exner_raw + column, (size_t)ncol};
+    MynnColumn<const real> dz = {dz_raw + column, (size_t)ncol};
+    MynnColumn<const real> qv1 = {qv1_raw + column, (size_t)ncol};
     const real xlvcp = XLV / CP;
     const real p608 = RV / RD - 1.0f;
     const real kgtr = MYNN_MUL(0.4f, MYNN_DIV(9.81f, 300.0f));
-    const int base = column * nz;
+    const int base = 0;
 
     real rho0 = rho[base];
     real exner0 = exner[base];
@@ -3417,14 +3631,18 @@ void mynn_driver_surface_columns(
 // is never written by the Fortran loop and stays zero.
 extern "C" __global__
 void mynn_driver_diss_heat_columns(
-    const real* __restrict__ el, const real* __restrict__ qke,
-    const real* __restrict__ p, real* __restrict__ diss_heat,
+    const real* __restrict__ el_raw, const real* __restrict__ qke_raw,
+    const real* __restrict__ p_raw, real* __restrict__ diss_heat_raw,
     int nz, int ncol)
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
+    MynnColumn<const real> el = {el_raw + column, (size_t)ncol};
+    MynnColumn<const real> qke = {qke_raw + column, (size_t)ncol};
+    MynnColumn<const real> p = {p_raw + column, (size_t)ncol};
+    MynnColumn<real> diss_heat = {diss_heat_raw + column, (size_t)ncol};
     const real b1 = 24.0f;
-    const int base = column * nz;
+    const int base = 0;
     for (int k = 0; k < nz - 1; ++k) {
         real blend = mynn_max2(
             MYNN_MUL(0.5f, MYNN_ADD(el[base + k], el[base + k + 1])), 1.0f);
@@ -3448,13 +3666,14 @@ void mynn_driver_exchange_columns(
 {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= count) return;
-    int k = index % nz;
+    int ld = count / nz;
+    int k = index / ld;
     if (k == 0) {
         k_m[index] = 0.0f;
         k_h[index] = 0.0f;
         return;
     }
-    real dzk = MYNN_MUL(0.5f, MYNN_ADD(dz[index], dz[index - 1]));
+    real dzk = MYNN_MUL(0.5f, MYNN_ADD(dz[index], dz[index - ld]));
     k_m[index] = MYNN_MUL(dfm[index], dzk);
     k_h[index] = MYNN_MUL(dfh[index], dzk);
 }

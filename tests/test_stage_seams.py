@@ -432,6 +432,39 @@ def test_two_packaged_profiles_are_told_apart_by_their_own_authorities(
         assert stage_cli.resolve_bundle(root)["source"] == source
 
 
+def test_an_earlier_release_s_preparation_keeps_its_packaged_source(tmp_path):
+    """A166: an admission-only mapping change does not relabel a bundle.
+
+    A159 added ``accept_boundary_interval_multiples`` to ten packaged
+    mappings.  A tree prepared before it carries the old document, whose
+    digest no longer matches the pin; the door named it ``mapped``, so a
+    hrrr-prs forecast ran and reported as a caller's own mapping.  The
+    old document resolves to its profile; one that decodes differently
+    still does not.
+    """
+
+    from gpuwm.prepared_single_domain_forecast import (
+        _MAPPED_PACKAGED_PROFILE, _SOURCE_SCHEMA)
+    from gpuwm.source_authorities import BOUNDARY_MULTIPLES_KEY
+
+    for source, profile in _MAPPED_PACKAGED_PROFILE.items():
+        root = _single_domain_bundle(tmp_path / source, source="20crv3")
+        _mapped_evidence(root, schema=_SOURCE_SCHEMA[source], profile=profile)
+        mapping = root / "source-evidence" / "mapping.json"
+        document = json.loads(mapping.read_bytes())
+        target = document["target"]
+        if target.pop(BOUNDARY_MULTIPLES_KEY, None) is None:
+            target[BOUNDARY_MULTIPLES_KEY] = True
+        mapping.write_text(json.dumps(document, indent=2), encoding="utf-8")
+        assert stage_cli.packaged_source_of(root) == source
+        assert stage_cli.resolve_bundle(root)["source"] == source
+        target["target_vertical_levels"] = int(
+            target.get("target_vertical_levels") or 0) + 1
+        mapping.write_text(json.dumps(document, indent=2), encoding="utf-8")
+        assert stage_cli.packaged_source_of(root) is None
+        assert stage_cli.resolve_bundle(root)["source"] == "mapped"
+
+
 def test_runner_single_requires_a_bound_root_artifact_receipt(tmp_path):
     """A hierarchy without a recorded root cache cannot relay its identity."""
 

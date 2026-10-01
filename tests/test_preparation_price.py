@@ -81,6 +81,55 @@ def test_the_price_never_undercounts_a_measured_peak(row):
     assert pooled >= row["reserved_gb"] * 1e9
 
 
+def _route_price(row):
+    """The price of a measured route row, from the shape it was run at."""
+    if row["route"] == "downscale-child":
+        nx, ny, nz = row["child"]
+        child = _cfg(nx, ny, nz, dx=row["child_dx"], dy=row["child_dx"],
+                     specified=False, nested=True)
+        pnx, pny, pnz = row["parent"]
+        return pp.price_downscale_interpolation(
+            parent_nx=pnx, parent_ny=pny, parent_nz=pnz,
+            parent_fields=row["parent_fields"], child_cfg=child)
+    physics = {key: row[key] for key in ("mp_physics",) if key in row}
+    dx = row.get("dx", 3000.0)
+    domains = [_cfg(*shape, dx=dx, dy=dx, **physics)
+               for shape in row["domains"]]
+    if "inventory" in row:
+        levels, fields, planes = row["inventory"]
+        inventory = pp.SourceInventory(levels=levels, level_fields=fields,
+                                       surface_planes=planes)
+    else:
+        inventory = pp.NOMINAL_SOURCE_INVENTORIES[row["route"]]
+    return pp.price_preparation(
+        row["route"], domains, inventory,
+        boundary_intervals=row.get("boundary_intervals", 0),
+        boundary_workers=row.get("boundary_workers", 0))
+
+
+@pytest.mark.parametrize("row", pp.MEASURED_ROUTE_PEAKS,
+                         ids=[row["route"] for row in pp.MEASURED_ROUTE_PEAKS])
+def test_each_measured_route_is_priced_at_or_above_its_card_peak(row):
+    """A101: the routes the mapped calibration was carried to unmeasured,
+    each run once on a card.  The price sits at or above the preparation's
+    own card peak, and without the CUDA context at or above what the pool
+    reserved; it never falls below what the door decided on in the run.
+    The experiment route reserved 1.4% past its pooled price at 1.20
+    headroom, which its row's 1.25 covers."""
+    assert row["route"] in pp.PREPARATION_ROUTES
+    price = _route_price(row)
+    assert price.need_bytes == row["priced_bytes"], row["case"]
+    assert price.need_bytes >= row["predicted_bytes"]
+    assert price.need_bytes >= row["card_gb"] * 1e9, (
+        row["case"], price.need_bytes / 1e9)
+    if row["reserved_gb"] is not None:
+        pooled = price.need_bytes - price.terms["cuda_context"]
+        assert pooled >= row["reserved_gb"] * 1e9, (row["case"], pooled / 1e9)
+    route = pp.PREPARATION_ROUTES[row["route"]]
+    if route.pool_headroom is not None:
+        assert f"pool headroom x{route.pool_headroom:g}" in price.basis
+
+
 def test_the_measured_live_setup_sits_inside_the_residual():
     """The fitted terms: live non-state memory at each measured peak is
     1.005 to 1.006 of the itemized analysis and vertical setup, under the
@@ -125,6 +174,74 @@ def test_the_ingest_estimate_retires_the_fractional_transient():
     assert estimate.headroom == pp.PREPARATION_POOL_HEADROOM
     assert estimate.transient_bytes == estimate.setup_bytes > 0
     assert estimate.peak_envelope_bytes < 43.51 * GIB
+
+
+def test_the_ingest_estimate_takes_its_route_rows_headroom(tmp_path):
+    """The run route's door prices its pool at its row's 1.25 (a 12 km
+    ERA5 run reserved 1.217 times its itemized arrays), while
+    ``estimate_ingest`` priced the same preparation at 1.20.  Named by its
+    route it takes that row's headroom, and ``gpuwm check`` names the run
+    route for a config whose forcing is its ``[case_data]``."""
+    from datetime import datetime
+
+    from gpuwm.core import preflight
+    from gpuwm.experiment import experiment_from_run_config
+
+    exp = experiment_from_run_config(
+        _cfg(500, 400, 49, dx=12000.0, dy=12000.0),
+        datetime(2026, 9, 27, 21))
+
+    def estimate(route):
+        return preflight.estimate_ingest(
+            exp, source="era5", forcing_interval_seconds=21600.0,
+            route=route)
+
+    default, run = estimate(None), estimate("experiment")
+    assert default.headroom == pp.PREPARATION_POOL_HEADROOM
+    assert run.headroom == pp.PREPARATION_ROUTES["experiment"].headroom
+    assert run.headroom == 1.25
+    assert run.subtotal_bytes == default.subtotal_bytes
+    assert run.alloc_estimate_bytes > default.alloc_estimate_bytes
+    assert estimate("gfs").headroom == pp.PREPARATION_POOL_HEADROOM
+    with pytest.raises(ValueError, match="no preparation route 'nowhere'"):
+        estimate("nowhere")
+
+    case = tmp_path / "case.toml"
+    case.write_text('[experiment]\nname = "c"\n\n[case_data]\n'
+                    'path = "data"\n', encoding="utf-8")
+    fetched = tmp_path / "fetched.toml"
+    fetched.write_text('[experiment]\nname = "f"\n\n[fetch]\n'
+                       'source = "gfs"\n', encoding="utf-8")
+    assert preflight.config_preparation_route(case) == "experiment"
+    assert preflight.config_preparation_route(fetched) is None
+
+
+def test_the_downscale_price_takes_its_route_rows_headroom(monkeypatch):
+    """``price_downscale_interpolation`` read the module default headroom
+    directly, so a headroom set on the ``downscale-child`` row would have
+    been dropped; it reads the row, as ``price_preparation`` does."""
+    from dataclasses import replace
+    from types import MappingProxyType
+
+    child = _cfg(450, 450, 49, dx=1000.0, dy=1000.0, specified=False,
+                 nested=True)
+
+    def price():
+        return pp.price_downscale_interpolation(
+            parent_nx=408, parent_ny=420, parent_nz=49, parent_fields=16,
+            child_cfg=child)
+
+    before = price()
+    rows = dict(pp.PREPARATION_ROUTES)
+    rows["downscale-child"] = replace(rows["downscale-child"],
+                                      pool_headroom=1.5)
+    monkeypatch.setattr(pp, "PREPARATION_ROUTES", MappingProxyType(rows))
+    after = price()
+    live = sum(before.terms[key] for key in
+               ("parent_fields", "child_fields", "setup_residual"))
+    assert after.terms["pool_headroom"] > before.terms["pool_headroom"]
+    assert after.terms["pool_headroom"] == -(-live // 2)
+    assert "pool headroom x1.5" in after.basis
 
 
 def test_source_inventory_counts_levels_fields_and_planes():

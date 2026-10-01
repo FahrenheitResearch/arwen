@@ -18,7 +18,10 @@ import numpy as np
 import pytest
 
 from gpuwm import fetch, gfs_direct, stage_cli, wrf_direct
-from gpuwm.experiment import load_experiment
+from gpuwm.experiment import (
+    DEFERRED_PERTURBATION_SCHEMA, deferred_initial_perturbation,
+    load_experiment,
+)
 from gpuwm.ingest.prepared_cache import prepared_cache_identity
 
 
@@ -119,7 +122,7 @@ def _cpu_preparation(monkeypatch, exp):
         "LANDMASK", "LU_INDEX", "HGT_M", "SCT_DOM", "TMN", "MAPFAC_M",
         "MAPFAC_U", "MAPFAC_V", "F", "E", "SINALPHA", "COSALPHA")}
     monkeypatch.setattr(gfs_direct, "_static_from_geog",
-                        lambda *_a: (statics, {}, None))
+                        lambda *_a, **_k: (statics, {}, None))
     grid = SimpleNamespace(**{name: lambda: (np.zeros((3, 3)), np.zeros((3, 3)))
                             for name in ("latlon_mass", "latlon_u", "latlon_v")})
     monkeypatch.setattr(gfs_direct, "validate_native_lambert_contracts",
@@ -236,6 +239,11 @@ def test_fresh_tree_defers_bubbles_preserves_arrays_and_binds_exact_config(
         exp = load_experiment(path)
         before = asdict(exp)
         with monkeypatch.context() as patch:
+            # The hierarchy double below stands in for the one-shot
+            # hierarchy call, which is the tree route with chaining off;
+            # the chained GFS tree records the same deferral in its head
+            # (tests/test_gfs_chained_tree.py, A136 L7b).
+            patch.setenv("GPUWM_CHAINED_PREP", "0")
             captures = _cpu_preparation(patch, exp)
             arguments = _inputs(tmp_path, path, name)
             proof = gfs_direct.prepare_gfs_wrf(**arguments)
@@ -266,6 +274,10 @@ def test_fresh_tree_defers_bubbles_preserves_arrays_and_binds_exact_config(
     assert "initial_perturbation" not in baseline
     assert "initial_perturbation" not in baseline_state["identity"]["source_identity"]
     deferred = changed["initial_perturbation"]
+    # The one source-neutral receipt every tree preparation writes.
+    assert deferred == deferred_initial_perturbation(
+        load_experiment(scenario), "any route", announce=False)
+    assert deferred["schema"] == DEFERRED_PERTURBATION_SCHEMA
     assert deferred["status"] == "DEFERRED_TO_FORECAST_INITIALIZATION"
     assert deferred["config"] == load_experiment(scenario).perturbation.receipt()
     assert deferred["applied_on_restart"] is False
@@ -292,7 +304,7 @@ def test_unsupported_single_or_spawn_scenario_refuses_before_static_or_decode(
     exp = load_experiment(scenario)
     _cpu_preparation(monkeypatch, exp)
     monkeypatch.setattr(gfs_direct, "_static_from_geog",
-                        lambda *_a: pytest.fail("unsupported scenario reached static preparation"))
+                        lambda *_a, **_k: pytest.fail("unsupported scenario reached static preparation"))
     arguments = _inputs(tmp_path, scenario, "refused")
     with pytest.raises(ValueError, match="spawn-triggered" if spawn else "does not apply.*perturbation"):
         gfs_direct.prepare_gfs_wrf(**arguments)
@@ -305,7 +317,8 @@ def test_absent_perturbation_policy_is_noop_for_single_and_tree(tmp_path):
         root.mkdir()
         exp = load_experiment(_config(root, domains=domains))
         before = asdict(exp)
-        assert gfs_direct._prepared_initial_perturbation(exp) is None
+        assert deferred_initial_perturbation(
+            exp, "GFS-direct prepared-cache") is None
         assert asdict(exp) == before
 
 

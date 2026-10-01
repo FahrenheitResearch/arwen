@@ -354,7 +354,12 @@ def configuration(request: Request, rung: dict, *, background_probe=None):
     stamp = utc(selected['init'])
     duration = rung['cycles'] * rung['cadence_seconds'] + rung['forecast_seconds']
     interval = selected['forcing_interval_seconds']
-    profile = dw.resolved_physics_profile(source, request.profile)
+    dims = [(rung['nx'], rung['ny'])]
+    # The rung's own grid picks the default, as at every other door
+    # (gpuwm.physics_menu.default_profile_for): read with no grid, a 750 m
+    # rung bound the source's own suite where the sub-km row binds.
+    profile = dw.resolved_physics_profile(source, request.profile,
+        finest_dx_m=dw.finest_spacing_m(rung['dx_m'], ()), domains=len(dims))
     dw._pole_clearance_refusal(rung['projection'], rung['nx'], rung['ny'], rung['dx_m'])
     area = dw.fetch_area_hint(rung['projection'], rung['nx'], rung['ny'],
                              source=source, root_dx_m=rung['dx_m'])
@@ -366,7 +371,7 @@ def configuration(request: Request, rung: dict, *, background_probe=None):
             background['fetch_hints']['area'] = area
     text = dw.render_config(name="Local rapid cycling", start_time=stamp,
         hours=max(1, math.ceil(duration / 3600)), projection=rung['projection'],
-        dims=[(rung['nx'], rung['ny'])], ratios=(), root_dx_m=rung['dx_m'],
+        dims=dims, ratios=(), root_dx_m=rung['dx_m'],
         profile=profile, tiles="off", cumulus_requested=False,
         fetch_hints=background['fetch_hints'],
         case_data=None, history_interval_s=rung['cadence_seconds'])
@@ -924,7 +929,7 @@ def register_cli(subparsers):
     p.add_argument('--prepared-namelist', help='WPS authority consumed by the supplied prepared bundle')
     p.add_argument('--source-input', action='append', default=[], help='ROLE=PATH for original source bytes needed to verify a supplied member identity; repeatable')
     p.add_argument('--supplement', action='append', default=[], help='ROLE=PATH consumed by the preparation composition; repeatable')
-    p.add_argument('--profile', help='physics profile name resolved by the authoring authority; defaults to the profile that authority selects')
+    p.add_argument('--profile', help='physics profile name resolved by the authoring authority; defaults to the profile that authority selects at the grid spacing of the selected rung')
     p.add_argument('--seed', type=int, default=0, help='base seed for member perturbation and the static covariance samples; the same seed reproduces the same analysis')
     p.add_argument('--obs-table', action='append', default=[], help='existing neutral observation table; repeatable')
     p.add_argument('--radar-grid', action='append', default=[], help='existing radar-grid observation file; repeatable')

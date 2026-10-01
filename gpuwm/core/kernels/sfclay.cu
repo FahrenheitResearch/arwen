@@ -103,8 +103,8 @@ __device__ __forceinline__ real sf_psim_unstable_full(real z)
                + 2.0f * atanf(1.0f);
     real ym = powf(1.0f - 10.0f * z, 0.33f); // file literal .33
     real rt3 = sqrtf(3.0f);
-    real psimc = 1.5f * logf((ym * ym + ym + 1.0f) / 3.0f)
-                - rt3 * atanf((2.0f * ym + 1.0f) / rt3)
+    real psimc = 1.5f * logf(__fdiv_rn((ym * ym + ym + 1.0f), 3.0f))
+                - rt3 * atanf(__fdiv_rn((2.0f * ym + 1.0f), rt3))
                 + 4.0f * atanf(1.0f) / rt3;
     return (psimk + z * z * psimc) / (1.0f + z * z);
 }
@@ -115,8 +115,8 @@ __device__ __forceinline__ real sf_psih_unstable_full(real z)
     real psihk = 2.0f * logf((1.0f + y) / 2.0f);
     real yh = powf(1.0f - 34.0f * z, 0.33f);
     real rt3 = sqrtf(3.0f);
-    real psihc = 1.5f * logf((yh * yh + yh + 1.0f) / 3.0f)
-                - rt3 * atanf((2.0f * yh + 1.0f) / rt3)
+    real psihc = 1.5f * logf(__fdiv_rn((yh * yh + yh + 1.0f), 3.0f))
+                - rt3 * atanf(__fdiv_rn((2.0f * yh + 1.0f), rt3))
                 + 4.0f * atanf(1.0f) / rt3;
     return (psihk + z * z * psihc) / (1.0f + z * z);
 }
@@ -254,9 +254,9 @@ void sfclay_column(
     real cpm = CP * (1.0f + 0.8f * qvx);
     real es = SVP1 * expf(SVP2 * (ground_t - SVPT0) / (ground_t - SVP3));
     if (!land && lakemask[idx] == 0.0f) es *= 0.98f;
-    if (!land || qs <= 0.0f) qs = EP2 * es / (ps / 1000.0f - es);
+    if (!land || qs <= 0.0f) qs = EP2 * es / (__fdiv_rn(ps, 1000.0f) - es);
     real es_air = SVP1 * expf(SVP2 * (temp - SVPT0) / (temp - SVP3));
-    real qgh = EP2 * es_air / (press / 1000.0f - es_air);
+    real qgh = EP2 * es_air / (__fdiv_rn(press, 1000.0f) - es_air);
     real rho = ps / (RD * tv);
     real za = 0.5f * dz8w[idx];
     real gz1, gz2, gz10;
@@ -274,13 +274,13 @@ void sfclay_column(
     real dthv = thvx - tskv;
     real wspd0 = hypotf(uu, vv), vconv;
     if (land) {
-        real fluxc = fmaxf(old_hfx / rho / CP + ep1 * tskv * old_qfx / rho,
+        real fluxc = fmaxf(__fdiv_rn(old_hfx / rho, CP) + ep1 * tskv * old_qfx / rho,
                            0.0f);
         vconv = powf(G / ground_t * pblh[idx] * fluxc, 0.33f);
     } else {
         vconv = sqrtf(fmaxf(-dthv, 0.0f));
     }
-    real vsgd = 0.32f * powf(fmaxf(dx / 5000.0f - 1.0f, 0.0f), 0.33f);
+    real vsgd = 0.32f * powf(fmaxf(__fdiv_rn(dx, 5000.0f) - 1.0f, 0.0f), 0.33f);
     real wspd = fmaxf(sqrtf(wspd0 * wspd0 + vconv * vconv + vsgd * vsgd),
                        0.1f);
     real br = G / thx * za * dthv / (wspd * wspd);
@@ -378,11 +378,11 @@ void sfclay_column(
     real psit = option == 91 ? fmaxf(gz1 - psih, 2.0f) : gz1 - psih;
     real psit2 = gz2 - psih2;
     real zl = land ? 0.01f : z0;
-    real psiq = logf(karman * old_ust * za / xka + za / zl)
+    real psiq = logf(__fdiv_rn(karman * old_ust * za, xka) + __fdiv_rn(za, zl))
               - (option == 91 ? psih : pq);
-    real psiq2 = logf(karman * old_ust * 2.0f / xka + 2.0f / zl)
+    real psiq2 = logf(__fdiv_rn(karman * old_ust * 2.0f, xka) + __fdiv_rn(2.0f, zl))
                - (option == 91 ? psih2 : pq2);
-    real psiq10 = logf(karman * old_ust * 10.0f / xka + 10.0f / zl)
+    real psiq10 = logf(__fdiv_rn(karman * old_ust * 10.0f, xka) + __fdiv_rn(10.0f, zl))
                 - (option == 91 ? psih10 : pq10);
 
     if (!land) {
@@ -410,14 +410,14 @@ void sfclay_column(
     if (isftcflx == 1 && !land) {
         real z0q = 1.0e-4f;
         if (option == 91) {
-            psiq = logf(za / z0q) - psih;
+            psiq = logf(__fdiv_rn(za, z0q)) - psih;
             psiq2 = logf(2.0f / z0q) - psih2;
             psiq10 = logf(10.0f / z0q) - psih10;
         } else {
             psih = sf_rev_heat_psi(zol, za, z0q, za);
             psih2 = sf_rev_heat_psi(zol, za, z0q, 2.0f);
             psih10 = sf_rev_heat_psi(zol, za, z0q, 10.0f);
-            psiq = logf((za + z0q) / z0q) - psih;
+            psiq = logf(__fdiv_rn((za + z0q), z0q)) - psih;
             psiq2 = logf((2.0f + z0q) / z0q) - psih2;
             psiq10 = logf((10.0f + z0q) / z0q) - psih10;
         }
@@ -453,7 +453,7 @@ void sfclay_column(
     if (iz0tlnd >= 1 && land) {
         real visc = (1.32f + 0.009f * (temp - 273.15f)) * 1.0e-5f;
         real restar = old_ust * z0 / visc;
-        real czil = iz0tlnd == 1 ? powf(10.0f, -0.40f * z0 / 0.07f) : 0.1f;
+        real czil = iz0tlnd == 1 ? powf(10.0f, __fdiv_rn(-0.40f * z0, 0.07f)) : 0.1f;
         if (option == 91) {
             real add = czil * karman * sqrtf(restar);
             psit = psiq = gz1 - psih + add;
@@ -479,17 +479,17 @@ void sfclay_column(
     real u10 = uu * psix10 / psix, v10 = vv * psix10 / psix;
     real th2 = thgb + (thx - thgb) * psit2 / psit;
     real q2 = qs + (qvx - qs) * psiq2 / psiq;
-    real t2 = th2 * powf(ps / P0, RCP);
+    real t2 = th2 * powf(__fdiv_rn(ps, P0), RCP);
     if (land) new_ust = fmaxf(new_ust, option == 91 ? 0.1f : 0.001f);
     real new_mol = karman * (thx - thgb) / psit;
 
     real z0out = z0;
     if (isfflx && !land) {
-        z0out = fminf(0.0185f * new_ust * new_ust / G
+        z0out = fminf(__fdiv_rn(0.0185f * new_ust * new_ust, G)
                       + 0.11f * 1.5e-5f / new_ust, 2.85e-3f);
         if (isftcflx != 0) {
-            real zw = fminf(powf(new_ust / 1.06f, 0.3f), 1.0f);
-            real zn1 = 0.011f * new_ust * new_ust / G + 1.59e-5f;
+            real zw = fminf(powf(__fdiv_rn(new_ust, 1.06f), 0.3f), 1.0f);
+            real zn1 = __fdiv_rn(0.011f * new_ust * new_ust, G) + 1.59e-5f;
             real zn2 = 10.0f * expf(-9.5f * powf(new_ust, -0.3333f))
                        + 0.11f * 1.5e-5f / fmaxf(new_ust, 0.01f);
             z0out = fminf(fmaxf((1.0f - zw) * zn1 + zw * zn2, 1.27e-7f),

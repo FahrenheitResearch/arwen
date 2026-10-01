@@ -132,10 +132,12 @@ def test_booby_trap_trapped_engine_entries_fail(tmp_path, monkeypatch):
     from gpuwm.core import rrtmg_sw as sw
     from gpuwm.verify.cases import real74_d01 as case
 
-    monkeypatch.setattr(lw, "gpu_rrtmg_lw_batched",
-                        _trip("gpu_rrtmg_lw_batched"))
-    monkeypatch.setattr(sw.CudaSW, "rrtmg_sw_batched",
-                        _trip("rrtmg_sw_batched"))
+    # The adapter calls the engines' device entries (results stay on the
+    # card), so those are the entries a forecast cannot run without.
+    monkeypatch.setattr(lw, "gpu_rrtmg_lw_batched_device",
+                        _trip("gpu_rrtmg_lw_batched_device"))
+    monkeypatch.setattr(sw.CudaSW, "rrtmg_sw_batched_device",
+                        _trip("rrtmg_sw_batched_device"))
     cfg = _legacy_cfg(900.0)
     with pytest.raises(Exception, match="tripwire fired"):
         case.run_config(cfg, tmp_path / "trap-engines")

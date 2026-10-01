@@ -20,7 +20,9 @@ gpuwm run-plan --probe                # what this machine can do
 ```
 
 Exit codes: **0** when the last event was `completed`, **1** when it was
-`failed`, **2** on a refused plan (nothing started), **130** on Ctrl-C.
+`failed`, **2** on a refused plan (nothing started), **75** when it was
+`failed` after `source_behind` (a source lead passed its late time; the
+frames written and the checkpoint at the seam are kept), **130** on Ctrl-C.
 
 ---
 
@@ -99,7 +101,8 @@ parser is what accepts or refuses each one.
 "thompson-mp8", "pbl": "myj", "surface_layer": "eta-similarity"}`),
 and reaches the wizard as the JSON its flag takes. The wizard checks it
 the way `gpuwm physics-catalog --check` does and writes it over the
-suite (`physics_profile`, or the source's default) the way
+suite (`physics_profile`, or the default at the finest grid, the one
+the check names for the same grid) the way
 `gpuwm physics-catalog --into` writes a mix, on every size its fit
 tries, so the card is priced for the schemes that run. The suite is then
 the base, not an assertion: the chain's stages are not told the config
@@ -110,6 +113,17 @@ run manifest's `physics` records `choices`, `base_suite`, the
 HRRR route runs its namelists, which have no key for `moist_cq`, so a
 mix from HRRR is written with the value that route's importer runs:
 the suite's own when the mix is a shipped suite, and `false` otherwise.
+
+A `physics_profile` with no `physics_choices` is the suite the wizard
+writes. The chain's stages are told the config is that suite only where
+the written file is that suite on every domain, the conflict check
+`gpuwm go` derives its `--physics-profile` with. With nests it usually
+is not: the wizard turns cumulus off on nests below the gray zone and
+steps their sixth-order damping down the ladder, so a tree whose suite
+has cumulus, or damps harder than the nests' ladder, runs its file as
+written, the suite on the root; a cumulus-free suite that the ladder
+leaves unchanged is still asserted. A suite named in
+`run_options.physics_profile` is always asserted.
 
 `point` or `polygon` is required (there is no default place), and so is
 `cycle`. `--out` is deliberately **not** exposed: run-plan owns where the
@@ -395,6 +409,7 @@ test rather than falling through to whatever the chain happened to do.
 | `supplement` | `[]` | repeatable `ROLE=PATH` preparation donor bindings, resolved relative to the plan. HRRR accepts `PMSL=GRIB` inside `data_dir` and binds explicit donor hashes in a run-local source manifest. Mapped routes forward the bindings to their preparer. GFS and existing prepared bundles reject this option. |
 | `data_dir` | `null` | where the fetch lands (`prepared` route only) |
 | `transport` | `null` | the one host the fetch stage pins, the value `gpuwm fetch --transport` takes; wins over the config's `[fetch] transport`, and `automatic_resolutions` records which one was used (`prepared` route only) |
+| `cycle` | `null` | `gpuwm go --cycle`: the cycle the run starts from (`YYYY-MM-DDTHH`, or `latest`, resolved once under the run's posting rule); wins over the config's `[fetch] cycle` or the intent's `cycle`. A `config.path` configuration is re-timed (start time, delayed nests, WPS and route namelists) into `<run_dir>/cycle-config/`; an inline one is refused. A site schedule names the cycle rather than launching `latest` (`prepared` route only) |
 | `physics_profile` | `null` | passed to the HRRR preparer when stated (`prepared` route only) |
 | `health_debug` | `false` | enable debug phase health attribution |
 
@@ -430,11 +445,18 @@ or reordered line, never a skipped one, and the reader refuses it.
 | `model_progress` (polled) | as above plus `source: "stage_progress_file"`, `step_ms: null` | a `prepared` stage that runs as a subprocess, sampled from its own progress file |
 | `prepare_head_ready` | `head_sha256` | a chained preparation published its head: `prepare` has just closed and the forecast starts while the later boundary intervals are prepared |
 | `prepare_sealed` | `prepared_root`, `prepared` | that preparation sealed (its `proof.json` is written), while the forecast runs on |
-| `boundary_wait_started` | `interval`, `reason` | the forecast reached a boundary interval that is not prepared yet |
-| `boundary_wait_finished` | `interval`, `seconds` | that interval arrived after `seconds` of waiting |
+| `boundary_wait_started` | `interval`, `reason`, `cause`, `model_elapsed_seconds`, `model_valid_time` | the forecast reached a boundary interval the preparation has not built yet (`cause: "preparation"`) |
+| `boundary_wait_finished` | `interval`, `seconds`, `cause`, `model_elapsed_seconds`, `model_valid_time` | that interval arrived after `seconds` of waiting |
+| `posting_schedule` | `source`, `member`, `cycle`, `as_posted`, `shape`, `streams`, `why`, `late_after_minutes`, `start_needs`, `expected_ready_at`, `expected_final_at`, `leads`, `schedule_path`, `table_sha256` | once, when a window fetched as its source posts resolves: when each lead is expected and when it counts as late |
+| `lead_posted` | `source`, `cycle`, `lead`, `valid_time`, `expected_at`, `first_seen_at`, `minutes_after_expected`, `posted_when_first_asked`, `endpoint` | once per lead, when one host first holds all of it (negative minutes: earlier than its row; `posted_when_first_asked` true: it was already up at the first ask, so the minutes only bound its posting) |
+| `lead_ready` | `source`, `cycle`, `lead`, `valid_time`, `bytes`, `fetch_seconds`, `marker_sha256` | once per lead, when it is fetched and verified |
+| `source_wait_started` | `phase`, `source`, `cycle`, `lead`, `valid_time`, `expected_at`, `late_at`, `waited_seconds`, `model_elapsed_seconds`, `model_valid_time`, `interval`, `reason` | the run is blocked on a source lead not posted yet; `phase` is `start` (before the first step; model time and `interval` null) or `seam` |
+| `source_wait_progress` | as `source_wait_started`, `waited_seconds` current | every 60 s while that wait lasts, so a reader tailing the stream can tell a wait from a hang |
+| `source_wait_finished` | `phase`, `source`, `cycle`, `lead`, `waited_seconds`, `first_seen_at`, `model_elapsed_seconds`, `model_valid_time` | the lead arrived |
+| `source_behind` | `source`, `cycle`, `lead`, `valid_time`, `expected_at`, `late_at`, `late_after_minutes`, `last_answer`, `model_elapsed_seconds`, `model_valid_time`, `frames_kept`, `checkpoint` | just before `failed`: a lead passed its `late_at`; the frames through that time and the checkpoint at the seam are kept, and the run exits 75 |
 | `warning` | `code`, `message`, (`detail`, `folder`) | anything worth saying, nothing worth stopping for; `folder` is the scratch folder a `compose_scratch_may_not_fit` warning measured |
 | `completed` | `dry_run`, `run_dir`, `receipt_path`, `receipts`, `outputs_committed`, `first_products_seconds`, `summary` | last line, exit 0 |
-| `failed` | `stage`, `error_class`, `message`, `remedy`, `run_dir`, `receipts`, (`folders`) | last line, nonzero exit; `folders` lists the folders a refusal names as the place to act (a scratch folder to make room in), which a page keeps in the words it shows |
+| `failed` | `stage`, `error_class`, `message`, `remedy`, `run_dir`, `receipts`, (`folders`) | last line, nonzero exit; `folders` lists the folders a refusal names as the place to act (a scratch folder to make room in), which a page keeps in the words it shows; after `source_behind`, `error_class` is `SourceBehind` and the exit code 75 |
 
 `stage` ∈ `fetch`, `prepare`, `initialize`, `forecast`, `finalize`.
 `fetch` appears only when the plan declares one; every other stage
@@ -889,6 +911,24 @@ this source's route admits it and it runs both radiation streams, else
 the next suite in the listed order that satisfies both. A source added
 to the registry gets a working default with **no code change**, and so
 does a suite added to the shipped list.
+
+`spacing_defaults` is the default by grid spacing, which binds ahead of
+`default_profile_id` when the run's finest grid is finer than a row's
+`finest_dx_below_m`. Each row names its suite (`profile_id`), its
+`basis`, and whether this source's route admits it: `admitted` for a
+single domain and `admitted_nested` for a domain with nests, each with
+the route's own sentence (`why_not`, `why_not_nested`) when it does not.
+Today there is one row: below 1 km the default is Thompson with
+MYNN and RUC on both radiation streams, the suite that kept coastal fog
+and stratus. A run the row does not admit keeps `default_profile_id`.
+`admitted_nested` equals `admitted` for every source today: the one
+stage that answered differently for a tree, the nested HRRR hierarchy's
+soil pin, now pins the soil column its land surface runs.
+
+A plan whose `physics_choices` name no suite records their base in the
+run manifest from the configuration the plan resolved to, so an `auto`
+ladder, whose depth only its fit knows, records the default of the
+ladder the fit landed on.
 
 `admissibility_rules[]` names the rules the cells were computed against
 and who owns each one — the route emission gate with its declared

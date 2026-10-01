@@ -38,14 +38,19 @@ List the whole registry with `gpuwm prep --list-sources`, or one row with
 | `20crv3` | `20cr`, `twentycrv3`, `20crv3-member` | 3 h | analysis only | global |
 | `20crv3-cf` | `20crv3-netcdf`, `20cr-netcdf`, `20cr-cf` | 3 h | analysis only | global |
 
-The boundary cadence column is the default. `--cadence N` writes a coarser
-one when the source's preparation takes it: `gdas`, `icon-eu`, `gefs`,
-`ecmwf-open-data` and `gem-gdps` take any whole multiple of the cadence
-above, so `gpuwm domain --source gdas --hours 9 --cadence 3` writes
+The boundary cadence column is the default. `--cadence N` writes another
+spacing when the publisher posts every lead of the window at it and the
+source's preparation takes it: `gdas`, `icon-eu`, `icon-d2`, `icon-global`,
+`gefs`, `ecmwf-open-data`, `gem-gdps`, `hrrr-prs`, `rap`, `rrfs`, `aigfs`,
+`aigefs` and `aifs` take any whole multiple of the spacing their publisher
+posts (`icon-global` posts hourly to f078, then every 3 h), so
+`gpuwm domain --source gdas --hours 9 --cadence 3` writes
 `interval_seconds = 10800` and prepares from f000, f003, f006 and f009.
 A cadence the preparation does not take is refused by `gpuwm domain`,
 `gpuwm fetch` and the `[fetch]` table check before anything is downloaded,
-naming the spacing the preparation takes.
+naming the spacing the preparation takes. A spacing whose leads the cycle
+does not publish (`--cadence 1` past f078 on `icon-global`) is refused the
+same way, naming the lead and the cycle's ladder.
 
 A registered source that is NOT in this list refuses by name and says why:
 either its row has no runnable initialization route yet, or its boundary
@@ -218,11 +223,14 @@ Nothing in `gpuwm/domain_wizard.py` names a model. A new row reaches this
 door by declaring, in `gpuwm/source_adapters.py`:
 
 - `runnable=True` and the profile/runner the decode route uses;
-- `forcing_interval_seconds` -- the source's native spacing between valid
-  times. For a row with a packaged profile this is the mapping document's
-  `target.boundary_interval_seconds`, and a test fails if the two ever
-  disagree, for every row that has one. It reproduces the number the
-  2026-08-17 battery typed into its hand-written namelists by hand. When
+- `forcing_interval_seconds` -- the spacing between valid times a door
+  writes when none is named. For a row with a packaged profile this is the
+  mapping document's `target.boundary_interval_seconds`, or a whole
+  multiple of it that the mapping takes and the source's route row names
+  as its `default_cadence` (`icon-global`: hourly published, 3 h by
+  default), and a test fails otherwise, for every row that has one. It
+  reproduces the number the 2026-08-17 battery typed into its hand-written
+  namelists by hand. When
   the product can be read at any whole multiple of that spacing, the
   mapping's `target` also declares `"accept_boundary_interval_multiples":
   true`, and a test fails if the source's fetch offers a cadence the

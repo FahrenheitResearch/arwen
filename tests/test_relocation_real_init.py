@@ -380,27 +380,35 @@ def test_initializer_blends_terrain_but_takes_no_t0_column_correction(
         "static_rebuild", "atmosphere_sint", "terrain_adjustment"}
 
     # The t=0 lineage, composed independently: fine analytic base,
-    # three-operand blend against the parent SINT captures, then the
-    # start_domain re-derivation from the blended MUB.
+    # three-operand blend against the parent SINT captures carried in
+    # float64 on that fine base (the child keeps its base's FP32 EOS
+    # correction), then the start_domain re-derivation from the blended
+    # MUB.
     coord = _coord()
     hgt = _footprint_hgt(ref_dc)
     fine = _make_real_base(coord, hgt, 10000.0, 290.0, 1)
-    ht_e = np.asarray(fine.terrain_z, F32).copy()
-    mub_e = np.asarray(fine.mub, F32).copy()
-    phb_e = np.asarray(fine.phb, F32).copy()
+    ht_e = np.array(fine.terrain_z, dtype=np.float64)
+    mub_e = np.array(fine.mub, dtype=np.float64)
+    phb_e = np.array(fine.phb, dtype=np.float64)
     reg = ni._mass_registration(ref_dc, parent_node)
     sint32 = lambda f: np_sint(f, reg, dtype=np.float64).astype(F32)
     ht_i = sint32(parent_node.state.ht)
     mub_i = sint32(parent_node.state.mub2d)
     phb_i = sint32(parent_node.state.phb)
-    blend_terrain(ht_i, ht_e, spec_bdy_width=1, blend_width=1)
-    blend_terrain(mub_i, mub_e, spec_bdy_width=1, blend_width=1)
-    blend_terrain(phb_i, phb_e, spec_bdy_width=1, blend_width=1)
-    np.testing.assert_array_equal(state.ht, ht_e)
-    np.testing.assert_array_equal(state.mub2d, mub_e)
-    np.testing.assert_array_equal(state.phb, phb_e)
-    stub = SimpleNamespace(ht=ht_e, mub2d=mub_e, phb=phb_e)
-    base_e = ni._base_from_blended(stub, ref_dc.run, coord, 10000.0)
+    blend_terrain(ht_i.astype(np.float64), ht_e, spec_bdy_width=1,
+                  blend_width=1)
+    blend_terrain(mub_i.astype(np.float64), mub_e, spec_bdy_width=1,
+                  blend_width=1)
+    blend_terrain(phb_i.astype(np.float64), phb_e, spec_bdy_width=1,
+                  blend_width=1)
+    np.testing.assert_array_equal(state.ht, ht_e.astype(F32))
+    np.testing.assert_array_equal(state.mub2d, mub_e.astype(F32))
+    np.testing.assert_array_equal(state.phb, phb_e.astype(F32))
+    np.testing.assert_array_equal(state.dphb_resid, np.asarray(
+        np.diff(phb_e, axis=0)
+        - np.diff(phb_e.astype(F32), axis=0).astype(np.float64), F32))
+    base_e = ni._base_from_blended(ref_dc.run, coord, 10000.0,
+                                   (ht_e, mub_e, phb_e))
     np.testing.assert_array_equal(state.pb, np.asarray(base_e.pb, F32))
     np.testing.assert_array_equal(state.thb, np.asarray(base_e.thb, F32))
     np.testing.assert_array_equal(state.alb, np.asarray(base_e.alb, F32))

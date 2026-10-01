@@ -135,6 +135,8 @@ static MS3 blockIdx = {0, 0, 0};
 static MS3 blockDim = {1, 1, 1};
 static MS3 threadIdx = {0, 0, 0};
 static MS3 gridDim = {1, 1, 1};
+#define __shared__ static
+static inline void __syncthreads() {}
 static inline float __fadd_rn(float a, float b) { return a + b; }
 static inline float __fsub_rn(float a, float b) { return a - b; }
 static inline float __fmul_rn(float a, float b) { return a * b; }

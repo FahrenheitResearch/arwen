@@ -252,32 +252,34 @@ def test_a_named_hrrr_cycle_with_wait_for_waits_instead_of_refusing(
         return released["f02"] or "f02." not in url.rsplit("/", 1)[-1]
 
     _with_probe(monkeypatch, "require_published_cycle", published)
-    clock = {"now": 0.0}
+    # --wait-for is the as-posted loop for every source now (A136 L2): the
+    # loop asks each hour when it is due and waits by its own clock, and
+    # the transport is called for each posted prefix (the HRRR-only wait
+    # branch inside fetch_hrrr is no longer reached from the command).
+    from gpuwm import fetch_as_posted
+    from gpuwm import source_posting as rows
 
-    def sleeper(seconds):
-        clock["now"] += seconds
+    monkeypatch.setattr(fetch, "_head_answer", published)
+    clock = {"now": rows.expected_at("hrrr", datetime(2026, 1, 31, 6), 2)}
+    start = clock["now"]
+
+    def pause(seconds):
+        clock["now"] += timedelta(seconds=seconds)
         released["f02"] = True
 
-    real_fetch_hrrr = fetch.fetch_hrrr
-    waited = []
-
-    def fetch_hrrr(**kwargs):
-        waited.append(kwargs["wait"])
-        return real_fetch_hrrr(**{**kwargs, "probe": published,
-                                  "sleeper": sleeper,
-                                  "clock": lambda: clock["now"]})
-
-    monkeypatch.setattr(fetch, "fetch_hrrr", fetch_hrrr)
+    monkeypatch.setattr(fetch_as_posted, "now_utc", lambda: clock["now"])
+    monkeypatch.setattr(fetch_as_posted, "pause", pause)
     out = tmp_path / "hrrr"
     rc = cli.main(["fetch", "--source", "hrrr", "--cycle", "2026-01-31T06",
                    "--hours", "2", "--wait-for",
                    "--wait-timeout-minutes", "1", "--out", str(out)])
     captured = capsys.readouterr()
     assert rc == 0, captured.err
-    assert waited == [True]
-    assert "not yet published" in captured.out
-    assert clock["now"] > 0
+    assert "f002 not posted yet" in captured.out
+    assert clock["now"] > start
     assert _manifest(out)["forecast_hours"] == [0, 1, 2]
+    assert sorted(path.name for path in (out / "posting").glob("f*.json")) == [
+        "f000.json", "f001.json", "f002.json"]
 
 
 def test_a_complete_gfs_folder_is_reused_when_no_provider_answers(
@@ -342,7 +344,7 @@ def test_a_partial_folder_still_asks_whether_the_cycle_is_published(
                      area=None, out=out, progress=lambda line: None)
     downloads.clear()
     _with_probe(monkeypatch, "require_published_cycle", lambda url: False)
-    rc = cli.main(["fetch", "--source", "hrrr", "--cycle", "2026-01-31T06",
+    rc = cli.main(["fetch", "--whole-cycle", "--source", "hrrr", "--cycle", "2026-01-31T06",
                    "--hours", "1", "--out", str(out)])
     assert rc != 0
     assert "not published" in capsys.readouterr().err
@@ -418,7 +420,7 @@ def test_a_named_cycle_is_checked_on_the_pinned_host_only(
                 now=_NOW)
     monkeypatch.setattr(fetch, "fetch_hrrr",
                         lambda **kwargs: pytest.fail("transfer started"))
-    rc = cli.main(["fetch", "--source", "hrrr", "--cycle", "2026-02-01T06",
+    rc = cli.main(["fetch", "--whole-cycle", "--source", "hrrr", "--cycle", "2026-02-01T06",
                    "--hours", "1", "--transport", "s3",
                    "--out", str(tmp_path / "hrrr")])
     assert rc != 0
@@ -571,7 +573,10 @@ def _handed_hrrr(monkeypatch) -> list:
     handed = []
 
     def fetch_hrrr(**kwargs):
-        handed.append((kwargs["cycle"], kwargs["transport"], kwargs["wait"]))
+        # The command no longer passes ``wait``: the as-posted loop waits
+        # for each hour before the transport is called (A136 L2).
+        handed.append((kwargs["cycle"], kwargs["transport"],
+                       kwargs.get("wait", False)))
         raise _Stop
 
     monkeypatch.setattr(fetch, "fetch_hrrr", fetch_hrrr)
@@ -658,7 +663,12 @@ def test_latest_hrrr_wait_for_with_transport_auto_waits_on_both_hosts(
                                  "--hours", "2", "--wait-for",
                                  "--transport", "auto",
                                  "--out", str(tmp_path / "hrrr")]))
-    assert len(handed) == 1 and handed[0][1:] == ("auto", True)
+    # Every host answers, so the window is posted whole and moves in one
+    # call on the resolved host; the waiting (when there is any) is the
+    # as-posted loop's, over the whole serving ladder (A136 L2), not a
+    # per-file wait inside the transport.
+    assert len(handed) == 1
+    assert handed[0][1] in ("nomads", "s3") and handed[0][2] is False
 
 
 def test_a_complete_hrrr_folder_with_transport_auto_keeps_its_host(
@@ -707,16 +717,19 @@ def test_run_plan_refuses_a_host_the_source_does_not_publish_on(tmp_path):
 # A pinned host past its retention says so, and names the host that keeps it
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("rule", [(), ("--whole-cycle",)])
 def test_an_old_cycle_pinned_to_nomads_names_retention_and_s3(
-        tmp_path, monkeypatch, capsys, python_engine):
+        tmp_path, monkeypatch, capsys, python_engine, rule):
+    # As posted (the default) and whole-cycle alike: a pinned host is the
+    # whole ladder, so a cycle past its retention can never start there.
     _with_probe(monkeypatch, "require_published_cycle",
                 lambda url: "nomads.ncep.noaa.gov" not in url)
     monkeypatch.setattr(fetch, "fetch_hrrr",
                         lambda **kwargs: pytest.fail("transfer started"))
-    rc = cli.main(["fetch", "--source", "hrrr", "--cycle", "2026-01-10T06",
+    rc = cli.main(["fetch", *rule, "--source", "hrrr", "--cycle", "2026-01-10T06",
                    "--hours", "1", "--transport", "nomads",
                    "--out", str(tmp_path / "hrrr")])
-    assert rc != 0
+    assert rc == 2
     err = capsys.readouterr().err
     assert "keeps only about the newest 48 h" in err
     assert "s3 still keeps it" in err and "--transport s3" in err
@@ -971,7 +984,7 @@ def test_an_hrrr_host_that_does_not_serve_a_product_is_refused_in_words(
                         _retiring_hrrr_hosts(downloads, {"nomads", "s3"}))
     # Both hosts said the cycle was there a moment ago.
     _every_host_answers(monkeypatch)
-    rc = cli.main(["fetch", "--source", "hrrr", "--cycle", "2026-02-01T06",
+    rc = cli.main(["fetch", "--whole-cycle", "--source", "hrrr", "--cycle", "2026-02-01T06",
                    "--hours", "1", "--transport", "s3",
                    "--out", str(tmp_path / "hrrr")])
     err = capsys.readouterr().err

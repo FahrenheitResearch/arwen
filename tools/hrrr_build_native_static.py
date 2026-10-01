@@ -107,8 +107,18 @@ def validate_static(
     if not np.isin(fields["LANDMASK"], (0.0, 1.0)).all():
         raise ValueError("LANDMASK is not binary")
     require_land_terrain(fields["HGT_M"], fields["LANDMASK"])
-    if fields["LU_INDEX"].min() < 1 or fields["LU_INDEX"].max() > 21:
-        raise ValueError("LU_INDEX is outside the MODIS-Noah categories")
+    # 21 categories, or the urban legend's 61 (categories 51-61 kept for
+    # the urban table) when the static carries it, as the forecast's own
+    # static contract reads them: with 21 here, every urban run whose land
+    # cover kept a Local Climate Zone or NLCD intensity class was refused
+    # at the static build.
+    from gpuwm.native_wrf_contract import _landuse_category_count
+    categories = (_landuse_category_count(fields["LANDUSEF"])
+                  if "LANDUSEF" in fields else 21)
+    if (fields["LU_INDEX"].min() < 1
+            or fields["LU_INDEX"].max() > categories):
+        raise ValueError(
+            f"LU_INDEX is outside the MODIS-Noah categories 1..{categories}")
     if fields["SCT_DOM"].min() < 1 or fields["SCT_DOM"].max() > 16:
         raise ValueError("SCT_DOM is outside the Noah soil categories")
     rotation_norm_error = np.max(np.abs(
@@ -134,8 +144,10 @@ def main() -> None:
     configuration.add_argument("--experiment-config", type=Path)
     configuration.add_argument(
         "--static-highres", type=json.loads, metavar="JSON",
-        help=("the [static] table a namelist-only preparation resolved, as "
-              "JSON; it has no configuration file to name"))
+        help=("the high-resolution carrier a namelist-only preparation "
+              "resolved, as the JSON identity a seal records "
+              "(static_highres_identity); it has no configuration file to "
+              "name"))
     parser.add_argument("--case-date", type=date.fromisoformat)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--receipt", type=Path, required=True)
@@ -154,13 +166,23 @@ def main() -> None:
     source_window = required_hrrr_source_window(target)
     from gpuwm.static.highres_production import (
         load_static_highres, apply_prepared_highres, overlay_active,
-        parse_static_table)
+        parse_sealed_static_highres)
     if args.static_highres is not None:
-        highres = parse_static_table(
+        highres = parse_sealed_static_highres(
             args.static_highres, source="--static-highres",
             base_dir=Path.cwd())
     else:
         highres = load_static_highres(args.experiment_config)
+    # d01's terrain smoothing ([[domain]] static on the root), built here
+    # as the WPS_GEOG roots of the other routes build it, and attested in
+    # the receipt the root seam (require_root_smoothing) reads.  A default
+    # setting builds through the call this tool always made.
+    from dataclasses import replace
+    from gpuwm.static.terrain_smoothing import smoothing_for
+    smoothing = smoothing_for(highres, 1)
+    smoothing_attestation = (
+        None if smoothing.is_default
+        else {"terrain_smoothing": {"d01": smoothing.echo()}})
     if overlay_active(highres, grid) and args.case_date is None:
         raise ValueError("high-resolution static preparation needs --case-date YYYY-MM-DD")
     if (args.static_cache is None) != (args.static_receipt is None):
@@ -171,6 +193,19 @@ def main() -> None:
         from gpuwm.hrrr_native_static import verify_hrrr_native_static
         fields, prior = verify_hrrr_native_static(
             args.static_cache, args.static_receipt, target)
+        # A sealed static keeps the terrain it was built with.  One built
+        # under another d01 smoothing than this preparation asks for would
+        # integrate terrain the configuration did not ask for (a default
+        # request is not checked by the root seam, which passes it).
+        attested = (prior.get("terrain_smoothing") or {}).get("d01")
+        requested = None if smoothing.is_default else smoothing.echo()
+        if attested is not None and attested != requested:
+            raise ValueError(
+                f"the static cache {args.static_cache} was built with d01 "
+                f"terrain smoothing {attested}, and this preparation asks "
+                f"for {smoothing.label()}; reusing it would integrate "
+                "terrain the configuration did not ask for. Build the "
+                "static from --geog-root instead")
         selection = GeogSelection(
             root=Path(prior["geog_root"]), resolution_tokens=(),
             **prior["geog_selection"])
@@ -179,6 +214,8 @@ def main() -> None:
         if args.geog_root is None:
             raise ValueError("provide geog-root or a verified static-cache/static-receipt pair")
         selection = GeogSelection.fallback(args.geog_root)
+        if smoothing_attestation is not None:
+            selection = replace(selection, terrain_smoothing=smoothing)
         geog_source_coverage: dict[str, object] = {}
         fields = build_static(
             grid, args.geog_root, selection=selection,
@@ -187,7 +224,8 @@ def main() -> None:
         fields, grid, config=highres, domain_id=1, case_date=args.case_date,
         landuse_attrs=(selection.landuse_global_attrs()
                        if overlay_active(highres, grid) else None),
-        baseline_receipt=prior)
+        baseline_receipt=(prior if args.static_cache is not None
+                          else smoothing_attestation))
     build_seconds = time.perf_counter() - build_started
     fields.update({
         "MAPFAC_M": grid.mapfac_m(),
@@ -268,6 +306,12 @@ def main() -> None:
     }
     if overlay_active(highres, grid):
         receipt["highres"] = overlay_binding["highres"]
+    if args.static_cache is None and smoothing_attestation is not None:
+        receipt.update(smoothing_attestation)
+    elif isinstance(prior, dict) and "terrain_smoothing" in prior:
+        # A rebuild from a sealed static keeps the terrain it was handed,
+        # and with it the attestation that terrain was built under.
+        receipt["terrain_smoothing"] = prior["terrain_smoothing"]
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     temporary_receipt = args.receipt.with_suffix(args.receipt.suffix + ".tmp")
     temporary_receipt.write_text(

@@ -185,7 +185,7 @@ def test_a_stage_launched_off_the_descriptor_is_caught(stages):
     bad_blocks = (g.ncol + bad_tpb - 1) // bad_tpb
     fn((bad_blocks,), (bad_tpb,),
        _prep_args(cp, g.ncol, g.nz)
-       + (np.int32(g.tpb), np.int32(g.nblocks), stages.geom_report,
+       + (stages._llo3_mask, np.int32(g.tpb), np.int32(g.nblocks), stages.geom_report,
           stages.order_report, cp.zeros(1, dtype=np.int32)))
     cp.cuda.Stream.null.synchronize()
 

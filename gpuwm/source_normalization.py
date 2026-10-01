@@ -386,11 +386,18 @@ def validate_inventory(spec: NormalizationSpec,
     if missing_invariants:
         raise ValueError(
             f"missing coordinate/invariant objects: {sorted(missing_invariants)}")
+    # A boundary series is uniform, at the publisher's spacing or a whole
+    # multiple of it (A173): every lead in it is one the publisher wrote,
+    # and nothing normalized here depends on the spacing, since each lead
+    # is remapped alone through the same plan.  A gap or an uneven series
+    # is refused because the decode reads one interval for the whole run.
     step = int(spec.cadence["step_hours"])
     leads = sorted({obj.lead for obj in objects if obj.lead is not None})
-    if not leads or any(b - a != step for a, b in zip(leads, leads[1:])):
+    gaps = {b - a for a, b in zip(leads, leads[1:])}
+    if not leads or len(gaps) > 1 or any(gap % step for gap in gaps):
         raise ValueError(
-            f"forcing leads must be a contiguous {step}-hour series")
+            "forcing leads must be one uniform series at a whole multiple "
+            f"of the publisher's {step}-hour spacing, not leads {leads}")
     expected = _expected_state(spec)
     for lead in leads:
         present = {(o.kind, o.field, o.level) for o in objects if o.lead == lead}
@@ -804,11 +811,22 @@ def _check_wps_time_coverage(spec: NormalizationSpec, path: Path,
     interval = share.get("interval_seconds")
     if isinstance(interval, (list, tuple)):
         interval = interval[0] if interval else None
-    if isinstance(interval, bool) or interval != declared_interval:
+    leads = sorted({o.lead for o in objects if o.lead is not None})
+    # The namelist's interval is the series' own spacing (A173): a whole
+    # multiple of the publisher's, and equal to the gap between the leads
+    # these objects carry, so the forcing the decode reads every
+    # interval_seconds exists at each of those times.
+    gaps = {(b - a) * 3600 for a, b in zip(leads, leads[1:])}
+    if (isinstance(interval, bool) or not isinstance(interval, int)
+            or interval <= 0 or interval % declared_interval
+            or (gaps and gaps != {interval})):
+        spacing = (f"the {next(iter(gaps))} s spacing of these leads"
+                   if len(gaps) == 1 else
+                   f"a whole multiple of {declared_interval}")
         raise ValueError(
-            f"{spec.source_id} requires WPS interval_seconds={declared_interval}")
+            f"{spec.source_id} requires WPS interval_seconds={spacing}, "
+            f"not {interval!r}")
     cycle = datetime.strptime(objects[0].cycle, spec.cycle_format)
-    leads = [o.lead for o in objects if o.lead is not None]
     earliest = cycle + timedelta(hours=min(leads))
     latest = cycle + timedelta(hours=max(leads))
     declared = []

@@ -169,8 +169,10 @@ def initialize_prepared_physics(
     fields = _validate_prepared_surface(surface, cfg)
     near_surface_host = _validate_prepared_near_surface(result, met, cfg)
     required_attrs = {"MMINLU", "ISWATER", "ISLAKE", "ISICE"}
+    admitted_attrs = (required_attrs | {"ISURBAN"}
+                      if getattr(cfg, "sf_surface_mosaic", 0) == 1 else required_attrs)
     if not isinstance(landuse_attrs, Mapping) \
-            or set(landuse_attrs) != required_attrs:
+            or not required_attrs <= set(landuse_attrs) <= admitted_attrs:
         raise ValueError(
             "prepared physics land-use identity must contain exactly "
             f"{sorted(required_attrs)}")
@@ -178,6 +180,7 @@ def initialize_prepared_physics(
     update_diagnostics(state, cfg.hypsometric_opt)
     landuse = initialize_landuse(
         static["LU_INDEX"], soil_type=static["SCT_DOM"],
+        urban_legend=int(getattr(cfg, "sf_urban_physics", 0)) > 0,
         landmask=static["LANDMASK"], snow=fields["SNOW"],
         xice=fields["SEAICE"], valid_time=valid_time,
         cen_lat=float(
@@ -239,6 +242,12 @@ def initialize_prepared_physics(
         near_surface["U10"][:, :-1] + near_surface["U10"][:, 1:])
     driver.fields["v10"][...] = 0.5 * (
         near_surface["V10"][:-1] + near_surface["V10"][1:])
+    if getattr(cfg, "sf_surface_mosaic", 0) == 1:
+        from gpuwm.core.noah_mosaic_door import attach_noah_mosaic_to_driver
+        attach_noah_mosaic_to_driver(
+            driver, cfg, landusef=static.get("LANDUSEF"), processed=False,
+            landuse_attrs=landuse_attrs, landmask=static["LANDMASK"],
+            fractional_seaice=fractional_seaice)
     return driver
 
 

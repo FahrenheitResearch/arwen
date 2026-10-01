@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from gpuwm.core import thompson as _classic
 from gpuwm.core.kernels import get_kernel
 from gpuwm.core.state import DTYPE
 from gpuwm.core.thompson_aerosol_launch import (
@@ -230,6 +231,16 @@ def launch_aa_cloud_sedimentation(
     arguments += (DTYPE(dt), np.int32(nz), np.int32(ny), np.int32(nx))
 
     ncol = ny * nx
+    # The classic launchers' switch (gpuwm.core.thompson.
+    # LEVEL_PARALLEL_FALLOUT): eight columns a block, one thread per level,
+    # for the production entry point; the diagnostic ones keep the column
+    # kernel.
+    if (_classic.LEVEL_PARALLEL_FALLOUT and nz <= _SHALLOW_KMAX
+            and cloud_active_columns is not None
+            and diagnostic_arguments is None):
+        get_kernel(SED_MODULE, "thompson_aa_cloud_sediment_levels_64_with_masks")(
+            ((ncol + 7) // 8,), (8, _SHALLOW_KMAX), arguments)
+        return
     blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
     get_kernel(SED_MODULE, kernel_name)(
         (blocks,), (_COLUMN_TPB,), arguments)

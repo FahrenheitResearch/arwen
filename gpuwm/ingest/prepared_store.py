@@ -518,6 +518,21 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
     inventory_fn = (streamed_store_inventory() if inventory_fn is None
                     else inventory_fn)
 
+    # THE SLAB'S DEVICE PEAK, PRICED BEFORE ITS CONSTRUCTOR.  The budget
+    # guard below prices the pinned HOST store; nothing priced the slab
+    # state, its physics and its carriers on the card, so an explicit
+    # rows_per_slab=1024 at 1792x1024x55 mp=18 built a full-size state on the
+    # card and stopped in a CUDA out-of-memory.  The slab is priced as the
+    # tile planner prices the loader, and a slab too tall for the card's
+    # free memory is loaded in the tallest slab that fits (the height
+    # partitions the same cache bytes and changes no operand), or refused by
+    # name when not even one row fits.
+    from gpuwm.core.resident_admission import admitted_slab_rows
+
+    rows_per_slab = admitted_slab_rows(
+        cfg, min(max(1, int(rows_per_slab)), ny), p_top=float(base.p_top),
+        log=log)
+
     slabs = _plan_slabs(ny, rows_per_slab)
     log(f"    {len(slabs)} row slabs of <= {rows_per_slab} rows, "
         f"{len(state_names)} prognostics + {len(surface_names)} surface "

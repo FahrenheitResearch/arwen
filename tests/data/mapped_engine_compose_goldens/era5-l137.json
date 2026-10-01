@@ -1787,7 +1787,7 @@
   "header_rule": "gpuwm-portable-frame-header-v1",
   "mapping": {
     "name": "rw-wps-era5-model-level-l137-grib2.mapping.json",
-    "sha256": "e66420c7163beb25f4431df8a026a58e141276c85434260b4107255994b730af"
+    "sha256": "65cfca7fc9fc6be102c796bd481126fe9e22491df8342fbaa1ff54b087fb09c6"
   },
   "measured_on": {
     "machine": "x86_64",

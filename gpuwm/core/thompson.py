@@ -9,12 +9,36 @@ from __future__ import annotations
 
 import numpy as np
 
+from gpuwm.core import constants as _constants
 from gpuwm.core.kernels import get_kernel
 from gpuwm.core.state import DTYPE
 
 _COLUMN_TPB = 32
 _SHALLOW_KMAX = 64
 _KMAX = 256
+
+#: Fallout of a column of at most ``_SHALLOW_KMAX`` levels runs through the
+#: ``*_levels_*`` kernels: eight columns a block (thirty-two for graupel,
+#: compacted to the active ones), one thread per level, byte-identical to the
+#: column kernels (tests/test_thompson_speed_shortcuts.py).  Those kernels
+#: need a block barrier, so they are compiled for the device only; the host
+#: kernel backend (tools/thompson_real_column_parity), which runs a block's
+#: threads one after another, turns this off and takes the column kernels.
+LEVEL_PARALLEL_FALLOUT = True
+_LEVEL_BLOCK = (8, _SHALLOW_KMAX)
+
+
+def _launch_fallout(level_symbol, column_symbol, level_parallel: bool,
+                    ncol: int, arguments, *, columns_per_block: int = 8):
+    """Launch one fallout kernel over ``ncol`` columns."""
+    if level_parallel:
+        get_kernel("thompson", level_symbol)(
+            ((ncol + columns_per_block - 1) // columns_per_block,),
+            _LEVEL_BLOCK, arguments)
+    else:
+        get_kernel("thompson", column_symbol)(
+            ((ncol + _COLUMN_TPB - 1) // _COLUMN_TPB,), (_COLUMN_TPB,),
+            arguments)
 VERTICAL_LEVEL_BOUNDS = (2, _KMAX)
 
 
@@ -677,7 +701,9 @@ def launch_frozen_vapor_network(
         qg if snow_velocity_boost is None else snow_velocity_boost)
     if not np.isfinite(dt) or dt <= 0.0:
         raise ValueError(f"dt must be finite and positive, got {dt}")
-    threads = 256
+    # Smaller blocks admit more resident warps for this register-heavy
+    # cell kernel. Its compiled arithmetic and cell mapping are unchanged.
+    threads = 128
     blocks = (size + threads - 1) // threads
     common = (
         qi, ni, qs, qg, qr, nr, temperature, pressure, qv,
@@ -1491,15 +1517,15 @@ def launch_rain_sedimentation(
         kernel_name += "_with_presence"
     elif reference_density is not None:
         kernel_name += "_with_density"
-    kernel = get_kernel("thompson", kernel_name)
-    ncol = ny * nx
-    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
     arguments = (qr, nr, temperature, pressure, qv)
     if reference_density is not None:
         arguments += (reference_density,)
     arguments += (dz, rainnc, rainncv, np.int32(accumulate_surface),
                   DTYPE(dt), np.int32(nz), np.int32(ny), np.int32(nx))
-    kernel((blocks,), (_COLUMN_TPB,), arguments)
+    _launch_fallout(
+        "thompson_rain_sediment_levels_64_with_presence", kernel_name,
+        LEVEL_PARALLEL_FALLOUT and nz <= _SHALLOW_KMAX
+        and density_carries_rain_presence, ny * nx, arguments)
 
 
 def launch_ice_sedimentation(
@@ -1550,15 +1576,15 @@ def launch_ice_sedimentation(
                    else "thompson_ice_sediment_256")
     if reference_density is not None:
         kernel_name += "_with_density"
-    kernel = get_kernel("thompson", kernel_name)
-    ncol = ny * nx
-    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
     arguments = (qi, ni, temperature, pressure, qv)
     if reference_density is not None:
         arguments += (reference_density,)
     arguments += (dz, rainnc, rainncv, snownc, snowncv,
                   DTYPE(dt), np.int32(nz), np.int32(ny), np.int32(nx))
-    kernel((blocks,), (_COLUMN_TPB,), arguments)
+    _launch_fallout(
+        "thompson_ice_sediment_levels_64_with_density", kernel_name,
+        LEVEL_PARALLEL_FALLOUT and nz <= _SHALLOW_KMAX
+        and reference_density is not None, ny * nx, arguments)
 
 
 def launch_cloud_sedimentation(
@@ -1639,9 +1665,6 @@ def launch_cloud_sedimentation(
         kernel_name += "_with_density_and_rain"
     elif reference_density is not None:
         kernel_name += "_with_density"
-    kernel = get_kernel("thompson", kernel_name)
-    ncol = ny * nx
-    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
     arguments = (qc, temperature, pressure, qv)
     if reference_density is not None:
         arguments += (reference_density,)
@@ -1651,7 +1674,11 @@ def launch_cloud_sedimentation(
         arguments += (cloud_active_columns,)
     arguments += (vertical_velocity, dz, DTYPE(dt),
                   np.int32(nz), np.int32(ny), np.int32(nx))
-    kernel((blocks,), (_COLUMN_TPB,), arguments)
+    _launch_fallout(
+        "thompson_cloud_sediment_levels_64_with_density_and_masks",
+        kernel_name,
+        LEVEL_PARALLEL_FALLOUT and nz <= _SHALLOW_KMAX
+        and cloud_active_columns is not None, ny * nx, arguments)
 
 
 def launch_snow_sedimentation(
@@ -1770,9 +1797,6 @@ def launch_snow_sedimentation(
         kernel_name += "_with_state"
     elif reference_density is not None:
         kernel_name += "_with_density"
-    kernel = get_kernel("thompson", kernel_name)
-    ncol = ny * nx
-    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
     arguments = (qs,)
     if melt_rain_qr is not None:
         arguments += (snow_melt_marker, melt_rain_qr, melt_rain_nr)
@@ -1789,7 +1813,11 @@ def launch_snow_sedimentation(
                   rainnc, rainncv, snownc, snowncv,
                   np.int32(accumulate_surface), DTYPE(dt),
                   np.int32(nz), np.int32(ny), np.int32(nx))
-    kernel((blocks,), (_COLUMN_TPB,), arguments)
+    _launch_fallout(
+        "thompson_snow_sediment_levels_64_with_rain_profile_and_presence",
+        kernel_name,
+        LEVEL_PARALLEL_FALLOUT and nz <= _SHALLOW_KMAX
+        and melt_rain_density_carries_presence, ny * nx, arguments)
 
 
 def launch_graupel_fallout_column_mask(
@@ -1999,9 +2027,6 @@ def launch_graupel_sedimentation(
         kernel_name += "_and_column_mask"
     if graupel_number_shadow is not None:
         kernel_name += "_and_shadow"
-    kernel = get_kernel("thompson", kernel_name)
-    ncol = ny * nx
-    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
     arguments = (qg,)
     if graupel_number is not None:
         arguments += (graupel_number,)
@@ -2015,7 +2040,12 @@ def launch_graupel_sedimentation(
         arguments += (graupel_number_shadow,)
     arguments += (np.int32(accumulate_surface), DTYPE(dt),
                   np.int32(nz), np.int32(ny), np.int32(nx))
-    kernel((blocks,), (_COLUMN_TPB,), arguments)
+    _launch_fallout(
+        "thompson_graupel_sediment_levels_64_with_density_and_column_mask"
+        "_and_shadow", kernel_name,
+        LEVEL_PARALLEL_FALLOUT and nz <= _SHALLOW_KMAX
+        and graupel_number_shadow is not None, ny * nx, arguments,
+        columns_per_block=32)
 
 
 # Positive and negative ice-vapor exchange share the exact WRF rate equation.
@@ -2024,7 +2054,137 @@ def launch_graupel_sedimentation(
 launch_snow_vapor_exchange = launch_snow_sublimation
 
 
+# The classic adapter's own arithmetic (gpuwm/core/microphysics.py:
+# _apply_thompson), fused into four launches by the thompson_adapter_*
+# kernels.  Each writes exactly what the CuPy operations and small kernels it
+# replaces wrote; tests/test_thompson_speed_glue.py holds them bit for bit.
+_ELEMENT_TPB = 256
+
+
+def _element_grid(size: int) -> tuple[int]:
+    return ((size + _ELEMENT_TPB - 1) // _ELEMENT_TPB,)
+
+
+def launch_adapter_prepare(
+        thb, thp, phb, php, th, pii, temperature, dz, saved_theta,
+        qc, qi, ni, qr, nr, qs, qg, entry_graupel, warm_entry, graupelncv,
+        micro_columns) -> None:
+    """The classic adapter's entry: thermodynamics, masks and WRF's rewrite.
+
+    ``th = thb + thp``, ``temperature = th * pii`` (``pii`` is read: the
+    adapter keeps CuPy's ``power`` for it), the layer depths from
+    ``(phb + php) / G`` with ``G`` passed as a value (NVRTC for sm_120 does
+    not round a division by a literal constant the IEEE way; CuPy divides by
+    a value), the entry graupel mask and the entry-temperature warm marker,
+    GRAUPELNCV reset, the pre-microphysics theta saved into ``saved_theta``
+    (``save_pre_mp_theta``), every species at or below R1 zeroed with its
+    number, and ``micro_columns`` cleared for :func:`launch_adapter_entry`.
+    ``thb`` and ``phb`` may be the vertical-only base profiles.
+    """
+    shape, size = _validate_fields({
+        "thp": thp, "th": th, "pii": pii,
+        "temperature": temperature, "dz": dz, "saved_theta": saved_theta,
+        "qc": qc, "qi": qi, "ni": ni, "qr": qr, "nr": nr, "qs": qs,
+        "qg": qg, "entry_graupel": entry_graupel, "warm_entry": warm_entry})
+    nz, ny, nx = shape
+    interface = (nz + 1, ny, nx)
+    if php.shape != interface or php.dtype != DTYPE:
+        raise ValueError(f"php must be float32 {interface}, got "
+                         f"{php.dtype} {php.shape}")
+    if thb.shape not in (shape, (nz,)) or phb.shape not in (interface,
+                                                           (nz + 1,)):
+        raise ValueError("thb and phb must be full or vertical-only")
+    for name, value in (("graupelncv", graupelncv),
+                        ("micro_columns", micro_columns)):
+        if value.shape != (ny, nx) or value.dtype != DTYPE:
+            raise ValueError(f"{name} must be float32 {(ny, nx)}")
+    get_kernel("thompson", "thompson_adapter_prepare")(
+        _element_grid(size), (_ELEMENT_TPB,),
+        (thb, thp, phb, php, th, pii, temperature, dz,
+         saved_theta, qc, qi, ni, qr, nr, qs, qg, entry_graupel,
+         warm_entry, graupelncv, micro_columns, DTYPE(_constants.G),
+         np.int32(size), np.int32(ny * nx), np.int32(thb.ndim == 3),
+         np.int32(phb.ndim == 3)))
+
+
+def launch_adapter_entry(
+        qc, qi, qr, qs, qg, temperature, pressure, qv,
+        graupel_number_shadow, micro_columns) -> None:
+    """The private graupel number and WRF's no-microphysics column flag.
+
+    The same values :func:`launch_classic_graupel_number_init` and
+    :func:`launch_microphysics_columns` write, one thread per cell; the
+    flag must have been cleared by :func:`launch_adapter_prepare`.
+    """
+    shape, size = _validate_fields({
+        "qc": qc, "qi": qi, "qr": qr, "qs": qs, "qg": qg,
+        "temperature": temperature, "pressure": pressure, "qv": qv,
+        "graupel_number_shadow": graupel_number_shadow})
+    nz, ny, nx = shape
+    if micro_columns.shape != (ny, nx) or micro_columns.dtype != DTYPE:
+        raise ValueError(f"micro_columns must be float32 {(ny, nx)}")
+    get_kernel("thompson", "thompson_adapter_entry")(
+        _element_grid(size), (_ELEMENT_TPB,),
+        (qc, qi, qr, qs, qg, temperature, pressure, qv,
+         graupel_number_shadow, micro_columns, np.int32(size),
+         np.int32(ny * nx)))
+
+
+def launch_adapter_masks(qr, qg, entry_graupel, rain_columns,
+                         graupel_columns) -> None:
+    """The post-source rain and graupel fallout column masks in one launch.
+
+    :func:`launch_hydrometeor_column_mask` on ``qr`` and
+    :func:`launch_graupel_fallout_column_mask`.
+    """
+    shape, _ = _validate_fields({"qr": qr, "qg": qg,
+                                 "entry_graupel": entry_graupel})
+    nz, ny, nx = shape
+    for name, value in (("rain_columns", rain_columns),
+                        ("graupel_columns", graupel_columns)):
+        if value.shape != (ny, nx) or value.dtype != DTYPE:
+            raise ValueError(f"{name} must be float32 {(ny, nx)}")
+    ncol = ny * nx
+    get_kernel("thompson", "thompson_adapter_masks")(
+        ((ncol + _COLUMN_TPB - 1) // _COLUMN_TPB,), (_COLUMN_TPB,),
+        (qr, qg, entry_graupel, rain_columns, graupel_columns,
+         np.int32(nz), np.int32(ncol)))
+
+
+def launch_adapter_finish(
+        temperature, pii, th, thp, h_diabatic, rainncv, snowncv, graupelncv,
+        sr, cfg, dt: float) -> None:
+    """Theta from temperature, moist_physics_finish, and SR.
+
+    ``th = temperature / pii``; with ``cfg.no_mp_heating == 0`` the
+    increment over the theta ``h_diabatic`` holds is clamped to
+    ``+/- DTYPE(cfg.mp_tend_lim * dt)``, added to ``thp`` and kept as
+    ``h_diabatic = increment / dt`` (gpuwm.core.microphysics.
+    moist_physics_finish), else ``h_diabatic = 0``; then
+    ``sr = where(rainncv > 1e-12, minimum(1, (snowncv + graupelncv) /
+    rainncv), 0)``.
+    """
+    shape, size = _validate_fields({
+        "temperature": temperature, "pii": pii, "th": th, "thp": thp,
+        "h_diabatic": h_diabatic})
+    nz, ny, nx = shape
+    for name, value in (("rainncv", rainncv), ("snowncv", snowncv),
+                        ("graupelncv", graupelncv), ("sr", sr)):
+        if value.shape != (ny, nx) or value.dtype != DTYPE:
+            raise ValueError(f"{name} must be float32 {(ny, nx)}")
+    get_kernel("thompson", "thompson_adapter_finish")(
+        _element_grid(size), (_ELEMENT_TPB,),
+        (temperature, pii, th, thp, h_diabatic, rainncv, snowncv,
+         graupelncv, sr, DTYPE(cfg.mp_tend_lim * dt), DTYPE(dt),
+         np.int32(cfg.no_mp_heating != 0), np.int32(size),
+         np.int32(ny * nx)))
+
+
 __all__ = [
+    "launch_adapter_entry",
+    "launch_adapter_finish",
+    "launch_adapter_masks",
+    "launch_adapter_prepare",
     "launch_cloud_freezing",
     "launch_cloud_saturation_adjust",
     "launch_cloud_sedimentation",

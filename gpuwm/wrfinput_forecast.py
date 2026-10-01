@@ -40,6 +40,9 @@ class WrfDomainBundle:
     authority_sha256: Mapping[str, str]
     landuse: object
     geog_selection: WrfLanduseIdentity
+    #: &physics fractional_seaice the land use above was initialised with;
+    #: the Noah mosaic tile door must split sea ice the same way.
+    fractional_seaice: bool = False
 
 
 @dataclass(frozen=True)
@@ -125,6 +128,7 @@ class WrfInitialization:
                 radiation_longitude=bundle.restored.raw['XLONG'],
                 landuse=bundle.landuse,
                 constant_glw_wm2=declared_constant_glw(self.inputs.experiment),
+                fractional_seaice=bundle.fractional_seaice,
                 **({"cam_ozone": cam} if cam is not None else {}))
         return DomainInitialization(wrf_initial_result(bundle.restored, state), initialize)
 
@@ -215,6 +219,7 @@ def prepare_wrf_run(run, directory: Path, *, run_seconds: float | None = None,
         land_attrs = {name: attrs[name] for name in names}
         landuse = initialize_landuse(
             restored.raw['LU_INDEX'], soil_type=restored.raw['ISLTYP'],
+            urban_legend=int(getattr(cfg, 'sf_urban_physics', 0)) > 0,
             landmask=restored.raw['LANDMASK'], snow=restored.raw['SNOW'],
             xice=restored.raw.get('XICE', restored.raw.get('SEAICE')),
             valid_time=domain.start_time or exp.start_time, cen_lat=float(attrs['CEN_LAT']),
@@ -226,7 +231,8 @@ def prepare_wrf_run(run, directory: Path, *, run_seconds: float | None = None,
         static['HGT_M'] = restored.raw['HGT']
         bundles.append(WrfDomainBundle(domain.grid_id, restored, MappingProxyType(static),
                        MappingProxyType({'wrfinput':original_hashes[f'wrfinput_d{domain.grid_id:02d}']}),
-                       landuse, WrfLanduseIdentity(MappingProxyType(land_attrs))))
+                       landuse, WrfLanduseIdentity(MappingProxyType(land_attrs)),
+                       fractional_seaice))
     boundaries = read_wrfbdy(run.wrfbdy_path, run_seconds=exp.run_seconds,
                             restored=bundles[0].restored,
                             forcing_interval_seconds=run.coverage.forcing_interval_seconds,

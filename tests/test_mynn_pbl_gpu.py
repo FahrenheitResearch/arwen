@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from conftest import requires_gpu
+from _toolchain_rows import toolchain_row
 
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
 
@@ -179,6 +180,27 @@ MYNN_CONDENSATION_FLOOR_CUDA_ULP = {
 MYNN_CONDENSATION_VARIANCE_CUDA_ULP = {
     "qc_bl": 62, "qi_bl": 3138, "cldfra": 3746, "vt": 448, "vq": 96, "sgm": 2,
 }
+
+#: ``MYNN_CONDENSATION_VARIANCE_CUDA_ULP`` per compiler where a compiler reads
+#: it differently, keyed on (compute capability, NVRTC major.minor), the pair
+#: measured.  A146: NVRTC had compiled every float division by a compile-time
+#: constant as a multiply by the rounded reciprocal on Blackwell, and the
+#: kernels now spell those divisions ``__fdiv_rn``, the IEEE quotient.  On
+#: sm_120 that moves qc_bl on the high-variance columns from 62 to 66 ULP
+#: against WRF; the other five fields and every floor-column budget read as
+#: before.  MEASURED 2026-09-30 on the RTX 5070 Ti (sm_120, NVRTC 13.4.92).
+MYNN_CONDENSATION_VARIANCE_CUDA_ULP_BY_TOOLCHAIN = {
+    ("120", (13, 4)): {**MYNN_CONDENSATION_VARIANCE_CUDA_ULP, "qc_bl": 66},
+}
+#: A167: NVRTC 12.9.86, the compiler of the default gpuwm[gpu] extra
+#: (cupy-cuda12x), reads the sm_120 row A146 re-recorded under 13.4: every
+#: reading this file's tests take, and the device result behind each, is
+#: bit-identical under the two compilers.  Before this row 12.9.86 failed
+#: here by name (tests/_toolchain_rows.py).  MEASURED 2026-10-01 on node-4's
+#: RTX 5070 Ti and node-2's RTX 5090, two processes per compiler, at
+#: integrate/2.8 9dbb4a2db.
+MYNN_CONDENSATION_VARIANCE_CUDA_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
+    MYNN_CONDENSATION_VARIANCE_CUDA_ULP_BY_TOOLCHAIN[("120", (13, 4))])
 
 
 @pytest.mark.gpu
@@ -416,6 +438,8 @@ def test_mynn_condensation_cuda_matches_official_wrf_oracle():
     assert len(rows) == len(CONDENSATION_CASES) * fields["dz"].shape[1]
     assert (set(MYNN_CONDENSATION_FLOOR_CUDA_ULP)
             == set(MYNN_CONDENSATION_VARIANCE_CUDA_ULP))
+    toolchain = (cp.cuda.Device().compute_capability,
+                 tuple(cp.cuda.nvrtc.getVersion()))
     for name, budget in MYNN_CONDENSATION_FLOOR_CUDA_ULP.items():
         recorded = f"{name}_after" if name in ("vt", "vq", "sgm") else name
         got = cp.asnumpy(getattr(actual, name))
@@ -426,7 +450,11 @@ def test_mynn_condensation_cuda_matches_official_wrf_oracle():
         variance = CONDENSATION_VARIANCE_COLUMNS
         _assert_max_ulp(
             got[variance], fields[recorded][variance],
-            MYNN_CONDENSATION_VARIANCE_CUDA_ULP[name],
+            toolchain_row(
+                MYNN_CONDENSATION_VARIANCE_CUDA_ULP_BY_TOOLCHAIN,
+                MYNN_CONDENSATION_VARIANCE_CUDA_ULP,
+                "MYNN_CONDENSATION_VARIANCE_CUDA_ULP_BY_TOOLCHAIN",
+                toolchain)[name],
             f"{name}/high_variance",
         )
 

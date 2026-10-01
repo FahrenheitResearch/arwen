@@ -2,20 +2,20 @@
   "schema": "arwen.research.diagnostics.v1",
   "scope": "A reviewed subset of products supported by the ArWen WRF-history import path. Product membership is source-capability metadata, not forecast-skill or GPU qualification. The renderer still checks actual saved fields and complete time windows.",
   "authority": {
-    "tools/rustwx/crates/rw-wrfbatch/src/wrf_process.rs": "4839e0ea4d62dde145ae34a0b2853a5f9791f6797c55acc7f0dd0c341b025a12",
-    "tools/rustwx/crates/rw-wrfbatch/src/local_import.rs": "bc8d07a3ac59278aa349ef28c5efc2b9126c61ce822488b93b8e0a6182dbc5fc",
-    "tools/rustwx/crates/rustwx-products/src/windowed.rs": "b85e58440a4d3397b2384fcaaf22870c0cf140f511e405799791fc4e27480dd7"
+    "tools/rustwx/crates/rw-wrfbatch/src/wrf_process.rs": "7da9380b49cd439c979fbfd79ad1f88f94080c6451a03d9a31b434b1173cb3df",
+    "tools/rustwx/crates/rw-wrfbatch/src/local_import.rs": "24f56f54e0a954260523e8004007323f2b6d531c940c36d67d644b9ec20086f7",
+    "tools/rustwx/crates/rustwx-products/src/windowed.rs": "e53e4a119195508489613042182232f32664a04db3990f40fc328e009ae52bf4"
   },
   "products": {
     "10m_wind_1h_max": {
       "kind": "windowed",
       "minimum_hours": 1,
-      "input_note": "stored sub-hourly 1 h max 10 m wind speed (wind_speed_10m_max_1h) at F003 (top-of-hour instantaneous fallback at F003: no stored sub-hourly max field, a lower bound on the native sub-hourly max)"
+      "input_note": "the top-of-hour 10 m wind speed, hypot(u_10m, v_10m), at F003 (the history stores no sub-hourly 10 m wind maximum there (neither wind_speed_10m_max_1h nor WRF WSPD10MAX), so the wind between its hourly writes is not seen: a lower bound on the window's maximum, not the maximum)"
     },
     "10m_wind_run_max": {
       "kind": "windowed",
       "minimum_hours": 1,
-      "input_note": "run max of stored sub-hourly 1 h max 10 m wind speeds (top-of-hour instantaneous fallback at F001, F002, F003: no stored sub-hourly max field, a lower bound on the native sub-hourly max)"
+      "input_note": "the largest top-of-hour 10 m wind speed, hypot(u_10m, v_10m), over the run at F001, F002, F003 (the history stores no sub-hourly 10 m wind maximum there (neither wind_speed_10m_max_1h nor WRF WSPD10MAX), so the wind between its hourly writes is not seen: a lower bound on the window's maximum, not the maximum)"
     },
     "10m_wind_speed_and_direction": {
       "kind": "direct",

@@ -251,12 +251,17 @@ def compile_runtime_unit(name: str, *, module_key: str,
     suites compile (a perturbed copy, ``-fmad=false``); they are recorded
     under the caller's own ``module_key`` and are not the production unit.
     """
-    import cupy as cp
-    from gpuwm.certify.kernel_manifest import record_module
-
     unit = runtime_unit(name)
     code = unit.source if source is None else source
     opts = unit.options if options is None else tuple(options)
+    return _compile_loaded_module(code, opts, module_key, log_stream)
+
+
+def _compile_loaded_module(code, opts, module_key, log_stream=None):
+    """Keep generated transfers and scientific units on the same compile route."""
+    import cupy as cp
+    from gpuwm.certify.kernel_manifest import record_module
+
     module = cp.RawModule(code=code, options=opts, backend="nvrtc",
                           name_expressions=None)
     if log_stream is None:
@@ -267,6 +272,14 @@ def compile_runtime_unit(name: str, *, module_key: str,
     return module
 
 
+def compile_generated_slab_kernel(source, name):
+    """Record each generated layout so the runtime manifest includes its code."""
+    key = f"gpuwm.core.noahmp.generated:{name}:{_sha(source)}"
+    module = _compile_loaded_module(source, DEFAULT_OPTIONS, key)
+    return module.get_function(name)
+
+
+
 __all__ += ["DEFAULT_OPTIONS", "NOAHMP_PRICING_MODULES", "RuntimeUnit",
-            "compile_runtime_unit", "exported_kernels", "pricing_key",
+            "compile_runtime_unit", "compile_generated_slab_kernel", "exported_kernels", "pricing_key",
             "runtime_unit"]

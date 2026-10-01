@@ -37,6 +37,185 @@ from test_gui_server import request
 
 GIB = float(1 << 30)
 
+# CUDA usable totals measured on physical 16 GB and 32 GB reference cards.
+# The unmeasured 24 GB tier retains its declared total.
+_CUDA_TOTAL_BYTES = {16: 16611278848, 32: 33711521792}
+
+
+def _card_terms(gib):
+    """Runtime probe terms with the same available memory a declared tier uses."""
+    from gpuwm.domain_wizard import card_assumed_free_gib
+
+    return {"sm_count": 170, "max_threads_per_sm": 1536, "registers_per_sm": 65536,
+            "warp_size": 32, "free_bytes": int(card_assumed_free_gib(gib) * GIB),
+            "total_bytes": _CUDA_TOTAL_BYTES.get(gib, int(gib * GIB)), "device_name": f"{gib} GB card"}
+
+
+@pytest.fixture
+def isolated_mynn(monkeypatch):
+    """Keep runtime choices and their published widths private to each fit regression."""
+    import sys
+
+    from gpuwm.core import mynn_pbl_scratch as scratch
+
+    monkeypatch.delenv(scratch.MYNN_PBL_COLUMN_CHUNK_ENV, raising=False)
+    monkeypatch.setattr(scratch, "_RESOLVED", {})
+    monkeypatch.setattr(scratch, "_PINNED", None)
+    monkeypatch.setattr(scratch, "_TILE_WALKED", {})
+    for name in scratch._CHUNK_MODULES:
+        if name in sys.modules:
+            module = sys.modules[name]
+            monkeypatch.setattr(module, "MYNN_PBL_COLUMN_CHUNK", module.MYNN_PBL_COLUMN_CHUNK)
+    return scratch
+
+
+def test_capacity_tier_memory_rows_preserve_physical_totals_and_unmeasured_fallback(
+        monkeypatch, isolated_mynn):
+    from importlib.resources import files
+
+    scratch = isolated_mynn
+    monkeypatch.setattr(scratch, "probe_mynn_card", lambda device=None: pytest.fail("unexpected host probe"))
+    table = json.loads((files("gpuwm") / "authorities" / "mynn-card-memory.v1.json").read_text(encoding="utf-8"))
+    assert table["schema"] == "gpuwm.mynn-card-memory.v1"
+    rows = {row["capacity_gib"]: row["cuda_total_bytes"] for row in table["rows"]}
+    assert {gib: rows[gib] for gib in _CUDA_TOTAL_BYTES} == _CUDA_TOTAL_BYTES
+    assert 24 not in rows
+    for gib, total in [*_CUDA_TOTAL_BYTES.items(), (24, 24 * 1024 ** 3)]:
+        assert scratch.mynn_pricing_total_bytes(gib) == total
+    assert scratch._RESOLVED == {}
+
+
+@pytest.mark.parametrize("gib, measured", [(16, False), (32, False), (24, False),
+                                         (16, True), (32, True)])
+def test_sizing_and_emitted_check_use_raw_measurements_before_tier_references(
+        monkeypatch, isolated_mynn, gib, measured):
+    from gpuwm import domain_wizard
+
+    scratch = isolated_mynn
+    monkeypatch.setattr(scratch, "probe_mynn_card", lambda device=None: pytest.fail("unexpected host probe"))
+    free = _card_terms(gib)["free_bytes"]
+    total = int(gib * GIB) if measured else _card_terms(gib)["total_bytes"]
+    assert scratch.mynn_pricing_total_bytes(gib, measured=measured) == total
+    card = {**_card_terms(gib), "total_bytes": total}
+    expected = scratch.choose_mynn_column_chunk(49, card=card, environ={}).chunk
+    monkeypatch.setattr(domain_wizard, "_sizing_phases_for_card",
+                        lambda *args, **kwargs: scratch.resolve_mynn_column_chunk(49))
+    monkeypatch.setattr(domain_wizard, "_check_emitted_config_for_card",
+                        lambda *args, **kwargs: scratch.resolve_mynn_column_chunk(49))
+    published = scratch.MYNN_PBL_COLUMN_CHUNK
+    profile = object() if measured else None
+    assert domain_wizard._sizing_phases(object(), free_bytes=free, vram_gib=gib, profile=profile) == expected
+    sizing = domain_wizard.SizingBudget(gib, free, profile, None, measured=measured)
+    assert domain_wizard._check_emitted_config(Path("unused.toml"), sizing) == expected
+    if measured:
+        declared = domain_wizard.SizingBudget(gib, free, None, None)
+        assert domain_wizard._check_emitted_config(
+            Path("unused.toml"), declared, remote_hardware=True) == expected
+    assert scratch._RESOLVED == {} and scratch.MYNN_PBL_COLUMN_CHUNK == published
+
+
+@pytest.mark.parametrize("nz", [49, 59])
+@pytest.mark.parametrize("total_gib, free_gib, source", [
+    (24, 22, "measured-vram-bounded"),
+    (32, 0.125, "measured-minimum"),
+    (128, 127, "measured"),
+])
+def test_target_context_uses_each_runtime_memory_policy_at_each_depth(
+        monkeypatch, isolated_mynn, nz, total_gib, free_gib, source):
+    scratch = isolated_mynn
+    card = {**_card_terms(total_gib), "free_bytes": int(free_gib * GIB)}
+    runtime = scratch.choose_mynn_column_chunk(nz, card=card, environ={})
+    shared = scratch.mynn_column_chunk_for_memory(
+        nz, total_bytes=card["total_bytes"], free_bytes=card["free_bytes"], environ={})
+    assert (shared.chunk, shared.source, shared.workspace_bytes, shared.vram_ceiling) == (
+        runtime.chunk, runtime.source, runtime.workspace_bytes, runtime.vram_ceiling)
+    assert runtime.source == source
+    # A host memo's old override provenance must not widen the target's tile buffers.
+    stale = scratch.choose_mynn_column_chunk(
+        nz, card=_card_terms(16), environ={scratch.MYNN_PBL_COLUMN_CHUNK_ENV: "32768"})
+    scratch._RESOLVED[nz] = stale
+    published = scratch.MYNN_PBL_COLUMN_CHUNK
+    with scratch.mynn_pricing_memory(total_bytes=card["total_bytes"], free_bytes=card["free_bytes"]):
+        assert scratch.resolve_mynn_column_chunk(nz) == runtime.chunk
+        assert scratch.resolve_mynn_tile_column_chunk(nz) == min(
+            runtime.chunk, scratch.MYNN_PBL_COLUMN_CHUNK_MINIMUM)
+    assert scratch._RESOLVED == {nz: stale} and scratch.MYNN_PBL_COLUMN_CHUNK == published
+    assert scratch._TILE_WALKED == {}
+
+
+@pytest.mark.parametrize("control", ["environment", "pin"])
+def test_target_context_honors_operator_width_for_resident_and_tile_pricing(
+        monkeypatch, isolated_mynn, control):
+    scratch = isolated_mynn
+    stale = scratch.choose_mynn_column_chunk(49, card=_card_terms(16), environ={})
+    scratch._RESOLVED[49] = stale
+    if control == "environment":
+        width = 32768
+        monkeypatch.setenv(scratch.MYNN_PBL_COLUMN_CHUNK_ENV, str(width))
+    else:
+        width = 12288
+        scratch.pin_mynn_column_chunk(width)
+    memo = dict(scratch._RESOLVED)
+    published = scratch.MYNN_PBL_COLUMN_CHUNK
+    target = _card_terms(32)
+    with scratch.mynn_pricing_memory(total_bytes=target["total_bytes"], free_bytes=target["free_bytes"]):
+        for nz in (49, 59):
+            assert scratch.resolve_mynn_column_chunk(nz) == width
+            assert scratch.resolve_mynn_tile_column_chunk(nz) == width
+    assert scratch._RESOLVED == memo and scratch.MYNN_PBL_COLUMN_CHUNK == published
+    assert scratch._TILE_WALKED == {}
+
+
+def test_nested_target_context_restores_outer_and_runtime_after_an_exception(monkeypatch, isolated_mynn):
+    scratch = isolated_mynn
+    host, outer, inner = (_card_terms(gib) for gib in (16, 32, 24))
+    memo = {nz: scratch.choose_mynn_column_chunk(nz, card=host, environ={}) for nz in (49, 59)}
+    scratch._RESOLVED.update(memo)
+    published = scratch.MYNN_PBL_COLUMN_CHUNK
+    monkeypatch.setattr(scratch, "probe_mynn_card", lambda device=None: pytest.fail("unexpected host probe"))
+    outer_widths = [scratch.choose_mynn_column_chunk(nz, card=outer, environ={}).chunk for nz in (49, 59)]
+    inner_widths = [scratch.choose_mynn_column_chunk(nz, card=inner, environ={}).chunk for nz in (49, 59)]
+    with scratch.mynn_pricing_memory(total_bytes=outer["total_bytes"], free_bytes=outer["free_bytes"]):
+        assert [scratch.resolve_mynn_column_chunk(nz) for nz in (49, 59)] == outer_widths
+        with pytest.raises(RuntimeError, match="interrupted pricing"):
+            with scratch.mynn_pricing_memory(total_bytes=inner["total_bytes"], free_bytes=inner["free_bytes"]):
+                assert [scratch.resolve_mynn_column_chunk(nz) for nz in (49, 59)] == inner_widths
+                raise RuntimeError("interrupted pricing")
+        assert [scratch.resolve_mynn_column_chunk(nz) for nz in (49, 59)] == outer_widths
+    assert [scratch.resolve_mynn_column_chunk(nz) for nz in (49, 59)] == [memo[nz].chunk for nz in (49, 59)]
+    assert scratch._RESOLVED == memo and scratch.MYNN_PBL_COLUMN_CHUNK == published
+
+
+def test_concurrent_target_contexts_do_not_share_widths_or_change_runtime(monkeypatch, isolated_mynn):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    scratch = isolated_mynn
+    host = _card_terms(24)
+    memo = {nz: scratch.choose_mynn_column_chunk(nz, card=host, environ={}) for nz in (49, 59)}
+    scratch._RESOLVED.update(memo)
+    published = scratch.MYNN_PBL_COLUMN_CHUNK
+    monkeypatch.setattr(scratch, "probe_mynn_card", lambda device=None: pytest.fail("unexpected host probe"))
+    barrier = Barrier(2, timeout=10)
+
+    def price(gib):
+        card = _card_terms(gib)
+        expected = [scratch.choose_mynn_column_chunk(nz, card=card, environ={}).chunk for nz in (49, 59)]
+        with scratch.mynn_pricing_memory(total_bytes=card["total_bytes"], free_bytes=card["free_bytes"]):
+            barrier.wait()
+            actual = [scratch.resolve_mynn_column_chunk(nz) for nz in (49, 59)]
+            barrier.wait()
+            assert actual == expected
+        assert [scratch.resolve_mynn_column_chunk(nz) for nz in (49, 59)] == [memo[nz].chunk for nz in (49, 59)]
+        return actual
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(price, gib) for gib in (16, 32)]
+        left, right = [future.result() for future in futures]
+    assert left != right
+    assert scratch._RESOLVED == memo and scratch.MYNN_PBL_COLUMN_CHUNK == published
+    assert scratch._TILE_WALKED == {}
+
 #: The wizard's one-line verdict, printed on every route (gpuwm/domain_wizard.py, sizing_summary).
 _SIZING = re.compile(r"peak envelope ([\d.]+) GiB of a ([\d.]+) GiB budget")
 #: The check's verdict, printed only where the check runs (gpuwm/core/preflight.py, check_main).
@@ -109,6 +288,152 @@ def test_a_gfs_draft_record_is_the_figure_its_check_prints(tmp_path, capsys):
         float(checked.group(1)), float(checked.group(2)))
     assert memory_fit(resolution) == {"need_gib": float(checked.group(1)),
                                       "budget_gib": float(checked.group(2)), "fits": True}
+
+
+def test_a_hrrr_fit_record_prices_the_boundary_tables_its_phases_price(tmp_path, monkeypatch):
+    """The record's allocation estimate is priced on the tables its envelope is.
+
+    HRRR publishes five hydrometeor masses on every frame and the root's
+    boundary carries them.  The fit's phase envelope priced those tables;
+    the itemized estimate the record's ``alloc_estimate_bytes`` (and the
+    printed sizing table) come from did not, so one record carried two
+    forecasts.  Red before the A92 follow-up.
+    """
+    from gpuwm import domain_wizard
+    from gpuwm.boundary_fields import boundary_hydrometeor_fields, source_boundary_species
+
+    seen = []
+    fit_memory = domain_wizard.fit_memory
+
+    def spy(estimate, phases, budget_bytes, sizing):
+        seen.append((estimate, phases))
+        return fit_memory(estimate, phases, budget_bytes, sizing)
+
+    monkeypatch.setattr(domain_wizard, "fit_memory", spy)
+    resolution, exp, _data = resolve_plan(
+        load_plan(_gui_plan(tmp_path, source="hrrr", route="prepared", cycle="2026-09-24T12")),
+        require_inputs=False)
+    # The emitted root carries the tables: its scheme holds masses HRRR publishes.
+    assert boundary_hydrometeor_fields(exp.root.run, source_boundary_species("hrrr"))
+    ((estimate, phases),) = seen
+    forecast = phases.forecast
+    assert estimate.domains[0].category_bytes("lbc") == forecast.domains[0].category_bytes("lbc")
+    assert estimate.alloc_estimate_bytes == forecast.alloc_estimate_bytes
+    assert estimate.peak_envelope_bytes == forecast.peak_envelope_bytes
+    assert resolution["memory"]["alloc_estimate_bytes"] == forecast.alloc_estimate_bytes
+
+
+@pytest.mark.parametrize("target_gib, expected_width", [(16, 16384), (24, 28672), (32, 36864)])
+@pytest.mark.parametrize("host_gib", [None, 16, 32], ids=["no-host-card", "16gb-host", "32gb-host"])
+@pytest.mark.parametrize("stale_memo", [False, True], ids=["fresh-runtime", "cached-runtime"])
+def test_named_card_fit_prices_the_runtime_width_without_changing_the_hosts_memo(
+        tmp_path, monkeypatch, isolated_mynn, target_gib, expected_width, host_gib, stale_memo):
+    """Every named tier prices its own scratch even on an absent or differently sized host."""
+    from gpuwm import domain_wizard
+    from gpuwm.core import preflight as pf
+    from gpuwm.physics_compat import THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+
+    scratch = isolated_mynn
+    host = None if host_gib is None else _card_terms(host_gib)
+    probes = []
+
+    def host_probe(device=None):
+        probes.append(device)
+        return host
+
+    monkeypatch.setattr(scratch, "probe_mynn_card", host_probe)
+    if stale_memo:
+        scratch._RESOLVED[49] = scratch.choose_mynn_column_chunk(49, card=host, environ={})
+    probes.clear()
+    memo = dict(scratch._RESOLVED)
+    published = scratch.MYNN_PBL_COLUMN_CHUNK
+    captured = []
+    estimate_phases = domain_wizard.estimate_phases
+
+    def priced(exp, **kwargs):
+        widths = [pf.mynn_pbl_column_chunk(dc.run) for dc in exp.domains]
+        phases = estimate_phases(exp, **kwargs)
+        captured.append((kwargs, phases, widths))
+        return phases
+
+    monkeypatch.setattr(domain_wizard, "estimate_phases", priced)
+    resolution, exp, _data = resolve_plan(load_plan(_gui_plan(
+        tmp_path, source="gfs", route="prepared", cycle="2024-05-03T12", nz=49,
+        width_km=300, height_km=300, dx_km=0.75, card=f"{target_gib}gb",
+        profile=THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID)), require_inputs=False)
+    assert captured
+    assert all(widths == [expected_width] for _kwargs, _phases, widths in captured)
+    assert probes == [], "declared-card pricing consulted the host card"
+    assert scratch._RESOLVED == memo and scratch.MYNN_PBL_COLUMN_CHUNK == published
+    assert scratch._TILE_WALKED == {}
+
+    # Run-time pricing follows the real engine resolver with a target-card probe.
+    # The separate real-card receipt checks the same path without this emulated probe.
+    target = _card_terms(target_gib)
+    monkeypatch.setattr(scratch, "probe_mynn_card", lambda device=None: target)
+    monkeypatch.setattr(scratch, "_RESOLVED", {})
+    kwargs, fitted, _widths = captured[-1]
+    runtime = pf.estimate_phases(exp, **kwargs)
+    assert scratch._RESOLVED[49].chunk == expected_width
+    assert runtime.forecast.alloc_estimate_bytes == fitted.forecast.alloc_estimate_bytes
+    assert runtime.peak_envelope_bytes == fitted.peak_envelope_bytes
+    assert resolution["memory"]["peak_envelope_bytes"] == runtime.peak_envelope_bytes
+    assert resolution["memory"]["alloc_estimate_bytes"] == runtime.forecast.alloc_estimate_bytes
+
+
+@pytest.mark.parametrize("target_gib", [16, 24, 32])
+@pytest.mark.parametrize("host_gib", [None, 16, 32], ids=["no-host-card", "16gb-host", "32gb-host"])
+@pytest.mark.parametrize("headroom_bytes", [1, -1], ids=["fits-by-one-byte", "too-big-by-one-byte"])
+def test_named_card_polygon_fit_acceptance_matches_the_runtime_budget(
+        tmp_path, monkeypatch, capsys, isolated_mynn, target_gib, host_gib, headroom_bytes):
+    """A fixed footprint is accepted and refused on either side of the runtime envelope."""
+    from gpuwm import domain_wizard
+    from gpuwm.cli import main
+    from gpuwm.core import preflight as pf
+    from gpuwm.physics_compat import THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+
+    scratch = isolated_mynn
+    target = _card_terms(target_gib)
+    monkeypatch.setattr(scratch, "probe_mynn_card", lambda device=None: target)
+    draft = dict(source="gfs", route="prepared", cycle="2024-05-03T12", nz=49,
+                 width_km=300, height_km=300, dx_km=0.75, card=f"{target_gib}gb",
+                 profile=THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID)
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _resolution, exp, _data = resolve_plan(load_plan(_gui_plan(seed, **draft)), require_inputs=False)
+    capsys.readouterr()
+    interval = domain_wizard.source_forcing_interval_seconds("gfs")
+    runtime = pf.estimate_phases(exp, source="gfs", forcing_interval_seconds=interval,
+                                 ingest_forcing_interval_seconds=interval, vram_gib=target_gib)
+    envelope = runtime.peak_envelope_bytes
+    width = scratch._RESOLVED[49].chunk
+    free_bytes = envelope + pf.EXTERNAL_MARGIN_BYTES + headroom_bytes
+    assert 0 < free_bytes < target["total_bytes"]
+    limited = {**target, "free_bytes": free_bytes}
+    # This proof changes the whole-process budget, not the scratch-width regime.
+    assert scratch.choose_mynn_column_chunk(49, card=limited, environ={}).chunk == width
+
+    host = None if host_gib is None else _card_terms(host_gib)
+    monkeypatch.setattr(scratch, "probe_mynn_card", lambda device=None: host)
+    monkeypatch.setattr(scratch, "_RESOLVED", {
+        49: scratch.choose_mynn_column_chunk(49, card=host, environ={})})
+    memo = dict(scratch._RESOLVED)
+    published = scratch.MYNN_PBL_COLUMN_CHUNK
+    sizing = domain_wizard.SizingBudget(target_gib, free_bytes, None, None)
+    monkeypatch.setattr(domain_wizard, "resolve_sizing_budget", lambda *args, **kwargs: sizing)
+    path = _gui_plan(tmp_path, **draft)
+    rc = main(["run-plan", str(path), "--resolve"])
+    out, err = capsys.readouterr()
+    document = json.loads(out)
+    record = document["memory"]
+    assert record["peak_envelope_bytes"] == envelope
+    assert record["budget_bytes"] == envelope + headroom_bytes
+    assert scratch._RESOLVED == memo and scratch.MYNN_PBL_COLUMN_CHUNK == published
+    if headroom_bytes > 0:
+        assert rc == 0 and memory_fit(document)["fits"] is True, err
+    else:
+        assert rc == 2 and memory_fit(document)["fits"] is False
+        assert document["kind"] == "memory" and "EXCEEDS" in document["error"]
 
 
 def test_resolve_prints_the_record_on_its_machine_channel(tmp_path, capsys):

@@ -26,6 +26,8 @@ const READER_KAPPA: f64 = 0.285_714_285_7;
 /// The gravity the fixture multiplied its heights by and the import
 /// divides its layer mass by.
 const FIXTURE_G: f64 = 9.81;
+/// The gravity `wrfcttcalc` divides a layer's pressure thickness by.
+const REFERENCE_G: f64 = 9.81;
 const T_FREEZE_K: f64 = 273.15;
 
 struct Scratch(PathBuf);
@@ -213,19 +215,47 @@ fn the_isotherm_height_is_the_interpolated_crossing_and_nan_above_the_coldest_le
     assert!(never.iter().all(|value| value.is_nan()), "-20 C: {:?}", &never[..4]);
 }
 
+/// The concrete breakage this test prevents: the brightness temperature
+/// applied `wrfcttcalc`'s absorption coefficients, which are per gram of
+/// condensate, to mixing ratios in kg kg-1, so every optical depth was a
+/// thousand times too small; this column read the file's 290 K skin
+/// temperature, and cirrus the model holds at -35 to -40 C drew 285 to
+/// 300 K.
 #[test]
-fn a_thin_column_reports_the_skin_temperature_and_the_column_maximum_is_the_mixing_ratio() {
-    let scratch = Scratch::new("thin");
+fn the_brightness_temperature_is_the_reference_cloud_top_and_the_column_maximum_is_the_mixing_ratio() {
+    let scratch = Scratch::new("opaque");
     let wrfout = fixture::write(scratch.path());
     let imported = import(&wrfout, &scratch.path().join("store"));
 
-    // Liquid only, 0.145 m2 kg-1: the whole column's optical depth is
-    // well under one, so the brightness temperature is the skin's.
-    let depth = 0.145 * f64::from(fixture::CLOUD_WATER_KG_PER_KG) * layer_mass_kg_m2() * fixture::NZ as f64;
-    assert!(depth < 1.0, "the fixture's column became opaque: {depth}");
+    // WRF-Python's wrfcttcalc on the fixture's column, which carries
+    // 0.1 g kg-1 of cloud water on every level.  It integrates from one
+    // level below the top, over a layer bounded by the full levels halfway
+    // in pressure to its neighbours: 12,000 Pa, an optical depth of
+    // 0.145 m2 g-1 * 0.1 g kg-1 * 12,000 Pa / 9.81 m s-2 = 17.7.  Depth one
+    // is reached a seventeenth of the way down that layer, and the
+    // brightness temperature is the temperature at that pressure,
+    // interpolated in pressure between the two levels around it.
+    let pressure = fixture::pressure_pa;
+    let (top_level, below_top) = (fixture::NZ - 1, fixture::NZ - 2);
+    let layer_top_pa = 0.5 * (pressure(top_level) + pressure(below_top));
+    let layer_bottom_pa = 0.5 * (pressure(below_top) + pressure(below_top - 1));
+    let cloud_water_g_per_kg = 1_000.0 * f64::from(fixture::CLOUD_WATER_KG_PER_KG);
+    let depth = 0.145 * cloud_water_g_per_kg * (layer_bottom_pa - layer_top_pa) / REFERENCE_G;
+    assert!(depth > 1.0, "the fixture's top layer is no longer opaque: {depth}");
+    let cloud_top_pa = layer_top_pa + (layer_bottom_pa - layer_top_pa) / depth;
+    assert!(
+        (pressure(top_level)..=pressure(below_top)).contains(&cloud_top_pa),
+        "the cloud top moved out of the top two levels: {cloud_top_pa} Pa"
+    );
+    let fraction = (cloud_top_pa - pressure(top_level)) / (pressure(below_top) - pressure(top_level));
+    let expected = temperature_k(top_level) + fraction * (temperature_k(below_top) - temperature_k(top_level));
+    assert!(
+        (expected - f64::from(fixture::SKIN_TEMPERATURE_K)).abs() > 5.0,
+        "the expected cloud top {expected} K cannot be told from the skin"
+    );
     assert_every_cell_near(
         &read_plane(&imported.hour, "simulated_ir_brightness_temperature"),
-        f64::from(fixture::SKIN_TEMPERATURE_K),
+        expected,
         1.0e-3,
         "brightness temperature",
     );

@@ -19,6 +19,7 @@ names that library as ``masked_surface_chain``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import gc
 import hashlib
@@ -129,6 +130,123 @@ def _selection_block(backend) -> dict[str, object]:
 
     selection = getattr(backend, "selection", None)
     return {} if selection is None else {"selection": dict(selection)}
+
+
+#: Members of a preprocessing receipt that record a measurement of the
+#: machine or of this run rather than a choice that shapes a prepared
+#: array, each with what it measures.  The receipt (the preparation proof)
+#: keeps every one; a prepared cache's identity and its hashed metadata
+#: bind :func:`preprocess_identity`, the receipt without them.  Bound, they
+#: made two preparations of the same inputs differ in content digest by
+#: the measurement alone (A138: the card's free bytes split one of three
+#: CUDA pairs in the A136 L7a proof), so a cache could not be recognised
+#: as the same preparation on another run, box or worker count.
+PREPROCESS_RECEIPT_MEASUREMENTS = MappingProxyType({
+    "selection.device_fit": (
+        "the preparation's device price against the card's measured "
+        "free and total bytes"),
+    "selection.device_load": (
+        "the card's free bytes and utilization when auto read it"),
+    "selection.reason": (
+        "why this backend runs, which quotes the measured utilization or "
+        "free memory when auto leaves the card"),
+    "host_cpu_count": "the machine's CPU count",
+    "workers": (
+        "the CPU worker count; every array is byte-identical at every "
+        "count (tests/test_preprocess_cpu_backend.py)"),
+    "masked_surface_chain.workers": (
+        "the masked surface fields' worker count; byte-identical at every "
+        "count (tests/test_masked_stencil_native.py)"),
+})
+
+
+def preprocess_identity(receipt):
+    """The part of a preprocessing receipt a prepared cache binds.
+
+    ``receipt`` without :data:`PREPROCESS_RECEIPT_MEASUREMENTS`.  Members
+    not removed are the receipt's own objects, so a vertical route list
+    a backend still appends to reads the same here.  Anything that is
+    not a mapping is returned unchanged.
+    """
+
+    if not isinstance(receipt, Mapping):
+        return receipt
+    bound = dict(receipt)
+    for path in PREPROCESS_RECEIPT_MEASUREMENTS:
+        parent, _, leaf = path.rpartition(".")
+        if not parent:
+            bound.pop(leaf, None)
+        elif isinstance(bound.get(parent), Mapping):
+            bound[parent] = {key: value for key, value
+                             in bound[parent].items() if key != leaf}
+    return bound
+
+
+def preprocess_measurements(receipt) -> dict[str, object]:
+    """What :func:`preprocess_identity` takes out of ``receipt``.
+
+    The :data:`PREPROCESS_RECEIPT_MEASUREMENTS` members ``receipt``
+    carries, nested as the receipt nests them, for a route whose hashed
+    implementation document binds the identity and whose receipt must
+    still say what the preparation measured.  Anything that is not a
+    mapping measured nothing.
+    """
+
+    measured: dict[str, object] = {}
+    if not isinstance(receipt, Mapping):
+        return measured
+    for path in PREPROCESS_RECEIPT_MEASUREMENTS:
+        parent, _, leaf = path.rpartition(".")
+        holder = receipt.get(parent) if parent else receipt
+        if not isinstance(holder, Mapping) or leaf not in holder:
+            continue
+        if parent:
+            measured.setdefault(parent, {})[leaf] = holder[leaf]
+        else:
+            measured[leaf] = holder[leaf]
+    return measured
+
+
+def preprocess_selection_identity(selection):
+    """A receipt's ``selection`` block less what it measured.
+
+    For a route that records the selection apart from the receipt (the
+    met_em preparation's ``metgrid-import.json``) and binds that record
+    into an identity.
+    """
+
+    return preprocess_identity({"selection": selection})["selection"]
+
+
+def preprocess_reports_identity(document, *, key: str = "preprocess_backend"):
+    """``document`` with every ``key`` member (a backend receipt) bound.
+
+    For reports that carry a backend's receipt inside them (the HRRR
+    mapping reports, a child's soil mapping) and are written into a
+    prepared cache's hashed metadata: each such receipt becomes its
+    :func:`preprocess_identity`.
+    """
+
+    if isinstance(document, Mapping):
+        return {name: (preprocess_identity(value) if name == key
+                       else preprocess_reports_identity(value, key=key))
+                for name, value in document.items()}
+    if isinstance(document, (list, tuple)):
+        return [preprocess_reports_identity(value, key=key)
+                for value in document]
+    return document
+
+
+def preprocess_identity_matches(bound, receipt) -> bool:
+    """Whether a cache's bound preprocessing is this receipt's.
+
+    A cache written since A138 binds :func:`preprocess_identity` of the
+    receipt; one written before it bound the whole receipt, measurements
+    included, which is still the same preparation exactly, so it keeps
+    restoring.  Anything else is a different preparation.
+    """
+
+    return bound == preprocess_identity(receipt) or bound == receipt
 
 
 def _bridge_identity(native) -> dict[str, object]:
@@ -249,9 +367,11 @@ def _era5_rh_to_water_cpu(relative_humidity, temperature):
     t = np.asarray(_host(temperature), dtype=np.float64)
     if rh.shape != t.shape:
         raise ValueError("relative_humidity and temperature shapes differ")
-    eis = 0.01 * np.exp(9.550426 - 5723.265 / t + 3.53068 * np.log(t)
+    from gpuwm.core import portable_math as pm
+
+    eis = 0.01 * pm.exp(9.550426 - 5723.265 / t + 3.53068 * pm.log(t)
                         - 0.00728332 * t)
-    ews = 6.112 * np.exp(17.67 * (t - 273.15) / ((t - 273.15) + 243.5))
+    ews = 6.112 * pm.exp(17.67 * (t - 273.15) / ((t - 273.15) + 243.5))
     frac = (273.15 - t) / 20.0
     blended = frac * eis + (1.0 - frac) * ews
     r = np.where(t > 253.15, blended, eis)
@@ -1236,9 +1356,15 @@ def release_backend_memory(backend) -> None:
 __all__ = [
     "CudaPreprocessBackend",
     "ParallelCpuPreprocessBackend",
+    "PREPROCESS_RECEIPT_MEASUREMENTS",
     "PreparationDeviceRefused",
     "admit_preparation",
     "decide_preparation_device",
+    "preprocess_identity",
+    "preprocess_identity_matches",
+    "preprocess_measurements",
+    "preprocess_reports_identity",
+    "preprocess_selection_identity",
     "release_backend_memory",
     "resolve_preprocess_backend",
 ]

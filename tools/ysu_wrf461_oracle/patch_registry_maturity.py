@@ -55,9 +55,10 @@ YSU_WARNINGS = [
     "this tree. Closing it needs a compare that cannot be flushed; --ftz=false "
     "is not available through CuPy.",
 
-    "gpuwm SHORT CIRCUITS a case WRF computes. kernels/ysu.cu:203 returns zero "
+    "gpuwm SHORT CIRCUITS a case WRF computes. kernels/ysu.cu:250 returns zero "
     "tendencies, PBLH = dz(1) and KPBL = 1 whenever UST, HFX and QFX are all "
-    "zero. bl_ysu_run has no such branch: measured on that column it produces "
+    "zero (outside the urban flag_bep arm, which takes its surface flux from "
+    "the BEP terms). bl_ysu_run has no such branch: measured on that column it produces "
     "a 703 m PBL with nine levels in it, EXCH_M of 0.143 m2/s and nonzero "
     "momentum tendencies. -ftz makes the same branch fire on a SUBNORMAL ust, "
     "i.e. on a nonzero input. Not fixed here because removing the branch "
@@ -69,7 +70,7 @@ YSU_WARNINGS = [
     "column with NaN -- pinned in the oracle fixture. gpuwm returns finite "
     "numbers. Separately, at kpbl == kte with cloud at kpbl-1, bl_ysu.F90:846 "
     "reads thlix(i,k+2) one element past an array declared kts:kte; "
-    "kernels/ysu.cu:390 guards that access with kpbl < nz and skips the "
+    "kernels/ysu.cu:437 guards that access with kpbl < nz and skips the "
     "top-down block instead.",
 
     "THE ARM WRF ACTUALLY USES IS NOT THE ARM THIS PORT IMPLEMENTS. "

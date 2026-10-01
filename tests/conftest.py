@@ -871,6 +871,46 @@ def _run_disk_pinned_to_ample_free_space(monkeypatch):
     monkeypatch.setattr(disk_budget, "free_bytes", lambda path: 10 ** 15)
 
 
+@pytest.fixture
+def pinned_thompson_tables(monkeypatch):
+    """Resolve the mp8 tables to the checkout's pinned set when it has one.
+
+    A non-editable gpuwm-data carries neither externalized Thompson table
+    (qr_acr_qg_V4.dat, freezeH2O.dat), so on a development tree whose
+    machine never ran ``gpuwm fetch-tables`` every test that binds the
+    Thompson table authority stopped in MissingTableAssets before the gate
+    it asserts on, and its result depended on the box running it.  When
+    the checkout's own gpuwm-data directory holds the complete pinned set,
+    this stages it as the user root (the mechanism
+    tests/test_prepared_domain_tree_forecast.py's missing-table control
+    uses) and clears the override so no other root answers first.
+
+    Only a complete checkout set is staged.  RELEASE-EXCLUDE.txt drops
+    freezeH2O.dat from the public tree (GitHub caps a blob at 100 MiB),
+    and the public developer install stages the whole set with ``gpuwm
+    fetch-tables`` under ~/.gpuwm/tables/thompson instead.  Staging that
+    checkout's short directory would hide the machine's complete set and
+    turn 28 passing tests into MissingTableAssets refusals, so there the
+    fixture changes nothing and returns None: the machine's own ladder
+    (override, complete packaged root, staged root) answers as it does
+    for a user.  Either way the binding still checks every asset's size
+    and SHA-256 against the pins.  The checkout set is read in place and
+    never written.  Not autouse: the tests of the resolver and of the
+    missing-table refusals need the machine's own answer.
+    """
+
+    from gpuwm import physics_compat
+
+    checkout = (pathlib.Path(__file__).resolve().parents[1] / "gpuwm-data"
+                / "gpuwm_data" / "data" / "thompson" / "tables")
+    if not physics_compat._table_root_is_complete(checkout):
+        return None
+    monkeypatch.delenv(physics_compat.THOMPSON_TABLE_ROOT_ENV, raising=False)
+    monkeypatch.setattr(physics_compat, "user_thompson_table_root",
+                        lambda: checkout)
+    return checkout
+
+
 def complete_runtime_manifest(payload: dict | None = None,
                               *, platform_name: str = "linux-x86_64",
                               **overrides) -> dict:

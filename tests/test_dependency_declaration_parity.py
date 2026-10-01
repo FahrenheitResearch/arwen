@@ -121,10 +121,6 @@ _PROVIDERS: dict[str, tuple[str, ...]] = {
     # not ship.  The two decode instruments that import it are
     # checkout-only by construction -- see _OPTIONAL_BY_DESIGN.
     "test_mapped_engine_parity": (),
-    # NO distribution provides this either: the MPAS GPU port, loaded BY
-    # PATH from a bound checkout by mpas_cycle_bridge/portbind.py -- see
-    # _OPTIONAL_BY_DESIGN for the full reason.
-    "mpas_port": (),
     "arwen_global": ("arwen-global",),
     "cdsapi": ("cdsapi",),
     "setuptools": ("setuptools",),
@@ -209,16 +205,6 @@ _OPTIONAL_BY_DESIGN: dict[str, str] = {
         "documents in the except branch ('different is not behind'). The "
         "command is correct without it. matplotlib happens to bring it, but "
         "the code does not rely on that."
-    ),
-    "mpas_port": (
-        "mpas_cycle_bridge/portbind.py's function-local imports of the MPAS "
-        "GPU port. The package is not a distribution anywhere: it exists "
-        "only after PortBinding loads a port checkout BY PATH onto "
-        "sys.path, and every function that imports it is reachable only "
-        "through a binding that has already done so -- without a checkout "
-        "the binding itself refuses first, with PortBindingError naming "
-        "what is missing. Declaring it would declare a package pip cannot "
-        "install."
     ),
     "arwen_global": (
         "The local DA doors read the separately published arwen-global "
@@ -448,6 +434,12 @@ def _top_level_imports(path: Path):
 _TEST_TREE_IMPORT_SITES: dict[str, tuple[str, ...]] = {
     "tools/recapture_card_pins.py": ("_card_pins",),
     "tools/recapture_phase2_pin.py": ("_phase2_pin",),
+    # The legacy RRTMG speed lane's node-side prep check (668fa4c56): it
+    # drives tests/test_rrtmg_legacy_prep_device.py through pytest, and its
+    # --timing arm imports that suite's synthetic-input and bit-compare
+    # helpers so the timing runs on the inputs the suite certifies.
+    # Checkout-only by the same construction as the two above.
+    "tools/rrtmg_prep_device_check.py": ("test_rrtmg_legacy_prep_device",),
 }
 
 

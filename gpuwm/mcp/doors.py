@@ -15,6 +15,9 @@ words a person reads.
 
 from __future__ import annotations
 
+import argparse
+import functools
+from importlib import import_module
 import json
 import os
 import subprocess
@@ -45,6 +48,63 @@ def engine_argv(*door_args: str) -> list[str]:
     """The subprocess argv for one CLI invocation of this tree's gpuwm."""
 
     return [sys.executable, "-m", "gpuwm.cli", *door_args]
+
+
+@functools.lru_cache(maxsize=None)
+def door_flags(module: str, command: str) -> frozenset[str]:
+    """Every option string ``gpuwm COMMAND`` takes, read from its own parser.
+
+    The door is registered on a throwaway parser from ``module``'s
+    ``register_cli``, the same function :func:`gpuwm.cli.build_parser`
+    calls, so the answer is this tree's parser and never a list kept
+    beside it.  A front door asks this before it passes a flag a newer
+    engine added, so it works on an engine with the flag and says so on
+    one without it.
+    """
+
+    parser = argparse.ArgumentParser(add_help=False)
+    doors = parser.add_subparsers()
+    import_module(module).register_cli(doors)
+    door = doors.choices[command]
+    return frozenset(option for action in door._actions
+                     for option in action.option_strings)
+
+
+def door_takes(module: str, command: str, flag: str) -> bool:
+    """Whether ``gpuwm COMMAND`` takes ``flag`` (see :func:`door_flags`)."""
+
+    return flag in door_flags(module, command)
+
+
+def as_posted_support() -> dict[str, object]:
+    """What this engine offers for running a forecast as its source posts.
+
+    The flags and the probe are the worker interface of the as-posted
+    design (A136, section 3.1): ``gpuwm fetch --as-posted`` and
+    ``--whole-cycle``, ``gpuwm go --whole-cycle``, ``gpuwm run-plan
+    --readiness`` and run-plan's ``as_posted`` run option.  Each is read
+    from the engine itself (:func:`door_takes`, and the run options
+    run-plan's routes declare), never from a version number, so a door
+    built against them passes them once the engine has them and, until
+    then, says the engine waits for the whole cycle.
+    ``run_plan_as_posted`` lists the run-plan routes that take the
+    option; the other keys are booleans.
+    """
+
+    from gpuwm.runplan import ROUTES
+
+    return {
+        "fetch_as_posted": door_takes("gpuwm.fetch", "fetch", "--as-posted"),
+        "fetch_whole_cycle": door_takes("gpuwm.fetch", "fetch",
+                                        "--whole-cycle"),
+        "go_whole_cycle": door_takes("gpuwm.go_cli", "go", "--whole-cycle"),
+        "run_plan_readiness": door_takes("gpuwm.runplan", "run-plan",
+                                         "--readiness"),
+        "fetch_readiness": door_takes("gpuwm.fetch", "fetch", "--readiness"),
+        "run_plan_as_posted": sorted(
+            name for name, route in ROUTES.items()
+            if "as_posted" in route.run_options),
+    }
 
 
 def _door_env(extra: dict[str, str] | None = None) -> dict[str, str]:

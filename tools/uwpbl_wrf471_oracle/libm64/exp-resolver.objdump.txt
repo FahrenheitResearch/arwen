@@ -1,0 +1,31 @@
+
+/lib/x86_64-linux-gnu/libm.so.6:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+00000000000602b0 <__exp_finite@GLIBC_2.15>:
+   602b0:	f3 0f 1e fa          	endbr64
+   602b4:	48 8b 15 15 4d 0c 00 	mov    0xc4d15(%rip),%rdx        # 124fd0 <f32subf64x@@GLIBC_2.28+0x8c2b0>
+   602bb:	8b 8a 9c 00 00 00    	mov    0x9c(%rdx),%ecx
+   602c1:	f6 c5 10             	test   $0x10,%ch
+   602c4:	74 10                	je     602d6 <__exp_finite@GLIBC_2.15+0x26>
+   602c6:	48 8d 05 83 08 04 00 	lea    0x40883(%rip),%rax        # a0b50 <f32subf64x@@GLIBC_2.28+0x7e30>
+   602cd:	f6 82 b8 00 00 00 20 	testb  $0x20,0xb8(%rdx)
+   602d4:	75 28                	jne    602fe <__exp_finite@GLIBC_2.15+0x4e>
+   602d6:	48 8d 05 53 a5 03 00 	lea    0x3a553(%rip),%rax        # 9a830 <f32subf64x@@GLIBC_2.28+0x1b10>
+   602dd:	f6 82 de 00 00 00 01 	testb  $0x1,0xde(%rdx)
+   602e4:	75 18                	jne    602fe <__exp_finite@GLIBC_2.15+0x4e>
+   602e6:	48 8d 05 63 06 04 00 	lea    0x40663(%rip),%rax        # a0950 <f32subf64x@@GLIBC_2.28+0x7c30>
+   602ed:	81 e1 00 00 00 10    	and    $0x10000000,%ecx
+   602f3:	48 8d 15 86 fd ff ff 	lea    -0x27a(%rip),%rdx        # 60080 <__exp10_finite@GLIBC_2.15+0x240>
+   602fa:	48 0f 44 c2          	cmove  %rdx,%rax
+   602fe:	c3                   	ret
+   602ff:	90                   	nop
+
+0000000000060300 <__fmod_finite@GLIBC_2.15>:
+   60300:	f3 0f 1e fa          	endbr64
+   60304:	66 48 0f 7e c1       	movq   %xmm0,%rcx
+   60309:	66 48 0f 7e ca       	movq   %xmm1,%rdx
+   6030e:	48                   	rex.W
+   6030f:	b8                   	.byte 0xb8

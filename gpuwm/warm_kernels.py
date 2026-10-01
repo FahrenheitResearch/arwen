@@ -64,15 +64,23 @@ _LONGITUDE = 0.0
 
 
 def default_profiles() -> tuple[str, ...]:
-    """Every profile some source defaults to, in first-seen order."""
+    """Every profile some source defaults to, in first-seen order.
+
+    At every spacing: a source's own default, then each grid-spacing row
+    it admits (:data:`gpuwm.physics_menu.SPACING_DEFAULTS`), so a plain
+    sub-km first forecast finds its kernels cached as a coarser one does.
+    """
 
     from gpuwm import physics_menu
 
     seen: list[str] = []
     for source in physics_menu.registered_sources():
-        profile = physics_menu.default_profile_for(source)
-        if profile is not None and profile not in seen:
-            seen.append(profile)
+        profiles = [physics_menu.default_profile_for(source)]
+        profiles += [row["profile_id"] for row in
+                     physics_menu.spacing_default_rows(source) if row["admitted"]]
+        for profile in profiles:
+            if profile is not None and profile not in seen:
+                seen.append(profile)
     return tuple(seen)
 
 
@@ -88,8 +96,50 @@ def _vapour(z):
     return 0.012 * np.exp(-np.asarray(z, dtype=np.float64) / 2500.0)
 
 
-def _run_profile(profile: str, levels: int) -> None:
-    """Build the synthetic domain with ``profile``'s physics; step it."""
+def synthetic_downward_longwave(cfg) -> tuple[float | None, str]:
+    """The downward longwave the synthetic column is handed, and why.
+
+    A profile with a longwave scheme writes GLW itself and is handed
+    nothing.  A profile with none, whose land surface reads GLW or whose
+    shortwave publishes it, is the configuration
+    :func:`gpuwm.core.physics.initialize_physics` refuses to invent a
+    number for.  A real run of such a profile declares the constant with
+    :data:`~gpuwm.physics_compat.CONSTANT_DOWNWARD_LONGWAVE_ACK`, and the
+    runtime then types :data:`~gpuwm.physics_compat.DECLARED_CONSTANT_GLW_WM2`
+    into that call (:func:`gpuwm.runtime.declared_constant_glw`).  The
+    column declares that same constant, so it compiles the kernels such a
+    run compiles.  The refusal a real run meets without the
+    acknowledgement is untouched: it lives at config load and in
+    ``initialize_physics``, and this door hands that call a declaration.
+
+    Returns ``(glw, sentence)``: ``glw`` is ``None`` where nothing is
+    declared, and the sentence is what the report says about it.
+    """
+
+    from gpuwm.config import radiation_scheme_ids
+    from gpuwm.physics_compat import (CONSTANT_DOWNWARD_LONGWAVE_ACK,
+                                      DECLARED_CONSTANT_GLW_WM2,
+                                      downward_longwave_disposition)
+
+    longwave, shortwave = radiation_scheme_ids(cfg)
+    kind, _consumer = downward_longwave_disposition(
+        ra_lw_physics=longwave, ra_sw_physics=shortwave,
+        sf_surface_physics=int(cfg.sf_surface_physics))
+    if kind in ("consumed", "published"):
+        return (float(DECLARED_CONSTANT_GLW_WM2),
+                f"declared constant {DECLARED_CONSTANT_GLW_WM2:g} W m-2, as a "
+                f"run of this suite declares it ({CONSTANT_DOWNWARD_LONGWAVE_ACK})")
+    if kind == "scheme":
+        return None, f"computed by ra_lw_physics={longwave}"
+    return None, "not read by this suite"
+
+
+def _run_profile(profile: str, levels: int) -> str:
+    """Build the synthetic domain with ``profile``'s physics; step it.
+
+    Returns the sentence :func:`synthetic_downward_longwave` gave for the
+    downward longwave the column ran on.
+    """
 
     import cupy as cp
 
@@ -117,16 +167,27 @@ def _run_profile(profile: str, levels: int) -> None:
     base = make_base_state(coord, _theta, p_surf=cfg.p_surf, ztop=cfg.ztop)
     state = init_moist_balanced(cfg, coord, base, _vapour)
     grid = (cfg.ny, cfg.nx)
+    glw, longwave = synthetic_downward_longwave(cfg)
     initialize_physics(
         state, cfg, radiation_start_time=_VALID_TIME,
         radiation_latitude=np.full(grid, _LATITUDE),
         radiation_longitude=np.full(grid, _LONGITUDE),
         noahmp_start_time=_VALID_TIME,
         noahmp_latitude=np.full(grid, _LATITUDE),
-        noahmp_longitude=np.full(grid, _LONGITUDE))
+        noahmp_longitude=np.full(grid, _LONGITUDE),
+        **({} if glw is None else {"glw": glw}))
     for _ in range(_STEPS):
         step(state, cfg)
     cp.cuda.runtime.deviceSynchronize()
+    return longwave
+
+
+#: What a profile that reads an unstaged asset is told.  The physics tables
+#: published outside the package are staged by ``gpuwm fetch-tables``; any
+#: other absent asset is named by ``gpuwm doctor`` with its own command.
+MISSING_ASSET_REMEDY = ("gpuwm fetch-tables stages the physics tables this "
+                        "suite reads; gpuwm doctor names any other missing "
+                        "asset and the command that installs it")
 
 
 def warm_kernels(profiles=None, *, levels: int = DEFAULT_LEVELS,
@@ -134,8 +195,20 @@ def warm_kernels(profiles=None, *, levels: int = DEFAULT_LEVELS,
     """Compile the forecast kernels of ``profiles`` into the kernel cache.
 
     Returns the report the door prints: per profile, the cache entries it
-    wrote and its seconds, and the totals.  ``say`` receives one line per
-    profile as it finishes.
+    wrote, its seconds and where its downward longwave came from, and the
+    totals.  ``say`` receives one line per profile as it finishes.
+
+    A profile whose configuration is refused (a ``ValueError`` from the
+    forecast code it runs) is recorded under ``failed`` with the refusal,
+    and the others still run: one refused suite used to stop the whole
+    ``--all-profiles`` pass at the first such profile, leaving every
+    later one cold.  A profile that reads a table asset this install has
+    not staged (a ``FileNotFoundError``, such as a Thompson table before
+    ``gpuwm fetch-tables``) is recorded the same way, with
+    :data:`MISSING_ASSET_REMEDY`, because the suites that do not read it
+    can still warm.  Anything else, such as no card or a CUDA error,
+    still stops the pass, because a device fault is not a property of
+    one profile and the ones after it would meet it too.
     """
 
     from gpuwm import kernel_compile_notice as notice
@@ -156,19 +229,35 @@ def warm_kernels(profiles=None, *, levels: int = DEFAULT_LEVELS,
     cache_dir = notice.cupy_kernel_cache_dir()
     entries_before = notice.scan_kernel_cache(cache_dir)[0]
     rows = []
+    failed = []
     started = time.perf_counter()
     for profile in profiles:
         before = notice.scan_kernel_cache(cache_dir)[0]
         began = time.perf_counter()
-        _run_profile(profile, levels)
+        try:
+            longwave = _run_profile(profile, levels)
+        except ValueError as refusal:
+            failed.append({"profile": profile, "error": str(refusal)})
+            if say is not None:
+                say(f"warm-kernels: {profile}: FAILED: {refusal}")
+            continue
+        except FileNotFoundError as missing:
+            failed.append({"profile": profile, "error": str(missing),
+                           "remedy": MISSING_ASSET_REMEDY})
+            if say is not None:
+                say(f"warm-kernels: {profile}: FAILED: {missing}. Next: "
+                    f"{MISSING_ASSET_REMEDY}")
+            continue
         row = {"profile": profile,
                "kernels_compiled": max(
                    0, notice.scan_kernel_cache(cache_dir)[0] - before),
-               "seconds": round(time.perf_counter() - began, 1)}
+               "seconds": round(time.perf_counter() - began, 1),
+               "downward_longwave": longwave}
         rows.append(row)
         if say is not None:
             say(f"warm-kernels: {profile}: {row['kernels_compiled']} "
-                f"kernel(s) compiled in {row['seconds']:.1f} s")
+                f"kernel(s) compiled in {row['seconds']:.1f} s; "
+                f"downward longwave {longwave}")
     finished = notice.kernel_cache_state(
         cache_dir, compute_capability=capability)
     return {
@@ -178,6 +267,7 @@ def warm_kernels(profiles=None, *, levels: int = DEFAULT_LEVELS,
         "cache_dir": str(cache_dir),
         "levels": int(levels),
         "profiles": rows,
+        "failed": failed,
         "kernels_compiled": sum(row["kernels_compiled"] for row in rows),
         "seconds": round(time.perf_counter() - started, 1),
         "cache_entries_before": int(entries_before),
@@ -211,7 +301,12 @@ def warm_kernels_main(args) -> int:
               f"the cache at {report['cache_dir']} holds "
               f"{report['cache_entries_for_this_card']} for this card",
               flush=True)
-    return 0
+        if report["failed"]:
+            print(f"warm-kernels: {len(report['failed'])} profile(s) "
+                  "failed: " + ", ".join(row["profile"]
+                                         for row in report["failed"]),
+                  file=sys.stderr)
+    return 1 if report["failed"] else 0
 
 
 def register_cli(subparsers) -> None:
@@ -241,5 +336,7 @@ def register_cli(subparsers) -> None:
     parser.set_defaults(func=warm_kernels_main)
 
 
-__all__ = ["DEFAULT_LEVELS", "WARM_KERNELS_SCHEMA", "default_profiles",
-           "register_cli", "warm_kernels", "warm_kernels_main"]
+__all__ = ["DEFAULT_LEVELS", "MISSING_ASSET_REMEDY", "WARM_KERNELS_SCHEMA",
+           "default_profiles",
+           "register_cli", "synthetic_downward_longwave", "warm_kernels",
+           "warm_kernels_main"]

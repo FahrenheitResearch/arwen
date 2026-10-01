@@ -1,8 +1,8 @@
-# The Weather Library's page store (`gpuwm.wiki.v1`)
+# The storm wiki's page store (`gpuwm.wiki.v1`)
 
-`gpuwm gui` shows the Weather Library: event pages, pages for each kind of storm,
+`gpuwm gui` shows a storm wiki: event pages, pages for each kind of storm,
 place pages, and every run in the forecasts folder as an article. The pages
-are data, never hand-written HTML. The event atlas fills the Weather Library by writing
+are data, never hand-written HTML. The event atlas fills the wiki by writing
 documents in this format; the page draws whatever the store holds.
 
 ## Where the store lives
@@ -86,12 +86,10 @@ A phenomenon: `id`, `title`, `plural`, `what` (`{quote, cite}`), `detect`
 
 ## Endpoints
 
-`GET /api/library`, `/api/library/event/ID`, `/api/library/kind/ID`,
-`/api/library/place/ID`, `/api/library/places`, `/api/library/run/RUN`,
-`/api/library/search?q=&type=&region=&decade=&season=&place=&seed=&sort=`,
-`/api/library/changes`, `/api/library/recipe/ID`. All read-only. The same paths
-with `wiki` in place of `library` answer too: that was their name before the
-page was named the Weather Library.
+`GET /api/wiki`, `/api/wiki/event/ID`, `/api/wiki/kind/ID`,
+`/api/wiki/place/ID`, `/api/wiki/places`, `/api/wiki/run/RUN`,
+`/api/wiki/search?q=&type=&region=&decade=&season=&place=&seed=&sort=`,
+`/api/wiki/changes`, `/api/wiki/recipe/ID`. All read-only.
 
 The search box takes words and matches them against titles, places and
 facts. A plain-language answer from the assistant can take the same box

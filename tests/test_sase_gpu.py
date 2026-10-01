@@ -439,8 +439,9 @@ def test_dynamic_solve_device_real_lift_golden():
     (input quantization + FP32 forward arithmetic both included), and
     reproduces the pinned device goldens of THIS card exactly
     (deterministic reduction; drift canary for kernel/toolchain changes).
-    The pair is per card (sase_goldens.GOLDEN_DEVICE_BY_CARD: the 5090
-    pair fails on an RTX 4090 by rel 1.48e-08 in f); a card with no pair
+    The pair is per card (sase_goldens.GOLDEN_DEVICE_BY_CARD: before A146
+    the 5090 pair failed on an RTX 4090 by rel 1.48e-08 in f; since, the
+    5090, 5070 Ti and 4090 read one pair); a card with no pair
     skips, naming itself, rather than failing for the card and not the
     code, and the release card stage names that skip in its receipt.
     """
@@ -2828,6 +2829,88 @@ def test_m1_control_column_device_live_seam_bitwise():
     assert pre["traj"] == live["traj"]         # seam engaged, inert
 
 
+def _least_pass_ms(fn, reps, passes=3):
+    """ms/call of ``fn``: one warm call, then ``passes`` event-timed passes of
+    ``reps`` calls each, and the least of them.
+
+    The least pass is what the card alone costs: a pass that shared the card
+    with another process reads slow, while a regression slows every pass.
+    On an idle card the passes agree to well under 1%, so the pins below
+    guard the same thing they guarded as single passes.
+
+    That absorbs a burst of another process's work, not a card shared for
+    the whole test.  MEASURED 2026-09-29 on the RTX 5070 Ti with a
+    concurrent float32 matmul stream holding it at 69-73%: moist_n2 read
+    16.085 ms (its idle 8.614, pin 14.2, so it fails) and the M1b increment
+    12.296 ms (idle 6.592, pin 13.2).  The pins are not loosened to cover
+    that, for the reason the M2 test states: a bound that survived a 2x
+    contention factor would guard nothing, so these are idle-card pins."""
+    import cupy as cp
+
+    fn()                                       # warm (pool/compile)
+    readings = []
+    for _ in range(passes):
+        s0, e0 = cp.cuda.Event(), cp.cuda.Event()
+        s0.record()
+        for _ in range(reps):
+            fn()
+        e0.record()
+        e0.synchronize()
+        readings.append(cp.cuda.get_elapsed_time(s0, e0) / reps)
+    return min(readings)
+
+
+def _device_name():
+    import cupy as cp
+
+    name = cp.cuda.runtime.getDeviceProperties(0)["name"]
+    if isinstance(name, (bytes, bytearray)):
+        name = bytes(name).decode("utf-8", errors="replace")
+    return name
+
+
+def _assert_card_pin(table, measured_ms, message):
+    """Assert ``table``'s pin for this card, or report an uncalibrated one.
+
+    The derivation ``_M2_VENT_D02_PIN_MS`` states: a pin is a factor over
+    ONE card's own idle baseline, so asserting it on another card measures
+    the hardware.  The M1 and M1b pins were single numbers from the RTX 5090
+    and failed on two slower sm_120 cards with nothing regressed (the RTX
+    5070 Ti and an RTX PRO 4500 read moist_n2 at 8.6 and 8.9 ms against the
+    5090's 6.5 ms pin, the M1b increment at 6.6 and 6.8 against 6.0)."""
+    card = _device_name()
+    pin = table.get(card)
+    if pin is None:
+        print(f"  UNCALIBRATED CARD {card!r}: {measured_ms:.3f} ms RECORDED, "
+              f"not asserted -- measure this card's idle baseline and add "
+              f"its row before relying on this pin here")
+        return
+    assert measured_ms <= pin, message.format(ms=measured_ms, card=card,
+                                              pin=pin)
+
+
+#: moist_n2 at the d02 shape (49, 501, 501), ms/call, per card: 1.65x the
+#: card's own idle baseline, the factor the RTX 5090 pin has carried since
+#: 2026-07-22 (docstring of the test below).
+_M1_MOIST_N2_D02_PIN_MS = {
+    # 3.95 ms baseline, 2026-07-22.
+    "NVIDIA GeForce RTX 5090": 6.5,
+    # 8.656 ms idle baseline, the slower of two runs of five passes
+    # (8.631-8.657 ms), 2026-09-29, node-4, NVRTC 13.4.92, driver 595.91.07.
+    "NVIDIA GeForce RTX 5070 Ti": 14.2,
+}
+
+#: The M1b vertical-channel increment at the d02 shape, ms/call, per card:
+#: about 2x the card's own idle baseline, the RTX 5090 derivation (6.0 ms
+#: over its 2.965/2.957 ms dual-run pair, 2026-07-22).
+_M1B_INCREMENT_D02_PIN_MS = {
+    "NVIDIA GeForce RTX 5090": 6.0,
+    # 6.622 ms idle baseline, the slower of two runs of five passes
+    # (6.622-6.630 ms), 2026-09-29, node-4, NVRTC 13.4.92, driver 595.91.07.
+    "NVIDIA GeForce RTX 5070 Ti": 13.2,
+}
+
+
 @requires_gpu
 def test_sase_driver_d02_first_light_moist_50_steps(monkeypatch):
     """M1 FIRST LIGHT, DRIVER LEVEL (S4-2): 50 full model steps on an
@@ -2861,9 +2944,11 @@ def test_sase_driver_d02_first_light_moist_50_steps(monkeypatch):
     measured 3.95 ms/call (regime-independent: the cost is the pass-1
     FP64 pow/exp saturation chain, needed at every cell for the
     switch itself) = 6.4% of the pre-M1 d02 seam, projecting the
-    combined share to ~7.3% (+ ~0.4% of integrate wall).  BINDING PIN
-    here: <= 6.5 ms/call at that shape (1.65x measured -- regression
-    guard, not a budget verdict); the budget verdict itself is
+    combined share to ~7.3% (+ ~0.4% of integrate wall).  BINDING PIN,
+    per card (``_M1_MOIST_N2_D02_PIN_MS``): <= 6.5 ms/call at that shape
+    on the RTX 5090 (1.65x measured -- regression guard, not a budget
+    verdict), and 1.65x its own idle baseline on every other calibrated
+    card, read as the least of three passes; the budget verdict itself is
     re-scored on the S4-3 smoke receipt (adjudicated, and flagged in
     the S4-2 report)."""
     import time
@@ -2997,31 +3082,22 @@ def test_sase_driver_d02_first_light_moist_50_steps(monkeypatch):
     w_p = cp.zeros(shape_p, dtype=cp.float32)
     e_p = cp.full(shape_p, 0.5, dtype=cp.float32)
 
-    def time_ms(fn, reps):
-        fn()                                   # warm (pool/compile)
-        s0, e0 = cp.cuda.Event(), cp.cuda.Event()
-        s0.record()
-        for _ in range(reps):
-            fn()
-        e0.record()
-        e0.synchronize()
-        return cp.cuda.get_elapsed_time(s0, e0) / reps
-
     n2_p = launch_n2(th_p, dz_col=dz_p)
-    t_moist = time_ms(lambda: launch_moist_n2(
+    t_moist = _least_pass_ms(lambda: launch_moist_n2(
         th_p, qv_p, qc_p, p_p, n2_p, dz_col=dz_p), 10)
     n2m_p = launch_moist_n2(th_p, qv_p, qc_p, p_p, n2_p, dz_col=dz_p)
-    t_step = time_ms(lambda: launch_sase_step(
+    t_step = _least_pass_ms(lambda: launch_sase_step(
         u_p, v_p, w_p, th_p, e_p, dx=3000.0, dy=3000.0, dz=300.0,
-        delta=3000.0, dt=15.0, n2=n2_p, dz_col=dz_p, n2_moist=n2m_p), 3)
+        delta=3000.0, dt=15.0, n2=n2_p, dz_col=dz_p, n2_moist=n2m_p), 3,
+        passes=1)
     print(f"d02-shape M1 increment: moist_n2 {t_moist:.3f} ms/call "
           f"(vs yolo-d pre-M1 d02 seam mean 62.12 ms: "
           f"{100 * t_moist / 62.12:.2f}%; one launch_sase_step here "
           f"{t_step:.3f} ms)")
-    assert t_moist <= 6.5, (
-        f"moist_n2 at the production d02 shape regressed to "
-        f"{t_moist:.3f} ms/call (pin 6.5 ms = 1.65x the 3.95 ms "
-        f"2026-07-22 baseline; docstring derivation)")
+    _assert_card_pin(_M1_MOIST_N2_D02_PIN_MS, t_moist, (
+        "moist_n2 at the production d02 shape regressed to {ms:.3f} "
+        "ms/call on {card} (pin {pin} ms = 1.65x that card's idle "
+        "baseline; table above the test)"))
 
 
 # ---------------------------------------------------------------------------
@@ -3435,11 +3511,14 @@ def test_m1b_vertical_channel_increment_d02_shape():
     (out/sase-yolo-d/run-metrics.json seam_ms_mean, 2026-07-22); the
     budget verdict itself is re-scored on the S4-3d smoke receipt
     (adjudicated -- the S4-2 report's carried flag).
-    BINDING PIN: increment <= 6.0 ms/call at this shape (regression
-    guard at ~2x the measured 2.965/2.957 ms dual-run pair on the RTX
-    5090, 2026-07-22; a worst-case-mask increment of 4.8% of the
-    pre-M1 seam -- the in-production increment is smaller by the
-    saturated-column fraction)."""
+    BINDING PIN, per card (``_M1B_INCREMENT_D02_PIN_MS``): increment
+    <= 6.0 ms/call at this shape on the RTX 5090 (regression guard at
+    ~2x the measured 2.965/2.957 ms dual-run pair on the RTX 5090,
+    2026-07-22; a worst-case-mask increment of 4.8% of the pre-M1 seam
+    -- the in-production increment is smaller by the saturated-column
+    fraction), and about 2x its own idle baseline on every other
+    calibrated card; each side of the difference is the least of three
+    passes."""
     import cupy as cp
     from gpuwm.core.sase import launch_vertical_channel
 
@@ -3454,28 +3533,19 @@ def test_m1b_vertical_channel_increment_d02_shape():
     n2e_p = cp.ascontiguousarray(n2e_p)        # columns (worst case)
     dz_p = cp.full(shape, 300.0, dtype=cp.float32)
 
-    def time_ms(fn, reps=10):
-        fn()                                   # warm (pool/compile)
-        s0, e0 = cp.cuda.Event(), cp.cuda.Event()
-        s0.record()
-        for _ in range(reps):
-            fn()
-        e0.record()
-        e0.synchronize()
-        return cp.cuda.get_elapsed_time(s0, e0) / reps
-
-    t_base = time_ms(lambda: launch_vertical_channel(
-        e_p, th_p, f=0.0, n2=n2e_p, dz_col=dz_p))
-    t_limb = time_ms(lambda: launch_vertical_channel(
-        e_p, th_p, f=0.0, n2=n2e_p, n2_dry=n2d_p, dz_col=dz_p))
+    t_base = _least_pass_ms(lambda: launch_vertical_channel(
+        e_p, th_p, f=0.0, n2=n2e_p, dz_col=dz_p), 10)
+    t_limb = _least_pass_ms(lambda: launch_vertical_channel(
+        e_p, th_p, f=0.0, n2=n2e_p, n2_dry=n2d_p, dz_col=dz_p), 10)
     inc = t_limb - t_base
     print(f"d02-shape M1b increment: channel {t_base:.3f} -> "
           f"{t_limb:.3f} ms/call, increment {inc:.3f} ms = "
           f"{100 * inc / 62.12:.2f}% of the pre-M1 d02 seam "
           f"(worst-case every-column mask)")
-    assert inc <= 6.0, (
-        f"M1b vertical-channel increment regressed to {inc:.3f} ms at "
-        f"the d02 shape (pin 6.0 ms; docstring derivation)")
+    _assert_card_pin(_M1B_INCREMENT_D02_PIN_MS, inc, (
+        "M1b vertical-channel increment regressed to {ms:.3f} ms at the "
+        "d02 shape on {card} (pin {pin} ms = about 2x that card's idle "
+        "baseline; table above the test)"))
 
 
 # ---------------------------------------------------------------------------

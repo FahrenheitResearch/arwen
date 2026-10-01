@@ -1,0 +1,17 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0
+rootdir: <tree>
+configfile: pyproject.toml
+plugins: xdist-3.8.0
+collected 356 items
+
+tests/test_kernel_source_freeze_per_module.py .......................... [  7%]
+........................................................................ [ 27%]
+.............                                                            [ 31%]
+tests/test_kernel_loader_inert.py .........s...............s.......s.... [ 41%]
+.................s...............s..........ssssss..s.ss...............s [ 62%]
+...............s.......s.....................s...............s.......... [ 82%]
+ssssss..s.ss...............                                              [ 89%]
+tests/test_licence_notices_ship.py ..s.................................  [100%]
+
+======================= 327 passed, 29 skipped in 1.15s ========================

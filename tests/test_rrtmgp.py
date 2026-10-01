@@ -653,6 +653,66 @@ def test_rte_tile_scales_with_the_kernel_frame_not_a_fixed_thread_count():
     assert _rte_gpt_tile(lw, 10 ** 9, 256) >= 1
 
 
+@pytest.mark.parametrize("sm_count", [20, 128, 170])
+def test_buffered_fold_tiles_are_card_independent(monkeypatch, sm_count):
+    import gpuwm.core.rrtmgp as r
+
+    monkeypatch.setattr(r, "_rte_sm_count", lambda: sm_count)
+    assert r._rte_gpt_tile(None, 3125, 256, fold=True, longwave=True) == 128
+    assert r._rte_gpt_tile(None, 3125, 224, fold=True) == 32
+    assert r._rte_gpt_tile(None, 971, 256, fold=True, longwave=True) == 128
+    assert r._rte_gpt_tile(None, 3125, 16, fold=True, longwave=True) == 16
+    assert r._rte_gpt_tile(None, 10 ** 9, 256, fold=True, longwave=True) == 128
+
+
+def test_rte_tile_width_override_is_measurement_only(monkeypatch):
+    import gpuwm.core.rrtmgp as r
+
+    monkeypatch.setenv("GPUWM_RTE_TILE_WIDTH", "16")
+    assert r._rte_gpt_tile(None, 3125, 256, fold=True, longwave=True) == 16
+    assert r._rte_gpt_tile(None, 3125, 224, fold=True) == 16
+    monkeypatch.setenv("GPUWM_RTE_LW_TILE_WIDTH", "64")
+    monkeypatch.setenv("GPUWM_RTE_SW_TILE_WIDTH", "32")
+    assert r._rte_gpt_tile(None, 3125, 256, fold=True, longwave=True) == 64
+    assert r._rte_gpt_tile(None, 3125, 224, fold=True) == 32
+    monkeypatch.delenv("GPUWM_RTE_LW_TILE_WIDTH")
+    monkeypatch.delenv("GPUWM_RTE_SW_TILE_WIDTH")
+    monkeypatch.setenv("GPUWM_RTE_TILE_WIDTH", "0")
+    with pytest.raises(ValueError, match="from 1 through 1024"):
+        r._rte_gpt_tile(None, 3125, 256, fold=True, longwave=True)
+
+
+@requires_gpu
+@pytest.mark.parametrize("kind", ["lw", "sw"])
+def test_rte_measurement_overrides_refuse_unsafe_groups(kind, monkeypatch):
+    import cupy as cp
+    import gpuwm.core.rrtmgp as r
+
+    tau = cp.full((3, 4, 16), 0.1, dtype=r.DTYPE)
+    surface = cp.full((3, 16), 0.8, dtype=r.DTYPE)
+    lev = cp.full((3, 5, 16), 10, dtype=r.DTYPE)
+
+    def run():
+        if kind == "lw":
+            return r._lw_rte(tau, tau, lev, surface, surface,
+                             top_at_1=False, out=None, incident_out=None)
+        return r._sw_rte(tau, tau, tau, cp.ones(3, dtype=r.DTYPE),
+                         surface, surface, surface, top_at_1=False, out=None)
+
+    monkeypatch.setenv("GPUWM_RTE_TILE_WIDTH", "8")
+    monkeypatch.setenv("GPUWM_RTE_FOLD", "1")
+    with pytest.raises(ValueError, match="full tile of at least 16"):
+        run()
+    monkeypatch.setenv("GPUWM_RTE_TILE_WIDTH", "16")
+    monkeypatch.setenv("GPUWM_RTE_COLUMNS_PER_BLOCK", "0")
+    with pytest.raises(ValueError, match="must be positive"):
+        run()
+    monkeypatch.delenv("GPUWM_RTE_COLUMNS_PER_BLOCK")
+    monkeypatch.setenv("GPUWM_RTE_FOLD", "yes")
+    with pytest.raises(ValueError, match="must be auto, 0 or 1"):
+        run()
+
+
 def test_rte_tile_coverage_override_is_measurement_only(monkeypatch):
     """The override exists so the two settings can be INTERLEAVED in one
     session.  Comparing a block of runs against a block taken later gave a
@@ -756,6 +816,7 @@ def test_gas_vmr_fused_kernel_matches_the_expression_reference():
         tables = load_gas_tables(kind)
         for trace in ({"co2": 4.2e-4},
                       {"co2": 4.2e-4, "ch4": 1.9e-6, "n2o": 3.3e-7},
+                      {"h2o": 1.25e-3, "o3": 2.5e-7},
                       {}):
             adapter.trace_vmr = trace
             for ncol, nlay in ((1024, 74), (377, 50), (1, 4)):
@@ -776,7 +837,7 @@ def test_gas_vmr_fused_kernel_matches_the_expression_reference():
                                    == got.view(cp.uint32))), (
                     f"{kind} trace={len(trace)} {ncol}x{nlay} differs")
                 checked += 1
-    assert checked == 18
+    assert checked == 24
 
 
 def test_above_model_gas_and_ozone_fill_every_appended_layer(monkeypatch):
@@ -824,7 +885,13 @@ def test_column_driver_routes_extended_profiles_through_every_solver_stage():
         assert f"{name}_profile.play, {name}_cldfra" in source
         assert f"{name}_paths.clwp" in source
     assert "lw_profile.tlev, tsfc[sl]" in source
-    assert source.count("_model_flux_interfaces(") == 4
+    # LW, SW over full chunks (daylight merge), SW over compacted daylit
+    # columns (scattered back; no merge needed).
+    assert source.count("_store_model_flux_pair(") == 3
+    # The surface direct beam BEP+BEM reads (sf_urban_physics = 3), through
+    # the same capped interfaces.
+    assert source.count("_model_flux_interfaces(") == 1
+    assert "flux.flux_dir, nz, xp=cp)" in source
 
 
 def test_real74_model_top_downward_flux_cpu_reference(monkeypatch):
@@ -1729,21 +1796,14 @@ def test_rrtmgp_sw_two_stream_conservative_column_energy(top_at_1):
 
 @pytest.mark.gpu
 @requires_gpu
-def test_rte_warp_fold_matches_the_reduce_pass_it_replaces():
-    """Folding a tile in a block gives the flux the reduce kernel gave.
+def test_rte_warp_fold_matches_the_reduce_pass_it_replaces(monkeypatch):
+    """Force tile-16 partials as the oracle for the wider buffered folds.
 
-    When the tile is wide enough to be worth it and divides the band, the
-    solvers take one block per column, sum the tile through shared memory
-    and write the flux themselves; the partial-flux arrays and
-    ``rrtmgp_*_flux_reduce`` are then not used at all.  The tile only
-    decides how the ascending g-point sum is BROKEN UP -- every pass
-    continues from the running flux -- so a tile of 16, too narrow to be
-    worth folding, is an exact reference for one that folds.  Both go
-    through the shipped launchers, so this covers the dispatch as well as
-    the arithmetic.
-
-    Each band is checked at the tile its own launcher would pick.  SW's is
-    32 rather than 64 because ngpt 224 admits no power of two above it.
+    The tile only partitions an ascending sum. Every folded pass starts
+    from the running flux, and every row follows the same FMA sequence as
+    the reduction kernel. Both paths use the shipped launchers, including
+    the measurement-only fold override. The separate geometry test also
+    covers the 16-lane buffered path and packed columns.
     """
     import cupy as cp
     import gpuwm.core.rrtmgp as rrtmgp
@@ -1754,15 +1814,17 @@ def test_rte_warp_fold_matches_the_reduce_pass_it_replaces():
         rrtmgp._rte_gpt_tile = (
             lambda kernel, ncol, ngpt, _t=forced, **kw: min(_t, int(ngpt)))
         try:
-            return run()
+            with monkeypatch.context() as context:
+                context.setenv("GPUWM_RTE_FOLD", "0" if forced == 16 else "1")
+                return run()
         finally:
             rrtmgp._rte_gpt_tile = original
 
     for ncol, nlay in ((176, 40), (37, 12), (1, 8)):
         rng = np.random.default_rng(ncol * 7 + nlay)
         nlev = nlay + 1
-        for kind, ngpt, fold_tile in (("lw", 256, 64),
-                                      ("sw", 224, 32)):
+        for kind, ngpt, fold_tiles in (("lw", 256, (32, 64, 128)),
+                                       ("sw", 224, (32,))):
             tau = cp.asarray(rng.uniform(0, 4, (ncol, nlay, ngpt)), np.float32)
             if kind == "lw":
                 lay_s = cp.asarray(
@@ -1798,15 +1860,16 @@ def test_rte_warp_fold_matches_the_reduce_pass_it_replaces():
                 fields = ("flux_up", "flux_dn", "flux_dir")
             for top_at_1 in (False, True):
                 reduced = with_tile(16, lambda: run(top_at_1))
-                folded = with_tile(fold_tile, lambda: run(top_at_1))
-                for name in fields:
-                    want = getattr(reduced, name)
-                    got = getattr(folded, name)
-                    np.testing.assert_array_equal(
-                        cp.asnumpy(want).view(np.uint32),
-                        cp.asnumpy(got).view(np.uint32),
-                        err_msg=(f"{kind} {name} ncol={ncol} nlay={nlay} "
-                                 f"top_at_1={top_at_1} is not bit-identical"))
+                for fold_tile in fold_tiles:
+                    folded = with_tile(fold_tile, lambda: run(top_at_1))
+                    for name in fields:
+                        want = getattr(reduced, name)
+                        got = getattr(folded, name)
+                        np.testing.assert_array_equal(
+                            cp.asnumpy(want).view(np.uint32),
+                            cp.asnumpy(got).view(np.uint32),
+                            err_msg=(f"{kind} {name} ncol={ncol} nlay={nlay} "
+                                     f"top_at_1={top_at_1} is not bit-identical"))
 
 
 @pytest.mark.gpu
@@ -2984,7 +3047,7 @@ def test_mcica_jump_operators_fold_the_levels_exactly():
         affine, matrices, mwc = level_operators(nlay, njump)
         _, f1, f2, f3, f4 = _mcica_jump_tables(nlay, ngpt)
         f1 = np.asarray(getattr(f1, "get", lambda: f1)()).reshape(ngpt, 2)
-        f2 = np.asarray(getattr(f2, "get", lambda: f2)()).reshape(ngpt, 32)
+        f2 = np.asarray(getattr(f2, "get", lambda: f2)()).reshape(32, ngpt).T
         f3 = np.asarray(getattr(f3, "get", lambda: f3)())
         f4 = np.asarray(getattr(f4, "get", lambda: f4)())
         for g in range(ngpt):
@@ -3727,6 +3790,87 @@ def test_preflight_prices_radius_columns_for_exactly_the_schemes_that_use_them()
             f"mp_physics={mp_physics}: preflight prices effc/effi/effs "
             f"columns={priced}, but changing effi from 5 to 40 um moved "
             f"the radiation answer={consumes}")
+
+
+@requires_gpu
+@pytest.mark.parametrize("ncol", [7, 8])
+def test_rte_buffered_fold_geometries_match_partials(ncol, monkeypatch):
+    """Packed and single-column folds preserve every output word."""
+    import cupy as cp
+    import gpuwm.core.rrtmgp as r
+
+    rng = np.random.default_rng(910 + ncol)
+    nlay = 9
+    for kind in ("lw", "sw"):
+        tables = r.load_gas_tables(kind)
+        ngpt = tables.ngpt
+        shape = (ncol, nlay, ngpt)
+        tau = cp.asarray(rng.uniform(0.01, 3, shape), dtype=r.DTYPE)
+        ssa = cp.asarray(rng.uniform(0.01, 0.9, shape), dtype=r.DTYPE)
+        cloud_shape = (ncol, nlay, tables.nband)
+        cloud = r.CloudOpticsResult(
+            tau=cp.asarray(rng.uniform(0, 2, cloud_shape), dtype=r.DTYPE),
+            ssa=cp.asarray(rng.uniform(0, 0.9, cloud_shape), dtype=r.DTYPE),
+            g=cp.asarray(rng.uniform(0, 0.8, cloud_shape), dtype=r.DTYPE))
+        surface = cp.asarray(rng.uniform(0.7, 0.95, (ncol, ngpt)),
+                             dtype=r.DTYPE)
+        inc = cp.asarray(rng.uniform(1, 30, (ncol, ngpt)), dtype=r.DTYPE)
+        if kind == "lw":
+            edge = np.linspace(101325, 100, nlay + 1)
+            play = cp.asarray(np.tile((edge[:-1] + edge[1:]) * 0.5,
+                                      (ncol, 1)), dtype=r.DTYPE)
+            plev = cp.asarray(np.tile(edge, (ncol, 1)), dtype=r.DTYPE)
+            tlay = cp.asarray(rng.uniform(200, 300, (ncol, nlay)), dtype=r.DTYPE)
+            tlev = cp.asarray(rng.uniform(200, 300, (ncol, nlay + 1)),
+                              dtype=r.DTYPE)
+            tsfc = cp.asarray(rng.uniform(270, 310, ncol), dtype=r.DTYPE)
+            vmr = cp.full((ncol, nlay, tables.ngas + 1), 1e-5, dtype=r.DTYPE)
+            meta = r._interpolation_metadata(tables, play, tlay, validate=False)
+            src = r._planck_sources(tables, play, plev, tlay, tlev, tsfc,
+                                    vmr, metadata=meta, validate=False, out=None)
+            planck = r.PlanckInputs(tables=tables, play=play, tlay=tlay,
+                                   tlev=tlev, tsfc=tsfc, vmr=vmr, metadata=meta)
+        else:
+            mu = cp.asarray(rng.uniform(0.1, 0.95, (ncol, nlay)), dtype=r.DTYPE)
+        mask = cp.asarray(rng.integers(0, 2, shape), dtype=cp.bool_)
+        for cloud_mode in ("off", "unmasked", "masked"):
+            fused = None if cloud_mode == "off" else r.FusedCloudOptics(
+                tables=tables, cloud=cloud,
+                mask=mask if cloud_mode == "masked" else None)
+            for top in (False, True):
+                for derive in ((False, True) if kind == "lw" else (False,)):
+                    def run(tile, columns):
+                        monkeypatch.setattr(r, "_rte_gpt_tile",
+                                            lambda *args, **kwargs: tile)
+                        if kind == "lw":
+                            return r._lw_rte(
+                                tau, None if derive else src.lay_source,
+                                None if derive else src.lev_source,
+                                None if derive else src.sfc_source, surface,
+                                inc, top_at_1=top, out=None, incident_out=None,
+                                fused_cloud=fused, planck=planck if derive else None,
+                                _fold_columns=columns)
+                        return r._sw_rte(
+                            tau, ssa, cp.zeros_like(tau), mu, surface, surface,
+                            inc, top_at_1=top, out=None, fused_cloud=fused,
+                            _fold_columns=columns)
+
+                    monkeypatch.delenv("GPUWM_RTE_COLUMNS_PER_BLOCK", raising=False)
+                    monkeypatch.setenv("GPUWM_RTE_FOLD", "0")
+                    reference = run(16, 1)
+                    monkeypatch.setenv("GPUWM_RTE_FOLD", "1")
+                    fields = ("flux_up", "flux_dn") + (
+                        ("flux_dir",) if kind == "sw" else ())
+                    for tile in ((16, 32, 64, 128) if kind == "lw" else (16, 32)):
+                        for columns in (1, 2, 4):
+                            monkeypatch.setenv("GPUWM_RTE_COLUMNS_PER_BLOCK", str(columns))
+                            result = run(tile, 1)
+                            for field in fields:
+                                np.testing.assert_array_equal(
+                                    cp.asnumpy(getattr(reference, field)).view(np.uint32),
+                                    cp.asnumpy(getattr(result, field)).view(np.uint32),
+                                    err_msg=str((kind, cloud_mode, top, derive,
+                                                 tile, columns, field)))
 
 
 def test_fused_finalize_matches_the_kernel_it_replaces():

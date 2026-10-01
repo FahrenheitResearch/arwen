@@ -24,7 +24,7 @@ from gpuwm.core.ntiedtke import NT_STAGE_SIGNATURE
 _CU = (Path(__file__).resolve().parents[1] / "gpuwm" / "core" / "kernels"
        / "ntiedtke.cu")
 
-_TAIL = ("expect_tpb", "expect_nblocks", "geom_report", "order_report",
+_TAIL = ("llo3_mask", "expect_tpb", "expect_nblocks", "geom_report", "order_report",
          "ticket")
 
 

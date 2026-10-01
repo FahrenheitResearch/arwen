@@ -453,6 +453,7 @@ fn compare_streamed_against_whole(
     let series = mapped_engine::frames::SeriesSummary {
         source_cycles: collection.source_cycles.clone(),
         grid_fingerprint: collection.grid_fingerprint.clone(),
+        lead_batch: false,
     };
     let mut carved = collection;
     mapped_engine::frames::write_frameset(&whole_out, &mapping, &series, &digests, |key| {

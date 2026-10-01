@@ -20,9 +20,12 @@ from gpuwm.core.diagnostics import update_diagnostics
 from gpuwm.core.grid import make_vertical_coord
 from gpuwm.experiment import (
     BUBBLE_AMPLITUDE_WARNING_K,
+    DEFERRED_PERTURBATION_SCHEMA,
     BubbleConfig,
     PerturbationConfig,
     build_experiment,
+    deferred_initial_perturbation,
+    deferred_perturbation_config,
     refuse_unrouted_perturbation,
 )
 from gpuwm.ingest.horiz import HorizontalSnapshot
@@ -216,6 +219,81 @@ def test_unrouted_route_refuses_a_configured_block_by_name():
     refuse_unrouted_perturbation(  # absent block: no-op
         build_experiment(_experiment_raw(), source="probe.toml"),
         "probe-route")
+
+
+def _tree_raw(perturbation=None):
+    """``_experiment_raw`` with a ratio-3 child well inside a wider root."""
+    raw = _experiment_raw(perturbation)
+    raw["domain"][0].update(nx=60, ny=60)
+    raw["domain"].append({
+        "grid_id": 2, "parent_id": 1, "i_parent_start": 20,
+        "j_parent_start": 20, "parent_grid_ratio": 3,
+        "parent_time_step_ratio": 3, "e_we": 25, "e_sn": 25,
+        "history_interval_s": 3600.0,
+    })
+    return raw
+
+
+def test_a_tree_preparation_defers_the_block_in_one_source_neutral_receipt(
+        capsys):
+    """Every source's tree preparation writes this one receipt.
+
+    The domain-tree runner applies the bubbles to the restored states
+    whatever source prepared the tree, so the deferral names no source:
+    two routes asking about the same experiment get the same document.
+    """
+    exp = build_experiment(
+        _tree_raw({"bubbles": [_bubble_entry(amplitude_k=0.01)]}),
+        source="probe.toml")
+    receipt = deferred_initial_perturbation(exp, "probe-route")
+    assert receipt == {
+        "schema": DEFERRED_PERTURBATION_SCHEMA,
+        "status": "DEFERRED_TO_FORECAST_INITIALIZATION",
+        "prepared_arrays": "unperturbed source initial and boundary states",
+        "application_route": "gpuwm.prepared_domain_tree_forecast",
+        "application_point": "restored states at experiment start time",
+        "applied_on_restart": False,
+        "applied_to_delayed_domains": False,
+        "config": exp.perturbation.receipt(),
+    }
+    assert "deferred to prepared-tree forecast initialization" in (
+        capsys.readouterr().err)
+    assert deferred_initial_perturbation(
+        exp, "another-route", announce=False) == receipt
+    assert capsys.readouterr().err == ""
+
+
+def test_a_single_domain_preparation_still_refuses_the_block_by_name():
+    """The prepared single-domain runner applies no bubble."""
+    exp = build_experiment(
+        _experiment_raw({"bubbles": [_bubble_entry()]}), source="probe.toml")
+    with pytest.raises(
+            ValueError,
+            match=r"single-domain probe-route route does not apply "
+                  r"\[perturbation\].*unperturbed state"):
+        deferred_initial_perturbation(exp, "probe-route")
+
+
+def test_a_deferral_receipt_gives_back_the_block_it_recorded():
+    """A stage that builds its experiment without the configuration
+    (the native HRRR hierarchy) takes the block back from the sealed
+    receipt, through the one validator."""
+    exp = build_experiment(
+        _tree_raw({"bubbles": [_bubble_entry(amplitude_k=12.0,
+                                             rh_preserve=True)]}),
+        source="probe.toml")
+    receipt = deferred_initial_perturbation(exp, "probe-route", announce=False)
+    assert "warning" in receipt["config"]["bubbles"][0]
+    assert deferred_perturbation_config(receipt) == exp.perturbation
+    with pytest.raises(ValueError, match="deferral must be"):
+        deferred_perturbation_config(exp.perturbation.receipt())
+
+
+def test_an_absent_block_defers_nothing_on_either_shape(capsys):
+    for raw in (_experiment_raw(), _tree_raw()):
+        exp = build_experiment(raw, source="probe.toml")
+        assert deferred_initial_perturbation(exp, "probe-route") is None
+    assert capsys.readouterr().err == ""
 
 
 # ---------------------------------------------------------------------------

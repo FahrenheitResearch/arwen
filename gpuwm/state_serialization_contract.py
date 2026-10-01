@@ -233,11 +233,70 @@ def setup_core_fingerprint(
     return digest.hexdigest()
 
 
+#: The REBUILT end-frame identity, for linear forcing (v2) and forcing with
+#: a rational time law (v3).  Each row's ``end_frame_sha256`` hashes a
+#: reconstruction: FP32 of ``value + tendency * duration``, or of the
+#: rational law at the interval's end.  Where a boundary value clears out
+#: between two forcing times (a hydrometeor table falling to 0.0), the
+#: float64 residual of that sum (about 1e-14 on coupled values near 200)
+#: survives the FP32 rounding while the next interval starts from 0.0, so
+#: two intervals that share one frame byte for byte carry different frame
+#: digests (A140).  Every release before 2.8.1 wrote only these, and a
+#: series whose builder recorded no end frame (a wrfbdy file's intervals,
+#: a prepared cache written before 2.8.1) is still hashed this way.
 LATERAL_BOUNDARY_PREFIX_SCHEMA = "gpuwm-lateral-boundary-prefix-v2"
+RATIONAL_BOUNDARY_PREFIX_SCHEMA = "gpuwm-lateral-boundary-prefix-v3"
+REBUILT_END_FRAME_PREFIX_SCHEMAS = (
+    LATERAL_BOUNDARY_PREFIX_SCHEMA, RATIONAL_BOUNDARY_PREFIX_SCHEMA)
+
+#: The BUILT end-frame identity: each row's ``end_frame_sha256`` is the
+#: digest of the frame its tendency was built toward, recorded by the
+#: builder that differenced the two frames
+#: (:attr:`gpuwm.ingest.lateral_bc.BoundaryInterval.end_frame_sha256`).
+#: That frame is the next interval's start frame, so a series whose
+#: interval k+1 starts from the frame interval k was built toward has
+#: ``end_frame_sha256[k] == start_frame_sha256[k+1]`` exactly, a clear-out
+#: included, and a splice does not.  The row's ``sha256`` still binds the
+#: value, tendency and time-law bytes, so this schema changes only what the
+#: frame digests mean.
+BUILT_END_FRAME_PREFIX_SCHEMA = "gpuwm-lateral-boundary-prefix-v4"
+LATERAL_BOUNDARY_PREFIX_SCHEMAS = (
+    *REBUILT_END_FRAME_PREFIX_SCHEMAS, BUILT_END_FRAME_PREFIX_SCHEMA)
+
+_SIDES = ("west", "east", "south", "north")
+
+
+def boundary_frame_sha256(frame) -> str:
+    """The digest of one forcing frame's four boundary sides.
+
+    ``frame`` maps each boundary field name to its ``west``, ``east``,
+    ``south`` and ``north`` tables, in the layout a side's ``value`` holds.
+    Each table is rounded to FP32, the representation the forcing consumer
+    uses, and walked in the order :func:`lateral_boundary_prefix_row`
+    hashes its start frame, so the digest of the frame an interval's
+    tendency was built toward is the next interval's
+    ``start_frame_sha256`` whenever the two intervals share that frame.
+    """
+
+    digest = hashlib.sha256()
+    for name in sorted(frame):
+        sides = frame[name]
+        for side_name in _SIDES:
+            _digest_array(
+                digest, f"{name}/{side_name}/value",
+                np.asarray(_host(sides[side_name]), dtype=np.float32))
+    return digest.hexdigest()
+
+
+def built_end_frame(interval) -> str | None:
+    """The end frame digest ``interval``'s builder recorded, if any."""
+
+    return getattr(interval, "end_frame_sha256", None)
 
 
 def lateral_boundary_prefix_identity(
-        state, *, error_type: type[Exception] = ValueError):
+        state, *, error_type: type[Exception] = ValueError,
+        rebuilt_end_frames: bool = False):
     """Return interval-level hashes for an append-only forcing proof.
 
     ``None`` means that this state has no external forcing inventory (a
@@ -246,6 +305,14 @@ def lateral_boundary_prefix_identity(
     tendency bytes.  The compact list is safe to put in a checkpoint header;
     it proves a later preparation retained the old inventory byte-for-byte
     without serializing those forcing tables into the checkpoint itself.
+
+    The document is in the built end-frame identity
+    (:data:`BUILT_END_FRAME_PREFIX_SCHEMA`) when every interval carries the
+    end frame its builder recorded, and otherwise wholly in the rebuilt one
+    (:data:`REBUILT_END_FRAME_PREFIX_SCHEMAS`), so one series always has
+    one identity.  ``rebuilt_end_frames`` asks for the rebuilt identity of
+    any series, which is how a document written before 2.8.1 is compared
+    like with like.
     """
 
     nest_class = getattr(state, "_nest_restart_classification", None)
@@ -257,26 +324,34 @@ def lateral_boundary_prefix_identity(
     boundaries = getattr(state, "lateral_boundaries", None)
     if boundaries is None:
         return None
+    intervals = list(boundaries.intervals)
+    built = (not rebuilt_end_frames and bool(intervals) and all(
+        built_end_frame(interval) is not None for interval in intervals))
     return lateral_boundary_prefix_document(
         spec_bdy_width=boundaries.spec_bdy_width,
         spec_zone=boundaries.spec_zone, relax_zone=boundaries.relax_zone,
-        rows=[lateral_boundary_prefix_row(interval)
-              for interval in boundaries.intervals],
-        rational=any(
-            getattr(getattr(field, side), "time_law", None) is not None
-            for interval in boundaries.intervals
-            for field in interval.fields.values()
-            for side in ("west", "east", "south", "north")))
+        rows=[lateral_boundary_prefix_row(interval,
+                                          rebuilt_end_frame=not built)
+              for interval in intervals],
+        rational=any(interval_has_time_law(interval)
+                     for interval in intervals),
+        built_end_frames=built)
 
 
-def lateral_boundary_prefix_row(interval) -> dict:
+def lateral_boundary_prefix_row(interval, *,
+                                rebuilt_end_frame: bool = False) -> dict:
     """One interval's row of :func:`lateral_boundary_prefix_identity`.
 
     Split out so a chained preparation can seal each boundary segment's
     row as the segment is written; the whole-set identity is these rows
     in order, unchanged.
+
+    ``end_frame_sha256`` is the end frame the interval's builder recorded
+    and, when it recorded none or ``rebuilt_end_frame`` is set, the
+    rebuilt one (see :data:`REBUILT_END_FRAME_PREFIX_SCHEMAS`).
     """
 
+    built = None if rebuilt_end_frame else built_end_frame(interval)
     digest = hashlib.sha256()
     start_frame = hashlib.sha256()
     end_frame = hashlib.sha256()
@@ -307,6 +382,10 @@ def lateral_boundary_prefix_row(interval) -> dict:
             # shared restart-boundary frame while preserving the older
             # interval row.
             start = np.asarray(_host(side.value), dtype=np.float32)
+            _digest_array(
+                start_frame, f"{name}/{side_name}/value", start)
+            if built is not None:
+                continue
             end = np.asarray(
                 _host(side.value) + _host(side.tendency) * duration,
                 dtype=np.float32)
@@ -321,8 +400,6 @@ def lateral_boundary_prefix_row(interval) -> dict:
                 end = np.asarray(evaluate_boundary_side(
                     rounded, np.float32(duration))[0], dtype=np.float32)
             _digest_array(
-                start_frame, f"{name}/{side_name}/value", start)
-            _digest_array(
                 end_frame, f"{name}/{side_name}/value", end)
     return {
         "start_seconds": interval.start_seconds,
@@ -330,7 +407,8 @@ def lateral_boundary_prefix_row(interval) -> dict:
         "fields": fields,
         "sha256": digest.hexdigest(),
         "start_frame_sha256": start_frame.hexdigest(),
-        "end_frame_sha256": end_frame.hexdigest(),
+        "end_frame_sha256": (built if built is not None
+                             else end_frame.hexdigest()),
     }
 
 
@@ -338,16 +416,25 @@ def interval_has_time_law(interval) -> bool:
     return any(
         getattr(getattr(field, side), "time_law", None) is not None
         for field in interval.fields.values()
-        for side in ("west", "east", "south", "north"))
+        for side in _SIDES)
 
 
 def lateral_boundary_prefix_document(*, spec_bdy_width, spec_zone,
-                                     relax_zone, rows, rational: bool):
-    """Assemble the prefix identity from its per-interval rows."""
+                                     relax_zone, rows, rational: bool,
+                                     built_end_frames: bool = False):
+    """Assemble the prefix identity from its per-interval rows.
 
+    ``built_end_frames`` says every row's end frame is the one its builder
+    recorded; the rows must then all have been made that way.
+    """
+
+    if built_end_frames:
+        schema = BUILT_END_FRAME_PREFIX_SCHEMA
+    else:
+        schema = (RATIONAL_BOUNDARY_PREFIX_SCHEMA if rational
+                  else LATERAL_BOUNDARY_PREFIX_SCHEMA)
     return {
-        "schema": ("gpuwm-lateral-boundary-prefix-v3" if rational
-                   else LATERAL_BOUNDARY_PREFIX_SCHEMA),
+        "schema": schema,
         "spec_bdy_width": spec_bdy_width,
         "spec_zone": spec_zone,
         "relax_zone": relax_zone,
@@ -410,12 +497,18 @@ CHECKPOINT_ONLY_STATE = ("ww_pp",)
 
 __all__ = [
     "ADVECTIVE_FORCING_STATE",
+    "BUILT_END_FRAME_PREFIX_SCHEMA",
     "CHECKPOINT_ONLY_STATE",
     "LATERAL_BOUNDARY_PREFIX_SCHEMA",
+    "LATERAL_BOUNDARY_PREFIX_SCHEMAS",
+    "RATIONAL_BOUNDARY_PREFIX_SCHEMA",
+    "REBUILT_END_FRAME_PREFIX_SCHEMAS",
     "STATE_DERIVED_SETUP_ARRAYS",
     "STATE_SERIALIZED_ATTRS",
     "STATE_SETUP_ARRAYS",
     "STATE_SETUP_SCALARS",
+    "boundary_frame_sha256",
+    "built_end_frame",
     "lateral_boundary_prefix_identity",
     "setup_core_fingerprint",
     "setup_fingerprint",

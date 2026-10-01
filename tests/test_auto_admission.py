@@ -284,7 +284,10 @@ def test_auto_ordinary_dispatch_takes_one_admission_before_the_fetch(tmp_path, m
     priced = []
     def price(value, **kwargs):
         assert value is exp
-        assert kwargs == {"column_chunk": exp.column_chunk, "profile": None}
+        # The [case_data] arm names no forcing source, so its tables
+        # carry water vapour only.
+        assert kwargs == {"column_chunk": exp.column_chunk, "profile": None,
+                          "boundary_species": ()}
         priced.append(kwargs)
         events.append("price")
         return marker

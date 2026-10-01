@@ -841,6 +841,21 @@ def test_a_missing_thompson_table_is_a_refusal_not_a_traceback(
 
     # Negative control: the same runner path with the tables present
     # gets past this gate and fails on its own (fake) preflight instead.
+    # "Present" is staged here, where `gpuwm fetch-tables` puts them, so
+    # the control does not depend on the machine running it: a non-editable
+    # gpuwm-data carries neither externalized table, and on a box that had
+    # never staged them this control failed as "DID NOT RAISE" at every
+    # commit.  The resolver still walks its own ladder (override, complete
+    # packaged root, staged root), and the gate asks presence only.
+    from gpuwm import physics_compat
+    from gpuwm.core.thompson_contract import CLASSIC_TABLE_ASSETS
+
+    staged = tmp_path / "home" / ".gpuwm" / "tables" / "thompson"
+    staged.mkdir(parents=True)
+    for asset in CLASSIC_TABLE_ASSETS:
+        (staged / asset.filename).write_bytes(b"")
+    monkeypatch.setattr(physics_compat, "user_thompson_table_root",
+                        lambda: staged)
     monkeypatch.delenv("GPUWM_THOMPSON_TABLE_ROOT")
     with pytest.raises(AssertionError, match="should have refused"):
         runner.main([

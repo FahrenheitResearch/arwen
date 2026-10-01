@@ -249,6 +249,17 @@ def test_every_implemented_option_is_selected_by_a_registered_suite() -> None:
             "WRF's classic 1/1 pair; every verified run used a 4/4 or "
             "Dudhia-shortwave suite, so no preset selects it and a config "
             "asks for it directly",
+        **{("urban", option_id):
+           "an urban canopy is added to a suite in its run's [shared] "
+           "table for a city domain; no preset recommends one before its "
+           "observation verification is recorded"
+           for option_id in ("slucm", "bep", "bep-bem")},
+        ("pbl", "uw"):
+            "WRF v4.7.1's UW moist-turbulence PBL is graded word for word "
+            "against WRF's own columns but has no forecast or observation "
+            "score yet, so no preset recommends it; a config asks for it "
+            "directly (bl_pbl_physics = 9, per domain too) and an imported "
+            "WRF namelist carries it",
     }
 
     missing = sorted(

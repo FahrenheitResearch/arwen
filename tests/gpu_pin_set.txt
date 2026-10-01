@@ -56,7 +56,7 @@
 #     these are pins for the card stage's purpose.  Declared one node id
 #     per row rather than by file, because the same files carry CPU rows
 #     that compare the numpy mirror with the oracle and those are not
-#     pins (see EXCLUDED).  The 15 files hold 53 rows that reach a device
+#     pins (see EXCLUDED).  The 15 files hold 54 rows that reach a device
 #     in all; tests/test_gpu_pin_set.py classifies every one of them, so
 #     a new row cannot join a file and stay undeclared.
 #
@@ -86,14 +86,14 @@
 #   tests/test_noahmp_frame_provenance.py: an estimator inventory baseline with
 #     no device behind it.
 #   the tests/test_ntiedtke_*_parity.py rows that reach a device and are
-#     NOT results: 20 assert a compiled kernel's local_size_bytes is 0,
-#     which is a launch-cost property of the artifact rather than a value
-#     the oracle has an opinion about, and three assert a behaviour with
-#     no oracle number behind it at all -- that a seeded array comes back
-#     zeroed (cloud_depth), that a -7.0 sentinel is gone everywhere
-#     (mrescale), and that deep-only slots are left alone on other
-#     columns (prep).  Each would be worth running; none is a pin, and
-#     the card stage is the pin stage.
+#     NOT results: 20 assert a compiled kernel's local_size_bytes is 0, a
+#     launch-cost property of the artifact, and four assert a behaviour
+#     with no oracle number behind it -- a seeded array comes back zeroed
+#     (cloud_depth), a -7.0 sentinel is gone everywhere (mrescale),
+#     deep-only slots are left alone on other columns (prep), and cutypen's
+#     outputs and final scratch are one bit pattern at 32, 64 and 128
+#     threads per block (prep).  Each would be worth running; none is a
+#     pin, and the card stage is the pin stage.
 #   tests/test_thompson_aerosol_gpu.py::test_mp8_freeze_receipt_still_holds_at_the_wp12b_tip:
 #     it re-asserts the mp=8 freeze on no device, and it is green whenever
 #     tests/test_mp8_frozen.py is, which the set already runs.  Not a
@@ -152,3 +152,13 @@ tests/test_ntiedtke_prep_parity.py::test_cuda_reproduces_every_prep_word
 tests/test_ntiedtke_prep_parity.py::test_cuda_matches_the_mirror_exactly
 tests/test_ntiedtke_prep_parity.py::test_cuda_scale_factors_survive_both_branches_in_one_launch
 tests/test_ntiedtke_uscale_parity.py::test_kernel_scalar_outputs_are_exact
+# The UW moist-turbulence PBL (bl_pbl_physics=9): the product launcher's
+# every output word asserted EQUAL to WRF v4.7.1's on the packaged oracle
+# fixtures (tools/uwpbl_wrf471_oracle), per grid, and a chunked launch equal
+# to a single one.  Binary64 with rounding-pinned operations and glibc's own
+# exp/log/pow, so the result is not a property of the card.  The FTZ row: the
+# product equal to the flush-emulating CPU reference on every word of the
+# subnormal fixture, and its 860 differences from WRF pinned word by word.
+tests/test_uwpbl_launcher_wrf471_parity.py::test_every_step_of_every_column_is_wrfs_words
+tests/test_uwpbl_launcher_wrf471_parity.py::test_a_chunked_launch_equals_a_single_one
+tests/test_uwpbl_ftz_wrf471_parity.py::test_product_equals_ftz_cpu_and_pins_every_oracle_mismatch

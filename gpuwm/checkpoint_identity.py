@@ -143,10 +143,15 @@ MICROPHYSICS_ALGORITHM_IDENTITIES = {
     # microphysics has been; "ccn-conc-init" records that the CCN reservoir
     # starts from the namelist constant fill (:220-227) rather than an
     # ingested aerosol field, so a future ingest must advance this tag
-    # instead of silently resuming onto it.
-    16: ("wdm6-double-moment-warm-rain-wrf-v4.6.1-v3-prognostic-nc-nr-ccn-"
+    # instead of silently resuming onto it.  v4 (A144): "zero-rate-rain-no-
+    # evaporation" names the rain condensation cap that no longer turns a
+    # zero rate (rain with no number) into evaporation, which changes the
+    # vapour, ice and theta trajectory wherever such rain meets
+    # subsaturated air (docs/wdm6_oracle_known_deltas.md, section 6).
+    16: ("wdm6-double-moment-warm-rain-wrf-v4.6.1-v4-prognostic-nc-nr-ccn-"
          "gamma-mu1-rain-ccn-activation-xland-autoconversion-ccn-conc-init-"
-         "conservative-rain-interface-flux-bounded-transport-time"),
+         "conservative-rain-interface-flux-bounded-transport-time-"
+         "zero-rate-rain-no-evaporation"),
     18: "nssl-two-moment-state-transport-v1-process-boundary-fail-loud",
     # Thompson AEROSOL-AWARE (WRF v4.6.1 THOMPSONAERO,
     # Registry/Registry.EM_COMMON:3036).  Named at the granularity the mp=8
@@ -201,6 +206,9 @@ SURFACE_LAYER_ALGORITHM_IDENTITIES = {
     5: "mynn-surface-layer-wrf-v4.6.1-v1",
     91: "classic-mm5-surface-layer-v1",
 }
+#: WRF v4.7.1 lsm_mosaic; bound only for the enabled tile path.
+NOAH_MOSAIC_ALGORITHM_IDENTITY = "noah-mosaic-wrf-v4.7.1-v1"
+
 LAND_SURFACE_ALGORITHM_IDENTITIES = {
     0: "disabled",
     2: "noah-lsm-v2-post-sflx-chs2-source-water-lake-skin",
@@ -226,6 +234,12 @@ PBL_ALGORITHM_IDENTITIES = {
     # re-transcription against another WRF advances the suffix rather than
     # silently resuming onto this one.
     2: "myj-pbl-wrf-v4.6.1-v1-mellor-yamada-2.5-janjic",
+    # The UW moist-turbulence PBL carries prognostic state across steps --
+    # the interface diffusivities it reads back as kvm_in/kvh_in and the
+    # residual surface stress -- and its saturation table is WRF's own
+    # words (gpuwm/core/uwpbl_constants.py).  The identity binds the WRF
+    # version the port transcribes, v4.7.1.
+    9: "uw-moist-turbulence-pbl-wrf-v4.7.1-v1",
     11: "shinhong-pbl-wrf-v4.6.1-v1",
     # SASE carries no WRF version in its identity because there is no WRF
     # scheme it transcribes.  What the identity DOES have to bind is the
@@ -287,6 +301,17 @@ RADIATION_ALGORITHM_IDENTITIES = {
     key: LONGWAVE_ALGORITHM_IDENTITIES[key] for key in (0, 4, 90)}
 RADIATION_ABOVE_ATMOSPHERE_POLICIES = {
     key: LONGWAVE_ABOVE_ATMOSPHERE_POLICIES[key] for key in (0, 4, 90)}
+#: The urban canopy models (``sf_urban_physics``).  Bound into the
+#: checkpoint header only when one runs, so every existing header is
+#: unchanged; the string names the WRF version whose routine each CUDA
+#: column is graded against.
+URBAN_ALGORITHM_IDENTITIES = {
+    0: "disabled",
+    1: "urban-slucm-wrf-v4.7.1-v1",
+    2: "urban-bep-wrf-v4.7.1-v1",
+    3: "urban-bep-bem-wrf-v4.7.1-v1",
+}
+
 CUMULUS_ALGORITHM_IDENTITIES = {
     0: "disabled",
     1: "kain-fritsch-v3-wrf-phase-energy-feedback",
@@ -340,6 +365,10 @@ _CONFIGURED_IDENTITY_TABLES = (
      "land-surface parameter bundle"),
     ("PBL_ALGORITHM_IDENTITIES", "bl_pbl_physics", "PBL"),
     ("CUMULUS_ALGORITHM_IDENTITIES", "cu_physics", "cumulus"),
+    # gpuwm/io/restart.py binds the urban canopy model a checkpoint was
+    # written under; the table carries 0 ("disabled") too, so asking at
+    # every value refuses nothing the writer would write.
+    ("URBAN_ALGORITHM_IDENTITIES", "sf_urban_physics", "urban canopy"),
 )
 
 #: Rows of :data:`_CONFIGURED_IDENTITY_TABLES` the writer reaches only for
@@ -512,6 +541,9 @@ def _require_agreement_with_the_registry() -> None:
     require_registry_agreement(
         "gpuwm.checkpoint_identity.CUMULUS_ALGORITHM_IDENTITIES",
         "cumulus", CUMULUS_ALGORITHM_IDENTITIES)
+    require_registry_agreement(
+        "gpuwm.checkpoint_identity.URBAN_ALGORITHM_IDENTITIES",
+        "urban", URBAN_ALGORITHM_IDENTITIES)
     if os.environ.get(REGISTRY_REBUILD_ENV) == "1":
         return
     # Radiation selects on a (lw, sw) PAIR, so the id-set helper does not

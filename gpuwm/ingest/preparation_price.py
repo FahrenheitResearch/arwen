@@ -59,6 +59,11 @@ once, an upper bound for a child built one at a time).  The residual's
 1.17 times its itemization reserved, inside 1.10 x 1.20, and is priced at
 30.2 GiB.  Tests hold the price at or above every measured peak and
 within a quarter of it.
+
+THE OTHER ROUTES (:data:`MEASURED_ROUTE_PEAKS`): the routes whose terms
+the mapped runs never exercised were each run once on a 16 GB card at a
+reference shape, and tests hold each route's price at or above its own
+peak.
 """
 
 from __future__ import annotations
@@ -202,6 +207,9 @@ class PreparationRoute:
     root's boundary tables are attached on the card while its own build
     is still held (met_em and the experiment route).  ``stage``: where
     the preparation would stop if started anyway, for the refusal.
+    ``pool_headroom``: the CuPy pool's reserve per itemized live byte on
+    a route whose card measurement (:data:`MEASURED_ROUTE_PEAKS`) reserved
+    more than :data:`PREPARATION_POOL_HEADROOM` allows; ``None`` takes it.
     """
 
     name: str
@@ -212,6 +220,12 @@ class PreparationRoute:
     boundary_workers: bool = False
     tables_on_root: bool = False
     door: str = ""
+    pool_headroom: float | None = None
+
+    @property
+    def headroom(self) -> float:
+        return (PREPARATION_POOL_HEADROOM if self.pool_headroom is None
+                else float(self.pool_headroom))
 
 
 #: THE ROUTE TABLE.  A route prepares on the card only through a row here.
@@ -233,10 +247,14 @@ PREPARATION_ROUTES = MappingProxyType({row.name: row for row in (
         "hrrr-native", "while building the f00 state or its boundary strips",
         children=None, boundary_workers=True,
         door="native HRRR (tools/hrrr_single_domain_benchmark.py)"),
+    # Pool headroom 1.25: at 12 km 500x400x49 from ERA5 the pool reserved
+    # 3.907 GB against 3.211 GB itemized (1.217), 1.4% past what 1.20
+    # priced (MEASURED_ROUTE_PEAKS).
     PreparationRoute(
         "experiment", "while building the case's forcing states",
         held_analyses=1, children=None, tables_on_root=True,
-        door="gpuwm run with [case_data] (gpuwm/runtime.py)"),
+        door="gpuwm run with [case_data] (gpuwm/runtime.py)",
+        pool_headroom=1.25),
     PreparationRoute(
         "experiment-host-store",
         "while interpolating the case's forcing times",
@@ -247,7 +265,29 @@ PREPARATION_ROUTES = MappingProxyType({row.name: row for row in (
         "while interpolating the parent frames onto the child",
         children=None,
         door="gpuwm downscale (gpuwm/offline_child_run.py)"),
+    PreparationRoute(
+        "nest-activation",
+        "while re-initializing the nest from the analysis at its start",
+        children=None,
+        door="gpuwm run activating a delayed nest (gpuwm/core/model.py)"),
 )})
+
+
+def route_pool_headroom(route: str | None) -> float:
+    """The pool headroom a preparation on ``route`` is priced with.
+
+    ``None`` is the calibrated :data:`PREPARATION_POOL_HEADROOM`; a named
+    route reads its row.  Generic callers ask here instead of importing the
+    route table, whose row names are source names.
+    """
+    if route is None:
+        return PREPARATION_POOL_HEADROOM
+    row = PREPARATION_ROUTES.get(route)
+    if row is None:
+        raise ValueError(
+            f"no preparation route {route!r}; the routes are "
+            f"{', '.join(sorted(PREPARATION_ROUTES))}")
+    return row.headroom
 
 
 @dataclass(frozen=True)
@@ -274,6 +314,7 @@ class PreparationDevicePrice:
                   ("parent_fields", "parent fields"),
                   ("child_fields", "child fields"),
                   ("setup_residual", "setup temporaries"),
+                  ("physics", "physics"),
                   ("boundary_tables", "boundary tables"),
                   ("source_transform", "source-grid transform"),
                   ("worker_slots", "boundary workers"),
@@ -320,13 +361,18 @@ def vertical_setup_bytes(cfg, inventory: SourceInventory) -> int:
     return plans + outputs
 
 
-def boundary_table_bytes(cfg, intervals: int) -> int:
-    """The root's float32 value+tendency tables for ``intervals`` intervals."""
+def boundary_table_bytes(cfg, intervals: int, *, boundary_species=()) -> int:
+    """The root's float32 value+tendency tables for ``intervals`` intervals.
+
+    ``boundary_species`` is the source's published hydrometeor inventory,
+    whose masses and seeded numbers the tables then carry too.
+    """
     if intervals <= 0 or not bool(getattr(cfg, "specified", False)):
         return 0
     from gpuwm.core.device_inventory import lbc_interval_values
 
-    return 4 * lbc_interval_values(cfg) * int(intervals)
+    return 4 * lbc_interval_values(
+        cfg, boundary_species=boundary_species) * int(intervals)
 
 
 def context_bytes(*, profile=None, vram_gib: float | None = None,
@@ -373,7 +419,8 @@ def price_preparation(route: str, domains: Sequence, inventory: SourceInventory,
                       *, boundary_intervals: int = 0,
                       boundary_workers: int = 0,
                       profile=None, vram_gib: float | None = None,
-                      platform: str | None = None
+                      platform: str | None = None,
+                      boundary_species=()
                       ) -> PreparationDevicePrice:
     """Price ``route`` preparing ``domains`` (root first) from ``inventory``.
 
@@ -407,14 +454,15 @@ def price_preparation(route: str, domains: Sequence, inventory: SourceInventory,
                                           * analysis_bytes(cfg, inventory))
         if index == 0 and row.tables_on_root and row.state_on_card:
             build["boundary_tables"] = boundary_table_bytes(
-                cfg, boundary_intervals)
+                cfg, boundary_intervals, boundary_species=boundary_species)
         phases[f"build d{index + 1:02d}"] = build
 
     if children and row.children == "together":
         residue = {"model_state": state_bytes(root),
                    "forcing_analysis": analysis_bytes(root, inventory),
                    "boundary_tables": boundary_table_bytes(
-                       root, boundary_intervals)}
+                       root, boundary_intervals,
+                       boundary_species=boundary_species)}
         for cfg in children:
             _add(residue, _build(cfg, inventory))
         phases["children"] = residue
@@ -424,7 +472,7 @@ def price_preparation(route: str, domains: Sequence, inventory: SourceInventory,
         width = int(getattr(root, "spec_bdy_width", 5) or 5)
         strip = _strip_config(root, width)
         slot = _build(strip, inventory)
-        slot_pool = math.ceil(PREPARATION_POOL_HEADROOM * sum(slot.values()))
+        slot_pool = math.ceil(row.headroom * sum(slot.values()))
         phases["boundary workers"] = {
             "model_state": state_bytes(root),
             "forcing_analysis": 2 * analysis_bytes(root, inventory),
@@ -443,7 +491,7 @@ def price_preparation(route: str, domains: Sequence, inventory: SourceInventory,
     for name, terms in phases.items():
         pooled = sum(value for key, value in terms.items()
                      if key != "worker_slots")
-        headroom = math.ceil((PREPARATION_POOL_HEADROOM - 1.0) * pooled)
+        headroom = math.ceil((row.headroom - 1.0) * pooled)
         terms = dict(terms, pool_headroom=headroom, cuda_context=context)
         phases[name] = terms
         totals[name] = sum(terms.values())
@@ -451,12 +499,54 @@ def price_preparation(route: str, domains: Sequence, inventory: SourceInventory,
     return PreparationDevicePrice(
         route=route, need_bytes=int(totals[binding]),
         terms=MappingProxyType(dict(phases[binding])), phase=binding,
-        phases=MappingProxyType(dict(totals)))
+        basis=_route_basis(row), phases=MappingProxyType(dict(totals)))
+
+
+def _route_basis(row: PreparationRoute) -> str:
+    """The calibration basis, naming a route's own pool headroom."""
+    if row.pool_headroom is None:
+        return PREPARATION_PRICE_BASIS
+    return (f"{PREPARATION_PRICE_BASIS}; this route's pool headroom "
+            f"x{row.headroom:g}, from its own measured CUDA preparation "
+            "(RTX 5070 Ti 16 GB, 2026-09-29)")
+
+
+def price_nest_activation(cfg, snapshot, *, physics_bytes: int = 0
+                          ) -> PreparationDevicePrice:
+    """A delayed nest's re-initialization at its start, from its DECODED analysis.
+
+    ``gpuwm run`` builds a delayed nest again when it starts, from the
+    catalog's analysis at that time (:func:`gpuwm.ingest.nest_init
+    .initialize_child`), after its startup build is released: the new state
+    and physics driver, that analysis on the nest's grid and the vertical
+    setup beside them, with the same residual and allocator headroom every
+    preparation carries.  ``snapshot`` is the decoded analysis the rebuild
+    reads; ``physics_bytes`` the nest's physics arrays.  No CUDA context is
+    charged: the forecast process already holds it, and the free figure
+    this is weighed against is read in that process.
+
+    Priced here and only for this door.  The shared admission estimate
+    every review and the prepared route read carries no re-ingest term,
+    because the prepared route restores a delayed nest from its prepared
+    cache instead.
+    """
+    inventory = SourceInventory.from_snapshot(snapshot)
+    terms = _build(cfg, inventory)
+    if int(physics_bytes):
+        terms["physics"] = int(physics_bytes)
+    terms["pool_headroom"] = math.ceil(
+        (PREPARATION_POOL_HEADROOM - 1.0) * sum(terms.values()))
+    need = sum(terms.values())
+    return PreparationDevicePrice(
+        route="nest-activation", need_bytes=int(need),
+        terms=MappingProxyType(dict(terms)), phase="activation",
+        phases=MappingProxyType({"activation": int(need)}))
 
 
 def price_forcing_preparation(route: str, exp, snapshots, *,
                               fp64_humidity_transform: bool = False,
-                              profile=None, vram_gib: float | None = None
+                              profile=None, vram_gib: float | None = None,
+                              boundary_species=()
                               ) -> PreparationDevicePrice:
     """Price a source door's preparation from its DECODED forcing.
 
@@ -484,7 +574,7 @@ def price_forcing_preparation(route: str, exp, snapshots, *,
     return price_preparation(
         route, [domain.run for domain in exp.domains], inventory,
         boundary_intervals=count - 1, profile=profile,
-        vram_gib=vram_gib)
+        vram_gib=vram_gib, boundary_species=boundary_species)
 
 
 #: The smallest inventory any source has: one level, no level field and no
@@ -539,9 +629,11 @@ def price_downscale_interpolation(*, parent_nx: int, parent_ny: int,
     sized on the child alone cannot see the first two, which is where a
     small child from a large parent spends its memory (A65, F08).  The
     child's own model state is the forecast's and is priced there.
-    Itemized, with the same residual and pool headroom as the measured
-    routes; this route itself was not among the measured runs.
+    Itemized, with the mapped routes' residual and the ``downscale-child``
+    route row's pool headroom; the route was run once on a card
+    (:data:`MEASURED_ROUTE_PEAKS`) and peaked under half this price.
     """
+    row = PREPARATION_ROUTES["downscale-child"]
     parent_columns = int(parent_nx) * int(parent_ny)
     child_mass, _u, _v = _columns(child_cfg)
     fields = int(parent_fields)
@@ -551,14 +643,14 @@ def price_downscale_interpolation(*, parent_nx: int, parent_ny: int,
     live = parent + child + residual
     terms = {"parent_fields": parent, "child_fields": child,
              "setup_residual": residual,
-             "pool_headroom": math.ceil(
-                 (PREPARATION_POOL_HEADROOM - 1.0) * live),
+             "pool_headroom": math.ceil((row.headroom - 1.0) * live),
              "cuda_context": context_bytes(profile=profile, vram_gib=vram_gib,
                                            platform=platform)}
     need = sum(terms.values())
     return PreparationDevicePrice(
         route="downscale-child", need_bytes=int(need),
         terms=MappingProxyType(terms), phase="parent interpolation",
+        basis=_route_basis(row),
         phases=MappingProxyType({"parent interpolation": int(need)}))
 
 
@@ -589,11 +681,45 @@ MEASURED_SOURCE_INVENTORY = SourceInventory(
 #: Forcing intervals of the measured runs (f00 to f06).
 MEASURED_BOUNDARY_INTERVALS = 6
 
+#: The routes the calibration above reaches without a card measurement of
+#: their own, each measured once on a card at a reference shape (tests hold
+#: every price at or above its peak).  One CUDA preparation per route on an
+#: RTX 5070 Ti 16 GB (Linux), integrate/2.8 at cc3cb0ad6, 2026-09-29.
+#: ``predicted_bytes`` is the price the door decided on (the receipt's
+#: ``selection.device_fit.need_bytes``); ``priced_bytes`` is the price now,
+#: with the route's own term where the run needed one.  ``card_gb`` is the
+#: preparation's own card memory, with every process it spawned summed
+#: into it, from nvidia-smi compute-apps every 0.2 s, up to the end of the
+#: preparation (the downscale child's forecast and the run route's physics
+#: attach come after it and are priced by the forecast).  ``reserved_gb``
+#: is the CuPy pool's reserved bytes at that point, where an instrument
+#: read it.  GB are 1e9 bytes.  Method and runs:
+#: docs/dev/a65-preparation-peaks.md.
+MEASURED_ROUTE_PEAKS = (
+    {"route": "downscale-child",
+     "case": "3 km parent 408x420x49, 16 fields, to a 1 km child 450x450x49",
+     "parent": (408, 420, 49), "parent_fields": 16,
+     "child": (450, 450, 49), "child_dx": 1000.0,
+     "predicted_bytes": 3_898_148_968, "priced_bytes": 3_898_148_968,
+     "card_gb": 1.791, "reserved_gb": 1.520},
+    {"route": "experiment",
+     "case": "ERA5 (ARCO), 12 km 500x400x49, mp 10, two forcing times",
+     "domains": ((500, 400, 49),), "dx": 12000.0, "mp_physics": 10,
+     "inventory": (37, 6, 24), "boundary_intervals": 1,
+     "predicted_bytes": 4_656_160_979, "priced_bytes": 4_816_711_559,
+     "card_gb": 4.261, "reserved_gb": 3.907},
+    {"route": "hrrr-native",
+     "case": "3 km 556x444x49, f00 to f02, two boundary workers",
+     "domains": ((556, 444, 49),), "boundary_workers": 2,
+     "predicted_bytes": 6_946_725_087, "priced_bytes": 6_946_725_087,
+     "card_gb": 4.496, "reserved_gb": None},
+)
+
 
 __all__ = [
     "FP64_HUMIDITY_BYTES_PER_SOURCE_POINT_LEVEL",
     "MEASURED_BOUNDARY_INTERVALS", "MEASURED_PREPARATION_PEAKS",
-    "MEASURED_SOURCE_INVENTORY", "NOMINAL_SOURCE_INVENTORIES",
+    "MEASURED_ROUTE_PEAKS", "MEASURED_SOURCE_INVENTORY", "NOMINAL_SOURCE_INVENTORIES",
     "PREPARATION_POOL_HEADROOM", "PREPARATION_PRICE_BASIS",
     "PREPARATION_ROUTES", "PreparationDevicePrice", "PreparationRoute",
     "SETUP_RESIDUAL", "SourceInventory", "analysis_bytes",

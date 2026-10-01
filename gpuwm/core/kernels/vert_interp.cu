@@ -28,11 +28,11 @@ void vertical_interpolate_logp(const real* __restrict__ field,
     if (pt > pbottom) {
         real q = field[c];
         if (below_temperature) {
-            real t1 = q * powf(pbottom / P0, RCP);
+            real t1 = q * powf(__fdiv_rn(pbottom, P0), RCP);
             real pavg = 0.5f * (pt + pbottom);
             real dhdp = 11880.516f * 0.1902632f
-                      * powf(pavg / 100.0f, 0.1902632f - 1.0f);
-            real dt = dhdp * ((pt - pbottom) / 100.0f) * 0.0065f;
+                      * powf(__fdiv_rn(pavg, 100.0f), 0.1902632f - 1.0f);
+            real dt = dhdp * (__fdiv_rn((pt - pbottom), 100.0f)) * 0.0065f;
             q = (t1 + dt) * powf(P0 / pt, RCP);
         }
         output[tid] = q;
@@ -211,11 +211,11 @@ void wrf_real_vertical_interpolate(const real* __restrict__ field,
             if (pt > ox[0]) {
                 if (extrap_temperature) {
                     // lagrange_setup t_extrap_type=2 CRC branch.
-                    real t1 = oy[0] * powf(ox[0] / P0, RCP);
+                    real t1 = oy[0] * powf(__fdiv_rn(ox[0], P0), RCP);
                     real pavg = 0.5f * (pt + ox[0]);
                     real dhdp = 11880.516f * 0.1902632f
-                              * powf(pavg / 100.0f, 0.1902632f - 1.0f);
-                    real dt = dhdp * ((pt - ox[0]) / 100.0f) * 0.0065f;
+                              * powf(__fdiv_rn(pavg, 100.0f), 0.1902632f - 1.0f);
+                    real dt = dhdp * (__fdiv_rn((pt - ox[0]), 100.0f)) * 0.0065f;
                     result = (t1 + dt) * powf(P0 / pt, RCP);
                 } else {
                     result = oy[0];

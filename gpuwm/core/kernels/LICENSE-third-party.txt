@@ -19,20 +19,22 @@ the rest.  A comment prepended to any of them would move a frozen digest and
 turn a numerics gate red for a reason that has nothing to do with numerics.
 So the notice sits beside the code instead of inside it, and it ships with
 the code: pyproject.toml's package-data glob for gpuwm.core.kernels names
-this file explicitly.  Two headers here are NOT digest-pinned and were
+this file explicitly.  The existing headers here are NOT digest-pinned and were
 checked against every _EXTRA_HEADERS consumer -- glibc_flt32.cuh and
 thompson_aerosol_common.cuh -- and those two do carry their notice inline.
+The new glibc_trig_flt32.cuh also carries its notice inline.
 
 WHAT IS COVERED, AND WHERE
 --------------------------
-1. Arm optimized-routines (MIT)        -- logf, expf, exp2f, powf
-2. FDLIBM / Sun Microsystems           -- expm1f, tanhf, atanf, log10f
+1. Arm optimized-routines (MIT)        -- logf, expf, exp2f, powf, sinf, cosf
+2. FDLIBM / Sun Microsystems           -- expm1f, tanhf, atanf, log10f, log1pf
 3. AER RRTMG (BSD 3-Clause)            -- the legacy RRTMG radiation kernels
 4. RTE+RRTMGP (BSD 3-Clause)           -- the default radiation kernels
 5. Numerical Recipes Software          -- the GAMMLN log-gamma coefficients
+6. CORE-MATH (MIT)                     -- tanf, asinf, acosf, atanf, log10f
 
-Sections 1 and 2 also state the scope of those two grants; section 6 states
-what none of the five covers.
+Sections 1, 2 and 6 state their scope; section 7 states what none of
+the six grants covers.
 
 The FP32 libm transcriptions exist because ArWen grades several physics
 schemes bitwise against a gfortran/glibc reference, so it carries hand
@@ -58,7 +60,7 @@ tests/test_cuda_libm_table_copies.py enumerates the table copies and keeps
 them in step, so this list is machine-checkable rather than prose.
 
 
-1. Arm optimized-routines -- logf, expf, exp2f, powf
+1. Arm optimized-routines -- logf, expf, exp2f, powf, sinf, cosf
 ----------------------------------------------------
 
 Written by Szabolcs Nagy and published at
@@ -69,6 +71,31 @@ them from glibc's copy at sysdeps/ieee754/flt-32/, which reproduces Arm's text
 unchanged apart from symbol renaming, branch-hint and cast macro spellings and
 symbol-versioning declarations -- none of which ArWen reproduces.  ArWen takes
 this material under the MIT branch of Arm's grant.
+
+The sinf / cosf cores and their tables in
+gpuwm/core/kernels/glibc_trig_flt32.cuh are also Arm's work. Their sources
+are math/sinf.c, math/cosf.c, math/sincosf.h and math/sincosf_data.c.
+The 2018 Arm revision 5e8389113b47a48622d1de8beb9a4adc2b332694
+predates glibc's imports ea5c662c623125ad39fc43d5b9224150256407a9
+(shared data and helpers, 2018-08-10) and
+599cf3976679e1b345307d9c02057f02aa95528f (sinf/cosf, 2018-08-14).
+Arm's MIT relicensing at 11253b0b9d6b covers the same algorithms and
+constants; current Arm fe09d4e7ed62aa24c81b5791c810bc9de70006e9
+still offers MIT. Its source notices read:
+
+    Copyright (c) 2018-2024, Arm Limited.
+    Copyright (c) 2018-2019, Arm Limited.
+
+The transcription follows glibc 2.43 sysdeps/ieee754/flt-32/s_sinf.c,
+s_cosf.c, s_sincosf.h, sincosf_poly.h and s_sincosf_data.c, selected
+as the x86 FMA IFUNC variant. The generic sine/cosine bodies, both range
+reductions, polynomials and tables reproduce Arm's code apart from
+renamings, qualifiers, macro spellings and splitting polynomial helpers
+into sincosf_poly.h. Integration aliases and IFUNC wrappers are not copied.
+The MIT branch is elected for these parts too; the full Arm permission
+notice below and licenses/LICENSE-Arm-optimized-routines-MIT.txt apply.
+This adds one trig header to the fourteen log/exp/pow kernel files above;
+the Python log/exp/pow copy remains separate.
 
 At the vintage glibc imported -- Arm 86067a740541, 2017-08-11, taken into
 glibc at 4ea49f4c08ee on 2017-09-04 -- those files read "Copyright (C) 2017,
@@ -107,8 +134,8 @@ c7e74e8165fadb7dd9ee169534fe99ef) reads:
     SOFTWARE.
 
 
-2. FDLIBM -- expm1f, tanhf, atanf, log10f
-------------------------------------------
+2. FDLIBM -- expm1f, tanhf, atanf, log10f, log1pf
+--------------------------------------------------
 
 These reductions descend from FDLIBM, developed at SunPro, a Sun Microsystems,
 Inc. business, and converted to single precision at Cygnus Support.  glibc
@@ -210,13 +237,124 @@ standard published Lanczos coefficient set -- is set out in full, including
 the argument against it, in licenses/NOTICE-Numerical-Recipes.txt.
 
 
-6. The scope of the five grants above
+6. CORE-MATH -- tanf, asinf, acosf, atanf, log10f
+------------------------------------------------
+
+The glibc_tanf, glibc_asinf, glibc_acosf and glibc_atanf functions in
+gpuwm/core/kernels/glibc_trig_flt32.cuh transcribe the CORE-MATH
+correctly-rounded binary32 implementations distributed in glibc 2.43.
+Their sources under glibc's sysdeps/ieee754/flt-32/ record these upstream
+CORE-MATH paths and revisions:
+
+    s_tanf.c: src/binary32/tan/tanf.c, 59d21d7
+    e_asinf.c: src/binary32/asin/asinf.c, bc385c2
+    e_acosf.c: src/binary32/acos/acosf.c, 56dd347
+    s_atanf.c: src/binary32/atan/atanf.c, a8066a5
+    s_asincosf_data.c: src/binary32/asin/asinf.c, bc385c2
+
+The common asinf/acosf coefficient tables are included in that scope.
+These files carry MIT permission directly, including in glibc's copies.
+The atanf here is CORE-MATH; the older FDLIBM atanf transcriptions in
+other files remain covered by the separate Sun notice. No FDLIBM code
+is transcribed in glibc_trig_flt32.cuh.
+
+The ubm_log10f and ubm_log10f_special functions in
+gpuwm/core/kernels/urban_bem.cuh transcribe CORE-MATH's correctly-rounded
+binary32 log10f as glibc 2.43 carries it (sysdeps/ieee754/flt-32/
+e_log10f.c: src/binary32/log10/log10f.c, bc385c2), Copyright (c)
+2022-2023 Alexei Sibidanov, under the same MIT permission. That file
+carries the copyright line and the permission notice beside the code.
+ubm_atanf there is a call to glibc_atanf above, not a transcription.
+
+The noah_log10 and noah_log10_special functions in
+gpuwm/core/kernels/noah_mosaic.cu transcribe the same CORE-MATH log10f
+(bc385c2, Copyright (c) 2022-2023 Alexei Sibidanov, the same MIT
+permission) for the Noah mosaic column, whose TDFCND takes LOG10 of the
+soil saturation ratio; that file too carries the copyright line and the
+permission notice beside the code.
+
+Both upstream copyright-year lines and the exact common permission text
+are reproduced in licenses/LICENSE-CORE-MATH-MIT.txt, in the header and
+beside the code in gpuwm/core/kernels/LICENSE-third-party.txt. MIT
+requires the copyright and permission notice in copies or substantial
+portions of this work:
+
+    Copyright (c) 2022-2024 Alexei Sibidanov.
+    Copyright (c) 2023-2024 Alexei Sibidanov.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+
+7. The scope of the six grants above
 -------------------------------------
 
 Each is stated by routine or by file on purpose.  They cover what sections 1
-to 5 name and nothing else.  Other code in this directory -- including other
+to 6 name and nothing else.  Other code in this directory -- including other
 transcriptions, and including gfk_tgamma in glibc_flt32.cuh, which is
 ArWen's own work -- takes nothing from Arm, Sun, AER, the RTE+RRTMGP
-copyright holders or Numerical Recipes, and is not offered to a reader on
+copyright holders, Numerical Recipes or CORE-MATH, and is not offered to a reader on
 the strength of these notices.  Its provenance is recorded where it lives:
 in the repository NOTICE, in PROVENANCE.md, and in each file's own header.
+
+
+ADDENDUM. The binary64 libm of the UW boundary layer (glibc_flt64.cuh)
+-----------------------------------------------------------------------
+
+glibc_flt64.cuh is prepended to uwpbl.cu (bl_pbl_physics = 9) and carries
+its notice inline.  It transcribes, by routine:
+
+a. Arm optimized-routines (MIT) -- binary64 exp, log and pow and their data
+   tables (math/exp.c, exp_data.c, log.c, log_data.c, pow.c,
+   pow_log_data.c).  Source notices: "Copyright (c) 2018-2026, Arm
+   Limited.", SPDX-License-Identifier: MIT.  The permission text is
+   section 1's.
+
+b. CORE-MATH (MIT) -- binary64 cos and acos, correctly rounded.  glibc's own
+   binary64 cos and acos (IBM, LGPL) are not transcribed anywhere in this
+   repository.
+
+The upstream files are kept verbatim, sha256-pinned, at
+tools/uwpbl_wrf471_oracle/libm64/upstream/.  These two grants cover the
+routines named here and nothing else, on the terms section 6 states for the
+others.  CORE-MATH's copyright lines and permission notice, reproduced as
+MIT requires (also at licenses/LICENSE-CORE-MATH-binary64-MIT.txt):
+
+    Copyright (c) 2022-2025 Paul Zimmermann and Tom Hubrecht
+    Copyright (c) 2024-2025 Alexei Sibidanov.
+
+    These files are part of the CORE-MATH project
+    (https://core-math.gitlabpages.inria.fr/).
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.

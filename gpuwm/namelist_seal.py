@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import hashlib
-import re
 from pathlib import Path
 
-from gpuwm.namelist_import import parse_namelist
+from gpuwm.fortran_namelist import (
+    parse_namelist, scan_namelist_text, value_end_through_blanks)
 
 
 NAMELIST_EXTENSION_INVARIANT_SCHEMA = (
@@ -24,10 +24,6 @@ _TIME_WINDOW_KEYS = (
     "end_hour",
     "end_minute",
     "end_second",
-)
-_ASSIGNMENT = re.compile(
-    r"^(?P<indent>\s*)(?P<key>[A-Za-z_][A-Za-z0-9_]*)"
-    r"(?P<equal>\s*=\s*)(?P<value>.*?)(?P<comment>\s*!.*)?$"
 )
 
 
@@ -131,40 +127,43 @@ def _validate_window(path: Path, *, cycle: datetime, run_seconds: int) -> None:
 
 
 def _normalized_bytes(path: Path) -> bytes:
+    """The namelist's bytes with each time-window VALUE replaced.
+
+    Spans come from :mod:`gpuwm.fortran_namelist`, the reader every
+    namelist door shares, so only the value of each window key is
+    normalized: a key packed beside it on one line (``run_hours = 6,
+    history_interval = 60,``) stays in the identity, and a value
+    continued over several lines is normalized whole.  The line matcher
+    that stood here replaced the rest of the line after the first key,
+    which took history_interval out of the identity, and refused the
+    other window keys on that line as missing.
+    """
+
     text = path.read_bytes().decode("utf-8")
-    section = None
     seen: set[str] = set()
-    output = []
-    for raw in text.splitlines(keepends=True):
-        body = raw.rstrip("\r\n")
-        ending = raw[len(body):]
-        stripped = body.strip()
-        if stripped.startswith("&"):
-            section = stripped[1:].strip().lower()
-        elif stripped == "/":
-            section = None
-        match = _ASSIGNMENT.match(body)
-        if match and section == "time_control":
-            key = match.group("key").lower()
-            if key in _TIME_WINDOW_KEYS:
-                if key in seen:
-                    raise ValueError(
-                        f"sealed namelist repeats time_control.{key}"
-                    )
-                seen.add(key)
-                body = (
-                    f"{match.group('indent')}{match.group('key')}"
-                    f"{match.group('equal')}<gpuwm-monotonic-window>"
-                    f"{match.group('comment') or ''}"
+    spans: list[tuple[int, int]] = []
+    for group in scan_namelist_text(text, source=str(path)):
+        if group.name != "time_control":
+            continue
+        for assignment in group.assignments:
+            if assignment.name not in _TIME_WINDOW_KEYS:
+                continue
+            if assignment.name in seen:
+                raise ValueError(
+                    f"sealed namelist repeats time_control.{assignment.name}"
                 )
-        output.append(body + ending)
+            seen.add(assignment.name)
+            spans.append((assignment.value_start,
+                          value_end_through_blanks(text, assignment)))
     missing = sorted(set(_TIME_WINDOW_KEYS) - seen)
     if missing:
         raise ValueError(
             "sealed namelist does not carry simple time-window assignments: "
             + ", ".join(missing)
         )
-    return "".join(output).encode("utf-8")
+    for start, end in sorted(spans, reverse=True):
+        text = text[:start] + "<gpuwm-monotonic-window>" + text[end:]
+    return text.encode("utf-8")
 
 
 def namelist_extension_invariant(

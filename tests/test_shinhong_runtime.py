@@ -235,9 +235,31 @@ def test_off_path_bl1_micro_run_state_hash_is_pinned():
         # (proof/node-reds-276/readings/shinhong-13.4.92-recording.log).
         # The bytes equal the 13.3.33 row's on the same card: this build
         # moved nothing in the bl=1 off path.
+        #
+        # The RTX 5090 row was RECORDED 2026-10-01 on node-2's 5090
+        # (compute capability 12.0, driver 13.3, cupy 14.2.0) at
+        # lane/281-nvrtc-literal-div after A146, two independent processes
+        # identical.  A146 moves this card's bytes: NVRTC had compiled every
+        # float division by a compile-time constant for sm_120 as a multiply
+        # by the rounded reciprocal (the advection fluxes' / 60 and / 12 and
+        # YSU's among them), and the kernels now spell them __fdiv_rn.  At
+        # integrate/2.8 b814c65a0, before the fix, the same card read
+        # 587102d37ce47fc448f0aacdac7affd6cb0b210169a02193256e552ab5c86657.
+        #
+        # The 5090 rows under 13.0.48 and 12.9.86 above are NOT re-recorded.
+        # Read the same day on the same card through those compilers, two
+        # processes each, they already failed at b814c65a0, before A146
+        # (13.0.48 read 1abde473296299bf03b6f0b208aa0cf1af3de3e505681426811f85d600fb96bc,
+        # 12.9.86 a91c88632924823bb8f00805236bfea828b11534ae0bb2081105952c6e4b8d02),
+        # and the change that moved them after 2026-08-06 is not identified,
+        # so no cause can be named for re-pinning them.  After A146 they read
+        # e3465ef39e7ae725c02e1cc270ee32051d4f85056bc5c62aaae89356afe0bae3 and
+        # 0cc2278147b5919ea1000621183fbb0d0232148e24650f80bc32943f2b498c92.
         "13.4.92": {
             "NVIDIA GeForce RTX 4090":
                 "854866c8c67f9c8ae8c058e7d4e1ba7365237466eaa76ebbbc8c2e188998e6ab",
+            "NVIDIA GeForce RTX 5090":
+                "694aed5d2f619930f894bbf73027386d72daad104eca27ea4f8dbf0311749d08",
         },
     }
     build = nvrtc_build()

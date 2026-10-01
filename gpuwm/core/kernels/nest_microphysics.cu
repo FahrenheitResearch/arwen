@@ -50,7 +50,7 @@ NsslTransitionState diagnose_mp8_mass_as_mp18(
 
     if (ice_number <= cxmin && ice > qxmin_init) {
         const float xims = 4.7123910329460728e-10f;
-        ice_number = rho * ice / xims;
+        ice_number = __fdiv_rn(rho * ice, xims);
     } else if (ice <= qxmin_cloud
                || (ice_number <= cxmin && ice <= qxmin_init)) {
         vapor += ice;
@@ -86,7 +86,7 @@ NsslTransitionState diagnose_mp8_mass_as_mp18(
     }
 
     if (graupel_number <= 0.1f * cxmin && graupel > qxmin_init) {
-        graupel_volume = graupel / 700.0f;
+        graupel_volume = __fdiv_rn(graupel, 700.0f);
         const float zhfac = 2.2736419413860176e-9f;
         const float xgms = 9.8960235561662557e-9f;
         const double lambda_inverse = pow(
@@ -231,7 +231,7 @@ NsslTransitionState diagnose_edge_mass_as_mp18(
     // volume default and alphahl=1 number diagnosis exactly match
     // nssl2_initial_state in nssl2.cu.
     if (hail_number <= 0.1f * cxmin && hail > qxmin_init) {
-        hail_volume = hail / 900.0f;
+        hail_volume = __fdiv_rn(hail, 900.0f);
         const float zhlfac = 8.8419414012719244e-9f;
         const double lambda_inverse = pow(
             (double)rho * (double)hail * (double)zhlfac, 0.25);
@@ -256,7 +256,7 @@ float thompson_edge_rain_number(float qr)
     if (qr <= 1.0e-12f) return 0.0f;
     const float am_r = 3.1415926536f * 1000.0f / 6.0f;
     const float lambda = 3.672f / 1.0e-3f;
-    return (1.0f / 6.0f) * qr / am_r
+    return __fdiv_rn((1.0f / 6.0f) * qr, am_r)
         * lambda * lambda * lambda;
 }
 
@@ -269,7 +269,7 @@ float thompson_edge_ice_number(float qi, float rho)
     float lambda = 4.0f / 5.0e-6f;
     float number = fminf(
         999.0e3f,
-        (1.0f / 6.0f) * ice_mass / am_i
+        __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
             * lambda * lambda * lambda);
     lambda = cbrtf(am_i * 6.0f * number / ice_mass);
     const float diameter = 4.0f / lambda;
@@ -277,11 +277,11 @@ float thompson_edge_ice_number(float qi, float rho)
         lambda = 4.0f / 5.0e-6f;
         number = fminf(
             999.0e3f,
-            (1.0f / 6.0f) * ice_mass / am_i
+            __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
                 * lambda * lambda * lambda);
     } else if (diameter > 300.0e-6f) {
         lambda = 4.0f / 300.0e-6f;
-        number = (1.0f / 6.0f) * ice_mass / am_i
+        number = __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
             * lambda * lambda * lambda;
     }
     return number / rho;
@@ -311,7 +311,7 @@ float morrison_edge_number(float q, int kind, float rimed_density)
         six_c = rimed_density * pi;
         lambda = 1.0f / 2000.0e-6f;
     }
-    return q * lambda * lambda * lambda / six_c;
+    return __fdiv_rn(q * lambda * lambda * lambda, six_c);
 }
 
 // P3 (mp_physics=50) edge closure.  WRF defines neither direction of a P3

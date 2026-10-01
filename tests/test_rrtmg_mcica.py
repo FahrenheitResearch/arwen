@@ -507,3 +507,24 @@ def test_gpu_twin_vram_estimate_accuracy(chunk):
             f"estimate {estimate}")
         del out
     pool.free_all_blocks()
+
+
+@gpu_gate
+@pytest.mark.parametrize("path", FIXTURES, ids=lambda p: p.stem)
+def test_sw_column_layout_bits(path):
+    data = _load(path)
+    side, kwargs = _fixture_kwargs(data)
+    if side != "sw" or int(data["icld"]) != 2:
+        pytest.skip("SW maximum-random overlap fixture required")
+    previous = None
+    for _ in range(DUAL_RUNS):
+        gpoint = M.gpu_generate_sw_subcolumns(**kwargs)
+        column = M.gpu_generate_sw_subcolumns(**kwargs, layout="column")
+        got = _to_host(column)
+        for name, want in _to_host(gpoint).items():
+            if want.ndim == 3:
+                want = want.transpose(1, 2, 0)
+            np.testing.assert_array_equal(got[name].view(np.uint32), want.view(np.uint32))
+            if previous is not None:
+                np.testing.assert_array_equal(got[name].view(np.uint32), previous[name].view(np.uint32))
+        previous = got

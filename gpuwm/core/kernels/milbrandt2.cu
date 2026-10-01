@@ -701,7 +701,7 @@ void milbrandt2_cold(
     // not act on it (the ``stop`` is commented out).  Nothing to reproduce.
     float Cdiff = (2.2157e-5f + 0.0155e-5f * Tc) * 1.0e5f / pr;
     float MUdyn = 1.72e-5f * (393.0f / (t + 120.0f))
-                  * powf(t / MY2_TRPL, 1.5f);
+                  * powf(__fdiv_rn(t, MY2_TRPL), 1.5f);
     float MUkin = MUdyn * ide;
     float iMUkin = 1.0f / MUkin;
     float ScTHRD = powf(MUkin / Cdiff, MY2_thrd);
@@ -1183,7 +1183,7 @@ void milbrandt2_cold(
             }
             tmp1 = t - 7.66f;
             float NNUmax = fmaxf(0.0f,
-                                 de / MY2_mio * (q - qsi)
+                                 __fdiv_rn(de, MY2_mio) * (q - qsi)
                                  / (1.0f + ck6 * (qsi / (tmp1 * tmp1))));
             if (Tc < -5.0f && Si > 1.0f) {
                 NuDEPSOR = fmaxf(0.0f,
@@ -1192,7 +1192,7 @@ void milbrandt2_cold(
             }
             if (qc > MY2_epsQ && Tc < -2.0f && wz > 0.001f) {
                 float GG = 1.0f * idew
-                           / (MY2_RGASV * t / ((qsw * pr) / MY2_EPS1) / Cdiff
+                           / (__fdiv_rn(MY2_RGASV * t / (__fdiv_rn((qsw * pr), MY2_EPS1)), Cdiff)
                               + MY2_CHLC / Ka / t
                                 * (MY2_CHLC / MY2_RGASV / t - 1.0f));
                 float Swmax = my2_SxFNC_w(wz, Tc, pr);
@@ -1217,7 +1217,7 @@ void milbrandt2_cold(
                 Dc = powf(de * (qc * iNC) * icmr, MY2_thrd);
                 float F1 = PI2 * Dc * Na * nc;
                 float F2 = Ka / pr * (Tc - Tcc);
-                float NuCONTA = -F1 * F2 * MY2_RGASV * t / MY2_CHLC * ide;
+                float NuCONTA = __fdiv_rn(-F1 * F2 * MY2_RGASV * t, MY2_CHLC) * ide;
                 float NuCONTB = F1 * F2 * ft * ide;
                 float NuCONTC = F1 * PSIa;
                 NuCONT = fmaxf(0.0f, (NuCONTA + NuCONTB + NuCONTC) * dt);
@@ -1816,7 +1816,7 @@ void milbrandt2_warm(
         Dr = my2_Dm_x(de, qr_in, iNR, icmr, MY2_thrd);
         if (Dr > 3.e-3f) {                                   // :2874-2881
             tmp1 = (Dr - 3.e-3f);
-            tmp2 = (Dr / MY2_DrMax);
+            tmp2 = (__fdiv_rn(Dr, MY2_DrMax));
             tmp3 = tmp2 * tmp2 * tmp2;
             nr_in = nr_in * fmaxf((1.0f + 2.e4f * tmp1 * tmp1), tmp3);
             iNR = 1.0f / nr_in;
@@ -1902,7 +1902,7 @@ void milbrandt2_warm(
         Dr = my2_Dm_x(de, qr, iNR, icmr, MY2_thrd);
         if (Dr > 3.e-3f) {
             tmp1 = (Dr - 3.e-3f); tmp2 = tmp1 * tmp1;
-            tmp3 = (Dr / MY2_DrMax); tmp4 = tmp3 * tmp3 * tmp3;
+            tmp3 = (__fdiv_rn(Dr, MY2_DrMax)); tmp4 = tmp3 * tmp3 * tmp3;
             nr = nr * (fmaxf((1.0f + 2.e4f * tmp2), tmp4));
         } else if (Dr < MY2_Dhh) {
             qc = qc + qr;
@@ -2200,7 +2200,8 @@ __device__ void my2_sediment_impl(MY2_SEDIMENT_PARAMETERS)
 {
     long long ncol = (long long)ny * nx;
     long long col = (long long)blockIdx.x * blockDim.x + threadIdx.x;
-    if (col >= ncol) return;
+    bool valid = col < ncol;
+    extern __shared__ float fluxes[];
     int st = (int)ncol;
 
     const float* DEc = DE + col;
@@ -2224,7 +2225,7 @@ __device__ void my2_sediment_impl(MY2_SEDIMENT_PARAMETERS)
     int ktop_sedi = 0;
     {
         float z = 0.0f;
-        for (int k = 0; k < nz; ++k) {
+        for (int k = 0; k < (valid ? nz : 0); ++k) {
             z = (k == 0) ? DZc[0] : z + DZc[(size_t)k * st];
             if (z < MY2_zMax_sedi) ktop_sedi = k;
         }
@@ -2233,37 +2234,61 @@ __device__ void my2_sediment_impl(MY2_SEDIMENT_PARAMETERS)
     float fluxM_r = 0.f, fluxM_i = 0.f, fluxM_s = 0.f;
     float fluxM_g = 0.f, fluxM_h = 0.f;
 
-    int kt;
-    kt = my2_count_column(QRc, MY2_epsQr_sedi, ktop_sedi, st);
-    if (kt >= 0)
-        my2_sedi_1D<KMAX>(QRc, NRc, 1, DEc, iDEc, gfc, MY2_epsQ, MY2_epsN,
-                          MY2_dmr, MY2_VrMax, MY2_DrMax, dt, DZc, iDZc,
-                          &fluxM_r, kt, nz, st,
-                          MY2_afr, MY2_bfr, cmr, ckQr1, ckQr2, icexr9);
-    kt = my2_count_column(QIc, MY2_epsQi_sedi, ktop_sedi, st);
-    if (kt >= 0)
-        my2_sedi_1D<KMAX>(QIc, NYc, 2, DEc, iDEc, gfc, MY2_epsQ, MY2_epsN,
-                          MY2_dmi, MY2_ViMax, MY2_DiMax, dt, DZc, iDZc,
-                          &fluxM_i, kt, nz, st,
-                          MY2_afi, MY2_bfi, cmi, ckQi1, ckQi2, ckQi4);
-    kt = my2_count_column(QNc, MY2_epsQs_sedi, ktop_sedi, st);
-    if (kt >= 0)
-        my2_sedi_1D<KMAX>(QNc, NNc, 3, DEc, iDEc, gfc, MY2_epsQ, MY2_epsN,
-                          dms, MY2_VsMax, MY2_DsMax, dt, DZc, iDZc,
-                          &fluxM_s, kt, nz, st,
-                          MY2_afs, MY2_bfs, cms, ckQs1, ckQs2, iGS20);
-    kt = my2_count_column(QGc, MY2_epsQg_sedi, ktop_sedi, st);
-    if (kt >= 0)
-        my2_sedi_1D<KMAX>(QGc, NGc, 4, DEc, iDEc, gfc, MY2_epsQ, MY2_epsN,
-                          MY2_dmg, MY2_VgMax, MY2_DgMax, dt, DZc, iDZc,
-                          &fluxM_g, kt, nz, st,
-                          MY2_afg, MY2_bfg, cmg, ckQg1, ckQg2, ckQg4);
-    kt = my2_count_column(QHc, MY2_epsQh_sedi, ktop_sedi, st);
-    if (kt >= 0)
-        my2_sedi_1D<KMAX>(QHc, NHc, 5, DEc, iDEc, gfc, MY2_epsQ, MY2_epsN,
-                          MY2_dmh, MY2_VhMax, MY2_DhMax, dt, DZc, iDZc,
-                          &fluxM_h, kt, nz, st,
-                          MY2_afh, MY2_bfh, cmh, ckQh1, ckQh2, ckQh4);
+    if (valid) {
+        int kt;
+        int category = (int)threadIdx.y;
+        if (category == 0) {
+        kt = my2_count_column(QRc, MY2_epsQr_sedi, ktop_sedi, st);
+        if (kt >= 0)
+            my2_sedi_1D<KMAX>(QRc, NRc, 1, DEc, iDEc, gfc, MY2_epsQ, MY2_epsN,
+                              MY2_dmr, MY2_VrMax, MY2_DrMax, dt, DZc, iDZc,
+                              &fluxM_r, kt, nz, st,
+                              MY2_afr, MY2_bfr, cmr, ckQr1, ckQr2, icexr9);
+        }
+        if (category == 1) {
+        kt = my2_count_column(QIc, MY2_epsQi_sedi, ktop_sedi, st);
+        if (kt >= 0)
+            my2_sedi_1D<KMAX>(QIc, NYc, 2, DEc, iDEc, gfc, MY2_epsQ, MY2_epsN,
+                              MY2_dmi, MY2_ViMax, MY2_DiMax, dt, DZc, iDZc,
+                              &fluxM_i, kt, nz, st,
+                              MY2_afi, MY2_bfi, cmi, ckQi1, ckQi2, ckQi4);
+        }
+        if (category == 2) {
+        kt = my2_count_column(QNc, MY2_epsQs_sedi, ktop_sedi, st);
+        if (kt >= 0)
+            my2_sedi_1D<KMAX>(QNc, NNc, 3, DEc, iDEc, gfc, MY2_epsQ, MY2_epsN,
+                              dms, MY2_VsMax, MY2_DsMax, dt, DZc, iDZc,
+                              &fluxM_s, kt, nz, st,
+                              MY2_afs, MY2_bfs, cms, ckQs1, ckQs2, iGS20);
+        }
+        if (category == 3) {
+        kt = my2_count_column(QGc, MY2_epsQg_sedi, ktop_sedi, st);
+        if (kt >= 0)
+            my2_sedi_1D<KMAX>(QGc, NGc, 4, DEc, iDEc, gfc, MY2_epsQ, MY2_epsN,
+                              MY2_dmg, MY2_VgMax, MY2_DgMax, dt, DZc, iDZc,
+                              &fluxM_g, kt, nz, st,
+                              MY2_afg, MY2_bfg, cmg, ckQg1, ckQg2, ckQg4);
+        }
+        if (category == 4) {
+        kt = my2_count_column(QHc, MY2_epsQh_sedi, ktop_sedi, st);
+        if (kt >= 0)
+            my2_sedi_1D<KMAX>(QHc, NHc, 5, DEc, iDEc, gfc, MY2_epsQ, MY2_epsN,
+                              MY2_dmh, MY2_VhMax, MY2_DhMax, dt, DZc, iDZc,
+                              &fluxM_h, kt, nz, st,
+                              MY2_afh, MY2_bfh, cmh, ckQh1, ckQh2, ckQh4);
+        }
+
+        fluxes[category * blockDim.x + threadIdx.x] =
+            category == 0 ? fluxM_r : category == 1 ? fluxM_i :
+            category == 2 ? fluxM_s : category == 3 ? fluxM_g : fluxM_h;
+    }
+    __syncthreads();
+    if (!valid || threadIdx.y != 0) return;
+    fluxM_r = fluxes[0 * blockDim.x + threadIdx.x];
+    fluxM_i = fluxes[1 * blockDim.x + threadIdx.x];
+    fluxM_s = fluxes[2 * blockDim.x + threadIdx.x];
+    fluxM_g = fluxes[3 * blockDim.x + threadIdx.x];
+    fluxM_h = fluxes[4 * blockDim.x + threadIdx.x];
 
     // Constraints on the snow size distribution (:3177-3200)
     for (int k = nz - 1; k >= 0; --k) {
@@ -2282,7 +2307,7 @@ __device__ void my2_sediment_impl(MY2_SEDIMENT_PARAMETERS)
             float t2 = 1.0f / iLAMs;
             float t4 = 0.6f * MY2_lamdas_min;
             float t5 = 2.0f * t4;
-            float t3 = t2 + t4 * powf(fmaxf(0.0f, t5 - t2) / t5, 2.0f);
+            float t3 = t2 + t4 * powf(__fdiv_rn(fmaxf(0.0f, t5 - t2), t5), 2.0f);
             t3 = fmaxf(t3, MY2_lamdas_min);
             nn = nn * powf(t3 * iLAMs, dms);
             NNc[o] = nn;
@@ -2342,6 +2367,8 @@ __device__ void my2_sediment_impl(MY2_SEDIMENT_PARAMETERS)
     (void)Q; (void)QC; (void)NC;
 }
 
+// Categories write disjoint fields. The finish launch keeps the original
+// snow constraints and precipitation expression order.
 extern "C" __global__
 void milbrandt2_sediment_64(MY2_SEDIMENT_PARAMETERS)
 {

@@ -652,6 +652,7 @@ fn processor_fingerprint() -> String {
     for source in [
         include_bytes!("process_request.rs").as_slice(),
         include_bytes!("wrf_process.rs").as_slice(),
+        include_bytes!("nest_move.rs").as_slice(),
         include_bytes!("wrf_volumes.rs").as_slice(),
         include_bytes!("local_import.rs").as_slice(),
         include_bytes!("postproc_severe.rs").as_slice(),

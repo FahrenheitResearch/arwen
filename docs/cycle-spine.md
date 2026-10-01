@@ -269,7 +269,7 @@ does not upgrade the evidence.
 
 | Flag | Default | Why that default |
 |---|---|---|
-| `--port-root PATH` | required for a model parent | the MPAS port checkout the forecast worker runs from |
+| `--port-root PATH` | required for a model parent | the MPAS port checkout the forecast worker runs from. The worker imports the port package the tree holds, `src/hexcore` or, in a tree from before the port's 0.2.0 rename, `src/mpas_port`, and a tree holding neither is refused by name before any port code loads |
 | `--port-config PATH` | required for a model parent | the port's case configuration JSON |
 | `--port-steps N` | required for a model parent | dycore steps per cycle boundary. The step **receipts** the worker returns are counted against this number — a leg that ran fewer steps than asked cannot earn the `mpas-cuda` stamp, which is what stops a crashed arm from being graded as a closed loop |
 | `--port-timeout SECONDS` | no timeout | how long to wait for one forecast segment |

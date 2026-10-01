@@ -374,6 +374,11 @@ def mu_at_u_faces(mu: cp.ndarray) -> cp.ndarray:
     copies that lived in dycore, advection, and diffusion).
     """
     xp = _array_module_for(mu)
+    if (not isinstance(mu, np.ndarray) and xp is cp
+            and mu.dtype == np.dtype(np.float32)
+            and mu.ndim == 2 and mu.flags.c_contiguous
+            and all(mu.shape)):
+        return _mass_faces_device(mu, yface=False)
     mux = 0.5 * (mu + xp.roll(mu, 1, axis=1))
     return xp.concatenate([mux, mux[:, :1]], axis=1)
 
@@ -382,8 +387,24 @@ def mu_at_v_faces(mu: cp.ndarray) -> cp.ndarray:
     """Column mass ``(ny, nx)`` averaged to v faces ``(ny+1, nx)``, periodic
     in y; face f lies between rows f-1 and f, row ny duplicates row 0."""
     xp = _array_module_for(mu)
+    if (not isinstance(mu, np.ndarray) and xp is cp
+            and mu.dtype == np.dtype(np.float32)
+            and mu.ndim == 2 and mu.flags.c_contiguous
+            and all(mu.shape)):
+        return _mass_faces_device(mu, yface=True)
     muy = 0.5 * (mu + xp.roll(mu, 1, axis=0))
     return xp.concatenate([muy, muy[:1, :]], axis=0)
+
+
+def _mass_faces_device(mu, *, yface):
+    """Preserve the separate FP32 sum and half-multiply on every face."""
+    from gpuwm.core.kernels import get_kernel
+    ny, nx = mu.shape
+    out = cp.empty((ny + int(yface), nx + int(not yface)), dtype=mu.dtype)
+    kernel = get_kernel('face_mass', 'average_mass_faces')
+    kernel(((out.size + 127) // 128,), (128,),
+           (mu, out, np.int32(ny), np.int32(nx), np.int32(yface)))
+    return out
 
 
 class DomainState:
@@ -1182,6 +1203,12 @@ def init_at_rest(cfg: RunConfig, coord: VerticalCoord, base: BaseState,
     filled from the base state, so flat call sites are unchanged.
     """
     _check_terrain_z(base, terrain_z)
+    # Admitted before the constructor, so an idealized domain too big for
+    # the card is refused by name rather than stopping in a CUDA
+    # out-of-memory inside it.
+    from gpuwm.core.resident_admission import admit_construction
+
+    admit_construction("building this idealized state on the card", cfg)
     s = DomainState(cfg)
     s.load_base(coord, base)
     return s

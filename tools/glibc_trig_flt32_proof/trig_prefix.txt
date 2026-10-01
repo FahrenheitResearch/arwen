@@ -1,0 +1,189 @@
+// ======================================================================
+// THIRD-PARTY NOTICE. This is a transcription of glibc 2.43 scalar libm.
+// The sine/cosine algorithm and tables originate in Arm optimized-routines
+// math/sinf.c, math/cosf.c, math/sincosf.h, math/sincosf_data.c:
+// Copyright (c) 2018-2024, Arm Limited. SPDX-License-Identifier: MIT
+// The glibc files actually transcribed here are distributed under LGPL-2.1
+// or later, Copyright (C) 2018-2026 Free Software Foundation, Inc.:
+// sysdeps/ieee754/flt-32/s_sinf.c, s_cosf.c, s_sincosf.h,
+// sincosf_poly.h, s_sincosf_data.c. Their LGPL notice is retained below.
+//
+// This file is free software; you can redistribute it and/or modify it
+// under the terms of the GNU Lesser General Public License as published
+// by the Free Software Foundation; either version 2.1 of the License, or
+// (at your option) any later version. This file is distributed in the hope
+// that it will be useful, but WITHOUT ANY WARRANTY; without even the
+// implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html.
+// The full upstream sources and COPYING.LIB accompany the evidence packet.
+//
+// CORE-MATH MIT transcriptions from sysdeps/ieee754/flt-32/:
+// e_asinf.c and s_asincosf_data.c (src/binary32/asin/asinf.c, bc385c2);
+// e_acosf.c (src/binary32/acos/acosf.c, 56dd347);
+// s_atanf.c (src/binary32/atan/atanf.c, a8066a5);
+// s_tanf.c (src/binary32/tan/tanf.c, 59d21d7).
+// Copyright (c) 2022-2024 Alexei Sibidanov.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and associated documentation files (the "Software"),
+// to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense,
+// and/or sell copies of the Software, and to permit persons to whom the
+// Software is furnished to do so, subject to the following conditions:
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Software.
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+// OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+// THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+// FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+// No SunPro FDLIBM code is used.
+// ======================================================================
+// Target: Ubuntu GLIBC 2.43-2ubuntu2.4, x86-64 AVX2+FMA, FE_TONEAREST.
+// sinf/cosf use __sinf_fma/__cosf_fma. The other four scalar functions
+// have no CPU IFUNC. Floating exceptions and errno are not device outputs.
+// Arithmetic is pinned to the selected libm machine instructions, not CUDA
+// trig builtins. Use -std=c++17. No FADD/FMUL macros are defined here.
+#ifndef GPUWM_GLIBC_TRIG_FLT32_CUH
+#define GPUWM_GLIBC_TRIG_FLT32_CUH
+typedef unsigned int gt_u32;
+typedef unsigned long long gt_u64;
+typedef long long gt_i64;
+
+__device__ inline float gt_d2f(double x) { return __double2float_rn(x); }
+__device__ inline double gt_identity(double x) { return x; }
+__device__ inline uint64_t gt_as_u64(double x) { return (uint64_t)__double_as_longlong(x); }
+__device__ inline double gt_abs(double x) {
+  return __longlong_as_double((long long)(gt_as_u64(x) & 0x7fffffffffffffffULL));
+}
+__device__ inline float gt_absf(float x) { return __uint_as_float(__float_as_uint(x) & 0x7fffffffU); }
+__device__ inline double gt_sign(double x, double y) {
+  return __longlong_as_double((long long)((gt_as_u64(x) & 0x7fffffffffffffffULL) | (gt_as_u64(y) & 0x8000000000000000ULL)));
+}
+__device__ inline float gt_signf(float x, float y) {
+  return __uint_as_float((__float_as_uint(x)&0x7fffffffU) | (__float_as_uint(y)&0x80000000U));
+}
+__device__ inline float gt_invalid(float x) {
+  uint32_t t=__float_as_uint(x);
+  return __uint_as_float((t & 0x7fffffffU)>0x7f800000U ? t|0x00400000U : 0xffc00000U);
+}
+__device__ inline double gt_roundeven(double x) {
+  // This helper only receives |x| < 2^28 * 2/pi. Conversion pins RN.
+  return (double)__double2ll_rn(x);
+}
+__device__ inline float gt_tiny_fmaf(float a,float b,float x) {
+  // Only called by the three tiny-input paths below, where the fused
+  // correction is less than half an ULP in RN. Preserve exponent-zero
+  // inputs by bits because CUDA FTZ flushes even an explicit FMA's result.
+  // All normal inputs retain glibc's explicit fused operation.
+  if ((__float_as_uint(x)&0x7f800000U)==0) return x;
+  return __fmaf_rn(a,b,x);
+}
+
+// s_sincosf_data.c and sincosf_poly.h.
+struct gt_sincos_t { double sign[4], hpi_inv, hpi, c0,c1,c2,c3,c4,s1,s2,s3; };
+__device__ const gt_sincos_t gt_sincos_table[2] = {
+ {{1,-1,-1,1},0x1.45F306DC9C883p+23,0x1.921FB54442D18p0,
+  0x1p0,-0x1.ffffffd0c621cp-2,0x1.55553e1068f19p-5,-0x1.6c087e89a359dp-10,0x1.99343027bf8c3p-16,
+  -0x1.555545995a603p-3,0x1.1107605230bc4p-7,-0x1.994eb3774cf24p-13},
+ {{1,-1,-1,1},0x1.45F306DC9C883p+23,0x1.921FB54442D18p0,
+  -0x1p0,0x1.ffffffd0c621cp-2,-0x1.55553e1068f19p-5,0x1.6c087e89a359dp-10,-0x1.99343027bf8c3p-16,
+  -0x1.555545995a603p-3,0x1.1107605230bc4p-7,-0x1.994eb3774cf24p-13}
+};
+__device__ const uint32_t gt_inv_pio4[24] = {
+ 0xa2,0xa2f9,0xa2f983,0xa2f9836e,0xf9836e4e,0x836e4e44,0x6e4e4415,0x4e441529,
+ 0x441529fc,0x1529fc27,0x29fc2757,0xfc2757d1,0x2757d1f5,0x57d1f534,0xd1f534dd,0xf534ddc0,
+ 0x34ddc0db,0xddc0db62,0xc0db6295,0xdb629599,0x6295993c,0x95993c43,0x993c4390,0x3c439041
+};
+__device__ inline float gt_sinf_poly(double x,double x2,const gt_sincos_t* p,int n) {
+ if (!(n&1)) {
+  double x3=__dmul_rn(x,x2);
+  double s1=__fma_rn(x2,p->s3,p->s2);
+  double x7=__dmul_rn(x3,x2);
+  double s=__fma_rn(x3,p->s1,x);
+  return gt_d2f(__fma_rn(x7,s1,s));
+ }
+ double x4=__dmul_rn(x2,x2);
+ double c2=__fma_rn(x2,p->c4,p->c3);
+ double c1=__fma_rn(x2,p->c1,p->c0);
+ double x6=__dmul_rn(x4,x2);
+ double c=__fma_rn(x4,p->c2,c1);
+ return gt_d2f(__fma_rn(x6,c2,c));
+}
+__device__ inline double gt_reduce_large(uint32_t xi,int* np) {
+ const uint32_t* arr=&gt_inv_pio4[(xi>>26)&15];
+ int shift=(xi>>23)&7;
+ xi=((xi&0xffffffU)|0x800000U)<<shift;
+ uint64_t r0=(uint32_t)(xi*arr[0]);
+ uint64_t r1=(uint64_t)xi*arr[4], r2=(uint64_t)xi*arr[8];
+ r0=((r2>>32)|(r0<<32))+r1;
+ uint64_t n=(r0+(1ULL<<61))>>62;
+ r0-=n<<62;
+ *np=(int)n;
+ return __dmul_rn((double)(int64_t)r0,0x1.921FB54442D18p-62);
+}
+__device__ inline float gt_sincos(float y,int cosine) {
+ uint32_t yi=__float_as_uint(y), top=(yi>>20)&0x7ffU;
+ if (top>=0x7f8U) return gt_invalid(y);
+ if (top<0x398U) return cosine ? 1.0f : y;
+ double x=(double)y;
+ const gt_sincos_t* p=&gt_sincos_table[0];
+ int n=0, sign=0;
+ if (top>=0x3f4U) {
+  if (top<0x42fU) {
+   double r=__dmul_rn(x,p->hpi_inv);
+   n=((int32_t)r+0x800000)>>24;
+   x=__fma_rn(-(double)n,p->hpi,x);
+  } else {
+   x=gt_reduce_large(yi,&n);
+   sign=(int)(yi>>31);
+  }
+  int q=(n+sign)&3;
+  if (q&2) p=&gt_sincos_table[1];
+  double x2=__dmul_rn(x,x);
+  return gt_sinf_poly(__dmul_rn(x,gt_sincos_table[0].sign[q]),x2,p,n^cosine);
+ }
+ return gt_sinf_poly(x,__dmul_rn(x,x),p,cosine);
+}
+__device__ float glibc_sinf(float x) { return gt_sincos(x,0); }
+__device__ float glibc_cosf(float x) { return gt_sincos(x,1); }
+
+__device__ const double gt_asincos_c0[12] = {
+ 0x1.555555555529cp-3,0x1.333333337e0ddp-4,0x1.6db6db3b4465ep-5,
+ 0x1.f1c72e13ac306p-6,0x1.6e89cebe06bc4p-6,0x1.1c6dcf5289094p-6,
+ 0x1.c6dbbcc7c6315p-7,0x1.8f8dc2615e996p-7,0x1.a5833b7bf15e8p-8,
+ 0x1.43f44ace1665cp-6,-0x1.0fb17df881c73p-6,0x1.07520c026b2d6p-5
+};
+__device__ const double gt_asincos_c1[12] = {
+ 0x1.6a09e667f3bcbp+0,0x1.e2b7dddff2db9p-4,0x1.b27247ab42dbcp-6,
+ 0x1.02995cc4e0744p-7,0x1.5ffb0276ec8eap-9,0x1.033885a928decp-10,
+ 0x1.911f2be23f8c7p-12,0x1.4c3c55d2437fdp-13,0x1.af477e1d7b461p-15,
+ 0x1.abd6bdff67dcbp-15,-0x1.1717e86d0fa28p-16,0x1.6ff526de46023p-16
+};
+// s_tanf.c rbig: limb form of glibc's unsigned 128-bit multiplies.
+__device__ const uint64_t gt_tan_ipi[4] = {
+ 0xfe5163abdebbc562ULL,0xdb6295993c439041ULL,0xfc2757d1f534ddc0ULL,0xa2f9836e4e441529ULL
+};
+__device__ inline double gt_rbig(uint32_t u,int* q) {
+ uint64_t m=(u&0x7fffffU)|0x800000U;
+ uint64_t h=__umul64hi(m,gt_tan_ipi[0]);
+ uint64_t p1l=m*gt_tan_ipi[1]+h;
+ h=__umul64hi(m,gt_tan_ipi[1])+(p1l<h);
+ uint64_t p2l=m*gt_tan_ipi[2]+h;
+ h=__umul64hi(m,gt_tan_ipi[2])+(p2l<h);
+ uint64_t p3l=m*gt_tan_ipi[3]+h;
+ uint64_t p3h=__umul64hi(m,gt_tan_ipi[3])+(p3l<h);
+ int s=(int)((u>>23)&255)-127-23;
+ uint64_t a; uint32_t i;
+ if(s<64) { i=(uint32_t)((p3h<<s)|(p3l>>(64-s))); a=(p3l<<s)|(p2l>>(64-s)); }
+ else if(s==64) { i=(uint32_t)p3l; a=p2l; }
+ else { i=(uint32_t)((p3l<<(s-64))|(p2l>>(128-s))); a=(p2l<<(s-64))|(p1l>>(128-s)); }
+ uint32_t sign=0U-(u>>31);
+ i-= (uint32_t)((int64_t)a>>63);
+ i=(i^sign)-sign;
+ *q=(int)i;
+ int64_t az=(int64_t)(a^(uint64_t)(int64_t)(int32_t)sign);
+ return __dmul_rn((double)az,0x1p-64);
+}

@@ -97,10 +97,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
+from typing import ClassVar
 
 from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
                           DEFAULT_COLUMN_CHUNK, MYJ_PBL_SCHEME,
-                          MYJ_SFCLAY_SCHEME, SASE_PBL_SCHEME, RunConfig,
+                          MYJ_SFCLAY_SCHEME, SASE_PBL_SCHEME,
+                          UW_PBL_SCHEME, RunConfig,
                           radiation_enabled, radiation_scheme_ids,
                           soil_layer_count)
 from gpuwm.core import kernel_frame_recordings as _kernel_frame_recordings
@@ -136,6 +138,11 @@ CAL_D01_POOL_HELD_BYTES = int(5.52 * GIB)
 CAL_D01_DEVICE_FOOTPRINT_BYTES = int(11.24 * GIB)
 
 #: Plan-mandated allocator-headroom factor over the itemized subtotal.
+#: Since A163 it prices the PREPARATION (ingest) pool and the Windows d01
+#: fixture's retention basis only.  The FORECAST's pool margin is
+#: :data:`FORECAST_POOL_HEADROOM`, which is measured, because 1.15 under
+#: the forecast stacked with the legacy-RRTMG pool slack on the same
+#: headroom (see that constant).
 ALLOCATOR_HEADROOM = 1.15
 
 #: The default-chunk RRTMGP workspace AS THE d01 FIXTURE ABOVE RAN IT.
@@ -420,6 +427,15 @@ OBSERVED_PEAK_OVER_FOOTPRINT = PEAK_ENVELOPE_FACTORS["windows"]
 #: evidence/2026-08-25-stale-guards-engine/named-follow-ups.md.  The
 #: rte-rrtmgp lane measured 0.099-0.102 on 6 h runs, uncharged by
 #: design and covered by ENVELOPE_UNMODELLED_BYTES at these sizes.
+#:
+#: RETIRED FROM THE ENVELOPE 2026-09-30 (A163).  It was charged as a
+#: fraction of an estimate that already carried the 1.15 allocator
+#: headroom, so the legacy lane paid two margins on one headroom, and the
+#: call-peak workspace whose retention it priced is itself itemized in the
+#: subtotal.  The forecast's one proportional margin is now
+#: :data:`FORECAST_POOL_HEADROOM`, measured over a battery that includes
+#: the legacy lane.  The value is kept because receipts of earlier
+#: releases are written in its terms; no gate reads it.
 POOL_SLACK_FRACTION = 0.20
 
 #: The name this term shipped under while it was believed to be a WDDM
@@ -573,7 +589,8 @@ _UNPRICED = object()
 
 
 def streaming_advisory(exp, *, machine=None,
-                       envelope=_UNPRICED, tree_road=_UNPRICED) -> str | None:
+                       envelope=_UNPRICED, tree_road=_UNPRICED,
+                       source=None) -> str | None:
     """Say out loud WHICH allocation this report prices.
 
     Every ENUMERATION in this module -- ``alloc_estimate_bytes``, the
@@ -634,6 +651,9 @@ def streaming_advisory(exp, *, machine=None,
     buffer(s) of 220x174 = 5.80 GiB" at the top and "2 tile buffer(s) of
     311x146 ... 6.17 GiB" in its binding-phase line.  ``machine`` is the
     same escape for a caller that has a card but not yet an envelope.
+    ``source`` is the forcing source a caller that prices here itself
+    knows, so the boundary tables it publishes are priced as the review's
+    own (:func:`admission_estimate`).
     """
     from gpuwm.core import streaming as _streaming
 
@@ -662,7 +682,9 @@ def streaming_advisory(exp, *, machine=None,
                 # basis, beside a verdict priced from the admission.
                 tree_road = _streaming.tree_road_plan(
                     exp, machine=machine,
-                    resident_estimate=admission_estimate(exp, machine=machine))
+                    resident_estimate=admission_estimate(
+                        exp, machine=machine, source=source),
+                    source=source)
             except Exception:        # a report never dies on its estimate
                 tree_road = None
         if tree_road is None:
@@ -704,7 +726,8 @@ def streaming_advisory(exp, *, machine=None,
                 "prices each domain against the budget its predecessors "
                 "left -- " + tree_road.summary() + ".")
     if envelope is _UNPRICED:
-        envelope = streamed_forecast_envelope(exp, machine=machine)
+        envelope = streamed_forecast_envelope(exp, machine=machine,
+                                              source=source)
     if getattr(envelope, "rows", None) is not None:
         # A tree plan reached here on a road that does not stream, or one
         # the walk refused; ``nested_note`` above already states it and
@@ -810,7 +833,8 @@ def pace_estimate_for_report(exp, *, streamed=None, free_bytes=None):
 
 
 def check_advisories(exp, config_path=None, *, machine=None,
-                     streamed=_UNPRICED, tree_road=_UNPRICED) -> list[str]:
+                     streamed=_UNPRICED, tree_road=_UNPRICED,
+                     source=None) -> list[str]:
     """Every route advisory this config earns, in report order.
 
     Same posture as ``feedback_advisory``: these change no exit code and
@@ -820,7 +844,8 @@ def check_advisories(exp, config_path=None, *, machine=None,
 
     ``machine`` and ``streamed`` are relayed to :func:`streaming_advisory`
     so a report that has already resolved ``[tiles]`` describes the
-    tiling it is about to quote numbers for, and not a second one.
+    tiling it is about to quote numbers for, and not a second one;
+    ``source`` too, for a report that prices here itself.
     """
 
     from gpuwm.checkpoint_routes import (
@@ -831,13 +856,15 @@ def check_advisories(exp, config_path=None, *, machine=None,
     # records: under ``mode = "auto"`` two derivations planned against
     # two different cards and one report printed two tilings.
     if streamed is _UNPRICED:
-        streamed = streamed_forecast_envelope(exp, machine=machine)
+        streamed = streamed_forecast_envelope(exp, machine=machine,
+                                              source=source)
     advisories = [feedback_advisory(exp)]
     advisories.extend(spawn_reservation_advisories(exp))
     advisories.extend(anisotropic_w_mixing_advisories(exp))
     advisories.append(streaming_advisory(exp, machine=machine,
                                          envelope=streamed,
-                                         tree_road=tree_road))
+                                         tree_road=tree_road,
+                                         source=source))
     # THE PACE, immediately after the sentence that says which road this
     # config takes -- the two belong together, because "this domain
     # streams" is only actionable next to what streaming costs and what
@@ -1043,13 +1070,263 @@ ENVELOPE_AFFINE_BASIS = (
     "measured, RTX 4080 16 GiB / Linux, whole forecasts machine-wide at "
     "250 ms across a 6.6x span of itemized estimate, 1/2/4 domains")
 
+#: A163: THE FORECAST'S POOL MARGIN, MEASURED AND COUNTED ONCE.
+#:
+#: THE DEFECT.  The envelope multiplied the itemized subtotal by the
+#: plan's 1.15 allocator headroom, and then, on the legacy-RRTMG lane,
+#: added 20% of THAT product as pool slack.  Both margins price the same
+#: thing -- what the CuPy pool holds beyond the itemized arrays -- so the
+#: legacy lane paid it twice: 1.38x the subtotal before the non-pool
+#: intercept.  HRRR physics on HRRR's full grid (1797 x 1057 x 50, RTX PRO
+#: 6000) itemized 83.35 GiB and was priced at 119.09 GiB against a
+#: 93.93 GiB budget, where the probe's measured ratio puts it near
+#: 93.4 GiB; urban BEP+BEM on the two 750 m city trees was priced at
+#: 29.6 GiB and ran to the end on a 24 GiB RTX 4090.  On the rte-rrtmgp
+#: lane the same 1.15 was all the margin there was.  The legacy engines'
+#: LW/SW call-peak workspace the 20% term was measured against is itself
+#: an ITEMIZED term of the subtotal (``legacy_radiation_vram_bytes``, the
+#: pure-legacy ``workspace_bytes``), so its retention is inside the
+#: measured ratio below and not a separate mechanism.
+#:
+#: THE MEASUREMENT.  ``(device peak - itemized non-pool - unmodelled
+#: residue - held arrays) / (itemized subtotal - held arrays)`` over the
+#: A163 battery: the smallest margin under which the envelope, which adds
+#: the itemized non-pool, :data:`ENVELOPE_UNMODELLED_BYTES` and the held
+#: arrays (the urban arrays priced at their allocated size,
+#: :func:`forecast_pool_estimate_bytes`; zero off urban) each once, holds
+#: that row's measured peak.  A ratio taken over the residue as well would
+#: price the residue twice, once in the margin and once beside it, the
+#: defect this section exists to retire.  The rows: 20 min HRRR-driven
+#: forecasts spanning the first radiation call and a history write, a 6 h
+#: legacy-RRTMG forecast, a ``[tiles]`` forecast and three trees, each
+#: forecast's own process tree sampled at 100 ms through NVML beside the
+#: runtime's 20 Hz watcher, on an RTX 5070 Ti 16 GB (node-4, card held
+#: alone) and an RTX 5090 32 GB (node-2, the run's own processes).  The
+#: two CONUS 3 km forecasts of 2026-09-30 on the RTX PRO 6000 are carried
+#: as rows too.  The table lives beside the constant it calibrates:
+#: :data:`FORECAST_PEAK_BATTERY`.
+#:
+#: The intercept is the ITEMIZED non-pool term, which covers what the
+#: cards measured (device peak minus pool-held peak) by a configuration's
+#: own amount: 0.72 GB measured against 1.02 GB itemized for the default
+#: suite without Kain-Fritsch on the 5070 Ti, against 1.86 GB with it, and
+#: 1.2-1.5 against 2.19-4.23 on the 5090.  So the ratio is taken over the
+#: whole device peak, never over the pool with a second allowance beside
+#: it.
+#:
+#: Over every battery row whose itemization is complete (pool USED
+#: 0.54x the subtotal on the ``[tiles]`` row, 0.92-1.06x on the rest) the
+#: worst is 1.085: the default suite without Kain-Fritsch at 500 x 500 x
+#: 49 with its default products (render while running), 20 min, on the
+#: 5070 Ti, whose itemized non-pool covers the measured one by the least;
+#: the same configuration on the 5090 measured 1.004.  The row that set the
+#: first repair's margin before counted a second CUDA process that was not
+#: the forecast's, and it is replaced by that 5090 re-measure, which names
+#: every process of the run.  The legacy lane, which the 20% term was
+#: charged to, measured 0.34-1.06 on current code, and its peak does not
+#: grow with run length: 6 h of the default suite with legacy RRTMG at
+#: 500 x 500 x 49 peaked 139 s after launch at 1.002 and the 6 h after
+#: never exceeded it.  The default-suite legacy-RRTMG 300 x 300 x 49 shape
+#: the 2026-08-20 Linux receipts measured at 1.34-1.41 (before #310
+#: narrowed the legacy batch width) now measures 0.82 on the 5070 Ti and
+#: 0.43 on the 5090.
+#:
+#: ONE ROW IS SHORT IN ITS ITEMIZATION, not in its margin, and it is a
+#: table row (:data:`FORECAST_ITEMIZATION_GAP_ROWS`) rather than the
+#: margin every configuration pays: HRRR physics with RTE-RRTMGP.
+FORECAST_PEAK_RATIO_MEASURED = 1.09
+
+#: Configurations whose pool the battery measured USING more than the
+#: itemization lists, with the measured worst ratio each pays instead of
+#: :data:`FORECAST_PEAK_RATIO_MEASURED` until those arrays are itemized.
+#: A configuration matches when it runs RTE-RRTMGP on a domain that also
+#: selects ANY of the listed schemes; the battery separates the pair but
+#: not the scheme within it (the same schemes under legacy RRTMG used
+#: 1.04x, lean RTE-RRTMGP 1.02x), so every scheme of the measured suite
+#: is listed.  Measured: HRRR physics with RTE-RRTMGP, 330 x 330 x 49,
+#: pool used 1.161x the subtotal and the peak 1.141x over the itemized
+#: non-pool and residue on the 5070 Ti (55 MB under the OLD envelope),
+#: 1.123x and 0.871x on the 5090.
+FORECAST_ITEMIZATION_GAP_ROWS = (
+    {"label": "HRRR physics schemes under RTE-RRTMGP",
+     "radiation": "rte-rrtmgp",
+     "any_of": (("mp_physics", 28), ("bl_pbl_physics", 5),
+                ("sf_sfclay_physics", 5), ("sf_surface_physics", 3)),
+     "ratio": 1.15},
+)
+
+#: The stated safety term over the measured worst ratio: the card-to-card
+#: swing of the pool-held ratio on the battery configuration the
+#: itemization prices most exactly (lean 528 x 528 x 49, pool used 1.022x
+#: the subtotal on both cards; held 1.125 on the 5070 Ti, 1.161 on the
+#: 5090: 0.036), rounded up.  That swing is the allocator's own
+#: variation between cards, which a card outside the battery can add to
+#: the worst row.  The grid-independent residue stays
+#: :data:`ENVELOPE_UNMODELLED_BYTES`.
+FORECAST_PEAK_RATIO_SAFETY = 0.04
+
+#: The forecast's pool margin over the itemized subtotal: the measured
+#: worst ratio plus the stated safety term, and the ONLY proportional
+#: margin a forecast envelope carries.  Every door prices with it, through
+#: :func:`forecast_pool_headroom`: the estimate
+#: (:attr:`ExperimentMemoryEstimate.alloc_estimate_bytes`), the
+#: ``[tiles]`` window price, and the mid-run spawn check.
+FORECAST_POOL_HEADROOM = round(
+    FORECAST_PEAK_RATIO_MEASURED + FORECAST_PEAK_RATIO_SAFETY, 2)
+
+
+def forecast_pool_headroom(runs) -> float:
+    """The measured forecast margin for these domains' run configs.
+
+    :data:`FORECAST_POOL_HEADROOM`, or a matching
+    :data:`FORECAST_ITEMIZATION_GAP_ROWS` row's measured ratio plus the
+    same safety term when any domain runs a configuration the battery
+    measured the itemization short on.  One number per forecast: the
+    domains share one pool.
+    """
+    from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
+
+    ratio = FORECAST_PEAK_RATIO_MEASURED
+    for run in runs:
+        # A DomainConfig carries its RunConfig as ``run``.
+        run = getattr(run, "run", run)
+        if 4 not in radiation_scheme_ids(run):
+            continue
+        lane = ("legacy-rrtmg" if rrtmg_variant(run) == RRTMG_VARIANT_LEGACY
+                else "rte-rrtmgp")
+        for row in FORECAST_ITEMIZATION_GAP_ROWS:
+            if row["radiation"] != lane:
+                continue
+            if any(int(getattr(run, key, -1)) == int(value)
+                   for key, value in row["any_of"]):
+                ratio = max(ratio, float(row["ratio"]))
+    return round(ratio + FORECAST_PEAK_RATIO_SAFETY, 2)
+
+#: The A163 battery, one row per measured forecast: ``(label, card,
+#: radiation lane, domains, itemized subtotal, itemized non-pool, measured
+#: peak, measured pool-held peak, held arrays)``, bytes.  The peak is NVML
+#: at 100 ms: device-wide on node-4, whose card was held alone, and the
+#: sum of the forecast's own process tree on node-2's shared card; the
+#: pool-held peak is the runtime's 20 Hz ``cupy_pool_total`` receipt.  The
+#: subtotal, non-pool and held arrays (the urban arrays priced at their
+#: allocated size, :func:`forecast_pool_estimate_bytes`) are
+#: ``gpuwm check --json`` on the card that ran it.  HRRR-prs 2026-09-29
+#: 12Z, 20 min forecasts (70 min for the delayed-nest tree), radiation
+#: from step 0, history every 10 min; the second repair's rows are
+#: HRRR-prs 2026-09-30 00Z, labelled with their own length.  The PRO 6000
+#: rows are the CONUS 3 km report's
+#: (Downloads/CONUS-HRRR-CLONE-18H-2026-09-30/REPORT.md section 3) at its
+#: printed two decimals, pool-held not recorded (0).
+FORECAST_PEAK_BATTERY = (
+    ("lean 528x528x49", "RTX 5070 Ti", "rte-rrtmgp", 1,
+     9_967_081_120, 1_679_081_472, 12_046_041_088, 11_209_578_496, 0),
+    ("lean 528x528x49", "RTX 5090", "rte-rrtmgp", 1,
+     9_967_081_120, 3_790_159_872, 12_989_759_488, 11_570_135_040, 0),
+    ("HRRR physics 300x300x49", "RTX 5070 Ti", "legacy-rrtmg", 1,
+     5_221_590_392, 1_550_057_472, 6_803_161_088, 6_027_823_616, 0),
+    ("HRRR physics 300x300x49", "RTX 5090", "legacy-rrtmg", 1,
+     7_528_838_520, 3_476_815_872, 9_648_996_352, 8_311_704_064, 0),
+    ("HRRR physics, RTE-RRTMGP 330x330x49", "RTX 5070 Ti", "rte-rrtmgp", 1,
+     5_944_617_376, 1_550_057_472, 8_867_807_232, 7_782_245_376, 0),
+    ("HRRR physics, RTE-RRTMGP 330x330x49", "RTX 5090", "rte-rrtmgp", 1,
+     7_016_786_336, 3_476_815_872, 10_127_147_008, 8_659_322_368, 0),
+    ("default suite, legacy RRTMG 300x300x49", "RTX 5070 Ti",
+     "legacy-rrtmg", 1,
+     3_792_969_400, 1_861_722_112, 5_503_975_424, 4_574_360_576, 0),
+    ("default suite, legacy RRTMG 300x300x49", "RTX 5090", "legacy-rrtmg", 1,
+     5_028_048_568, 4_233_715_712, 6_920_601_600, 5_705_550_848, 0),
+    ("default suite, legacy RRTMG 500x500x49", "RTX 5070 Ti",
+     "legacy-rrtmg", 1,
+     9_052_755_000, 1_861_722_112, 11_723_079_680, 11_005_778_432, 0),
+    # The same suite, 6 h (1,440 steps, a history write every hour), the
+    # run length the 2026-08-20 receipts the pool slack rested on were
+    # measured over: the peak came 139 s after launch and the 6 h after
+    # never exceeded it.  This run integrated to 06Z and then stopped at
+    # the forecast's provenance check, because a file of the tree it ran
+    # from was rewritten under it; pool-held is therefore not read.
+    ("default suite without KF, legacy RRTMG 500x500x49, 6 h",
+     "RTX 5070 Ti",
+     "legacy-rrtmg", 1,
+     8_927_513_384, 1_018_478_592, 10_502_537_216, 0, 0),
+    # The 750 m BEP+BEM city tree scaled to 180 x 180 (2.25 km) with a
+    # 135 x 135 750 m nest, 59 levels, legacy RRTMG; pool-held not read.
+    ("urban BEP+BEM tree 180x180 + 135x135 x 59", "RTX 5090",
+     "legacy-rrtmg", 2,
+     10_754_875_210, 3_476_815_872, 12_046_041_088, 0, 6_649_469_352),
+    # The same tree at 216 x 216 + 162 x 162 x 59, sized for the 16 GB
+    # card (A163 second repair).  Refused before A163 (19.39 GB envelope
+    # against a 15.83 GB budget) and at the first repair (16.77 GB);
+    # admitted (14.89 GB at the 1.16 margin it ran under, 14.79 GB at
+    # 1.13) and ran 50 steps to the end: one CUDA process at the peak,
+    # 12.34 GB of it the forecast's own.  Pool used 0.92x the
+    # subtotal: the BEP+BEM column workspace is priced at every column
+    # urban and the parent's city is smaller than that.
+    ("urban BEP+BEM tree 216x216 + 162x162 x 59", "RTX 5070 Ti",
+     "legacy-rrtmg", 2,
+     11_931_666_412, 1_704_886_272, 12_360_613_888, 11_440_669_696,
+     8_630_518_752),
+    # Default suite, a 1 km nest delayed to 1 h and spawned mid-run, 70 min
+    # forecast across the spawn; pool-held not read.
+    ("tree 360x360 + delayed nest 360x360 x 49", "RTX 5090", "rte-rrtmgp", 2,
+     6_394_161_884, 4_233_715_712, 9_036_627_968, 0, 0),
+    ("tree 360x360 + delayed nest 360x360 x 49", "RTX 5070 Ti",
+     "rte-rrtmgp", 2,
+     6_394_161_884, 1_861_722_112, 8_367_636_480, 0, 0),
+    ("default suite 500x500x49", "RTX 5070 Ti", "rte-rrtmgp", 1,
+     9_573_167_984, 1_861_722_112, 12_220_104_704, 11_524_418_048, 0),
+    # The 5090 row of the shape above, re-measured on the A163 second
+    # repair's tree with every CUDA process of the run's process tree
+    # named, with no products and with the default products (render while
+    # running): at the peak there is one CUDA process, the forecast
+    # (`gpuwm go`), 12.26 GB both times; the renderer holds no CUDA
+    # context, and the launch's CuPy readiness probe (a `python -c` that
+    # imports CuPy and counts devices, 0.5 GB) exits before the forecast
+    # allocates.  The row it replaces (1.115) counted a second CUDA process
+    # that was not the forecast's: 3.60 GB of device peak over pool-held,
+    # against 1.37 GB here, of which the Kain-Fritsch workspace that row's
+    # suite carried and this one does not explains about 0.4 GB.
+    ("default suite without KF 500x500x49", "RTX 5090", "rte-rrtmgp", 1,
+     9_503_787_168, 2_185_838_592, 12_264_144_896, 10_894_410_240, 0),
+    # The same configuration with its default products (render while
+    # running) on the 16 GB card held alone: one CUDA process at the peak,
+    # the forecast; the renderer holds no CUDA context and the launch
+    # probe (0.24 GB) exits before the forecast allocates.  The worst row.
+    ("default suite without KF 500x500x49, default products",
+     "RTX 5070 Ti",
+     "rte-rrtmgp", 1,
+     9_503_787_168, 1_018_478_592, 11_869_880_320, 11_145_529_856, 0),
+    # [tiles] auto on 640 x 640 x 49 (the default suite, 20 min): the
+    # planner streams it in 8 tiles of 320 x 160 through 2 buffers of
+    # 356 x 196.  The subtotal is the window price's pool (2 buffers + the
+    # retained template + the k-tables), the non-pool its CUDA context and
+    # local-memory terms: the window price is this envelope.
+    ("[tiles] auto 640x640x49, 2 buffers of 356x196", "RTX 5070 Ti",
+     "rte-rrtmgp", 1,
+     10_312_908_352, 889_454_592, 9_634_316_288, 8_802_425_344, 0),
+    ("CONUS lean 1797x1057x50, 18 h", "RTX PRO 6000", "rte-rrtmgp", 1,
+     int(64.88 * GIB), int(3.89 * GIB), int(69.66 * GIB), 0, 0),
+    ("CONUS HRRR physics 1620x953x50, 1 h", "RTX PRO 6000",
+     "legacy-rrtmg", 1,
+     int(64.68 * GIB), int(3.56 * GIB), int(72.48 * GIB), 0, 0),
+)
+
+#: What the A163 margin rests on, printed beside the number it makes.
+ENVELOPE_A163_BASIS = (
+    "measured (A163), RTX 5070 Ti 16 GB and RTX 5090 32 GB / Linux, "
+    "20 min forecasts: lean, the default suite with RTE-RRTMGP and with "
+    "legacy RRTMG, HRRR physics with legacy RRTMG and with RTE-RRTMGP, "
+    "two BEP+BEM city trees, a tree whose nest spawns at 1 h, a [tiles] "
+    "forecast, and 6 h of the default suite with legacy RRTMG; NVML at "
+    "100 ms; plus the RTX PRO 6000 CONUS runs of 2026-09-30")
+
 
 def machine_peak_envelope_bytes(
         *, alloc_estimate_bytes: int, non_pool_bytes: int,
         domains: int = 1,
         footprint_projection_bytes: int | None = None,
         family: str = "linux",
-        legacy_radiation: bool = True) -> int:
+        legacy_radiation: bool = True,
+        held_exact_bytes: int = 0) -> int:
     """The machine-wide peak a run of this configuration should reach.
 
     AFFINE, not multiplicative.  The old form was ``factor x projection``
@@ -1070,36 +1347,77 @@ def machine_peak_envelope_bytes(
       measured residue, stated as a constant because that is what it
       measured as.
 
-    The WDDM lane adds ONE more measured term,
-    :data:`WDDM_POOL_SLACK_FRACTION` of the estimate -- the pool
-    retention the 3080 calibration measured beyond the affine terms
-    (worst +0.30x of the estimate, legacy-RRTMG lane).  This REPLACES
-    the retired ``footprint x 1.75`` floor, which predicted 3.8x the
-    measured peak on the calibration card and refused runs that fit
-    with gigabytes to spare.  ``footprint_projection_bytes`` is
-    accepted for signature compatibility and no longer read.
+    The legacy-RRTMG pool slack (:data:`POOL_SLACK_FRACTION`) is no
+    longer a term (A163): it priced the same pool headroom the estimate's
+    margin already prices, and the measured margin
+    (:data:`FORECAST_POOL_HEADROOM`) covers the legacy lane's measured
+    peaks on its own.  ``legacy_radiation`` and
+    ``footprint_projection_bytes`` are accepted for signature
+    compatibility and no longer read.
+
+    ``held_exact_bytes`` is the part of the estimate held at exactly its
+    priced size for the whole run (the urban arrays,
+    :func:`forecast_pool_estimate_bytes`).  The per-nest term is a
+    fraction of the REST: what it measured is the nest coupler's buffers,
+    the extra per-domain drivers and the per-domain output staging, which
+    scale with the prognostic and output fields, and no coupler or
+    history writer touches a held urban array.
     """
 
     nests = max(0, int(domains) - 1)
-    affine = (int(alloc_estimate_bytes) + int(non_pool_bytes)
-              + ENVELOPE_UNMODELLED_BYTES
-              + math.ceil(ENVELOPE_PER_NEST_FRACTION * nests
-                          * int(alloc_estimate_bytes)))
-    # Charged on every driver model and priced by RADIATION LANE: the
-    # retention is the legacy engines' call-peak workspace sitting in the
-    # CuPy pool between calls, which is a property of the suite and of
-    # the allocator, not of WDDM (see POOL_SLACK_FRACTION for the three
-    # campaigns that split on it).  While it was Windows-only the Linux
-    # envelope under-predicted every instrumented run on both Linux
-    # cards; while it was unconditional it charged the rte-rrtmgp lane
-    # 20% for a mechanism that lane does not have.
-    #
-    # The default is to CHARGE it.  A caller that has not said which
-    # radiation lane it is on gets the conservative answer; an envelope
-    # that guesses optimistically is not an envelope.
-    if legacy_radiation:
-        affine += math.ceil(POOL_SLACK_FRACTION * int(alloc_estimate_bytes))
-    return affine
+    pooled = max(0, int(alloc_estimate_bytes) - int(held_exact_bytes))
+    return (int(alloc_estimate_bytes) + int(non_pool_bytes)
+            + ENVELOPE_UNMODELLED_BYTES
+            + math.ceil(ENVELOPE_PER_NEST_FRACTION * nests * pooled))
+
+
+def forecast_pool_estimate_bytes(subtotal_bytes: int, *,
+                                 held_exact_bytes: int = 0,
+                                 headroom: float) -> int:
+    """The forecast's pool estimate: the measured margin on what the pool
+    turns over, and the held arrays at their allocated size.
+
+    A163.  The margin (:data:`FORECAST_POOL_HEADROOM`) is what the CuPy
+    pool holds beyond the itemization: blocks a step frees and the pool
+    keeps, transients of one size cached for another.  An array allocated
+    once at its exact shape and held for the run takes exactly its size
+    from the pool, so multiplying it by the margin prices headroom it
+    never uses.  The urban arrays are that family, and they are most of a
+    BEP+BEM forecast: 12.73 of 18.77 GiB itemized on the 750 m city tree
+    of 288 x 288 + 216 x 216 x 59, where the margin on the whole subtotal
+    priced 1.7 GiB of headroom the pool never holds for them.  Measured:
+    :data:`FORECAST_PEAK_BATTERY`'s urban rows, whose peak less the held
+    arrays stays under the margin on the rest
+    (``tests/test_memory_gate_a163.py``); on the 216 x 216 + 162 x 162
+    tree the 16 GB card measured a 12.36 GB device peak against a
+    14.79 GB envelope.
+    """
+    held = max(0, min(int(held_exact_bytes), int(subtotal_bytes)))
+    return math.ceil(float(headroom) * (int(subtotal_bytes) - held)) + held
+
+
+def urban_held_item_names(run) -> frozenset:
+    """The ``fields/...`` physics item names priced at their allocated size
+    (:func:`gpuwm.core.urban_state.urban_held_array_shapes`); empty when no
+    urban model runs."""
+    if int(getattr(run, "sf_urban_physics", 0) or 0) <= 0:
+        return frozenset()
+    from gpuwm.core.urban_state import urban_held_array_shapes
+    return frozenset(f"fields/{name}" for name in urban_held_array_shapes(run))
+
+
+def urban_held_bytes(run) -> int:
+    """Device bytes of :func:`urban_held_item_names` for one domain."""
+    if int(getattr(run, "sf_urban_physics", 0) or 0) <= 0:
+        return 0
+    from gpuwm.core.urban_state import urban_held_array_shapes
+    total = 0
+    for shape in urban_held_array_shapes(run).values():
+        n = 4
+        for extent in shape:
+            n *= int(extent)
+        total += n
+    return total
 
 
 def observed_peak_envelope_bytes(
@@ -1435,6 +1753,20 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "diff6_seam": 0,
     "diffusion": 0,
     "dycore": 0,
+    # The dycore-host speed lane's four point-local units (66af318bc),
+    # launched by every integration: 0 B each, read 2026-09-30 on sm_120
+    # (RTX 5090) and sm_89 (RTX 4090) at NVRTC 13.4.92.  No array in any
+    # of their kernels, so none can reserve backing store.
+    "face_mass": 0,
+    # zadvect_implicit = 1 (A158, kernels/ieva.cu) at its shipped
+    # IEVA_KMAX = 65: the five column solves hold two double columns of
+    # 65 words each, 1,040 B, and the split and column-mass kernels none.
+    # Read 2026-10-01 on sm_120 (RTX 5090), NVRTC 13; IEVA_TIER_FRAME
+    # prices the deeper tiers (2,064 B at 129, 4,112 B at 257, read alike).
+    "ieva": 1040,
+    "held_heating": 0,
+    "rk_bookkeeping": 0,
+    "surface_w": 0,
     # The FTZ receipt's probe rides the production loader from the same
     # kernels directory, so the local-frame sweep sees it like any model
     # module; it holds no local frame.
@@ -1606,6 +1938,11 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # refl.cu's widest 72: WDM6 diagnoses one N0 array from nr where
     # Morrison carries three.
     "wdm6_refl": 16128,
+    # The legacy RRTMG adapter's device glue and its device wrapper prep:
+    # 0 B each, read on sm_120 at NVRTC 13.4.92 (the only recording that
+    # has them).
+    "rrtmg_legacy_adapter": 0,
+    "rrtmg_legacy_prep": 0,
     "rrtmg_lw": 0,
     "rrtmg_mcica_wrf": 0,
     # Another compiler-build move at a fixed sm_120: 0 B on NVRTC 13.0.48,
@@ -1629,19 +1966,13 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "ruc": 144,
     "saxpy": 0,
     "sfclay": 0,
-    # Shin-Hong (bl_pbl_physics=11).  MEASURED 2026-08-03 on the RTX 5090
-    # the same NVRTC + driver way as every other row: shinhong_column
-    # holds 14,040 B (its per-thread column work arrays at the module's
-    # fixed SHINHONG_KMAX = 128 tier, one thread per column -- the ysu.cu
-    # shape, one tier up); shinhong_partition_probe and the validation
-    # kernel hold no local frame.
-    # Compiler-build move at a fixed sm_120: NVRTC 13.3.33 emits 17,160 B
-    # against 13.0.48's 14,040, and the ceiling is the wider one.  On a
-    # 170-SM card that is 0.74 GiB more backing store than the original
-    # reading charged.  Re-read 2026-09-28 on the current source: 13,000 B
-    # on 13.0.48 and 13.0.88, 17,160 on 13.3.33 and 13.4.92 (RTX 5090 and
-    # RTX 5070 Ti alike), so the ceiling does not move.
-    "shinhong": 17160,
+    # Shin-Hong (bl_pbl_physics=11).  Its column arrays moved into a
+    # global workspace on 2026-09-30 (the ysu.cu route): 17,160 -> 0 B,
+    # re-read at the new source on sm_120 under NVRTC 13.0.48, 13.0.88,
+    # 13.3.33 and 13.4.92, on sm_89 under 13.4.92 and on sm_86 under
+    # 13.0.48 (gpuwm/core/kernel_frame_recordings.py).  The workspace is
+    # priced separately by shinhong_column_workspace_bytes.
+    "shinhong": 0,
     "shinhong_validation": 0,
     "smag2d": 0,
     "spec_bdy": 0,
@@ -1683,7 +2014,14 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # sm_86.
     "thompson_aerosol_warm": 112,
     "tke_budget": 0,
+    "topo_radiation": 40,
     "uh_diag": 0,
+    # The UW moist-turbulence PBL (bl_pbl_physics = 9): uwpbl_columns keeps
+    # CAM's automatic arrays in a global per-column workspace
+    # (:func:`uwpbl_column_workspace_bytes`), so what is left on the stack
+    # is its binary64 scalars at 255 registers: 3,184 B on sm_89 and 864 B
+    # on sm_120, both at NVRTC 13.4.92 (kernel_frame_recordings).
+    "uwpbl": 3184,
     "vert_interp": 768,
     # WDM6 (mp_physics=16).  MEASURED 2026-08-10 on the reference RTX 5090
     # the same NVRTC + driver way as every other row: the module's one
@@ -1736,6 +2074,22 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # The workspace itself is priced by :func:`ysu_column_workspace_bytes`.
     "ysu": 0,
     "ysu_validation": 0,
+    # The urban canopy models (sf_urban_physics 1-3), read 2026-09-30 at
+    # NVRTC 13.4.92 on sm_89 (RTX 4090) and sm_120 (RTX 5090):
+    # urban_ucm 72 B on sm_89 and 0 B on sm_120 since its green-roof
+    # constants moved to __constant__ memory (both under the 1,024 B
+    # default stack, so neither reserves anything); urban_bep and
+    # urban_bep_couple 0 B; myjurb, the MYJ column under BEP, 10,256 B on
+    # both, which DOES reserve: (10,256 - 1,024) B x SMs x threads per SM.
+    # A167: sm_120 under NVRTC 12.9.86, the default [gpu] extra's compiler,
+    # compiles three of them wider (kernel_frame_recordings.
+    # SM120_NVRTC_12_9_86): myjurb 12,304 B, which was 0.205 GiB of
+    # reservation uncharged on an RTX 5070 Ti; urban_ucm 552 B and
+    # urban_bep 16 B, both under the default stack.
+    "myjurb": 12304,
+    "urban_bep": 16,
+    "urban_bep_couple": 0,
+    "urban_ucm": 552,
 }
 
 #: The readings the ceiling above is made of, each naming its box, its
@@ -1947,6 +2301,11 @@ class TieredKernelFrame:
 #: ``acoustic.cu``'s ``WPHI_MAX_LEV`` sizes one FP32 column per thread.
 ACOUSTIC_TIER_FRAME = TieredKernelFrame("acoustic", "WPHI_MAX_LEV", 129, 4)
 
+#: ``ieva.cu``'s ``IEVA_KMAX`` sizes two FP64 columns per thread, 16 B per
+#: level: 1,040 / 2,064 / 4,112 B at the 65 / 129 / 257 tiers
+#: (:data:`gpuwm.core.ieva_constants.IEVA_LEVEL_TIERS`), read exactly so.
+IEVA_TIER_FRAME = TieredKernelFrame("ieva", "IEVA_KMAX", 65, 16)
+
 #: ``wdm6.cu``'s ``WDM6_KMAX`` sizes the whole per-thread column stack, and
 #: ``gpuwm/core/wdm6.py`` compiles it at one of two rungs
 #: (``wdm6_constants.WDM6_KERNEL_LEVEL_TIERS`` = 64, 80) rather than at
@@ -2010,6 +2369,13 @@ WSM6_TIER_FRAME = TieredKernelFrame("wsm6", "WSM6_KMAX", 64, 112)
 #: :data:`CHAINED_TRANSLATION_UNIT_FRAMES`, which cover these fragments
 #: as the translation units they actually launch in.
 UNMEASURED_KERNEL_MODULES = frozenset({
+    # Noah mosaic (sf_surface_mosaic = 1) launches only through its own
+    # unit, gpuwm/core/noah_mosaic.py _mosaic_module, compiled with
+    # --fmad=false beside the loader's -std=c++17.  A default-option
+    # standalone compile is a module nothing launches, so its frame would
+    # price nothing; the unit that does launch is noah_mosaic_unit in
+    # CHAINED_TRANSLATION_UNIT_FRAMES below.
+    "noah_mosaic",
     "noahmp_driver", "noahmp_energy", "noahmp_thermal", "noahmp_libm_slab",
     "noahmp_glacier",
     # P3 borrows r_pow/r_exp/r_log from noahmp_leaves.cu rather than
@@ -2020,8 +2386,19 @@ UNMEASURED_KERNEL_MODULES = frozenset({
     # below -- so unlike the Noah-MP fragments this one is priced, not a
     # refusal.
     "p3",
-    "rrtmg_sw", "rrtmg_lw_chain", "rrtmg_lw_taugb02_10_11_12",
-    "rrtmg_lw_taugb03_05", "rrtmg_lw_taugb06_09", "rrtmg_lw_taugb13_16"})
+    "rrtmg_sw", "rrtmg_lw_chain", "rrtmg_lw_chain_coalesced", "rrtmg_lw_zbatched",
+    "rrtmg_lw_taugb02_10_11_12", "rrtmg_lw_taugb03_05",
+    "rrtmg_lw_taugb06_09", "rrtmg_lw_taugb13_16",
+    # BEP+BEM's column kernel needs urban_bem.cuh and the glibc headers
+    # gpuwm/core/urban_bem.py composes; priced as urban_bem_composed.
+    "urban_bep_bem"})
+# face_mass, held_heating, rk_bookkeeping and surface_w (the dycore-host
+# speed lane's point-local units, 66af318bc) sat in this set on
+# 2026-09-30 under the same "no measurement platform in this lane"
+# declaration, because the sweep that entered them ran CPU-only.  The
+# same day an RTX 5090 (sm_120) and an RTX 4090 (sm_89) read all four at
+# 0 B at NVRTC 13.4.92, which retired the declaration: they compile
+# standalone and carry rows in kernel_frame_recordings.SM120_NVRTC_13_4_92.
 # mynn_scalar_mix and mynn_dmp_sibling (4a0bb3f69) sat in this set from
 # 2026-08-31 under a "no measurement platform in this lane" declaration;
 # the sm_86 campaign measured both the same day (0 B, RTX 3080 at NVRTC
@@ -2071,13 +2448,26 @@ CHAINED_TRANSLATION_UNIT_FRAMES: dict[str, ChainedTranslationUnitFrame] = {
     "rrtmg_lw_legacy_chain": ChainedTranslationUnitFrame(
         module="rrtmg_lw_legacy_chain",
         max_local_size_bytes=2048,
+        # rrtmg_lw_chain_coalesced joined 2026-09-30: the address-only
+        # twin of the chain kernels the batched engine launches, measured
+        # with the unit on sm_120 at NVRTC 13.4.92 (cldprmc 64 B, march
+        # 2,048 B, the rest 0 B -- the rows its originals already had),
+        # so the unit's 2,048 B does not move.  rrtmg_lw_zbatched joined
+        # the same day: the one-launch taumol (the sixteen band bodies as
+        # device functions) and the shared-memory staged accumulation,
+        # 0 B each on sm_120 and sm_89 at NVRTC 13.4.92; its later
+        # per-g-point prol and row accumulation read 0 B on both too, and
+        # the unit's rows (march 2,048 B, cldprmc 64 B) did not move.
         covers=frozenset({
-            "rrtmg_lw_chain", "rrtmg_lw_taugb02_10_11_12",
-            "rrtmg_lw_taugb03_05", "rrtmg_lw_taugb06_09",
-            "rrtmg_lw_taugb13_16"})),
+            "rrtmg_lw_chain", "rrtmg_lw_chain_coalesced", "rrtmg_lw_zbatched",
+            "rrtmg_lw_taugb02_10_11_12", "rrtmg_lw_taugb03_05",
+            "rrtmg_lw_taugb06_09", "rrtmg_lw_taugb13_16"})),
     "rrtmg_sw_legacy": ChainedTranslationUnitFrame(
         module="rrtmg_sw_legacy",
         max_local_size_bytes=0,
+        # Re-read 2026-09-30 after the fused spcvmc layer pass and the
+        # coalesced slabs: all 17 kernels 0 B on sm_120 and sm_89 at
+        # NVRTC 13.4.92.
         covers=frozenset({"rrtmg_sw"})),
     # P3 one-category (mp=50).  ``noahmp_leaves.cu`` + ``p3.cu`` compiled as
     # ONE unit by gpuwm/core/p3_device.p3_source(), the same shape the
@@ -2093,6 +2483,57 @@ CHAINED_TRANSLATION_UNIT_FRAMES: dict[str, ChainedTranslationUnitFrame] = {
         module="p3_composed",
         max_local_size_bytes=0,
         covers=frozenset({"p3"})),
+    # BEP+BEM (sf_urban_physics = 3): glibc_flt32.cuh + glibc_trig_flt32.cuh
+    # + urban_bem.cuh + urban_bep_bem.cu compiled by gpuwm/core/urban_bem.py
+    # as one unit.  Both kernels read 2026-10-01 at the two compilers a
+    # gpuwm[gpu] install can carry:
+    #
+    #   sm_89  (RTX 4090), NVRTC 12.9.86: 4,368 B 13.4.92: 4,144 B
+    #   sm_120 (RTX 5090), NVRTC 12.9.86: 5,128 B 13.4.92: 2,312 B
+    #
+    # bep_bem_class_init is 0 B at all four readings.  Price the widest:
+    # the default install's NVRTC 12.9.86 leaves 984 B per resident thread
+    # uncharged on sm_120 if this row carries only the 4,144 B reading.
+    # tests/test_urban_bem_wrf471_parity.py::
+    # test_the_composed_bem_unit_compiles_within_the_priced_frame re-reads
+    # both kernels through the production loader on whatever card runs it.
+    "urban_bem_composed": ChainedTranslationUnitFrame(
+        module="urban_bem_composed",
+        max_local_size_bytes=5128,
+        covers=frozenset({"urban_bep_bem"})),
+    # Noah mosaic (sf_surface_mosaic = 1): glibc_flt32.cuh + noah_mosaic.cu,
+    # compiled by gpuwm/core/noah_mosaic.py _mosaic_module with
+    # MOSAIC_NVRTC_OPTIONS (-std=c++17 --fmad=false).  noah_mosaic_column's
+    # local_size_bytes through that loader, read 2026-10-01 at both
+    # compilers a gpuwm[gpu] install can carry:
+    #
+    #   sm_89  (RTX 4090), NVRTC 12.9.86: 240 B   13.4.92: 240 B
+    #   sm_120 (RTX 5090), NVRTC 12.9.86: 688 B   13.4.92: 176 B
+    #
+    # Priced at the widest.  NVRTC 12.9.86 is the default install's compiler
+    # (A167), and on sm_120 it spills the column to 255 registers and 688 B;
+    # the 240 B this row carried until then was the 13.4.92 reading alone.
+    # Still under the 1,024 B default stack, so the row reserves nothing.
+    "noah_mosaic_unit": ChainedTranslationUnitFrame(
+        module="noah_mosaic_unit",
+        max_local_size_bytes=688,
+        covers=frozenset({"noah_mosaic"})),
+    # The same tile loop composed with the unchanged urban_ucm.cu
+    # (sf_urban_physics = 1), noah_mosaic_ucm_column, the same four readings:
+    #
+    #   sm_89  (RTX 4090), NVRTC 12.9.86: 400 B   13.4.92: 400 B
+    #   sm_120 (RTX 5090), NVRTC 12.9.86: 1,040 B 13.4.92: 288 B
+    #
+    # Priced at the widest, which is past the 1,024 B default stack: on the
+    # default install's compiler on sm_120 this unit does reserve backing
+    # store, 16 B per resident thread, which the 400 B row left uncharged.
+    # tests/test_noah_mosaic_driver.py::
+    # test_the_mosaic_units_compile_to_the_frames_they_are_priced_at re-reads
+    # both units on whatever card runs it.
+    "noah_mosaic_ucm_unit": ChainedTranslationUnitFrame(
+        module="noah_mosaic_ucm_unit",
+        max_local_size_bytes=1040,
+        covers=frozenset()),
 }
 
 _seen_covers: set[str] = set()
@@ -2365,6 +2806,13 @@ _PBL_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
     # flat row refuses nothing -- while a module this table cannot see is
     # exactly where a future non-zero frame would hide.
     5: ("mynn_pbl", "mynn_dmp_sibling", "mynn_scalar_mix"),
+    # The UW moist-turbulence PBL: ONE module.  gpuwm/core/uwpbl.py's only
+    # kernel load is ``load_module("uwpbl")`` (the loader assembles the
+    # glibc_flt64/uwpbl_* headers in front of uwpbl.cu), one thread per
+    # column, and like MYJ it performs its own implicit diffusion inside
+    # that kernel.  No validation module: _run_uwpbl's finiteness check is
+    # a host reduction and compiles nothing.
+    UW_PBL_SCHEME: ("uwpbl",),
     # Shin-Hong launches its column kernel plus its own batched output
     # validator, the YSU pair's shape (gpuwm/core/shinhong.py).
     11: ("shinhong", "shinhong_validation"),
@@ -2399,11 +2847,14 @@ _RADIATION_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
 }
 
 #: What a legacy 4/4 selection launches: the two chained translation
-#: units (:data:`CHAINED_TRANSLATION_UNIT_FRAMES`) and the standalone
-#: ``rrtmg_mcica_wrf.cu`` device McICA twin (measured 0 B like every
-#: other standalone row).
+#: units (:data:`CHAINED_TRANSLATION_UNIT_FRAMES`), the standalone
+#: ``rrtmg_mcica_wrf.cu`` device McICA twin, the adapter's device glue
+#: ``rrtmg_legacy_adapter.cu`` and the device wrapper prep
+#: ``rrtmg_legacy_prep.cu`` (all measured 0 B like every other standalone
+#: row).
 _RRTMG_LEGACY_KERNEL_MODULES: tuple[str, ...] = (
-    "rrtmg_mcica_wrf", "rrtmg_lw_legacy_chain", "rrtmg_sw_legacy")
+    "rrtmg_mcica_wrf", "rrtmg_lw_legacy_chain", "rrtmg_sw_legacy",
+    "rrtmg_legacy_adapter", "rrtmg_legacy_prep")
 
 
 def _radiation_44_kernel_modules(run) -> tuple[str, ...]:
@@ -2429,6 +2880,35 @@ _SELECTOR_TABLES = (
     ("sf_surface_physics", _LAND_SURFACE_KERNEL_MODULES),
     ("ra_physics", _RADIATION_KERNEL_MODULES),
 )
+
+#: ``sf_urban_physics`` -> the kernel modules the urban model launches:
+#: urban_ucm.cu (gpuwm/core/urban_ucm.py), urban_bep.cu with the surface
+#: couple urban_bep_couple.cu (gpuwm/core/urban_bep.py, urban_bep_couple.py),
+#: and BEP+BEM's composed unit ``urban_bem_composed`` (gpuwm/core/
+#: urban_bem.py) with the same couple.  Under MYJ, options 2 and 3 replace
+#: the MYJ PBL call with MYJURB (gpuwm/core/physics.py), whose
+#: myjurb.cu frame is 10,256 B on sm_89 at NVRTC 13.4.92: on an RTX 4090
+#: that is a 1.7 GiB launch-time reservation the fit gate did not charge
+#: before this row existed.
+_URBAN_KERNEL_MODULES: dict[int, tuple[str, ...]] = {
+    0: (),
+    1: ("urban_ucm",),
+    2: ("urban_bep", "urban_bep_couple"),
+    3: ("urban_bem_composed", "urban_bep_couple"),
+}
+
+
+def _urban_kernel_modules(run, grid_id: int) -> tuple[str, ...]:
+    urban = int(getattr(run, "sf_urban_physics", 0) or 0)
+    if urban not in _URBAN_KERNEL_MODULES:
+        raise ValueError(
+            f"no kernel-module row for sf_urban_physics={urban} on "
+            f"d{grid_id:02d}; add one to gpuwm/core/preflight.py before "
+            "this configuration can be priced or gated.")
+    modules = _URBAN_KERNEL_MODULES[urban]
+    if urban in (2, 3) and int(run.bl_pbl_physics) == MYJ_PBL_SCHEME:
+        modules += ("myjurb",)
+    return modules
 
 
 def refl_diagnostic_reachable(exp: ExperimentConfig) -> bool:
@@ -2469,6 +2949,9 @@ def domain_kernel_modules(dc: DomainConfig, *,
             modules.update(_radiation_44_kernel_modules(dc.run))
         else:
             modules.update(table[value])
+    modules.update(_urban_kernel_modules(dc.run, dc.grid_id))
+    if int(getattr(dc.run, "zadvect_implicit", 0) or 0) > 0:
+        modules.add("ieva")                    # A158, gpuwm/core/ieva.py
     mp_physics = int(dc.run.mp_physics)
     if (mp_physics and mp_physics not in _REFLECTIVITY_MICROPHYSICS
             and mp_physics not in _SELF_REFLECTIVITY_MICROPHYSICS):
@@ -2488,6 +2971,12 @@ def domain_kernel_modules(dc: DomainConfig, *,
             "stash_refl_10cm it loads neither, and must say so in "
             "_SELF_REFLECTIVITY_MICROPHYSICS with the reason.  Leaving it "
             "out of both under-prices the local-memory reservation.")
+    if int(getattr(dc.run, "sf_surface_mosaic", 0)) == 1:
+        # lsm_mosaic replaces lsm (module_surface_driver.F:2662-2778): the
+        # mosaic unit runs every Noah column, and noah.cu is never loaded.
+        modules.discard("noah")
+        modules.add("noah_mosaic_ucm_unit" if int(getattr(dc.run, "sf_urban_physics", 0)) == 1
+                    else "noah_mosaic_unit")
     if prices_refl and mp_physics in _REFLECTIVITY_MICROPHYSICS:
         # mp=16 launches its reflectivity from its OWN translation unit, so
         # a WDM6 domain must never reserve refl.cu's wider frame and a
@@ -2614,6 +3103,17 @@ def kernel_local_frame_bytes(
         frame = WSM6_TIER_FRAME.frame_bytes(wsm6_level_tier(int(dc.run.nz)))
         if frame > frames.get(WSM6_TIER_FRAME.module, -1):
             frames[WSM6_TIER_FRAME.module] = frame
+    # ``ieva`` prices per domain that turns zadvect_implicit on, at that
+    # domain's own tier, exactly as wdm6/wsm6 do.
+    from gpuwm.core.ieva_constants import level_tier as ieva_level_tier
+
+    for dc in exp.domains:
+        if IEVA_TIER_FRAME.module not in domain_kernel_modules(
+                dc, prices_refl=prices_refl):
+            continue
+        frame = IEVA_TIER_FRAME.frame_bytes(ieva_level_tier(int(dc.run.nz)))
+        if frame > frames.get(IEVA_TIER_FRAME.module, -1):
+            frames[IEVA_TIER_FRAME.module] = frame
     return frames
 
 
@@ -2753,7 +3253,38 @@ def column_workspace_bytes(
     return (gf_column_workspace_bytes(exp, profile=profile)
             + kf_column_workspace_bytes(exp, profile=profile)
             + ysu_column_workspace_bytes(exp, profile=profile)
-            + ntiedtke_column_workspace_bytes(exp, profile=profile))
+            + shinhong_column_workspace_bytes(exp, profile=profile)
+            + ntiedtke_column_workspace_bytes(exp, profile=profile)
+            + uwpbl_column_workspace_bytes(exp, profile=profile))
+
+
+def uwpbl_column_workspace_bytes(
+        exp: ExperimentConfig, *,
+        profile: DeviceLocalMemoryProfile | None = None) -> int:
+    """Device bytes the UW moist-turbulence PBL's column pools hold, or zero.
+
+    ``gpuwm/core/uwpbl.py`` keeps CAM's automatic arrays (binary64, the
+    scheme's own precision) in two per-column global pools sized from the
+    level count, and walks the domain in column chunks whose pools fit
+    ``UWPBL_WORKSPACE_BUDGET_BYTES``.  The sizing lives in
+    gpuwm.core.physics_inventory, which the launcher allocates from, so this
+    term and the allocation are one formula.  Bounded by the column count:
+    a domain smaller than one chunk allocates only its own columns.  The
+    worst domain, because the pools are call transients released between
+    domains.
+
+    Zero for every configuration that does not select
+    ``bl_pbl_physics = 9``.
+    """
+    from gpuwm.core.physics_inventory import uwpbl_workspace_bytes
+
+    worst = 0
+    for dc in exp.domains:
+        if int(dc.run.bl_pbl_physics) != UW_PBL_SCHEME:
+            continue
+        worst = max(worst, uwpbl_workspace_bytes(
+            int(dc.run.nz), int(dc.run.nx) * int(dc.run.ny)))
+    return int(worst)
 
 
 def gf_column_workspace_bytes(
@@ -2835,6 +3366,26 @@ def ysu_column_workspace_bytes(
     return int(worst)
 
 
+def shinhong_column_workspace_bytes(
+        exp: ExperimentConfig, *,
+        profile: DeviceLocalMemoryProfile | None = None) -> int:
+    """Price the largest Shin-Hong tile without importing the GPU runtime."""
+    from gpuwm.core.physics_inventory import (
+        SHINHONG_BLOCK, SHINHONG_TILE_BLOCKS_PER_SM, shinhong_workspace_floats)
+
+    profile = MEASURED_LOCAL_MEMORY_PROFILE if profile is None else profile
+    tile_cap = (profile.multiprocessor_count * SHINHONG_TILE_BLOCKS_PER_SM
+                * SHINHONG_BLOCK)
+    worst = 0
+    for dc in exp.domains:
+        if int(dc.run.bl_pbl_physics) != 11:
+            continue
+        columns = min(int(dc.run.nx) * int(dc.run.ny), tile_cap)
+        worst = max(worst,
+                    shinhong_workspace_floats(int(dc.run.nz), columns) * 4)
+    return int(worst)
+
+
 def ntiedtke_column_workspace_bytes(
         exp: ExperimentConfig, *,
         profile: DeviceLocalMemoryProfile | None = None) -> int:
@@ -2895,6 +3446,13 @@ class MemoryItem:
     shape: tuple[int, ...]
     itemsize: int = 4
     dtype: str = "float32"
+    #: Allocated ONCE at exactly this shape and held for the whole run?
+    #: Then the pool holds it at its size and it is priced there, outside
+    #: the measured pool margin (:func:`forecast_pool_estimate_bytes`,
+    #: A163).  A class constant, not a field, so every inventory that
+    #: holds no such array is the dataclass it always was:
+    #: :class:`HeldMemoryItem` carries it.
+    held_exact: ClassVar[bool] = False
 
     @property
     def nbytes(self) -> int:
@@ -2902,6 +3460,16 @@ class MemoryItem:
         for extent in self.shape:
             n *= int(extent)
         return n
+
+
+@dataclass(frozen=True)
+class HeldMemoryItem(MemoryItem):
+    """A :class:`MemoryItem` allocated once at exactly its shape and held
+    for the run.  Only the urban arrays are one
+    (``gpuwm.core.urban_state.urban_held_array_shapes``), the family the
+    battery measured that way (A163)."""
+
+    held_exact: ClassVar[bool] = True
 
 
 def _items(category: str, shapes: dict[str, tuple[int, ...]],
@@ -3390,6 +3958,11 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False) -> dict[str
     n_soil = soil_layer_count(cfg)
     for name in ("smois", "tslb", "sh2o", "smcrel"):
         shapes[f"fields/{name}"] = (n_soil, ny, nx)
+    if int(getattr(cfg, "sf_surface_mosaic", 0)) == 1:
+        from gpuwm.core.noah_mosaic import mosaic_array_shapes
+        for name, (shape, dtype) in mosaic_array_shapes(
+                cfg.mosaic_cat, ny, nx, urban=int(getattr(cfg, "sf_urban_physics", 0)) == 1).items():
+            shapes[f"fields/{name}"] = shape  # All tile dtypes are 4 bytes.
     shapes["fields/exch_h"] = m
     shapes["fields/exch_m"] = m
     if int(cfg.bl_pbl_physics) == 5:
@@ -3406,6 +3979,22 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False) -> dict[str
         # at 1792x1024x55, enough to admit a run that cannot allocate.
         from gpuwm.core.physics_inventory import MYJ_PBL_STATE_3D
         for name in MYJ_PBL_STATE_3D:
+            shapes[f"fields/{name}"] = m
+    if int(cfg.bl_pbl_physics) == UW_PBL_SCHEME:
+        # The UW moist-turbulence PBL's carried and published fields,
+        # allocated by initialize_physics for this selector only and read
+        # from the same inventory tuples: the interface diffusivities and
+        # diagnostics at nz+1 levels, the residual stress and the surface
+        # diagnostics, and the held radiation cloud fraction.  Missing them
+        # under-counts by (5*(nz+1) + nz + 5) planes per domain.
+        from gpuwm.core.physics_inventory import (
+            UWPBL_DIAGNOSTICS_2D, UWPBL_DIAGNOSTICS_FULL, UWPBL_HELD_3D,
+            UWPBL_STATE_2D, UWPBL_STATE_FULL)
+        for name in UWPBL_STATE_FULL + UWPBL_DIAGNOSTICS_FULL:
+            shapes[f"fields/{name}"] = (nz + 1, ny, nx)
+        for name in UWPBL_STATE_2D + UWPBL_DIAGNOSTICS_2D:
+            shapes[f"fields/{name}"] = s2
+        for name in UWPBL_HELD_3D:
             shapes[f"fields/{name}"] = m
     if int(cfg.sf_surface_physics) == 3:
         # RUC's two Registry-package soil-column arrays, SMFR3D and
@@ -3425,6 +4014,14 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False) -> dict[str
             shapes[f"fields/{name}"] = (NSNOW, ny, nx)
         for name in NOAHMP_STATE_SNOWSOIL_3D:
             shapes[f"fields/{name}"] = (NSNOW + n_soil, ny, nx)
+    if int(getattr(cfg, "sf_urban_physics", 0)) > 0:
+        # The urban canopy model's Registry arrays, all carried in
+        # ``fields`` (gpuwm/core/urban_state.py).  BEP+BEM's wall and floor
+        # stacks run to thousands of words per column, so leaving them out
+        # would admit a run that cannot allocate.
+        from gpuwm.core.urban_state import urban_array_shapes
+        for name, shape in urban_array_shapes(cfg).items():
+            shapes[f"fields/{name}"] = shape
 
     stacks = ["pbl_tendencies", "radiation_tendencies", "cumulus_tendencies"]
     reuse_pbl = physics_reuses_pbl_composition(cfg)
@@ -3557,7 +4154,8 @@ def _perimeter_count(ny: int, nx: int, width: int) -> int:
                for d in range(width))
 
 
-def lbc_host_series_bytes(cfg: RunConfig, intervals: int) -> int:
+def lbc_host_series_bytes(cfg: RunConfig, intervals: int, *,
+                          source=None) -> int:
     """HOST bytes of a specified domain's lateral forcing series.
 
     ``LateralBoundaries`` keeps value and tendency in float64, four sides,
@@ -3567,11 +4165,21 @@ def lbc_host_series_bytes(cfg: RunConfig, intervals: int) -> int:
     part of what a streamed forecast holds in host RAM.  Zero for a domain
     that carries no tabulated series (a nest's forcing is its parent's
     rolling device frame).
+
+    ``source`` names the forcing source (or is the mapping document a
+    mapped route prepares from); the analysed hydrometeors its table row
+    publishes ride the series too
+    (:func:`gpuwm.boundary_fields.source_boundary_species`), so a series
+    priced without it is a HRRR-forced run's host claim short by those
+    tables.
     """
     if not bool(getattr(cfg, "specified", False)) or bool(
             getattr(cfg, "nested", False)):
         return 0
-    return 8 * lbc_interval_values(cfg) * max(0, int(intervals))
+    from gpuwm.boundary_fields import source_boundary_species
+    return 8 * lbc_interval_values(
+        cfg, boundary_species=source_boundary_species(source)) * max(
+            0, int(intervals))
 
 
 def lbc_intervals(run_seconds: float, forcing_interval_seconds: float, *,
@@ -3585,7 +4193,7 @@ def lbc_intervals(run_seconds: float, forcing_interval_seconds: float, *,
     return max(1, math.ceil(run_seconds / float(forcing_interval_seconds)))
 
 
-def mynn_pbl_column_chunk(cfg: RunConfig) -> int:
+def mynn_pbl_column_chunk(cfg: RunConfig, *, tile_buffer: bool = False) -> int:
     """Columns per MYNN call for this domain.
 
     The process's derived chunk, capped by the domain: a 50x20 verification
@@ -3598,19 +4206,28 @@ def mynn_pbl_column_chunk(cfg: RunConfig) -> int:
     :func:`gpuwm.core.mynn_pbl_scratch.resolve_mynn_column_chunk` settles the
     width once per process and memoises it, so THIS function, the shared
     arena it sizes and the solver that walks the domain all name the same
-    number.  It is the shipped 8,192 columns -- the fastest arm of the
-    2026-09-15 sweeps, an interior minimum measured in both directions --
-    on a card and off one alike, unless an operator overrides it, so a
-    CPU-only ``gpuwm domain`` prices exactly what the card will run.  It is
-    NOT ``MYNN_PBL_COLUMN_CHUNK_FLOOR``, which bounds the derivation that
-    rides the receipt and is wider than the width that runs.
+    number.  It is the widest width the card's memory admits up to the
+    98,304-column cap (the 2026-09-30 sweep on the level-major kernels:
+    wider is faster up to one chunk per domain), never below 8,192, and
+    the cap itself off a card without a target memory sample. A domain
+    fit supplies its selected card's memory sample and uses the same
+    run-width policy without consulting the host's memo. An operator
+    override replaces it. It is NOT ``MYNN_PBL_COLUMN_CHUNK_FLOOR``, which bounds the
+    derivation that rides the receipt.
+
+    ``tile_buffer=True`` prices a streamed tile buffer, which walks
+    :func:`gpuwm.core.mynn_pbl_scratch.resolve_mynn_tile_column_chunk`
+    instead: each buffer holds its own workspace.
     """
-    from gpuwm.core.mynn_pbl_scratch import resolve_mynn_column_chunk
-    return max(1, min(resolve_mynn_column_chunk(int(cfg.nz)),
-                      int(cfg.ny) * int(cfg.nx)))
+    from gpuwm.core.mynn_pbl_scratch import (
+        resolve_mynn_column_chunk, resolve_mynn_tile_column_chunk)
+    resolve = (resolve_mynn_tile_column_chunk if tile_buffer
+               else resolve_mynn_column_chunk)
+    return max(1, min(resolve(int(cfg.nz)), int(cfg.ny) * int(cfg.nx)))
 
 
-def mynn_pbl_scratch_slots(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+def mynn_pbl_scratch_slots(cfg: RunConfig, *, tile_buffer: bool = False
+                           ) -> dict[str, tuple[int, ...]]:
     """Every ``bl_pbl_physics=5`` scratch slot and its exact shape.
 
     Split out of :func:`scratch_slot_registry` so the MYNN workspace can be
@@ -3621,7 +4238,7 @@ def mynn_pbl_scratch_slots(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
         mynn_pbl_flag_shapes, mynn_pbl_index_shapes,
         mynn_pbl_scratch_shapes, mynn_pbl_tendency_field_shapes,
     )
-    chunk = mynn_pbl_column_chunk(cfg)
+    chunk = mynn_pbl_column_chunk(cfg, tile_buffer=tile_buffer)
     nz, ny, nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
     slots: dict[str, tuple[int, ...]] = {}
     slots.update(mynn_pbl_scratch_shapes(chunk, nz))
@@ -3643,7 +4260,8 @@ def mynn_pbl_scratch_bytes_for(cfg: RunConfig) -> int:
 
 
 def scratch_slot_registry(cfg: RunConfig, *,
-                          n_lbc_intervals: int = 0
+                          n_lbc_intervals: int = 0,
+                          tile_buffer: bool = False
                           ) -> dict[str, tuple[int, ...]]:
     """Static registry: every named ``DomainState.scratch`` slot and its
     exact shape formula, keyed by the RunConfig features that create it.
@@ -3684,6 +4302,11 @@ def scratch_slot_registry(cfg: RunConfig, *,
         integration_health_status_bits=health_words,
         integration_health_validation=(4,),
     )
+    if int(getattr(cfg, "zadvect_implicit", 0) or 0) > 0:
+        # ieva.py: the explicit/implicit eta mass-flux split (reused by the
+        # scalar split after the dynamics solves) and the column masses.
+        slots.update(ieva_wwe=fl, ieva_wwi=fl, ieva_mut=s2,
+                     ieva_mut_old=s2, ieva_mut_new=s2)
     # advection.py:161-163.
     slots.update(adv_ru=xs, adv_rv=ys, adv_rw=fl)
     # acoustic.py:115-116, :223-226.
@@ -3958,7 +4581,11 @@ def scratch_slot_registry(cfg: RunConfig, *,
                      # float32 the arena estimator otherwise never saw.
                      my2_zet_t=m)
     if cfg.mp_physics == 10:
-        # morrison.py:153-172 (prep + accumulators) + refl.py:324-325.
+        # morrison.py apply (prep + accumulators) + refl.py:324-325.
+        # morr_z8w is no longer allocated: the fused preparation kernel
+        # (morrison_prepare_fields) forms each dz in registers.  It stays
+        # priced, an over-estimate of (nz + 1) * ny * nx * 4 bytes, until
+        # the d01 calibration fixture (measured with it) is re-measured.
         slots.update(morr_theta=m, morr_rho=m, morr_pii=m, morr_dz=m,
                      morr_ice_to_snow=m, morr_z8w=fl,
                      mp_rainnc=s2, mp_rainncv=s2, mp_snownc=s2,
@@ -4197,7 +4824,11 @@ def scratch_slot_registry(cfg: RunConfig, *,
         # domain in chunks of that width and the split is bitwise identical
         # to the wide call.  Only the six returned A-grid tendency fields are
         # full width, because couple_ysu_tendencies consumes whole fields.
-        slots.update(mynn_pbl_scratch_slots(cfg))
+        slots.update(mynn_pbl_scratch_slots(cfg, tile_buffer=tile_buffer))
+    if int(cfg.bl_pbl_physics) == UW_PBL_SCHEME:
+        # physics.py _run_uwpbl: WRF's zero QNC_CURR/WSEDL3D (and the zero
+        # QNI_CURR where the microphysics carries no P_QNI), one plane.
+        slots["uwpbl_zero"] = m
     if cfg.cu_physics:
         # physics.py:451-470 KF driver persistence (restart-serialized).
         slots.update(cu_rainc=s2, cu_nca=s2, cu_pratec=s2, cu_raincv=s2,
@@ -4682,6 +5313,12 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         ("physics_qtot", "physics_qi", "physics_qs"), "write_before_read",
         "gpuwm/core/physics.py:387-414",
         "physics preparation explicitly zeroes these arrays before reads"),
+    ScratchSlotLifetime(
+        ("uwpbl_zero",), "write_before_read",
+        "gpuwm/core/physics.py:_run_uwpbl",
+        "the UW PBL call assigns zero to every element before the launch "
+        "reads it as WRF's zero QNC_CURR/WSEDL3D, and nothing reads it "
+        "after the launch"),
     ScratchSlotLifetime(
         ("physics_validation_status",), "write_before_read",
         "gpuwm/core/physics.py:_run_ysu; "
@@ -5518,6 +6155,9 @@ _MYJ_OUTPUT_BUNDLE_SCHEMES = (2,)
 _MYJ_3D = ("rublten", "rvblten", "rthblten", "rqvblten", "rqcblten",
            "rqiblten", "el_myj", "exch_h")
 _MYJ_2D = ("pblh", "kpbl", "mixht")
+#: What MYJURB (sf_urban_physics 2/3 under MYJ) allocates beyond that
+#: roster; tests/test_myjurb_wrf471_parity.py holds it to the launcher.
+_MYJURB_EXTRA_3D = ("exch_m",)
 
 
 def myj_output_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
@@ -5539,6 +6179,51 @@ def myj_output_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     s2 = (cfg.ny, cfg.nx)
     shapes = {f"myj_output/{name}": m for name in _MYJ_3D}
     shapes.update({f"myj_output/{name}": s2 for name in _MYJ_2D})
+    if int(getattr(cfg, "sf_urban_physics", 0) or 0) in (2, 3):
+        # Under BEP/BEM the call goes to gpuwm/core/myjurb.py instead, whose
+        # bundle is the same roster plus EXCH_M (module_bl_myjurb.F
+        # publishes both exchange coefficients): one more 3-D plane.
+        shapes.update({f"myj_output/{name}": m for name in _MYJURB_EXTRA_3D})
+    return shapes
+
+
+def uwpbl_output_transient_shapes(
+        cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+    """Per-call UW PBL transients before coupling consumes them.
+
+    The :func:`ysu_output_transient_shapes` contract for scheme 9, read
+    from the launcher's own roster (gpuwm.core.physics_inventory, which
+    gpuwm/core/uwpbl.py allocates from, so there is no second copy to
+    drift): the seven mass-level tendencies, the three interface
+    diagnostics, the four surface diagnostics and the int32 KPBL; plus the
+    two mass-level inputs _run_uwpbl forms (the mass-level heights and
+    phy_prep's density) with the one intermediate plane either expression
+    holds while it is formed, and, where the microphysics carries the ice
+    number, the mass-coupling factor and the coupled tendency.  Every word
+    is four bytes.  The column workspace is priced separately
+    (:func:`uwpbl_column_workspace_bytes`).
+    """
+    if int(cfg.bl_pbl_physics) != UW_PBL_SCHEME:
+        return {}
+    from gpuwm.config import UW_PBL_ICE_NUMBER_SPECIES
+    from gpuwm.core.physics_inventory import (
+        UWPBL_DIAGNOSTICS_FULL, UWPBL_MASS_OUTPUTS, UWPBL_SURFACE_OUTPUTS)
+    m = (cfg.nz, cfg.ny, cfg.nx)
+    fl = (cfg.nz + 1, cfg.ny, cfg.nx)
+    s2 = (cfg.ny, cfg.nx)
+    shapes = {f"uwpbl_output/{name}": m for name in UWPBL_MASS_OUTPUTS}
+    shapes.update({f"uwpbl_output/{name}": fl
+                   for name in UWPBL_DIAGNOSTICS_FULL})
+    shapes.update({f"uwpbl_output/{name}": s2
+                   for name in UWPBL_SURFACE_OUTPUTS + ("kpbl2d",)})
+    shapes["uwpbl_input/z_mass"] = m
+    shapes["uwpbl_input/rho"] = m
+    # Each of the two is one CuPy expression with one intermediate plane
+    # alive while it is formed.
+    shapes["uwpbl_input/expression_temporary"] = m
+    if int(cfg.mp_physics) in UW_PBL_ICE_NUMBER_SPECIES:
+        shapes["uwpbl_output/ice_number_mass_factor"] = m
+        shapes["uwpbl_output/ice_number_coupled"] = m
     return shapes
 
 
@@ -5594,6 +6279,24 @@ def noahmp_lsm_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     }
 
 
+def noahmp_lsm_cache_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+    """Noah-MP's slab caches, held on the card between calls.
+
+    ``(columns, bytes-per-column)`` with ``itemsize=1``, as the transients
+    above.  The surface layout and the per-identity parameter slabs are
+    reused from one call to the next while the land identities stay the
+    same, so they are resident for the domain's life rather than per call:
+    ``nx*ny`` columns at :func:`gpuwm.core.noahmp_runtime
+    .slab_cache_bytes_per_column` (522 B), every column priced as land.
+    """
+    if getattr(cfg, "sf_surface_physics", 0) != 4:
+        return {}
+    from gpuwm.core.noahmp_runtime import slab_cache_bytes_per_column
+
+    return {"noahmp_lsm/slab_caches":
+            (int(cfg.ny) * int(cfg.nx), slab_cache_bytes_per_column())}
+
+
 #: 620 B of leaf-batch rows per staged column: bare_flux 52 + radiation 76 +
 #: water 296 + sflx_pre 196, the derivation the allocation inventory records.
 _NOAHMP_STAGED_BYTES_PER_COLUMN = 620
@@ -5623,6 +6326,13 @@ class DomainMemoryEstimate:
         """
         return sum(item.nbytes for item in self.items
                    if item.category not in ("transient", "sase"))
+
+    @property
+    def held_exact_bytes(self) -> int:
+        """Resident bytes allocated once at their priced size and held for
+        the run (:attr:`MemoryItem.held_exact`), which the measured pool
+        margin does not multiply (A163)."""
+        return sum(item.nbytes for item in self.items if item.held_exact)
 
     @property
     def transient_bytes(self) -> int:
@@ -5661,27 +6371,44 @@ def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
                     lateral_boundaries=None,
                     p_top: float = 5000.0,
                     column_chunk: int = DEFAULT_COLUMN_CHUNK,
+                    boundary_species=(),
+                    tile_buffer: bool = False,
                     ) -> DomainMemoryEstimate:
     """Itemized :class:`DomainMemoryEstimate` for one domain.
 
     ``spec_bdy_width`` (the experiment's) sizes child ``nest_*`` tables;
     ``n_lbc_intervals`` sizes the root's eager forcing tables.  Both
     default from the domain's own RunConfig / to zero intervals for a
-    bare single-domain estimate.
+    bare single-domain estimate.  ``tile_buffer`` prices ``dc`` as one
+    streamed tile buffer, whose MYNN workspace is its own
+    (:func:`mynn_pbl_column_chunk`).
     """
     run = dc.run
     width = run.spec_bdy_width if spec_bdy_width is None else spec_bdy_width
     items: list[MemoryItem] = []
     items += _items("state", state_array_shapes(run))
-    items += _items("physics", physics_array_shapes(run, cam_ozone=cam_ozone))
+    held = urban_held_item_names(run)
+    items += tuple(
+        (HeldMemoryItem if name in held else MemoryItem)(
+            name, "physics", tuple(shape), 4)
+        for name, shape in physics_array_shapes(
+            run, cam_ozone=cam_ozone).items())
     from gpuwm.core.cfl_inventory import (
         WRF_CFL_SHAPE, wrf_cfl_recording_requested)
     if wrf_cfl_recording_requested(run, adaptive=cfl_recording):
         items.append(MemoryItem("wrf_cfl_ring", "diagnostic",
                                 WRF_CFL_SHAPE, 4, "uint32"))
     registry = scratch_slot_registry(
-        run, n_lbc_intervals=(n_lbc_intervals if run.specified else 0))
+        run, n_lbc_intervals=(n_lbc_intervals if run.specified else 0),
+        tile_buffer=tile_buffer)
     registry.update({slot: (int(run.ny), int(run.nx)) for slot in follower_slots})
+    if boundary_species and run.specified and n_lbc_intervals > 0:
+        # The analysed hydrometeors the source publishes ride the root's
+        # tables (gpuwm.boundary_fields); their spec+relax tendency is
+        # recomputed per stage, so they add tables and no held slot.
+        registry["lbc_forcing_tables"] = (
+            n_lbc_intervals * lbc_interval_values(
+                run, boundary_species=boundary_species),)
     if lateral_boundaries is not None:
         if not run.specified:
             raise ValueError("external boundary storage requires a specified domain")
@@ -5701,8 +6428,10 @@ def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
     items += _items("transient", ysu_output_transient_shapes(run))
     items += _items("transient", shinhong_output_transient_shapes(run))
     items += _items("transient", myj_output_transient_shapes(run))
+    items += _items("transient", uwpbl_output_transient_shapes(run))
     items += _items("transient", noahmp_lsm_transient_shapes(run),
                     itemsize=1)
+    items += _items("physics", noahmp_lsm_cache_shapes(run), itemsize=1)
     items += tuple(MemoryItem(name, "transient", shape, size)
                    for name, (shape, size)
                    in rrtmgp_column_shapes(
@@ -5747,7 +6476,8 @@ class ExperimentMemoryEstimate:
     dycore_state_workspace_bytes: int
     uses_shared_dycore_state_workspace: bool
     column_chunk: int
-    headroom: float = ALLOCATOR_HEADROOM
+    #: The measured forecast margin (A163), not the plan's 1.15.
+    headroom: float = FORECAST_POOL_HEADROOM
     retention_residual_bytes: int = field(default=0)
     device_overhead_bytes: int = field(
         default_factory=lambda: platform_projection_constants()[1])
@@ -5757,11 +6487,13 @@ class ExperimentMemoryEstimate:
     non_pool_device_bytes: int = 0
     #: Which envelope family priced it (``linux``/``windows``/...).
     envelope_family: str = "linux"
-    #: Does this configuration run the LEGACY RRTMG engines?  That is
-    #: what decides the pool-slack term (:data:`POOL_SLACK_FRACTION`) --
-    #: the retained LW/SW call-peak workspace three campaigns measured on
-    #: the legacy lane and on no other.  Defaults to charging it: a
-    #: caller that has not said gets the conservative answer.
+    #: Does this configuration run the LEGACY RRTMG engines?  Reported
+    #: (``envelope_legacy_radiation`` in ``gpuwm check --json``) and passed
+    #: through to :func:`machine_peak_envelope_bytes`, which no longer
+    #: reads it: the pool-slack term it used to decide
+    #: (:data:`POOL_SLACK_FRACTION`) is retired from every gate (A163),
+    #: because the legacy lane's call-peak workspace is itemized and its
+    #: measured peaks sit inside :data:`FORECAST_POOL_HEADROOM`.
     uses_legacy_radiation: bool = True
     # Mixed variants keep the modern workspace resident during legacy calls.
     # Pure-legacy estimates retain their historical workspace-envelope field.
@@ -5842,8 +6574,16 @@ class ExperimentMemoryEstimate:
                 + self.transient_peak_bytes)
 
     @property
+    def held_exact_bytes(self) -> int:
+        """The subtotal's arrays held at exactly their priced size (the
+        urban arrays), summed over the domains."""
+        return sum(d.held_exact_bytes for d in self.domains)
+
+    @property
     def alloc_estimate_bytes(self) -> int:
-        return math.ceil(self.headroom * self.subtotal_bytes)
+        return forecast_pool_estimate_bytes(
+            self.subtotal_bytes, held_exact_bytes=self.held_exact_bytes,
+            headroom=self.headroom)
 
     @property
     def held_projection_bytes(self) -> int:
@@ -5874,20 +6614,18 @@ class ExperimentMemoryEstimate:
             non_pool_bytes=self.envelope_intercept_bytes,
             domains=len(self.domains),
             family=self.envelope_family,
-            legacy_radiation=self.uses_legacy_radiation)
+            legacy_radiation=self.uses_legacy_radiation,
+            held_exact_bytes=self.held_exact_bytes)
 
     @property
     def envelope_basis(self) -> str:
-        """The evidence behind this configuration's envelope terms."""
-        if not self.uses_legacy_radiation:
-            return ENVELOPE_AFFINE_BASIS
-        # The slack term is the legacy lane's, and its evidence is the
-        # union of the campaigns that measured that lane on each driver
-        # model -- naming only the local platform's would credit half of
-        # what the number rests on.
-        if self.envelope_family == "windows":
-            return f"{ENVELOPE_WDDM_BASIS}; {ENVELOPE_LINUX_POOL_BASIS}"
-        return f"{ENVELOPE_AFFINE_BASIS}; {ENVELOPE_LINUX_POOL_BASIS}"
+        """The evidence behind this configuration's envelope terms.
+
+        One basis for every radiation lane since A163: the margin is
+        measured over a battery that carries both lanes, and the
+        intercept and residue rest on the affine campaign.
+        """
+        return f"{ENVELOPE_A163_BASIS}; {ENVELOPE_AFFINE_BASIS}"
 
     def peak_envelope_terms(self) -> str:
         """The envelope's arithmetic, exactly as it was evaluated.
@@ -5898,17 +6636,25 @@ class ExperimentMemoryEstimate:
         one of them is described.
         """
         nests = max(0, len(self.domains) - 1)
-        nest_term = (f" + {ENVELOPE_PER_NEST_FRACTION:.0%} of the estimate "
+        held = self.held_exact_bytes
+        nest_term = (f" + {ENVELOPE_PER_NEST_FRACTION:.0%} of the estimate"
+                     f"{' less the held arrays' if held else ''} "
                      f"x {nests} nest(s)" if nests else "")
-        slack_term = (
-            f" + {POOL_SLACK_FRACTION:.0%} of the estimate legacy-RRTMG "
-            f"pool slack" if self.uses_legacy_radiation else "")
-        return (f"estimate {self.alloc_estimate_bytes / GIB:.2f} + "
+        margin = (f"x {self.headroom:.2f}: measured peak/itemized "
+                  f"{self.headroom - FORECAST_PEAK_RATIO_SAFETY:.2f} + safety "
+                  f"{FORECAST_PEAK_RATIO_SAFETY:.2f}")
+        pool = (f"subtotal {self.subtotal_bytes / GIB:.2f} {margin}"
+                if not held else
+                f"subtotal less held arrays "
+                f"{(self.subtotal_bytes - held) / GIB:.2f} {margin}, + "
+                f"urban arrays held at their allocated size "
+                f"{held / GIB:.2f}")
+        return (f"estimate {self.alloc_estimate_bytes / GIB:.2f} ({pool}) + "
                 f"non-pool {self.envelope_intercept_bytes / GIB:.2f} (CUDA "
                 f"context + local-memory backing store + GF, KF and "
                 f"YSU column workspaces) + "
                 f"{ENVELOPE_UNMODELLED_BYTES / GIB:.2f} unmodelled"
-                f"{nest_term}{slack_term} = "
+                f"{nest_term} = "
                 f"{self.peak_envelope_bytes / GIB:.2f} GiB")
 
 
@@ -5952,7 +6698,7 @@ class ExperimentMemoryEstimate:
 #: Its forecast may run beside the producer; the producer holds one
 #: forcing time on its own device while it does, and
 #: ``boundary_stream.chained_admission`` admits the pair only when the
-#: forecast's estimate plus that one time fits the card, and
+#: forecast's peak envelope plus that one time fits the card, and
 #: ``boundary_stream.host_admission`` only when host RAM holds the forecast
 #: process, its head and its whole boundary series beside the producer.
 #:
@@ -6508,8 +7254,14 @@ def estimate_ingest(exp: ExperimentConfig, *, source: str,
                     analysis_shapes_by_domain: Mapping[int, Mapping[str, tuple[int, ...]]] | None = None,
                     sequential_domains: bool = False,
                     preprocess_backend: str = "cuda",
+                    route: str | None = None,
                     ) -> IngestMemoryEstimate:
     """Itemize the preprocessing phase of ``exp``'s WHOLE DOMAIN TREE.
+
+    ``route`` names the preparation route row
+    (:data:`gpuwm.ingest.preparation_price.PREPARATION_ROUTES`) the door
+    prepares on, and the allocator headroom is that row's, as the door's
+    own price takes it; ``None`` takes the measured default.
 
     The root carries the streamed forcing times and the boundary tables.
     Every nest carries one complete initial state, and they are resident
@@ -6549,8 +7301,10 @@ def estimate_ingest(exp: ExperimentConfig, *, source: str,
     items += _items("analysis", analysis_shapes(dc))
     items += _items("state", state_array_shapes(run))
     from gpuwm.ingest.preparation_price import (
-        PREPARATION_POOL_HEADROOM, SETUP_RESIDUAL, SourceInventory,
+        SETUP_RESIDUAL, SourceInventory, route_pool_headroom,
         vertical_setup_bytes)
+
+    headroom = route_pool_headroom(route)
 
     def setup_of(domain, analysis_nbytes):
         inventory = SourceInventory.from_shapes(analysis_shapes(domain))
@@ -6592,9 +7346,11 @@ def estimate_ingest(exp: ExperimentConfig, *, source: str,
     # four sides, every forcing time.  Reported so the phase's HOST cost
     # is visible too; it is not part of the device residency above.
     width = int(run.spec_bdy_width)
+    from gpuwm.boundary_fields import source_boundary_species
     frame_elements = sum(
         2 * width * (dims[1] + dims[2]) * dims[0]
-        for dims in _lbc_field_dims(run).values())
+        for dims in _lbc_field_dims(
+            run, boundary_species=source_boundary_species(source)).values())
     return IngestMemoryEstimate(
         grid_id=dc.grid_id, items=tuple(items),
         resident_times=INGEST_RESIDENT_FORCING_TIMES,
@@ -6619,11 +7375,12 @@ def estimate_ingest(exp: ExperimentConfig, *, source: str,
         device_overhead_bytes=(0 if preprocess_backend == "cpu" else
                                platform_projection_constants(vram_gib=vram_gib)[1]),
         preprocess_backend=preprocess_backend,
-        host_boundary_series_bytes=lbc_host_series_bytes(run, n_intervals),
+        host_boundary_series_bytes=lbc_host_series_bytes(
+            run, n_intervals, source=source),
         nest_analysis_bytes=nest_analysis,
         widest_nest_analysis_bytes=widest_nest_analysis,
         setup_bytes=setup,
-        headroom=PREPARATION_POOL_HEADROOM,
+        headroom=headroom,
     )
 
 
@@ -6727,6 +7484,11 @@ class PhaseMemoryEstimate:
     #: ``Machine.host_bytes``), or ``None`` when no machine was given.  What
     #: :meth:`host_preparation_refusal` weighs the CPU preparation against.
     host_ram_bytes: int | None = None
+    #: The source whose published hydrometeors the forecast terms' root
+    #: boundary tables carry (:func:`estimate_phases`' ``boundary_source``),
+    #: so a surface re-taking a decision from these phases prices the same
+    #: tables.  ``None`` prices water vapour only.
+    boundary_source: object = None
 
     @property
     def ingest_priced(self) -> bool:
@@ -7079,7 +7841,8 @@ class PhaseMemoryEstimate:
 
 def streamed_forecast_envelope(exp: ExperimentConfig, *, machine=None, resident_estimate=None,
                                forcing_interval_seconds: float | None = None,
-                               forcing_intervals: int | None = None):
+                               forcing_intervals: int | None = None,
+                               source=None):
     """The ROOT domain's streamed envelope under this config's ``[tiles]``.
 
     ``None`` whenever this configuration does not stream, which includes the
@@ -7103,6 +7866,8 @@ def streamed_forecast_envelope(exp: ExperimentConfig, *, machine=None, resident_
     ``forcing_interval_seconds`` / ``forcing_intervals`` are the schedule
     the root's lateral forcing series is priced at (its host bytes are part
     of ``host_bytes``); omitted, the estimator's default cadence stands in.
+    ``source`` is the forcing source, whose published hydrometeors that
+    series carries (:func:`lbc_host_series_bytes`).
     """
     if not getattr(exp, "domains", None):
         return None
@@ -7124,9 +7889,15 @@ def streamed_forecast_envelope(exp: ExperimentConfig, *, machine=None, resident_
         return streaming.streamed_envelope(
             exp.domains[0].run, options, machine=machine, resident_estimate=resident_estimate,
             forcing_interval_seconds=forcing_interval_seconds,
-            forcing_intervals=forcing_intervals)
+            forcing_intervals=forcing_intervals, source=source)
     except Exception:                    # a gate never dies on its estimate
         return None
+
+
+#: :func:`estimate_phases`' default ``boundary_source``: the ``source`` it
+#: prices the ingest phase for.  A sentinel rather than ``None``, because
+#: ``None`` is itself a boundary source (one that publishes nothing).
+_SAME_AS_SOURCE = object()
 
 
 def estimate_phases(exp: ExperimentConfig, *, source: str,
@@ -7144,8 +7915,13 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
                     analysis_shapes_by_domain: Mapping[int, Mapping[str, tuple[int, ...]]] | None = None,
                     sequential_domains: bool = False,
                     preprocess_backend: str | None = None,
+                    boundary_source=_SAME_AS_SOURCE,
+                    preparation_route: str | None = None,
                     ) -> PhaseMemoryEstimate:
     """Price every phase of ``exp`` and say which one binds the card.
+
+    ``preparation_route`` is relayed to :func:`estimate_ingest` as its
+    ``route`` (the preparation row whose allocator headroom it takes).
 
     ``ingest_forcing_interval_seconds`` defaults to the SOURCE's own
     fetch cadence rather than the forecast's LBC interval, because the
@@ -7169,14 +7945,25 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
     ``source_fields_per_time`` are relayed to :func:`estimate_ingest`
     unchanged; they price the ingest phase's HOST residency, which no
     term above touches.
+
+    ``boundary_source`` is the source whose published hydrometeors the
+    root's boundary tables carry, in every forecast term here; it is
+    ``source`` unless given.  A surface that prices no ingest phase
+    (``gpuwm run-plan --estimate`` passes ``source=None``) names its
+    configuration's forcing source here instead, so its forecast figure
+    is the one ``gpuwm check`` prices for the same file.
     """
+    if boundary_source is _SAME_AS_SOURCE:
+        boundary_source = source
     from gpuwm.preprocess_policy import resolve_preprocess_backend
     preprocess_backend = resolve_preprocess_backend(
         source=source, experiment=exp, requested=preprocess_backend)
+    from gpuwm.boundary_fields import source_boundary_species
     forecast = estimate_experiment(
         exp, column_chunk=column_chunk, forcing_intervals=forcing_intervals,
         forcing_interval_seconds=forcing_interval_seconds,
-        vram_gib=vram_gib, profile=profile)
+        vram_gib=vram_gib, profile=profile,
+        boundary_species=source_boundary_species(boundary_source))
     key = None if source is None else str(source).strip().lower()
     ingest = None
     if key in SOURCE_ANALYSIS_LEVELS or analysis_shapes_by_domain is not None:
@@ -7192,7 +7979,7 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
             decoded_valid_times=decoded_valid_times,
             source_fields_per_time=source_fields_per_time,
             analysis_shapes_by_domain=analysis_shapes_by_domain, sequential_domains=sequential_domains,
-            preprocess_backend=preprocess_backend)
+            preprocess_backend=preprocess_backend, route=preparation_route)
     resident_forecast = forecast.peak_envelope_bytes
     tree_road = None
     if len(getattr(exp, "domains", ()) or ()) > 1:
@@ -7216,9 +8003,10 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
             # forcing series, as it does on the single-domain road below.
             tree_road = tree_road_plan(
                 exp, machine=machine,
-                resident_estimate=admission_estimate(exp, machine=machine),
+                resident_estimate=admission_estimate(
+                    exp, machine=machine, source=boundary_source),
                 forcing_interval_seconds=forcing_interval_seconds,
-                forcing_intervals=forcing_intervals)
+                forcing_intervals=forcing_intervals, source=boundary_source)
         except Exception:            # a gate never dies on its estimate
             tree_road = None
         streamed = (tree_road if tree_road is not None and tree_road.usable
@@ -7230,7 +8018,7 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
         streamed = streamed_forecast_envelope(
             exp, machine=machine, resident_estimate=forecast,
             forcing_interval_seconds=forcing_interval_seconds,
-            forcing_intervals=forcing_intervals)
+            forcing_intervals=forcing_intervals, source=boundary_source)
     return PhaseMemoryEstimate(
         forecast=forecast, ingest=ingest,
         # THE PEAK, NOT THE HOLD.  ``vram_bytes`` is what a streamed
@@ -7247,6 +8035,7 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
         resident_forecast_envelope_bytes=resident_forecast,
         preprocess_backend=preprocess_backend,
         host_ram_bytes=_machine_host_bytes(machine),
+        boundary_source=boundary_source,
     )
 
 
@@ -7287,6 +8076,7 @@ def estimate_experiment(
         lateral_boundaries=None,
         vram_gib: float | None = None,
         profile: DeviceLocalMemoryProfile | None = None,
+        boundary_species=(),
 ) -> ExperimentMemoryEstimate:
     """Sum the per-domain itemizations; count the lru_cache-shared
     k-distribution tables ONCE (rrtmgp.py:324/:436 -- baseline behavior,
@@ -7320,6 +8110,7 @@ def estimate_experiment(
             parent=(None if dc.parent_id == 0 else by_id[dc.parent_id]),
             n_lbc_intervals=n_int,
             lateral_boundaries=(lateral_boundaries if dc.parent_id == 0 else None),
+            boundary_species=(boundary_species if dc.parent_id == 0 else ()),
             p_top=exp.vertical.p_top,
             column_chunk=column_chunk)
         for dc in exp.domains)
@@ -7411,6 +8202,7 @@ def estimate_experiment(
             if uses_arena else 0),
         uses_shared_dycore_state_workspace=uses_arena,
         column_chunk=column_chunk,
+        headroom=forecast_pool_headroom(dc.run for dc in exp.domains),
         retention_residual_bytes=(
             platform_projection_constants(vram_gib=vram_gib)[0]
             if uses_rrtmgp else 0),
@@ -7428,7 +8220,7 @@ def estimate_experiment(
     )
 
 
-def admission_estimate(exp: ExperimentConfig, *, machine=None
+def admission_estimate(exp: ExperimentConfig, *, machine=None, source=None
                        ) -> ExperimentMemoryEstimate:
     """THE estimate a tree's ``[tiles]`` admission is judged from.
 
@@ -7450,7 +8242,7 @@ def admission_estimate(exp: ExperimentConfig, *, machine=None
     So the admission is priced from the CONFIGURATION and the machine, and
     from nothing a cold surface cannot see: ``column_chunk`` is the
     experiment's own, the forcing schedule is the one the configuration
-    declares, and no lateral boundary tables are folded in.  The run keeps
+    declares, and no lateral boundary SET is folded in.  The run keeps
     its own, richer estimate for its memory LEDGER -- that one has the
     cache's real interval count and belongs to a different question -- and
     the two are never compared against each other.
@@ -7471,10 +8263,26 @@ def admission_estimate(exp: ExperimentConfig, *, machine=None
     carries the profile for the review surfaces, and
     :meth:`tilestream.autoplan.Machine.detect` has always carried it for
     the door), and the same card gives the same envelope on both sides.
+
+    THE SOURCE IS PART OF THE CONFIGURATION'S TABLES.  The root's forcing
+    tables at the declared schedule are priced, and they carry the
+    analysed hydrometeors the forcing source publishes
+    (:func:`gpuwm.boundary_fields.source_boundary_species`, read off its
+    table row, off the mapping document a mapped route passes as
+    ``source``, or off the masses a prepared door's cache carries, which
+    that door passes instead of its source's name).  Priced without it, a
+    HRRR-forced tiled, streamed or resident-admitted run was weighed
+    against the card short by those tables while :func:`estimate_phases`
+    priced them, so the review and the door answered two different
+    envelopes again.  ``None`` (a source
+    the caller does not know, or one that publishes none) prices water
+    vapour only, which is what such a run holds.
     """
+    from gpuwm.boundary_fields import source_boundary_species
     return estimate_experiment(
         exp, column_chunk=exp.column_chunk,
-        profile=getattr(machine, "device_profile", None))
+        profile=getattr(machine, "device_profile", None),
+        boundary_species=source_boundary_species(source))
 
 
 # ---------------------------------------------------------------------------
@@ -7798,14 +8606,21 @@ def _require_headroom(cp, remaining_bytes: int, reserve: ReservePolicy,
             remaining_bytes=remaining_bytes)
 
 
-def _synthetic_root_boundaries(cfg: RunConfig, n_intervals: int):
+def _synthetic_root_boundaries(cfg: RunConfig, n_intervals: int, *,
+                               boundary_species=()):
     """Zero-valued LateralBoundaries with the exact real74 table shapes,
-    so attach_lateral_boundaries performs the REAL eager device upload."""
+    so attach_lateral_boundaries performs the REAL eager device upload.
+
+    ``boundary_species`` is the source's published hydrometeor inventory
+    (:func:`gpuwm.boundary_fields.source_boundary_species`): the tables
+    carry the masses and seeded numbers the run's root boundary carries,
+    so the measurement is of the tables the run holds."""
     import numpy as np
     from gpuwm.ingest.lateral_bc import build_lateral_boundaries
 
     snapshot = {name: np.zeros(dims, dtype=np.float64)
-                for name, dims in _lbc_field_dims(cfg).items()}
+                for name, dims in _lbc_field_dims(
+                    cfg, boundary_species=boundary_species).items()}
     # mu snapshots are 2-D in domain_boundary_snapshot; (1, ny, nx) works
     # identically through _field_boundary, but keep the exact contract.
     snapshot["mu"] = np.zeros((cfg.ny, cfg.nx), dtype=np.float64)
@@ -7986,10 +8801,15 @@ def run_alloc_preflight(
         forcing_interval_seconds: float = DEFAULT_FORCING_INTERVAL_SECONDS,
         forcing_intervals: int | None = None,
         reserve: ReservePolicy | None = None,
-        profile: DeviceLocalMemoryProfile | None = None) -> AllocReport:
+        profile: DeviceLocalMemoryProfile | None = None,
+        boundary_species=()) -> AllocReport:
     """N0: construct all DomainStates + drivers + d01 LBC + the F4 nest
     manifest allocations + the RRTMGP workspace on the real device, run
     ZERO steps, report pool used/peak vs estimate, free.
+
+    ``boundary_species`` is the forcing source's published hydrometeor
+    inventory: the d01 tables built and measured carry them, and the
+    estimate beside the measurement prices the same tables.
 
     OOM policy (robust-5): any device allocation failure records the
     phase and pool/device diagnostics and TERMINATES the worker via
@@ -8006,7 +8826,8 @@ def run_alloc_preflight(
     reserve = ReservePolicy.n0_alloc() if reserve is None else reserve
     estimate = estimate_experiment(
         exp, column_chunk=column_chunk, forcing_intervals=forcing_intervals,
-        forcing_interval_seconds=forcing_interval_seconds, profile=profile)
+        forcing_interval_seconds=forcing_interval_seconds, profile=profile,
+        boundary_species=boundary_species)
     column_chunk = estimate.column_chunk
     n_int = lbc_intervals(exp.run_seconds, forcing_interval_seconds,
                           retained_intervals=forcing_intervals)
@@ -8090,7 +8911,8 @@ def run_alloc_preflight(
                 state.scratch(shape, slot)
             if dc.parent_id == 0 and dc.run.specified:
                 attach_lateral_boundaries(
-                    state, _synthetic_root_boundaries(dc.run, n_int))
+                    state, _synthetic_root_boundaries(
+                        dc.run, n_int, boundary_species=boundary_species))
                 # Davies weights are created on first force; prove their
                 # bytes now under the exact resident slot name.
                 state.scratch((2, dc.run.spec_bdy_width), "lbc_weights_0")
@@ -8409,7 +9231,19 @@ def config_forcing_source(path: Path, *,
     authority = read_config_authority(path)
     if not is_experiment_toml_bytes(authority.payload):
         return None
-    raw = tomllib.load(io.BytesIO(authority.payload))
+    return recorded_forcing_source(
+        tomllib.load(io.BytesIO(authority.payload)), priced_only=priced_only)
+
+
+def recorded_forcing_source(raw: dict, *,
+                            priced_only: bool = True) -> str | None:
+    """The forcing product a parsed configuration records, or None.
+
+    :func:`config_forcing_source`'s reading of an already parsed TOML,
+    so a surface that holds the configuration's text rather than its
+    path (``gpuwm run-plan --estimate``) reads the same name ``gpuwm
+    check`` reads off the file.  ``priced_only`` as there.
+    """
     table = raw.get("fetch")
     if isinstance(table, dict) and isinstance(table.get("source"), str):
         source = table["source"].strip().lower()
@@ -8419,6 +9253,39 @@ def config_forcing_source(path: Path, *,
     # The config-driven front door decodes ERA5 GRIB1; a [case_data]
     # table is that route by definition.
     return "era5" if "case_data" in raw else None
+
+
+def config_preparation_route(path: Path) -> str | None:
+    """The preparation route row a config's own door prepares on, or None.
+
+    A config whose forcing :func:`config_forcing_source` reads from its
+    ``[case_data]`` table (no ``[fetch]`` source) is prepared by
+    ``gpuwm run`` itself, the ``experiment`` row of
+    :data:`gpuwm.ingest.preparation_price.PREPARATION_ROUTES`, whose door
+    prices its allocator reserve at that row's measured headroom.  Any
+    other config is prepared by a door that picks its route, and the
+    estimate keeps the default headroom.
+
+    The run door takes the ``experiment-host-store`` row instead when its
+    streaming plan, made against the card at run time, puts the case in
+    a host store; the config alone cannot say that, so such a config is
+    priced here at the ``experiment`` row's higher headroom on purpose,
+    at or above what that door charges.
+    """
+    import io
+    import tomllib
+
+    from gpuwm.config_authority import read_config_authority
+    from gpuwm.experiment import is_experiment_toml_bytes
+
+    authority = read_config_authority(Path(path))
+    if not is_experiment_toml_bytes(authority.payload):
+        return None
+    raw = tomllib.load(io.BytesIO(authority.payload))
+    table = raw.get("fetch")
+    if isinstance(table, dict) and isinstance(table.get("source"), str):
+        return None
+    return "experiment" if "case_data" in raw else None
 
 
 def unpriced_ingest_note(path: Path, source: str | None = None) -> str:
@@ -8892,15 +9759,26 @@ def _required_memory_without_kernels(exp, args, *,
             frames = noahmp_frame_basis(physics_kernel_modules(exp), profile)
             basis = (f"{basis} ({verdict}; its card was not read on this "
                      f"route: {unread}); {frames.sentence()}")
+    # THE TABLES THE RUN HOLDS, as check_main's declared and measured
+    # routes and ``run-plan --estimate`` price them: the root's boundary
+    # carries the analysed hydrometeors the recorded source publishes.
+    # Priced without them, a bare check on a machine whose kernels are not
+    # proven read a 550 x 550 x 49 Morrison root whose source publishes
+    # five masses 24.8 MB below the figure its own suggested
+    # --free-gib/--vram-gib follow-up printed for the same file.
+    from gpuwm.boundary_fields import source_boundary_species
+
+    recorded = config_forcing_source(args.config, priced_only=False)
     estimate = estimate_experiment(
         exp, column_chunk=args.column_chunk, forcing_intervals=forcing_intervals,
         forcing_interval_seconds=interval, vram_gib=vram_gib,
-        profile=profile)
-    source = config_forcing_source(args.config, priced_only=True)
+        profile=profile, boundary_species=source_boundary_species(recorded))
+    source = recorded if recorded in SOURCE_ANALYSIS_LEVELS else None
     ingest = (estimate_ingest(
         exp, source=source, forcing_interval_seconds=interval,
         forcing_intervals=forcing_intervals,
-        vram_gib=vram_gib, profile=profile)
+        vram_gib=vram_gib, profile=profile,
+        route=config_preparation_route(args.config))
         if source in SOURCE_ANALYSIS_LEVELS else None)
     return {
         "status": "estimated", "basis": basis,
@@ -9179,6 +10057,30 @@ def check_main(args) -> int:
         # over the recorded platforms and the NON-POOL BASIS line says
         # so, naming that the card was not read (non_pool_basis).
         profile = card_local_memory_profile(card_total_gib)
+    #: What the config RECORDS, priceable or not.  A report that is about
+    #: to tell the reader their ingest phase is unpriced has to name the
+    #: source it could not price; folding it into the same ``None`` as
+    #: "no [fetch] table at all" printed "this config records no forcing
+    #: product at all" at a reader looking at the one they wrote.
+    #: :func:`estimate_phases` keys off the same table either way, so an
+    #: unpriceable name still leaves the ingest term absent.
+    ingest_source = config_forcing_source(args.config, priced_only=False)
+    #: THE TABLES THE RUN HOLDS.  The root's boundary tables carry the
+    #: analysed hydrometeors the recorded source publishes (its table row,
+    #: :func:`gpuwm.boundary_fields.source_boundary_species`), and
+    #: :func:`estimate_phases` prices them.  The itemization this report
+    #: prints, the reserve and the allocation gate are priced on the same
+    #: tables; without them a 550 x 550 x 49 HRRR-forced Morrison root
+    #: itemized 21.6 MB less boundary table than it holds, and reported an
+    #: observed envelope 24.8 MB below the peak envelope printed beside it.
+    #: ``--alloc`` builds and measures synthetic tables carrying the same
+    #: species, so its measurement, its estimate side and the observed
+    #: envelope are of the tables the run holds too; it used to build
+    #: water-vapour-only tables and report that observed envelope beside a
+    #: peak envelope priced with the hydrometeors.
+    from gpuwm.boundary_fields import source_boundary_species
+
+    boundary_species = source_boundary_species(ingest_source)
     # The retention term is a fraction OF the estimate, so the estimate is
     # formed first.  It is pure arithmetic and the runners re-derive it from
     # the same inputs, so there is no second source of truth.
@@ -9186,7 +10088,8 @@ def check_main(args) -> int:
         exp, profile=profile, estimate_bytes=estimate_experiment(
             exp, forcing_intervals=forcing_intervals, column_chunk=chunk,
             forcing_interval_seconds=forcing_interval,
-            vram_gib=card_total_gib, profile=profile
+            vram_gib=card_total_gib, profile=profile,
+            boundary_species=boundary_species
         ).alloc_estimate_bytes)
     if args.reserve_gib is not None:
         # Flat controller-ratified reserve replacing the proposed stack.
@@ -9199,7 +10102,8 @@ def check_main(args) -> int:
             report = run_alloc_preflight(
                 exp, column_chunk=chunk, forcing_intervals=forcing_intervals,
                 forcing_interval_seconds=forcing_interval,
-                reserve=reserve, profile=profile)
+                reserve=reserve, profile=profile,
+                boundary_species=boundary_species)
         except (PreflightHeadroomError, PreflightAllocError) as exc:
             abort = exc
         if report is not None:
@@ -9214,7 +10118,8 @@ def check_main(args) -> int:
             estimate = estimate_experiment(
                 exp, forcing_intervals=forcing_intervals, column_chunk=chunk,
                 forcing_interval_seconds=forcing_interval,
-                vram_gib=card_total_gib, profile=profile)
+                vram_gib=card_total_gib, profile=profile,
+                boundary_species=boundary_species)
             measured_used = None
             free = getattr(abort, "free_bytes", None)
             physical_total_bytes = getattr(abort, "total_bytes", None)
@@ -9226,7 +10131,8 @@ def check_main(args) -> int:
         estimate = estimate_experiment(
             exp, forcing_intervals=forcing_intervals, column_chunk=chunk,
             forcing_interval_seconds=forcing_interval,
-            vram_gib=card_total_gib, profile=profile)
+            vram_gib=card_total_gib, profile=profile,
+            boundary_species=boundary_species)
         measured_used = None
         free = None
         if declared_memory:
@@ -9339,14 +10245,7 @@ def check_main(args) -> int:
     # let a 12 GB-sized domain download 81 GFS files and then OOM in
     # ingest at 15.82 GB.  A config whose source this estimator cannot
     # price says so; it never silently reports the forecast as the peak.
-    #: What the config RECORDS, priceable or not.  A report that is about
-    #: to tell the reader their ingest phase is unpriced has to name the
-    #: source it could not price; folding it into the same ``None`` as
-    #: "no [fetch] table at all" printed "this config records no forcing
-    #: product at all" at a reader looking at the one they wrote.
-    #: :func:`estimate_phases` keys off the same table either way, so an
-    #: unpriceable name still leaves the ingest term absent.
-    ingest_source = config_forcing_source(args.config, priced_only=False)
+    # ``ingest_source`` is read above, beside the boundary species.
     #: THE FORCING FILES, not the experiment: the source mesh and the
     #: number of valid times the decoder will hold.  ``None`` whenever this
     #: command has no catalog to read them off, and the ingest section then
@@ -9356,6 +10255,7 @@ def check_main(args) -> int:
 
     phases = estimate_phases(
         exp, source=ingest_source, column_chunk=chunk,
+        preparation_route=config_preparation_route(args.config),
         forcing_intervals=forcing_intervals,
         ingest_forcing_interval_seconds=ingest_interval,
         forcing_interval_seconds=forcing_interval,
@@ -9584,15 +10484,15 @@ def check_main(args) -> int:
             "non_pool_device_bytes": estimate.non_pool_device_bytes,
             "envelope_unmodelled_bytes": ENVELOPE_UNMODELLED_BYTES,
             "envelope_per_nest_fraction": ENVELOPE_PER_NEST_FRACTION,
-            # Keyed by RADIATION LANE since 2026-08-20, not by driver
-            # model.  The old key name is kept because 2.5.0 receipts
-            # read it; ``envelope_pool_slack_fraction`` is its name now.
-            "envelope_wddm_pool_slack_fraction": (
-                POOL_SLACK_FRACTION
-                if estimate.uses_legacy_radiation else 0.0),
-            "envelope_pool_slack_fraction": (
-                POOL_SLACK_FRACTION
-                if estimate.uses_legacy_radiation else 0.0),
+            # Both slack keys read 0.0 since A163: the term is retired
+            # from the envelope, and the keys stay because 2.5.0 and
+            # later receipts read them.
+            "envelope_wddm_pool_slack_fraction": 0.0,
+            "envelope_pool_slack_fraction": 0.0,
+            "forecast_pool_headroom": estimate.headroom,
+            "held_exact_bytes": estimate.held_exact_bytes,
+            "forecast_peak_ratio_measured": FORECAST_PEAK_RATIO_MEASURED,
+            "forecast_peak_ratio_safety": FORECAST_PEAK_RATIO_SAFETY,
             "envelope_legacy_radiation": estimate.uses_legacy_radiation,
             "envelope_basis": estimate.envelope_basis,
             "local_memory_profile": estimate.non_pool_device_bytes and
@@ -9891,8 +10791,14 @@ def check_main(args) -> int:
         print(f"  TIER 1  resident: {_format_bytes(estimate.resident_bytes)}"
               f"   subtotal (+workspace+transient peak): "
               f"{_format_bytes(estimate.subtotal_bytes)}")
-        print(f"  ESTIMATE (x{estimate.headroom:.2f} headroom): "
-              f"{_format_bytes(estimate.alloc_estimate_bytes)}")
+        print(f"  ESTIMATE (x{estimate.headroom:.2f}: measured peak/itemized "
+              f"{estimate.headroom - FORECAST_PEAK_RATIO_SAFETY:.2f} + safety "
+              f"{FORECAST_PEAK_RATIO_SAFETY:.2f}"
+              + (f", on the subtotal less "
+                 f"{_format_bytes(estimate.held_exact_bytes)} of urban "
+                 f"arrays held at their allocated size"
+                 if estimate.held_exact_bytes else "")
+              + f"): {_format_bytes(estimate.alloc_estimate_bytes)}")
         print(f"  TIER 2  pool-held projection: "
               f"{_format_bytes(estimate.held_projection_bytes)}"
               f"   TIER 3 device-footprint projection: "
@@ -9905,6 +10811,7 @@ def check_main(args) -> int:
         gf_ws = gf_column_workspace_bytes(exp, profile=profile)
         kf_ws = kf_column_workspace_bytes(exp, profile=profile)
         ysu_ws = ysu_column_workspace_bytes(exp, profile=profile)
+        shinhong_ws = shinhong_column_workspace_bytes(exp, profile=profile)
         # Kept out of the f-string: a line break inside an f-string
         # expression is PEP 701 (Python 3.12+) syntax, and the supported
         # floor is 3.11 -- the 1.2.0 release workflow failed on exactly
@@ -9915,7 +10822,7 @@ def check_main(args) -> int:
         # to the per-card term (task 206).
         context_bytes = profile.cuda_context_bytes
         remeasured_bytes = (estimate.alloc_estimate_bytes + widest
-                            + gf_ws + kf_ws + ysu_ws
+                            + gf_ws + kf_ws + ysu_ws + shinhong_ws
                             + context_bytes
                             + reserve.retention_residual_bytes)
         gf_ws_term = (f" + GF column workspace {_format_bytes(gf_ws)}"
@@ -9924,6 +10831,9 @@ def check_main(args) -> int:
                        if kf_ws else "")
         ysu_ws_term = (f" + YSU column workspace {_format_bytes(ysu_ws)}"
                        if ysu_ws else "")
+        ysu_ws_term += (" + Shin-Hong column workspace "
+                        f"{_format_bytes(shinhong_ws)}"
+                        if shinhong_ws else "")
         print(f"  NON-POOL: CUDA context "
               f"{_format_bytes(context_bytes)} + local-memory backing "
               f"store {_format_bytes(widest)} "
@@ -9941,8 +10851,8 @@ def check_main(args) -> int:
                 "bare-default forecasts on an RTX 3080 10 GiB Windows/WDDM "
                 "desktop measured machine-wide peaks of estimate + "
                 "itemized non-pool within -0.20..+0.95 GiB, so the "
-                "envelope is that sum plus the measured WDDM pool-slack "
-                "term -- the retired 1.75 multiplier predicted 3.8x the "
+                "envelope is that affine sum with the measured A163 "
+                "margin -- the retired 1.75 multiplier predicted 3.8x the "
                 "measured peak on the same card and is gone from every "
                 "gate")
         else:
@@ -10626,6 +11536,7 @@ __all__ = [
     "device_rail_free_bytes", "device_wide_used_bytes",
     "column_workspace_bytes", "gf_column_workspace_bytes",
     "kf_column_workspace_bytes", "ysu_column_workspace_bytes",
+    "shinhong_column_workspace_bytes",
     "kernel_local_memory_bytes", "non_pool_device_bytes",
     "physics_kernel_modules", "refl_diagnostic_reachable",
     "LEVEL_SPECIALIZED_KERNEL_FRAMES", "LevelSpecializedFrame",
@@ -10651,7 +11562,8 @@ __all__ = [
     "evaluate_alloc_gates",
     "gate_display_name",
     "k_distribution_bytes", "lbc_interval_values", "lbc_intervals",
-    "myj_output_transient_shapes",
+    "myj_output_transient_shapes", "uwpbl_output_transient_shapes",
+    "uwpbl_column_workspace_bytes",
     "nest_allocation_manifest", "nest_field_kinds", "nest_slot_dtypes",
     "nest_slot_shapes",
     "physics_array_lifetime", "physics_array_shapes",
@@ -10667,7 +11579,11 @@ __all__ = [
     "shared_scratch_arena_shapes", "shinhong_output_transient_shapes",
     "state_array_shapes",
     "ysu_output_transient_shapes",
-    "ENVELOPE_AFFINE_BASIS", "ENVELOPE_PER_NEST_FRACTION",
+    "ENVELOPE_AFFINE_BASIS", "ENVELOPE_A163_BASIS", "ENVELOPE_PER_NEST_FRACTION",
+    "FORECAST_PEAK_RATIO_MEASURED", "FORECAST_PEAK_RATIO_SAFETY",
+    "FORECAST_POOL_HEADROOM", "FORECAST_PEAK_BATTERY",
+    "HeldMemoryItem", "forecast_pool_estimate_bytes", "urban_held_bytes",
+    "urban_held_item_names",
     "ENVELOPE_UNMODELLED_BYTES", "ENVELOPE_WDDM_BASIS",
     "WDDM_POOL_SLACK_FRACTION", "CARD_CLASS_MULTIPROCESSORS",
     "card_local_memory_profile", "live_device_local_memory_profile",

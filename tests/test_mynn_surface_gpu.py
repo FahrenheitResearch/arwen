@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from conftest import requires_gpu
+from _toolchain_rows import toolchain_row
 
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
 
@@ -227,6 +228,112 @@ WRAPPER_ULP = {
     },
 }
 
+#: ``NARROW_ULP`` per compiler where a compiler reads it differently, keyed
+#: on (compute capability, NVRTC major.minor), the pair measured.
+#: A146 re-recorded this table: NVRTC had compiled every float division
+#: by a compile-time constant as a multiply by the rounded reciprocal on
+#: Blackwell, and the kernels now spell those divisions ``__fdiv_rn``, the
+#: IEEE quotient.  On sm_120 4 rows read more than ``NARROW_ULP``.
+#: MEASURED 2026-09-30 on the RTX 5070 Ti (sm_120, NVRTC 13.4.92) at the
+#: A146 review repair, every output of every stage compared.
+NARROW_ULP_BY_TOOLCHAIN = {
+    ("120", (13, 4)): {
+        **NARROW_ULP,
+        "lh": (2, 0, 0, 0, 0, 1),
+        "qfx": (2, 0, 0, 0, 0, 2),
+        "qsfc": (0, 0, 0, 0, 0, 1),
+        "qstar": (0, 0, 0, 0, 0, 3),
+    },
+}
+#: A167: NVRTC 12.9.86, the compiler of the default gpuwm[gpu] extra
+#: (cupy-cuda12x), reads the sm_120 row A146 re-recorded under 13.4: every
+#: reading this file's tests take, and the device result behind each, is
+#: bit-identical under the two compilers.  Before this row 12.9.86 failed
+#: here by name (tests/_toolchain_rows.py).  MEASURED 2026-10-01 on node-4's
+#: RTX 5070 Ti and node-2's RTX 5090, two processes per compiler, at
+#: integrate/2.8 9dbb4a2db.
+NARROW_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
+    NARROW_ULP_BY_TOOLCHAIN[("120", (13, 4))])
+
+
+#: ``WIDE_ULP`` per compiler where a compiler reads it differently, keyed
+#: on (compute capability, NVRTC major.minor), the pair measured.
+#: A146 re-recorded this table: NVRTC had compiled every float division
+#: by a compile-time constant as a multiply by the rounded reciprocal on
+#: Blackwell, and the kernels now spell those divisions ``__fdiv_rn``, the
+#: IEEE quotient.  On sm_120 10 rows read more than ``WIDE_ULP``.
+#: MEASURED 2026-09-30 on the RTX 5070 Ti (sm_120, NVRTC 13.4.92) at the
+#: A146 review repair, every output of every stage compared.
+WIDE_ULP_BY_TOOLCHAIN = {
+    ("120", (13, 4)): {
+        **WIDE_ULP,
+        (1, 1): {
+            **WIDE_ULP[(1, 1)],
+            "lh": (1, 0, 0, 0, 0, 0, 4, 3, 0, 2),
+            "qfx": (1, 0, 0, 0, 0, 0, 3, 2, 0, 4),
+            "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+            "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "qstar": (0, 0, 0, 0, 0, 0, 0, 0, 0, 4),
+        },
+        (2, 1): {
+            **WIDE_ULP[(2, 1)],
+            "lh": (0, 0, 0, 0, 0, 0, 0, 0, 0, 2),
+            "qfx": (0, 0, 0, 0, 0, 0, 0, 0, 0, 2),
+            "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+            "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "qstar": (0, 0, 0, 0, 0, 0, 0, 0, 0, 4),
+        },
+    },
+}
+#: A167: as for NARROW_ULP_BY_TOOLCHAIN above.
+WIDE_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
+    WIDE_ULP_BY_TOOLCHAIN[("120", (13, 4))])
+
+
+#: ``WRAPPER_ULP`` per compiler where a compiler reads it differently, keyed
+#: on (compute capability, NVRTC major.minor), the pair measured.
+#: A146 re-recorded this table: NVRTC had compiled every float division
+#: by a compile-time constant as a multiply by the rounded reciprocal on
+#: Blackwell, and the kernels now spell those divisions ``__fdiv_rn``, the
+#: IEEE quotient.  On sm_120 18 rows read more than ``WRAPPER_ULP``;
+#: the reciprocal-multiply compiler's one row (psim on free_convective_land)
+#: reads at or below ``WRAPPER_ULP`` now and is gone.
+#: MEASURED 2026-09-30 on the RTX 5070 Ti (sm_120, NVRTC 13.4.92) at the
+#: A146 review repair, every output of every stage compared.
+WRAPPER_ULP_BY_TOOLCHAIN = {
+    ("120", (13, 4)): {
+        **WRAPPER_ULP,
+        1: {
+            **WRAPPER_ULP[1],
+            "cd": (2, 0, 3, 0, 1, 0, 2, 0, 0, 0),
+            "ck": (1, 0, 2, 0, 2, 0, 2, 1, 0, 0),
+            "lh": (0, 0, 0, 0, 0, 0, 0, 0, 0, 2),
+            "psih": (1, 0, 2, 0, 2, 0, 0, 1, 2, 1),
+            "qfx": (0, 0, 0, 0, 0, 0, 0, 1, 0, 4),
+            "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+            "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "rmol": (1, 0, 3, 0, 3, 2, 0, 2, 1, 2),
+            "u10": (0, 0, 0, 2, 1, 2, 0, 0, 0, 0),
+            "v10": (1, 0, 0, 0, 1, 4, 0, 0, 1, 0),
+            "zol": (1, 0, 3, 0, 2, 2, 0, 1, 1, 2),
+        },
+        2: {
+            **WRAPPER_ULP[2],
+            "cd": (0, 0, 2, 0, 0, 0, 0, 2, 2, 2),
+            "ck": (2, 0, 2, 0, 0, 0, 1, 2, 2, 1),
+            "lh": (0, 0, 0, 0, 0, 0, 0, 0, 2, 2),
+            "qfx": (0, 0, 0, 0, 0, 0, 0, 0, 1, 4),
+            "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+            "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "v10": (0, 0, 1, 0, 0, 2, 0, 0, 1, 2),
+        },
+    },
+}
+#: A167: as for NARROW_ULP_BY_TOOLCHAIN above.
+WRAPPER_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
+    WRAPPER_ULP_BY_TOOLCHAIN[("120", (13, 4))])
+
+
 #: module_sf_mynn.F:1027-1044.  With ISFFLX<1 WRF assigns these thirteen
 #: outputs the literal constant 0 and leaves the other twenty-two on the same
 #: code path the ISFFLX=1 first step takes.  So the ISFFLX=0 stage needs no
@@ -356,7 +463,8 @@ def test_mynn_surface_cuda_matches_official_wrf_oracle():
     _assert_parity(
         actual, fields,
         tuple(name for name in MYNN_SURFACE_OUTPUTS if name != "znt"),
-        NARROW_ULP, NARROW_CASES,
+        toolchain_row(NARROW_ULP_BY_TOOLCHAIN, NARROW_ULP,
+                      "NARROW_ULP_BY_TOOLCHAIN"), NARROW_CASES,
     )
     land = fields["xland"] < 1.5
     znt = cp.asnumpy(actual.znt)
@@ -385,7 +493,9 @@ def test_mynn_surface_cuda_matches_widened_wrf_oracle(itimestep, isfflx):
     )
     cp.cuda.get_current_stream().synchronize()
     _assert_parity(
-        actual, fields, MYNN_SURFACE_OUTPUTS, WIDE_ULP[(itimestep, 1)],
+        actual, fields, MYNN_SURFACE_OUTPUTS,
+        toolchain_row(WIDE_ULP_BY_TOOLCHAIN, WIDE_ULP,
+                      "WIDE_ULP_BY_TOOLCHAIN")[(itimestep, 1)],
         WIDE_CASES, zeroed=ISFFLX0_ZEROED if isfflx == 0 else (),
     )
 
@@ -479,7 +589,9 @@ def test_mynn_surface_cuda_matches_sfclay_wrapper_oracle(itimestep):
     _assert_parity(
         actual, fields,
         tuple(n for n in MYNN_SURFACE_OUTPUTS if n not in ("wstar", "qstar")),
-        WRAPPER_ULP[itimestep], WIDE_CASES,
+        toolchain_row(WRAPPER_ULP_BY_TOOLCHAIN, WRAPPER_ULP,
+                      "WRAPPER_ULP_BY_TOOLCHAIN")[itimestep],
+        WIDE_CASES,
     )
 
 
@@ -523,6 +635,14 @@ def test_every_table_row_is_the_right_width_and_carries_a_measurement():
     tables += [(WIDE_ULP[key], WIDE_CASES) for key in WIDE_ULP]
     tables += [(WRAPPER_ULP[key], WIDE_CASES) for key in WRAPPER_ULP]
     assert len(tables) == 5
+    for rows in WRAPPER_ULP_BY_TOOLCHAIN.values():
+        assert set(rows) == set(WRAPPER_ULP)
+        tables += [(rows[key], WIDE_CASES) for key in rows]
+    for rows in WIDE_ULP_BY_TOOLCHAIN.values():
+        assert set(rows) == set(WIDE_ULP)
+        tables += [(rows[key], WIDE_CASES) for key in rows]
+    tables += [(rows, NARROW_CASES)
+               for rows in NARROW_ULP_BY_TOOLCHAIN.values()]
     for table, cases in tables:
         assert table
         for name, row in table.items():

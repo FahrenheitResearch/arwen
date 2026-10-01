@@ -205,13 +205,34 @@ FROZEN_COMMIT_ORIGINAL = "789f61181fb0b198ace10775f3ea184eb5e786a3"
 #: compile string is the loader's preamble plus the file (thompson takes no
 #: extra header): measured without cupy by the receipt's reconstruction,
 #: which at 4ae7913df's bytes gives the loader-captured f9b8547f exactly.
+#: RE-FROZEN 2026-09-30 by the speed change that adds Thompson's exact
+#: shortcuts (an empty column's fallout and an empty cell's radii take a
+#: short path with the full path's writes) and the level-parallel fallout
+#: kernels.  No answer moved: the kernels' bit tests
+#: (tests/test_thompson_speed_shortcuts.py) and three 1 h forecasts, mp=8
+#: product and convective and mp=28 convective, are byte-identical to
+#: d6929cb8d on an RTX 4090 (the product forecast and the oracle also on an
+#: RTX 5090).  Previously d77977dc/e2ea3185.
+#: RE-FROZEN 2026-09-30 by the fused classic adapter launches
+#: (thompson_adapter_prepare / _entry / _masks / _finish), which share
+#: thompson_level_has_microphysics and thompson_classic_graupel_number with
+#: the two kernels they replace in the adapter.  No answer moved:
+#: tests/test_thompson_speed_glue.py and the lane's three 1 h forecasts are
+#: byte-identical to d6929cb8d on an RTX 4090, and the oracle and the
+#: product forecast on an RTX 5090.  Previously d0997611/fd8a053a.
+#: RE-FROZEN for A146 on top of those: thompson.cu's constant-divisor float
+#: divisions spelled __fdiv_rn, because NVRTC compiles x / C as a multiply by
+#: the rounded reciprocal on Blackwell targets. Previously a7955418.
+#: Re-frozen again by the A146 review repair: seven more divisions by a
+#: local constant (am_r, am_i, am_g) in the speed lanes' fused kernels,
+#: which the compute_89 census found and the source scan could not see.
 THOMPSON_CU_SHA256 = (
-    "d77977dc2479d97245aa11068b9e38fbdb9b8b6fb4c6acfcdb386ceb699ea262")
+    "01cdaebba2b72ce26e17fef6fea790eba7a520d367bb51f388cbb3040929d314")
 #: sha256 of ``_preamble() + thompson.cu`` -- the exact string nvrtc sees.
 #: THIS is the mp=8 numerics guarantee.
 THOMPSON_COMPILED_SOURCE_SHA256 = (
-    "e2ea318527e1cea3f3be5bc1d2224ed09d5cbfaf556da22b10fdcea879b3dc47")
-THOMPSON_COMPILED_SOURCE_LEN = 373200
+    "a4f136cd6e91597c0c04a7538bed3908ce1327defca059e99ef5b1663bf965b7")
+THOMPSON_COMPILED_SOURCE_LEN = 428667
 
 COMMON_CUH_SHA256 = (
     "c78b17cb02ef67a2ad24d19e06e1129d7d5bcda74b972b38470fd33a6e58ff43")
@@ -237,13 +258,25 @@ CUDA_DEFINES_PIN = {
 #: __all__, and the other moving commits gave existing launchers new
 #: keyword inputs (cloud_presence, density_carries_rain_presence,
 #: melt_rain_density, micro_columns).  Previously 6e446a46 from 4ae7913df.
+#: RE-FROZEN 2026-09-30: the fallout launchers send columns of at most 64
+#: levels to the level-parallel kernels and the cold source launches 128
+#: threads a block; __all__ is unchanged and no answer moved.  Previously
+#: b952306f.
+#: RE-FROZEN 2026-09-30: launch_adapter_prepare, _entry, _masks and
+#: _finish join __all__ (the fused classic adapter launches); no answer
+#: moved.  Previously 9e004667.
 THOMPSON_PY_SHA256 = (
-    "b952306f3a01f1a2239a56d41d9112f5e8b48d21f3268e7abd731160ae61d8a0")
+    "8489904b03b87cc2390e98a5d2cb420bd4635f6c1716624d124e1722c96ee38e")
 
 #: ``gpuwm/core/thompson.py::__all__`` verbatim, in declaration order.
 #: mp=28 launchers live in the new ``thompson_aerosol_*.py`` modules; not
 #: one name may be added here.
 THOMPSON_PY_ALL = (
+    # RE-PINNED 2026-09-30: the four fused classic adapter launches.
+    "launch_adapter_entry",
+    "launch_adapter_finish",
+    "launch_adapter_masks",
+    "launch_adapter_prepare",
     "launch_cloud_freezing",
     "launch_cloud_saturation_adjust",
     "launch_cloud_sedimentation",
@@ -312,12 +345,18 @@ THOMPSON_PY_ALL = (
 #: no site was edited.  Previously 365, 917, 1034, 2116, 2952, 3019, 3236,
 #: 3842, 4067, 4190, 4322, 4742, 6994 / 365, 917, 1034, 4067, 4190, 4742 /
 #: 923, 1042 / 3995, 4408, 7067.
+#: RE-FROZEN 2026-09-30: the level-parallel held-density cloud fallout
+#: appended to thompson.cu repeats its column kernel's 100.0e6f, 2730.0f
+#: and 272.0f line, and the exact shortcuts added lines above most sites;
+#: the counts are 14 / 7 / 3 / 3 and no existing site was edited.
+#: RE-FROZEN 2026-09-30: the fused adapter kernels added lines above the
+#: level-parallel fallout; counts 14 / 7 / 3 / 3, no site edited.
 THOMPSON_CU_LITERAL_SITES = {
-    "100.0e6f": [404, 1028, 1145, 2391, 3265, 3332, 3558, 4238, 4518, 4641,
-                 4773, 5193, 7484],
-    "2730.0f": [404, 1028, 1145, 4518, 4641, 5193],
-    "272.0f": [1034, 1153],
-    "cloud_number_bin = 65": [4446, 4859, 7566],
+    "100.0e6f": [416, 1136, 1265, 2572, 3446, 3513, 3739, 4419, 4699, 4822,
+                 4954, 5374, 7665, 9638],
+    "2730.0f": [416, 1136, 1265, 4699, 4822, 5374, 9638],
+    "272.0f": [1142, 1273, 9646],
+    "cloud_number_bin = 65": [4627, 5040, 7747],
 }
 
 #: Every ``.cu`` translation unit present at the frozen commit, as
@@ -335,11 +374,23 @@ FROZEN_MODULE_DIGESTS = {
         # tier -- proven against a real host preprocessor, with a negative
         # control, in tests/test_acoustic_nz_tiers.py -- so this pin moves
         # while the compiled binary does not.
-        '766285639b5379db461db1ca9a81ec12b45d36d097547fb59ab2db541b89768c',
-        '9c8836bfb75aa56ef600dd83e31b6e2ffd0948547f27c13659c345062ac3417f'),
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously 76628563/9c8836bf.
+        '1ec408993d5af7c8517a92679155ef8a280fd43d9b1b26e496b36a276b336730',
+        'a7054926f305cf60f1ffde3cebeb4212c7fe9f8d793734ad0c5b79afe4359818'),
     'advection': (
-        '8a88c2fc0ed833e9fc5bd55bd3f3f78752fbb9e68714122c2fb68adc368d2d7e',
-        '3449e3bc306ef5ba9a374e0e04b6e0f7601cbe6e3d7b0aa6ba6b8edd91c8d16e'),
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously 8a88c2fc/3449e3bc.
+        '3c64071b010591a27da5004dc112d93e7c9be18f284f7d436febd0d2b3ec9c96',
+        '10dcae5561cdbb39bc34bfad19ec8496fbb7cdc1d1167e2a33278ba02e4a5db2'),
     'coriolis_map': (
         '53fc37398d086dcf54c317917872e5d8d473b83d6d217697335d5ae6bc96d143',
         '7981384362444c8e782abb80efb29cbf61d0a3183cc0c316799b3bf9f3c43671'),
@@ -424,8 +475,14 @@ FROZEN_MODULE_DIGESTS = {
         'c904e487cbf3cf0b6f6bbf6acad56158d2c3392d3c2a8a2e3ec6200d89f0cb03',
         '5f01ec47943352f0239f690945ec20924a23a70bbba6b5ca2437724871314b0c'),
     'kessler': (
-        'fecf2e8028fda0ed4cb47fccce4c602d4632048d2dcbdd163613685ded952fdc',
-        '530faef7f3bc5e5600d7a5f1086c9e4d0914a3aeda735214072bed30907c05d7'),
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously fecf2e80/530faef7.
+        '80856acab86330c9533a391ea4a30f612791e767a810c7df02cb757002991de2',
+        'f6f6aa8d6089cb6ead3935594abfc8079cdb75fbcaf41e5c1f05472c8d608e24'),
     'kf': (
         # Re-pinned for the column-workspace move (48ff6b813), measured
         # on node-1 with its two declared bit-moving placements named in
@@ -445,8 +502,22 @@ FROZEN_MODULE_DIGESTS = {
         # not an mp=8 translation unit and thompson.cu is byte-unchanged.
         # Measured against the float64 mirror by tests/test_kf.py::
         # test_shallow_feedback_tendencies_divide_by_an_unrounded_2400.
-        '6a2207a03f0a8d93413eafe0dd47d214fcd0f98f2e18a967f7922b05dc959bb3',
-        '30c369d5b1dadcf2555e7372b71047f42b893180bfdb6b14e1da924f83fc3bf6'),
+        #
+        # RE-PINNED 2026-09-30 by the default-pieces speed lane (08a1eed93):
+        # KF launches eight-warp blocks and orders each block's columns so
+        # the ones its trigger test predicts to convect share warps; order
+        # only, every column runs the whole scheme on its own workspace
+        # lane, and the output zero-fills the kernel overwrites are gone.
+        # No answer moved: the lane's A/B dumps (sm_120, KF every step) and
+        # a 1 h real HRRR default-suite forecast (sm_89) are byte-identical
+        # to d6929cb8d.  Not an mp=8 unit.
+        # Re-pinned for A146 on top of that: every float division by a
+        # compile-time constant is spelled __fdiv_rn, because NVRTC compiles x
+        # / C as a multiply by the rounded reciprocal on Blackwell targets.
+        # Reading: sm_89 unchanged; Blackwell cards now round these quotients
+        # IEEE-correctly. Previously 30308b1b/7d81bfc9.
+        '705dded69dccebdab5a2276e24d32f4e21186fdb985ed3ab06b389b8ace914c4',
+        '0ef80d84d30359e2dd407b0c75e591539a71c921c90344e48f27c9130cac8415'),
     'lbc_flow': (
         # 4febd041f supplies resolved WDM6/NSSL inflow concentrations.
         # docs/dev/qnn-specified-inflow.md records 4 CPU + 10 GPU
@@ -454,6 +525,8 @@ FROZEN_MODULE_DIGESTS = {
         '68a743950e30e308676fada38f96ea3139d283447028edfeb85d2d64c36441fa',
         '233391c535605271d70b32dc5ce85321cb0ed633340dae3fe2cd3ebcf08ab6ba'),
     'lbc_state': (
+        # Re-pinned for parent-window and child-frame coupling enumeration.
+        # Full-field entry points and per-element expressions stay intact.
         # Re-pinned for the per-side relaxation mask:
         # state_specified_relaxation takes relax_sides, and
         # a streamed tile clears the bit of each interior seam so a
@@ -470,8 +543,8 @@ FROZEN_MODULE_DIGESTS = {
         # (_validate_frame_domain), so every ring there keeps two rows and
         # two columns, the enumeration is the previous one entry for entry,
         # and no whole-domain bit moves.
-        'ef419942c2d00572ca53c04dec7224832f06a5391fe85c69105046fe242f8884',
-        'ac121aaa14ee44aeac81791fd40c63e4926f06376c103a5a5be0b7d21fcff88d'),
+        '138ac171b44c61bb1da9d9f45fcc08190528417cecc15f99b9fac103c6e6fb9e',
+        '67fec8de23b2ba6df7b44b0459b2ef6527a187ed34500c9fc911b95a0f7b6fe7'),
     'morrison': (
         # MOVER: the deposition-freezing cold-trap bound, carried to the
         # engine line from lane/level5-owner 0c54221d2.  UNLIKE the two
@@ -521,27 +594,65 @@ FROZEN_MODULE_DIGESTS = {
         # distinguishes it. Morrison is not an mp=8 translation unit, and
         # the other source digests remain unchanged. These are source
         # identities, not regenerated physical reference outputs.
-        'a563005eb0992bc925d1c80f58d173dad1bfb385824be1bae5f9f90cc6ecb829',
-        '9038bbbdfc9f0f03c57ab3c6e81c93618cdee2be9f258bfb2df1a497ac29e3d9'),
+        # RE-PINNED by 68d2b1fec (speed, no reading moves): sedimentation
+        # runs one thread per column and category and computes each
+        # category's fall speeds once; the substep count is the same fmaxf
+        # maximum.  A 1 h Morrison default-suite forecast (220 x 176 x 49,
+        # 240 steps) writes every wrfout frame byte-identical to d6929cb8d
+        # on an RTX 5090 and an RTX 4090.  Then the clear-air finalize path
+        # (speed, no reading moves): a level with exactly zero hydrometeor
+        # mass and positive vapour writes the values the full path computes
+        # for it without the conversions that are all zero there; the same
+        # forecasts stay byte-identical.
+        # Re-pinned for A146 on top of that: every float division by a
+        # compile-time constant is spelled __fdiv_rn, because NVRTC compiles x
+        # / C as a multiply by the rounded reciprocal on Blackwell targets.
+        # Reading: sm_89 unchanged; Blackwell cards now round these quotients
+        # IEEE-correctly. Previously b0b9f1d2/506849c6.
+        # Re-pinned again by the A146 review repair: cons15, a constant
+        # numerator of powf calls over 4 * 720, the first pass missed.
+        '9d4aad5a012cf2751f3515d96dae48adc1765f65aaa934486e0a025bf8dca229',
+        '96bf1249e66ec76fccaf269b55f71f3a078910ef4a9db3ba6596a13d7a5bc536'),
     'mynn_pbl': (
-        # Ordinary mixing length shares the rounded initialization helper.
-        # This changes PBL tendencies and has continuation identity v2.
-        # The old source digest remains pinned by the stripped DMP sibling;
-        # its test proves all source outside this entry point is unchanged.
-        # These identify source, not new numerical reference outputs.
-        'ef5ad38bdddaaf1cc465290e22f5b6ee176e8f19e33354c939d18b37f906c5da',
-        '32592d90718ea3da2b0261cb10be432c60a43656ffe45b1c4aefb0c6aa54f169'),
+        # RE-PINNED by the level-major MYNN layout (speed lane, 2.8.1):
+        # every per-column kernel addresses level k of column c at
+        # k * ncol + c instead of c * nz + k, so a warp's loads coalesce.
+        # Addressing only; no arithmetic line moved.  Outputs are bitwise
+        # identical to d6929cb8d on the RTX 4090 and RTX 5090: the WRF
+        # oracle tests (test_mynn_pbl_gpu, test_mynn_pbl_driver_gpu), and
+        # every returned tendency and carried field of a captured real
+        # 288x288x59 call replayed carried, cold start, at odd and whole-
+        # domain chunk widths, tiled, and with bl_mynn_mixscalars=1.  The
+        # DMP sibling carries the same edit and its own re-pin.  The pin
+        # before it was the rounded ordinary mixing length (continuation
+        # identity v2), which this change does not touch.
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously 5c5a7278/0258a93f.
+        'fccea5e6cce85002f494d1bfe780db12b688675e1ec21de1e64148eb0e596fef',
+        '33f7a2faee1130d26ecafaf4b00c571ee243e2c5fcdf4ec30a5d0dd9c8f8a995'),
     'mynn_surface': (
-        'a94de3ff2da95c37e12b437123b4a3807ac1318c524b339609f6024f4d21f85b',
-        '891ec5d565c720afabab57169f1a3b1aa95efc3d1ac84e87ffbd4ebb239c57fe'),
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously a94de3ff/891ec5d5.
+        'e2593f1fbc56581258594c3dfa2c6ac8471afd351a2f15cdacc1225a64750d92',
+        '698e7f36bac844c7727b2fee5f15b5673276c87bfb4b36edbf367b0369aa87a4'),
     'nest': (
+        # Re-pinned for a combined four-side boundary launch. The original
+        # single-side entry point and SINT expression tree remain unchanged.
         # e1bdd7741 + d17f1d08b preserve global terrain coordinates and
         # sequential donor arithmetic through bounded child operands.
         # Measured 8d317e5ec: 34 focused + 29 resident CUDA controls;
         # 295d6ec0a: public moving/restart, 137 exact arrays per domain.
         # Re-pinned with diagnostics for 88fdf60b9's parent smoothers.
-        '7aa2d1102fbbedaa9655850d1dc3403f3d995f9d1167da8fdd5a8ab7a2ac569f',
-        '7b627569381652445f132287d81bda319eb5c7a156f854c46e034cdb98a226ac'),
+        'de9a5a8f6145f7f067f0b38a36e892eb3433b5aed8eaea665c1dc064391b9c31',
+        '060556616b23921f1733e17cbb26cd5dfa93b9e3bd821f67779c2d25b679b78c'),
     'nest_microphysics': (
         # Re-pinned for the mp=9 (Milbrandt-Yau) mixed-edge ratification
         # (audit R-003): the generic microphysics_edge_field kernel gained
@@ -573,8 +684,14 @@ FROZEN_MODULE_DIGESTS = {
         # mp8_to_mp18_mass_diagnosed_field entry point is byte-identical,
         # and an all-mp8 run never launches the edge matrix at all.
         # Previously pinned at 9031874d/ae17b2a2.
-        '6584d2be8f237eb3991ab4ccef25d5bf8e9426de1dc5f4c2884afd624ffefc0a',
-        'ab4befec0c24f28d9f096ca962543a8db5f2f9e9ca5c195ad3ce83916a7b99c2'),
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously 6584d2be/ab4befec.
+        'a00a3f6cd14622bb53d27152652df31889267ae83c160a4f97128051b99c539c',
+        '02bb1a0d5607306d502eba8d7054272bbd6e8a0b3c64961e2e2922eca1efa057'),
     'noah': (
         # RE-PINNED by the WRF-parity FRZX repair (NOAH-01).  WRF renames
         # this quantity twice on its way down and gpuwm followed the NAME
@@ -594,8 +711,46 @@ FROZEN_MODULE_DIGESTS = {
         # tests/test_noah_wrf461_parity.py (the re-pinned BASELINE_MAX_ULP
         # table), ::test_the_mirror_reproduces_wrfs_frozen_ground_infiltration
         # and ::test_the_kernel_hands_smflx_the_same_word_the_mirror_does.
-        'd7ae4d2ccac5ca6c32c575031337a3dfa7dfe8c37a14bf64167e57be3ac373fc',
-        'b8adda8aa53d0749c1a08f9a2e760930d7046654bfb04e6e72ffa170725461dc'),
+        #
+        # RE-PINNED by the urban hand-over (739569b89, 27ca0e896;
+        # sf_urban_physics 1-3): noah_column gained ten trailing arguments
+        # and WRF's pre-SFLX urban remap (module_sf_noahdrv.F:964-990) under
+        # `urban_col`, which is false on every column when urban_opt == 0,
+        # plus the rural hand-over writes on urban columns only.  The
+        # default path is unchanged: measured on node-1 (RTX 4090), all 216
+        # output arrays of the default-off call are byte-identical to the
+        # pre-change kernel's (tests/test_urban_default_off_identity.py::
+        # test_a_handover_with_no_urban_column_is_the_default_kernel), and
+        # tests/test_noah_wrf461_parity.py holds its table unchanged.  The
+        # urban arm is graded against WRF v4.7.1 by tests/
+        # test_urban_noah_hook_wrf471_parity.py.  Previously
+        # d7ae4d2c/b8adda8a.
+        #
+        # RE-PINNED because that claim did not hold for a whole forecast:
+        # with the hand-over compiled into the one kernel behind a runtime
+        # flag, NVRTC contracted a different set of products into FMAs, and
+        # a 1 h default forecast (configs/hrrr_native_quick_demo.toml, RTX
+        # 5090) differed from integrate/2.8's from its 15-minute history
+        # on, while the same tree with the pre-hand-over kernel body was
+        # byte-identical in all five.  The body is now `template <bool
+        # URBAN>` with every hand-over statement under `if constexpr`:
+        # noah_column (URBAN = false, the default launch) compiles from
+        # exactly the pre-hand-over statements (545 of 545) and takes its
+        # pre-hand-over arguments, and noah_column_urban carries the
+        # hand-over.  Previously a21b1917/21faf648.
+        #
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously d7ae4d2c/b8adda8a.
+        #
+        # MERGED with integrate/2.8 (urban) on lane/281-nvrtc-literal-div:
+        # both changes above are in the file, so the digests are the
+        # merged file's.
+        '061c34da2141ba8ffdb732e2d89292a064fdcedc063d7d27e863d424ea504223',
+        'b930239d2abacfcd3503a2090e9b98551d751d723b7bda03fb0ca66e22bd9d06'),
     'noahmp_bareflux': (
         '54fb5065e95b24d4cf676e2deda29bae44b3e9305d3d98cbc1abf5ed55f444ce',
         'fbb19fc8b5668ea2edbcc1270f8ffe367475124ffa0ce99d3bc34639f3f31e9f'),
@@ -679,8 +834,17 @@ FROZEN_MODULE_DIGESTS = {
         # exact parent source reproduces both old pins through the real
         # loader; retained NSSL GPU oracle comparisons grade arithmetic
         # without widening the existing tolerances.
-        '0541eb4f5353d8379af80100fb231893698fcde0521706357a5afc7c88569679',
-        '24a7e4af3fab46b6c9dffbc58438287eebc7c5151dde8c11ec815491476ff044'),
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously 0541eb4f/24a7e4af.
+        # Re-pinned again by the A146 review repair: the snow-melt
+        # constant c1sw, a C math function divisor the first pass
+        # missed.
+        '37173f1bcc9ec0fd6c6f4afe060c0d984bcd14abc5d4841d05aa62e6ac85d3ea',
+        '588d4ab74a57935ca1a7bab9abb195ab05150e67fbb753e7b360c50de4eb78e8'),
     'nssl2_diagnostics': (
         'a95ae9e0bc3dd20a13865cfa6d1148d2a78ee5d7c17c9c1bca9a0c8dbdf19868',
         '331b4a9734959260ab515216e24ee7100eac18d8e6d646b1e0e8bf21c0c23374'),
@@ -701,9 +865,24 @@ FROZEN_MODULE_DIGESTS = {
     # adding a parameter and a branch to a fused kernel.  Each digest below
     # was re-derived from the tree by this test's own fixture, not edited
     # to match.
+    #
+    # RE-PINNED by the speed lane's NSSL sedimentation (no reading moves):
+    # for nz <= 64 one launch runs the six categories in parallel rows, one
+    # thread per level, every flux computed before any level updates as
+    # sediment1d does; graupel and hail read their gamma values from a
+    # table the device fills once with the same tgamma calls; nz > 64 and
+    # CUDA-graph captures keep the per-category column kernels.  The mp18
+    # suite's 1 h forecasts of two convective cases (220 x 176 x 49) write
+    # every wrfout frame byte-identical to d6929cb8d on an RTX 5090 and an
+    # RTX 4090.
     'nssl2_driver_support': (
-        'd1c729369bdf59859f178622402f138e2c9b67f4f12fa5661162924c7cf542ec',
-        '0ae24c4f406b91a4d849f5ce171838264be81254544dc04693550f3355a14511'),
+        # Re-pinned for A146 on top of that: every float division by a
+        # compile-time constant is spelled __fdiv_rn, because NVRTC compiles x
+        # / C as a multiply by the rounded reciprocal on Blackwell targets.
+        # Reading: sm_89 unchanged; Blackwell cards now round these quotients
+        # IEEE-correctly. Previously d56ab580/edda4361.
+        '12f193c6918056b995577930304867cd8369a46ab1facfcde589d244cbd6eca8',
+        'cfe99438d0ff9b7e7bc31c61daea9b33f0a77b82908807ee9b9c300719031320'),
     'nssl2_fused_gs': (
         # RE-PINNED by the WRF-parity vertical-velocity centering repair
         # (G-01).  The kernel averaged interface w to mass level TWICE,
@@ -729,8 +908,18 @@ FROZEN_MODULE_DIGESTS = {
         # wvel by 1.18x to 2.06x); the kernel's spelling is held by ::
         # test_cuda_centres_interface_w_onto_mass_levels_exactly_once, which
         # replaces a source pin that asserted the two-stage average.
-        '8b4ad70fcde7a2fb5889c07045505c25d77440d1b96913adac1b54eaf1187e2a',
-        '4606e9061c788322ffa6a92a3f9a1a58cd5bcd4b4e7753eaccd3b2c96cd72b30'),
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously 8b4ad70f/4606e906.
+        # Re-pinned again by the A146 review repair: the graupel and
+        # hail fall speeds' / tgammaf(4.0f) and / tgammaf(5.0f), which
+        # compute_120 folds to a reciprocal multiply and the first
+        # pass's compute_89 census could not see, and c1sw.
+        '07dff4bf34509e89b75683a83d356c4691b6eab1aa96140af3e6fa5b00fe429b',
+        '15ec0480c24de0c6694d66cd183cb05412aa518d19c33a3ed4e9936027266a7f'),
     'nssl2_nucond': (
         # RE-PINNED by the WRF-parity raw-w repair (N-02).  The low-T cnuc
         # hack at module_mp_nssl_2mom.F:10122 tests the RAW staggered
@@ -748,8 +937,14 @@ FROZEN_MODULE_DIGESTS = {
         # a two-sided gate: it also requires the mass-level average to
         # survive at its two legitimate sites, so it cannot go green by
         # deleting the averaging everywhere.
-        '224e22e7f0ab40965444d9dbdca6796c6d43a3404bdbb434425954d44d2b2555',
-        '311068aa8b1f2dd2d0a5cb38cf5d936c2b2e5ac9e6c5e4f764695e3aa01418a9'),
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously 224e22e7/311068aa.
+        'b4819a1e912924fe2e30c33897585e3a46c32e89dcb3ab43eb1ee32b212b6db1',
+        '40864b3a5080c27998d0346d719281a535a1b8aea92c969bbc2a156de342e181'),
     'nssl2_qvexcess': (
         '6906dcd9f8822d73d87ff3cb6e545a1b1ddef567c16c658435d4f669f1f369dc',
         '89d27036499b7f57d780c594308766b83ef711fbc9d9c5d0ece2e79c270f6626'),
@@ -763,19 +958,46 @@ FROZEN_MODULE_DIGESTS = {
         # change. Restoring the parent source through the real loader
         # reproduces both old pins; test_wrf_cfl_histogram grades the new
         # measurement against its independent CPU reference.
-        'c7217de931f41cc30ccb8f31281ab8da2c1bf770c0621a16522f0b656eb3b872',
-        'c15740b46301a3814fbe5c8ecab6daeff20e6997b012798873543c5aa601e01c'),
+        # lane/281-w-crit-cfl (A165) moves it: w_damp takes WRF's onset
+        # (w_crit_cfl under zadvect_implicit, else w_beta 1) and
+        # w_crit_cfl as arguments where W_DAMP_BETA and W_CRIT_CFL were
+        # literals, and w_cfl_stat counts cells above the same onset.  At
+        # 1.0 and 1.0 the arithmetic is the old kernel's;
+        # tests/test_w_crit_cfl.py grades it against WRF 4.7.1's compiled
+        # w_damp at w_crit_cfl 1.0 and 2.0 with and without IEVA.
+        'dead1a45d33ae499f123a4db41f01a24b9ff02e20fd6901bb9fa8598ddae43c4',
+        '38f711506f8e6ac2a6269b44d3b27a01b7290bf1c0a151cc1af236c426b04ecc'),
     'pd_advection': (
-        '606e396872b2c42bafcff8d46d6a4c16d0f1c4f0fc796bb1728f4ae3678c309c',
-        'd9e8649915c1a8bd0b65354131baa8fc29d00f921d61849bb4fa0d47b065c9ea'),
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously 606e3968/d9e86499.
+        '5347b9a3170e69a980e4a1883659a42b493cd5262f9c88e4a7b29fa1a20e003d',
+        '9cdc25d04bd11268a5b0d43c207beaf9377144cfd1faace54f2d45c9987488e0'),
     'refl': (
-        'ff4e3c6dd532be49fc866692e829e9a7efa7ac1c65a95b4cd1beb910f39d07b6',
-        '8e3843a3884edee0ed8ade032401df5750ccde3df2d396a4d17a59267d0f27a1'),
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously ff4e3c6d/8e3843a3.
+        '1e2c45699a721b4b042769f9f868d85d8a6eb4960fc547ce9affb59b69f43f66',
+        'c95b01ece7024d7ba3ad97cc1e6cc121c001e774217b2e2e45915630f55774c1'),
     'rrtmg_lw': (
         # Re-pinned for the buffer-march positivity fix (7ce2f5de7,
         # dp == DELTAP bitwise for in-contract tops per its message).
-        '391e459a9c174e07fc0fddba6de6e59ea836f04edccd00b7e0ae6c0d41ae2555',
-        'c39e41b508935b52b22914c1385dc636451d8aa34e10b8eb316e4d7e98b944b9'),
+        # Re-pinned for TAUGB_GPOINT_PROLOGUE (lane/speed-rrtmg-legacy):
+        # an added index macro for the batched per-g-point band helpers,
+        # every existing kernel and macro byte-unchanged.  Reading:
+        # tests/test_rrtmg_lw_batched_layout.py (generated band bodies
+        # held to the standalone kernels statement for statement) and the
+        # LW engine uint32-identical to the d6929cb8d engine on fifteen
+        # decks at chunks 1, 256, 1,536 and 4,096, and six captured
+        # product-suite calls uint32-identical to the d6929cb8d forecast.
+        '241382acf34bc312e6361822acc057ec3fedf2f31514b477ff939ef723632592',
+        'e6b66fe0cd2f2fbceb2c37aa7ab21636c24944df42b997b8908196fe1444069a'),
     'rrtmg_lw_chain': (
         'a71a779ea3a733e422414ee5d5d885cb904972fe32ac2bfe6438d6c5214c1252',
         'ee8f4c95e52248d0b641a48a8532d44d6aff0b75344dda59a416a3905ae972c1'),
@@ -792,43 +1014,74 @@ FROZEN_MODULE_DIGESTS = {
         '104c3157451dc878e3f9d751db1cf01a4368b1a2892825678370c5159a787ff6',
         '56f315a0258d902c69f99abacbe5e53005f50ce478725c146647d3df26c71522'),
     'rrtmg_mcica_wrf': (
-        'edb6bcb71a9d0763d3576b602db0afa05ec5eddc9bc63548f4991f34bd6d718c',
-        '07af9ba6f5a0ed7e3c735f0b574041aace48f306e2641e7563252ae992a2cfd9'),
+        # Re-pinned for rmcw_fill_outputs_column (lane/speed-rrtmg-legacy,
+        # the longwave McICA slabs written straight into the batched
+        # engine's (column, layer, g-point) layout): an appended kernel,
+        # every existing kernel byte-unchanged.  Reading:
+        # tests/test_rrtmg_lw_batched_layout.py (column layout == the
+        # g-point layout transposed, uint32, on the WRF fixtures and real
+        # prep decks) and tests/test_rrtmg_mcica.py green, and six
+        # captured product-suite radiation calls uint32-identical to the
+        # d6929cb8d forecast.  Not an mp=8 translation unit.
+        '80cd32a2feee70f1d0fe2db3eaf02386de4d970bfc9dc8e22d71fafbab5564b6',
+        '5a744048e817344ac573b98c2cc63644efdb03845abd07feb8c122fb41332b39'),
     'rrtmg_sw': (
         # f7c2aadea removes an unused macro; host launch coverage now
         # includes every layer. Measured d8ef9d086: 156 CUDA controls
         # including independent WRF 80/129-layer reference fixtures.
         # Re-pinned for the one-instruction subnormal armor (65944605a,
         # exact in binary64 per its message; witness at 25ad40769).
-        '0301818b55046062ef0b89edc1c2ddc85adb361a4bfd03bc278f56c5fb139aef',
-        '288e905955ad26e2f216928eb81cba05800d75c0e29e2172f34b9f89002d36cd'),
+        # Re-pinned for the interleaved spcvmc workspace (2c1bbb398,
+        # lane/speed-rrtmg-legacy): addresses only, no arithmetic statement
+        # moved.  Reading: tests/test_rrtmg_sw_cuda.py (Fortran oracle
+        # max_ulp 0, batched == per-column) green, and six captured
+        # product-suite radiation calls uint32-identical to the d6929cb8d
+        # forecast on an RTX 4090 and an RTX 5090.  rrtmg_sw is not an mp=8
+        # translation unit and thompson.cu is byte-unchanged.
+        # Re-pinned for the coalesced shortwave slabs, the device laysolfr
+        # scan and the fused spcvmc layer pass (lane/speed-rrtmg-legacy):
+        # layouts, scheduling and storage only, every arithmetic statement
+        # kept (tools/rrtmg_sw_witness/fusion_statement_manifest.json,
+        # checked by tests/test_rrtmg_sw_layout_identity.py).  Reading:
+        # tests/test_rrtmg_sw_cuda.py (Fortran oracle max_ulp 0, batched ==
+        # per-column) green, real prep decks uint32-identical to the
+        # previous engine at chunks 1, 256, 1,536 and 4,096, and six
+        # captured product-suite radiation calls uint32-identical to the
+        # d6929cb8d forecast.
+        # e203fa9ea re-mapped rsw_taumol_b and the accumulation tile; a
+        # clean RTX PRO 4500 profile measured both slower, so the next
+        # commit restored this file byte for byte to its bfc177208 content,
+        # whose pin this is.
+        '44a83f0e310996cd708fb186d81e49722a199d4ed965d9eca37177c480c1a044',
+        'c9e02eeaa6c611943244ccbd786dd5ede27b52ac0621f9a86f6c5dfb13e0e701'),
     'rrtmgp_cloud': (
-        '015aec6065be8a23bcec1ce5421ae28cfbc74de1d6a7713a75bc1a78d1f7bc08',
-        '5976824ca813f3e40a8b6d73ccb88d39b333f110054bb502d482817a3a7c6ad7'),
+        # Re-pinned for fused profile preparation, broadcasts, temperature casts and flux copies.
+        # Exact-array gates and all five seeded digests match the base.
+        '512157c75edf4637d99a1cad490e8db71e51cd2c3643ff129adebefa81557560',
+        '4ee90af7209167d012e195c011752f84e08d6ea741350977b1a735ac8ee444d4'),
     'rrtmgp_gas': (
-        # Re-pinned for the contributed RRTMGP optimisation (51819ed0f,
-        # plus af2fe5e7f's follow-up): cell-per-block gas optics with
-        # shared memory, __f*_rn-pinned expressions.  Equivalence is the
-        # commit's own bitwise gates
-        # (test_gas_vmr_fused_kernel_matches_the_expression_reference and
-        # siblings), run green on sm_86.  Not an mp=8 unit.
-        '06249ff6c626dc914912c27465dc5cd3aa0ac3969f40b7cc515c639871594d04',
-        '01ad92e76fedbe87270f701260a324fb182446657a59030b7023458ae6bc0b3e'),
+        # Re-pinned for shared flavor weights, four cells and the frozen oracle.
+        # Exact-array gates and all five seeded digests match the base.
+        '47c20175678a44e0d51503c045d10bb218e1cf089ddc500d181ff75ca0ec27a1',
+        'b87b1a5736f7590137bdca926d296eeaa975d3cf1bd71a36c1f49102cb0524b5'),
     'rrtmgp_mcica': (
-        # Re-pinned with rrtmgp_gas for 51819ed0f (mcica jump operators);
-        # the same commit's bitwise gates cover it.  Not an mp=8 unit.
-        'e59fe155d595c74a8c17619758091633652773a509a56030d3dc1a7d90b11039',
-        '49a078da7c25f9ecc321b26a827a1972c641808613d0a8aac9143291805dfd29'),
+        # Re-pinned for shared seeds, exact clear paths, SASS-matched FP64
+        # intrinsics, bit-major GF(2) jumps and MWC-only alias walks.
+        # Base oracle gates bits.
+        '1de9a7a5408ffdbd043d547bfafbf2b1eb13c590caa8a03cd956149e1b1c2ad8',
+        '4747b7e9cb34990a0650f7a654163f0c8ca2979afe38840e0613164b789520f0'),
     'rrtmgp_rte': (
-        # Re-pinned for 51819ed0f: in-solver Planck derivation, fused
-        # finalize, warp fold -- each with an in-commit bitwise
-        # equivalence test against the kernel it replaces.  This unit
-        # also carries the rrtmgp_planck_common.cuh header grant; the
-        # loader-inertness gate below defers to
-        # test_kernel_loader_inert's closed mapping for exactly the
-        # modules the loader names.  Not an mp=8 unit.
-        '22e0afb97b08a24e6daf30a3a03197558d6f452a1bfe225c729e83fdc12c6087',
-        '3204abbd31c1600c43a2f1bbf7e7c2d416b5a4be77fac81041a8a9dcbd68d63e'),
+        # Re-pinned for buffered folds, packed columns and 16-lane masks.
+        # The partials/reduce oracle covers both geometries, cloud modes,
+        # Planck paths and tile widths. Not an mp=8 unit.
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously b33d69b0/ceedc6be.
+        '399be63125468cd93171d0cea76218a53c5a4a6245005fd5c897700ed822ed71',
+        '0b4beba7a0418703df1d3f492dfa81140821e2d6f3fd2d58189ad23afb9b72b4'),
     'rrtmgp_validation': (
         'c3a2554827e7c39db269d0fa1d5ad594d1623d6974be859a1ae3a044d438951f',
         '36f7a4dccc8c66be225e16fdd6088f0fafa7a357ac1aba9b4a99f98af297c370'),
@@ -915,8 +1168,14 @@ FROZEN_MODULE_DIGESTS = {
         # kernel held to the float64 mirror by ::
         # test_sfclay_kernel_writes_ustm_and_not_a_copy_of_ust and by every
         # standing SFCLAY_OUTPUTS sweep, which now grades ustm.
-        '1e0687817889897b950b5ae47e0f0cff58f0a97b32e5b65bcf3bf1ce15215f22',
-        'c26f5f0590d0e42ca033795ba801acd269e07fb7ed8f54213dfb385d5cff7f2b'),
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously 1e068781/c26f5f05.
+        '20526ca8a9c151ab36a620ba198ee1f1072828c23480b6f9d761057c85c28964',
+        '64893145b9bb557e1c30b32b323cf8118c91f903893c4a5ba7668b4e04a5ee9e'),
     'smag2d': (
         # Re-pinned on the 1.5 integration line: feature/les-integration's
         # verified km_opt=2/3 work edits smag2d.cu after this table was
@@ -937,8 +1196,14 @@ FROZEN_MODULE_DIGESTS = {
         # it was.  The mutant is a SEPARATE translation unit compiled
         # through load_module_int_defines under its own cache key and its
         # own kernel-manifest entry; it is never this one.
-        'c57ebd81fc6478ab58f4376043a0931feddf89c4146e7ed88b089133f559332e',
-        '2e5a33dcfd34a46c47d8408206c7e13bb14ee80320858f9c7adf796c118223e8'),
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously c57ebd81/2e5a33dc.
+        'eedf1fb33b0b8daa1582311bb667f006571a5cfa3d0f83c4b3107c310b4aa7df',
+        '975ec1e4f28c8aac4703bc4f783439b37831098afb0e664553c3e90a85ffb7ed'),
     'spec_bdy': (
         'bcc7090fbbb8ea307bd6dd6c65ab9b8a3f56948c4752ae3d744127b450d20161',
         'bc03ed595bacc546d8e041fbb1d11b5bb3b3b90760ef06ea1dd1f0f18b4de931'),
@@ -966,8 +1231,20 @@ FROZEN_MODULE_DIGESTS = {
         # to WRF's own Fortran on 137,200 saved real-data columns, echo from
         # up to 43.9 dB off to within 0.045 dB).  Previously
         # 938bf573/f9b8547f from 4ae7913df.
-        'd77977dc2479d97245aa11068b9e38fbdb9b8b6fb4c6acfcdb386ceb699ea262',
-        'e2ea318527e1cea3f3be5bc1d2224ed09d5cbfaf556da22b10fdcea879b3dc47'),
+        # RE-FROZEN 2026-09-30 by Thompson's exact shortcuts and
+        # level-parallel fallout, byte-identical in bit tests and three 1 h
+        # forecasts (see THOMPSON_CU_SHA256).  Previously d77977dc/e2ea3185.
+        # RE-FROZEN 2026-09-30 by the fused classic adapter launches,
+        # byte-identical in bit tests and three 1 h forecasts (see
+        # THOMPSON_CU_SHA256).  Previously d0997611/fd8a053a.
+        # Re-pinned for A146 on top of that: every float division by a
+        # compile-time constant is spelled __fdiv_rn, because NVRTC compiles x
+        # / C as a multiply by the rounded reciprocal on Blackwell targets.
+        # Reading: sm_89 unchanged; Blackwell cards now round these quotients
+        # IEEE-correctly. Previously a7955418/0508e4cc.
+        # Re-frozen again by the A146 review repair (see THOMPSON_CU_SHA256).
+        '01cdaebba2b72ce26e17fef6fea790eba7a520d367bb51f388cbb3040929d314',
+        'a4f136cd6e91597c0c04a7538bed3908ce1327defca059e99ef5b1663bf965b7'),
     'uh_diag': (
         'cbfc98e8d025a4511fd7f8a41ca4bd163c261da4a48dec22bb979ec5a496b14e',
         '9dc88c6e14b2aaaa4249a9f844dc231f105431623375c988a2894e322de2f3ea'),
@@ -983,11 +1260,23 @@ FROZEN_MODULE_DIGESTS = {
         # compute_89 and compute_120, and tests/test_wrf_vert_interp.py
         # holds every tier to identical output bytes.  Previously
         # ab608d65/65b0fe8a.
-        'd03c5656b7fd62c57e9598fcdf88ce89cca30f24cf9356230ae531c5626a6b30',
-        'f23a28175208a3da96af2b60a97050870cfe045d91698a06e054a8433c3dcf42'),
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously d03c5656/f23a2817.
+        '3efb1a82b8e1dd801b4466787d7ea561a48d5ac96f1c5ada640f20934150c16c',
+        '1c8825566f28dd38f44ee0ba88a11abe969220ea943966347c0be6ce8ea7d426'),
     'wsm6': (
-        '0526192b79d90d3be7c733a475987216d37cc81b17f8de4f1fe3e4220a6b81d7',
-        '1a6d20da0d450f235227fe609bdb12b368d96aec5ac231752074ff4dd9cc50e6'),
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously 0526192b/1a6d20da.
+        '0028b0c2d88d6087095cd2d4afab27bb2cb76b2a5bf51e3e5e908e0fdf2f0886',
+        'd6798c079bbf2c6343d6d6575be2cd5fd67a128612c401b36e8ebfc3f1c10451'),
     'ysu': (
         # Re-pinned for the column-workspace move (17cf943ef): per-thread
         # local arrays became a caller-sized global workspace, stride-32
@@ -1018,8 +1307,41 @@ FROZEN_MODULE_DIGESTS = {
         # no counterpart to the clamp at :646 and :823), landed in the same
         # window by the lane that owns it; the kernel and
         # gpuwm.verify.npref.np_ysu_column carry it identically.
-        '251dc8469b13a18a86f8a4a6546ceb9bb7680407a3f4afa03290d1140a48964b',
-        '4725831d8c4ad0660eff7d792f34c3eb8eb71e6e672293612100634c68200a7f'),
+        #
+        # RE-PINNED by WRF's flag_bep arm (dc7532c7f; sf_urban_physics 2/3):
+        # the column body became `template <bool BEP>` and every BEP
+        # statement sits under `if constexpr`, so ysu_column (BEP = false)
+        # compiles from the statements it always had; a new entry point,
+        # ysu_column_bep, carries the arm.  The non-BEP numerics are held
+        # unchanged by tests/test_ysu_wrf461_parity.py (its ULP table did not
+        # move, under NVRTC 13.4.92 and 12.9.86 alike) and the BEP arm is
+        # graded by tests/test_ysu_bep_wrf471_parity.py.  Previously
+        # 251dc846/4725831d.
+        #
+        # RE-PINNED by the declared rural-drag divergence (sf_urban_physics
+        # 2/3 under YSU only): the flag_bep arm removes the whole of YSU's
+        # own first-level drag instead of WRF's urban fraction of it, because
+        # the BEP couple already carries the rural drag in a_u_bep and WRF
+        # counts it twice.  One expression under `if constexpr (BEP)`;
+        # ysu_column (BEP = false) compiles from unchanged statements.
+        # Graded by tests/test_ysu_bep_wrf471_parity.py against a WRF build
+        # with exactly that one-line change and by
+        # tests/test_ysu_bep_rural_drag.py (a non-urban column under BEP
+        # against the same column with urban off).  Previously
+        # a42a4137/28be0b25.
+        #
+        # Re-pinned for A146 (a98f2482e): every float division by a compile-time
+        # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
+        # multiply by the rounded reciprocal on Blackwell targets.  Reading:
+        # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
+        # identical to the base's); Blackwell cards now round these quotients
+        # IEEE-correctly.  Previously 251dc846/4725831d.
+        #
+        # MERGED with integrate/2.8 (urban) on lane/281-nvrtc-literal-div:
+        # both changes above are in the file, so the digests are the
+        # merged file's.
+        '43dba307d5089d0df9d2161d04150b9f30a9ddfefd5c076afd2f47c2051c513b',
+        '7412be7df19858c833818f840c83f3963ba7a67a55082e3b6f11fe05c80a0d08'),
 }
 
 # -- R2 --------------------------------------------------------------------
@@ -1235,12 +1557,38 @@ EDGE_FIELD_CODES_PIN = {
 # identity labels, not values: 'state.qc' or 'scratch[mp_dz8w]'.
 # ------------------------------------------------------------------
 ADAPTER_CALLS_NO_REFL = (
-    ('save_pre_mp_theta', (
-        '<_HostAdapterState>',
+    # RE-PINNED 2026-09-30 by the fused classic adapter launches
+    # (launch_adapter_prepare / _entry / _masks / _finish): after CuPy's
+    # Exner power, the thermodynamics, entry markers, GRAUPELNCV reset,
+    # save_pre_mp_theta and WRF's entry rewrite are one launch; WRF's per-column no_micro flag (217e84e18,
+    # :1646, :2020) and the private graupel number, still taken on the
+    # rewritten entry state before any source kernel, are the next; the two
+    # post-source column masks are one; theta, moist_physics_finish and SR
+    # are one.  Every output bit is unchanged (tests/test_thompson_speed_
+    # glue.py and the lane's byte-identical 1 h forecasts).
+    ('launch_adapter_prepare', (
+        'state.thb',
+        'state.thp',
+        'state.phb',
+        'state.php',
+        'scratch[mp_th]',
+        'scratch[mp_pii]',
+        'scratch[mp_thompson_temperature]',
+        'scratch[mp_dz8w]',
+        'state.h_diabatic',
+        'state.qc',
+        'state.qi',
+        'state.ni',
+        'state.qr',
+        'state.nr',
+        'state.qs',
+        'state.qg',
+        'scratch[mp_thompson_frozen_reference_temperature]',
+        'scratch[mp_thompson_graupel_melt_marker]',
+        'scratch[mp_graupelncv]',
+        'scratch[mp_thompson_micro_columns]',
      ), {}),
-    # 217e84e18: WRF's per-column no_micro flag (:1646, :2020), taken on
-    # the entry state before any source kernel.
-    ('launch_microphysics_columns', (
+    ('launch_adapter_entry', (
         'state.qc',
         'state.qi',
         'state.qr',
@@ -1249,14 +1597,8 @@ ADAPTER_CALLS_NO_REFL = (
         'scratch[mp_thompson_temperature]',
         'state.p',
         'state.qv',
-        'scratch[mp_thompson_micro_columns]',
-     ), {}),
-    ('launch_classic_graupel_number_init', (
-        'state.qg',
-        'scratch[mp_thompson_temperature]',
-        'state.p',
-        'state.qv',
         'scratch[mp_thompson_graupel_number_shadow]',
+        'scratch[mp_thompson_micro_columns]',
      ), {}),
     ('launch_frozen_vapor_network_from_owner', (
         'state.qi',
@@ -1293,13 +1635,11 @@ ADAPTER_CALLS_NO_REFL = (
         '<classic-table-owner>',
         '10.0',
      ), {}),
-    ('launch_hydrometeor_column_mask', (
+    ('launch_adapter_masks', (
         'state.qr',
-        'scratch[mp_rainncv]',
-     ), {}),
-    ('launch_graupel_fallout_column_mask', (
-        'scratch[mp_thompson_frozen_reference_temperature]',
         'state.qg',
+        'scratch[mp_thompson_frozen_reference_temperature]',
+        'scratch[mp_rainncv]',
         'scratch[mp_sr]',
      ), {}),
     ('launch_cloud_saturation_adjust', (
@@ -1489,21 +1829,54 @@ ADAPTER_CALLS_NO_REFL = (
         'state.effi',
         'state.effs',
      ), {}),
-    ('moist_physics_finish', (
-        '<_HostAdapterState>',
-        '<SimpleNamespace>',
+    ('launch_adapter_finish', (
+        'scratch[mp_thompson_temperature]',
+        'scratch[mp_pii]',
         'scratch[mp_th]',
+        'state.thp',
+        'state.h_diabatic',
+        'scratch[mp_rainncv]',
+        'scratch[mp_snowncv]',
+        'scratch[mp_graupelncv]',
+        'scratch[mp_sr]',
+        '<SimpleNamespace>',
         '10.0',
      ), {}),
 )
 
 ADAPTER_CALLS_WITH_REFL = (
-    ('save_pre_mp_theta', (
-        '<_HostAdapterState>',
+    # RE-PINNED 2026-09-30 by the fused classic adapter launches
+    # (launch_adapter_prepare / _entry / _masks / _finish): after CuPy's
+    # Exner power, the thermodynamics, entry markers, GRAUPELNCV reset,
+    # save_pre_mp_theta and WRF's entry rewrite are one launch; WRF's per-column no_micro flag (217e84e18,
+    # :1646, :2020) and the private graupel number, still taken on the
+    # rewritten entry state before any source kernel, are the next; the two
+    # post-source column masks are one; theta, moist_physics_finish and SR
+    # are one.  Every output bit is unchanged (tests/test_thompson_speed_
+    # glue.py and the lane's byte-identical 1 h forecasts).
+    ('launch_adapter_prepare', (
+        'state.thb',
+        'state.thp',
+        'state.phb',
+        'state.php',
+        'scratch[mp_th]',
+        'scratch[mp_pii]',
+        'scratch[mp_thompson_temperature]',
+        'scratch[mp_dz8w]',
+        'state.h_diabatic',
+        'state.qc',
+        'state.qi',
+        'state.ni',
+        'state.qr',
+        'state.nr',
+        'state.qs',
+        'state.qg',
+        'scratch[mp_thompson_frozen_reference_temperature]',
+        'scratch[mp_thompson_graupel_melt_marker]',
+        'scratch[mp_graupelncv]',
+        'scratch[mp_thompson_micro_columns]',
      ), {}),
-    # 217e84e18: WRF's per-column no_micro flag (:1646, :2020), taken on
-    # the entry state before any source kernel.
-    ('launch_microphysics_columns', (
+    ('launch_adapter_entry', (
         'state.qc',
         'state.qi',
         'state.qr',
@@ -1512,14 +1885,8 @@ ADAPTER_CALLS_WITH_REFL = (
         'scratch[mp_thompson_temperature]',
         'state.p',
         'state.qv',
-        'scratch[mp_thompson_micro_columns]',
-     ), {}),
-    ('launch_classic_graupel_number_init', (
-        'state.qg',
-        'scratch[mp_thompson_temperature]',
-        'state.p',
-        'state.qv',
         'scratch[mp_thompson_graupel_number_shadow]',
+        'scratch[mp_thompson_micro_columns]',
      ), {}),
     ('launch_frozen_vapor_network_from_owner', (
         'state.qi',
@@ -1556,13 +1923,11 @@ ADAPTER_CALLS_WITH_REFL = (
         '<classic-table-owner>',
         '10.0',
      ), {}),
-    ('launch_hydrometeor_column_mask', (
+    ('launch_adapter_masks', (
         'state.qr',
-        'scratch[mp_rainncv]',
-     ), {}),
-    ('launch_graupel_fallout_column_mask', (
-        'scratch[mp_thompson_frozen_reference_temperature]',
         'state.qg',
+        'scratch[mp_thompson_frozen_reference_temperature]',
+        'scratch[mp_rainncv]',
         'scratch[mp_sr]',
      ), {}),
     ('launch_cloud_saturation_adjust', (
@@ -1761,10 +2126,17 @@ ADAPTER_CALLS_WITH_REFL = (
         'state.effi',
         'state.effs',
      ), {}),
-    ('moist_physics_finish', (
-        '<_HostAdapterState>',
-        '<SimpleNamespace>',
+    ('launch_adapter_finish', (
+        'scratch[mp_thompson_temperature]',
+        'scratch[mp_pii]',
         'scratch[mp_th]',
+        'state.thp',
+        'state.h_diabatic',
+        'scratch[mp_rainncv]',
+        'scratch[mp_snowncv]',
+        'scratch[mp_graupelncv]',
+        'scratch[mp_sr]',
+        '<SimpleNamespace>',
         '10.0',
      ), {}),
 )

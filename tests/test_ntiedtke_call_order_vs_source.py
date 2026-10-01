@@ -175,7 +175,8 @@ def _kernel_args():
     return out
 
 
-_TAIL = {"geom_report", "order_report", "ticket"}
+# The assembler initializes the mask beside the diagnostic carriers.
+_TAIL = {"geom_report", "order_report", "ticket", "llo3_mask"}
 _SCRATCH = {"scr", "scr_i"}
 
 

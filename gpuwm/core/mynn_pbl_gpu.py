@@ -369,39 +369,57 @@ def _tendency_ncol(values: Mapping[str, object]) -> int:
     return int(shape[0]) if len(shape) == 2 else 1
 
 
+def _dense(array) -> bool:
+    """True when ``array`` covers one dense block of memory from its pointer.
+
+    The batched scan reads ``size`` words from the data pointer in any order,
+    which is every element exactly when the view is C- or F-contiguous.
+    """
+    return bool(array.flags.c_contiguous or array.flags.f_contiguous)
+
+
+def _flag_launch(kernel, block, flags) -> None:
+    """Queue ``kernel``'s verdict for each array of ``block`` into
+    ``flags[:len(block)]``, one word per array, without reading it back.
+
+    Large dense FP32 groups use one clear and one batched scan instead of one
+    reduction launch per array. Small or other-typed inputs keep the
+    original reduction.
+    """
+    predicate = getattr(kernel, "name", None)
+    factory = {"mynn_pbl_nonfinite": _nonfinite,
+               "mynn_pbl_nonpositive": _nonpositive,
+               "mynn_pbl_nonzero": _nonzero}.get(predicate)
+    if (len(block) >= 4 and predicate in _VALIDATION_PREDICATES
+            and factory is not None and kernel is factory()
+            and flags.dtype == cp.int32 and flags.flags.c_contiguous
+            and all(array.dtype == DTYPE and _dense(array)
+                    for array in block)):
+        flags[:len(block)].fill(0)
+        arguments = tuple(value for array in block
+                          for value in (array, np.uint64(array.size)))
+        blocks = _validation_grid_blocks(max(array.size for array in block),
+                                         len(block), cp.cuda.runtime.getDevice())
+        _validation_batch_kernel(predicate, len(block))(
+            (blocks, len(block)), (128,), (*arguments, flags))
+    else:
+        for index, array in enumerate(block):
+            kernel(array, out=flags[index:index + 1].reshape(()),
+                   keepdims=False)
+
+
 def _flag_mask(kernel, arrays, flags) -> list[bool]:
     """Per-array verdicts from ``kernel``, one host read per flag block.
 
-    Large contiguous FP32 groups use one clear and one batched scan instead
-    of one reduction launch per array. Small or other-typed inputs keep the
-    original reduction. Groups longer than the flag block still preserve
-    every array's word and complete the same immediate host read.
+    Groups longer than the flag block still preserve every array's word and
+    complete the same immediate host read.
     """
     arrays = tuple(arrays)
     words = int(flags.size)
     mask: list[bool] = []
     for start in range(0, len(arrays), words):
         block = arrays[start:start + words]
-        predicate = getattr(kernel, "name", None)
-        factory = {"mynn_pbl_nonfinite": _nonfinite,
-                   "mynn_pbl_nonpositive": _nonpositive,
-                   "mynn_pbl_nonzero": _nonzero}.get(predicate)
-        if (len(block) >= 4 and predicate in _VALIDATION_PREDICATES
-                and factory is not None and kernel is factory()
-                and flags.dtype == cp.int32 and flags.flags.c_contiguous
-                and all(array.dtype == DTYPE and array.flags.c_contiguous
-                        for array in block)):
-            flags[:len(block)].fill(0)
-            arguments = tuple(value for array in block
-                              for value in (array, np.uint64(array.size)))
-            blocks = _validation_grid_blocks(max(array.size for array in block),
-                                             len(block), cp.cuda.runtime.getDevice())
-            _validation_batch_kernel(predicate, len(block))(
-                (blocks, len(block)), (128,), (*arguments, flags))
-        else:
-            for index, array in enumerate(block):
-                kernel(array, out=flags[index:index + 1].reshape(()),
-                       keepdims=False)
+        _flag_launch(kernel, block, flags)
         mask.extend(bool(value) for value in flags[:len(block)].get())
     return mask
 
@@ -409,6 +427,48 @@ def _flag_mask(kernel, arrays, flags) -> list[bool]:
 def _tripped(kernel, arrays, flags) -> bool:
     """True when ``kernel`` reports nonzero for any array in the group."""
     return any(_flag_mask(kernel, arrays, flags))
+
+
+def _first_refusal(checks, flags) -> str | None:
+    """The message of the first check in ``checks`` that trips, else None.
+
+    ``checks`` is an ordered sequence of ``(kernel, arrays, message)``, the
+    order a caller used to test them one ``_tripped`` at a time.  Every
+    check's scans are queued into their own flag words first and the words
+    are read back once, so a call site that refused on its third check
+    still refuses with that check's message, and one that passes pays one
+    host read instead of one per check.  The scans only read their inputs,
+    so running a later check on inputs an earlier check would have refused
+    changes nothing but the order of reads.  Checks that share a predicate
+    share one launch.  A group too long for the flag block falls back to
+    the per-check reads.
+    """
+    checks = [(kernel, tuple(arrays), message)
+              for kernel, arrays, message in checks]
+    if sum(len(arrays) for _, arrays, _ in checks) > int(flags.size):
+        for kernel, arrays, message in checks:
+            if _tripped(kernel, arrays, flags):
+                return message
+        return None
+    groups: dict[int, tuple[object, list]] = {}
+    spans = []
+    for kernel, arrays, message in checks:
+        group = groups.setdefault(id(kernel), (kernel, []))[1]
+        spans.append((id(kernel), len(group), len(group) + len(arrays),
+                      message))
+        group.extend(arrays)
+    offsets = {}
+    offset = 0
+    for key, (kernel, arrays) in groups.items():
+        offsets[key] = offset
+        _flag_launch(kernel, arrays, flags[offset:offset + len(arrays)])
+        offset += len(arrays)
+    words = flags[:offset].get()
+    for key, lo, hi, message in spans:
+        base = offsets[key]
+        if words[base + lo:base + hi].any():
+            return message
+    return None
 
 
 def dmp_registers_per_thread() -> int:
@@ -443,7 +503,7 @@ def _pair_array(value, shape, name: str, out=None):
     """Validate/broadcast one MYNN argument, copying only when it must.
 
     ``out`` is a scratch view.  With every runtime input already a
-    contiguous float32 device array the fast path returns it untouched and
+    level-major float32 device array the fast path returns it untouched and
     allocates nothing; the copy happens only for a broadcast, a
     non-contiguous view, or a host array from an oracle fixture.
     """
@@ -456,10 +516,15 @@ def _pair_array(value, shape, name: str, out=None):
                 f"{name} shape {array.shape} is not broadcastable to "
                 f"MYNN pair shape {shape}"
             ) from exc
-    if array.flags.c_contiguous:
+    if out is not None:
+        if array.strides == out.strides:
+            return array
+        out[...] = array
+        return out
+    if array.flags.f_contiguous:
         return array
     if out is None:
-        return cp.ascontiguousarray(array)
+        return cp.asfortranarray(array)
     out[...] = array
     return out
 
@@ -508,7 +573,11 @@ def mynn_level2_pairs_cuda(values: Mapping[str, object], *,
             out=pairs[name])
     result = MynnLevel2Result(
         **work.group(SLOT_LEVEL2_OUT, MYNN_LEVEL2_OUTPUTS, shape))
-    launch_mynn_level2_pairs(inputs, result)
+    # The elementwise launcher keeps its contiguous public contract.
+    physical_inputs = {name: array.T for name, array in inputs.items()}
+    physical_result = MynnLevel2Result(
+        **{name: getattr(result, name).T for name in MYNN_LEVEL2_OUTPUTS})
+    launch_mynn_level2_pairs(physical_inputs, physical_result)
     return result
 
 
@@ -524,10 +593,10 @@ def mynn_pblh_scale_columns_cuda(
 ) -> MynnPblhScaleResult:
     """Evaluate WRF ``GET_PBLH`` and ``SCALE_AWARE`` on device columns."""
 
-    theta = cp.ascontiguousarray(cp.asarray(thetav, dtype=DTYPE))
-    energy = cp.ascontiguousarray(cp.asarray(qke, dtype=DTYPE))
-    depth = cp.ascontiguousarray(cp.asarray(dz, dtype=DTYPE))
-    interface = cp.ascontiguousarray(cp.asarray(zw, dtype=DTYPE))
+    theta = cp.asfortranarray(cp.asarray(thetav, dtype=DTYPE))
+    energy = cp.asfortranarray(cp.asarray(qke, dtype=DTYPE))
+    depth = cp.asfortranarray(cp.asarray(dz, dtype=DTYPE))
+    interface = cp.asfortranarray(cp.asarray(zw, dtype=DTYPE))
     if theta.ndim != 2 or energy.shape != theta.shape or depth.shape != theta.shape:
         raise ValueError("MYNN PBLH mass fields must share shape (ncol,nz)")
     ncol, nz = theta.shape
@@ -568,7 +637,7 @@ def mynn_mixlength_default_cuda(
         "dz", "u", "v", "qke", "dtv", "theta", "vt", "vq",
         "cldfra", "edmf_w", "edmf_a",
     )
-    dz = cp.ascontiguousarray(cp.asarray(values["dz"], dtype=DTYPE))
+    dz = cp.asfortranarray(cp.asarray(values["dz"], dtype=DTYPE))
     if dz.ndim != 2:
         raise ValueError("MYNN mixing-length columns must share shape (ncol,nz)")
     ncol, nz = dz.shape
@@ -631,7 +700,7 @@ def mynn_turbulence_default_cuda(
         "qsq", "cov", "vt", "vq", "theta", "cldfra", "edmf_w",
         "edmf_a", "tkeprodtd",
     )
-    dz = cp.ascontiguousarray(cp.asarray(values["dz"], dtype=DTYPE))
+    dz = cp.asfortranarray(cp.asarray(values["dz"], dtype=DTYPE))
     if dz.ndim != 2:
         raise ValueError("MYNN turbulence columns must share shape (ncol,nz)")
     ncol, nz = dz.shape
@@ -678,7 +747,7 @@ def mynn_turbulence_default_cuda(
         "edmf_a": columns["edmf_a"],
         **scalars,
     }, scratch=work)
-    # mynn_pbl.cu:945 returns before k == 0, so the surface element of all
+    # mynn_turbulence_default_interfaces returns before k == 0, so the surface element of all
     # nine products keeps the zero WRF gave them.  Same reasoning as above.
     products = work.one(SLOT_TURBULENCE,
                         (len(_TURBULENCE_PRODUCTS), ncol, nz))
@@ -731,7 +800,7 @@ def mynn_predict_default_cuda(
         "dz", "rho", "dfq", "pdk", "pdt", "pdq", "pdc", "el", "qke",
         "tsq", "qsq", "cov",
     )
-    dz = cp.ascontiguousarray(cp.asarray(values["dz"], dtype=DTYPE))
+    dz = cp.asfortranarray(cp.asarray(values["dz"], dtype=DTYPE))
     if dz.ndim != 2:
         raise ValueError("MYNN predictor columns must share shape (ncol,nz)")
     ncol, nz = dz.shape
@@ -800,7 +869,7 @@ def mynn_condensation_default_cuda(
         "dz", "th", "thl", "qw", "qv", "qc", "qi", "qs", "p", "exner",
         "tsq", "qsq", "cov", "sh", "el", "rstoch", "vt", "vq", "sgm",
     )
-    dz = cp.ascontiguousarray(cp.asarray(values["dz"], dtype=DTYPE))
+    dz = cp.asfortranarray(cp.asarray(values["dz"], dtype=DTYPE))
     if dz.ndim != 2:
         raise ValueError(
             "MYNN condensation columns must share shape (ncol,nz)"
@@ -913,7 +982,7 @@ def _tendency_device_arrays(values: Mapping[str, object], work):
     if missing:
         raise TypeError(f"missing MYNN tendency inputs: {', '.join(missing)}")
 
-    dz = cp.ascontiguousarray(cp.asarray(values["dz"], dtype=DTYPE))
+    dz = cp.asfortranarray(cp.asarray(values["dz"], dtype=DTYPE))
     if dz.ndim != 2:
         raise ValueError("MYNN tendency columns must share shape (ncol,nz)")
     ncol, nz = dz.shape
@@ -930,24 +999,21 @@ def _tendency_device_arrays(values: Mapping[str, object], work):
         name: _pair_array(values[name], (ncol,), name)
         for name in MYNN_TENDENCIES_SCALAR_INPUTS
     }
-    flags = work.flags()
-    if _tripped(_nonfinite(),
-                (*columns.values(), *interfaces.values(), *scalars.values()),
-                flags):
-        raise ValueError("MYNN tendency inputs must be finite")
-
-    def nonpositive(source: Mapping[str, cp.ndarray], names):
-        return _tripped(
-            _nonpositive(), [source[name] for name in names], flags)
-
-    if nonpositive(columns, ("dz", "rho")):
-        raise ValueError("MYNN tendency dz and rho must be positive")
-    if nonpositive(columns, ("exner", "p")):
-        raise ValueError("MYNN tendency exner and p must be positive")
-    if nonpositive(scalars, ("delt", "wspd")):
-        raise ValueError("MYNN tendency delt and wspd must be positive")
-    if nonpositive(scalars, ("psfc",)):
-        raise ValueError("MYNN tendency psfc must be positive")
+    refusal = _first_refusal((
+        (_nonfinite(),
+         (*columns.values(), *interfaces.values(), *scalars.values()),
+         "MYNN tendency inputs must be finite"),
+        (_nonpositive(), (columns["dz"], columns["rho"]),
+         "MYNN tendency dz and rho must be positive"),
+        (_nonpositive(), (columns["exner"], columns["p"]),
+         "MYNN tendency exner and p must be positive"),
+        (_nonpositive(), (scalars["delt"], scalars["wspd"]),
+         "MYNN tendency delt and wspd must be positive"),
+        (_nonpositive(), (scalars["psfc"],),
+         "MYNN tendency psfc must be positive"),
+    ), work.flags())
+    if refusal is not None:
+        raise ValueError(refusal)
     return columns, interfaces, scalars, ncol, nz
 
 
@@ -1206,7 +1272,7 @@ def mynn_initialize_default_cuda(
         raise TypeError(
             f"missing MYNN initialize inputs: {', '.join(missing)}")
 
-    dz = cp.ascontiguousarray(cp.asarray(values["dz"], dtype=DTYPE))
+    dz = cp.asfortranarray(cp.asarray(values["dz"], dtype=DTYPE))
     if dz.ndim != 2:
         raise ValueError("MYNN initialize columns must share shape (ncol,nz)")
     ncol, nz = dz.shape
@@ -1221,14 +1287,16 @@ def mynn_initialize_default_cuda(
         for name in MYNN_INITIALIZE_SCALAR_INPUTS
     }
     work = _scratch_for(scratch, ncol, nz)
-    flags = work.flags()
-    if _tripped(_nonfinite(),
-                (*columns.values(), interface, *scalars.values()), flags):
-        raise ValueError("MYNN initialize inputs must be finite")
-    if _tripped(_nonpositive(), (columns["dz"],), flags):
-        raise ValueError("MYNN initialize layer depths must be positive")
-    if _tripped(_nonpositive(), (scalars["ust"],), flags):
-        raise ValueError("MYNN initialize requires a positive ust")
+    refusal = _first_refusal((
+        (_nonfinite(), (*columns.values(), interface, *scalars.values()),
+         "MYNN initialize inputs must be finite"),
+        (_nonpositive(), (columns["dz"],),
+         "MYNN initialize layer depths must be positive"),
+        (_nonpositive(), (scalars["ust"],),
+         "MYNN initialize requires a positive ust"),
+    ), work.flags())
+    if refusal is not None:
+        raise ValueError(refusal)
 
     # mynn_pbl.cu:2482-2489 aliases all seven outputs as the routine own
     # working columns and its first loop fills every level of each from the
@@ -1307,7 +1375,7 @@ def mynn_dmp_mf_cuda(
     if missing:
         raise TypeError(f"missing MYNN mass-flux inputs: {', '.join(missing)}")
 
-    dz = cp.ascontiguousarray(cp.asarray(values["dz"], dtype=DTYPE))
+    dz = cp.asfortranarray(cp.asarray(values["dz"], dtype=DTYPE))
     if dz.ndim != 2:
         raise ValueError("MYNN mass-flux columns must share shape (ncol,nz)")
     ncol, nz = dz.shape
@@ -1337,18 +1405,20 @@ def mynn_dmp_mf_cuda(
         for name in MYNN_DMP_MF_QN_COLUMN_INPUTS:
             qn_columns[name] = _pair_array(values[name], (ncol, nz), name)
     work = _scratch_for(scratch, ncol, nz)
-    flags = work.flags()
-    if _tripped(_nonfinite(),
-                (*columns.values(), interface, *scalars.values()), flags):
-        raise ValueError("MYNN mass-flux inputs must be finite")
-    if _tripped(_nonpositive(), (columns["dz"],), flags):
-        raise ValueError("MYNN mass-flux layer depths must be positive")
-    if _tripped(_nonpositive(), (columns["p"], columns["rho"]), flags):
-        raise ValueError("MYNN mass-flux p and rho must be positive")
-    if _tripped(_nonpositive(), (columns["exner"], columns["tk"]), flags):
-        raise ValueError("MYNN mass-flux exner and tk must be positive")
-    if _tripped(_nonpositive(), (scalars["pblh"], scalars["dx"]), flags):
-        raise ValueError("MYNN mass-flux pblh and dx must be positive")
+    refusal = _first_refusal((
+        (_nonfinite(), (*columns.values(), interface, *scalars.values()),
+         "MYNN mass-flux inputs must be finite"),
+        (_nonpositive(), (columns["dz"],),
+         "MYNN mass-flux layer depths must be positive"),
+        (_nonpositive(), (columns["p"], columns["rho"]),
+         "MYNN mass-flux p and rho must be positive"),
+        (_nonpositive(), (columns["exner"], columns["tk"]),
+         "MYNN mass-flux exner and tk must be positive"),
+        (_nonpositive(), (scalars["pblh"], scalars["dx"]),
+         "MYNN mass-flux pblh and dx must be positive"),
+    ), work.flags())
+    if refusal is not None:
+        raise ValueError(refusal)
 
     # mynn_pbl.cu:2799-2821 seeds every layer and every face output before
     # the plume walk, including the four copied from their input
@@ -1427,13 +1497,11 @@ def mynn_dmp_mf_cuda(
     # Plume-edge terms already sitting in the launch scratch, viewed in
     # the (ncol, nz+1|nz, nup) layout the flux kernel reads (bitwise data
     # movement only; the launcher makes its own contiguous copies).
-    up_w = plume_scratch.reshape(
-        ncol, _DMP_PLUME_VECTORS, nup, nz + 1)[:, 0].transpose(0, 2, 1)
-    per_col = _DMP_WORK_VECTORS * nz + nup * nz
-    rhoz = work_scratch.reshape(ncol, per_col)[:, :nz]
-    ent = work_scratch.reshape(ncol, per_col)[
-        :, _DMP_WORK_VECTORS * nz:].reshape(
-        ncol, nup, nz).transpose(0, 2, 1)
+    up_w = plume_scratch.T.reshape(
+        _DMP_PLUME_VECTORS, nup, nz + 1, ncol)[0].transpose(2, 1, 0)
+    rhoz = work_scratch[:, :nz]
+    ent = work_scratch.T[_DMP_WORK_VECTORS * nz:].reshape(
+        nup, nz, ncol).transpose(2, 1, 0)
     solved = {}
     for name in MYNN_DMP_MF_QN_COLUMN_INPUTS:
         solved[f"s_aw{name}"] = mynn_dmp_qn_flux_columns_cuda(
@@ -1465,6 +1533,7 @@ def _driver_prep_cuda(layers, ust, ncol: int, nz: int, work):
     same assembly measured 205 ULP of drift in ``RUBLTEN``.
     """
 
+    layers = {name: cp.asfortranarray(array) for name, array in layers.items()}
     outputs = work.group(
         SLOT_PREP, ("qv1", "sqw", "thl", "thetav", "qke_seed"), (ncol, nz))
     zw = work.one(SLOT_ZW, (ncol, nz + 1))
@@ -1515,6 +1584,7 @@ def _driver_surface_cuda(layers, qv1, scalars, ncol: int, nz: int, work):
     0 ULP.
     """
 
+    layers = {name: cp.asfortranarray(array) for name, array in layers.items()}
     names = ("flt", "fltv", "flq", "flqv", "flqc", "th_sfc", "rmol", "zet",
              "pmz", "phh")
     outputs = work.group(SLOT_SURFACE, names, (ncol,))
@@ -1618,7 +1688,7 @@ def mynn_bl_driver_cuda(
         raise TypeError(f"missing MYNN driver inputs: {', '.join(missing)}")
 
     layers = {
-        name: cp.ascontiguousarray(cp.asarray(values[name], dtype=DTYPE))
+        name: cp.asfortranarray(cp.asarray(values[name], dtype=DTYPE))
         for name in (*MYNN_DRIVER_LAYER_INPUTS, *MYNN_DRIVER_STATE)
     }
     shapes = {array.shape for array in layers.values()}

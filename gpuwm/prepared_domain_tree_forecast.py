@@ -110,9 +110,12 @@ from gpuwm.physics_compat import (  # noqa: E402
     experimental_selection_sentence,
 )
 from gpuwm.io.restart import RestartMismatchError  # noqa: E402
+from gpuwm.ingest.memory_refusal import InitializationMemoryRefused  # noqa: E402
 from gpuwm.supervisor import (  # noqa: E402
+    HEARTBEAT_NAME,
     quarantine_file as supervisor_quarantine_file,
     replace_file_with_retry as supervisor_replace_file_with_retry,
+    restart_attempt,
 )
 from gpuwm.ingest.prepared_cache import (  # noqa: E402
     PreparedCacheReader,
@@ -267,6 +270,8 @@ def _without_forecast_stop(exp):
     # the chosen value binds on run.mix_isotropic, and an auto-selected
     # 1 must extend a written 1's sealed legs (and vice versa).
     result.pop("auto_mix_isotropic", None)
+    # Likewise the off-centering provenance label (run.epssm binds).
+    result.pop("auto_epssm", None)
     domains = result.get("domains")
     if not isinstance(domains, list) or not domains:
         raise ValueError(
@@ -367,6 +372,29 @@ def _digest(value: str, label: str) -> str:
     if len(normalized) != 64 or any(char not in _HEX for char in normalized):
         raise ValueError(f"{label} must be a SHA-256 digest")
     return normalized
+
+
+def _bound_authority(authority: Mapping[str, object], head) -> dict:
+    """The tree's authority digests, as every domain's cache must carry them.
+
+    An as-posted head's domains bind its input plan where the manifest
+    digest goes (the L3 design ruling): exactly this head's placeholder is
+    taken, and only in the identity keys the head declares manifest-bound.
+    The seal writes the digest, and :func:`_seal_tree_inputs` holds every
+    domain to it.  Everything else is a SHA-256 digest, as before.
+    """
+
+    placeholder = None
+    bound: tuple = ()
+    if head is not None and head["basis"].get("as_posted") is not None:
+        from gpuwm.ingest.boundary_stream import as_posted_placeholder
+
+        posted = head["basis"]["as_posted"]
+        placeholder = as_posted_placeholder(posted["input_plan_sha256"])
+        bound = tuple(posted["manifest_bound_identity_keys"])
+    return {label: (value if placeholder is not None and label in bound
+                    and value == placeholder else _digest(value, label))
+            for label, value in authority.items()}
 
 
 def _require_file(path: Path, label: str) -> Path:
@@ -621,6 +649,33 @@ class PreparedTreeInputs:
     #: (:func:`gpuwm.terrain_clock.clock_receipt`), filled in beside the
     #: substep one.
     terrain_clock: Mapping[str, object] | None = None
+    #: The chained preparation's ``boundary-stream/head.json`` when this run
+    #: is bound to the head (``--prepared-head-sha256``): the root restores
+    #: from its streamed cache, the children from ``hierarchy-head/``, and
+    #: the seal is bound at the end (:func:`_seal_tree_inputs`).  ``None``
+    #: for a sealed binding.
+    stream_head: Mapping[str, object] | None = None
+    #: The head digest this tree was prepared under, however it is bound:
+    #: the head itself, or a sealed proof that names it
+    #: (``boundary_stream.head_sha256``).  ``None`` for a tree prepared in
+    #: one piece.  It stands in the restart identity for the proof and the
+    #: root cache digests, so a checkpoint written before the seal resumes
+    #: under either binding.
+    prepared_head_sha256: str | None = None
+    #: ``{"dNN": content_sha256}`` of each child the head prepared, for a
+    #: SEALED binding of an as-posted tree, else ``None``.  Such a tree's
+    #: head children carry the input plan where their sealed twins carry
+    #: the manifest digest, so the two content digests differ by that
+    #: identity alone; the restart identity binds the head's under both
+    #: bindings (:func:`tree_restart_identity_components`), each sealed
+    #: child held to its head twin (:func:`_as_posted_head_children`).
+    head_child_content_sha256: Mapping[str, str] | None = None
+    #: What the long-step derivation read before it chose a clock
+    #: (:class:`gpuwm.ingest.boundary_stream.ClockBasis`).
+    clock_basis: object | None = None
+    #: The preflight's own arguments, so the seal runs the same preflight
+    #: again on the sealed tree.
+    preflight_arguments: Mapping[str, object] | None = None
 
 
 def _with_terrain_acoustics(inputs: PreparedTreeInputs) -> PreparedTreeInputs:
@@ -663,7 +718,16 @@ def _with_terrain_acoustics(inputs: PreparedTreeInputs) -> PreparedTreeInputs:
     readers = {int(bundle.grid_id): bundle.cache_reader
                for bundle in inputs.domains
                if getattr(bundle, "cache_reader", None) is not None}
+    basis = None
     if readers:
+        from gpuwm.ingest.boundary_stream import ClockBasis
+
+        # Kept for a head-bound run, which reads the same derivation again
+        # as each root boundary interval arrives.
+        basis = ClockBasis(experiment=adapted, acoustic=acoustic,
+                           readers=MappingProxyType(dict(readers)),
+                           statics=MappingProxyType(dict(statics)),
+                           reach=MappingProxyType(dict(reach)))
         adapted, clock = clock_for_prepared_cache(
             adapted, acoustic, readers=readers, statics=statics,
             boundaries=getattr(inputs, "boundaries", None),
@@ -676,10 +740,13 @@ def _with_terrain_acoustics(inputs: PreparedTreeInputs) -> PreparedTreeInputs:
                       if getattr(bundle, "restored", None) is not None},
             statics=statics, boundaries=getattr(inputs, "boundaries", None),
             corridors=reach)
+    extra = ({} if basis is None or not hasattr(inputs, "clock_basis")
+             else {"clock_basis": basis})
     return replace(inputs, experiment=adapted,
                    acoustic_substeps=MappingProxyType(
                        acoustic_receipt(acoustic)),
-                   terrain_clock=MappingProxyType(clock_receipt(clock)))
+                   terrain_clock=MappingProxyType(clock_receipt(clock)),
+                   **extra)
 
 
 def _prepared_planning_nodes(inputs):
@@ -705,6 +772,26 @@ def _prepared_planning_nodes(inputs):
 
 
 def _domain_rows(exp) -> list[dict[str, object]]:
+    return [_with_history_window(domain, row) for domain, row in zip(
+        exp.domains, _plain_domain_rows(exp))]
+
+
+def _with_history_window(domain, row: dict[str, object]) -> dict[str, object]:
+    """The row, plus the history window where the domain sets one.
+
+    Absent when unset, so every receipt written before the window existed
+    is unchanged.
+    """
+    begin = float(getattr(domain, "history_begin_s", 0.0) or 0.0)
+    end = getattr(domain, "history_end_s", None)
+    if begin:
+        row["history_begin_s"] = begin
+    if end is not None:
+        row["history_end_s"] = float(end)
+    return row
+
+
+def _plain_domain_rows(exp) -> list[dict[str, object]]:
     return [
         {
             "grid_id": int(domain.grid_id),
@@ -754,6 +841,14 @@ TREE_RESTART_IDENTITY_COMPONENTS = (
     "domain_cache_content_sha256", "execution_plan",
     "runtime_source_identity",
 )
+#: The same identity for a tree prepared chained: its head digest stands
+#: for the proof, and the children's caches for the domain caches (the
+#: root's cache is bound by the head and checked against it at the seal).
+CHAINED_TREE_RESTART_IDENTITY_COMPONENTS = (
+    "schema", "experiment_identity", "prepared_head_sha256",
+    "domain_cache_content_sha256", "execution_plan",
+    "runtime_source_identity",
+)
 
 
 def tree_restart_identity_components(
@@ -774,6 +869,39 @@ def tree_restart_identity_components(
     # Raw artifact digests remain verified by that adapter; source, cache,
     # configuration and runtime identity remain bound below.
     receipt_identity = getattr(initialization, 'preparation_receipt_sha256', None)
+    head_sha256 = (None if initialization is not None
+                   else getattr(inputs, "prepared_head_sha256", None))
+    if head_sha256 is not None:
+        # A CHAINED TREE is bound by its head whichever way this run binds
+        # it (the head at launch, or the sealed proof that names it), so a
+        # checkpoint written before the seal resumes under either binding.
+        # The head binds the proof's start half, the root's start arrays
+        # and every child's receipt; the seal is checked against it, so
+        # the proof and root cache digests (which a head-bound run does
+        # not have at launch) are not components here.  Each child is the
+        # one the head prepared: an as-posted tree's sealed children carry
+        # the manifest digest where the head's carry the input plan, so a
+        # sealed binding names its head twins' digests.
+        root_id = next(int(domain.grid_id)
+                       for domain in inputs.experiment.domains
+                       if domain.parent_id == 0)
+        head_children = getattr(inputs, "head_child_content_sha256", None)
+        return _strict_json({
+            "schema": REPORT_SCHEMA,
+            "experiment_identity": restart_identity_payload(
+                inputs.experiment),
+            "prepared_head_sha256": head_sha256,
+            "domain_cache_content_sha256": {
+                f"d{bundle.grid_id:02d}": (
+                    bundle.cache_reader.content_sha256
+                    if head_children is None
+                    else head_children[f"d{bundle.grid_id:02d}"])
+                for bundle in inputs.domains
+                if int(bundle.grid_id) != root_id
+            },
+            "execution_plan": _plan_restart_identity(inputs.execution_plan),
+            "runtime_source_identity": runtime_identity,
+        })
     preparation_sha256 = (receipt_identity() if callable(receipt_identity)
                           else inputs.authority_sha256["preparation_receipt"])
     # Strict-JSON at construction, not at hash time: these components are
@@ -808,7 +936,9 @@ def _plan_restart_identity(plan) -> dict[str, object]:
     identity = _strict_json(plan)
     for row in identity.get("domains", ()):
         if isinstance(row, dict):
-            row.pop("history_interval_s", None)
+            for name in ("history_interval_s", "history_begin_s",
+                         "history_end_s"):
+                row.pop(name, None)
     return identity
 
 
@@ -952,6 +1082,55 @@ def _load_hierarchy_document(prepared_root: Path, expected_sha256: str):
         + "; ".join(seen[name] for name in sorted(seen))
         + ".  Accepted schemas: "
         + ", ".join(sorted({e["schema"] for e in _HIERARCHY_DOCUMENTS})))
+
+
+def _load_head_document(prepared_root: Path, head_sha256: str):
+    """A chained tree's head and the proof it carries without its seal keys.
+
+    Returns ``(path, document, source, head)``, where ``document`` is the
+    head's ``basis.proof_head`` (the tree's proof less
+    :data:`gpuwm.ingest.boundary_stream.SEAL_ONLY_PROOF_KEYS`) and
+    ``path`` is ``boundary-stream/head.json``.  Refused when the head fails
+    its digest or the pin, when its preparation will never seal, or when
+    it is a single domain's head.
+    """
+
+    from gpuwm.ingest.boundary_stream import (
+        HEAD_NAME, LAYOUT_DOMAIN_TREE, BoundaryStreamError, bind_head,
+        proof_document_name, stream_dir)
+    from gpuwm.stage_cli import packaged_source_of
+
+    try:
+        head = bind_head(prepared_root, head_sha256)
+    except BoundaryStreamError as error:
+        raise ValueError(str(error)) from None
+    tree = head["basis"].get("tree")
+    if not isinstance(tree, Mapping) or tree.get("layout") \
+            != LAYOUT_DOMAIN_TREE:
+        raise ValueError(
+            f"the prepared head in {prepared_root} is a single domain's "
+            "head, which the single-domain runner binds")
+    document = dict(head["basis"]["proof_head"])
+    # The document the seal writes, which the head names: proof.json, or a
+    # native HRRR tree's receipt.json.  Matched with its schema, as the
+    # sealed binding matches them.
+    name = proof_document_name(head)
+    for entry in _HIERARCHY_DOCUMENTS:
+        if entry["filename"] != name \
+                or document.get("schema") != entry["schema"]:
+            continue
+        if document.get("status") != entry["status"]:
+            raise ValueError(
+                f"the prepared head in {prepared_root} is not a "
+                f"{entry['status']} {entry['source']} hierarchy")
+        source = entry["source"]
+        if source == "mapped":
+            source = packaged_source_of(prepared_root) or "mapped"
+        return stream_dir(prepared_root) / HEAD_NAME, document, source, head
+    raise ValueError(
+        f"the prepared head in {prepared_root} carries schema "
+        f"{document.get('schema')!r}, which is not a hierarchy proof this "
+        "runner reads")
 
 
 def _hierarchy_valid_time(document) -> str:
@@ -1128,6 +1307,453 @@ def _validate_delayed_prepared_time(exp, domain, reader, receipt) -> None:
                 "from the analysis at its activation time")
 
 
+class StreamedClockGuard:
+    """Keeps a head-bound run on the clock a sealed run of its tree chooses.
+
+    The long step each domain runs is derived from the strongest
+    crest-level wind in the start states AND in the root's boundary data
+    over the whole forecast (:mod:`gpuwm.terrain_clock`).  A run started
+    on a prepared head sees only the start states; the boundary intervals
+    arrive while it integrates.  The breakage this prevents: a head-bound
+    forecast published as the sealed one after stepping with a longer
+    step than the terrain map holds for the winds its boundaries bring.
+    So each interval, as it loads, is folded into the reading, and a
+    changed clock ends the head-bound attempt by name
+    (:class:`gpuwm.ingest.boundary_stream.StreamedClockChanged`).  Call it
+    with each loaded interval.  It lives here, on the forecast side,
+    because the preparation package stages ``boundary_stream`` without
+    the forecast's terrain clock.
+    """
+
+    def __init__(self, basis, *, run_clock, root_grid_id: int,
+                 run_seconds: float):
+        from gpuwm.ingest.boundary_stream import derived_clock
+        from gpuwm.terrain_clock import (
+            boundary_geometry_from_cache, start_winds_from_cache)
+
+        self.basis = basis
+        self.root = int(root_grid_id)
+        self.run_seconds = float(run_seconds)
+        self.expected = derived_clock(run_clock)
+        self.starts = {
+            int(gid): start_winds_from_cache(reader, f"d{int(gid):02d}")
+            for gid, reader in basis.readers.items()}
+        reader = basis.readers.get(self.root)
+        self.geometry = (None if reader is None else
+                         boundary_geometry_from_cache(
+                             reader, basis.statics.get(self.root)))
+        self.intervals: dict[float, object] = {}
+        #: How many intervals were folded into the reading.
+        self.checked = 0
+
+    def __call__(self, interval) -> None:
+        from gpuwm.ingest.boundary_stream import (
+            StreamedClockChanged, derived_clock)
+        from gpuwm.ingest.lateral_bc import LateralBoundaries
+        from gpuwm.terrain_clock import (
+            BoundaryWinds, clock_for_domains, clock_receipt)
+
+        if self.geometry is None:
+            # The sealed derivation reads no boundary winds either
+            # (terrain_clock.clock_for_prepared_cache), so nothing a later
+            # interval carries can move its clock.
+            return
+        self.intervals[float(interval.start_seconds)] = interval
+        ordered = tuple(self.intervals[key] for key in sorted(self.intervals))
+        boundary = BoundaryWinds(
+            f"d{self.root:02d}", LateralBoundaries(ordered, 1, 1, 1),
+            self.geometry, self.run_seconds)
+        _, clock = clock_for_domains(
+            self.basis.experiment, self.basis.acoustic,
+            statics=self.basis.statics, starts=self.starts,
+            boundary=boundary, corridors=self.basis.reach, announce=False)
+        self.checked += 1
+        derived = derived_clock(clock_receipt(clock))
+        if derived == self.expected:
+            return
+        changed = sorted(gid for gid in set(derived) | set(self.expected)
+                         if derived.get(gid) != self.expected.get(gid))
+        raise StreamedClockChanged(
+            f"boundary interval {float(interval.start_seconds):g} s to "
+            f"{float(interval.end_seconds):g} s carries a crest-level wind "
+            "that moves the terrain-derived clock of "
+            + ", ".join(f"d{gid:02d}" for gid in changed)
+            + " away from the clock this run started on, so the forecast "
+            "so far is not the one the sealed preparation gives")
+
+
+class TreeHeadNeedsSeal(Exception):
+    """A tree bound at its head reads something only its seal writes.
+
+    Not a refusal: the runner says the reason, waits for the preparation
+    to seal and runs as a sealed binding (:func:`main`).
+    """
+
+
+def _head_needs_seal(exp, *, relocation_follow: bool,
+                     head_corridor: bool = False) -> str | None:
+    """Why a head-bound tree starts after the seal, or ``None``.
+
+    Each reason names what the forecast reads that the preparation writes
+    only at its seal, which is the breakage waiting prevents: a forecast
+    started on files that do not exist yet.
+
+    A tree whose nests follow a source reads the statics corridor they
+    re-ground over.  A chained preparation builds it into its head
+    (``hierarchy-head/statics-corridor``, bound by the head's proof), so
+    ``head_corridor`` is true and such a tree starts at its head; a head
+    without one (prepared before heads carried the corridor) waits for
+    the seal that writes it.
+    """
+
+    if relocation_follow and not head_corridor:
+        return ("its nests follow a source, and this head carries no "
+                "statics corridor for a moving nest to re-ground over, "
+                "which the preparation's seal writes")
+    tiles = getattr(exp, "tiles", None)
+    if (tiles is not None and tiles.enabled
+            and streaming.options_for_domain(exp.domains[0], tiles).mode
+            == "on"):
+        # ``mode = "on"`` streams the root whatever the card.  ``auto``
+        # streams it only where the planner says it does not fit
+        # resident, which is asked of the card once the head is verified
+        # (:func:`_root_store_needs_seal`).
+        return ROOT_STORE_NEEDS_SEAL
+    return None
+
+
+#: Why a head-bound tree whose root streams under ``[tiles]`` starts after
+#: the seal: the forecast reads the root's host store, which is filled from
+#: the root's sealed prepared cache, and at the head that cache has no
+#: header and not every boundary interval.
+ROOT_STORE_NEEDS_SEAL = ("[tiles] streams its root from a host store, which "
+                         "is filled from the root's sealed prepared cache")
+
+
+def _root_store_needs_seal(inputs) -> str | None:
+    """Why this head-bound tree starts after the seal after all, or ``None``.
+
+    ``[tiles] mode = "auto"`` streams a domain only where the planner says
+    it does not fit resident on this card, and every cyclone setup writes
+    ``auto``.  Asked before the head was verified, a ``[tiles]`` table
+    alone sent such a tree to the seal wait even when its root was going
+    to run resident, which is a storm-following tree's usual answer on the
+    card it was sized for.  So the question is asked here, of the same
+    admission the run takes
+    (:func:`gpuwm.core.streaming.cold_tree_streaming_decision` on the cold
+    planning machine, priced with the root's own boundary tables), and
+    only a root the planner streams waits.  The run asks it again as it
+    decides, and a root it streams at the head still starts on the seal
+    (:func:`run_prepared_tree`).
+    """
+
+    if getattr(inputs, "stream_head", None) is None:
+        return None
+    exp = inputs.experiment
+    domains = tuple(getattr(exp, "domains", ()) or ())
+    tiles = getattr(exp, "tiles", None)
+    if (not domains or tiles is None or not tiles.enabled
+            or not streaming.options_for_domain(domains[0], tiles).enabled):
+        return None
+    root_reader = _root_bundle(inputs).cache_reader
+    decisions: dict = {}
+    try:
+        cold_tree_streaming_decision(
+            exp, _prepared_planning_nodes(inputs),
+            machine=streaming.cold_planning_machine(exp), decisions=decisions,
+            source=prepared_single._priced_boundary_source(
+                root_reader, inputs.source))
+    except Exception:  # noqa: BLE001 - the run's own admission answers it
+        # A tree the admission refuses (or a card it cannot read) is the
+        # run's to refuse, with its failed-run receipt, exactly as it did
+        # before this question was asked early; the run's decision below
+        # still sends a streamed root to the seal.
+        return None
+    decision = decisions.get(int(domains[0].grid_id))
+    if decision is not None and decision.stream:
+        return ROOT_STORE_NEEDS_SEAL + " on this card"
+    return None
+
+
+def _head_hierarchy(prepared_root: Path, head, exp):
+    """The head's ``hierarchy-head/`` and each child's receipt, checked.
+
+    Returns ``(hierarchy_root, receipts)`` with ``None`` for the root
+    (whose static cache the head's root identity binds) and each child's
+    ``receipt.json`` held to the digest the head binds
+    (``basis.tree.children_receipts``).
+    """
+
+    from gpuwm.ingest.boundary_stream import HIERARCHY_HEAD_DIRNAME
+
+    tree = head["basis"]["tree"]
+    labels = [f"d{int(domain.grid_id):02d}" for domain in exp.domains]
+    if list(tree.get("domains") or ()) != labels:
+        raise ValueError(
+            f"the prepared head's domains {tree.get('domains')} are not "
+            f"this experiment's {labels}")
+    if tree.get("children_artifacts") != HIERARCHY_HEAD_DIRNAME:
+        raise ValueError(
+            "the prepared head keeps its children outside "
+            f"{HIERARCHY_HEAD_DIRNAME}/")
+    root = f"{HIERARCHY_HEAD_DIRNAME}/domains/{labels[0]}"
+    expected_root = {
+        "prepared_cache": f"{root}/prepared-cache",
+        "static_cache": f"{root}/native-static.npz",
+        "geometry_receipt": f"{root}/geometry-receipt.json",
+    }
+    if (dict(tree.get("root") or {}) != expected_root
+            or str(head["basis"]["cache"]["directory"])
+            != expected_root["prepared_cache"]):
+        raise ValueError(
+            "the prepared head's root files are not the canonical "
+            f"{root}/ layout")
+    receipts = dict(tree.get("children_receipts") or {})
+    if sorted(receipts) != sorted(labels[1:]):
+        raise ValueError(
+            "the prepared head does not bind every child's receipt "
+            f"(binds {sorted(receipts)}, the tree has {labels[1:]})")
+    hierarchy_root = _require_directory(
+        prepared_root / HIERARCHY_HEAD_DIRNAME, "prepared head hierarchy")
+    documents: list = [None]
+    for label in labels[1:]:
+        path = _require_file(
+            hierarchy_root / "domains" / label / "receipt.json",
+            f"{label} artifact receipt")
+        if _sha256(path) != receipts[label]:
+            raise ValueError(
+                f"{label} receipt differs from the one the prepared head "
+                "binds")
+        documents.append(_json_object(path, f"{label} artifact receipt"))
+    return hierarchy_root, documents
+
+
+def _as_posted_head_children(prepared_root: Path, proof, bundles):
+    """Each child's head-twin content digest, for a sealed as-posted tree.
+
+    ``None`` unless ``proof`` is the sealed proof of an as-posted chained
+    tree (it names its head, ``boundary_stream.head_sha256``, and records
+    ``posting.as_posted``): any other chained tree's head and sealed
+    children are the same caches.  An as-posted head prepares every child
+    before the input manifest exists, so each head child carries the input
+    plan where its sealed twin carries the manifest digest, and the two
+    content digests differ by that identity alone.  A forecast bound to
+    the head restores the head's children and its restart identity binds
+    their digests; this run, bound to the seal, binds the same ones
+    (:func:`tree_restart_identity_components`).
+
+    The head the proof names is read with its digest checked, each sealed
+    child is held to its head twin
+    (:func:`gpuwm.ingest.boundary_stream.verify_as_posted_tree_children`:
+    the receipt the head binds and the cache it records, equal arrays,
+    metadata and static files, the identity changed only where the
+    manifest goes), and each child this preflight loaded must be the
+    sealed twin that check read.  Refused when that cannot be shown,
+    which is the breakage this prevents: a sealed run naming child
+    digests nothing held to the head, under which a checkpoint written
+    before the seal would resume on children that were not the head's.
+    """
+
+    posting = proof.get("posting")
+    head_sha256 = (proof.get("boundary_stream") or {}).get("head_sha256")
+    if head_sha256 is None or not (
+            isinstance(posting, Mapping) and posting.get("as_posted")):
+        return None
+    from gpuwm.ingest.boundary_stream import (
+        BoundaryStreamError, read_head, verify_as_posted_tree_children)
+
+    try:
+        head = read_head(prepared_root, expected_sha256=str(head_sha256))
+        if head["basis"].get("as_posted") is None:
+            raise BoundaryStreamError(
+                "the head it names was not prepared as posted")
+        checked = verify_as_posted_tree_children(
+            prepared_root, head=head,
+            manifest_sha256=str(proof.get("input_manifest_sha256")))
+    except BoundaryStreamError as error:
+        raise ValueError(
+            f"the sealed as-posted tree in {prepared_root} cannot be held to "
+            f"the head its proof names: {error}") from None
+    found = {}
+    for bundle in bundles:
+        if int(bundle.parent_id) == 0:
+            continue
+        label = f"d{int(bundle.grid_id):02d}"
+        record = checked.get(label)
+        if record is None or record["sealed_content_sha256"] \
+                != bundle.cache_reader.content_sha256:
+            raise ValueError(
+                f"the sealed {label} this run restores is not the one held "
+                "to its as-posted head twin")
+        found[label] = str(record["head_content_sha256"])
+    return MappingProxyType(found)
+
+
+def _array_rows(reader) -> dict:
+    """A cache reader's array table as plain JSON (for comparison)."""
+
+    return json.loads(_canonical(dict(reader.arrays)))
+
+
+def _seal_tree_inputs(inputs: PreparedTreeInputs, *,
+                      stream=None) -> PreparedTreeInputs:
+    """Wait for the tree's seal and bind the forecast to it.
+
+    The root's streamed cache is checked against the head it was
+    published under (:func:`gpuwm.ingest.boundary_stream.verify_seal`:
+    the sealed header's digest over the head's arrays plus every segment,
+    the proof naming the head, every interval this run consumed
+    unchanged).  The complete sealed preflight then runs on the sealed
+    tree, and each domain the run restored from ``hierarchy-head/`` is
+    held to its sealed ``hierarchy-artifacts/`` twin: the same static
+    cache, the same geometry receipt, the same array table and cache
+    content digest (the root's as sealed), the same identity.  The
+    terrain-derived clock the run stepped on must be the one the sealed
+    tree derives over its whole boundary series.
+    """
+
+    head = inputs.stream_head
+    if head is None:
+        return inputs
+    from gpuwm.ingest.boundary_stream import (
+        StreamedIntervals, derived_clock, verify_seal)
+    from gpuwm.ingest.prepared_cache import PreparedCacheReader
+
+    if stream is None:
+        stream = StreamedIntervals(inputs.prepared_root, head=head)
+    if not stream.sealed():
+        print("prepared tree: waiting for the preparation to seal "
+              f"({inputs.prepared_root})", file=sys.stderr, flush=True)
+    stream.wait_sealed()
+    sealed = verify_seal(inputs.prepared_root, head=head,
+                         consumed=stream.consumed_markers())
+    sealed_inputs = preflight_prepared_tree(
+        **dict(inputs.preflight_arguments),
+        preparation_receipt_sha256=sealed["proof_sha256"])
+    if sealed_inputs.prepared_head_sha256 != str(head["head_sha256"]):
+        raise RuntimeError(
+            "the sealed tree's proof names another head than the one this "
+            "forecast started from")
+    root_id = int(inputs.experiment.domains[0].grid_id)
+    posted = sealed.get("as_posted")
+    root_cache = inputs.prepared_root / str(head["basis"]["cache"]["directory"])
+    # As posted, the seal wrote the root's one-shot identity, which
+    # verify_seal held to the head's (only the manifest digest changes).
+    streamed_root = PreparedCacheReader(
+        root_cache,
+        expected_identity=(
+            dict(head["basis"]["cache"]["identity"]) if posted is None
+            else _json_object(root_cache / "header.json",
+                              "sealed root cache header")["identity"]))
+    if streamed_root.content_sha256 != sealed["content_sha256"]:
+        raise RuntimeError(
+            "the root's streamed cache header is not the one the seal "
+            "check read")
+
+    def same_identity(started, bound) -> bool:
+        if posted is None:
+            return dict(started.cache_identity) == dict(bound.cache_identity)
+        from gpuwm.ingest.boundary_stream import (
+            BoundaryStreamError, check_as_posted_identity)
+
+        try:
+            check_as_posted_identity(
+                dict(started.cache_identity), dict(bound.cache_identity),
+                plan_sha256=head["basis"]["as_posted"]["input_plan_sha256"],
+                manifest_sha256=posted["input_manifest_sha256"],
+                manifest_bound=head["basis"]["as_posted"][
+                    "manifest_bound_identity_keys"])
+        except BoundaryStreamError:
+            return False
+        return True
+
+    for started, bound in zip(inputs.domains, sealed_inputs.domains):
+        label = f"d{int(started.grid_id):02d}"
+        root = int(started.grid_id) == root_id
+        reader = streamed_root if root else started.cache_reader
+        if not root and started.cache_reader.verify_all().get(
+                "content_sha256") != started.cache_reader.content_sha256:
+            raise RuntimeError(
+                f"the head's {label} cache changed during the run")
+        # As posted, a child the head prepared carries the plan where its
+        # sealed twin carries the manifest digest, so the two content
+        # digests differ by that identity alone: verify_seal held the
+        # child's metadata, arrays and static files to its twin, and the
+        # sealed digest it read must be the twin's.  The sealed binding
+        # names this run's head child in its restart identity, so a
+        # checkpoint this run writes resumes on the seal.
+        content_same = (
+            reader.content_sha256 == bound.cache_reader.content_sha256
+            if posted is None or root else
+            (posted.get("children") or {}).get(label, {}).get(
+                "sealed_content_sha256")
+            == bound.cache_reader.content_sha256
+            and (sealed_inputs.head_child_content_sha256 or {}).get(label)
+            == reader.content_sha256)
+        differs = [
+            name for name, same in (
+                ("static cache",
+                 _sha256(started.static_path) == _sha256(bound.static_path)),
+                ("geometry receipt",
+                 _sha256(started.geometry_receipt_path)
+                 == _sha256(bound.geometry_receipt_path)),
+                ("cache identity", same_identity(started, bound)),
+                ("array table",
+                 _array_rows(reader) == _array_rows(bound.cache_reader)),
+                ("cache content digest", content_same),
+            ) if not same]
+        if differs:
+            raise RuntimeError(
+                f"the sealed tree's {label} differs from the head this "
+                f"forecast restored it from: {', '.join(differs)}")
+    started_corridor = dict(inputs.statics_corridor or {})
+    sealed_corridor = dict(sealed_inputs.statics_corridor or {})
+    if started_corridor.keys() != sealed_corridor.keys() or any(
+            sealed_corridor[grid_id].cache_sha256 != corridor.cache_sha256
+            for grid_id, corridor in started_corridor.items()):
+        # A moving nest re-grounded over the head's corridor; the sealed
+        # tree must carry the same ground.
+        raise RuntimeError(
+            "the sealed tree's statics corridor differs from the head's, "
+            "which this forecast moved its nests over")
+    if derived_clock(sealed_inputs.terrain_clock) \
+            != derived_clock(inputs.terrain_clock):
+        # Every interval passed the clock guard as it loaded, so this is
+        # the last word on the same question over the whole series.
+        raise RuntimeError(
+            "the sealed tree derives a different terrain clock than the one "
+            "this head-bound forecast ran on")
+    return sealed_inputs
+
+
+def _restore_streamed_child_at_start(owner, node, restore, build):
+    """Restore a streamed delayed nest into a new host store at its start.
+
+    ``owner`` is the stepper the nest was attached with at the forecast's
+    start, over the store its startup restore filled, and ``node.state`` is
+    that startup restore's :class:`gpuwm.core.streamed_state
+    .CanonicalStoreState`.  The owner is closed and the outgoing store let
+    go (:func:`gpuwm.core.streaming.release_outgoing_store`) BEFORE
+    ``restore()`` allocates the store at the nest's start: while the
+    startup view still held it, the nest's start held two copies of it.
+    ``build(store_bundle, node)`` attaches the replacement inside the
+    owner's reconstruction reservation, from a copy of ``node`` carrying
+    the restored state, and the owner is rebound to that state, so the one
+    stepper the executor holds for this grid steps the restored nest.
+    Returns ``(store_bundle, restored)``.
+    """
+    owner.tiled_run.close()
+    streaming.release_outgoing_store(owner)
+    store_bundle, restored = restore()
+    state = restored.initial_result.state
+    temporary_node = copy(node)
+    temporary_node.state = state
+    with owner.allocation_scope():
+        replacement = build(store_bundle, temporary_node)
+    owner.rebind_after_reconstruction(replacement, state=state)
+    return store_bundle, restored
+
+
 def validate_physics_profile(exp, *, source: str, profile: str | None):
     """Assert one named suite on every domain; never rewrite configuration."""
     if profile is None:
@@ -1139,24 +1765,49 @@ def validate_physics_profile(exp, *, source: str, profile: str | None):
 def preflight_prepared_tree(
     *,
     prepared_root: Path,
-    preparation_receipt_sha256: str,
+    preparation_receipt_sha256: str | None = None,
     experiment_config: Path,
     experiment_config_sha256: str,
     physics_profile: str | None = None,
+    prepared_head_sha256: str | None = None,
 ) -> PreparedTreeInputs:
-    """Verify the complete hierarchy and resolve a runnable CPU-only plan."""
+    """Verify the complete hierarchy and resolve a runnable CPU-only plan.
 
-    preparation_receipt_sha256 = _digest(
-        preparation_receipt_sha256, "preparation-receipt-sha256"
-    )
+    Exactly one binding: the sealed preparation document
+    (``preparation_receipt_sha256``) or a chained preparation's head
+    (``prepared_head_sha256``).  A head binds the root's start state from
+    its streamed cache and every child from ``hierarchy-head/``, each
+    checked here as a sealed tree's domains are; the root's boundary
+    intervals are hash-checked as they arrive and the seal is bound at
+    the end of the run (:func:`_seal_tree_inputs`).
+    """
+
+    preflight_arguments = MappingProxyType(dict(
+        prepared_root=prepared_root, experiment_config=experiment_config,
+        experiment_config_sha256=experiment_config_sha256,
+        physics_profile=physics_profile))
+    if (preparation_receipt_sha256 is None) == (prepared_head_sha256 is None):
+        raise ValueError(
+            "a prepared tree binds its sealed preparation receipt or its "
+            "prepared head, exactly one of the two")
+    head = None
     experiment_config_sha256 = _digest(
         experiment_config_sha256, "experiment-config-sha256"
     )
     prepared_root = _require_directory(prepared_root, "prepared root")
     experiment_config = _require_file(experiment_config, "experiment config")
-    receipt_path, preparation, prepared_source = _load_hierarchy_document(
-        prepared_root, preparation_receipt_sha256
-    )
+    if prepared_head_sha256 is not None:
+        receipt_path, preparation, prepared_source, head = \
+            _load_head_document(
+                prepared_root,
+                _digest(prepared_head_sha256, "prepared-head-sha256"))
+    else:
+        preparation_receipt_sha256 = _digest(
+            preparation_receipt_sha256, "preparation-receipt-sha256"
+        )
+        receipt_path, preparation, prepared_source = _load_hierarchy_document(
+            prepared_root, preparation_receipt_sha256
+        )
     if _sha256(experiment_config) != experiment_config_sha256:
         raise ValueError("experiment config differs from --experiment-config-sha256")
 
@@ -1175,8 +1826,14 @@ def preflight_prepared_tree(
         paths, mapped_authority, _ = prepared_single._validate_packaged_mapped_evidence(
             prepared_root=prepared_root, proof=preparation,
             manifest=mapped_manifest, manifest_sha256=manifest_digest,
-            experiment_config=None, wps_namelist=None, source=prepared_source)
+            experiment_config=None, wps_namelist=None, source=prepared_source,
+            sealed=head is None)
         mapped_paths = {"mapped_manifest": manifest_path, **paths}
+        if head is not None and head["basis"].get("input_manifest_sha256") \
+                not in (None, manifest_digest):
+            raise ValueError(
+                "the prepared head names a different source manifest than "
+                "the one its evidence carries")
 
     exp = load_experiment(experiment_config)
     # THE COORDINATE THE PREPARED INPUTS CARRY, before anything derived
@@ -1213,6 +1870,13 @@ def preflight_prepared_tree(
     # exp.relocation.enabled and (follow is not None or moves) test.
     from gpuwm.static.corridor import config_declares_follow_source
     relocation_follow = config_declares_follow_source(exp)
+    if head is not None:
+        sealed_need = _head_needs_seal(
+            exp, relocation_follow=relocation_follow,
+            head_corridor=isinstance(
+                preparation.get("statics_corridor"), Mapping))
+        if sealed_need is not None:
+            raise TreeHeadNeedsSeal(sealed_need)
     if relocation_follow:
         # The [static.highres] idiom: an enabled surface refuses on the
         # lanes that cannot honor it.  A prepared tree deliberately runs
@@ -1277,60 +1941,69 @@ def preflight_prepared_tree(
         raise ValueError("preparation valid_time differs from experiment start_time")
     if preparation.get("domain_count") != len(exp.domains):
         raise ValueError("preparation domain count differs from experiment config")
-    hierarchy_root = _require_directory(
-        prepared_root / "hierarchy-artifacts", "hierarchy artifact root"
-    )
-    artifact_receipt_path = _require_file(
-        hierarchy_root / "receipt.json", "hierarchy artifact receipt"
-    )
-    artifact_manifest_path = _require_file(
-        hierarchy_root / "domain-artifacts.json", "domain artifact manifest"
-    )
-    artifact_receipt = _json_object(artifact_receipt_path, "hierarchy artifact receipt")
-    artifact_manifest = _json_object(artifact_manifest_path, "domain artifact manifest")
-    if artifact_receipt != preparation.get("artifact_receipt"):
-        raise ValueError(
-            "published hierarchy artifact receipt differs from preparation"
+    if head is None:
+        hierarchy_root = _require_directory(
+            prepared_root / "hierarchy-artifacts", "hierarchy artifact root"
         )
-    expected_ids = [int(domain.grid_id) for domain in exp.domains]
-    expected_manifest = {
-        "schema": ARTIFACT_MANIFEST_SCHEMA,
-        "domains": [
-            {
-                "grid_id": grid_id,
-                "prepared_cache": f"domains/d{grid_id:02d}/prepared-cache",
-                "static_cache": f"domains/d{grid_id:02d}/native-static.npz",
-                "geometry_receipt": (f"domains/d{grid_id:02d}/geometry-receipt.json"),
-            }
-            for grid_id in expected_ids
-        ],
-    }
-    if artifact_manifest != expected_manifest:
-        raise ValueError("domain artifact manifest is not canonical")
-    expected_artifact_identity = {
-        "schema": ARTIFACT_RECEIPT_SCHEMA,
-        "status": "READY",
-        "domain_count": len(exp.domains),
-        "grid_ids": expected_ids,
-        "manifest": {
-            "path": "domain-artifacts.json",
-            "sha256": _sha256(artifact_manifest_path),
-        },
-        "boundary_inventory": {
-            "external": [expected_ids[0]],
-            "nested_parent_forced": expected_ids[1:],
-        },
-    }
-    if any(
-        artifact_receipt.get(key) != value
-        for key, value in expected_artifact_identity.items()
-    ):
-        raise ValueError("hierarchy artifact receipt identity differs")
-    domain_receipts = artifact_receipt.get("domains")
-    if not isinstance(domain_receipts, list) or len(domain_receipts) != len(
-        exp.domains
-    ):
-        raise ValueError("hierarchy domain receipt inventory is incomplete")
+        artifact_receipt_path = _require_file(
+            hierarchy_root / "receipt.json", "hierarchy artifact receipt"
+        )
+        artifact_manifest_path = _require_file(
+            hierarchy_root / "domain-artifacts.json", "domain artifact manifest"
+        )
+        artifact_receipt = _json_object(artifact_receipt_path, "hierarchy artifact receipt")
+        artifact_manifest = _json_object(artifact_manifest_path, "domain artifact manifest")
+        if artifact_receipt != preparation.get("artifact_receipt"):
+            raise ValueError(
+                "published hierarchy artifact receipt differs from preparation"
+            )
+        expected_ids = [int(domain.grid_id) for domain in exp.domains]
+        expected_manifest = {
+            "schema": ARTIFACT_MANIFEST_SCHEMA,
+            "domains": [
+                {
+                    "grid_id": grid_id,
+                    "prepared_cache": f"domains/d{grid_id:02d}/prepared-cache",
+                    "static_cache": f"domains/d{grid_id:02d}/native-static.npz",
+                    "geometry_receipt": (f"domains/d{grid_id:02d}/geometry-receipt.json"),
+                }
+                for grid_id in expected_ids
+            ],
+        }
+        if artifact_manifest != expected_manifest:
+            raise ValueError("domain artifact manifest is not canonical")
+        expected_artifact_identity = {
+            "schema": ARTIFACT_RECEIPT_SCHEMA,
+            "status": "READY",
+            "domain_count": len(exp.domains),
+            "grid_ids": expected_ids,
+            "manifest": {
+                "path": "domain-artifacts.json",
+                "sha256": _sha256(artifact_manifest_path),
+            },
+            "boundary_inventory": {
+                "external": [expected_ids[0]],
+                "nested_parent_forced": expected_ids[1:],
+            },
+        }
+        if any(
+            artifact_receipt.get(key) != value
+            for key, value in expected_artifact_identity.items()
+        ):
+            raise ValueError("hierarchy artifact receipt identity differs")
+        domain_receipts = artifact_receipt.get("domains")
+        if not isinstance(domain_receipts, list) or len(domain_receipts) != len(
+            exp.domains
+        ):
+            raise ValueError("hierarchy domain receipt inventory is incomplete")
+    else:
+        # THE HEAD'S TREE: every child complete under hierarchy-head/, the
+        # root's static files and its streamed cache beside them; each
+        # child's receipt is bound by digest in the head (basis.tree).
+        hierarchy_root, domain_receipts = _head_hierarchy(
+            prepared_root, head, exp)
+        artifact_receipt_path = None
+        artifact_manifest_path = None
 
     grids = tuple(grids_from_projection_config(exp))
     if len(grids) != len(exp.domains):
@@ -1350,16 +2023,21 @@ def preflight_prepared_tree(
             "namelist_sha256": provenance.get("native_namelist_input_sha256"),
         }
     else:
-        first = exp.domains[0]
-        first_header = _json_object(
-            hierarchy_root
-            / "domains"
-            / f"d{int(first.grid_id):02d}"
-            / "prepared-cache"
-            / "header.json",
-            "d01 cache header",
-        )
-        first_identity = first_header.get("identity")
+        if head is not None:
+            # The root's identity is the head's cache identity until the
+            # seal writes its header.
+            first_identity = head["basis"]["cache"]["identity"]
+        else:
+            first = exp.domains[0]
+            first_header = _json_object(
+                hierarchy_root
+                / "domains"
+                / f"d{int(first.grid_id):02d}"
+                / "prepared-cache"
+                / "header.json",
+                "d01 cache header",
+            )
+            first_identity = first_header.get("identity")
         if not isinstance(first_identity, dict):
             raise ValueError("d01 cache identity is missing")
         authority = {
@@ -1382,8 +2060,7 @@ def preflight_prepared_tree(
         }
         if authority != expected_authority:
             raise ValueError("mapped hierarchy authorities differ from the preparation")
-    for label, value in authority.items():
-        authority[label] = _digest(value, label)
+    authority = _bound_authority(authority, head)
 
     bundles = []
     common_source_identity = None
@@ -1398,6 +2075,9 @@ def preflight_prepared_tree(
         exp, moving_roots=moving_grid_ids(exp))
     for domain, grid, embedded_receipt in zip(exp.domains, grids, domain_receipts):
         label = f"d{int(domain.grid_id):02d}"
+        # A head-bound root: its static files and its streamed cache, whose
+        # header the seal writes; the head carries its identity.
+        head_root = head is not None and int(domain.parent_id) == 0
         bundle = _require_directory(
             hierarchy_root / "domains" / label, f"{label} bundle"
         )
@@ -1408,14 +2088,21 @@ def preflight_prepared_tree(
         geometry_path = _require_file(
             bundle / "geometry-receipt.json", f"{label} geometry receipt"
         )
-        domain_receipt_path = _require_file(
-            bundle / "receipt.json", f"{label} artifact receipt"
-        )
-        domain_receipt = _json_object(domain_receipt_path, f"{label} artifact receipt")
-        if domain_receipt != embedded_receipt:
-            raise ValueError(f"{label} receipt differs from hierarchy receipt")
-
-        header = _json_object(cache / "header.json", f"{label} cache header")
+        if head_root:
+            domain_receipt_path = None
+            domain_receipt = {}
+            header = {"identity": head["basis"]["cache"]["identity"]}
+        else:
+            domain_receipt_path = _require_file(
+                bundle / "receipt.json", f"{label} artifact receipt"
+            )
+            domain_receipt = _json_object(
+                domain_receipt_path, f"{label} artifact receipt")
+            if domain_receipt != embedded_receipt:
+                raise ValueError(
+                    f"{label} receipt differs from hierarchy receipt")
+            header = _json_object(
+                cache / "header.json", f"{label} cache header")
         identity = header.get("identity")
         if not isinstance(identity, dict):
             raise ValueError(f"{label} cache identity is missing")
@@ -1476,11 +2163,26 @@ def preflight_prepared_tree(
         elif common_source_identity != normalized_source:
             raise ValueError("prepared domain source identities differ")
 
-        reader = PreparedCacheReader(cache, expected_identity=identity)
-        _validate_delayed_prepared_time(exp, domain, reader, domain_receipt)
-        verified = reader.verify_all()
-        if verified.get("content_sha256") != header.get("content_sha256"):
-            raise ValueError(f"{label} cache content identity differs")
+        if head_root:
+            from gpuwm.ingest.prepared_cache import PreparedHeadReader
+
+            # The start-time half of the root's cache, each array held to
+            # the head's manifest row; its content digest exists only at
+            # the seal, where _seal_tree_inputs checks it.
+            reader = PreparedHeadReader(
+                prepared_root, head, expected_identity=identity)
+            if reader.path.resolve() != cache.resolve():
+                raise ValueError(
+                    "the prepared head names another root cache directory "
+                    "than the tree's hierarchy-head/")
+            reader.verify_all()
+        else:
+            reader = PreparedCacheReader(cache, expected_identity=identity)
+            _validate_delayed_prepared_time(
+                exp, domain, reader, domain_receipt)
+            verified = reader.verify_all()
+            if verified.get("content_sha256") != header.get("content_sha256"):
+                raise ValueError(f"{label} cache content identity differs")
         _validate_vertical(reader, exp, int(domain.grid_id))
         lbc = reader.header.get("metadata", {}).get("lbc")
         if (domain.parent_id == 0 and not isinstance(lbc, dict)) or (
@@ -1494,23 +2196,35 @@ def preflight_prepared_tree(
         static = load_native_static_cache(
             static_path, grid, domain.run.ny, domain.run.nx
         )
-        _validate_domain_receipt(
-            domain_receipt,
-            domain=domain,
-            bundle=bundle,
-            reader=reader,
-            static_path=static_path,
-            geometry_path=geometry_path,
-        )
-        hashes = MappingProxyType(
-            {
-                "cache_header": _sha256(cache / "header.json"),
-                "cache_content": reader.content_sha256,
+        if head_root:
+            # No receipt at the head: the root's static cache is bound by
+            # the cache identity the head's digest carries.
+            if identity.get("static_cache_sha256") != _sha256(static_path):
+                raise ValueError(
+                    f"{label} static cache differs from the prepared head's "
+                    "root identity")
+            hashes = MappingProxyType({
                 "static": _sha256(static_path),
                 "geometry_receipt": _sha256(geometry_path),
-                "domain_receipt": _sha256(domain_receipt_path),
-            }
-        )
+            })
+        else:
+            _validate_domain_receipt(
+                domain_receipt,
+                domain=domain,
+                bundle=bundle,
+                reader=reader,
+                static_path=static_path,
+                geometry_path=geometry_path,
+            )
+            hashes = MappingProxyType(
+                {
+                    "cache_header": _sha256(cache / "header.json"),
+                    "cache_content": reader.content_sha256,
+                    "static": _sha256(static_path),
+                    "geometry_receipt": _sha256(geometry_path),
+                    "domain_receipt": _sha256(domain_receipt_path),
+                }
+            )
         bundles.append(
             PreparedDomainBundle(
                 grid_id=int(domain.grid_id),
@@ -1588,13 +2302,21 @@ def preflight_prepared_tree(
     execution_plan = resolve_execution_plan(exp)
     authority_hashes = MappingProxyType(
         {
-            "preparation_receipt": _sha256(receipt_path),
-            "artifact_receipt": _sha256(artifact_receipt_path),
-            "artifact_manifest": _sha256(artifact_manifest_path),
+            **({"prepared_head": _sha256(receipt_path)} if head is not None
+               else {
+                   "preparation_receipt": _sha256(receipt_path),
+                   "artifact_receipt": _sha256(artifact_receipt_path),
+                   "artifact_manifest": _sha256(artifact_manifest_path),
+               }),
             "experiment_config": _sha256(experiment_config),
             **{name: _sha256(path) for name, path in mapped_paths.items()},
         }
     )
+    chained_head = (str(head["head_sha256"]) if head is not None
+                    else (preparation.get("boundary_stream") or {}).get(
+                        "head_sha256"))
+    head_children = (None if head is not None else _as_posted_head_children(
+        prepared_root, preparation, bundles))
     # THE ACOUSTIC SUBSTEPS EACH DOMAIN'S OWN GROUND NEEDS, on the inputs
     # every later reader takes its experiment from.
     return _with_terrain_acoustics(PreparedTreeInputs(
@@ -1620,6 +2342,11 @@ def preflight_prepared_tree(
             for label, names in tolerated_identity.items()}),
         statics_corridor=statics_corridor,
         statics_corridor_cache_path=statics_corridor_cache_path,
+        stream_head=(None if head is None else MappingProxyType(head)),
+        prepared_head_sha256=(None if chained_head is None
+                              else str(chained_head)),
+        head_child_content_sha256=head_children,
+        preflight_arguments=preflight_arguments,
     ))
 
 
@@ -2053,6 +2780,39 @@ def fingerprint_across_stored_chain(header, fingerprint_as_built, model) -> str:
     return replayed
 
 
+def _root_bundle(inputs):
+    """The root domain's bundle, found by the experiment's root grid id.
+
+    Every door's bundles carry a ``grid_id``; not every door's carry a
+    ``parent_id`` (the wrfinput and met_em bundles do not), so the root
+    is named by the experiment, which every door carries.
+    """
+    root_id = next(int(domain.grid_id)
+                   for domain in inputs.experiment.domains
+                   if domain.parent_id == 0)
+    return next(bundle for bundle in inputs.domains
+                if int(bundle.grid_id) == root_id)
+
+
+def _priced_external_boundary_source(boundaries, source):
+    """What the tree door prices a handed-in root boundary set from.
+
+    The wrfinput and met_em doors hand the runner the root's lateral
+    boundary set whole (``initialization.lateral_boundaries``), and its
+    intervals' field tables are what the run holds, so the hydrometeor
+    masses those tables name are what it prices, read through the same
+    inventory reader a sealed cache's header is
+    (:func:`gpuwm.boundary_fields.sealed_boundary_species`).  ``source``
+    answers only for a set whose intervals name no fields.
+    """
+    from gpuwm.boundary_fields import sealed_boundary_species
+
+    carried = sealed_boundary_species(
+        [{"fields": list(getattr(interval, "fields", None) or ())}
+         for interval in boundaries.intervals])
+    return source if carried is None else carried
+
+
 def run_prepared_tree(
     inputs: PreparedTreeInputs,
     *,
@@ -2185,10 +2945,22 @@ def run_prepared_tree(
 
     planning_machine = streaming.cold_planning_machine(exp)
     external_boundaries = getattr(initialization, "lateral_boundaries", None)
-    retained_intervals = (len(external_boundaries.intervals)
-        if external_boundaries is not None else
-        len(next(bundle for bundle in inputs.domains if bundle.parent_id == 0)
-            .cache_reader.header["metadata"]["lbc"]["intervals"]))
+    # The root's boundary tables as this run will hold them.  Handed in
+    # whole (the wrfinput and met_em doors), they are that set's own
+    # tables: those doors' bundles carry no prepared-cache header to read,
+    # and reading one here stopped both with AttributeError before step 0.
+    # Otherwise they are the tables the root's cache about to be restored
+    # carries, as the single-domain door prices its own.
+    if external_boundaries is not None:
+        retained_intervals = len(external_boundaries.intervals)
+        priced_boundary = _priced_external_boundary_source(
+            external_boundaries, inputs.source)
+    else:
+        root_reader = _root_bundle(inputs).cache_reader
+        retained_intervals = len(
+            root_reader.header["metadata"]["lbc"]["intervals"])
+        priced_boundary = prepared_single._priced_boundary_source(
+            root_reader, inputs.source)
     estimate = estimate_experiment(
         exp, forcing_interval_seconds=inputs.boundary_interval_seconds,
         forcing_intervals=retained_intervals, lateral_boundaries=external_boundaries,
@@ -2199,9 +2971,45 @@ def run_prepared_tree(
     # consumes this decision rather than asking again from the ledger
     # estimate, which is a different question against a different budget.
     cold_tree = cold_tree_streaming_decision(
-        exp, cold_nodes, machine=planning_machine, decisions=cold_decisions)
+        exp, cold_nodes, machine=planning_machine, decisions=cold_decisions,
+        source=priced_boundary)
+    if cold_tree is None:
+        # NOTHING STREAMS, SO THE WHOLE TREE IS RESIDENT, and it is admitted
+        # before the shared workspaces and the first restore allocate: with
+        # no [tiles] block the tree walk above consults nothing, and a tree
+        # too big for the card stopped in a CUDA out-of-memory part way
+        # through its restores.  Priced on the tables this run holds -- the
+        # door's own forcing cadence, retained interval count and external
+        # boundary set, as `estimate` above, with the analysed hydrometeors
+        # the root's cache carries where no external set is handed in -- on
+        # the card's own profile, state and physics of every domain together.
+        admission_machine = streaming.cold_admission_machine(
+            planning_machine, options=getattr(exp, "tiles", None))
+        from gpuwm.boundary_fields import source_boundary_species
+        streaming.admit_resident_road(
+            exp, None, machine=admission_machine,
+            estimate=(None if admission_machine is None else
+                      estimate_experiment(
+                          exp,
+                          forcing_interval_seconds=(
+                              inputs.boundary_interval_seconds),
+                          forcing_intervals=retained_intervals,
+                          lateral_boundaries=external_boundaries,
+                          profile=getattr(admission_machine,
+                                          "device_profile", None),
+                          boundary_species=source_boundary_species(
+                              priced_boundary))),
+            what="this prepared domain tree, held resident on the card")
     store_ids = ({gid for gid, decision in cold_decisions.items() if decision.stream}
                  if initialization is None else set())
+    if (getattr(inputs, "stream_head", None) is not None
+            and int(exp.domains[0].grid_id) in store_ids):
+        # The door asked this before the run (_root_store_needs_seal) and
+        # the card answered resident; asked again here it streams the root
+        # (its free memory moved in between).  Nothing is allocated yet, so
+        # the run starts again on the seal rather than reading a store the
+        # head cannot fill.
+        raise TreeHeadNeedsSeal(ROOT_STORE_NEEDS_SEAL + " on this card")
     resident_domains = tuple(dc for dc in exp.domains if dc.grid_id not in store_ids)
     started = time.perf_counter()
     # The estimator and core.model allocate shared arenas only for a tree.
@@ -2297,6 +3105,80 @@ def run_prepared_tree(
         return driver
 
     bundles_by_id = {int(bundle.grid_id): bundle for bundle in inputs.domains}
+
+    # A TREE BOUND AT ITS HEAD.  The root restores its start state from the
+    # streamed cache and its boundary intervals arrive through the stream,
+    # each hash-checked against its segment marker as it loads and folded
+    # into the terrain clock's reading; the children restore from
+    # hierarchy-head/, complete at the head.  The seal is bound at the end.
+    stream_head = getattr(inputs, "stream_head", None)
+    boundary_source = None
+    boundary_stream_receipt = None
+    seam_waits = None
+    clock_guard = None
+    #: The root's model time after its last completed step in this process
+    #: (``None`` before the first), which dates a seam wait.
+    stepped = {"model_elapsed_seconds": None}
+    head_started = time.perf_counter()
+    if stream_head is not None:
+        if initialization is not None or sealed_forcing_extension:
+            raise ValueError(
+                "a tree bound at its prepared head takes no external "
+                "initialization and no sealed forcing extension; bind the "
+                "sealed preparation receipt instead")
+        from gpuwm.ingest.boundary_stream import (
+            PRODUCER_NAME, WAIT_LOG_NAME, SeamWaits, stream_dir,
+            streamed_boundaries)
+
+        events = getattr(observer, "events", None)
+
+        def wait_where(index):
+            elapsed = stepped["model_elapsed_seconds"]
+            if elapsed is None:
+                return {"phase": "start", "interval": None,
+                        "model_elapsed_seconds": None,
+                        "model_valid_time": None}
+            valid = exp.start_time + timedelta(seconds=float(elapsed))
+            return {"phase": "seam", "interval": index,
+                    "model_elapsed_seconds": float(elapsed),
+                    "model_valid_time": valid.strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+        def publish_wait(block):
+            # The wait while it lasts, dropped the moment it ends, so a
+            # reader never sees a stale wait beside a stepping model.
+            payload = {
+                "schema": PROGRESS_SCHEMA,
+                "status": "RUNNING",
+                "model_elapsed_seconds": float(
+                    stepped["model_elapsed_seconds"] or 0.0),
+                "requested_run_seconds": float(exp.run_seconds),
+            }
+            if block is not None:
+                payload["waiting"] = block
+            _atomic_json(progress_path, payload, heartbeat=True)
+
+        seam_waits = SeamWaits(
+            emit=None if events is None else events.emit,
+            observer=observer, publish=publish_wait, model_time=wait_where,
+            say=lambda line: print(line, file=sys.stderr, flush=True),
+            log_path=outdir / WAIT_LOG_NAME,
+            producer_path=stream_dir(inputs.prepared_root) / PRODUCER_NAME)
+        clock_basis = getattr(inputs, "clock_basis", None)
+        if clock_basis is not None:
+            clock_guard = StreamedClockGuard(
+                clock_basis, run_clock=getattr(inputs, "terrain_clock", None),
+                root_grid_id=int(exp.root.grid_id),
+                run_seconds=float(exp.run_seconds))
+        boundary_source = streamed_boundaries(
+            inputs.prepared_root, head=stream_head, on_wait=seam_waits,
+            validate=clock_guard, start_time=exp.start_time)
+        boundary_stream_receipt = {
+            "chained": True,
+            "head_sha256": stream_head["head_sha256"],
+            "head_decision": dict(stream_head.get("decision") or {}),
+            "ready_at_start": boundary_source.intervals.ready_prefix(),
+            "interval_count": len(boundary_source.intervals),
+        }
 
     def restore_store_domain(domain, grid, source):
         from gpuwm.ingest.prepared_store import store_from_prepared_cache
@@ -2397,17 +3279,18 @@ def run_prepared_tree(
             raise RuntimeError("prepared child activation is off its start tick")
         if int(domain.grid_id) in early_steppers:
             owner = early_steppers[int(domain.grid_id)]
-            owner.tiled_run.close()
-            store_bundle, restored = restore_store_domain(domain, node.grid, bundle)
+            # The startup slab template's driver, which this map alone
+            # still names once the store is released, goes before the
+            # restore allocates, as the resident branch's does below.
+            drivers.pop(domain.grid_id, None)
+            store_bundle, restored = _restore_streamed_child_at_start(
+                owner, node,
+                lambda: restore_store_domain(domain, node.grid, bundle),
+                lambda store_bundle, temporary: streaming.store_domain_builder(
+                    store_bundle, node=temporary, clock=clock)(
+                        None, domain.run, cold_decisions[domain.grid_id]))
             state = restored.initial_result.state
-            temporary_node = copy(node)
-            temporary_node.state = state
-            with owner.allocation_scope():
-                replacement = streaming.store_domain_builder(
-                    store_bundle, node=temporary_node, clock=clock)(
-                        None, domain.run, cold_decisions[domain.grid_id])
             reservation = initial_reservations.get(domain.grid_id)
-            owner.rebind_after_reconstruction(replacement, state=state)
             owner._reconstruction_reservation = reservation
             owner._reconstruction_host_budget_bytes = cold_decisions[
                 domain.grid_id].detail.get('host_claim_bytes')
@@ -2442,13 +3325,22 @@ def run_prepared_tree(
         if domain.grid_id in store_ids and initialization is None:
             store_bundle, restored = restore_store_domain(domain, grid, bundle)
         elif initialization is None:
+            streamed = boundary_source is not None and domain.parent_id == 0
             restored = restore_prepared_cache(
                 bundle.cache,
                 expected_identity=dict(bundle.cache_identity),
                 cfg=domain.run,
                 static=bundle.static_fields,
                 allow_nested_without_lbc=domain.parent_id != 0,
+                **({"reader": bundle.cache_reader,
+                    "boundary_source": boundary_source} if streamed else {}),
             )
+            if streamed:
+                from gpuwm.ingest.boundary_stream import keep_interval_check
+
+                # A later attachment may replace the series' check; the
+                # clock guard stays chained after it.
+                keep_interval_check(boundary_source.intervals, clock_guard)
             if restored.surface is None:
                 raise ValueError(
                     f"d{domain.grid_id:02d} prepared cache lacks canonical surface")
@@ -2934,6 +3826,17 @@ def run_prepared_tree(
             },
             heartbeat=True,
         )
+        if boundary_source is not None:
+            # Once per ROOT step, after that instant's frames and
+            # checkpoint: the interval the next root step needs is asked
+            # for here, so a wait (and a lead that never posts) happens
+            # with the tree at a clean seam, not inside a nest's substep.
+            elapsed = float(event["model_elapsed_seconds"])
+            stepped["model_elapsed_seconds"] = elapsed
+            if elapsed < float(exp.run_seconds):
+                prepared_single._require_next_interval(
+                    boundary_source.intervals, elapsed, writers=writers,
+                    exp=exp)
 
     # After the closures, before any submit (the first happens inside
     # execute_experiment below).  `io_mode="none"` has no writers to
@@ -3072,9 +3975,31 @@ def run_prepared_tree(
         if relocation_runner is not None:
             relocation_runner.close_receipt(model)
     except BaseException as error:
+        from gpuwm.ingest.boundary_stream import SourceBehind
+
+        stopped = None
+        if isinstance(error, SourceBehind):
+            # A late source lead: the tree is at a clean seam (asked for
+            # between two root steps), so its state is checkpointed there
+            # and a relaunch resumes exactly at it.
+            checkpoints = ([] if model._last_checkpoint is None
+                           else [model._last_checkpoint])
+
+            def seam_checkpoint(tree, ticks):
+                restart_handler(tree, ticks)
+                checkpoints.append(tree._last_checkpoint)
+
+            stopped = prepared_single._stop_at_seam(
+                error, model=model, node=model.root, exp=exp,
+                schedule=model.schedule, restart_handler=seam_checkpoint,
+                checkpoint_ticks={}, checkpoints=checkpoints,
+                seam_waits=seam_waits)
+        said = error if stopped is None else stopped
         # The last line a driving script reads has to say what happened.
         step_log.close(status="FAIL",
-                       error=f"{type(error).__name__}: {error}")
+                       error=f"{type(said).__name__}: {said}")
+        if stopped is not None:
+            raise stopped from error
         raise
     else:
         # After the drain: every frame this run will ever commit is
@@ -3123,6 +4048,37 @@ def run_prepared_tree(
             canonical_state_digest(node.state, node.clock, scope="trajectory",
                 before_hash=runtime._digest_progress(observer, grid_id)))
 
+    if boundary_source is not None:
+        # THE SEAL.  Every root interval this run integrated was hash-checked
+        # as it loaded; here the complete tree is bound: the root's sealed
+        # cache against the head and every segment, the full preflight
+        # against the sealed tree, and each domain restored from the head
+        # against its sealed twin.
+        runtime._finalizing_progress(observer, "bind-prepared-seal")
+        seal_started = time.perf_counter()
+        inputs = _seal_tree_inputs(inputs, stream=boundary_source.intervals)
+        from gpuwm.state_serialization_contract import setup_fingerprint
+
+        # The setup the root's restore could not check at the head (its
+        # boundary series did not exist yet), checked as the single
+        # domain checks it at its seal.
+        recorded = _root_bundle(inputs).cache_reader.metadata.get(
+            "setup_fingerprint")
+        if setup_fingerprint(nodes[int(exp.root.grid_id)].state) != recorded:
+            raise RuntimeError(
+                "the sealed root cache records a different setup fingerprint "
+                "than the streamed boundaries reproduce")
+        waits = boundary_source.intervals.waits
+        boundary_stream_receipt.update({
+            "seal_wait_seconds": time.perf_counter() - seal_started,
+            "waits": [{"interval": index, "seconds": seconds}
+                      for index, seconds in waits],
+            "wait_seconds_total": sum(seconds for _, seconds in waits),
+            "clock_intervals_checked": (
+                None if clock_guard is None else clock_guard.checked),
+            "proof_sha256": inputs.authority_sha256["preparation_receipt"],
+            "restore_to_seal_seconds": time.perf_counter() - head_started,
+        })
     runtime._finalizing_progress(observer, "verify-inputs",
         work_bytes=(None if initialization is not None else
                     _prepared_input_bytes(inputs)))
@@ -3306,6 +4262,10 @@ def run_prepared_tree(
             },
         },
         "runtime_source_identity": runtime_identity,
+        # Present only on a run bound at its prepared head: the head, the
+        # waits for its boundary intervals and the seal it was bound to.
+        **({} if boundary_stream_receipt is None
+           else {"boundary_stream": boundary_stream_receipt}),
         # What the end-of-run recheck could actually SEE.  The identity
         # above is the one taken at launch; the gate that compares it
         # skips the git half when either end failed to resolve it, and a
@@ -3414,6 +4374,159 @@ def run_prepared_tree(
     return report
 
 
+def _sealed_proof_sha256(prepared_root: Path, head_sha256: str, *,
+                         on_wait=None) -> str:
+    """Wait for a chained tree's seal and return its proof's digest.
+
+    The seal is checked against the head the caller pinned
+    (:func:`gpuwm.ingest.boundary_stream.verify_seal`), and a producer that
+    fails or falls silent ends the wait by name.  ``on_wait`` hears the
+    wait as the end-of-run seal's does (:func:`_start_seal_waits`).  A
+    source lead past its late time stays :class:`gpuwm.ingest.
+    boundary_stream.SourceBehind`, so the run exits 75 naming the lead
+    (:func:`_source_behind_exit`) instead of reading as a refusal.
+    """
+
+    from gpuwm.ingest.boundary_stream import (
+        BoundaryStreamError, SourceBehind, StreamedIntervals, read_head,
+        verify_seal)
+
+    try:
+        head = read_head(prepared_root, expected_sha256=head_sha256)
+        stream = StreamedIntervals(prepared_root, head=head, on_wait=on_wait)
+        stream.wait_sealed()
+        return verify_seal(prepared_root, head=head)["proof_sha256"]
+    except SourceBehind:
+        raise
+    except BoundaryStreamError as error:
+        raise ValueError(str(error)) from None
+
+
+def _source_behind_exit(outdir: Path, behind, observer) -> int:
+    """End the run on a source lead past its late time, and say which.
+
+    The frames already written and the checkpoint at the seam are kept,
+    and the record says which lead, so the door exits 75 naming it (as the
+    single domain does).  The same whether the lead fell behind at a seam
+    or while the forecast waited for the seal before its first step.
+    """
+
+    from gpuwm.ingest.boundary_stream import (
+        SOURCE_BEHIND_EXIT_CODE, WAIT_LOG_NAME, SeamWaits)
+
+    wrfout = outdir / "wrfout"
+    frames = ([path for path in wrfout.glob("wrfout_*")
+               if path.suffix != ".json"] if wrfout.is_dir() else [])
+    behind = behind.at(frames_kept=len(frames))
+    behind.details.setdefault("checkpoint", None)
+    _write_failed_run_receipt(outdir, behind)
+    SeamWaits(log_path=outdir / WAIT_LOG_NAME).record_source_behind(behind)
+    hook = getattr(observer, "source_behind", None)
+    if hook is not None:
+        try:
+            hook(dict(behind.details))
+        except Exception:  # noqa: BLE001 - the refusal stands
+            pass
+    print(f"prepared_domain_tree_forecast: {behind}", file=sys.stderr)
+    return SOURCE_BEHIND_EXIT_CODE
+
+
+def _start_seal_waits(outdir: Path, prepared_root: Path, observer):
+    """The ``on_wait`` of a seal wait before the forecast's first step.
+
+    Said as a seam wait is said (:class:`gpuwm.ingest.boundary_stream.
+    SeamWaits`) with the model not stepped yet (``phase: start``): on the
+    run's event stream when the observer has one, in the wait log, on
+    stderr, and on the supervisor heartbeat as ``waiting:preparation`` or
+    ``waiting:source``.  THE BREAKAGE: the seal wait before a rerun on the
+    sealed tree said nothing, so ``gpuwm go``'s watchdog saw the attempt's
+    last ``integrating`` record stand still and stopped the worker as
+    stalled once the wait passed its 120 s step bound.  No ``progress.json``
+    block: the run's ``evidence/`` folder does not exist before the
+    forecast restores.
+    """
+
+    from gpuwm.ingest.boundary_stream import (
+        PRODUCER_NAME, WAIT_LOG_NAME, SeamWaits, stream_dir)
+
+    events = getattr(observer, "events", None)
+    return SeamWaits(
+        emit=None if events is None else events.emit,
+        observer=observer,
+        model_time=lambda index: {
+            "phase": "start", "interval": None,
+            "model_elapsed_seconds": None, "model_valid_time": None},
+        say=lambda line: print(line, file=sys.stderr, flush=True),
+        log_path=Path(outdir) / WAIT_LOG_NAME,
+        producer_path=stream_dir(Path(prepared_root)) / PRODUCER_NAME)
+
+
+#: Where a head-bound attempt's outputs go when the run starts again on
+#: the sealed tree (a later interval moved the terrain clock).  A later
+#: attempt in the same folder takes ``streamed-attempt-2`` and so on.
+STREAMED_ATTEMPT_DIRNAME = "streamed-attempt"
+#: What stays in the run folder when an attempt is set aside: the
+#: supervisor heartbeat, which describes the worker rather than one
+#: attempt's outputs.  THE BREAKAGE: moved aside with the attempt, it left
+#: ``gpuwm go``'s watchdog reading nothing new while the rerun waited for
+#: the seal, and the watchdog stopped the worker as stalled; on Windows
+#: the move also races the watchdog's own reads of the file.
+KEPT_IN_PLACE = frozenset({HEARTBEAT_NAME})
+
+
+def _is_streamed_attempt(name: str) -> bool:
+    if name == STREAMED_ATTEMPT_DIRNAME:
+        return True
+    prefix = f"{STREAMED_ATTEMPT_DIRNAME}-"
+    return name.startswith(prefix) and name[len(prefix):].isdigit()
+
+
+def _set_aside_streamed_attempt(outdir: Path) -> Path:
+    """Move every output of a head-bound attempt into one kept folder.
+
+    Each attempt gets its own folder and an earlier attempt's folder stays
+    where it is, so a folder already holding one is never refused and no
+    attempt is nested inside another.  The heartbeat stays in place
+    (:data:`KEPT_IN_PLACE`).
+    """
+
+    outdir = Path(outdir)
+    earlier = {entry.name for entry in outdir.iterdir()
+               if entry.is_dir() and _is_streamed_attempt(entry.name)}
+    name, number = STREAMED_ATTEMPT_DIRNAME, 1
+    while name in earlier:
+        number += 1
+        name = f"{STREAMED_ATTEMPT_DIRNAME}-{number}"
+    attempt = outdir / name
+    attempt.mkdir()
+    for entry in sorted(outdir.iterdir()):
+        if (entry.name != name and entry.name not in earlier
+                and entry.name not in KEPT_IN_PLACE):
+            os.replace(entry, attempt / entry.name)
+    return attempt
+
+
+def _release_attempt_memory() -> None:
+    """Hand a set-aside attempt's device memory back before the next restore.
+
+    The driver and state attachments are reference cycles, so a collection
+    returns their arrays to the pool, and the pool then returns its blocks
+    to the card: the sealed run's restore and every free-memory reading it
+    takes see the card as a fresh launch on the sealed proof would.
+    """
+
+    import gc
+
+    gc.collect()
+    try:
+        from gpuwm.core.model import _trim_default_pool
+
+        _trim_default_pool()
+    except ImportError:
+        # No CuPy on this install: the attempt held nothing on a card.
+        return
+
+
 def build_parser() -> argparse.ArgumentParser:
     """This runner's parser, built without parsing anything.
 
@@ -3430,7 +4543,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=("print this runner's capability JSON and exit; it must be "
               "the only argument"))
     parser.add_argument("--prepared-root", type=Path, required=True)
-    parser.add_argument("--preparation-receipt-sha256", required=True)
+    # Exactly one of these two binds the preparation (checked in main).
+    parser.add_argument("--preparation-receipt-sha256", default=None,
+                        help="sha256 of the sealed tree's preparation "
+                             "document (proof.json or receipt.json)")
+    parser.add_argument(
+        "--prepared-head-sha256", default=None,
+        help=("head_sha256 of boundary-stream/head.json: binds a chained "
+              "tree's preparation at its head, so the forecast starts while "
+              "the root's later boundary intervals are prepared; the seal "
+              "is bound at the end"))
     parser.add_argument("--experiment-config", type=Path, required=True)
     parser.add_argument("--experiment-config-sha256", required=True)
     parser.add_argument("--physics-profile", default=None, metavar="ID",
@@ -3441,8 +4563,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--restart", type=Path,
         help="resume from any member of a gpuwmrst checkpoint set written "
              "by an earlier run of this prepared tree.  The forecast "
-             "length (run_seconds) and the output/restart cadence "
-             "(history_interval_s, restart_interval_s) may differ from "
+             "length (run_seconds), the output/restart cadence "
+             "(history_interval_s, restart_interval_s) and each "
+             "domain's history window (history_begin_s, history_end_s) "
+             "may differ from "
              "the run that wrote it -- the same contract `gpuwm run "
              "--restart` publishes.  Under an adaptive clock the "
              "controller's targets and clamps (target_cfl, target_hcfl, "
@@ -3471,6 +4595,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the line every xsec: product is cut along, "
                              "`gpuwm render --section`'s own value; "
                              "ignored without --render-products")
+    parser.add_argument("--no-memory-gate", action="store_true",
+                        dest="no_memory_gate",
+                        help="restore a tree whose priced peak envelope "
+                             "exceeds this card's free memory anyway, as "
+                             "`gpuwm go --no-memory-gate` does: the envelope "
+                             "is an upper bound and the card's own "
+                             "allocation then decides; a model state too big "
+                             "to build at all is still refused")
     # The same four flags the single-domain door carries, registered
     # from the same function so the two cannot drift.
     add_progress_arguments(parser)
@@ -3545,17 +4677,51 @@ def main(argv=None, *, observer=None) -> int:
               file=sys.stderr)
         return 2
     from gpuwm.runtime import _preparation_progress
+    from gpuwm.ingest.boundary_stream import (
+        StreamedClockChanged, SourceBehind)
+
     _preparation_progress(observer, "validate-prepared-inputs")
     started = time.perf_counter()
+    binding = {
+        "prepared_root": args.prepared_root,
+        "experiment_config": args.experiment_config,
+        "experiment_config_sha256": args.experiment_config_sha256,
+        **({} if args.physics_profile is None else
+           {"physics_profile": args.physics_profile}),
+    }
     try:
-        inputs = preflight_prepared_tree(
-            prepared_root=args.prepared_root,
-            preparation_receipt_sha256=args.preparation_receipt_sha256,
-            experiment_config=args.experiment_config,
-            experiment_config_sha256=args.experiment_config_sha256,
-            **({} if args.physics_profile is None else
-               {"physics_profile": args.physics_profile}),
-        )
+        if (args.preparation_receipt_sha256 is None) \
+                == (args.prepared_head_sha256 is None):
+            raise ValueError(
+                "bind the preparation with exactly one of "
+                "--preparation-receipt-sha256 (a sealed tree) and "
+                "--prepared-head-sha256 (a chained tree's head)")
+        if args.prepared_head_sha256 is not None \
+                and args.sealed_forcing_extension:
+            raise ValueError(
+                "--sealed-forcing-extension binds the sealed forcing "
+                "prefix; bind the sealed tree with "
+                "--preparation-receipt-sha256")
+        try:
+            inputs = preflight_prepared_tree(
+                **binding,
+                **({"prepared_head_sha256": args.prepared_head_sha256}
+                   if args.prepared_head_sha256 is not None else
+                   {"preparation_receipt_sha256":
+                    args.preparation_receipt_sha256}),
+            )
+            store_need = _root_store_needs_seal(inputs)
+            if store_need is not None:
+                raise TreeHeadNeedsSeal(store_need)
+        except TreeHeadNeedsSeal as waiting:
+            print("prepared tree: the forecast starts after the "
+                  f"preparation seals: {waiting}",
+                  file=sys.stderr, flush=True)
+            inputs = preflight_prepared_tree(
+                **binding, preparation_receipt_sha256=_sealed_proof_sha256(
+                    args.prepared_root, args.prepared_head_sha256,
+                    on_wait=_start_seal_waits(
+                        outdir, args.prepared_root, observer)))
         # An experimental component option warns on every front door it
         # can be selected through, and this runner is one of them: a
         # domain tree is not runnable through `gpuwm go`, which refuses
@@ -3571,6 +4737,10 @@ def main(argv=None, *, observer=None) -> int:
         print(f"prepared_domain_tree_forecast: refused: {error}",
               file=sys.stderr)
         return 2
+    except SourceBehind as behind:
+        # The forecast waited for the seal before its first step and a
+        # source lead passed its late time: a source behind, not a refusal.
+        return _source_behind_exit(outdir, behind, observer)
     except ValueError as error:
         # Preflight is the stage whose whole job is to refuse before the
         # GPU is touched, and every one of its refusals is a ValueError
@@ -3585,19 +4755,95 @@ def main(argv=None, *, observer=None) -> int:
         args, outdir=outdir, observer=observer, started=started)
     run_finished = False
     interrupted = False
+    # --no-memory-gate skips the resident envelope admission inside, as it
+    # skips `gpuwm go`'s own gate; the constructor floors stay.
+    from gpuwm.core.resident_admission import memory_gate_override
+
+    def run(bound, products, restart):
+        with memory_gate_override(args.no_memory_gate):
+            return run_prepared_tree(
+                bound,
+                output_directory=outdir,
+                io_mode=args.io_mode,
+                restart=restart,
+                health_debug=args.health_debug,
+                observer=observer,
+                sealed_forcing_extension=args.sealed_forcing_extension,
+                progress_options=ProgressOptions.from_args(args),
+                **({} if products is None else {"first_products": products}),
+            )
+
     try:
-        report = run_prepared_tree(
-            inputs,
-            output_directory=outdir,
-            io_mode=args.io_mode,
-            restart=args.restart,
-            health_debug=args.health_debug,
-            observer=observer,
-            sealed_forcing_extension=args.sealed_forcing_extension,
-            progress_options=ProgressOptions.from_args(args),
-            **({} if first_products is None else {"first_products": first_products}),
-        )
+        clock_changed = None
+        needs_seal = None
+        try:
+            report = run(inputs, first_products, args.restart)
+        except StreamedClockChanged as changed:
+            # Only the reason leaves this handler.  The exception's traceback
+            # holds the attempt's frames and, through them, its whole tree
+            # on the card; a sealed run started in here restored a second
+            # tree beside it.
+            clock_changed = str(changed)
+        except TreeHeadNeedsSeal as waiting:
+            # The run's own admission streams the root at the head (see
+            # run_prepared_tree); nothing stepped, so a checkpoint it
+            # resumed from is still this tree's.
+            needs_seal = str(waiting)
+        rerun_reason = clock_changed or needs_seal
+        if rerun_reason is not None:
+            # The head-bound attempt stepped on a clock the sealed tree does
+            # not choose, so it is not this tree's forecast: its outputs are
+            # set aside (kept, named) and the forecast runs again on the
+            # sealed tree, bound as a launch on its proof binds it.  Not
+            # through _seal_tree_inputs, which holds the sealed clock to the
+            # head's and so refuses exactly this tree.  An attempt whose
+            # root the run's admission streams stopped before its first
+            # step, and runs again on the seal the same way.
+            # First the heartbeat says a new attempt starts, so a supervisor
+            # takes the step and model time going back to zero as that and
+            # not as a regression, and times what follows as preparation;
+            # a hosting observer ends the renders it owns here too.
+            restart_attempt(observer, rerun_reason)
+            rearm = first_products is not None
+            if rearm:
+                # Ended, and waited for, before its folder moves: nothing
+                # is published into a picture folder that has moved, and
+                # on Windows a folder with a file open in it does not move.
+                from gpuwm.first_products import halt_renders_and_wait
+
+                if not halt_renders_and_wait(first_products):
+                    print("prepared tree: a render of the head-bound "
+                          "attempt was still running after it was killed",
+                          file=sys.stderr, flush=True)
+                first_products = None
+            _release_attempt_memory()
+            attempt = _set_aside_streamed_attempt(outdir)
+            print(f"prepared tree: {rerun_reason}; the head-bound attempt "
+                  f"is kept in {attempt} and the forecast starts again on "
+                  "the sealed preparation", file=sys.stderr, flush=True)
+            rerun_args = args
+            if clock_changed is not None and args.restart is not None:
+                # The checkpoint was stepped on the head's clock, so no
+                # resume from it is the sealed tree's forecast.
+                print("prepared tree: the checkpoint this attempt resumed "
+                      f"from ({args.restart}) was stepped on the head's "
+                      "clock, so the sealed forecast runs from its start "
+                      "time", file=sys.stderr, flush=True)
+                rerun_args = argparse.Namespace(
+                    **{**vars(args), "restart": None})
+            inputs = preflight_prepared_tree(
+                **binding, preparation_receipt_sha256=_sealed_proof_sha256(
+                    args.prepared_root, args.prepared_head_sha256,
+                    on_wait=_start_seal_waits(
+                        outdir, args.prepared_root, observer)))
+            if rearm:
+                first_products = prepared_single._route_owned_first_products(
+                    rerun_args, outdir=outdir, observer=observer,
+                    started=started)
+            report = run(inputs, first_products, rerun_args.restart)
         run_finished = True
+    except SourceBehind as behind:
+        return _source_behind_exit(outdir, behind, observer)
     except MissingTableAssets as error:
         # A refusal, not a failed run: no failed-run-receipt, because
         # nothing ran.  One sentence naming the table and the command
@@ -3624,6 +4870,19 @@ def main(argv=None, *, observer=None) -> int:
         # collapse AND its remedy the hardest of them to read.
         _write_failed_run_receipt(outdir, error)
         print(f"prepared_domain_tree_forecast: refused: {error}",
+              file=sys.stderr)
+        if observer is not None:
+            # A host emits its terminal failure from the exception. Returning
+            # only 2 replaced this cause with an empty StageExitError event.
+            raise
+        return 2
+    except InitializationMemoryRefused as error:
+        # A memory refusal taken before the first device allocation: the
+        # tree does not fit the card it was about to be restored onto.  One
+        # sentence naming the terms and the remedy, exit 2, and a receipt
+        # saying nothing ran.
+        _write_failed_run_receipt(outdir, error)
+        print(f"prepared_domain_tree_forecast: {error}",
               file=sys.stderr)
         return 2
     except BaseException as error:

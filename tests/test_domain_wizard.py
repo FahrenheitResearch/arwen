@@ -13,6 +13,7 @@ wrap-aware (W > E) fetch boxes instead of refusals.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from fractions import Fraction
 import json
 import os
@@ -70,6 +71,42 @@ def _run_wizard(tmp_path, *extra, point="39.7,-96.6", card="16gb",
         *(() if card is None else ("--card", card)), "--ladder", ladder,
         "--source", source, "--cycle", cycle, "--out", str(out), *extra])
     return rc, out
+
+
+@contextmanager
+def _runtime_card_pricing(monkeypatch, *, vram_gib, free_bytes):
+    """Re-price a fit through the runtime probe for its declared card."""
+    import sys
+
+    from gpuwm.core import mynn_pbl_scratch as scratch
+
+    # CUDA measured less than the nominal total on the 16 GB and 32 GB
+    # cards. At 49 levels that crosses the MYNN width quantum, so nominal
+    # totals would price a wider workspace than those cards actually run.
+    # Keep the probe samples independent of the planner's capacity table.
+    total_bytes = {16.0: 16611278848, 32.0: 33711521792}.get(
+        vram_gib, int(vram_gib * GIB))
+    card = {
+        "sm_count": 70, "max_threads_per_sm": 1536,
+        "registers_per_sm": 65536, "warp_size": 32,
+        "total_bytes": total_bytes, "free_bytes": int(free_bytes),
+        "device_name": "declared-card-runtime",
+    }
+    assert scratch._PRICING_MEMORY.get() is None
+    with monkeypatch.context() as runtime:
+        runtime.delenv(scratch.MYNN_PBL_COLUMN_CHUNK_ENV, raising=False)
+        runtime.setattr(scratch, "probe_mynn_card", lambda device=None: card)
+        runtime.setattr(scratch, "_RESOLVED", {})
+        runtime.setattr(scratch, "_PINNED", None)
+        runtime.setattr(scratch, "_TILE_WALKED", {})
+        # Runtime resolution publishes its choice to already loaded modules.
+        # Register their original values so repricing cannot leak that choice.
+        for name in scratch._CHUNK_MODULES:
+            module = sys.modules.get(name)
+            if module is not None and hasattr(module, "MYNN_PBL_COLUMN_CHUNK"):
+                runtime.setattr(module, "MYNN_PBL_COLUMN_CHUNK",
+                                module.MYNN_PBL_COLUMN_CHUNK)
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -668,20 +705,22 @@ def test_dims_even_divisible_and_clear(ladder, scale):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("card", sorted(CARD_VRAM_GIB))
-def test_fit_fills_card_budget(tmp_path, card):
+def test_fit_fills_card_budget(tmp_path, monkeypatch, card):
     rc, out = _run_wizard(tmp_path, card=card, ladder="auto")
     assert rc == 0
     text = out.read_text(encoding="utf-8")
     exp = experiment_from_text(text, source=str(out))
     vram = CARD_VRAM_GIB[card]
-    estimate = estimate_experiment(exp, forcing_interval_seconds=21600.0,
-                                   vram_gib=vram)
-    envelope = estimate.peak_envelope_bytes
     # The budget is the CANDIDATE's own -- its suite's reserve out of the
     # free VRAM a card that size really presents, not the nameplate.
     free_bytes = int(card_assumed_free_gib(vram) * GIB)
-    budget = sizing_budget_bytes(exp, free_bytes=free_bytes, vram_gib=vram,
-                                 forcing_interval_seconds=21600.0)
+    with _runtime_card_pricing(monkeypatch, vram_gib=vram,
+                               free_bytes=free_bytes):
+        estimate = estimate_experiment(exp, forcing_interval_seconds=21600.0,
+                                       vram_gib=vram)
+        budget = sizing_budget_bytes(exp, free_bytes=free_bytes, vram_gib=vram,
+                                     forcing_interval_seconds=21600.0)
+    envelope = estimate.peak_envelope_bytes
     assert envelope <= budget
     # ...and it must stop SHORT of it.  Every ladder v1.4.0 emitted landed
     # 0.01-0.19 GiB from the wall, which is a rounding error away from a
@@ -750,11 +789,13 @@ def test_the_wizard_budgets_with_the_platform_envelope_factor(
     free_bytes = int(card_assumed_free_gib(vram) * GIB)
     for exp, platform in ((windows_exp, "win32"), (linux_exp, "linux")):
         monkeypatch.setattr(pf.sys, "platform", platform)
-        estimate = estimate_experiment(exp, forcing_interval_seconds=21600.0,
-                                       vram_gib=vram)
-        budget = sizing_budget_bytes(
-            exp, free_bytes=free_bytes, vram_gib=vram,
-            forcing_interval_seconds=21600.0)
+        with _runtime_card_pricing(monkeypatch, vram_gib=vram,
+                                   free_bytes=free_bytes):
+            estimate = estimate_experiment(exp, forcing_interval_seconds=21600.0,
+                                           vram_gib=vram)
+            budget = sizing_budget_bytes(
+                exp, free_bytes=free_bytes, vram_gib=vram,
+                forcing_interval_seconds=21600.0)
         assert estimate.peak_envelope_bytes <= budget, platform
         assert estimate.peak_envelope_bytes >= 0.7 * budget, platform
 
@@ -794,11 +835,14 @@ def test_windows_12gib_sizes_under_the_measured_model(
     # And the emitted config really fits the measured accounting.
     exp = experiment_from_text(out.read_text(encoding="utf-8"),
                                source=str(out))
-    estimate = estimate_experiment(exp, forcing_interval_seconds=21600.0,
-                                   vram_gib=12.0)
-    budget = sizing_budget_bytes(
-        exp, free_bytes=int(card_assumed_free_gib(12.0) * GIB),
-        vram_gib=12.0, forcing_interval_seconds=21600.0)
+    free_bytes = int(card_assumed_free_gib(12.0) * GIB)
+    with _runtime_card_pricing(monkeypatch, vram_gib=12.0,
+                               free_bytes=free_bytes):
+        estimate = estimate_experiment(exp, forcing_interval_seconds=21600.0,
+                                       vram_gib=12.0)
+        budget = sizing_budget_bytes(
+            exp, free_bytes=free_bytes, vram_gib=12.0,
+            forcing_interval_seconds=21600.0)
     assert estimate.peak_envelope_bytes <= budget
 
 
@@ -1612,8 +1656,12 @@ def test_the_wizard_defaults_cumulus_off_below_the_permitting_bound(
                                      cumulus_by_domain)
 
     out = tmp_path / "bare3km.toml"
+    # A 1.5 km nest, not 750 m: below 1 km the default is the spacing
+    # table's cumulus-free suite (gpuwm.physics_menu.SPACING_DEFAULTS), so
+    # nothing would be retired; this probe is the derived Kain-Fritsch
+    # suite meeting a 3 km root.
     rc = cli_main(["domain", "--point=35.3,-97.5", "--card", "24gb",
-                   "--root-dx", "3", "--chain", "4", "--source", "gfs",
+                   "--root-dx", "3", "--chain", "2", "--source", "gfs",
                    "--cycle", "2026-07-29T18", "--hours", "6",
                    "--out", str(out)])
     printed = capsys.readouterr().out
@@ -1773,7 +1821,7 @@ def test_emitted_radiation_uses_the_representation_the_guard_compares(
     "wsm6-ysu-mm5-noah-no-radiation-v1",
 ])
 def test_physics_profile_configs_pass_the_runner_guard_as_emitted(
-        tmp_path, capsys, profile):
+        tmp_path, capsys, pinned_thompson_tables, profile):
     """--physics-profile emits a config the prepared runner accepts.
 
     Not "nearly accepts": this is the runner's own validator, run over
@@ -2095,7 +2143,7 @@ def test_an_hrrr_emission_names_its_automatic_native_launch(tmp_path, capsys):
 
 
 def test_a_nested_hrrr_emission_drives_the_route_with_no_hand_edits(
-        tmp_path, capsys):
+        tmp_path, capsys, pinned_thompson_tables):
     """The acceptance this lane exists for, run through the ROUTE's gates.
 
     ``gpuwm domain --source hrrr`` used to emit one file of the five the
@@ -2117,7 +2165,7 @@ def test_a_nested_hrrr_emission_drives_the_route_with_no_hand_edits(
         _require_raw_wps_contract, _supported_hierarchy_slice)
     from gpuwm.ingest.hrrr_target import (load_hrrr_target_domain,
                                           required_hrrr_source_window)
-    from gpuwm.hrrr_route_inputs import ROUTE_DEFAULT_PHYSICS_PROFILE
+    from gpuwm.physics_menu import default_profile_for
     from gpuwm.vertical_contract import explicit_vertical_from_wrf_namelist
     from tools.hrrr_single_domain_benchmark import (
         _validate_native_hrrr_physics_profile)
@@ -2162,12 +2210,16 @@ def test_a_nested_hrrr_emission_drives_the_route_with_no_hand_edits(
     assert {float(d.run.epssm) for d in native_exp.domains} == {0.5}
 
     # And the ROOT preparation's own two gates over the same file.
-    # Bound to the route's OWN default rather than a literal: the point
-    # is that the wizard emitted namelists the root preparer accepts for
-    # the suite it emitted, whichever suite that is.
+    # Bound to the default this tree takes rather than a literal: the
+    # point is that the wizard emitted namelists the root preparer
+    # accepts for the suite it emitted, whichever suite that is.  Its
+    # 750 m nest binds the sub-km default, which a nested hrrr tree takes
+    # now that the hierarchy stage pins the soil its land surface runs.
+    suite = default_profile_for(
+        "hrrr", min(d.run.dx for d in exp.domains), len(exp.domains))
     binding = _validate_native_hrrr_physics_profile(
-        paths["namelist_input"], ROUTE_DEFAULT_PHYSICS_PROFILE)
-    assert binding["profile"] == ROUTE_DEFAULT_PHYSICS_PROFILE
+        paths["namelist_input"], suite)
+    assert binding["profile"] == suite
     # ... and that suite runs BOTH radiation streams, which is the
     # property 1.8 exists to give this route.
     assert binding["resolved"]["ra_lw_physics"] == 4
@@ -2846,12 +2898,12 @@ def test_the_card_tier_is_conservative_against_a_real_card(card):
 @pytest.mark.parametrize("card", sorted(CARD_VRAM_GIB))
 @pytest.mark.parametrize("ladder", ["12", "12-3", "12-3-1-0.5"])
 def test_an_emitted_config_fits_the_card_it_was_sized_for(
-        tmp_path, card, ladder):
+        tmp_path, monkeypatch, card, ladder):
     """The A-0 regression, as an inequality rather than a subprocess.
 
     Every `--card 16gb` ladder v1.4.0 emitted exceeded the budget a real
     16 GB card leaves.  Re-priced here against that card's real free
-    VRAM and its own suite's reserve, with nothing declared and nothing
+    VRAM, runtime MYNN width and its own suite's reserve, with nothing
     added back.
     """
     rc, out = _run_wizard(tmp_path, card=card, ladder=ladder, source="gfs",
@@ -2861,14 +2913,16 @@ def test_an_emitted_config_fits_the_card_it_was_sized_for(
                                source=str(out))
     vram = CARD_VRAM_GIB[card]
     interval = 10800.0
-    estimate = estimate_experiment(exp, forcing_interval_seconds=interval,
-                                   vram_gib=vram)
-    phases = estimate_phases(exp, source="gfs",
-                             forcing_interval_seconds=interval,
-                             vram_gib=vram)
     real_free = int(REAL_CARD_FREE_GIB[card] * GIB)
-    budget = sizing_budget_bytes(exp, free_bytes=real_free, vram_gib=vram,
-                                 forcing_interval_seconds=interval)
+    with _runtime_card_pricing(monkeypatch, vram_gib=vram,
+                               free_bytes=real_free):
+        estimate = estimate_experiment(exp, forcing_interval_seconds=interval,
+                                       vram_gib=vram)
+        phases = estimate_phases(exp, source="gfs",
+                                 forcing_interval_seconds=interval,
+                                 vram_gib=vram)
+        budget = sizing_budget_bytes(exp, free_bytes=real_free, vram_gib=vram,
+                                     forcing_interval_seconds=interval)
     assert phases.peak_envelope_bytes <= budget, (
         f"{card} {ladder}: emitted envelope "
         f"{phases.peak_envelope_bytes / GIB:.2f} GiB over a real budget of "
@@ -3176,8 +3230,18 @@ def test_the_minimum_layout_refusal_does_not_contradict_itself(
     # 4 GiB is the probe that still exercises THIS arm: at 3 GiB the
     # size-independent floor (context + kernel backing store) overflows
     # first and the no-layout-can-help refusal answers instead.
+    # The suite is named, with the grid deciding its cumulus exactly as
+    # the unnamed default does: this probe is the minimum-layout arm for
+    # the 12 km default suite, and below 1 km the unnamed default is the
+    # spacing table's heavier suite, whose kernel set alone overflows a
+    # 4 GiB card (the no-layout-can-help arm, pinned in
+    # tests/test_domain_wizard_memory_remedy.py).
+    from gpuwm.physics_menu import default_profile_for
+
     rc = cli_main(["domain", "--point=35.22,-97.44", "--vram-gib", "4",
                    "--ladder", "12-3-1-0.5", "--source", "gfs",
+                   "--physics-profile", default_profile_for("gfs"),
+                   "--cumulus", "grid",
                    "--cycle", "2026-07-28T00", "--out", str(out)])
     assert rc == 2
     message = capsys.readouterr().err

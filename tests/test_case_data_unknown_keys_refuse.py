@@ -95,6 +95,14 @@ def test_the_optional_keys_are_exactly_the_silent_exposure():
         # every optional key gets, and the parametrized test below proves
         # it fires for this key too.
         "water_temperature_policy",
+        # A157.  Moved deliberately: it pins where the root prepares, and a
+        # dropped `preprocess_backend = "cpu"` would run `auto`, which moves
+        # to the CPU or stays on the card depending on how busy the card
+        # reads, under the name of the user's pin -- the comparison it
+        # exists for would then compare two preparations.  The near-miss
+        # refusal below fires for it like every other optional key, and an
+        # unknown value is refused by name (tests/test_run_preprocess_backend.py).
+        "preprocess_backend",
     }
 
 

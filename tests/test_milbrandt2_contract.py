@@ -289,8 +289,16 @@ def test_transcendentals_are_ieee_not_fast_math():
     # The general form, so the NEXT intrinsic is caught without this list
     # being edited first.  Nothing in this kernel legitimately calls a
     # double-underscore function.
+    # A block barrier computes nothing: the category-parallel sedimentation
+    # waits on ``__syncthreads`` before one thread per column combines the
+    # five categories' surface fluxes, so it is one allowed spelling.
+    # ``__fdiv_rn`` is the other, and it is the opposite of fast math: A146
+    # found NVRTC compiling ``x / C`` for a compile-time constant as
+    # ``x * RN(1/C)`` on Blackwell cards, and the A146 literal-division gate
+    # requires every such division here to be spelled ``__fdiv_rn``, the
+    # IEEE round-to-nearest quotient on every card.
     intrinsics = sorted(set(re.findall(r"\b__[a-z][a-z0-9_]*(?=\s*\()",
-                                       code)))
+                                       code)) - {"__syncthreads", "__fdiv_rn"})
     assert intrinsics == [], (
         f"unlisted device intrinsics appeared: {intrinsics}")
     # The header note must survive too -- it is the only record of why.

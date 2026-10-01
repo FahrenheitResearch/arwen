@@ -31,6 +31,9 @@ The defects this file holds shut, each seen on the unmodified page:
   an open Show command instead of showing that machine's line.
 - A settings Save answered after the person edited a field again put the
   value it had sent back over the newer edit.
+- With the auto nest ladder the Physics step's check and Start were sent
+  without the grid the fit landed on, so the engine described the source's
+  own default for a fitted 500 m ladder that runs the sub-km set.
 - Customise of a 12, 3 and 1 km best run showed one grid: the event's nests
   rode on the 12 km Overview choice, which named its outer grid alone, and
   the plan it built left out the rest of the best run (how often each grid
@@ -89,6 +92,9 @@ def nested(answer, argv):
     plan = json.loads(Path(argv[argv.index("run-plan") + 1]).read_text(encoding="utf-8"))
     intent = (plan.get("config") or {}).get("intent") or {}
     ratios = [int(r) for r in str(intent.get("chain") or "").split(",") if r]
+    if intent.get("ladder") == "auto":
+        # The stand-in's card fits the deepest preset: 12, 3, 1 and 0.5 km.
+        ratios = [4, 3, 2]
     if not ratios:
         return answer
     experiment = answer["configuration"]["experiment"]
@@ -312,6 +318,39 @@ def test_a_nest_ladder_replaces_the_events_chain_and_buffers(tab, served):
     assert reply.status == 200, body
     intent = body["plan"]["config"]["intent"]
     assert intent["ladder"] == "12-3" and "chain" not in intent and "buffer_km" not in intent
+
+
+def test_the_auto_ladder_checks_and_starts_on_the_grid_its_fit_lands_on(tab, served):
+    """The check and Start carry the fitted grid of the auto ladder; the fit itself never does."""
+
+    _server, runner, _root = served
+    tab.open("create/40,-100,600x600/when/at/2020-06-01T12/src/era5")
+    tab.step("When")
+    tab.next()
+    tab.step("How fine")
+    tab.next()
+    tab.step("Physics")
+    tab.next()
+    tab.step("Review")
+    tab.page.locator(".steppanel details.fold > summary", has_text="More settings").click()
+    before = len(runner.checks)
+    tab.page.locator(".steppanel select:has(option[value='auto'])").select_option("auto")
+    # The engine's check is asked at the fitted grid, as the page sent it beside the ladder.
+    for _ in range(300):
+        if any((c.get("finest_dx_km"), c.get("domains")) == (0.5, 4) for c in runner.checks[before:]):
+            break
+        tab.page.wait_for_timeout(50)
+    else:
+        raise AssertionError(f"no check read the fitted grid: {runner.checks[before:]!r}")
+    asked = [body for body in tab.bodies("/api/physics/check") if body.get("ladder") == "auto"]
+    assert asked and (asked[-1]["finest_dx_km"], asked[-1]["domains"]) == (0.5, 4), asked
+    fits = [body for body in tab.bodies("/api/create/fit") if body.get("ladder") == "auto"]
+    assert fits and not any("finest_dx_km" in body or "domains" in body for body in fits), fits
+    tab.page.locator(".steppanel .nav2 .btns .showcmd.live > button").click()
+    tab.page.wait_for_function("() => !!document.querySelector('.steppanel .showcmd.live .copyline code')",
+                               timeout=20000)
+    start = [body for body in tab.bodies("/api/create/start") if body.get("ladder") == "auto"]
+    assert start and (start[-1]["finest_dx_km"], start[-1]["domains"]) == (0.5, 4), start
 
 
 def test_a_ladder_beside_a_chain_is_refused_with_the_conflict_named(served):

@@ -243,7 +243,7 @@ __device__ float p3_polysvp1(float t, int i_type)
         }
         return r_pow(10.0f, -9.09718f * (273.16f / t - 1.0f)
                             - 3.56654f * p3_log10(273.16f / t)
-                            + 0.876793f * (1.0f - t / 273.16f)
+                            + 0.876793f * (1.0f - __fdiv_rn(t, 273.16f))
                             + p3_log10(6.1071f)) * 100.0f;
     }
     if (t >= 202.0f) {
@@ -260,7 +260,7 @@ __device__ float p3_polysvp1(float t, int i_type)
     return r_pow(10.0f, -7.90298f * (373.16f / t - 1.0f)
                         + 5.02808f * p3_log10(373.16f / t)
                         - 1.3816e-7f * (r_pow(10.0f, 11.344f
-                                        * (1.0f - t / 373.16f)) - 1.0f)
+                                        * (1.0f - __fdiv_rn(t, 373.16f))) - 1.0f)
                         + 8.1328e-3f * (r_pow(10.0f, -3.49149f
                                         * (373.16f / t - 1.0f)) - 1.0f)
                         + p3_log10(1013.246f)) * 100.0f;
@@ -487,14 +487,14 @@ __device__ void p3_get_rain_dsd2(float* nr_grd, float qr_grd, float ispf,
         float lammin = (mu_r + 1.0f) * P3_INV_DRMAX;
         if (lamr < lammin) {
             lamr = lammin;
-            nr = r_exp(3.0f * r_log(lamr) + r_log(qr)
+            nr = __fdiv_rn(r_exp(3.0f * r_log(lamr) + r_log(qr)
                        + r_log(p3_gam(mu_r + 1.0f))
-                       - r_log(p3_gam(mu_r + 4.0f))) / P3_CONS1;
+                       - r_log(p3_gam(mu_r + 4.0f))), P3_CONS1);
         } else if (lamr > lammax) {
             lamr = lammax;
-            nr = r_exp(3.0f * r_log(lamr) + r_log(qr)
+            nr = __fdiv_rn(r_exp(3.0f * r_log(lamr) + r_log(qr)
                        + r_log(p3_gam(mu_r + 1.0f))
-                       - r_log(p3_gam(mu_r + 4.0f))) / P3_CONS1;
+                       - r_log(p3_gam(mu_r + 4.0f))), P3_CONS1);
         }
         *logn0r_o = p3_log10(nr) + (mu_r + 1.0f) * p3_log10(lamr)
                     - p3_log10(p3_gam(mu_r + 1.0f));
@@ -515,10 +515,10 @@ __device__ void p3_calc_bulk_rho_rime(float qi_tot, float* qi_rim,
         rho_rime = qir / bir;
         if (rho_rime < P3_RHO_RIMEMIN) {
             rho_rime = P3_RHO_RIMEMIN;
-            bir = qir / rho_rime;
+            bir = __fdiv_rn(qir, rho_rime);
         } else if (rho_rime > P3_RHO_RIMEMAX) {
             rho_rime = P3_RHO_RIMEMAX;
-            bir = qir / rho_rime;
+            bir = __fdiv_rn(qir, rho_rime);
         }
     } else {
         qir = 0.0f; bir = 0.0f; rho_rime = 0.0f;
@@ -613,12 +613,12 @@ __device__ void p3_activate_droplets(int log_predictNc, float sup_cld, int it,
 // (:2276-2288) and the surface accumulators.  Level-local, so this is the
 // authority's whole-array section written as a k-loop.
 // ---------------------------------------------------------------------
-__device__ void p3_step_prep_col(P3_ARGS)
+__device__ void p3_step_prep_levels(P3_ARGS, int k_start, int k_stride)
 {
     float* __restrict__ th = F[F_TH];
     float* __restrict__ qv = F[F_QV];
     const float* __restrict__ pres = F[F_PRES];
-    for (int k = 0; k < nk; ++k) {
+    for (int k = k_start; k < nk; k += k_stride) {
         float tm = r_pow(AT(pres, k) * 1.0e-5f, P3_RD * P3_INV_CP);  // :2293
         AT(S[S_TMPARR1], k) = tm;
         AT(S[S_T], k) = AT(th, k) * tm;                              // :2295
@@ -630,6 +630,11 @@ __device__ void p3_step_prep_col(P3_ARGS)
         AT(D[D_DI], k) = 0.0f;                                       // :2283
         AT(D[D_RHOPO], k) = 0.0f;                                    // :2284
     }
+}
+
+__device__ void p3_step_prep_col(P3_ARGS)
+{
+    p3_step_prep_levels(P3_PASS, 0, 1);
     P[P_PRTLIQ][i] = 0.0f;                                           // :2270
     P[P_PRTSOL][i] = 0.0f;                                           // :2271
     // The two column-scope logical flags.  Float 0/1 rather than int so
@@ -643,7 +648,7 @@ __device__ void p3_step_prep_col(P3_ARGS)
 // k_loop_1 (:2320-2411): atmospheric variables, the two column-scope
 // logical flags, and mass clipping in dry air.
 // ---------------------------------------------------------------------
-__device__ void p3_step_kloop1_col(P3_ARGS)
+__device__ int p3_step_kloop1_levels(P3_ARGS, int k_start, int k_stride)
 {
     float* __restrict__ qc = F[F_QC];
     float* __restrict__ nc = F[F_NC];
@@ -663,7 +668,7 @@ __device__ void p3_step_kloop1_col(P3_ARGS)
     int nucleation_possible = 0;
     int hydrometeors_present = 0;
 
-    for (int k = 0; k < nk; ++k) {
+    for (int k = k_start; k < nk; k += k_stride) {
         float t = AT(S[S_T], k);
         float tm = AT(S[S_TMPARR1], k);
         float invexn = 1.0f / tm;                                    // :2294
@@ -761,9 +766,15 @@ __device__ void p3_step_kloop1_col(P3_ARGS)
     }
     // first compute_SCPF (:2432-2434) with SCPF off (:1889-1899): the qv
     // snapshot is the only product the WRF call shape reads.
-    for (int k = 0; k < nk; ++k) AT(S[S_QVCLD], k) = AT(F[F_QV], k);
-    FLG[i] = nucleation_possible ? 1.0f : 0.0f;
-    FLG[ncol + i] = hydrometeors_present ? 1.0f : 0.0f;
+    for (int k = k_start; k < nk; k += k_stride) AT(S[S_QVCLD], k) = AT(F[F_QV], k);
+    return nucleation_possible | (hydrometeors_present << 1);
+}
+
+__device__ void p3_step_kloop1_col(P3_ARGS)
+{
+    int flags = p3_step_kloop1_levels(P3_PASS, 0, 1);
+    FLG[i] = (flags & 1) ? 1.0f : 0.0f;
+    FLG[ncol + i] = (flags & 2) ? 1.0f : 0.0f;
 }
 
 // ---------------------------------------------------------------------
@@ -771,11 +782,10 @@ __device__ void p3_step_kloop1_col(P3_ARGS)
 // update, clipping.  The single largest step; run by one thread over the
 // whole column so the statement order is the authority's.
 // ---------------------------------------------------------------------
-__device__ void p3_step_kloopmain_col(P3_ARGS)
+__device__ int p3_step_kloopmain_levels(P3_ARGS, int k_start, int k_stride)
 {
     // goto 333 (:2439) -- nothing to do in this column.
-    if (FLG[i] == 0.0f && FLG[ncol + i] == 0.0f) return;
-    FLG[ncol + i] = 0.0f;                                            // :2441
+    if (FLG[i] == 0.0f && FLG[ncol + i] == 0.0f) return 0;
 
     float* __restrict__ qc = F[F_QC];
     float* __restrict__ nc = F[F_NC];
@@ -807,7 +817,7 @@ __device__ void p3_step_kloopmain_col(P3_ARGS)
     float rhorime_c = 400.0f;
     int hydrometeors_present = 0;
 
-    for (int k = 0; k < nk; ++k) {
+    for (int k = k_start; k < nk; k += k_stride) {
         const float t = AT(S[S_T], k);
         const float rho = AT(S[S_RHO], k);
         const float inv_rho = AT(S[S_INVRHO], k);
@@ -870,8 +880,8 @@ __device__ void p3_step_kloopmain_col(P3_ARGS)
             float kap = 1.414e3f * mu;                               // :2539
             float eii;
             if (t < 253.15f)      eii = 0.001f;                      // :2547
-            else if (t < 273.15f) eii = 0.001f + (t - 253.15f)
-                                         * (0.3f - 0.001f) / 20.0f;
+            else if (t < 273.15f) eii = 0.001f + __fdiv_rn((t - 253.15f)
+                                         * (0.3f - 0.001f), 20.0f);
             else                  eii = 0.3f;
 
             {   float ncg = AT(nc, k);
@@ -930,7 +940,7 @@ __device__ void p3_step_kloopmain_col(P3_ARGS)
                     tmp1 = AT(qir, k) / AT(qi, k);
                     if (tmp1 < 0.6f)      eii_fact = 1.0f;
                     else if (tmp1 < 0.9f) eii_fact = 1.0f
-                                                     - (tmp1 - 0.6f) / 0.3f;
+                                                     - __fdiv_rn((tmp1 - 0.6f), 0.3f);
                     else                  eii_fact = 0.0f;
                 } else {
                     eii_fact = 1.0f;
@@ -978,11 +988,11 @@ __device__ void p3_step_kloopmain_col(P3_ARGS)
             if (AT(qi, k) >= P3_QSMALL && t > 273.15f) {
                 float qsat0 = 0.622f * P3_E0 / (AT(pres, k) - P3_E0);
                 dum = 0.0f;
-                qimlt = ((f1pr05 + f1pr14 * r_pow(sc, P3_THRD)
+                qimlt = (__fdiv_rn((f1pr05 + f1pr14 * r_pow(sc, P3_THRD)
                           * r_pow(rhofaci * rho / mu, 0.5f))
                          * ((t - 273.15f) * kap
                             - rho * P3_XXLV * dv * (qsat0 - qv_cld))
-                         * 2.0f * P3_PI / P3_XLF + dum) * AT(ni, k);
+                         * 2.0f * P3_PI, P3_XLF) + dum) * AT(ni, k);
                 qimlt = fmaxf(qimlt, 0.0f);
                 nimlt = qimlt * (AT(ni, k) / AT(qi, k));
             }
@@ -1479,8 +1489,15 @@ __device__ void p3_step_kloopmain_col(P3_ARGS)
     }
 
     // second compute_SCPF (:3968-3970): refresh the qv snapshot.
-    for (int k = 0; k < nk; ++k) AT(S[S_QVCLD], k) = AT(F[F_QV], k);
-    FLG[ncol + i] = hydrometeors_present ? 1.0f : 0.0f;
+    for (int k = k_start; k < nk; k += k_stride) AT(S[S_QVCLD], k) = AT(F[F_QV], k);
+    return hydrometeors_present;
+}
+
+__device__ void p3_step_kloopmain_col(P3_ARGS)
+{
+    if (FLG[i] == 0.0f && FLG[ncol + i] == 0.0f) return;
+    int present = p3_step_kloopmain_levels(P3_PASS, 0, 1);
+    FLG[ncol + i] = present ? 1.0f : 0.0f;
 }
 
 // ---------------------------------------------------------------------
@@ -2015,6 +2032,364 @@ extern "C" __global__ void p3k_final(P3_KERNEL_ARGS)
 
 extern "C" __global__ void p3k_saveold_precip(P3_KERNEL_ARGS)
 { P3_TID; p3_step_saveold_col(P3_PASS); p3_step_precip_col(P3_PASS); }
+
+// Fluxes are completed before any level updates in each substep.
+// The only cross-level reduction is the exact Courant maximum.
+__device__ void p3_step_sed_cloud_levels(P3_ARGS, float (*co)[4])
+{
+    int enabled = i < ncol && FLG[ncol + i] != 0.0f;
+    float* __restrict__ qc = F[F_QC];
+    float* __restrict__ nc = F[F_NC];
+    const float* __restrict__ dz = F[F_DZ];
+    const float iscf = 1.0f;
+    const float odt = 1.0f / dt;
+    const int kbot = 0, ktop = nk - 1;
+
+    int log_qxpresent = 0, k_qxtop = kbot;
+    for (int k = ktop; enabled && k >= kbot; --k) {                             // :4064
+        if (AT(qc, k) * iscf >= P3_QSMALL) {
+            log_qxpresent = 1; k_qxtop = k; break;
+        }
+    }
+    enabled = enabled && log_qxpresent;
+
+    float dt_left = enabled ? dt : 0.0f, prt_accum = 0.0f;
+    int k_qxbot = kbot;
+    for (int k = kbot; enabled && k <= k_qxtop; ++k) {                          // :4002
+        if (AT(qc, k) * iscf >= P3_QSMALL) { k_qxbot = k; break; }
+    }
+    for (int k = threadIdx.y; enabled && k < nk; k += 16) {
+        AT(W[W_VQ], k) = 0.0f; AT(W[W_VN], k) = 0.0f;
+        AT(W[W_FQ], k) = 0.0f; AT(W[W_FN], k) = 0.0f;
+    }
+
+    while (__syncthreads_or(dt_left > 1.0e-4f)) {
+        float Co_max = 0.0f;
+        for (int k = k_qxtop - threadIdx.y; dt_left > 1.0e-4f && k >= k_qxbot; k -= 16) {
+            AT(W[W_VQ], k) = 0.0f; AT(W[W_VN], k) = 0.0f;
+            if (AT(qc, k) * iscf > P3_QSMALL) {
+                float mu_c, lamc, t1, t2, ncg = AT(nc, k);
+                p3_get_cloud_dsd2(&ncg, AT(qc, k), AT(S[S_RHO], k), iscf,
+                                  &mu_c, &lamc, &t1, &t2);
+                AT(nc, k) = ncg;
+                float dum = 1.0f / r_pow(lamc, P3_BCN);              // :4022
+                AT(W[W_VQ], k) = AT(S[S_ACN], k)
+                                 * p3_gam(4.0f + P3_BCN + mu_c) * dum
+                                 / p3_gam(mu_c + 4.0f);
+                if (log_predictNc) {                                 // :4025
+                    AT(W[W_VN], k) = AT(S[S_ACN], k)
+                                     * p3_gam(1.0f + P3_BCN + mu_c) * dum
+                                     / p3_gam(mu_c + 1.0f);
+                }
+            }
+            Co_max = fmaxf(Co_max, AT(W[W_VQ], k) * dt_left
+                                   * (1.0f / AT(dz, k)));
+        }
+        co[threadIdx.y][threadIdx.x] = Co_max;
+        __syncthreads();
+        Co_max = co[0][threadIdx.x];
+        for (int group = 1; group < 16; ++group)
+            Co_max = fmaxf(Co_max, co[group][threadIdx.x]);
+        int tmpint1 = (int)(Co_max + 1.0f);
+        float dt_sub = fminf(dt_left, dt_left / (float)tmpint1);
+        int k_temp = (k_qxbot == kbot) ? k_qxbot : k_qxbot - 1;
+        for (int k = k_temp + threadIdx.y; dt_left > 1.0e-4f && k <= k_qxtop; k += 16) {
+            AT(W[W_FQ], k) = AT(W[W_VQ], k) * AT(qc, k) * AT(S[S_RHO], k);
+            if (log_predictNc) {
+                AT(W[W_FN], k) = AT(W[W_VN], k) * AT(nc, k) * AT(S[S_RHO], k);
+            }
+        }
+        __syncthreads();
+        if (dt_left > 1.0e-4f) {
+        if (k_qxbot == kbot) prt_accum = prt_accum + AT(W[W_FQ], kbot) * dt_sub;
+        if (threadIdx.y == 0) {
+            int k = k_qxtop;
+            float idz = 1.0f / AT(dz, k);
+            float fdq = -AT(W[W_FQ], k) * idz;
+            AT(qc, k) = AT(qc, k) + fdq * dt_sub * AT(S[S_INVRHO], k);
+            if (log_predictNc) {
+                float fdn = -AT(W[W_FN], k) * idz;
+                AT(nc, k) = AT(nc, k) + fdn * dt_sub * AT(S[S_INVRHO], k);
+            }
+        }
+        for (int k = k_qxtop - 1 - threadIdx.y; k >= k_temp; k -= 16) {
+            float idz = 1.0f / AT(dz, k);
+            float fdq = (AT(W[W_FQ], k + 1) - AT(W[W_FQ], k)) * idz;
+            AT(qc, k) = AT(qc, k) + fdq * dt_sub * AT(S[S_INVRHO], k);
+            if (log_predictNc) {
+                float fdn = (AT(W[W_FN], k + 1) - AT(W[W_FN], k)) * idz;
+                AT(nc, k) = AT(nc, k) + fdn * dt_sub * AT(S[S_INVRHO], k);
+            }
+        }
+        dt_left = dt_left - dt_sub;
+        if (k_qxbot != kbot) k_qxbot = k_qxbot - 1;
+        }
+    }
+    if (enabled && threadIdx.y == 0) P[P_PRTLIQ][i] = prt_accum * P3_INV_RHOW * odt;
+}
+
+
+__device__ void p3_step_sed_rain_levels(P3_ARGS, float (*co)[4])
+{
+    int enabled = i < ncol && FLG[ncol + i] != 0.0f;
+    float* __restrict__ qr = F[F_QR];
+    float* __restrict__ nr = F[F_NR];
+    const float* __restrict__ dz = F[F_DZ];
+    const float* __restrict__ vn_tab = T[T_VN];
+    const float* __restrict__ vm_tab = T[T_VM];
+    const float ispf = 1.0f;
+    const float odt = 1.0f / dt;
+    const int kbot = 0, ktop = nk - 1;
+
+    int log_qxpresent = 0, k_qxtop = kbot;
+    for (int k = ktop; enabled && k >= kbot; --k) {
+        if (AT(qr, k) * ispf >= P3_QSMALL) {
+            log_qxpresent = 1; k_qxtop = k; break;
+        }
+    }
+    enabled = enabled && log_qxpresent;
+
+    float dt_left = enabled ? dt : 0.0f, prt_accum = 0.0f;
+    int k_qxbot = kbot;
+    for (int k = kbot; enabled && k <= k_qxtop; ++k) {
+        if (AT(qr, k) * ispf >= P3_QSMALL) { k_qxbot = k; break; }
+    }
+    for (int k = threadIdx.y; enabled && k < nk; k += 16) {
+        AT(W[W_VQ], k) = 0.0f; AT(W[W_VN], k) = 0.0f;
+        AT(W[W_FQ], k) = 0.0f; AT(W[W_FN], k) = 0.0f;
+    }
+
+    while (__syncthreads_or(dt_left > 1.0e-4f)) {
+        float Co_max = 0.0f;
+        for (int k = k_qxtop - threadIdx.y; dt_left > 1.0e-4f && k >= k_qxbot; k -= 16) {
+            AT(W[W_VQ], k) = 0.0f; AT(W[W_VN], k) = 0.0f;
+            if (AT(qr, k) * ispf > P3_QSMALL) {
+                AT(nr, k) = fmaxf(AT(nr, k), P3_NSMALL);
+                float mu_r, lamr, cdistr, logn0r, nrg = AT(nr, k);
+                p3_get_rain_dsd2(&nrg, AT(qr, k), ispf,
+                                 &mu_r, &lamr, &cdistr, &logn0r);
+                AT(nr, k) = nrg;
+                int dumii_r, dumjj_r;
+                float rdumii, rdumjj;
+                p3_find_lt_3(mu_r, lamr, &dumii_r, &dumjj_r,
+                             &rdumii, &rdumjj);
+                float vq = p3_rain_table(vm_tab, dumii_r, dumjj_r,
+                                         rdumii, rdumjj);
+                AT(W[W_VQ], k) = vq * AT(S[S_RHOFACR], k);
+                float vn = p3_rain_table(vn_tab, dumii_r, dumjj_r,
+                                         rdumii, rdumjj);
+                AT(W[W_VN], k) = vn * AT(S[S_RHOFACR], k);
+            }
+            Co_max = fmaxf(Co_max, AT(W[W_VQ], k) * dt_left
+                                   * (1.0f / AT(dz, k)));
+        }
+        co[threadIdx.y][threadIdx.x] = Co_max;
+        __syncthreads();
+        Co_max = co[0][threadIdx.x];
+        for (int group = 1; group < 16; ++group)
+            Co_max = fmaxf(Co_max, co[group][threadIdx.x]);
+        int tmpint1 = (int)(Co_max + 1.0f);
+        float dt_sub = fminf(dt_left, dt_left / (float)tmpint1);
+        int k_temp = (k_qxbot == kbot) ? k_qxbot : k_qxbot - 1;
+        for (int k = k_temp + threadIdx.y; dt_left > 1.0e-4f && k <= k_qxtop; k += 16) {
+            AT(W[W_FQ], k) = AT(W[W_VQ], k) * AT(qr, k) * AT(S[S_RHO], k);
+            AT(W[W_FN], k) = AT(W[W_VN], k) * AT(nr, k) * AT(S[S_RHO], k);
+        }
+        __syncthreads();
+        if (dt_left > 1.0e-4f) {
+        if (k_qxbot == kbot) prt_accum = prt_accum + AT(W[W_FQ], kbot) * dt_sub;
+        if (threadIdx.y == 0) {
+            int k = k_qxtop;
+            float idz = 1.0f / AT(dz, k);
+            float fdq = -AT(W[W_FQ], k) * idz;
+            float fdn = -AT(W[W_FN], k) * idz;
+            AT(qr, k) = AT(qr, k) + fdq * dt_sub * AT(S[S_INVRHO], k);
+            AT(nr, k) = AT(nr, k) + fdn * dt_sub * AT(S[S_INVRHO], k);
+        }
+        for (int k = k_qxtop - 1 - threadIdx.y; k >= k_temp; k -= 16) {
+            float idz = 1.0f / AT(dz, k);
+            float fdq = (AT(W[W_FQ], k + 1) - AT(W[W_FQ], k)) * idz;
+            float fdn = (AT(W[W_FN], k + 1) - AT(W[W_FN], k)) * idz;
+            AT(qr, k) = AT(qr, k) + fdq * dt_sub * AT(S[S_INVRHO], k);
+            AT(nr, k) = AT(nr, k) + fdn * dt_sub * AT(S[S_INVRHO], k);
+        }
+        dt_left = dt_left - dt_sub;
+        if (k_qxbot != kbot) k_qxbot = k_qxbot - 1;
+        }
+    }
+    if (enabled && threadIdx.y == 0) P[P_PRTLIQ][i] = P[P_PRTLIQ][i] + prt_accum * P3_INV_RHOW * odt;
+}
+
+
+__device__ void p3_step_sed_ice_levels(P3_ARGS, float (*co)[4])
+{
+    int enabled = i < ncol && FLG[ncol + i] != 0.0f;
+    float* __restrict__ qi = F[F_QI];
+    float* __restrict__ qir = F[F_QIR];
+    float* __restrict__ ni = F[F_NI];
+    float* __restrict__ qib = F[F_QIB];
+    const float* __restrict__ dz = F[F_DZ];
+    const float* __restrict__ itab = T[T_ITAB];
+    const float odt = 1.0f / dt;
+    const int kbot = 0, ktop = nk - 1;
+
+    int log_qxpresent = 0, k_qxtop = kbot;
+    for (int k = ktop; enabled && k >= kbot; --k) {
+        if (AT(qi, k) >= P3_QSMALL) { log_qxpresent = 1; k_qxtop = k; break; }
+    }
+    enabled = enabled && log_qxpresent;
+
+    float dt_left = enabled ? dt : 0.0f, prt_accum = 0.0f;
+    int k_qxbot = kbot;
+    for (int k = kbot; enabled && k <= k_qxtop; ++k) {
+        if (AT(qi, k) >= P3_QSMALL) { k_qxbot = k; break; }
+    }
+    for (int k = threadIdx.y; enabled && k < nk; k += 16) {
+        AT(W[W_VQ], k) = 0.0f; AT(W[W_VN], k) = 0.0f;
+        AT(W[W_FQ], k) = 0.0f; AT(W[W_FN], k) = 0.0f;
+        AT(W[W_FQIR], k) = 0.0f; AT(W[W_FBIR], k) = 0.0f;
+    }
+
+    while (__syncthreads_or(dt_left > 1.0e-4f)) {
+        float Co_max = 0.0f;
+        for (int k = k_qxtop - threadIdx.y; dt_left > 1.0e-4f && k >= k_qxbot; k -= 16) {
+            AT(W[W_VQ], k) = 0.0f; AT(W[W_VN], k) = 0.0f;
+            if (AT(qi, k) >= P3_QSMALL) {
+                AT(ni, k) = fmaxf(AT(ni, k), P3_NSMALL);
+                float rhop;
+                {   float qq = AT(qir, k), bb = AT(qib, k);
+                    p3_calc_bulk_rho_rime(AT(qi, k), &qq, &bb, &rhop);
+                    AT(qir, k) = qq; AT(qib, k) = bb; }
+                int dumi, dumjj, dumii;
+                float d1, d4, d5;
+                p3_find_lt_1a(AT(qi, k), AT(ni, k), AT(qir, k), rhop,
+                              &dumi, &dumjj, &dumii, &d1, &d4, &d5);
+                float f1pr01 = p3_access_lookup_table(itab, dumjj, dumii,
+                                                      dumi, 1, d1, d4, d5);
+                float f1pr02 = p3_access_lookup_table(itab, dumjj, dumii,
+                                                      dumi, 2, d1, d4, d5);
+                float f1pr09 = p3_access_lookup_table(itab, dumjj, dumii,
+                                                      dumi, 7, d1, d4, d5);
+                float f1pr10 = p3_access_lookup_table(itab, dumjj, dumii,
+                                                      dumi, 8, d1, d4, d5);
+                AT(ni, k) = fminf(AT(ni, k), f1pr09 * AT(qi, k));
+                AT(ni, k) = fmaxf(AT(ni, k), f1pr10 * AT(qi, k));
+                AT(W[W_VQ], k) = f1pr02 * AT(S[S_RHOFACI], k);
+                AT(W[W_VN], k) = f1pr01 * AT(S[S_RHOFACI], k);
+            }
+            Co_max = fmaxf(Co_max, AT(W[W_VQ], k) * dt_left
+                                   * (1.0f / AT(dz, k)));
+        }
+        co[threadIdx.y][threadIdx.x] = Co_max;
+        __syncthreads();
+        Co_max = co[0][threadIdx.x];
+        for (int group = 1; group < 16; ++group)
+            Co_max = fmaxf(Co_max, co[group][threadIdx.x]);
+        int tmpint1 = (int)(Co_max + 1.0f);
+        float dt_sub = fminf(dt_left, dt_left / (float)tmpint1);
+        int k_temp = (k_qxbot == kbot) ? k_qxbot : k_qxbot - 1;
+        for (int k = k_temp + threadIdx.y; dt_left > 1.0e-4f && k <= k_qxtop; k += 16) {
+            float vq = AT(W[W_VQ], k), rho = AT(S[S_RHO], k);
+            AT(W[W_FQ], k) = vq * AT(qi, k) * rho;
+            AT(W[W_FN], k) = AT(W[W_VN], k) * AT(ni, k) * rho;
+            AT(W[W_FQIR], k) = vq * AT(qir, k) * rho;
+            AT(W[W_FBIR], k) = vq * AT(qib, k) * rho;
+        }
+        __syncthreads();
+        if (dt_left > 1.0e-4f) {
+        if (k_qxbot == kbot) prt_accum = prt_accum + AT(W[W_FQ], kbot) * dt_sub;
+        if (threadIdx.y == 0) {
+            int k = k_qxtop;
+            float idz = 1.0f / AT(dz, k), irho = AT(S[S_INVRHO], k);
+            AT(qi, k) += (-AT(W[W_FQ], k) * idz) * dt_sub * irho;
+            AT(qir, k) += (-AT(W[W_FQIR], k) * idz) * dt_sub * irho;
+            AT(qib, k) += (-AT(W[W_FBIR], k) * idz) * dt_sub * irho;
+            AT(ni, k) += (-AT(W[W_FN], k) * idz) * dt_sub * irho;
+        }
+        for (int k = k_qxtop - 1 - threadIdx.y; k >= k_temp; k -= 16) {
+            float idz = 1.0f / AT(dz, k), irho = AT(S[S_INVRHO], k);
+            AT(qi, k) += ((AT(W[W_FQ], k + 1) - AT(W[W_FQ], k)) * idz)
+                         * dt_sub * irho;
+            AT(qir, k) += ((AT(W[W_FQIR], k + 1) - AT(W[W_FQIR], k)) * idz)
+                          * dt_sub * irho;
+            AT(qib, k) += ((AT(W[W_FBIR], k + 1) - AT(W[W_FBIR], k)) * idz)
+                          * dt_sub * irho;
+            AT(ni, k) += ((AT(W[W_FN], k + 1) - AT(W[W_FN], k)) * idz)
+                         * dt_sub * irho;
+        }
+        dt_left = dt_left - dt_sub;
+        if (k_qxbot != kbot) k_qxbot = k_qxbot - 1;
+        }
+    }
+    if (enabled && threadIdx.y == 0) P[P_PRTSOL][i] = P[P_PRTSOL][i] + prt_accum * P3_INV_RHOW * odt;
+}
+
+
+// Level groups share each column. The reduction combines only flags.
+// Each level retains the original update expressions and statement order.
+extern "C" __global__ void p3k_levels_prepare(P3_KERNEL_ARGS)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    __shared__ int flags[8][16];
+    int f = 0;
+    if (i < ncol) {
+        // Complete both level-local stages before advancing k.
+        for (int k = threadIdx.y; k < nk; k += 8) {
+            p3_step_prep_levels(P3_PASS, k, nk);
+            f |= p3_step_kloop1_levels(P3_PASS, k, nk);
+        }
+    }
+    flags[threadIdx.y][threadIdx.x] = f;
+    __syncthreads();
+    if (i < ncol && threadIdx.y == 0) {
+        f = flags[0][threadIdx.x];
+        for (int group = 1; group < 8; ++group)
+            f |= flags[group][threadIdx.x];
+        FLG[i] = (f & 1) ? 1.0f : 0.0f;
+        FLG[ncol + i] = (f & 2) ? 1.0f : 0.0f;
+        P[P_PRTLIQ][i] = 0.0f;
+        P[P_PRTSOL][i] = 0.0f;
+    }
+}
+
+extern "C" __global__ void p3k_levels_sed(P3_KERNEL_ARGS)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    __shared__ float co[16][4];
+    p3_step_sed_cloud_levels(P3_PASS, co);
+    p3_step_sed_rain_levels(P3_PASS, co);
+    p3_step_sed_ice_levels(P3_PASS, co);
+}
+
+extern "C" __global__ void p3k_levels_finish(P3_KERNEL_ARGS)
+{
+    P3_TID;
+    int k = blockIdx.y;
+    if (FLG[ncol + i] != 0.0f) {
+        AT(S[S_QVCLD], k) = AT(F[F_QV], k);
+        p3_homofreeze_level(P3_PASS, k);
+        p3_final_level(P3_PASS, k);
+    }
+    AT(F[F_THOLD], k) = AT(F[F_TH], k);
+    AT(F[F_QVOLD], k) = AT(F[F_QV], k);
+    if (k == 0) p3_step_precip_col(P3_PASS);
+}
+
+extern "C" __global__ void p3k_levels_process(P3_KERNEL_ARGS)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    __shared__ int flags[16][8];
+    int f = 0;
+    if (i < ncol) f = p3_step_kloopmain_levels(P3_PASS, threadIdx.y, 16);
+    flags[threadIdx.y][threadIdx.x] = f;
+    __syncthreads();
+    if (i < ncol && threadIdx.y == 0) {
+        f = flags[0][threadIdx.x];
+        for (int group = 1; group < 16; ++group)
+            f |= flags[group][threadIdx.x];
+        FLG[ncol + i] = f ? 1.0f : 0.0f;
+    }
+}
 
 extern "C" __global__ void p3k_fused_process(P3_KERNEL_ARGS)
 {

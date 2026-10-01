@@ -1112,15 +1112,7 @@ def _global_updates(*, valid_time: datetime, nx: int, ny: int, nz: int,
         if not isinstance(selectors, Mapping):
             raise ValueError(
                 "front-door physics selection lacks selector provenance")
-        global_names = {
-            "mp_physics": "MP_PHYSICS",
-            "ra_lw_physics": "RA_LW_PHYSICS",
-            "ra_sw_physics": "RA_SW_PHYSICS",
-            "sf_sfclay_physics": "SF_SFCLAY_PHYSICS",
-            "sf_surface_physics": "SF_SURFACE_PHYSICS",
-            "bl_pbl_physics": "BL_PBL_PHYSICS",
-            "cu_physics": "CU_PHYSICS",
-        }
+        global_names = _GLOBAL_PHYSICS_ATTRIBUTES
         missing = sorted(set(global_names) - set(selectors))
         if missing:
             raise ValueError(
@@ -1130,6 +1122,62 @@ def _global_updates(*, valid_time: datetime, nx: int, ny: int, nz: int,
             for selector, global_name in global_names.items()
         })
     return updates
+
+
+#: The physics a stock wrfinput states in its global attributes, by the
+#: selector each one carries.  The frozen contract holds the WSM6 + Dudhia
+#: reference file's values for all seven, so an export that stamps none of
+#: them states that file's physics, not its own.
+_GLOBAL_PHYSICS_ATTRIBUTES = {
+    "mp_physics": "MP_PHYSICS",
+    "ra_lw_physics": "RA_LW_PHYSICS",
+    "ra_sw_physics": "RA_SW_PHYSICS",
+    "sf_sfclay_physics": "SF_SFCLAY_PHYSICS",
+    "sf_surface_physics": "SF_SURFACE_PHYSICS",
+    "bl_pbl_physics": "BL_PBL_PHYSICS",
+    "cu_physics": "CU_PHYSICS",
+}
+
+
+def recorded_physics_selectors(cfg: Mapping[str, object], *,
+                               label: str = "direct-export"
+                               ) -> dict[str, object]:
+    """The physics a prepared domain was prepared with, as global selectors.
+
+    Read from the cache's own recorded configuration, the one every
+    identity check binds, for an export no physics selection was handed
+    to: the profile-free single-domain export (``python -m
+    gpuwm.wrf_direct`` without ``--physics-profile``, the ERA5 door) and
+    every domain of the tree export.  Those used to stamp nothing, so the
+    frozen contract's global MP_PHYSICS = 6, RA_LW_PHYSICS = 0,
+    RA_SW_PHYSICS = 1 and CU_PHYSICS = 0 went out beside a Thompson,
+    Morrison or RTE+RRTMGP cache's arrays, and stock WRF reads its scheme
+    from those attributes.  The radiation pair is resolved through the
+    engine's own rule, so the combined ``ra_physics`` spelling states the
+    pair it runs.  A cache that records no value for one of them is
+    refused by name rather than filled from the frozen file.
+    """
+
+    from gpuwm.config import radiation_scheme_ids_from_settings
+
+    missing = [key for key in _GLOBAL_PHYSICS_ATTRIBUTES
+               if key not in ("ra_lw_physics", "ra_sw_physics")
+               and cfg.get(key) is None]
+    if (cfg.get("ra_physics") is None
+            and (cfg.get("ra_lw_physics") is None
+                 or cfg.get("ra_sw_physics") is None)):
+        missing.append("ra_physics")
+    if missing:
+        raise ValueError(
+            f"{label} prepared cache records no {sorted(missing)}, so the "
+            "export cannot state the physics its arrays were prepared with "
+            "and would write the frozen WSM6 reference file's instead; "
+            "re-prepare the case")
+    longwave, shortwave = radiation_scheme_ids_from_settings(cfg)
+    selectors = {key: int(cfg[key]) for key in _GLOBAL_PHYSICS_ATTRIBUTES
+                 if key not in ("ra_lw_physics", "ra_sw_physics")}
+    selectors.update(ra_lw_physics=int(longwave), ra_sw_physics=int(shortwave))
+    return selectors
 
 
 def _create_dataset(path: Path, contract: Mapping[str, object],
@@ -2120,11 +2168,16 @@ def _configured_domain_start(exp, domain) -> datetime:
 
 def _hierarchy_global_updates(*, valid_time: datetime, cfg,
                               geometry: Mapping[str, object], domain):
+    # Each nest states its OWN recorded physics: a child's cumulus is not
+    # its parent's, and a stock WRF nest reads its schemes from its own
+    # wrfinput's attributes.
     updates = _global_updates(
         valid_time=valid_time,
         nx=int(cfg["nx"]), ny=int(cfg["ny"]), nz=int(cfg["nz"]),
         dx=float(cfg["dx"]), dy=float(cfg["dy"]), dt=float(cfg["dt"]),
         geometry=geometry,
+        physics_selection={"selectors": recorded_physics_selectors(
+            cfg, label=f"d{domain.grid_id:02d} direct-export")},
     )
     updates.update({
         "GRID_ID": domain.grid_id,
@@ -2354,7 +2407,7 @@ def export_prepared_wrf_namelists(
 
     import tomllib
 
-    from gpuwm.experiment import build_experiment
+    from gpuwm.experiment import build_experiment_from_config_tables
     from gpuwm.namelist_import import import_namelists
     from gpuwm.native_wrf_contract import validate_native_lambert_contracts
 
@@ -2362,9 +2415,13 @@ def export_prepared_wrf_namelists(
     input_path = Path(namelist_input)
     artifacts_path = Path(domain_artifacts_manifest)
     resolved_text, report = import_namelists(wps_path, input_path)
-    exp = build_experiment(
+    # A WUDAPT geog_data_res imports with a [static] companion; the
+    # exported statics are the prepared artifacts', so it is validated and
+    # split off here, as every file door does.
+    exp = build_experiment_from_config_tables(
         tomllib.loads(resolved_text),
-        source=f"native export of {wps_path.name} + {input_path.name}")
+        source=f"native export of {wps_path.name} + {input_path.name}",
+        base_dir=wps_path.parent)
     validate_native_lambert_contracts(
         exp, wps_path, source_name="native hierarchy")
     provenance = {
@@ -2407,9 +2464,12 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
       equality check proves the prepared physics came from this config
       under this registry.  Expert tuples retain their registry-owned
       acknowledgement here too.
-    - Neither: the historical v2 contract, pinned to the exact stock
-      slice (WSM6+YSU+classic-MM5+Noah); see
+    - Neither: the historical v2 contract, pinned to the stock
+      YSU+classic-MM5+Noah slice with any inventoried microphysics; see
       test_the_profile_free_export_gate_keeps_its_exact_v2_stock_slice.
+      Its global physics attributes are the cache's own recorded ones
+      (:func:`recorded_physics_selectors`), so an mp_physics=8 cache
+      states MP_PHYSICS = 8.
     """
 
     cache = PreparedCache(Path(prepared_cache))
@@ -2485,9 +2545,13 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
     # The suite receipt is per-domain; this exporter writes exactly d01,
     # so the global attributes are stamped from that domain's selector
     # record.  A named-profile receipt already carries flat selectors.
+    # With no selection the cache's own recorded physics is stamped, never
+    # the frozen contract's WSM6 + Dudhia values.
     selection_selectors = physics_selection
     if physics_selection is not None and "domains" in physics_selection:
         selection_selectors = physics_selection["domains"]["1"]
+    if selection_selectors is None:
+        selection_selectors = {"selectors": recorded_physics_selectors(cfg)}
     updates = _global_updates(
         valid_time=valid_time, nx=nx, ny=ny, nz=nz,
         dx=float(cfg["dx"]), dy=float(cfg["dy"]), dt=float(cfg["dt"]),

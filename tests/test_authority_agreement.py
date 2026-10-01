@@ -494,6 +494,16 @@ def test_exhaustive_component_cross_product_agrees_on_every_combination(
     def fixture_hash(value=None):
         return fixed_hash if value is registry else original_hash(value)
 
+    # The validator normally copies caller-owned registries. This fixture
+    # is immutable for the whole walk, and the hash assertion below checks
+    # that claim independently. Reuse ONLY this object so its cached hash
+    # also reaches the validator; all other deepcopy calls stay unchanged.
+    original_copy = registry_module.deepcopy
+
+    def fixture_copy(value, memo=None):
+        return registry if value is registry else original_copy(value, memo)
+
+    monkeypatch.setattr(registry_module, "deepcopy", fixture_copy)
     monkeypatch.setattr(registry_module, "registry_sha256", fixture_hash)
     monkeypatch.setitem(globals(), "registry_sha256", fixture_hash)
 

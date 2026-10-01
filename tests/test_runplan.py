@@ -1374,6 +1374,151 @@ def test_the_staged_chain_starts_the_forecast_at_the_prepared_head(
     assert stages == ["fetch", "prepare", "forecast", "finalize"]
 
 
+@requires_cupy
+def test_the_staged_chain_says_the_seal_before_the_stage_bookkeeping_ends(
+        tmp_path, monkeypatch):
+    """``prepare_sealed`` lands when the preparer seals, not when the stage's
+    reuse binding (git provenance and argument digests) is written: here that
+    binding cannot finish until the forecast has ended, and the forecast must
+    still see the seal on the stream while it runs."""
+
+    import threading
+    import time
+    from datetime import datetime, timezone
+
+    monkeypatch.setenv("GPUWM_CHAINED_PREP", "1")
+
+    import gpuwm.stage_cli as stage_cli
+    import gpuwm.stage_reuse as stage_reuse
+    from gpuwm.ingest.boundary_stream import HEAD_SCHEMA, head_sha256
+
+    started = threading.Event()
+    forecast_done = threading.Event()
+    bound = {}
+
+    def chained_prep(arguments):
+        prep_root = Path(arguments[arguments.index("--output-root") + 1])
+        bound["root"] = prep_root
+        stream = prep_root / "boundary-stream"
+        stream.mkdir(parents=True)
+        head = {"schema": HEAD_SCHEMA,
+                "basis": {"schema": HEAD_SCHEMA, "cache": {},
+                          "proof_head": {"schema": "probe"},
+                          "input_manifest_sha256": "0" * 64},
+                "decision": {"chained": True},
+                "created_utc": datetime.now(timezone.utc).isoformat()}
+        head["head_sha256"] = head_sha256(head)
+        (stream / "head.json").write_text(json.dumps(head), encoding="utf-8")
+        assert started.wait(10), "the forecast did not start at the head"
+        (prep_root / "proof.json").write_text("{}", encoding="utf-8")
+
+    real_binding = stage_reuse.write_binding
+
+    def slow_binding(*args, **kwargs):
+        assert forecast_done.wait(20), "the forecast never ended"
+        return real_binding(*args, **kwargs)
+
+    def head_bundle(prepared_root, head):
+        return {"document": Path(prepared_root) / "proof.json",
+                "root": Path(prepared_root), "schema": "probe",
+                "source": "icon-eu", "layout": "single", "domains": 1,
+                "payload": {}, "head_sha256": head,
+                "source_manifest_sha256": "0" * 64}
+
+    def forecast(argv, *, layout, observer):
+        started.set()
+        deadline = time.monotonic() + 10
+        seen = False
+        while not seen and time.monotonic() < deadline:
+            seen = any(record["event"] == "prepare_sealed"
+                       for record in read_events(observer.events.path,
+                                                 allow_partial_tail=True))
+            time.sleep(0.01)
+        bound["seal_seen_while_forecasting"] = seen
+        forecast_done.set()
+
+    monkeypatch.setattr(stage_reuse, "write_binding", slow_binding)
+    monkeypatch.setattr(stage_cli, "resolve_head_bundle", head_bundle)
+    _staged, _argv, events, _plan = _executed_staged_chain(
+        tmp_path, monkeypatch, prep=chained_prep, forecast=forecast,
+        sim=lambda bundle, **kw: ["python", "-m", "runner",
+                                  "--outdir", str(kw["outdir"])])
+    assert bound["seal_seen_while_forecasting"] is True
+    names = [record["event"] for record in events]
+    assert names.index("prepare_head_ready") < names.index("prepare_sealed")
+    assert names.count("prepare_sealed") == 1
+    assert (bound["root"] / stage_reuse.BINDING_NAME).is_file()
+
+
+@requires_cupy
+def test_a_failed_staged_forecast_says_it_waits_for_the_preparation(
+        tmp_path, monkeypatch):
+    """The failure is reported after the preparation ends, and until then
+    the run's heartbeat says ``waiting:preparation`` rather than keeping the
+    failed forecast's last phase."""
+
+    import threading
+    import time
+    from datetime import datetime, timezone
+
+    monkeypatch.setenv("GPUWM_CHAINED_PREP", "1")
+
+    import gpuwm.stage_cli as stage_cli
+    from gpuwm.ingest.boundary_stream import HEAD_SCHEMA, head_sha256
+    from gpuwm.supervisor import HEARTBEAT_NAME, read_heartbeat
+
+    started = threading.Event()
+    seen = {}
+
+    def chained_prep(arguments):
+        prep_root = Path(arguments[arguments.index("--output-root") + 1])
+        stream = prep_root / "boundary-stream"
+        stream.mkdir(parents=True)
+        head = {"schema": HEAD_SCHEMA,
+                "basis": {"schema": HEAD_SCHEMA, "cache": {},
+                          "proof_head": {"schema": "probe"},
+                          "input_manifest_sha256": "0" * 64},
+                "decision": {"chained": True},
+                "created_utc": datetime.now(timezone.utc).isoformat()}
+        head["head_sha256"] = head_sha256(head)
+        (stream / "head.json").write_text(json.dumps(head), encoding="utf-8")
+        assert started.wait(10), "the forecast did not start at the head"
+        progress = prep_root.parent.parent / HEARTBEAT_NAME
+        deadline = time.monotonic() + 10
+        while "during" not in seen and time.monotonic() < deadline:
+            try:
+                beat = read_heartbeat(progress)
+            except (OSError, ValueError):
+                beat = None
+            if beat is not None and beat.status.startswith("waiting:"):
+                seen["during"] = beat
+            time.sleep(0.01)
+        (prep_root / "proof.json").write_text("{}", encoding="utf-8")
+
+    def head_bundle(prepared_root, head):
+        return {"document": Path(prepared_root) / "proof.json",
+                "root": Path(prepared_root), "schema": "probe",
+                "source": "icon-eu", "layout": "single", "domains": 1,
+                "payload": {}, "head_sha256": head,
+                "source_manifest_sha256": "0" * 64}
+
+    def forecast(argv, *, layout, observer):
+        started.set()
+        raise RuntimeError("the model went unstable")
+
+    monkeypatch.setattr(stage_cli, "resolve_head_bundle", head_bundle)
+    _staged, _argv, events, plan = _executed_staged_chain(
+        tmp_path, monkeypatch, prep=chained_prep, forecast=forecast,
+        sim=lambda bundle, **kw: ["python", "-m", "runner",
+                                  "--outdir", str(kw["outdir"])])
+    during = seen["during"]
+    assert during.status == "waiting:preparation"
+    assert during.wait["on"] == "preparation" and during.wait["lead"] is None
+    failed = next(record for record in events if record["event"] == "failed")
+    assert "unstable" in failed["message"]
+    assert read_heartbeat(plan.run_dir / HEARTBEAT_NAME).status == "failed"
+
+
 # NEEDS CUPY INSTALLED, and opens no device: this test asserts the staged
 # chain's own refusal names prep-arguments.json; without cupy the run-plan
 # door refuses first and names the missing wheel instead.
@@ -2421,9 +2566,11 @@ def test_latest_is_resolved_to_a_concrete_cycle_before_the_fetch_runs(
 
     monkeypatch.setattr(fetch, "resolve_latest_cycle",
                         lambda source, last_hour: _dt(2026, 8, 7, 12))
+    # The whole-cycle rule's resolver call; the as-posted default is
+    # pinned in tests/test_readiness.py.
     arguments, resolutions, warnings = resolve_fetch_cycle(
         ["--source", "gfs", "--cycle", "latest", "--hours", "6",
-         "--out", "data"])
+         "--whole-cycle", "--out", "data"])
 
     assert "latest" not in arguments
     assert arguments[arguments.index("--cycle") + 1] == "2026-08-07T12"
@@ -2456,7 +2603,8 @@ def test_latest_is_matched_case_insensitively(monkeypatch):
     monkeypatch.setattr(fetch, "resolve_latest_cycle",
                         lambda source, last_hour: _dt(2026, 8, 7, 12))
     arguments, resolutions, _ = resolve_fetch_cycle(
-        ["--source", "hrrr", "--cycle", "Latest", "--hours", "3"])
+        ["--source", "hrrr", "--cycle", "Latest", "--hours", "3",
+         "--whole-cycle"])
     assert arguments[arguments.index("--cycle") + 1] == "2026-08-07T12"
     assert resolutions
 
@@ -2479,7 +2627,8 @@ def test_a_stale_latest_cycle_is_a_warning_never_a_refusal(monkeypatch):
             lambda cls, tz=None: stale + _td(hours=20))}))
 
     arguments, resolutions, warnings = resolve_fetch_cycle(
-        ["--source", "gfs", "--cycle", "latest", "--hours", "6"])
+        ["--source", "gfs", "--cycle", "latest", "--hours", "6",
+         "--whole-cycle"])
 
     assert arguments[arguments.index("--cycle") + 1] == "2026-08-07T00"
     assert warnings and warnings[0]["code"] == "latest_cycle_is_not_the_newest"
@@ -2503,7 +2652,8 @@ def test_the_fetch_hours_include_the_forecast_start_lead(monkeypatch):
 
     monkeypatch.setattr(fetch, "resolve_latest_cycle", record)
     resolve_fetch_cycle(["--source", "gfs", "--cycle", "latest",
-                         "--hours", "12", "--forecast-start-hour", "6"])
+                         "--hours", "12", "--forecast-start-hour", "6",
+                         "--whole-cycle"])
     assert seen["last_hour"] == 18
 
 
@@ -2897,6 +3047,66 @@ def test_an_unmapped_preparation_phase_is_reported_not_mis_filed(tmp_path):
     finished = next(record for record in records
                     if record["event"] == "stage_finished")
     assert "a-phase-nobody-mapped" in finished["phases"]
+
+
+def _phases_the_pipeline_emits() -> set[str]:
+    """Every phase literal a ``_preparation_progress`` call site passes."""
+
+    import re
+
+    call = re.compile(r"_preparation_progress\(\s*[A-Za-z_][A-Za-z0-9_.]*\s*,"
+                      r"\s*\"([a-z0-9-]+)\"\s*\)")
+    package = Path(__file__).resolve().parents[1] / "gpuwm"
+    found: set[str] = set()
+    for path in package.rglob("*.py"):
+        found.update(call.findall(path.read_text(encoding="utf-8")))
+    return found
+
+
+def test_every_phase_the_pipeline_emits_has_a_stage():
+    """A155: every prepared `gpuwm go` printed two "no stage for" warnings.
+
+    The prepared runners report validate-prepared-inputs and
+    restore-prepared-domain(-tree), and a tree restart
+    restore-nest-lifecycle, and none of the four was in the table, so the
+    warning meant for a phase the pipeline GREW fired on every run.  This
+    holds the table to the pipeline's own call sites, so a new phase fails
+    here instead of warning on every run; the test above keeps the warning
+    for a phase nobody mapped.
+    """
+
+    from gpuwm import runplan
+
+    emitted = _phases_the_pipeline_emits()
+    assert {"validate-prepared-inputs", "restore-prepared-domain",
+            "restore-prepared-domain-tree", "prepare-case"} <= emitted, (
+        f"the call-site scan found too little to mean anything: {emitted}")
+    unmapped = sorted(emitted - set(runplan._PHASE_STAGES))
+    assert unmapped == [], (
+        f"the pipeline reports {unmapped} and run-plan maps them to no "
+        "stage, so every run reaching them prints a warning")
+    assert set(runplan._PHASE_STAGES.values()) <= set(STAGES)
+
+
+def test_a_prepared_runner_s_phases_stay_in_the_forecast_stage(tmp_path):
+    """The prepared chains open `forecast` before the runner starts; the
+    runner's check and load of its bundle land there, with no warning and
+    no extra stage."""
+
+    with EventStream(tmp_path / EVENTS_FILENAME, mirror=None) as events:
+        observer = RunObserver(events)
+        observer.enter_stage("forecast", phase="forecast")
+        observer.preparing("validate-prepared-inputs")
+        observer.preparing("restore-prepared-domain")
+        observer(model_elapsed_seconds=60.0, outer_step=1)
+        observer.finish_stage()
+    records = read_events(tmp_path / EVENTS_FILENAME)
+    assert [record for record in records if record["event"] == "warning"] == []
+    finished = [record for record in records
+                if record["event"] == "stage_finished"]
+    assert [(record["stage"], record["phases"]) for record in finished] == [
+        ("forecast", ["forecast", "validate-prepared-inputs",
+                      "restore-prepared-domain"])]
 
 
 def test_speed_x_is_null_rather_than_an_infinity_before_any_wall_elapses(
@@ -3683,3 +3893,76 @@ def test_a_run_that_did_not_finish_has_a_code_for_its_kept_pictures():
     meaning = WARNING_CODES["early_render_kept"]
     assert "KEPT" in meaning
     assert "banner" in meaning
+
+
+_LATE_LEAD = {"source": "gefs", "cycle": "2026-09-30T12", "lead": 30,
+              "valid_time": "2026-10-01T18:00:00Z",
+              "expected_at": "2026-09-30T15:53:00Z",
+              "late_at": "2026-09-30T16:53:00Z", "late_after_minutes": 60,
+              "last_answer": "not_posted",
+              "model_elapsed_seconds": 97200.0,
+              "model_valid_time": "2026-10-01T15:00:00Z",
+              "frames_kept": 28, "checkpoint": None}
+
+
+def test_every_posting_and_wait_tag_is_allowlisted_with_its_fields():
+    """A136: a consumer switching on ``event`` can be exhaustive."""
+
+    from gpuwm.runplan import POSTING_EVENT_FIELDS
+
+    for tag in ("posting_schedule", "lead_posted", "lead_ready",
+                "source_wait_started", "source_wait_progress",
+                "source_wait_finished", "boundary_wait_started",
+                "boundary_wait_finished", "source_behind"):
+        assert tag in EVENT_TAGS
+        assert POSTING_EVENT_FIELDS[tag]
+    # Model time on every wait, and the cause on the preparation waits.
+    for tag in ("source_wait_started", "source_wait_progress",
+                "source_wait_finished", "boundary_wait_started",
+                "boundary_wait_finished", "source_behind"):
+        assert {"model_elapsed_seconds", "model_valid_time"} <= set(
+            POSTING_EVENT_FIELDS[tag])
+    assert "cause" in POSTING_EVENT_FIELDS["boundary_wait_started"]
+
+
+@pytest.mark.parametrize("how", ["observer", "error"])
+def test_a_source_that_falls_behind_exits_75_naming_the_lead(
+        tmp_path, monkeypatch, how):
+    """``source_behind`` then ``failed`` (``SourceBehind``), and exit 75.
+
+    Before this, run-plan returned 1 for every failure, so a site could
+    not tell a lead later than its budget (launch again once it posts)
+    from a broken run.
+    """
+
+    import gpuwm.go_cli as go_cli
+    from gpuwm import capabilities
+    from gpuwm.ingest.boundary_stream import SourceBehind
+
+    monkeypatch.setattr(capabilities, "require", lambda *args, **kwargs: None)
+
+    def fake_go_main(args, *, observer=None, **_):
+        observer.stage_begin(label="forecast", command=["runner"])
+        if how == "observer":
+            # The hosted forecast tells its observer, then the chain stops
+            # at the stage with the runner's exit code.
+            observer.source_behind(dict(_LATE_LEAD))
+            raise go_cli.GoStageFailed(75)
+        raise SourceBehind(_LATE_LEAD)
+
+    monkeypatch.setattr(go_cli, "go_main", fake_go_main)
+    plan = load_plan(_prepared_plan(tmp_path, tmp_path / "run"))
+    plan.run_dir.mkdir(parents=True, exist_ok=True)
+    with EventStream(plan.run_dir / EVENTS_FILENAME, mirror=None) as events:
+        assert execute_plan(plan, events=events) == 75
+    records = read_events(plan.run_dir / EVENTS_FILENAME)
+    behind, failed = records[-2], records[-1]
+    assert behind["event"] == "source_behind"
+    assert behind["lead"] == 30 and behind["late_after_minutes"] == 60
+    assert behind["frames_kept"] == 28
+    assert failed["event"] == "failed"
+    assert failed["error_class"] == "SourceBehind"
+    assert failed["exit_code"] == 75
+    assert failed["message"].startswith(
+        "gefs f030 of the 2026-09-30T12 cycle has not posted by 16:53Z")
+    assert "The forecast stopped at 27:00" in failed["message"]

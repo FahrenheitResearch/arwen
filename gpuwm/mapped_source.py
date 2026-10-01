@@ -36,6 +36,7 @@ import numpy as np
 # no `import netCDF4` here any more and no Python fallback behind it: a
 # missing decoder is a named refusal, not a second implementation.
 from gpuwm import netcdf_bridge
+from gpuwm.core import portable_math as pm
 from gpuwm.explain import warn
 from gpuwm.ingest.grib import Era5Snapshot, build_rust_bridge, inspect_grib1_envelopes
 from gpuwm.ingest.quantization import admit_bounded
@@ -934,12 +935,12 @@ def _height_at_surface_pressure(
     beneath = position == 0
     weight = np.where(
         beneath, 0.0,
-        (np.log(safe) - np.log(p_above))
-        / np.where(beneath, 1.0, np.log(p_below) - np.log(p_above)))
+        (pm.log(safe) - pm.log(p_above))
+        / np.where(beneath, 1.0, pm.log(p_below) - pm.log(p_above)))
     t_level = t_above + (at(temperatures, below) - t_above) * weight
     q_level = q_above + (at(humidities, below) - q_above) * weight
     dewpoint = surface["surface dewpoint"]
-    vapour_hpa = (10.0 * 0.6112) * np.exp(
+    vapour_hpa = (10.0 * 0.6112) * pm.exp(
         17.67 * (dewpoint - 273.15) / (dewpoint - 29.65))
     q_surface = 0.622 * vapour_hpa / (safe / 100.0 - 0.378 * vapour_hpa)
     surface_t = np.where(beneath, surface["surface temperature"], t_level)
@@ -948,7 +949,7 @@ def _height_at_surface_pressure(
     virtual_surface = surface_t * (1.0 + _HYDROSTATIC_VIRTUAL * surface_q)
     scale = _HYDROSTATIC_RD / _SURFACE_HEIGHT_GRAVITY
     height = z_above - scale * (0.5 * (virtual_above + virtual_surface)) \
-        * np.log(safe / p_above)
+        * pm.log(safe / p_above)
     bad = int(np.count_nonzero(unreadable | ~np.isfinite(height)))
     if bad:
         raise ValueError(
@@ -5913,7 +5914,7 @@ def _evaluate_derivation(
             below = ladder[level + 1]
             above = ladder[level]
             positive_above = above > 0.0
-            log_ratio = np.log(
+            log_ratio = pm.log(
                 below / np.where(positive_above, above, _HYDROSTATIC_TOP_PA)
             )
             alpha = np.where(
@@ -6084,6 +6085,7 @@ def _materialize_frames(
     *,
     mapping_sha256: str,
     input_sha256: Mapping[str, str],
+    lead_batch: bool = False,
 ) -> tuple[MappedSourceFrame, ...]:
     unbound = sorted(
         name for name, field in mapping["fields"].items()
@@ -6261,7 +6263,9 @@ def _materialize_frames(
     if tuple(sorted(times)) != times or len(set(times)) != len(times):
         raise ValueError("mapped forcing times are not unique and increasing")
     target = mapping["target"]
-    if target.get("require_lateral_boundaries"):
+    # One lead batch of a window (an as-posted preparation) may hold one
+    # time; the window's series rules are its caller's, over every batch.
+    if target.get("require_lateral_boundaries") and not lead_batch:
         if len(times) < 2:
             # The owned class, not a bare ValueError: this is a complete
             # statement about the bytes a user staged, and the door they

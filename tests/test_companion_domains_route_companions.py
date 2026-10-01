@@ -178,21 +178,39 @@ def test_the_route_precheck_accepts_an_edited_candidate(tmp_path, monkeypatch):
     assert reached, refusal
 
 
-def test_the_route_precheck_still_refuses_a_candidate_without_them(
+def test_a_candidate_missing_a_companion_runs_the_set_its_configuration_renders(
         tmp_path, monkeypatch):
-    """The refusal that reported this defect is not weakened by the fix."""
+    """The precheck that reported this defect is retired, not weakened.
+
+    It refused a configuration with an incomplete set beside it, and it
+    did so three seconds into the real run, after `gpuwm go --dry-run`
+    had passed it.  Since 2.8.1 a run with no complete set beside its
+    configuration writes the whole set from the configuration into its
+    own run folder, through the same writer and round trip the doors
+    use, and a configuration that set cannot carry is refused at the
+    door (tests/test_hrrr_route_bare_configuration.py).  What the
+    precheck protected still holds: the run never mixes a partial set
+    with rendered files, and what it runs is the door's set, byte for
+    byte.
+    """
 
     base = _emit(tmp_path)
     candidate = tmp_path / "stripped.toml"
     _edit(base, candidate, {"kind": "set_output", "grid_id": 2,
                             "history_interval_s": 300.0,
                             "restart_interval_s": 3600.0})
-    route_input_paths(candidate)["namelist_input"].unlink()
+    beside = route_input_paths(candidate)
+    door = {role: path.read_bytes() for role, path in beside.items()}
+    beside["namelist_input"].unlink()
     reached, refusal = _chain_reaches_fetch(
         tmp_path, candidate, "stripped", monkeypatch)
-    assert not reached
-    assert "namelist_input" in refusal
-    assert candidate.name in refusal
+    assert reached, refusal
+    rendered, = (tmp_path / "run-stripped").rglob(
+        f"route-inputs/{beside['namelist_input'].name}")
+    written = route_input_paths(rendered.parent / candidate.name)
+    for role, content in door.items():
+        assert written[role].read_bytes() == content, role
+    assert not beside["namelist_input"].exists()
 
 
 #: Every kind the door advertises, named here so the sweep below is a

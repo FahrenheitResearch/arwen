@@ -29,6 +29,10 @@ class FakeSpec:
     # The other two exact-modulo alarms the root must also land on.
     restart_ticks: int | None = None
     lbc_interval_ticks: int | None = None
+    # WRF's history window (DomainTicks.history_begin_ticks/_end_ticks):
+    # the lattice origin offset and the last frame, off by default.
+    history_begin_ticks: int = 0
+    history_end_ticks: int | None = None
 
 
 @dataclass

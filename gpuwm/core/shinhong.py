@@ -34,7 +34,12 @@ from gpuwm.core.state import DTYPE
 from gpuwm.physics_vertical_contract import (
     outside_vertical_bounds, refuse_vertical_levels)
 
-_TPB = 32
+from gpuwm.core.physics_inventory import (
+    SHWS_SLOTS, SHINHONG_BLOCK, SHINHONG_TILE_BLOCKS_PER_SM,
+    shinhong_workspace_floats,
+)
+
+_TPB = SHINHONG_BLOCK
 _VALIDATE_TPB = 256
 _KMAX = 128
 
@@ -70,6 +75,23 @@ SHINHONG_PASSENGER_OUTPUTS = ("tke", "el")
 SHINHONG_TKE_FLOOR = 0.005
 
 
+def shinhong_tile_columns(fn, ncol: int) -> int:
+    """Bound workspace storage to columns that can be resident."""
+    sms = cp.cuda.Device().attributes["MultiProcessorCount"]
+    per_sm = SHINHONG_TILE_BLOCKS_PER_SM
+    try:
+        from cupy_backends.cuda.api import driver
+
+        resident = driver.occupancyMaxActiveBlocksPerMultiprocessor(
+            fn.kernel.ptr, SHINHONG_BLOCK, 0)
+        per_sm = min(per_sm, int(resident))
+    except Exception:  # noqa: BLE001
+        pass
+    per_sm = max(1, int(per_sm))
+    return int(max(SHINHONG_BLOCK,
+                   min(int(ncol), sms * per_sm * SHINHONG_BLOCK)))
+
+
 def launch_shinhong(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                     tke, *,
                     psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland,
@@ -97,7 +119,7 @@ def launch_shinhong(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
             "Shin-Hong PBL", VERTICAL_LEVEL_BOUNDS, nz,
             breakage=(
                 "one CUDA thread owns a whole column and holds it in "
-                f"per-thread local memory at SHINHONG_KMAX={_KMAX} "
+                f"a global column workspace bounded by SHINHONG_KMAX={_KMAX} "
                 "(kernels/shinhong.cu), and the scheme's YSU-inherited "
                 "counter-gradient and entrainment indexing needs four levels "
                 "to exist."))
@@ -136,17 +158,21 @@ def launch_shinhong(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                wstar=cp.empty((ny, nx), dtype=DTYPE),
                delta=cp.empty((ny, nx), dtype=DTYPE))
     ncol = ny * nx
-    blocks = (ncol + _TPB - 1) // _TPB
     kernel = get_kernel("shinhong", "shinhong_column")
-    kernel((blocks,), (_TPB,),
-           (u, v, theta, qv, qc, qi, p, p_interface, exner, dz, tke,
-            psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland, u10, v10,
-            corf,
-            out["du"], out["dv"], out["dtheta"], out["dqv"], out["dqc"],
-            out["dqi"], out["exch_h"], out["tke"], out["el"],
-            out["hpbl"], out["kpbl"], out["wstar"], out["delta"],
-            DTYPE(dt), DTYPE(dx), DTYPE(dy), np.int32(int(tke_diag)),
-            np.int32(nz), np.int32(ny), np.int32(nx)))
+    tile = shinhong_tile_columns(kernel, ncol)
+    ws = cp.empty(shinhong_workspace_floats(nz, tile), dtype=DTYPE)
+    for lo in range(0, ncol, tile):
+        blocks = (min(tile, ncol - lo) + _TPB - 1) // _TPB
+        kernel((blocks,), (_TPB,),
+               (u, v, theta, qv, qc, qi, p, p_interface, exner, dz, tke,
+                psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland, u10, v10,
+                corf,
+                out["du"], out["dv"], out["dtheta"], out["dqv"], out["dqc"],
+                out["dqi"], out["exch_h"], out["tke"], out["el"],
+                out["hpbl"], out["kpbl"], out["wstar"], out["delta"],
+                DTYPE(dt), DTYPE(dx), DTYPE(dy), np.int32(int(tke_diag)),
+                np.int32(nz), np.int32(ny), np.int32(nx),
+                ws, np.int32(nz + 2), np.int32(lo)))
     return out
 
 

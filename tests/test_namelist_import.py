@@ -549,14 +549,21 @@ def test_synthetic_import_resolves_and_reports(tmp_path):
     assert exp.root.run.wrf_rrtmg_compatibility == \
         "wrf-rrtmg-4-4-to-rte-rrtmgp-v2"
     # A scalar Fortran namelist assignment changes only the first Registry
-    # array element; d02 retains WRF's initialized epssm=0.1 default.
+    # array element; d02 retains WRF's initialized epssm=0.1 default,
+    # written as the "auto" sentinel because the user did not choose it
+    # (A171: the off-centering floor raises a default over steep ground).
     assert [dc.run.epssm for dc in exp.domains] == [0.5, 0.1]
+    assert exp.auto_epssm == (2,)
+    assert len(report.model_choices) == 1
+    assert "d02 take(s) WRF's Registry default 0.1" in report.model_choices[0]
+    assert 'Left to the model (written "auto"):' in report.format()
     # RunConfig-default moist_cq: a Morrison + Shin-Hong suite matches no
     # shipped profile since bl_pbl = 11 imports natively, so the implicit
     # switch takes implicit_runtime_switches' documented fallback (it was
     # [True, True] from the Morrison profile while 11 substituted to YSU).
     assert [dc.run.moist_cq for dc in exp.domains] == [False, False]
-    assert toml_text.count("epssm = 0.1") == 1
+    assert toml_text.count('epssm = "auto"') == 1
+    assert "epssm = 0.1" not in toml_text
     assert 'wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-to-rte-rrtmgp-v2"' \
         in toml_text
     # derived chain: the emitted TOML carries NO child dx/dt keys
@@ -642,8 +649,12 @@ def test_explicit_epssm_column_preserves_child_value(tmp_path):
     toml_text, _ = import_namelists(*_pair(tmp_path, inp=inp))
     out = tmp_path / "epssm-explicit.toml"
     out.write_text(toml_text)
-    assert [dc.run.epssm for dc in load_experiment(out).domains] == [0.5, 0.5]
+    exp = load_experiment(out)
+    assert [dc.run.epssm for dc in exp.domains] == [0.5, 0.5]
     assert "epssm = 0.1" not in toml_text
+    # Every domain's value is the user's: none is the model's to raise.
+    assert exp.auto_epssm == ()
+    assert 'epssm = "auto"' not in toml_text
 
 
 def test_omitted_epssm_uses_registry_default_on_every_domain(tmp_path):
@@ -651,8 +662,13 @@ def test_omitted_epssm_uses_registry_default_on_every_domain(tmp_path):
     toml_text, _ = import_namelists(*_pair(tmp_path, inp=inp))
     out = tmp_path / "epssm-default.toml"
     out.write_text(toml_text)
-    assert [dc.run.epssm for dc in load_experiment(out).domains] == [0.1, 0.1]
-    assert toml_text.count("epssm = 0.1") == 1
+    exp = load_experiment(out)
+    assert [dc.run.epssm for dc in exp.domains] == [0.1, 0.1]
+    # Unset in the namelist: every domain runs WRF's default, written once
+    # in [shared] as the model's choice and inherited by d02.
+    assert toml_text.count('epssm = "auto"') == 1
+    assert "epssm = 0.1" not in toml_text
+    assert exp.auto_epssm == (1, 2)
 
 
 def test_direct_scheme_ids_map_without_substitution(tmp_path):
@@ -1695,7 +1711,7 @@ def test_tke_adv_opt_drops_as_inert(tmp_path):
 
 @pytest.mark.parametrize("key", [
     "swint_opt", "gwd_opt", "sf_lake_physics", "shcu_physics",
-    "topo_shading", "slope_rad", "kf_edrates", "flag_sm_adj",
+    "kf_edrates", "flag_sm_adj",
     "sst_update", "sst_skin", "tmn_update",
 ])
 def test_pinned_physics_neutrals_fix_at_zero_and_refuse_nonzero(
@@ -2796,3 +2812,56 @@ def test_a_non_integer_fine_input_stream_is_refused_not_coerced(tmp_path):
         " run_hours = 6,\n fine_input_stream = 0, .true.,")
     with pytest.raises(ValueError, match="Fortran integer tokens"):
         import_namelists(*_pair(tmp_path, inp=inp_text))
+
+
+# ---------------------------------------------------------------------------
+# A142: several keys per line reach every door through the shared reader
+# ---------------------------------------------------------------------------
+
+def _packed(text: str) -> str:
+    """Every ``key = values,`` line joined onto the one before it, so each
+    group is one line of ``a = 1, b = 2, ...`` (continuation lines, which
+    do not start with a name, stay where they are)."""
+    import re
+
+    packed = re.sub(r",\n (?=[a-z_0-9]+ *=)", ", ", text)
+    assert packed.count("\n") < text.count("\n") // 2
+    return packed
+
+
+def _grid_facts(grids) -> list[tuple]:
+    return [(type(grid).__name__, grid.e_we, grid.e_sn, grid.dx,
+             grid.known_x, grid.known_y, grid.cen_lat, grid.cen_lon)
+            for grid in grids]
+
+
+def test_a142_packed_namelists_import_identically(tmp_path):
+    wps_path, inp_path = _pair(tmp_path)
+    one_per_line = import_namelists(wps_path, inp_path, name="a142")
+    one_grids = _grid_facts(grids_from_wps_namelist(wps_path))
+    _pair(tmp_path, wps=_packed(WPS_TEXT), inp=_packed(INPUT_TEXT))
+    assert " start_year = 1999, 1999, start_month = 05, 05," in \
+        inp_path.read_text()
+    packed = import_namelists(wps_path, inp_path, name="a142")
+    assert packed[0] == one_per_line[0]
+    assert packed[1].format() == one_per_line[1].format()
+    assert _grid_facts(grids_from_wps_namelist(wps_path)) == one_grids
+
+
+def test_a142_cli_import_namelist_reads_the_reported_line(tmp_path, capsys):
+    """The queue row's own line: start_year, start_month and start_day on
+    one line used to come back as start_year = [year, 'start_month = ..',
+    'start_day = ..'] and the door refused the namelist."""
+    reported = INPUT_TEXT.replace(
+        " start_year = 1999, 1999,\n start_month = 05, 05,\n"
+        " start_day = 03, 03,\n",
+        " start_year = 1999, 1999, start_month = 05, 05, start_day = 03, 03,\n")
+    assert reported != INPUT_TEXT
+    wps_path, inp_path = _pair(tmp_path, inp=reported)
+    assert parse_namelist(inp_path)["time_control"]["start_year"] == \
+        [1999, 1999]
+    out = tmp_path / "resolved.toml"
+    assert cli.main(["import-namelist", str(wps_path), str(inp_path),
+                     "--output", str(out), "--name", "a142"]) == 0
+    capsys.readouterr()
+    assert load_experiment(out).start_time == datetime(1999, 5, 3, 12)

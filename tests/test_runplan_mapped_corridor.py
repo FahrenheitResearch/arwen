@@ -168,14 +168,15 @@ def test_staged_tc_binds_corridor_before_reuse_and_dispatches_tree(
 
     actual_prepare = runplan._prepare_stage
 
-    def prepare_stage(root, *, arguments, stated, run):
+    def prepare_stage(root, *, arguments, stated, run, built=None):
         if old_bundle and not root.exists():
             publish(root, corridor=False)
             stage_reuse.write_binding(
                 root, arguments=[a for a in arguments if a != "--statics-corridor"],
                 stated=stated)
             seen["old_proof"] = (root / "proof.json").read_bytes()
-        result = actual_prepare(root, arguments=arguments, stated=stated, run=run)
+        result = actual_prepare(root, arguments=arguments, stated=stated,
+                                run=run, built=built)
         seen["decisions"].append(result)
         assert stage_reuse.decide(root, arguments=arguments, stated=stated)["decision"] == stage_reuse.REUSE
         return result

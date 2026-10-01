@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 from typing import Callable, Mapping, Sequence
 
@@ -107,6 +107,12 @@ class BackgroundSource:
     #: Where a refused domain should go instead.  Source-neutral words:
     #: it names another registry entry, not a case or a site.
     coverage_fallback: str | None
+    #: ``True`` when ``publication_lag_seconds`` is the source's posting
+    #: row on its expected line (:func:`_row_lag_seconds`), so a planned
+    #: cycle can still be posting its last leads and the run's fetch
+    #: waits for them (:func:`late_background_wait_minutes`).  ``False``
+    #: for a fixed shipped wait that is not a posting row.
+    plans_on_posting_row: bool = True
 
     def horizon(self, cycle: datetime) -> int:
         return int(self.horizon_hours(cycle))
@@ -133,22 +139,52 @@ def _hrrr_horizon(cycle: datetime) -> int:
 #: here is the plan the GFS route already produced.
 GFS_AVAILABILITY_LAG_S = 4 * 3600.0
 
-#: HRRR: measured publication spread is roughly 50 minutes for f00
-#: rising to about 105 minutes for f18 (fetch.py's --wait-for default
-#: patience is sized for the same span).  Modelled as a floor plus a
-#: per-lead slope through those two ends, and used FAIL-CLOSED: a cycle
-#: is only selected once the whole requested window should be published.
-HRRR_BASE_LAG_S = 50 * 60.0
-HRRR_PER_LEAD_LAG_S = (105 * 60.0 - HRRR_BASE_LAG_S) / 18.0
-
-
 def _gfs_lag(last_lead_hours: int) -> float:
     del last_lead_hours
     return GFS_AVAILABILITY_LAG_S
 
 
+def _row_lag_seconds(source_id: str, last_lead_hours: int) -> float:
+    """When the source's ``last_lead_hours`` is due, from its table row, seconds.
+
+    The source's ``publication_lag`` rules (the fetch route table's rows,
+    or its ``legacy_posting`` row for a legacy transport) on the EXPECTED
+    line, the time :func:`gpuwm.source_posting.expected_at` gives a lead,
+    for the slowest of the cycle hours whose forecast reaches that lead,
+    since no cycle is named here.
+
+    The expected line, not the latest posting seen: a plan on the latest
+    line waits out the slowest run any watch saw (HRRR's late 30 Sep 06Z
+    and 07Z runs put every HRRR plan about an hour behind the cycle that
+    was out).  A background that runs later than its expected time is
+    waited for by the run's fetch until its row calls it late
+    (:func:`late_background_wait_minutes`); it is not skipped for an
+    older cycle and it does not fail.
+
+    Only the hours whose horizon reaches the lead: HRRR's off-synoptic
+    runs stop at f018, so their steeper per-lead rule must not date a
+    synoptic run's f019 to f048.  A lead no hour reaches is refused by
+    the source's ladder in words that name its horizon, so the maximum
+    over every hour there only keeps this arithmetic total.
+    """
+
+    from gpuwm.source_cycles import cycle_grid_for
+
+    grid = cycle_grid_for(source_id, posting=True)
+    if grid is None:
+        return 0.0
+    lead = int(last_lead_hours)
+    cycles = [datetime(2001, 1, 1, hour) for hour in grid.hours]
+    reaching = [cycle for cycle in cycles
+                if grid.horizon(cycle) is None or grid.horizon(cycle) >= lead]
+    return max(grid.delay(cycle, lead) for cycle in (reaching or cycles)) * 3600.0
+
+
 def _hrrr_lag(last_lead_hours: int) -> float:
-    return HRRR_BASE_LAG_S + HRRR_PER_LEAD_LAG_S * max(0, int(last_lead_hours))
+    # HRRR posts its leads over the better part of two hours, so the wait
+    # tracks the window's last lead.  The curve is the hrrr row of the
+    # route table's legacy_posting, measured, not a constant here.
+    return _row_lag_seconds("hrrr", last_lead_hours)
 
 
 _LEGACY_BACKGROUND_DEFAULTS: Mapping[str, BackgroundSource] = MappingProxyType({
@@ -162,6 +198,7 @@ _LEGACY_BACKGROUND_DEFAULTS: Mapping[str, BackgroundSource] = MappingProxyType({
         coverage_bounded=False,
         initial_hydrometeors="explicit zero (WRF Vtable.GFS parity)",
         coverage_fallback=None,
+        plans_on_posting_row=False,
     ),
     "hrrr": BackgroundSource(
         name="hrrr",
@@ -210,7 +247,11 @@ class _BackgroundSources(Mapping):
         return BackgroundSource(
             name=adapter.source_id, label=adapter.display_title,
             cycle_step_hours=step, forcing_interval_seconds=adapter.forcing_interval_seconds,
-            publication_lag_seconds=lambda lead: 0. if grid is None else grid.delay_hours * 3600.,
+            # No cycle is named here, so the slowest of the source's
+            # cycle hours that reach that lead, on the expected line
+            # (_row_lag_seconds says why).
+            publication_lag_seconds=lambda lead: _row_lag_seconds(
+                adapter.source_id, lead),
             horizon_hours=horizon, coverage_bounded=adapter.coverage_window is not None,
             initial_hydrometeors="See the bound native or mapped preparation inventory; not inferred from transport.",
             coverage_fallback=None)
@@ -227,6 +268,43 @@ def resolve_background_source(name: str) -> BackgroundSource:
         raise BackgroundError(f"Source {name!r} declares no runnable preparation route") from None
     except ValueError as exc:
         raise BackgroundError(str(exc)) from exc
+
+
+def late_background_wait_minutes(name: str, cycle: datetime, last_lead: int,
+                                 *, now: datetime) -> int | None:
+    """Minutes a run's fetch still waits for a planned background, or None.
+
+    A plan dated on the posting row's expected line (:func:`_row_lag_seconds`)
+    takes the newest cycle whose window is due, not one every watch has
+    seen posted, so a cycle running late can still be posting its last
+    leads when the fetch starts.  The fetch waits for them, saying which
+    lead it waits on, until the window's last lead is late on its row
+    (:func:`gpuwm.source_posting.late_at`: its expected time plus the
+    row's ``late_after_minutes``, which is never shorter than the row's
+    measured late spread), instead of refusing the cycle as unpublished.
+    The answer is the minutes from ``now`` to that time, rounded up.
+
+    None where nothing is left to wait for: the window's late time has
+    passed (every lead is out, or the source fell behind its budget and
+    the fetch's own publication check says so at once), the source's plan
+    is a fixed shipped wait rather than its posting row, or no run waits
+    on its row.
+    """
+
+    entry = resolve_background_source(name)
+    if not entry.plans_on_posting_row:
+        return None
+    from gpuwm import fetch_routes, source_posting
+
+    if entry.name not in fetch_routes.posting_sources():
+        return None
+    late = source_posting.late_at(entry.name, cycle, int(last_lead))
+    if late is None:
+        return None
+    if now.tzinfo is not None:
+        now = now.astimezone(timezone.utc).replace(tzinfo=None)
+    remaining = (late - now).total_seconds()
+    return math.ceil(remaining / 60.0) if remaining > 0 else None
 
 
 @dataclass(frozen=True)
@@ -529,6 +607,7 @@ __all__ = [
     "MemberBackground",
     "PERTURBED_DETERMINISTIC",
     "background_receipt",
+    "late_background_wait_minutes",
     "plan_background_cycle",
     "plan_member_backgrounds",
     "refuse_uncovered_area",

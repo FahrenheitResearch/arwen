@@ -3508,8 +3508,8 @@ OPEN_CB = 25.0
 
 #: WRF w_damp constants (share/module_model_constants.F:88-89 and the
 #: Registry w_crit_cfl default): damping strength (m/s^2), activation
-#: Courant number (w_beta, non-IEVA path), and the reference Courant number
-#: the excess is measured against.
+#: Courant number (w_beta, non-IEVA path), and the default reference
+#: Courant number the excess is measured against (namelist w_crit_cfl).
 W_DAMP_ALPHA = 0.3
 W_DAMP_BETA = 1.0
 W_CRIT_CFL = 1.0
@@ -3618,14 +3618,16 @@ def np_emdiv_uv(u_pp, v_pp, mudf, coord, cfg, msfu=None, msfv=None):
     return u_pp, v_pp
 
 
-def np_w_damp(rw_t, ww, w, mut, coord, dt):
+def np_w_damp(rw_t, ww, w, mut, coord, dt, *, w_crit_cfl=W_CRIT_CFL,
+              zadvect_implicit=0):
     """Mirror of ``w_damp`` (openbc.cu): WRF's vertical-velocity limiter,
-    transcribed from ``dyn_em/module_big_step_utilities_em.F`` ``w_damp``
-    (w_damping = 1, non-IEVA, map factors 1).
+    transcribed from WRF 4.7.1 ``dyn_em/module_big_step_utilities_em.F``
+    ``w_damp`` (w_damping = 1, map factors 1).
 
     On interior w levels k = 1..nz-1 (Fortran k = 2, kde-1) the vertical
     Courant number is ``vert_cfl = |ww/(c1f*mut + c2f) * rdnw[k] * dt|``;
-    where it exceeds the activation value ``w_beta = 1``, the coupled w
+    where it exceeds the activation value (``w_crit_cfl`` when
+    ``zadvect_implicit > 0``, else ``w_beta = 1``), the coupled w
     tendency gets ``-sign(1, w)*w_alpha*(vert_cfl - w_crit_cfl)*
     (c1f*mut + c2f)``.  Returns a new float64 array.
     """
@@ -3640,10 +3642,11 @@ def np_w_damp(rw_t, ww, w, mut, coord, dt):
     rdnw = np.asarray(coord.rdnw, dtype=np.float64)[1:nz, None, None]
     cfm = c1f * mut[None] + c2f
     vert_cfl = np.abs(ww[1:nz] / cfm * rdnw * dt)
+    onset = w_crit_cfl if zadvect_implicit > 0 else W_DAMP_BETA
     rw_t[1:nz] += np.where(
-        vert_cfl > W_DAMP_BETA,
+        vert_cfl > onset,
         -np.copysign(1.0, w[1:nz]) * W_DAMP_ALPHA
-        * (vert_cfl - W_CRIT_CFL) * cfm, 0.0)
+        * (vert_cfl - w_crit_cfl) * cfm, 0.0)
     return rw_t
 
 

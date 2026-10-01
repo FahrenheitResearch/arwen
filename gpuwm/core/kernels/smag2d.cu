@@ -381,15 +381,15 @@ real wrf_rdz(const WrfSmagGrid& q, int kw, int j, int i)
 __device__ __forceinline__
 real wrf_zx(const WrfSmagGrid& q, int kw, int j, int iface)
 {
-    return q.rdx * (wrf_phi(q, kw, j, iface)
-                  - wrf_phi(q, kw, j, iface - 1)) / G;
+    return __fdiv_rn(q.rdx * (wrf_phi(q, kw, j, iface)
+                  - wrf_phi(q, kw, j, iface - 1)), G);
 }
 
 __device__ __forceinline__
 real wrf_zy(const WrfSmagGrid& q, int kw, int jface, int i)
 {
-    return q.rdy * (wrf_phi(q, kw, jface, i)
-                  - wrf_phi(q, kw, jface - 1, i)) / G;
+    return __fdiv_rn(q.rdy * (wrf_phi(q, kw, jface, i)
+                  - wrf_phi(q, kw, jface - 1, i)), G);
 }
 
 __device__ __forceinline__
@@ -1300,7 +1300,7 @@ void wrf_smag_hd_s(WRF_SMAG_GRID_ARGS, const real* fx, const real* fy,
 __device__ __forceinline__
 real wrf_n2_temp(real theta_full, real p_full)
 {
-    return theta_full * powf(p_full / P0, RCP);
+    return theta_full * powf(__fdiv_rn(p_full, P0), RCP);
 }
 
 // Saturation mixing ratio (calculate_N2 :1630-1637): es in Pa from the
@@ -1411,13 +1411,13 @@ void wrf_calc_n2(WRF_SMAG_GRID_ARGS,
             real t_p = wrf_n2_temp(th_p, p[hpp]);
             real t_m = wrf_n2_temp(th_m, p[hpm]);
             real xlvqv = XLV * qv_c;
-            real coefa = (1.0f + xlvqv / RD / t_c)
-                       / (1.0f + XLV * xlvqv / CP / RV / t_c / t_c)
+            real coefa = (1.0f + __fdiv_rn(xlvqv, RD) / t_c)
+                       / (1.0f + __fdiv_rn(__fdiv_rn(XLV * xlvqv, CP), RV) / t_c / t_c)
                        / th_c;
             real thetaep1 = th_p
-                * (1.0f + XLV * wrf_n2_qvs(t_p, p[hpp]) / CP / t_p);
+                * (1.0f + __fdiv_rn(XLV * wrf_n2_qvs(t_p, p[hpp]), CP) / t_p);
             real thetaem1 = th_m
-                * (1.0f + XLV * wrf_n2_qvs(t_m, p[hpm]) / CP / t_m);
+                * (1.0f + __fdiv_rn(XLV * wrf_n2_qvs(t_m, p[hpm]), CP) / t_m);
             value = G * (coefa * (thetaep1 - thetaem1) / tmpdz
                          - (qtot_p - qtot_m) / tmpdz);
         } else {
@@ -1445,29 +1445,29 @@ void wrf_calc_n2(WRF_SMAG_GRID_ARGS,
             real t_2 = wrf_n2_temp(th_2, p[h2]);
             // phy_prep surface extrapolation for p8w/t8w (z-linear,
             // module_big_step_utilities_em.F:4916-4923).
-            real z0 = wrf_phi(q, 0, j, i) / G;
-            real z1 = 0.5f * (wrf_phi(q, 0, j, i)
-                              + wrf_phi(q, 1, j, i)) / G;
-            real z2 = 0.5f * (wrf_phi(q, 1, j, i)
-                              + wrf_phi(q, 2, j, i)) / G;
+            real z0 = __fdiv_rn(wrf_phi(q, 0, j, i), G);
+            real z1 = __fdiv_rn(0.5f * (wrf_phi(q, 0, j, i)
+                              + wrf_phi(q, 1, j, i)), G);
+            real z2 = __fdiv_rn(0.5f * (wrf_phi(q, 1, j, i)
+                              + wrf_phi(q, 2, j, i)), G);
             real w1 = (z0 - z2) / (z1 - z2);
             real w2 = 1.0f - w1;
             real p8w0 = w1 * p_c + w2 * p[h1];
             real t8w0 = w1 * t_c + w2 * wrf_n2_temp(
                 wrf_n2_theta(q, n, 1, j, i), p[h1]);
-            real thetasfc = t8w0 / powf(p8w0 / P0, RCP);
+            real thetasfc = t8w0 / powf(__fdiv_rn(p8w0, P0), RCP);
             real qvs0 = wrf_n2_qvs(t_c, p_c);
             real qvs1 = wrf_n2_qvs(t_1, p[h1]);
             real qvs2 = wrf_n2_qvs(t_2, p[h2]);
             real qvsfc = q.cf1 * qvs0 + q.cf2 * qvs1
                        + q.cf3 * qvs2;
             real xlvqv = XLV * qv_c;
-            real coefa = (1.0f + xlvqv / RD / t_c)
-                       / (1.0f + XLV * xlvqv / CP / RV / t_c / t_c)
+            real coefa = (1.0f + __fdiv_rn(xlvqv, RD) / t_c)
+                       / (1.0f + __fdiv_rn(__fdiv_rn(XLV * xlvqv, CP), RV) / t_c / t_c)
                        / th_c;
-            real thetaep1 = th_p * (1.0f + XLV * qvs1 / CP / t_1);
+            real thetaep1 = th_p * (1.0f + __fdiv_rn(XLV * qvs1, CP) / t_1);
             real thetaesfc = thetasfc
-                * (1.0f + XLV * qvsfc / CP / t8w0);
+                * (1.0f + __fdiv_rn(XLV * qvsfc, CP) / t8w0);
             value = G * (coefa * (thetaep1 - thetaesfc) / tmpdz
                          - (qtot_p - qtot_sfc) / tmpdz);
         } else {
@@ -1740,40 +1740,40 @@ void wrf_tke_km(WRF_SMAG_GRID_ARGS,
         if (k == 0) {
             real tmpdz = 1.0f / wrf_rdzw(q, 1, j, i)
                        + 1.0f / wrf_rdzw(q, 0, j, i);
-            real z0 = wrf_phi(q, 0, j, i) / G;
-            real z1 = 0.5f * (wrf_phi(q, 0, j, i)
-                              + wrf_phi(q, 1, j, i)) / G;
-            real z2 = 0.5f * (wrf_phi(q, 1, j, i)
-                              + wrf_phi(q, 2, j, i)) / G;
+            real z0 = __fdiv_rn(wrf_phi(q, 0, j, i), G);
+            real z1 = __fdiv_rn(0.5f * (wrf_phi(q, 0, j, i)
+                              + wrf_phi(q, 1, j, i)), G);
+            real z2 = __fdiv_rn(0.5f * (wrf_phi(q, 1, j, i)
+                              + wrf_phi(q, 2, j, i)), G);
             real w1 = (z0 - z2) / (z1 - z2);
             real w2 = 1.0f - w1;
             real t0 = wrf_theta_full(q, thp, thb, thb3d, 0, j, i)
-                    * powf(p[IDX3(0, j, i)] / P0, RCP);
+                    * powf(__fdiv_rn(p[IDX3(0, j, i)], P0), RCP);
             real t1 = wrf_theta_full(q, thp, thb, thb3d, 1, j, i)
-                    * powf(p[IDX3(1, j, i)] / P0, RCP);
+                    * powf(__fdiv_rn(p[IDX3(1, j, i)], P0), RCP);
             real p8w0 = w1 * p[IDX3(0, j, i)] + w2 * p[IDX3(1, j, i)];
             real t8w0 = w1 * t0 + w2 * t1;
-            real thetasfc = t8w0 / powf(p8w0 / P0, RCP);
+            real thetasfc = t8w0 / powf(__fdiv_rn(p8w0, P0), RCP);
             real th1 = wrf_theta_full(q, thp, thb, thb3d, 1, j, i);
             dthrdn = (th1 - thetasfc) / tmpdz;
         } else if (k == nz - 1) {
             real tmpdz = 1.0f / wrf_rdz(q, nz - 1, j, i)
                        + 0.5f / wrf_rdzw(q, nz - 1, j, i);
-            real z0 = wrf_phi(q, nz, j, i) / G;
-            real z1 = 0.5f * (wrf_phi(q, nz - 1, j, i)
-                              + wrf_phi(q, nz, j, i)) / G;
-            real z2 = 0.5f * (wrf_phi(q, nz - 2, j, i)
-                              + wrf_phi(q, nz - 1, j, i)) / G;
+            real z0 = __fdiv_rn(wrf_phi(q, nz, j, i), G);
+            real z1 = __fdiv_rn(0.5f * (wrf_phi(q, nz - 1, j, i)
+                              + wrf_phi(q, nz, j, i)), G);
+            real z2 = __fdiv_rn(0.5f * (wrf_phi(q, nz - 2, j, i)
+                              + wrf_phi(q, nz - 1, j, i)), G);
             real w1 = (z0 - z2) / (z1 - z2);
             real w2 = 1.0f - w1;
             real tm1 = wrf_theta_full(q, thp, thb, thb3d, nz - 1, j, i)
-                     * powf(p[IDX3(nz - 1, j, i)] / P0, RCP);
+                     * powf(__fdiv_rn(p[IDX3(nz - 1, j, i)], P0), RCP);
             real tm2 = wrf_theta_full(q, thp, thb, thb3d, nz - 2, j, i)
-                     * powf(p[IDX3(nz - 2, j, i)] / P0, RCP);
+                     * powf(__fdiv_rn(p[IDX3(nz - 2, j, i)], P0), RCP);
             real p8wt = expf(w1 * logf(p[IDX3(nz - 1, j, i)])
                              + w2 * logf(p[IDX3(nz - 2, j, i)]));
             real t8wt = w1 * tm1 + w2 * tm2;
-            real thetatop = t8wt / powf(p8wt / P0, RCP);
+            real thetatop = t8wt / powf(__fdiv_rn(p8wt, P0), RCP);
             real thm1 = wrf_theta_full(q, thp, thb, thb3d, nz - 2, j, i);
             dthrdn = (thetatop - thm1) / tmpdz;
         } else {
@@ -1927,7 +1927,7 @@ void wrf_tke_rhs(WRF_SMAG_GRID_ARGS,
     real map = msft[(size_t)j * nx + i];
     real deltas = powf((dx / map) * (dy / map) / rdzw_c, 0.33333333f);
     real l = wrf_l_scale(tke[idx], bn2[idx], deltas);
-    real ce1 = (c_k / 0.10f) * 0.19f;
+    real ce1 = (__fdiv_rn(c_k, 0.10f)) * 0.19f;
     real ce2 = fmaxf(0.0f, 0.93f - ce1);
     real coefc = (k == 0 || k == nz - 1) ? 3.9f
                : (ce1 + ce2 * l / deltas);

@@ -101,6 +101,28 @@ def test_a_following_customise_runs_the_events_own_setup_not_the_pages(following
     assert not (server.root / "following").exists() and not calls
 
 
+def test_a_gfs_following_plan_names_the_route_its_configuration_runs_on(following, monkeypatch):
+    """A152: a storm-following plan on GFS names the prepared route.
+
+    Every storm-following plan named the config-driven route, and `gpuwm
+    run-plan` refuses a GFS cyclone configuration there as belonging to the
+    prepared route.  The plan and the page's posting question now name the
+    route the configuration runs on, and Start's plan asks nothing the
+    route does not take.
+    """
+
+    server, runner, calls = following
+    monkeypatch.setattr(server.api, "_offered",
+                        lambda *a, **k: {"sources": [{"id": "gfs", "route": "prepared"}]})
+    body = {**_payload(server.api, source="gfs", cycle="2026-09-30T12", hours=6), "dry_run": True}
+    response, answer = request(server, "POST", "/api/create/start", body=body)
+    assert response.status == 200, answer
+    assert answer["plan"]["route"] == "prepared"
+    assert "--source=gfs" in answer["prepare"]
+    # The event page's own following layout on an ERA5 event keeps the config-driven route, which its
+    # [case_data] configuration runs on (the test below).
+
+
 def test_a_following_start_publishes_its_configuration_and_companions_and_draws_the_standard_set(following):
     server, runner, calls = following
     response, answer = request(server, "POST", "/api/create/start",

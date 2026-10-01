@@ -732,10 +732,15 @@ GPU_SURFACE_FIELD_MAP = {"hpbl": "hpbl", "wstar": "wstar", "delta": "delta"}
 #: no breakage; the release card stage names that skip in its receipt.
 #: Receipts: tests/data/receipts/pin-gates/shinhong-ulp-nvrtc13048-*.json,
 #: shinhong-ulp-nvrtc13333-*.json and extra-pin-readings-221f66f14-run*.json.
+#: A146 (2026-10-01) overturned the attribution: the el 14 was sm_120's
+#: reciprocal multiply for the kernel's constant divisions, not the card;
+#: with them spelled __fdiv_rn the 5090 reads el 13 under all three
+#: compilers and no field differs between cards (GPU_CARD_SENSITIVE_FIELDS).
 RTX_5090 = "NVIDIA GeForce RTX 5090"
 RTX_4090 = "NVIDIA GeForce RTX 4090"
+RTX_5070_TI = "NVIDIA GeForce RTX 5070 Ti"
 
-#: The RTX 4090's row, identical under NVRTC 13.0.48 and 13.3.33.
+#: The RTX 4090's row, also measured under NVRTC 13.4.92 after the workspace move.
 _GPU_ROW_RTX_4090 = {
     "du": 93207,
     "dv": 46603,
@@ -751,6 +756,11 @@ _GPU_ROW_RTX_4090 = {
     "delta": 1,
 }
 
+#: Every RTX 5090 row below was RE-RECORDED for A146 on 2026-10-01, on
+#: node-2's 5090 (driver 13.3, cupy 14.2.0), two processes per compiler:
+#: el 14 -> 13 under each of 13.0.48, 12.9.86 and 13.4.92 and no other field
+#: moved.  shinhong.cu's constant divisions are now spelled __fdiv_rn; NVRTC
+#: had compiled them for sm_120 as reciprocal multiplies.
 GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD = {
     "13.0.48": {
         RTX_5090: {
@@ -762,7 +772,7 @@ GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD = {
             "dqi": 3055548,
             "exch_h": 8,
             "tke": 2022,
-            "el": 14,
+            "el": 13,
             "hpbl": 1,
             "wstar": 1,
             "delta": 1,
@@ -779,13 +789,25 @@ GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD = {
             "dqi": 3055548,
             "exch_h": 8,
             "tke": 2005,
-            "el": 14,
+            "el": 13,
             "hpbl": 1,
             "wstar": 1,
             "delta": 1,
         },
     },
     "13.3.33": {
+        RTX_4090: _GPU_ROW_RTX_4090,
+    },
+    # Two fresh processes per card measured these rows; on each card the old
+    # and workspace kernels also returned identical bits for every oracle
+    # output, including TKE.  Receipts: shinhong-workspace-nvrtc13492-sm89
+    # and -sm120.json under pin-gates.
+    # The 5090 now reads the 4090's row here (A146, above).  Node-4's RTX
+    # 5070 Ti (driver 13.2), which had no row, reads the same row in two
+    # processes and joins the table.
+    "13.4.92": {
+        RTX_5090: _GPU_ROW_RTX_4090,
+        RTX_5070_TI: _GPU_ROW_RTX_4090,
         RTX_4090: _GPU_ROW_RTX_4090,
     },
 }
@@ -801,10 +823,15 @@ GPU_BASELINE_MAX_ULP = GPU_BASELINE_MAX_ULP_BY_NVRTC_BUILD["13.0.48"][RTX_5090]
 #: on one card.  Everything else is required to be identical across compilers.
 GPU_COMPILER_SENSITIVE_FIELDS = ("dv", "tke")
 
-#: Fields allowed to differ between cards under one compiler: ``el`` alone,
-#: the 2026-09-18 reading (14 on the RTX 5090, 13 on the RTX 4090 under
-#: NVRTC 13.0.48).  Everything else is required to be identical across cards.
-GPU_CARD_SENSITIVE_FIELDS = ("el",)
+#: Fields allowed to differ between cards under one compiler: NONE.  This
+#: was ``el`` alone, the 2026-09-18 reading (14 on the RTX 5090, 13 on the
+#: RTX 4090 under NVRTC 13.0.48), filed as the card.  It was A146: NVRTC
+#: compiled shinhong.cu's constant divisions for sm_120 as reciprocal
+#: multiplies.  With them spelled ``__fdiv_rn`` the 5090 reads el 13 under
+#: every compiler it was measured with and the 5070 Ti reads the 4090's row,
+#: so every field is required to be identical across cards.  A card with no
+#: row still skips, naming itself: one nobody has read can still differ.
+GPU_CARD_SENSITIVE_FIELDS: tuple = ()
 
 
 def _device_name() -> str:
@@ -942,13 +969,14 @@ def _shinhong_gpu_outputs(cp, fixture, cache: bool = True):
 
 def test_the_rows_only_differ_where_the_compiler_or_the_card_reaches():
     """CPU-only: across compilers on one card the rows are one site apart,
-    across cards under one compiler they differ in ``el`` alone, and both
+    across cards under one compiler they are identical (``el`` differed
+    until A146 showed that split was the reciprocal multiply), and both
     must stay so.
 
     A compiler row is allowed to re-baseline ``dv`` and ``tke`` -- the two
     fields the ``wscalek`` cube root reaches -- and nothing else; a card row
-    is allowed to re-baseline ``el`` -- the 2026-09-18 reading -- and nothing
-    else.  Without this, a future "the compiler moved" or "the card moved"
+    may re-baseline only GPU_CARD_SENSITIVE_FIELDS, which is empty.
+    Without this, a future "the compiler moved" or "the card moved"
     commit could quietly relax a field neither ever touched, which is
     exactly the failure mode the split would otherwise create.
     """
@@ -975,13 +1003,15 @@ def test_the_rows_only_differ_where_the_compiler_or_the_card_reaches():
         card_moved |= {name for name in fields
                        if len({row[name] for row in by_card.values()}) > 1}
     assert card_moved == set(GPU_CARD_SENSITIVE_FIELDS), (
-        "the card rows differ on fields the 2026-09-18 reading did not move:"
+        "the card rows differ outside GPU_CARD_SENSITIVE_FIELDS:"
         f" {sorted(card_moved ^ set(GPU_CARD_SENSITIVE_FIELDS))}.  If a new"
         " card really moves another field, record the reading in the same"
         " commit that widens GPU_CARD_SENSITIVE_FIELDS.")
-    # And the sensitive fields must actually differ, or the split is vacuous.
-    assert compiler_moved and card_moved, (
-        "no field differs between rows: the split proves nothing")
+    # And the compiler split must actually differ, or it is vacuous.  The
+    # card split has none since A146 (GPU_CARD_SENSITIVE_FIELDS), and the
+    # equality above holds every card row to that.
+    assert compiler_moved, (
+        "no field differs between compiler rows: the split proves nothing")
 
 
 def test_the_kernel_compiler_identifies_itself_to_four_parts():

@@ -426,6 +426,8 @@ def run_terrain_fields(exp, grids, *, root_terrain, static_catalog,
     from gpuwm.static.corridor import (corridor_grid, moving_grid_ids,
                                        planned_corridor)
 
+    from gpuwm.static.terrain_smoothing import catalog_with_smoothing
+    static_catalog = catalog_with_smoothing(static_catalog, static_highres)
     highres_on = bool(static_highres is not None
                       and getattr(static_highres, "enabled", False))
     needs_catalog = (len(exp.domains) > 1
@@ -532,7 +534,11 @@ def static_catalog_for_survey(catalog):
     (tests/test_clock.py::test_no_float_elapsed_accumulation_audit).
     """
 
-    return getattr(catalog, "static_catalog", catalog)
+    from gpuwm.static.terrain_smoothing import catalog_with_smoothing
+    selected = getattr(catalog, "static_catalog", catalog)
+    # The children's terrain smoothing, as _static_catalog views it.
+    return catalog_with_smoothing(selected,
+                                  getattr(catalog, "static_highres", None))
 
 
 def not_applicable_why(vertical) -> str:

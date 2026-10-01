@@ -145,6 +145,21 @@ pub fn plan_frames(
     mapping: &Mapping,
     source_cycles: &BTreeMap<(NaiveDateTime, Option<String>), NaiveDateTime>,
 ) -> Result<FramePlan> {
+    plan_frames_within(mapping, source_cycles, false)
+}
+
+/// [`plan_frames`] for one lead batch of a window when `lead_batch` is
+/// set: a batch may hold one time, and its cadence is the window's, so
+/// the two lateral-boundary series rules (at least two times, one
+/// uniform cadence matching the target's boundary interval) are left to
+/// the caller, which holds them over every batch's times together.  Named
+/// breakage: an as-posted preparation decodes each lead as it posts, and
+/// a one-lead batch was refused as a one-time forcing series.
+pub fn plan_frames_within(
+    mapping: &Mapping,
+    source_cycles: &BTreeMap<(NaiveDateTime, Option<String>), NaiveDateTime>,
+    lead_batch: bool,
+) -> Result<FramePlan> {
     // A field marked `dependency_only` is an input to a derivation and
     // nothing else, so the frame stream does not carry it.  Named
     // breakage: ICON-D2's six raw mass fractions were written beside the
@@ -207,10 +222,11 @@ pub fn plan_frames(
         ));
     }
     let target = mapping.target()?;
-    if target
-        .field("require_lateral_boundaries")
-        .and_then(crate::node::Node::as_bool)
-        .unwrap_or(false)
+    if !lead_batch
+        && target
+            .field("require_lateral_boundaries")
+            .and_then(crate::node::Node::as_bool)
+            .unwrap_or(false)
     {
         if times.len() < 2 {
             // The owned class, not frame_invalid: the Python engine
@@ -717,26 +733,7 @@ fn frame_header(
             },
         })
     } else {
-        let latitude = &collection.latitude;
-        let longitude = &collection.longitude;
-        json!({
-            "projection": "regular_latitude_longitude",
-            "nx": longitude.len(),
-            "ny": latitude.len(),
-            "earth_shape": "source_metadata_bound",
-            "scan_order": format!(
-                "{},{}",
-                if longitude[longitude.len() - 1] > longitude[0] { "+x" } else { "-x" },
-                if latitude[latitude.len() - 1] > latitude[0] { "+y" } else { "-y" },
-            ),
-            "wind_basis": "earth_relative",
-            "parameters": {
-                "latitude_first": latitude[0],
-                "latitude_last": latitude[latitude.len() - 1],
-                "longitude_first": longitude[0],
-                "longitude_last": longitude[longitude.len() - 1],
-            },
-        })
+        regular_latlon_grid(&collection.latitude, &collection.longitude)
     };
     let policies = mapping
         .target()?
@@ -752,6 +749,30 @@ fn frame_header(
         "initialization_policies": policies,
         "schema": SOURCE_FRAME_SCHEMA,
     }))
+}
+
+/// The frame header's grid document for a regular latitude/longitude
+/// source: the same document whether it is written into a frame or sent
+/// ahead of the decode with an atmospheric window request.
+pub fn regular_latlon_grid(latitude: &[f64], longitude: &[f64]) -> Value {
+    json!({
+        "projection": "regular_latitude_longitude",
+        "nx": longitude.len(),
+        "ny": latitude.len(),
+        "earth_shape": "source_metadata_bound",
+        "scan_order": format!(
+            "{},{}",
+            if longitude[longitude.len() - 1] > longitude[0] { "+x" } else { "-x" },
+            if latitude[latitude.len() - 1] > latitude[0] { "+y" } else { "-y" },
+        ),
+        "wind_basis": "earth_relative",
+        "parameters": {
+            "latitude_first": latitude[0],
+            "latitude_last": latitude[latitude.len() - 1],
+            "longitude_first": longitude[0],
+            "longitude_last": longitude[longitude.len() - 1],
+        },
+    })
 }
 
 /// Values per pass when encoding the frame stream: 1 MiB of f64.
@@ -889,6 +910,9 @@ pub(crate) fn axis_document(values: &[f64]) -> Value {
 pub struct SeriesSummary {
     pub source_cycles: BTreeMap<(NaiveDateTime, Option<String>), NaiveDateTime>,
     pub grid_fingerprint: String,
+    /// The series is one lead batch of a window (`compose --lead-batch`):
+    /// the window's series rules are held by the caller across batches.
+    pub lead_batch: bool,
 }
 
 /// A field's input versions. Recording versions preserves the original
@@ -929,12 +953,24 @@ impl<'a> FieldMaterializer<'a> {
         let mut versions = BTreeMap::new();
         // Validate every direct input, including one subsequently
         // replaced by a derivation. Publication never hides a bad input.
-        for ((time, member, name), direct) in &collection.direct {
-            if *time != key.0 || *member != key.1 { continue; }
-            let field = mapping.field(name)?;
-            field.units_target()?;
-            field.location()?;
-            CanonicalField::validate_values(name, &direct.axes, &direct.values, direct.missing_count)?;
+        // Each input is a full scan of its values, independent of every
+        // other, so they are checked concurrently and drained in the
+        // collection's order: the refusal is the first one in that order.
+        let inputs: Vec<(&String, &crate::assemble::DirectValue)> = collection.direct.iter()
+            .filter(|((time, member, _), _)| *time == key.0 && *member == key.1)
+            .map(|((_, _, name), direct)| (name, direct))
+            .collect();
+        let checks: Vec<Result<()>> = crate::threads::install(|| {
+            use rayon::prelude::*;
+            inputs.par_iter().map(|(name, direct)| {
+                let field = mapping.field(name)?;
+                field.units_target()?;
+                field.location()?;
+                CanonicalField::validate_values(name, &direct.axes, &direct.values, direct.missing_count)
+            }).collect()
+        });
+        crate::threads::in_order(checks)?;
+        for (name, _direct) in inputs {
             versions.insert(name.clone(), steps.len());
             steps.push(FieldStep { name: name.clone(), derivation: None, completion: false,
                 dependencies: Vec::new() });
@@ -953,6 +989,36 @@ impl<'a> FieldMaterializer<'a> {
                 .map(|direct| direct.missing_count > 0);
             if partial == Some(false) { continue; }
             seeds.insert(*name, versions.remove(*name));
+        }
+        // The completion reads whole columns of five operands together.
+        // A field decoded over the atmospheric window alone has other
+        // columns than a full-grid operand, so pairing them would read
+        // one column's temperature with another column's pressure.  The
+        // decode stream reads any frame that completes a field whole
+        // (`DecodeStream::completes_over_whole_columns`) or never decodes
+        // the operands over the window (`decode_window_candidates`), so
+        // reaching this is an engine defect, and it is refused rather
+        // than published.
+        if !seeds.is_empty() {
+            let full = [collection.latitude.len(), collection.longitude.len()];
+            let windowed: Vec<&str> = HYPSOMETRIC_OPERANDS.iter().map(|(name, _)| *name)
+                .chain(seeds.keys().copied())
+                .filter(|name| collection.direct.get(&(key.0, key.1.clone(), (*name).to_owned()))
+                    .is_some_and(|direct| {
+                        let shape = direct.values.shape();
+                        shape.len() >= 2 && shape[shape.len() - 2..] != full
+                    }))
+                .collect();
+            if !windowed.is_empty() {
+                return Err(frame_invalid(format!(
+                    "the frame at {} completes {} hydrostatically, which reads whole \
+                     columns, but {} was decoded over the atmospheric window alone, \
+                     so its columns are not the surface pressure's; the decode \
+                     should have read this frame whole (an engine defect)",
+                    key.0,
+                    seeds.keys().copied().collect::<Vec<_>>().join(", "),
+                    windowed.join(", "))));
+            }
         }
         // A completion step reads the operands' current versions and, when
         // the source published part of the field, that partial field.
@@ -1210,7 +1276,7 @@ pub fn write_frameset(
     mapping: &Mapping,
     series: &SeriesSummary,
     input_sha256: &BTreeMap<String, String>,
-    slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection>,
+    slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection> + Send,
 ) -> Result<Value> {
     write_frameset_with_window(directory, mapping, series, input_sha256, false, slice)
 }
@@ -1221,10 +1287,59 @@ pub fn write_frameset_with_window(
     series: &SeriesSummary,
     input_sha256: &BTreeMap<String, String>,
     request_windows: bool,
-    slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection>,
+    slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection> + Send,
+) -> Result<Value> {
+    write_frameset_with_decode_window(directory, mapping, series, input_sha256, request_windows,
+        None, slice)
+}
+
+/// The writer, when the decode was granted its atmospheric window before
+/// the first record was read (`DecodeStream::decode_window`): every frame
+/// publishes that window instead of asking again, and a field the decode
+/// already produced over the window is published as it was decoded.
+pub fn write_frameset_with_decode_window(
+    directory: &std::path::Path,
+    mapping: &Mapping,
+    series: &SeriesSummary,
+    input_sha256: &BTreeMap<String, String>,
+    request_windows: bool,
+    decode_window: Option<crate::window::Window>,
+    slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection> + Send,
 ) -> Result<Value> {
     write_frameset_within(directory, mapping, series, input_sha256, request_windows,
-        &crate::space::available_bytes, slice)
+        decode_window, &crate::space::available_bytes, slice)
+}
+
+/// [`write_frameset_with_window`] with `lanes` valid times in flight.
+///
+/// `slice` is called with each valid time's POSITION in the frameset as
+/// well as its key, from several threads at once, so it must be able to
+/// decode any valid time on its own (`DecodeStream::slice_detached`).
+/// Everything a reader can observe is the one-lane writer's: frames are
+/// written in frameset order, each atmospheric-window request goes to
+/// the parent in frameset order, and the refusal reported is the first
+/// one in frameset order -- a valid time that fails is only reported
+/// once every earlier valid time has been written, exactly where the
+/// one-lane writer would have raised it.
+///
+/// Named breakage: a 49-time 3 km CONUS compose ran one valid time at a
+/// time, about 15 s each, on 2.3 cores of work whatever the box had,
+/// because most of a valid time's wall is serial (assembly, the field
+/// digests, the frame write); that made the source decode the longest
+/// stage of a rented GPU box's preparation.
+#[allow(clippy::too_many_arguments)]
+pub fn write_frameset_lanes(
+    directory: &std::path::Path,
+    mapping: &Mapping,
+    series: &SeriesSummary,
+    input_sha256: &BTreeMap<String, String>,
+    request_windows: bool,
+    decode_window: Option<crate::window::Window>,
+    lanes: usize,
+    slice: impl Fn(usize, &(NaiveDateTime, Option<String>)) -> Result<DecodedCollection> + Sync,
+) -> Result<Value> {
+    write_frameset_core(directory, mapping, series, input_sha256, request_windows,
+        decode_window.as_ref(), &crate::space::available_bytes, lanes, &slice)
 }
 
 /// The writer, with the free-space reading it admits the stream against.
@@ -1236,71 +1351,371 @@ pub fn write_frameset_with_window(
 /// `available` before the first byte goes out.  Named breakage: a 48 h
 /// global source composed for fourteen minutes and then stopped on a full
 /// disk, because nothing asked whether the disk could hold its stream.
+#[allow(clippy::too_many_arguments)]
 fn write_frameset_within(
     directory: &std::path::Path,
     mapping: &Mapping,
     series: &SeriesSummary,
     input_sha256: &BTreeMap<String, String>,
     request_windows: bool,
-    available: &dyn Fn(&std::path::Path) -> Option<u64>,
-    mut slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection>,
+    decode_window: Option<crate::window::Window>,
+    available: &(dyn Fn(&std::path::Path) -> Option<u64> + Sync),
+    slice: impl FnMut(&(NaiveDateTime, Option<String>)) -> Result<DecodedCollection> + Send,
 ) -> Result<Value> {
-    use crate::refusal::{bytes_and_gib, write_error};
-    let plan = plan_frames(mapping, &series.source_cycles)?;
-    let mut inventories: BTreeSet<Vec<String>> = BTreeSet::new();
-    std::fs::create_dir_all(directory).map_err(|error| {
-        write_error(&format!("create the output directory {}", directory.display()), &error, None)
-    })?;
-    let stream_path = directory.join("frames.f64");
-    let file = std::fs::File::create(&stream_path).map_err(|error| {
-        write_error(&format!("create the frame stream {}", stream_path.display()), &error, None)
-    })?;
-    let mut stream = std::io::BufWriter::new(file);
-    let mut offset: u64 = 0;
+    // One lane calls `slice` from this thread, in frameset order; the
+    // lock only lets the one-lane and many-lane writers share one body.
+    let slice = std::sync::Mutex::new(slice);
+    write_frameset_core(directory, mapping, series, input_sha256, request_windows,
+        decode_window.as_ref(), available, 1,
+        &|_index, key| (slice.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))(key))
+}
+
+type FrameKey = (NaiveDateTime, Option<String>);
+
+/// One valid time between its decode and its field work: the frame's
+/// header and field plan, and the inventory it publishes.
+struct PlannedFrame<'a> {
+    index: usize,
+    source_cycle: NaiveDateTime,
+    header: Value,
+    fields: FieldMaterializer<'a>,
+    names: Vec<String>,
+    soil_count: Option<i64>,
+}
+
+/// One published field, digested, windowed and ready to be streamed.
+struct PreparedField {
+    name: String,
+    units: String,
+    axes: Vec<String>,
+    location: String,
+    staggering: String,
+    shape: Vec<usize>,
+    values: Vec<f64>,
+    sha256: String,
+    missing_count: usize,
+    source_references: Vec<String>,
+    original: Option<Value>,
+}
+
+/// What one field's work produces, in the order the frame publishes it.
+struct FieldWork {
+    descriptor: Value,
+    soil_levels: Option<usize>,
+    pressure_levels: Option<Vec<f64>>,
+    prepared: PreparedField,
+}
+
+/// One valid time ready to be written: every field that precedes its
+/// first refusal, and that refusal, so the write reproduces the one-lane
+/// writer's order (fields before the failing one go out, then it fails).
+struct PreparedFrame {
+    index: usize,
+    source_cycle: NaiveDateTime,
+    header: Value,
+    window: Option<crate::window::Window>,
+    pressure_levels: Option<Vec<f64>>,
+    latitude: Value,
+    longitude: Value,
+    vertical_values: Value,
+    fields: Vec<PreparedField>,
+    failure: Option<crate::refusal::Refusal>,
+}
+
+/// A decoded valid time's header and field plan -- everything the frame
+/// knows before its window is asked for.
+fn plan_frame<'a>(
+    mapping: &'a Mapping,
+    plan: &FramePlan,
+    index: usize,
+    collection: DecodedCollection,
+) -> Result<PlannedFrame<'a>> {
+    let key = &plan.keys[index];
+    let (valid_time, _member) = key;
+    validate_frame_axes(&collection, &[])?;
+    let source_cycle = collection.source_cycles[key];
+    let header = frame_header(mapping, *valid_time, source_cycle, &collection, &[])?;
+    // ONE valid time, with canonical fields pulled on demand and
+    // released after their final consumer. Source decoder residency
+    // is separate; this removes the duplicate complete frame.
+    let fields = FieldMaterializer::new(mapping, collection, plan, key)?;
+    let names = fields.names();
+    let soil_count = mapping.soil_layer_count()?.filter(|count| *count > 0);
+    if soil_count.is_some() {
+        for name in ["soil_temperature", "volumetric_soil_moisture"] {
+            if !names.iter().any(|field| field == name) {
+                return Err(frame_invalid(format!("mapped frame at {valid_time} lacks {name}")));
+            }
+        }
+    }
+    Ok(PlannedFrame { index, source_cycle, header, fields, names, soil_count })
+}
+
+/// One field's checks, digests and window: pure work on a materialized
+/// field, so a frame's fields run it concurrently.
+#[allow(clippy::too_many_arguments)]
+fn field_work(
+    fields: &FieldMaterializer<'_>,
+    id: usize,
+    plan: &FramePlan,
+    soil_count: Option<i64>,
+    window: Option<&crate::window::Window>,
+    decode_window: Option<&crate::window::Window>,
+    time: &Value,
+    valid_time: NaiveDateTime,
+) -> Result<FieldWork> {
+    let field = &fields.available[&id];
+    let finite_required = plan.required_names.contains(&field.name)
+        && field.name != "soil_temperature" && field.name != "volumetric_soil_moisture";
+    if finite_required && field.values.iter().any(|value| !value.is_finite()) {
+        return Err(frame_invalid(format!(
+            "required mapped field {} is not finite at {valid_time}", field.name)));
+    }
+    if let Some(soil_count) = soil_count {
+        if ["soil_temperature", "volumetric_soil_moisture"].contains(&field.name.as_str()) {
+            let axis = field.axes.iter().position(|axis| axis == "soil")
+                .ok_or_else(|| frame_invalid(format!("{} has no soil axis", field.name)))?;
+            let observed = field.values.shape()[axis] as i64;
+            if observed != soil_count {
+                return Err(frame_invalid(format!(
+                    "{} has {observed} layers, target declares {soil_count}", field.name)));
+            }
+        }
+    }
+    // A field the decode produced over the granted window alone: its y/x
+    // are the window's and every value it has was checked above, so it
+    // is published as decoded.
+    let decoded = decode_window.filter(|w| w.holds_decoded(field));
+    if let Some(w) = decoded {
+        w.validate_decoded(field, fields.collection.vertical_values.len())?;
+    } else {
+        validate_frame_axes(&fields.collection, std::slice::from_ref(field))?;
+        if let Some(window) = window { window.validate_field(field)?; }
+    }
+    let original_flat = array::contiguous(&field.values);
+    // Hash once over the complete source. The same digest enters
+    // the original canonical header and the field descriptor.
+    let field_sha256 = crate::digest::array_sha256(field.values.shape(), &original_flat);
+    let descriptor = field_descriptor(field, time, &field_sha256);
+    let soil_levels = field.axes.iter().position(|axis| axis == "soil")
+        .map(|axis| field.values.shape()[axis]);
+    let retained = window.filter(|w| w.fields.contains(&field.name));
+    let shape = retained.map_or_else(|| field.values.shape().to_vec(),
+        |w| w.shape(field.values.shape()[0]).to_vec());
+    let mut pressure_levels = None;
+    let values: Vec<f64> = if decoded.is_some() {
+        original_flat.into_owned()
+    } else if let Some(w) = retained {
+        if field.name == "air_pressure" {
+            pressure_levels = Some(crate::window::pressure_levels(
+                &original_flat, w.source_shape[0] * w.source_shape[1])?);
+        }
+        w.crop(&original_flat, shape[0])
+    } else {
+        original_flat.into_owned()
+    };
+    let sha256 = if retained.is_some() && decoded.is_none() {
+        crate::digest::array_sha256(&shape, &values)
+    } else { field_sha256.clone() };
+    let missing_count = if retained.is_some() {
+        values.iter().filter(|v| v.is_nan()).count()
+    } else { field.missing_count };
+    let original = if let Some(w) = decoded {
+        // Nothing outside the window was decoded, so there is no
+        // whole-field digest or missing count to state.
+        Some(json!({
+            "shape": [field.values.shape()[0], w.source_shape[0], w.source_shape[1]],
+            "sha256": Value::Null,
+            "missing_count": Value::Null,
+            "validation": crate::window::DECODED_VALIDATION,
+        }))
+    } else {
+        retained.map(|_| json!({
+            "shape": field.values.shape(), "sha256": field_sha256,
+            "missing_count": field.missing_count,
+            "validation": "complete-canonical-field-before-window-v1",
+        }))
+    };
+    Ok(FieldWork {
+        descriptor,
+        soil_levels,
+        pressure_levels,
+        prepared: PreparedField {
+            name: field.name.clone(),
+            units: field.units.clone(),
+            axes: field.axes.clone(),
+            location: field.location.clone(),
+            staggering: field.staggering.clone(),
+            shape,
+            values,
+            sha256,
+            missing_count,
+            source_references: field.source_references.clone(),
+            original,
+        },
+    })
+}
+
+/// Materialize, check, digest and window every field one valid time
+/// publishes.
+///
+/// Fields are MATERIALIZED in publication order (a derivation reads the
+/// fields before it), then checked and digested concurrently -- the
+/// digest over a complete 3-D field is the dominant cost and the fields
+/// are independent -- and drained in publication order, so the descriptor
+/// list, the soil coordinate and the first refusal are the one-lane
+/// writer's.
+fn prepare_frame(plan: &FramePlan, planned: PlannedFrame<'_>,
+                 window: Option<crate::window::Window>,
+                 decode_window: Option<&crate::window::Window>) -> PreparedFrame {
+    let PlannedFrame { index, source_cycle, mut header, mut fields, soil_count, .. } = planned;
+    let valid_time = plan.keys[index].0;
+    let time = json!({
+        "reference_time": utc_isoformat(source_cycle), "valid_time": utc_isoformat(valid_time),
+        "lead_seconds": (valid_time - source_cycle).num_seconds(), "statistic": "instantaneous",
+        "interval_start": Value::Null, "interval_end": Value::Null, "accumulation_reset": Value::Null,
+    });
+    let mut failure = None;
+    let mut ready = Vec::with_capacity(fields.output.len());
+    for id in fields.output.clone() {
+        if let Err(refusal) = fields.materialize(id) {
+            failure = Some(refusal);
+            break;
+        }
+        ready.push(id);
+    }
+    let works: Vec<Result<FieldWork>> = {
+        let fields = &fields;
+        let (time, window) = (&time, window.as_ref());
+        crate::threads::install(|| {
+            use rayon::prelude::*;
+            ready.par_iter()
+                .map(|id| field_work(fields, *id, plan, soil_count, window, decode_window, time,
+                    valid_time))
+                .collect()
+        })
+    };
+    let mut descriptors = Vec::with_capacity(works.len());
+    let mut prepared = Vec::with_capacity(works.len());
+    let mut pressure_levels = None;
+    for work in works {
+        match work {
+            Ok(work) => {
+                descriptors.push(work.descriptor);
+                if header["vertical_coordinates"].get("soil").is_none() {
+                    if let Some(levels) = work.soil_levels {
+                        header["vertical_coordinates"]["soil"] = json!({
+                            "coordinate": "soil_depth", "level_count": levels,
+                            "level_values": Vec::<f64>::new(), "a_coefficients": Vec::<f64>::new(),
+                            "b_coefficients": Vec::<f64>::new(), "positive": "down", "units": "index",
+                        });
+                    }
+                }
+                if work.pressure_levels.is_some() {
+                    pressure_levels = work.pressure_levels;
+                }
+                prepared.push(work.prepared);
+            }
+            Err(refusal) => {
+                // An earlier field's refusal is the one the one-lane
+                // writer reached first, before any later materialization.
+                failure = Some(refusal);
+                break;
+            }
+        }
+    }
+    if failure.is_none() {
+        header["fields"] = Value::Array(descriptors);
+        if let Err(refusal) = require_wrf_initial_state(&header) {
+            failure = Some(refusal);
+        }
+    }
+    PreparedFrame {
+        index,
+        source_cycle,
+        header,
+        window,
+        pressure_levels,
+        latitude: axis_document(&fields.collection.latitude),
+        longitude: axis_document(&fields.collection.longitude),
+        vertical_values: axis_document(&fields.collection.vertical_values),
+        fields: prepared,
+        failure,
+    }
+}
+
+/// The ordered half of the writer: the window requests, the stream, its
+/// digest and the frame documents.  Only the thread that owns the
+/// frameset touches it, and only in frameset order.
+struct Committer<'w> {
+    directory: &'w std::path::Path,
+    mapping: &'w Mapping,
+    series: &'w SeriesSummary,
+    input_sha256: &'w BTreeMap<String, String>,
+    request_windows: bool,
+    /// The window granted before decoding (`DecodeStream::decode_window`):
+    /// published by every frame instead of asking the parent again.
+    decode_window: Option<&'w crate::window::Window>,
+    available: &'w (dyn Fn(&std::path::Path) -> Option<u64> + Sync),
+    keys: &'w [FrameKey],
+    count: usize,
+    stream_path: std::path::PathBuf,
+    stream: std::io::BufWriter<std::fs::File>,
+    offset: u64,
     // What the whole stream needs, once the first frame has said; kept
     // so a write that still meets a full disk can say how far it got.
-    let mut planned: Option<u64> = None;
-    let stream_failure = |error: std::io::Error, planned: Option<u64>, written: u64| {
-        let detail = crate::refusal::out_of_space(&error)
-            .then(|| stream_detail(directory, planned, written, available));
-        write_error(&format!("write the frame stream {}", stream_path.display()), &error, detail)
-    };
+    planned: Option<u64>,
     // The whole-stream digest the reader re-computes before it trusts a
     // single array.  Accumulated as the bytes go out rather than by
     // re-reading the file: a real frameset is multi-gigabyte.
-    let mut stream_digest = <sha2::Sha256 as sha2::Digest>::new();
-    let mut frame_documents = Vec::with_capacity(plan.keys.len());
-    let mut windowed = false;
-    for key in &plan.keys {
-        let (valid_time, member) = key;
-        // ONE valid time, with canonical fields pulled on demand and
-        // released after their final consumer. Source decoder residency
-        // is separate; this removes the duplicate complete frame.
-        let collection = slice(key)?;
-        validate_frame_axes(&collection, &[])?;
-        let source_cycle = collection.source_cycles[key];
-        let mut header = frame_header(mapping, *valid_time, source_cycle, &collection, &[])?;
-        let mut fields = FieldMaterializer::new(mapping, collection, &plan, key)?;
-        let names = fields.names();
-        let soil_count = mapping.soil_layer_count()?.filter(|count| *count > 0);
-        if soil_count.is_some() {
-            for name in ["soil_temperature", "volumetric_soil_moisture"] {
-                if !names.iter().any(|field| field == name) {
-                    return Err(frame_invalid(format!("mapped frame at {valid_time} lacks {name}")));
-                }
+    stream_digest: sha2::Sha256,
+    frame_documents: Vec<Value>,
+    windowed: bool,
+    inventories: BTreeSet<Vec<String>>,
+}
+
+impl Committer<'_> {
+    fn stream_failure(&self, error: std::io::Error, written: u64) -> crate::refusal::Refusal {
+        let detail = crate::refusal::out_of_space(&error)
+            .then(|| stream_detail(self.directory, self.planned, written, self.available));
+        crate::refusal::write_error(
+            &format!("write the frame stream {}", self.stream_path.display()), &error, detail)
+    }
+
+    /// The frame's atmospheric window, asked of the parent IN FRAMESET
+    /// ORDER, and -- on the first frame -- the whole stream's admission
+    /// against the free space, before its first byte.
+    fn window_for(&mut self, frame: &PlannedFrame<'_>) -> Result<Option<crate::window::Window>> {
+        use crate::refusal::bytes_and_gib;
+        let window = if let Some(granted) = self.decode_window {
+            // Granted before the first record was decoded, so it is not
+            // asked for again; every frame publishes it over the
+            // canonical atmospheric fields it carries.
+            let valid_time = self.keys[frame.index].0;
+            if let Some(name) = granted.fields.iter().find(|name| !frame.names.contains(*name)) {
+                return Err(frame_invalid(format!(
+                    "the atmospheric window granted before decoding names {name}, which the \
+                     frame at {valid_time} does not carry")));
             }
-        }
-        let window = if request_windows {
-            crate::window::request_for_source(&fields.collection.latitude, &fields.collection.longitude,
-                &header["grid"], &names, frame_documents.len(), &series.grid_fingerprint)?
+            if granted.source_shape != [frame.fields.collection.latitude.len(),
+                                        frame.fields.collection.longitude.len()] {
+                return Err(frame_invalid(format!(
+                    "the atmospheric window granted before decoding was taken on another \
+                     source grid than the frame at {valid_time}")));
+            }
+            Some(granted.for_inventory(&frame.names))
+        } else if self.request_windows {
+            crate::window::request_for_source(&frame.fields.collection.latitude,
+                &frame.fields.collection.longitude, &frame.header["grid"], &frame.names,
+                frame.index, &self.series.grid_fingerprint)?
         } else { None };
-        windowed |= window.is_some();
-        if frame_documents.is_empty() {
-            if let Some(values) = fields.planned_values(window.as_ref())? {
+        self.windowed |= window.is_some();
+        if frame.index == 0 {
+            if let Some(values) = frame.fields.planned_values(window.as_ref())? {
                 let frame_bytes = values.saturating_mul(8);
-                let needed = frame_bytes.saturating_mul(plan.keys.len() as u64);
-                planned = Some(needed);
-                if let Some(free) = available(directory).filter(|free| needed > *free) {
+                let needed = frame_bytes.saturating_mul(self.count as u64);
+                self.planned = Some(needed);
+                if let Some(free) = (self.available)(self.directory).filter(|free| needed > *free) {
                     // The folder and both numbers make the first sentence,
                     // so a front end that shows one sentence shows them.
                     return Err(crate::refusal::disk_full(format!(
@@ -1308,70 +1723,21 @@ fn write_frameset_within(
                          that folder has {} free.  It is {} valid times of {} each, \
                          refused before its first byte rather than written until \
                          the disk fills",
-                        bytes_and_gib(needed), directory.display(), bytes_and_gib(free),
-                        plan.keys.len(), bytes_and_gib(frame_bytes))));
+                        bytes_and_gib(needed), self.directory.display(), bytes_and_gib(free),
+                        self.count, bytes_and_gib(frame_bytes))));
                 }
             }
         }
-        let mut pressure_levels = None;
-        inventories.insert(names);
-        let time = json!({
-            "reference_time": utc_isoformat(source_cycle), "valid_time": utc_isoformat(*valid_time),
-            "lead_seconds": (*valid_time - source_cycle).num_seconds(), "statistic": "instantaneous",
-            "interval_start": Value::Null, "interval_end": Value::Null, "accumulation_reset": Value::Null,
-        });
-        let mut descriptors = Vec::with_capacity(fields.output.len());
-        let mut field_documents = Vec::with_capacity(fields.output.len());
-        for id in fields.output.clone() {
-            fields.materialize(id)?;
-            let field = &fields.available[&id];
-            let finite_required = plan.required_names.contains(&field.name)
-                && field.name != "soil_temperature" && field.name != "volumetric_soil_moisture";
-            if finite_required && field.values.iter().any(|value| !value.is_finite()) {
-                return Err(frame_invalid(format!(
-                    "required mapped field {} is not finite at {valid_time}", field.name)));
-            }
-            if let Some(soil_count) = soil_count {
-                if ["soil_temperature", "volumetric_soil_moisture"].contains(&field.name.as_str()) {
-                    let axis = field.axes.iter().position(|axis| axis == "soil")
-                        .ok_or_else(|| frame_invalid(format!("{} has no soil axis", field.name)))?;
-                    let observed = field.values.shape()[axis] as i64;
-                    if observed != soil_count {
-                        return Err(frame_invalid(format!(
-                            "{} has {observed} layers, target declares {soil_count}", field.name)));
-                    }
-                }
-            }
-            validate_frame_axes(&fields.collection, std::slice::from_ref(field))?;
-            if let Some(window) = &window { window.validate_field(field)?; }
-            let original_flat = array::contiguous(&field.values);
-            // Hash once over the complete source. The same digest enters
-            // the original canonical header and the field descriptor.
-            let field_sha256 = crate::digest::array_sha256(field.values.shape(), &original_flat);
-            descriptors.push(field_descriptor(field, &time, &field_sha256));
-            if header["vertical_coordinates"].get("soil").is_none() {
-                if let Some(axis) = field.axes.iter().position(|axis| axis == "soil") {
-                    header["vertical_coordinates"]["soil"] = json!({
-                        "coordinate": "soil_depth", "level_count": field.values.shape()[axis],
-                        "level_values": Vec::<f64>::new(), "a_coefficients": Vec::<f64>::new(),
-                        "b_coefficients": Vec::<f64>::new(), "positive": "down", "units": "index",
-                    });
-                }
-            }
-            let retained = window.as_ref().filter(|w| w.fields.contains(&field.name));
-            let shape = retained.map_or_else(|| field.values.shape().to_vec(),
-                |w| w.shape(field.values.shape()[0]).to_vec());
-            let flat = if let Some(w) = retained {
-                if field.name == "air_pressure" {
-                    pressure_levels = Some(crate::window::pressure_levels(
-                        &original_flat, w.source_shape[0] * w.source_shape[1])?);
-                }
-                std::borrow::Cow::Owned(w.crop(&original_flat, shape[0]))
-            } else { original_flat };
-            let payload_digest = if retained.is_some() {
-                crate::digest::array_sha256(&shape, &flat)
-            } else { field_sha256.clone() };
-            let length = (flat.len() * 8) as u64;
+        self.inventories.insert(frame.names.clone());
+        Ok(window)
+    }
+
+    /// Stream one prepared frame's fields and document it.
+    fn commit(&mut self, frame: PreparedFrame) -> Result<()> {
+        let (valid_time, member) = &self.keys[frame.index];
+        let mut field_documents = Vec::with_capacity(frame.fields.len());
+        for field in frame.fields {
+            let length = (field.values.len() * 8) as u64;
             // Encoded, digested into the whole-stream hash, and
             // written through a FIXED buffer, a chunk at a time.  One
             // field of a 0.25-degree analysis is ~700 MB as f64;
@@ -1379,17 +1745,18 @@ fn write_frameset_within(
             // double the peak of every decode this seam exists to make
             // cheaper -- the same reason the reader streams its hash
             // instead of reading the stream whole.  The field's OWN
-            // digest was taken above from the full original values.
+            // digest was taken from the full original values.
             let mut chunk: Vec<u8> = Vec::with_capacity(STREAM_CHUNK * 8);
             let mut field_written: u64 = 0;
-            for values in flat.chunks(STREAM_CHUNK) {
+            for values in field.values.chunks(STREAM_CHUNK) {
                 chunk.clear();
                 for value in values {
                     chunk.extend_from_slice(&value.to_le_bytes());
                 }
-                sha2::Digest::update(&mut stream_digest, &chunk);
-                stream.write_all(&chunk)
-                    .map_err(|error| stream_failure(error, planned, offset + field_written))?;
+                sha2::Digest::update(&mut self.stream_digest, &chunk);
+                if let Err(error) = self.stream.write_all(&chunk) {
+                    return Err(self.stream_failure(error, self.offset + field_written));
+                }
                 field_written += chunk.len() as u64;
             }
             let mut field_document = json!({
@@ -1398,29 +1765,23 @@ fn write_frameset_within(
                 "axes": field.axes,
                 "location": field.location,
                 "staggering": field.staggering,
-                "shape": shape,
+                "shape": field.shape,
                 "dtype": "<f8",
-                "offset": offset,
+                "offset": self.offset,
                 "length": length,
-                "sha256": payload_digest,
-                "missing_count": if retained.is_some() {
-                    flat.iter().filter(|v| v.is_nan()).count()
-                } else { field.missing_count },
+                "sha256": field.sha256,
+                "missing_count": field.missing_count,
                 "source_references": field.source_references,
             });
-            if retained.is_some() {
-                field_document["original"] = json!({
-                    "shape": field.values.shape(), "sha256": field_sha256,
-                    "missing_count": field.missing_count,
-                    "validation": "complete-canonical-field-before-window-v1",
-                });
+            if let Some(original) = field.original {
+                field_document["original"] = original;
             }
             field_documents.push(field_document);
-            offset += length;
-            fields.consume(id);
+            self.offset += length;
         }
-        header["fields"] = Value::Array(descriptors);
-        require_wrf_initial_state(&header)?;
+        if let Some(refusal) = frame.failure {
+            return Err(refusal);
+        }
         // Every MappedSourceFrame scalar rides the frame, not the
         // document: the reader rebuilds one dataclass per entry and
         // re-runs its validators, and a frame that had to borrow its
@@ -1430,58 +1791,261 @@ fn write_frameset_within(
         let mut frame_document = json!({
             "valid_time": naive_isoformat(*valid_time),
             "member": member,
-            "source_cycle": naive_isoformat(source_cycle),
-            "latitude": axis_document(&fields.collection.latitude),
-            "longitude": axis_document(&fields.collection.longitude),
-            "vertical_kind": mapping.vertical()?.get("kind").and_then(crate::node::Node::as_str).unwrap_or_default(),
-            "vertical_units": mapping.vertical()?.get("units").and_then(crate::node::Node::as_str).unwrap_or_default(),
-            "vertical_values": axis_document(&fields.collection.vertical_values),
-            "grid_fingerprint": series.grid_fingerprint,
-            "mapping_sha256": mapping.sha256,
-            "input_sha256": input_sha256,
+            "source_cycle": naive_isoformat(frame.source_cycle),
+            "latitude": frame.latitude,
+            "longitude": frame.longitude,
+            "vertical_kind": self.mapping.vertical()?.get("kind").and_then(crate::node::Node::as_str).unwrap_or_default(),
+            "vertical_units": self.mapping.vertical()?.get("units").and_then(crate::node::Node::as_str).unwrap_or_default(),
+            "vertical_values": frame.vertical_values,
+            "grid_fingerprint": self.series.grid_fingerprint,
+            "mapping_sha256": self.mapping.sha256,
+            "input_sha256": self.input_sha256,
             "fields": field_documents,
-            "header": header,
+            "header": frame.header,
         });
-        if let Some(w) = window {
+        if let Some(w) = frame.window {
             frame_document["atmospheric_window"] = w.document();
-            if let Some(levels) = pressure_levels {
+            if let Some(levels) = frame.pressure_levels {
                 frame_document["original_pressure_hpa"] = axis_document(&levels);
             }
         }
-        frame_documents.push(frame_document);
+        self.frame_documents.push(frame_document);
+        Ok(())
     }
-    // Checked once the whole series has been written, from the names
-    // alone.  The frameset is scratch until the caller reads it back,
-    // so a series that fails here is deleted whole; nothing partial is
-    // ever handed on.
-    require_one_inventory(&inventories)?;
-    stream.flush().map_err(|error| stream_failure(error, planned, offset))?;
-    let document = json!({
-        "schema": if windowed { crate::window::FRAMESET_SCHEMA } else { crate::FRAMESET_SCHEMA },
-        "engine": {"name": crate::ENGINE_NAME, "version": crate::ENGINE_VERSION},
-        // One object, not a bare name beside a loose byte count: the
-        // reader verifies path, size and whole-stream digest together
-        // before it maps a byte, and two spellings of the same number
-        // are how a stream and its manifest drift apart.
-        "stream": {
-            "path": "frames.f64",
-            "dtype": "<f8",
-            "bytes": offset,
-            "sha256": crate::digest::hex_digest(stream_digest),
-        },
-        "mapping_sha256": mapping.sha256,
-        "mapping_path": mapping.path,
-        "input_sha256": input_sha256,
-        "grid_fingerprint": series.grid_fingerprint,
-        "frames": frame_documents,
-    });
-    let manifest_path = directory.join("frames.json");
-    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&document).unwrap_or_default())
-        .map_err(|error| {
-            write_error(&format!("write the frameset manifest {}", manifest_path.display()),
-                &error, None)
-        })?;
-    Ok(document)
+}
+
+/// What a pipeline job hands back to the thread that writes the stream.
+enum Stage<'a> {
+    Planned(usize, Result<PlannedFrame<'a>>),
+    Prepared(PreparedFrame),
+    /// A job panicked.  Carried back so the ordered thread re-raises it:
+    /// left in the job, it would never report and the ordered thread
+    /// would wait for it forever.
+    Panicked(Box<dyn std::any::Any + Send>),
+}
+
+/// The one writer body, for one lane or many.
+#[allow(clippy::too_many_arguments)]
+fn write_frameset_core(
+    directory: &std::path::Path,
+    mapping: &Mapping,
+    series: &SeriesSummary,
+    input_sha256: &BTreeMap<String, String>,
+    request_windows: bool,
+    decode_window: Option<&crate::window::Window>,
+    available: &(dyn Fn(&std::path::Path) -> Option<u64> + Sync),
+    lanes: usize,
+    slice: &(dyn Fn(usize, &FrameKey) -> Result<DecodedCollection> + Sync),
+) -> Result<Value> {
+    use crate::refusal::write_error;
+    let plan = plan_frames_within(mapping, &series.source_cycles, series.lead_batch)?;
+    std::fs::create_dir_all(directory).map_err(|error| {
+        write_error(&format!("create the output directory {}", directory.display()), &error, None)
+    })?;
+    let stream_path = directory.join("frames.f64");
+    let file = std::fs::File::create(&stream_path).map_err(|error| {
+        write_error(&format!("create the frame stream {}", stream_path.display()), &error, None)
+    })?;
+    let mut committer = Committer {
+        directory,
+        mapping,
+        series,
+        input_sha256,
+        request_windows,
+        decode_window,
+        available,
+        keys: &plan.keys,
+        count: plan.keys.len(),
+        stream_path,
+        stream: std::io::BufWriter::new(file),
+        offset: 0,
+        planned: None,
+        stream_digest: <sha2::Sha256 as sha2::Digest>::new(),
+        frame_documents: Vec::with_capacity(plan.keys.len()),
+        windowed: false,
+        inventories: BTreeSet::new(),
+    };
+    let lanes = lanes.min(plan.keys.len()).max(1);
+    // Set when the ordered thread stops early, so a job the scope still
+    // has queued does not decode a valid time nobody will write.
+    let abandoned = std::sync::atomic::AtomicBool::new(false);
+    let pipelined = if lanes > 1 {
+        crate::threads::in_place_scope(|scope| {
+            pipeline(scope, mapping, &plan, lanes, slice, decode_window, &abandoned, &mut committer)
+        })
+    } else { None };
+    match pipelined {
+        Some(outcome) => outcome?,
+        None => {
+            for index in 0..plan.keys.len() {
+                let collection = slice(index, &plan.keys[index])?;
+                let planned = plan_frame(mapping, &plan, index, collection)?;
+                let window = committer.window_for(&planned)?;
+                let prepared = prepare_frame(&plan, planned, window, decode_window);
+                committer.commit(prepared)?;
+            }
+        }
+    }
+    committer.finish()
+}
+
+/// `lanes` valid times in flight, written in order.
+///
+/// Jobs on the pool decode a valid time and plan its frame (stage one),
+/// or do its field work once its window is known (stage two).  THIS
+/// thread does everything ordered: it asks each frame's window of the
+/// parent in frameset order, writes each prepared frame in frameset
+/// order, and admits a new valid time only while fewer than `lanes` hold
+/// a decoded valid time (decoding, waiting for their window, or in field
+/// work) -- which is what bounds memory.  A prepared frame waiting for an
+/// earlier one to be written holds only its published arrays, so up to
+/// half as many again may wait that way; without that allowance one slow
+/// valid time at the head stalled every lane behind it.
+///
+/// A refusal at frame `i` (its decode, its plan or its window) is held
+/// until every frame before `i` has been written, then returned; nothing
+/// after `i` is started once it is known, and a later frame's refusal can
+/// never be reported ahead of an earlier frame's.
+#[allow(clippy::too_many_arguments)]
+fn pipeline<'s>(
+    scope: &rayon::Scope<'s>,
+    mapping: &'s Mapping,
+    plan: &'s FramePlan,
+    lanes: usize,
+    slice: &'s (dyn Fn(usize, &FrameKey) -> Result<DecodedCollection> + Sync),
+    decode_window: Option<&'s crate::window::Window>,
+    abandoned: &'s std::sync::atomic::AtomicBool,
+    committer: &mut Committer<'_>,
+) -> Result<()> {
+    use std::sync::atomic::Ordering;
+    let (sender, receiver) = std::sync::mpsc::channel::<Stage<'s>>();
+    let count = plan.keys.len();
+    let (mut started, mut windowed, mut committed, mut outstanding) = (0usize, 0usize, 0usize, 0usize);
+    // Frames holding a decoded valid time, and how many may be between
+    // their decode and their write in all.
+    let mut decoded = 0usize;
+    let depth = lanes + (lanes / 2).max(1);
+    let mut planned: BTreeMap<usize, Result<PlannedFrame<'s>>> = BTreeMap::new();
+    let mut prepared: BTreeMap<usize, PreparedFrame> = BTreeMap::new();
+    let mut halted: Option<(usize, crate::refusal::Refusal)> = None;
+    let outcome = loop {
+        while halted.is_none() && started < count && decoded < lanes && started - committed < depth {
+            let (index, sender) = (started, sender.clone());
+            scope.spawn(move |_| {
+                if abandoned.load(Ordering::Relaxed) { return; }
+                let stage = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    Stage::Planned(index, slice(index, &plan.keys[index])
+                        .and_then(|collection| plan_frame(mapping, plan, index, collection)))
+                })).unwrap_or_else(Stage::Panicked);
+                let _ = sender.send(stage);
+            });
+            started += 1;
+            outstanding += 1;
+            decoded += 1;
+        }
+        let mut written = Ok(());
+        while let Some(frame) = prepared.remove(&committed) {
+            written = committer.commit(frame);
+            if written.is_err() { break; }
+            committed += 1;
+        }
+        if written.is_err() { break written; }
+        if committed == count { break Ok(()); }
+        if halted.as_ref().is_some_and(|(index, _)| *index == committed) {
+            break Err(halted.take().expect("just matched").1);
+        }
+        if outstanding == 0 {
+            break Err(frame_invalid(format!(
+                "the frame writer stalled at valid time {committed} of {count} with no work in flight")));
+        }
+        let Ok(stage) = receiver.recv() else {
+            break Err(frame_invalid("the frame writer lost its workers"));
+        };
+        outstanding -= 1;
+        match stage {
+            Stage::Planned(index, outcome) => {
+                if outcome.is_err() { decoded -= 1; }
+                planned.insert(index, outcome);
+            }
+            Stage::Prepared(frame) => {
+                decoded -= 1;
+                prepared.insert(frame.index, frame);
+            }
+            Stage::Panicked(payload) => {
+                // The one-lane writer would have panicked on this thread;
+                // so does this one, once nothing else will be started.
+                abandoned.store(true, Ordering::Relaxed);
+                std::panic::resume_unwind(payload);
+            }
+        }
+        while halted.is_none() {
+            let Some(outcome) = planned.remove(&windowed) else { break };
+            let index = windowed;
+            windowed += 1;
+            match outcome.and_then(|frame| committer.window_for(&frame).map(|window| (frame, window))) {
+                Ok((frame, window)) => {
+                    let sender = sender.clone();
+                    scope.spawn(move |_| {
+                        if abandoned.load(Ordering::Relaxed) { return; }
+                        let stage = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            Stage::Prepared(prepare_frame(plan, frame, window, decode_window))
+                        })).unwrap_or_else(Stage::Panicked);
+                        let _ = sender.send(stage);
+                    });
+                    outstanding += 1;
+                }
+                Err(refusal) => {
+                    halted = Some((index, refusal));
+                    // Frames after the refusal are never written; their
+                    // decoded valid times are released now.
+                    planned.clear();
+                }
+            }
+        }
+    };
+    abandoned.store(true, Ordering::Relaxed);
+    drop(receiver);
+    outcome
+}
+
+impl Committer<'_> {
+    /// Checked once the whole series has been written, from the names
+    /// alone.  The frameset is scratch until the caller reads it back,
+    /// so a series that fails here is deleted whole; nothing partial is
+    /// ever handed on.
+    fn finish(mut self) -> Result<Value> {
+        use crate::refusal::write_error;
+        require_one_inventory(&self.inventories)?;
+        if let Err(error) = self.stream.flush() {
+            return Err(self.stream_failure(error, self.offset));
+        }
+        let document = json!({
+            "schema": if self.windowed { crate::window::FRAMESET_SCHEMA } else { crate::FRAMESET_SCHEMA },
+            "engine": {"name": crate::ENGINE_NAME, "version": crate::ENGINE_VERSION},
+            // One object, not a bare name beside a loose byte count: the
+            // reader verifies path, size and whole-stream digest together
+            // before it maps a byte, and two spellings of the same number
+            // are how a stream and its manifest drift apart.
+            "stream": {
+                "path": "frames.f64",
+                "dtype": "<f8",
+                "bytes": self.offset,
+                "sha256": crate::digest::hex_digest(self.stream_digest),
+            },
+            "mapping_sha256": self.mapping.sha256,
+            "mapping_path": self.mapping.path,
+            "input_sha256": self.input_sha256,
+            "grid_fingerprint": self.series.grid_fingerprint,
+            "frames": self.frame_documents,
+        });
+        let manifest_path = self.directory.join("frames.json");
+        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&document).unwrap_or_default())
+            .map_err(|error| {
+                write_error(&format!("write the frameset manifest {}", manifest_path.display()),
+                    &error, None)
+            })?;
+        Ok(document)
+    }
 }
 
 #[cfg(test)]
@@ -1690,7 +2254,7 @@ mod tests {
         let collection = crate::engine::decode_collection(&mapping, &inputs, &mut |_| {}).unwrap();
         let oracle = materialize_frames(&mapping, &collection).unwrap();
         let series = SeriesSummary { source_cycles: collection.source_cycles.clone(),
-            grid_fingerprint: collection.grid_fingerprint.clone() };
+            grid_fingerprint: collection.grid_fingerprint.clone(), lead_batch: false };
         let scratch = std::env::temp_dir().join(format!("gpuwm-field-writer-oracle-{}", std::process::id()));
         let mut remaining = collection;
         let document = write_frameset(&scratch, &mapping, &series, &crate::engine::input_digests(&inputs).unwrap(),
@@ -1763,19 +2327,128 @@ mod tests {
     /// Write the golden through `write_frameset_within` with `available`
     /// as the disk's free space; the result and how many valid times the
     /// writer pulled.
-    fn write_golden(directory: &std::path::Path, available: &dyn Fn(&std::path::Path) -> Option<u64>)
+    fn write_golden(directory: &std::path::Path,
+                    available: &(dyn Fn(&std::path::Path) -> Option<u64> + Sync))
         -> (Result<Value>, usize) {
         let (mapping, collection, inputs) = netcdf_golden();
         let series = SeriesSummary { source_cycles: collection.source_cycles.clone(),
-            grid_fingerprint: collection.grid_fingerprint.clone() };
+            grid_fingerprint: collection.grid_fingerprint.clone(), lead_batch: false };
         let mut remaining = collection;
         let mut pulled = 0usize;
         let result = write_frameset_within(directory, &mapping, &series,
-            &crate::engine::input_digests(&inputs).unwrap(), false, available, |key| {
+            &crate::engine::input_digests(&inputs).unwrap(), false, None, available, |key| {
                 pulled += 1;
                 Ok(crate::engine::carve_valid_time(&mut remaining, key))
             });
         (result, pulled)
+    }
+
+    /// The golden, carved into one collection per valid time, handed out
+    /// by position to a many-lane writer.
+    fn golden_by_position() -> (Mapping, SeriesSummary, BTreeMap<String, String>,
+                                Vec<std::sync::Mutex<Option<DecodedCollection>>>) {
+        let (mapping, collection, inputs) = netcdf_golden();
+        let series = SeriesSummary { source_cycles: collection.source_cycles.clone(),
+            grid_fingerprint: collection.grid_fingerprint.clone(), lead_batch: false };
+        let keys: Vec<_> = collection.source_cycles.keys().cloned().collect();
+        let mut remaining = collection;
+        let slices = keys.iter()
+            .map(|key| std::sync::Mutex::new(Some(crate::engine::carve_valid_time(&mut remaining, key))))
+            .collect();
+        (mapping, series, crate::engine::input_digests(&inputs).unwrap(), slices)
+    }
+
+    #[test]
+    fn many_lanes_write_the_one_lane_frameset_byte_for_byte() {
+        let one = scratch("lanes-one");
+        let (document, frames) = write_golden(&one, &|_| None);
+        document.unwrap();
+        assert!(frames >= 2, "the golden is a series, so lanes overlap");
+        for lanes in [2, 3, frames + 4] {
+            let (mapping, series, digests, slices) = golden_by_position();
+            let many = scratch(&format!("lanes-{lanes}"));
+            write_frameset_core(&many, &mapping, &series, &digests, false, None, &|_| None, lanes,
+                &|index, key| {
+                    let slice = slices[index].lock().unwrap().take().expect("each valid time is pulled once");
+                    assert!(slice.source_cycles.contains_key(key), "position {index} carries its own key");
+                    Ok(slice)
+                }).unwrap();
+            for name in ["frames.json", "frames.f64"] {
+                assert_eq!(std::fs::read(one.join(name)).unwrap(), std::fs::read(many.join(name)).unwrap(),
+                    "{name} differs at {lanes} lanes");
+            }
+            std::fs::remove_dir_all(&many).unwrap();
+        }
+        std::fs::remove_dir_all(&one).unwrap();
+    }
+
+    #[test]
+    fn many_lanes_report_the_first_refusal_in_frameset_order_after_writing_what_precedes_it() {
+        // A later valid time's refusal produced FIRST must not win: the
+        // one-lane writer would have stopped at the earlier one.
+        let (mapping, series, digests, _slices) = golden_by_position();
+        let lanes = series.source_cycles.len();
+        assert!(lanes >= 2, "the golden needs two valid times");
+        let early = scratch("lanes-refusal-order");
+        let refusal = write_frameset_core(&early, &mapping, &series, &digests, false, None, &|_| None, lanes,
+            &|index, _key| {
+                if index == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                Err(frame_invalid(format!("valid time {index} refused")))
+            }).unwrap_err();
+        assert_eq!(refusal.message, "valid time 0 refused");
+        assert_eq!(std::fs::metadata(early.join("frames.f64")).unwrap().len(), 0);
+        assert!(!early.join("frames.json").exists());
+        std::fs::remove_dir_all(&early).unwrap();
+
+        // What precedes the refusal is written whole, as the one-lane
+        // writer writes it, and nothing after it.
+        let one = scratch("lanes-refusal-one");
+        let reference = {
+            let (mapping, collection, inputs) = netcdf_golden();
+            let series = SeriesSummary { source_cycles: collection.source_cycles.clone(),
+                grid_fingerprint: collection.grid_fingerprint.clone(), lead_batch: false };
+            let mut remaining = collection;
+            let mut pulled = 0usize;
+            write_frameset_within(&one, &mapping, &series,
+                &crate::engine::input_digests(&inputs).unwrap(), false, None, &|_| None, |key| {
+                    pulled += 1;
+                    if pulled == 2 { return Err(frame_invalid("valid time 1 refused")); }
+                    Ok(crate::engine::carve_valid_time(&mut remaining, key))
+                })
+        };
+        assert_eq!(reference.unwrap_err().message, "valid time 1 refused");
+        let (mapping, series, digests, slices) = golden_by_position();
+        let many = scratch("lanes-refusal-many");
+        let refusal = write_frameset_core(&many, &mapping, &series, &digests, false, None, &|_| None, lanes,
+            &|index, _key| {
+                if index == 1 { return Err(frame_invalid("valid time 1 refused")); }
+                Ok(slices[index].lock().unwrap().take().expect("pulled once"))
+            }).unwrap_err();
+        assert_eq!(refusal.message, "valid time 1 refused");
+        let written = std::fs::read(many.join("frames.f64")).unwrap();
+        assert!(!written.is_empty());
+        assert_eq!(std::fs::read(one.join("frames.f64")).unwrap(), written);
+        assert!(!many.join("frames.json").exists());
+        std::fs::remove_dir_all(&one).unwrap();
+        std::fs::remove_dir_all(&many).unwrap();
+    }
+
+    #[test]
+    fn a_job_that_panics_panics_the_writer_instead_of_hanging_it() {
+        let (mapping, series, digests, slices) = golden_by_position();
+        let lanes = series.source_cycles.len();
+        let directory = scratch("lanes-panic");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            write_frameset_core(&directory, &mapping, &series, &digests, false, None, &|_| None, lanes,
+                &|index, _key| {
+                    if index == 1 { panic!("valid time 1 panicked"); }
+                    Ok(slices[index].lock().unwrap().take().expect("pulled once"))
+                })
+        }));
+        assert!(outcome.is_err(), "the panic reached the caller");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]

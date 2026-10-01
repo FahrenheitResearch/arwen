@@ -90,6 +90,40 @@ def finest_km(ladder: str | None) -> float | None:
     return ROOT_DX_M / 1000.0 / math.prod(ratios)
 
 
+def grid_default_profile(row: dict[str, Any], finest_m: float, domains: int) -> str | None:
+    """The suite a draft of this source runs with no physics named, on a grid this fine with this many domains.
+
+    The source's own default, unless the finest grid is under the bound of a spacing row (``spacing_defaults``,
+    :data:`gpuwm.physics_menu.SPACING_DEFAULTS`) the source admits for that many domains, which is the row
+    `gpuwm domain` binds.
+    """
+
+    for spacing in row.get("spacing_defaults") or []:
+        admitted = spacing.get("admitted_nested") if domains > 1 else spacing.get("admitted")
+        if admitted and finest_m < float(spacing["finest_dx_below_m"]):
+            return spacing["profile_id"]
+    return row.get("default_profile")
+
+
+def ladder_default_profile(row: dict[str, Any], ladder: str | None,
+                           fit: dict[str, Any] | None = None) -> str | None:
+    """The suite a draft of this source on this ladder runs with no physics named (:func:`grid_default_profile`).
+
+    For ``auto``, whose depth the fit picks, the grid ``fit`` landed on (the page's Check the fit answer, its
+    ``domains``); without one, the source's own default.
+    """
+
+    from gpuwm.domain_wizard import LADDER_RATIOS, ROOT_DX_M
+
+    ratios = LADDER_RATIOS.get(ladder or "")
+    if ratios is None:
+        spacings = [float(domain["dx_km"]) for domain in (fit or {}).get("domains") or [] if domain.get("dx_km")]
+        if ladder != "auto" or not spacings:
+            return row.get("default_profile")
+        return grid_default_profile(row, min(spacings) * 1000.0, len(spacings))
+    return grid_default_profile(row, ROOT_DX_M / math.prod(ratios), len(ratios) + 1)
+
+
 def _km(value: float | None) -> str:
     if value is None:
         return "an unknown spacing"
@@ -318,43 +352,70 @@ class Planner:
         row = next(item for item in sources["sources"] if item["id"] == source["choice"])
         reasons["source"] = f"{row['name']}. {source['reason']}".strip()
 
-        # which physics, over the source's own admissible menu
+        # the times the engine takes: a cycle, a later forecast hour to start from, a length
+        step = int(row.get("step_hours") or 1)
+        lead_start = max(0.0, (start - cycle_at).total_seconds() / 3600 - SPIN_UP_H)
+        start_hour = int(lead_start // step * step)
+        hours = int(-(-(lead_end - start_hour) // 1))
+        card = system.get("card") or "16gb"
+        fields = {"name": (form or {}).get("name") or "", "source": row["id"], "cycle": cycle, "lat": lat, "lon": lon,
+                  "width_km": width, "height_km": height, "hours": hours, "start_hour": start_hour,
+                  "ladder": ladder["choice"], "dx_km": None, "profile": None, "card": card,
+                  "products": None}
+
+        # which physics, over the source's own admissible menu.  The default marked is the suite this ladder runs
+        # with none named, which below 1 km is the spacing row's rather than the source's own.  The auto ladder's
+        # depth is its fit's, so it is fitted first with no physics named, the run the field left alone makes.
+        default_here = ladder_default_profile(row, ladder["choice"], self._auto_fit(fields))
+        here_words = (" (the source's default)" if default_here == row.get("default_profile")
+                      else " (the default on this ladder)")
         menu = {item["id"]: f"{item['summary']} [{item.get('status') or 'status unknown'}]"
-                + (" (the source's default)" if item.get("default") else "") for item in row["profiles"]}
+                + (here_words if item["id"] == default_here else "") for item in row["profiles"]}
         physics = self._ask("physics", "Which physics set suits the weather they want to see?", menu,
                             {**state, "ladder": ladder["choice"]})
         reasons["physics"] = physics["reason"] or physics["choice"]
-        # The source's default goes in as the form's own "the source's default" (no profile named), the
-        # same run the page makes when the field is left alone.  Naming it would assert the suite on every
-        # nest, which the prepared tree forecast refuses because the wizard turns cumulus off on nests.
+        # The default of this ladder goes in unnamed, the same run the page makes when the field is left alone.
+        # It is the suite this ladder runs unnamed: on a ladder whose finest grid binds a spacing row, the
+        # field left alone runs that row's suite, so the source's own default is named there like any other.
+        # A named suite on a tree runs as the file the wizard writes from it (the suite on the root, cumulus
+        # off and the damping ladder on the nests): the run asserts a suite only where that file is the suite on
+        # every domain (gpuwm.runplan._asserted_profile).
         chosen_profile = physics["choice"]
-        if chosen_profile == row.get("default_profile"):
+        if chosen_profile == default_here:
             chosen_profile = None
-            reasons["physics"] = f"{physics['choice']}, the source's default. {reasons['physics']}".strip()
+            reasons["physics"] = f"{physics['choice']}, {here_words.strip(' ()')}. {reasons['physics']}".strip()
 
         # which machine
         machines = {"this-computer": f"this computer ({(system.get('devices') or [{}])[0].get('name') or 'no card found'})"}
         machine = self._ask("machine", "Which machine should run it?", machines, state)
         reasons["machine"] = machines[machine["choice"]]
 
-        # the times the engine takes: a cycle, a later forecast hour to start from, a length
-        step = int(row.get("step_hours") or 1)
-        lead_start = max(0.0, (start - cycle_at).total_seconds() / 3600 - SPIN_UP_H)
-        start_hour = int(lead_start // step * step)
-        hours = int(-(-(lead_end - start_hour) // 1))
         reasons["start"] = (f"From the {cycle} UTC cycle" + (f", starting at its {start_hour} h forecast" if start_hour else "")
                             + f", {hours} h long, so the model has time to spin up before the window.")
-        card = system.get("card") or "16gb"
-        fields = {"name": (form or {}).get("name") or "", "source": row["id"], "cycle": cycle, "lat": lat, "lon": lon,
-                  "width_km": width, "height_km": height, "hours": hours, "start_hour": start_hour,
-                  "ladder": ladder["choice"], "dx_km": None, "profile": chosen_profile, "card": card,
-                  "products": None}
+        fields["profile"] = chosen_profile
         reasons["card"] = (f"Sized for this computer's card ({card})." if system.get("card")
                            else "No card was found here, so it is sized for a 16 GB card.")
         fit, fixes = self._check(fields, state, reasons, read)
         return {"fields": fields, "reasons": reasons, "fit": fit, "fixes": fixes, "read": read,
                 "window_utc": {"start": start.strftime("%Y-%m-%dT%H"), "end": end.strftime("%Y-%m-%dT%H")},
                 "machine": machine["choice"]}
+
+    def _auto_fit(self, fields: dict[str, Any]) -> dict[str, Any] | None:
+        """The page's Check the fit of an auto-ladder draft with no physics named, or ``None``.
+
+        ``None`` for any other ladder, whose grids are its own, and for a fit the engine refuses: the check after
+        the choices says why, and its fix moves to a named ladder.
+        """
+
+        from ..api import ApiError
+
+        if fields.get("ladder") != "auto":
+            return None
+        payload = {key: value for key, value in fields.items() if value is not None}
+        try:
+            return self.tool("check_fit", payload, lambda: self.api.fit(dict(payload), False)).body["fit"]
+        except ApiError:
+            return None
 
     def _check(self, fields: dict[str, Any], state: dict[str, Any], reasons: dict[str, str],
                read: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -429,4 +490,4 @@ class Planner:
 
 
 __all__ = ["FIXES", "LADDER_WORDS", "PARTS", "PlanError", "Planner", "SIZES", "cost_words", "finest_km", "fit_numbers",
-           "inside", "ladder_order"]
+           "grid_default_profile", "inside", "ladder_default_profile", "ladder_order"]

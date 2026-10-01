@@ -57,6 +57,7 @@ from gpuwm.offline_child import (
     les_child_regime,
     bind_parent_physics_from_gpuwm_restart,
     bind_parent_physics_from_wrf_namelist,
+    child_mosaic_refusal,
     child_surface_requirement,
     derive_child_surface_from_parent,
     open_parent_history,
@@ -682,13 +683,78 @@ def child_lateral_zone(parent_config: dict, *, ratio: int,
     }
 
 
+def _fraction_gcd(values):
+    """The largest step every value is a whole number of (exact)."""
+    from fractions import Fraction
+
+    result = None
+    for value in values:
+        frac = Fraction(value).limit_denominator(10 ** 6)
+        if result is None:
+            result = frac
+            continue
+        result = Fraction(
+            math.gcd(result.numerator * frac.denominator,
+                     frac.numerator * result.denominator),
+            result.denominator * frac.denominator)
+    return result
+
+
+def adaptive_parent_child_step(*, child_dx: float, child_dy: float,
+                               centre_lat: float, clocks) -> float:
+    """The fixed step of a child whose parent ran the adaptive clock.
+
+    WHY NOT THE PARENT'S ``dt`` OVER THE RATIO.  An adaptive parent's
+    checkpoint echoes the step its clock happened to be on when the set
+    was written (``dt`` is state, not identity:
+    :data:`gpuwm.core.adaptive_clock.ADAPTIVE_DERIVED_RUN_FIELDS`), and
+    the offline child integrates one fixed step.  Divided by the ratio,
+    that live value made the child's step a property of the checkpoint
+    instant: on a 3 km West Coast parent (2025-01-07 06Z, terrain clock
+    capping it at 13.5 s) the set written at 30 minutes carried 11.25 s,
+    so the 1 km child took 3.75 s, and a set written on a calm hour
+    (37.21 s, say) gives 12.403 s, which no 900 s history interval is a
+    whole number of -- refused by the child's clock contract on the
+    ``--point`` route, which has no way to set a step.  A child's step is
+    the child's own: the engine's clock convention at the child's spacing
+    (:func:`gpuwm.domain_wizard.seconds_per_km`, 5 s per km outside the
+    tropics), taken down to the largest step that every clock the child
+    keeps (``clocks``: run length, history, checkpoint and health
+    intervals) is a whole number of.
+    """
+
+    from fractions import Fraction
+
+    from gpuwm.domain_wizard import seconds_per_km
+
+    spacing_km = Fraction(min(float(child_dx), float(child_dy))
+                          ).limit_denominator(10 ** 6) / 1000
+    ceiling = Fraction(seconds_per_km(float(centre_lat))) * spacing_km
+    kept = [float(value) for value in clocks
+            if value is not None and float(value) > 0.0]
+    if not kept:
+        return float(ceiling)
+    base = _fraction_gcd(kept)
+    divisions = max(1, math.ceil(base / ceiling))
+    return float(base / divisions)
+
+
 def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
                              child_nx: int, child_ny: int,
                              run_seconds: float,
                              output_interval_s: float,
-                             child_eta_levels=None) -> dict:
+                             child_eta_levels=None,
+                             centre_lat: float | None = None,
+                             clock_seconds=()) -> dict:
     """Child RunConfig dict: parent physics verbatim, geometry rescaled,
-    lateral zone sized in parent cells (:func:`child_lateral_zone`)."""
+    lateral zone sized in parent cells (:func:`child_lateral_zone`).
+
+    A parent that ran the adaptive clock hands the child a fixed step of
+    its own (:func:`adaptive_parent_child_step`, at ``centre_lat``; the
+    parent grid's mean latitude when absent) that lands on the child's
+    run length, history and checkpoint intervals and on every value in
+    ``clock_seconds`` (the health interval), and the child's config says
+    it runs a fixed clock, which is what the offline child integrates."""
     from dataclasses import fields as dataclass_fields
 
     from gpuwm.config import RunConfig, validate_run_config
@@ -696,11 +762,26 @@ def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
     known = {field.name for field in dataclass_fields(RunConfig)}
     merged = {key: value for key, value in parent_config.items()
               if key in known}
+    child_dx = float(parent["dx"]) / ratio
+    child_dy = float(parent["dy"]) / ratio
+    if parent_config.get("use_adaptive_time_step"):
+        if centre_lat is None:
+            xlat = parent.get("xlat") if isinstance(parent, dict) else None
+            centre_lat = (float(np.mean(xlat)) if xlat is not None
+                          else 45.0)
+        child_dt = adaptive_parent_child_step(
+            child_dx=child_dx, child_dy=child_dy, centre_lat=centre_lat,
+            clocks=(run_seconds, output_interval_s,
+                    parent_config.get("restart_interval_s", 0.0),
+                    *clock_seconds))
+        merged["use_adaptive_time_step"] = False
+    else:
+        child_dt = float(parent_config["dt"]) / ratio
     merged.update({
         "nx": int(child_nx), "ny": int(child_ny),
-        "dx": float(parent["dx"]) / ratio,
-        "dy": float(parent["dy"]) / ratio,
-        "dt": float(parent_config["dt"]) / ratio,
+        "dx": child_dx,
+        "dy": child_dy,
+        "dt": child_dt,
         "grid_id": int(parent_config.get("grid_id", 1)) + 1,
         "specified": True, "nested": False,
         "run_seconds": float(run_seconds),
@@ -1759,7 +1840,21 @@ def _downscale_main(args, reservation: _OutputReservation,
             parent_config, parent=parent, ratio=ratio,
             child_nx=child_nx, child_ny=child_ny,
             run_seconds=run_seconds, output_interval_s=output_interval_s,
-            child_eta_levels=child_levels)
+            child_eta_levels=child_levels, centre_lat=lat,
+            clock_seconds=(float(args.health_interval_seconds),))
+        if parent_config.get("use_adaptive_time_step"):
+            live = float(parent_config["dt"])
+            warn(f"the parent ran the adaptive clock and its checkpoint "
+                 f"carries the step it was on ({live:g} s); the child runs "
+                 f"a fixed {merged['dt']:g} s step of its own, not "
+                 f"{live / ratio:g} s",
+                 why="The offline child integrates one fixed step.  An "
+                     "adaptive parent's live step depends on the instant "
+                     "its checkpoint was written, so the child takes the "
+                     "engine's clock convention at its own spacing (5 s "
+                     "per km outside the tropics), down to the largest "
+                     "step its run length, history, checkpoint and health "
+                     "intervals are whole numbers of.")
         outdir = Path(args.out)
         child_config = derived_child_config_path(
             outdir, dry_run=bool(args.dry_run))
@@ -1858,6 +1953,11 @@ def _downscale_main(args, reservation: _OutputReservation,
     from gpuwm.offline_child_run import child_cadence
     child_clock = child_cadence(
         cfg, health_interval_seconds=float(args.health_interval_seconds))
+    # Noah mosaic, refused here for the same reason: its tiles need a door
+    # this route does not have (offline_child.child_mosaic_refusal).
+    mosaic_refusal = child_mosaic_refusal(cfg)
+    if mosaic_refusal is not None:
+        raise OfflineChildContractError(mosaic_refusal)
     parent_ny, parent_nx = _parent_mass_dims(frames[0])
     placement = OfflineChildPlacement(
         parent_nx=parent_nx, parent_ny=parent_ny,
@@ -2131,7 +2231,12 @@ def _downscale_main(args, reservation: _OutputReservation,
     # cadence there from the first moment, and a refusal that still
     # released --out never had to account for this file.
     _write_downscale_plan(plan_path, plan)
-    report = offline_child_run.run(namespace)
+    # --no-memory-gate reaches the child's own resident admission, which
+    # prices the same envelope this plan printed.
+    from gpuwm.core.resident_admission import memory_gate_override
+
+    with memory_gate_override(getattr(args, "no_memory_gate", False)):
+        report = offline_child_run.run(namespace)
     return 0 if report["result"] == "PASS" else 1
 
 
@@ -2334,6 +2439,14 @@ def register_cli(subparsers) -> None:
                              "keeps in --out (default 1, the newest, which "
                              "a downscale from this child binds to); 0 "
                              "keeps every set")
+    parser.add_argument("--no-memory-gate", action="store_true",
+                        dest="no_memory_gate",
+                        help="run a child whose priced peak envelope exceeds "
+                             "this card's free memory anyway, as `gpuwm go "
+                             "--no-memory-gate` does: the envelope is an "
+                             "upper bound and the card's own allocation then "
+                             "decides; a child state too big to build at all "
+                             "is still refused")
     parser.add_argument("--dry-run", action="store_true",
                         help="validate contracts, derive/print the plan, "
                              "write the derived TOML, run nothing")

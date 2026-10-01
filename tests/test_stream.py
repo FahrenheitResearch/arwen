@@ -2349,11 +2349,17 @@ def test_stream_prices_its_card_from_the_function_gpuwm_run_prices_from(
     plan = dataclasses.replace(
         _make_plan(tmp_path, cycle_count=1, target_lead=1),
         gpu_uuid="GPU-fixture")
-    priced = supervisor.priced_reservation_bytes(plan.experiment)
+    priced = supervisor.priced_reservation_bytes(plan.experiment,
+                                                 source="hrrr")
     assert priced is not None and priced > 0
     # Priced from the plan's loaded experiment and from its configuration
     # file: the same number, so the stream cannot price what it does not run.
-    assert supervisor.priced_reservation_bytes(plan.experiment_config) == priced
+    assert supervisor.priced_reservation_bytes(
+        plan.experiment_config, source="hrrr") == priced
+    # With the source it prepares from: the analysed hydrometeors HRRR
+    # publishes ride the root's boundary tables, and a reservation priced
+    # without them is short by exactly those tables.
+    assert priced > supervisor.priced_reservation_bytes(plan.experiment)
 
     calls = []
     monkeypatch.setattr(
@@ -2386,7 +2392,8 @@ def test_a_stream_that_does_not_fit_beside_a_cotenant_is_refused_at_the_door(
     plan = dataclasses.replace(
         _make_plan(tmp_path, cycle_count=1, target_lead=1),
         gpu_uuid="GPU-fixture")
-    priced = supervisor.priced_reservation_bytes(plan.experiment)
+    priced = supervisor.priced_reservation_bytes(plan.experiment,
+                                                 source="hrrr")
     device = _shared_card(monkeypatch, tmp_path)
     device["total"] = priced + 4 * 1024 ** 3
     device["used"] = 5 * 1024 ** 3  # free = priced - 1 GiB
@@ -2408,7 +2415,8 @@ def test_a_started_stream_says_the_shared_card_once_and_is_never_re_refused(
     plan = dataclasses.replace(
         _make_plan(tmp_path, cycle_count=1, target_lead=1),
         gpu_uuid="GPU-fixture")
-    priced = supervisor.priced_reservation_bytes(plan.experiment)
+    priced = supervisor.priced_reservation_bytes(plan.experiment,
+                                                 source="hrrr")
     device = _shared_card(monkeypatch, tmp_path)
     device["total"] = priced + 8 * 1024 ** 3
     device["used"] = 2 * 1024 ** 3  # free = priced + 6 GiB

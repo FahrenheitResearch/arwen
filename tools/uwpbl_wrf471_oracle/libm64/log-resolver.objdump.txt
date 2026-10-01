@@ -1,0 +1,37 @@
+
+/lib/x86_64-linux-gnu/libm.so.6:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+0000000000071ba0 <__log_finite@GLIBC_2.15>:
+   71ba0:	f3 0f 1e fa          	endbr64
+   71ba4:	48 8b 15 25 34 0b 00 	mov    0xb3425(%rip),%rdx        # 124fd0 <f32subf64x@@GLIBC_2.28+0x8c2b0>
+   71bab:	8b 8a 9c 00 00 00    	mov    0x9c(%rdx),%ecx
+   71bb1:	f6 c5 10             	test   $0x10,%ch
+   71bb4:	74 10                	je     71bc6 <__log_finite@GLIBC_2.15+0x26>
+   71bb6:	48 8d 05 03 f6 02 00 	lea    0x2f603(%rip),%rax        # a11c0 <f32subf64x@@GLIBC_2.28+0x84a0>
+   71bbd:	f6 82 b8 00 00 00 20 	testb  $0x20,0xb8(%rdx)
+   71bc4:	75 28                	jne    71bee <__log_finite@GLIBC_2.15+0x4e>
+   71bc6:	48 8d 05 63 8e 02 00 	lea    0x28e63(%rip),%rax        # 9aa30 <f32subf64x@@GLIBC_2.28+0x1d10>
+   71bcd:	f6 82 de 00 00 00 01 	testb  $0x1,0xde(%rdx)
+   71bd4:	75 18                	jne    71bee <__log_finite@GLIBC_2.15+0x4e>
+   71bd6:	48 8d 05 73 f3 02 00 	lea    0x2f373(%rip),%rax        # a0f50 <f32subf64x@@GLIBC_2.28+0x8230>
+   71bdd:	81 e1 00 00 00 10    	and    $0x10000000,%ecx
+   71be3:	48 8d 15 f6 fc ff ff 	lea    -0x30a(%rip),%rdx        # 718e0 <__log2_finite@GLIBC_2.15+0x40>
+   71bea:	48 0f 44 c2          	cmove  %rdx,%rax
+   71bee:	c3                   	ret
+   71bef:	90                   	nop
+   71bf0:	f3 0f 1e fa          	endbr64
+   71bf4:	66 48 0f 7e c6       	movq   %xmm0,%rsi
+   71bf9:	66 48 0f 7e ca       	movq   %xmm1,%rdx
+   71bfe:	48 89 f0             	mov    %rsi,%rax
+   71c01:	49 89 d0             	mov    %rdx,%r8
+   71c04:	48 c1 e8 34          	shr    $0x34,%rax
+   71c08:	49 c1 e8 34          	shr    $0x34,%r8
+   71c0c:	8d 48 ff             	lea    -0x1(%rax),%ecx
+   71c0f:	41 89 c1             	mov    %eax,%r9d
+   71c12:	81 f9 fd 07 00 00    	cmp    $0x7fd,%ecx
+   71c18:	0f 87 d2 02 00 00    	ja     71ef0 <__log_finite@GLIBC_2.15+0x350>
+   71c1e:	44                   	rex.R
+   71c1f:	89                   	.byte 0x89

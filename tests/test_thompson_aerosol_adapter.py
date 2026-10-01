@@ -890,11 +890,16 @@ def test_reused_classic_launchers_receive_the_mp8_argument_shape(monkeypatch):
     import gpuwm.core.thompson as thompson
     import gpuwm.core.thompson_runtime as classic_runtime
 
+    # mp=8 makes its entry graupel number and its post-source rain and
+    # graupel fallout column masks in its fused launch_adapter_entry and
+    # launch_adapter_masks, which write exactly what
+    # launch_classic_graupel_number_init, launch_hydrometeor_column_mask and
+    # launch_graupel_fallout_column_mask write
+    # (tests/test_thompson_speed_glue.py); mp=28 still calls those three,
+    # and the comparison below covers the launchers both adapters call.
     reused = (
-        "launch_classic_graupel_number_init",
         "launch_classic_graupel_number_finalize",
         "launch_hydrometeor_column_mask",
-        "launch_graupel_fallout_column_mask",
         "launch_ice_sedimentation",
         "launch_snow_sedimentation",
         "launch_graupel_sedimentation",
@@ -965,10 +970,13 @@ def test_reused_classic_launchers_receive_the_mp8_argument_shape(monkeypatch):
             # into a buffer it has spent or not yet filled: the entry-cloud
             # slot for mp=28, the rain evaporation's density output for
             # mp=8.  Same launcher, same mask buffer, same order.
+            # The cloud call is compared; mp=28's post-source rain mask
+            # (the mp=8 twin of which is fused into launch_adapter_masks) is
+            # left out.
             def carried(calls, carrier):
                 assert [a[0] for a, _k in calls].count(carrier) == 1, calls
-                return [(("L_qc",) + args[1:] if args[0] == carrier
-                         else args, kwargs) for args, kwargs in calls]
+                return [(("L_qc",) + args[1:], kwargs)
+                        for args, kwargs in calls if args[0] == carrier]
             got = carried(got, "scratch.mp_thompson_aero_qc_entry")
             want = carried(want, "scratch.mp_thompson_rain_reference_density")
         assert got == want, name
@@ -2586,7 +2594,8 @@ _G3_ULP_PINS = (
     ("aero-cloud-freeze-nc", "qc", 4, 1.000, "entry", 1.000, 4, "entry"),
     ("aero-cold-overlap", "qc", 4, 1.000, "entry", 1.000, 4, "entry"),
     ("aero-cold-overlap", "qr", 6, 1.789, "entry", 18.00, 1, "after"),
-    ("aero-cold-overlap", "nr_per_kg", 6, 0.6109, "entry", 16.00, 1, "after"),
+    # 16.00 at level 1 until A146 (see _G3_ULP_PINS_SM89).
+    ("aero-cold-overlap", "nr_per_kg", 6, 0.6109, "entry", 17.00, 1, "after"),
     ("aero-cold-overlap", "nc_per_kg", 4, 0.2292, "entry", 0.2292, 4,
      "entry"),
     ("aero-cold-overlap", "effc_m", 4, 1.11439e+07, "after", 1.11439e+07, 4,
@@ -2599,17 +2608,22 @@ _G3_ULP_PINS = (
     # existed for -- to 3.000 ulps at level 2.  The rows stay because both
     # cells are still above the FLAT gate once level 6 is put back in.
     ("aero-reduces-to-classic", "qr", 6, 0.5850, "entry", 1.000, 0, "after"),
-    ("aero-reduces-to-classic", "nr_per_kg", 6, 0.1593, "entry", 3.000, 2,
+    # 0.1593 at level 6 until A146 (see _G3_ULP_PINS_SM89).
+    ("aero-reduces-to-classic", "nr_per_kg", 6, 0.1592, "entry", 3.000, 2,
      "entry"),
     ("wp08-nusweep", "qr", 12, 60.00, "after", 60.00, 12, "after"),
 )
 
 #: The same nine cells on an RTX 4090 (sm_89, cupy 14.2.0), measured
-#: 2026-09-24.  Two cells read differently from sm_120, both in the last
-#: ulp of a rounding: ``aero-cold-overlap`` nr_per_kg is 17 ulps at level 1
-#: (16 on sm_120) and ``aero-reduces-to-classic`` nr_per_kg is 0.1592 at
-#: level 6 (0.1593).  The relative gate's miss set is the same nine cells on
-#: both classes.
+#: 2026-09-24.  Until A146 two cells read differently from sm_120, both in
+#: the last ulp of a rounding: ``aero-cold-overlap`` nr_per_kg was 16 ulps
+#: at level 1 on sm_120 and ``aero-reduces-to-classic`` nr_per_kg 0.1593 at
+#: level 6.  A146 is why: NVRTC compiled a float division by a compile-time
+#: constant as a multiply by the rounded reciprocal on Blackwell, and since
+#: the kernels spell those divisions ``__fdiv_rn`` sm_120 reads both cells
+#: as sm_89 does (RTX 5070 Ti, NVRTC 13.4.92, 2026-09-30), so the two rows
+#: are equal.  The relative gate's miss set is the same nine cells on both
+#: classes.
 _G3_ULP_PINS_SM89 = (
     ("aero-cloud-freeze-nc", "qc", 4, 1.000, "entry", 1.000, 4, "entry"),
     ("aero-cold-overlap", "qc", 4, 1.000, "entry", 1.000, 4, "entry"),
@@ -2683,9 +2697,9 @@ _G3_WORST_ULP_BY_FIXTURE = {
     "aero-nc-accrete": 5.0,
     "aero-nc-auto": 3.0,
     "aero-nc-cap": 4.0,
-    "aero-nc-effrad": 3.0,
-    "aero-nc-sed": 3.0,
-    "aero-reduces-to-classic": 4.0,
+    "aero-nc-effrad": 2.0,
+    "aero-nc-sed": 4.0,
+    "aero-reduces-to-classic": 3.0,
     "aero-scav-frozen": 3.0,
     "aero-scav-rain": 4.0,
     "aero-sfc-emit": 0.0,
@@ -2701,11 +2715,14 @@ _G3_WORST_ULP_BY_FIXTURE = {
 }
 
 #: The same ratchet per card class.  The table above is sm_120's (an RTX
-#: 5070 Ti re-read it on 2026-09-24).  On an RTX 4090 (sm_89) three
-#: fixtures read one ulp apart from sm_120: ``aero-nc-effrad`` 2
+#: 5070 Ti re-read it on 2026-09-30).  Until A146 an RTX 4090 (sm_89) read
+#: three fixtures one ulp apart from sm_120: ``aero-nc-effrad`` 2
 #: (``nr_per_kg``, 3 on sm_120), ``aero-nc-sed`` 4 (``nr_per_kg``, 3) and
 #: ``aero-reduces-to-classic`` 3 (``ni_per_kg`` 1 against 4 on sm_120, so
-#: its worst is ``nr_per_kg``'s 3).
+#: its worst is ``nr_per_kg``'s 3).  Since the kernels spell a division by a
+#: compile-time constant ``__fdiv_rn`` (A146: NVRTC had compiled it as a
+#: reciprocal multiply on Blackwell) sm_120 reads the three as sm_89 does,
+#: and the two rows are equal.
 _G3_WORST_ULP_BY_CARD_CLASS = {
     "12.0": _G3_WORST_ULP_BY_FIXTURE,
     "8.9": dict(_G3_WORST_ULP_BY_FIXTURE, **{

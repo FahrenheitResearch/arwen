@@ -189,6 +189,203 @@ def test_strip_takes_the_cold_value_not_zero_garbage():
     assert np.all(rth[strip3] == 0.0)
 
 
+def test_strip_accumulations_start_from_the_parent_not_zero():
+    """THE DEFECT: fresh ground's accumulated rain started at zero, so every
+    move left a band of too little total rain on the nest's leading edge
+    (8 moves in a 12 h tropical storm run).  WRF interpolates RAINC and
+    RAINNC from the parent onto the exposed cells; the strip now takes the
+    parent's accumulation there, and the overlap keeps the nest's own."""
+    from gpuwm.core.nest_interp import sint
+    from gpuwm.core.physics_continuation import (
+        STRIP_ACCUMULATION_RULE, capture_continuation,
+        parent_strip_accumulations, restore_continuation, shift_continuation)
+
+    # A nest with no cumulus scheme (no cu_rainc) under a KF parent.
+    state = _ScratchState({"mp_rainnc": _distinct((NY, NX), 8)})
+    driver = SimpleNamespace(cumulus_callable=None)
+    captured = capture_continuation(state, driver)
+    plan = _plan(di=2, dj=1)
+    pny, pnx = 16, 16
+    parent = SimpleNamespace(
+        cfg=SimpleNamespace(run=SimpleNamespace(nx=pnx, ny=pny)),
+        state=_ScratchState({
+            "mp_rainnc": np.abs(_distinct((pny, pnx), 9)) * F32(10.0),
+            "cu_rainc": np.abs(_distinct((pny, pnx), 10)) * F32(5.0)}))
+    child_dc = SimpleNamespace(
+        grid_id=2, i_parent_start=plan.placement_to.i_parent_start - 5,
+        j_parent_start=plan.placement_to.j_parent_start - 5,
+        parent_grid_ratio=RATIO, run=SimpleNamespace(nx=NX, ny=NY))
+    strip, receipt = parent_strip_accumulations(parent, child_dc, captured)
+    assert receipt["rule"] == STRIP_ACCUMULATION_RULE
+    assert receipt["seeded"] == ["mp_rainnc"] and receipt["convective_in_rainnc"]
+    reg = _mass_registration(child_dc, parent)
+    expected = (sint(parent.state.existing_scratch("mp_rainnc"), reg)
+                + sint(parent.state.existing_scratch("cu_rainc"), reg))
+    np.testing.assert_array_equal(strip["mp_rainnc"], expected)
+
+    shifted = shift_continuation(captured, plan, strip=strip)
+    new_state = _ScratchState()
+    restore_continuation(new_state, SimpleNamespace(cumulus_callable=None),
+                         shifted)
+    rainnc = new_state.existing_scratch("mp_rainnc")
+    (dst_j, src_j), (dst_i, src_i) = plan.window(rainnc.shape)
+    fresh = np.ones(rainnc.shape, dtype=bool)
+    fresh[dst_j, dst_i] = False
+    old = state.existing_scratch("mp_rainnc")
+    assert np.array_equal(rainnc[dst_j, dst_i], old[src_j, src_i])
+    assert np.array_equal(rainnc[fresh], expected[fresh])
+    # Control: without the parent's values the strip is the cold zero.
+    cold = shift_continuation(captured, plan)["mp_rainnc"]
+    assert np.all(cold[fresh] == 0.0) and np.all(expected[fresh] > 0.0)
+
+    # The old footprint's specified ring never accumulated (the nest's
+    # microphysics skips it); where it lands inside the new footprint it
+    # takes the parent's value too, and the rest of the overlap keeps the
+    # nest's own.
+    ringed = shift_continuation(captured, plan, strip=strip, ring=1)["mp_rainnc"]
+    old_ring = np.zeros((NY, NX), dtype=bool)
+    old_ring[[0, -1], :] = True
+    old_ring[:, [0, -1]] = True
+    stale = np.zeros((NY, NX), dtype=bool)
+    stale[dst_j, dst_i] = old_ring[src_j, src_i]
+    # A (+6, +3) nest-cell move keeps 9 cells of the old east column and 6
+    # of the old north row inside, one shared.
+    assert int(stale.sum()) == 14
+    assert np.array_equal(ringed[stale], expected[stale])
+    keep = ~fresh & ~stale
+    assert np.array_equal(ringed[keep], rainnc[keep])
+    assert np.array_equal(ringed[fresh], expected[fresh])
+
+    # A parent with no accumulators (a test double, an idealized tree)
+    # seeds nothing and says why.
+    none, why = parent_strip_accumulations(SimpleNamespace(), child_dc, captured)
+    assert none == {} and "no scratch" in why["reason"]
+
+
+def _mass_registration(child_dc, parent):
+    """WRF's mass-point SINT registration of ``child_dc`` in ``parent``,
+    built as :func:`gpuwm.ingest.nest_init._mass_registration` builds it."""
+    from gpuwm.core.nest_interp import register_nest
+
+    return register_nest(
+        nri=child_dc.parent_grid_ratio, nrj=child_dc.parent_grid_ratio,
+        i_parent_start=child_dc.i_parent_start,
+        j_parent_start=child_dc.j_parent_start,
+        child_nx=child_dc.run.nx, child_ny=child_dc.run.ny,
+        parent_nx=parent.cfg.run.nx, parent_ny=parent.cfg.run.ny,
+        stagger="", wrapper="interp")
+
+
+def test_the_host_registration_is_the_nest_init_one():
+    """The strip's registration equals the one the child initializer uses
+    (so moving it off gpuwm.ingest.nest_init changed no cell)."""
+    nest_init = pytest.importorskip("gpuwm.ingest.nest_init")
+    parent = SimpleNamespace(cfg=SimpleNamespace(run=SimpleNamespace(nx=16, ny=16)))
+    child_dc = SimpleNamespace(i_parent_start=5, j_parent_start=4,
+                               parent_grid_ratio=RATIO,
+                               run=SimpleNamespace(nx=NX, ny=NY))
+    ours = _mass_registration(child_dc, parent)
+    theirs = nest_init._mass_registration(child_dc, parent)
+    for name in ("ci", "cj", "ip", "jp", "xig", "xjg"):
+        assert np.array_equal(getattr(ours, name), getattr(theirs, name)), name
+    assert (ours.nxp, ours.nyp, ours.nxc, ours.nyc) == (
+        theirs.nxp, theirs.nyp, theirs.nxc, theirs.nyc)
+
+
+def test_a_spawned_nest_starts_from_the_parents_rain_so_a_move_leaves_no_band():
+    """THE DEFECT (second repair): a nest spawned mid-run started its
+    accumulators at zero, and each later move seeded its new ground with
+    the parent's rain since the run began.  Held ground counted from the
+    birth, new ground from the start: a band of too much rain on every
+    leading edge.  Now the birth takes the parent's accumulation too, so a
+    nest that rains exactly what its parent does shows no seam at all
+    after a move."""
+    from gpuwm.core.nest_interp import sint
+    from gpuwm.core.physics_continuation import (
+        STRIP_ACCUMULATION_RULE, capture_continuation,
+        parent_strip_accumulations, seed_birth_accumulations,
+        shift_continuation)
+
+    pny, pnx = 16, 16
+    before_birth_nc = np.abs(_distinct((pny, pnx), 21)) * F32(10.0)
+    before_birth_c = np.abs(_distinct((pny, pnx), 22)) * F32(5.0)
+    parent = SimpleNamespace(
+        cfg=SimpleNamespace(run=SimpleNamespace(nx=pnx, ny=pny)),
+        state=_ScratchState({"mp_rainnc": before_birth_nc.copy(),
+                             "cu_rainc": before_birth_c.copy()}))
+    plan = _plan(di=2, dj=1)
+    born_dc = SimpleNamespace(
+        grid_id=2, i_parent_start=plan.placement_from.i_parent_start - 5,
+        j_parent_start=plan.placement_from.j_parent_start - 5,
+        parent_grid_ratio=RATIO, run=SimpleNamespace(nx=NX, ny=NY))
+    moved_dc = SimpleNamespace(
+        grid_id=2, i_parent_start=plan.placement_to.i_parent_start - 5,
+        j_parent_start=plan.placement_to.j_parent_start - 5,
+        parent_grid_ratio=RATIO, run=SimpleNamespace(nx=NX, ny=NY))
+
+    # Born with no cumulus scheme: its driver allocated RAINNC only.
+    child = _ScratchState({"mp_rainnc": np.zeros((NY, NX), F32)})
+    receipt = seed_birth_accumulations(child, parent, born_dc)
+    assert receipt["event"] == "birth" and receipt["rule"] == STRIP_ACCUMULATION_RULE
+    assert receipt["seeded"] == ["mp_rainnc"] and receipt["convective_in_rainnc"]
+    born_reg = _mass_registration(born_dc, parent)
+    at_birth = sint(before_birth_nc, born_reg) + sint(before_birth_c, born_reg)
+    np.testing.assert_array_equal(child.existing_scratch("mp_rainnc"), at_birth)
+    assert "cu_rainc" not in child._scratch      # nothing the child lacks
+
+    # The move, on rain that is the same everywhere: the parent's
+    # interpolation is then exact at both placements, so what is left
+    # between held and new ground is only where each starts counting.
+    # 12 mm before the birth (8 grid-scale, 4 convective), 3 mm after it on
+    # the parent and on the nest alike.
+    parent.state._scratch["mp_rainnc"] = np.full((pny, pnx), 8.0, F32)
+    parent.state._scratch["cu_rainc"] = np.full((pny, pnx), 4.0, F32)
+    born = _ScratchState({"mp_rainnc": np.zeros((NY, NX), F32)})
+    seed_birth_accumulations(born, parent, born_dc)
+    np.testing.assert_allclose(born.existing_scratch("mp_rainnc"), 12.0, rtol=1e-6)
+    parent.state._scratch["mp_rainnc"] += F32(3.0)
+    born._scratch["mp_rainnc"] += F32(3.0)
+
+    def moved_total(child_state):
+        captured = capture_continuation(
+            child_state, SimpleNamespace(cumulus_callable=None))
+        strip, _ = parent_strip_accumulations(parent, moved_dc, captured)
+        return shift_continuation(captured, plan, strip=strip)["mp_rainnc"]
+
+    moved = moved_total(born)
+    (dst_j, _src_j), (dst_i, _src_i) = plan.window(moved.shape)
+    held = np.zeros(moved.shape, dtype=bool)
+    held[dst_j, dst_i] = True
+    assert held.any() and (~held).any()
+    # New ground and held ground both hold the 15 mm since the run began:
+    # one field, no band between them.
+    np.testing.assert_allclose(moved[~held], 15.0, rtol=1e-6)
+    np.testing.assert_allclose(moved[held], 15.0, rtol=1e-6)
+
+    # Control (the defect): born at zero, the ground held since birth holds
+    # 3 mm beside the new ground's 15, a band 12 mm deep on every move.
+    cold = _ScratchState({"mp_rainnc": np.full((NY, NX), 3.0, F32)})
+    band = moved_total(cold)
+    np.testing.assert_allclose(band[~held], 15.0, rtol=1e-6)
+    np.testing.assert_allclose(band[held], 3.0, rtol=1e-6)
+
+
+def test_a_parent_array_that_is_not_the_parents_grid_seeds_nothing():
+    """A streamed parent's slab template is not the parent's rain: the
+    strip takes nothing from it and the receipt names it."""
+    from gpuwm.core.physics_continuation import parent_strip_accumulations
+
+    parent = SimpleNamespace(
+        cfg=SimpleNamespace(run=SimpleNamespace(nx=16, ny=16)),
+        state=_ScratchState({"mp_rainnc": np.ones((8, 16), F32)}))
+    child_dc = SimpleNamespace(grid_id=2, i_parent_start=5, j_parent_start=5,
+                               parent_grid_ratio=RATIO,
+                               run=SimpleNamespace(nx=NX, ny=NY))
+    strip, receipt = parent_strip_accumulations(parent, child_dc, ["mp_rainnc"])
+    assert strip == {} and receipt["seeded"] == []
+    assert receipt["not_parent_extent"] == {"mp_rainnc": [8, 16]}
+
+
 def test_a_null_move_is_the_identity():
     from gpuwm.core.physics_continuation import (
         capture_continuation, restore_continuation, shift_continuation)

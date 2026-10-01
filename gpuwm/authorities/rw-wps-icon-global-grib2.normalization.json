@@ -7,7 +7,7 @@
       12,
       18
     ],
-    "forcing_interval_seconds": 10800,
+    "forcing_interval_seconds": 3600,
     "horizons": [
       {
         "cycle_hours": [
@@ -24,7 +24,7 @@
         "max_lead_hours": 120
       }
     ],
-    "step_hours": 3
+    "step_hours": 1
   },
   "contract": "arwen.gdt101-regional-remap.v1",
   "fields": {

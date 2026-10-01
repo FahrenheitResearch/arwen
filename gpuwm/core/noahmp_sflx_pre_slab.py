@@ -92,6 +92,8 @@ from __future__ import annotations
 
 from dataclasses import fields as dc_fields
 
+from gpuwm.core.noahmp_slab_libm import copy_slab_slots, split_slab_slots
+
 import numpy as np
 
 from gpuwm.core import noahmp_sflx_pre_gpu as _batch
@@ -184,6 +186,7 @@ def evaluate_sflx_pre_slab(fields: dict, n: int) -> dict:
     flat ``dict`` of CuPy arrays: :class:`PreEnergy`'s fields under their own
     names, :class:`EnergyCall`'s under ``"call." + name``.
     """
+    _slots_atm_x = []
     import cupy as cp
 
     if int(n) < 0:
@@ -228,13 +231,14 @@ def evaluate_sflx_pre_slab(fields: dict, n: int) -> dict:
     # ---- ATM, 819-823 -----------------------------------------------------
     atm_x = cp.empty((n, len(_batch._ATM_IN)), dtype=cp.float32)
     for slot, name in enumerate(_batch._ATM_IN):
-        atm_x[:, slot] = x[name]
+        _slots_atm_x.append((slot, x[name]))
     atm_y = cp.zeros((n, len(_batch._ATM_OUT)), dtype=cp.float32)
+    copy_slab_slots(atm_x, _slots_atm_x)
     _launch(get_kernel("noahmp_leaves", "noahmp_leaf_atm"), n,
             (atm_x, cp.zeros((n, 1), dtype=cp.int32), atm_y, np.int32(n)))
     # Contiguous, not the strided column view; see the module docstring.
-    atm = {name: cp.ascontiguousarray(atm_y[:, slot])
-           for slot, name in enumerate(_batch._ATM_OUT)}
+    atm = split_slab_slots(atm_y, {name: (slot, 1)
+                                  for slot, name in enumerate(_batch._ATM_OUT)})
 
     # ---- DZSNSO / TROOT / BEG_WB, 827-849 ---------------------------------
     dzsnso = cp.zeros((n, _NFULL), dtype=cp.float32)

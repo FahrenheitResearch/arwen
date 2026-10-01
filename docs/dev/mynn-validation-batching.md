@@ -6,9 +6,14 @@ word per input. Pointers and lengths are launch arguments; compiled code is
 shared, while status buffers remain with each workspace and stream. No
 device descriptor or additional persistent field is allocated.
 
-The same immediate read occurs at the same call site. Shape checks, input
-conversion, finite/positive checks, sorted nonzero-field names and error
-ordering are unchanged. Small groups, noncontiguous inputs, other dtypes and
+Each call site (the tendency, mass-flux and initialize inputs) queues all of
+its finite and positive checks into separate flag words, checks that share a
+predicate in one scan, and reads the words back once before its solver
+launches; it raises the message of the first check, in the original order,
+that tripped. Shape checks, input conversion, finite/positive checks, sorted
+nonzero-field names and error ordering are unchanged. Dense views in either
+memory order (the level-major workspace hands the solver Fortran-ordered
+views) take the batched scan. Small groups, noncontiguous inputs, other dtypes and
 custom predicates retain the original reductions. Explicit flush-to-zero
 behavior matches the existing reduction predicates, including signed zeros
 and positive subnormal comparisons. Scientific MYNN kernels are unchanged.

@@ -309,10 +309,13 @@ def test_wdm6_driver_seams_treat_it_as_a_full_ice_scheme():
     }
     assert kf_phase_mode_for_microphysics(16) == \
         KFPhaseMode.SEPARATE_ICE_SNOW
+    # v4 (A144): the rain condensation cap keeps the rate's sign, so rain
+    # with no number no longer evaporates; checkpoints from v3 must refuse.
     assert MICROPHYSICS_ALGORITHM_IDENTITIES[16].startswith(
-        "wdm6-double-moment-warm-rain-wrf-v4.6.1-v3")
+        "wdm6-double-moment-warm-rain-wrf-v4.6.1-v4")
     assert MICROPHYSICS_ALGORITHM_IDENTITIES[16].endswith(
-        "conservative-rain-interface-flux-bounded-transport-time")
+        "conservative-rain-interface-flux-bounded-transport-time-"
+        "zero-rate-rain-no-evaporation")
 
 
 def test_the_ring_guard_captures_wdm6_s_number_moments():

@@ -1,0 +1,242 @@
+{
+ "g44": {
+  "file": "cases-g44.bin",
+  "nk": 44,
+  "dt": 60.0,
+  "nsteps": 4,
+  "columns": [
+   {
+    "family": "convective",
+    "member": 0
+   },
+   {
+    "family": "convective",
+    "member": 1
+   },
+   {
+    "family": "convective",
+    "member": 2
+   },
+   {
+    "family": "stable",
+    "member": 0
+   },
+   {
+    "family": "stable",
+    "member": 1
+   },
+   {
+    "family": "stable",
+    "member": 2
+   },
+   {
+    "family": "stratocu",
+    "member": 0
+   },
+   {
+    "family": "stratocu",
+    "member": 1
+   },
+   {
+    "family": "stratocu",
+    "member": 2
+   },
+   {
+    "family": "coldpool",
+    "member": 0
+   },
+   {
+    "family": "coldpool",
+    "member": 1
+   },
+   {
+    "family": "coldpool",
+    "member": 2
+   },
+   {
+    "family": "icecloud",
+    "member": 0
+   },
+   {
+    "family": "icecloud",
+    "member": 1
+   },
+   {
+    "family": "icecloud",
+    "member": 2
+   },
+   {
+    "family": "shallowcu",
+    "member": 0
+   },
+   {
+    "family": "shallowcu",
+    "member": 1
+   },
+   {
+    "family": "shallowcu",
+    "member": 2
+   }
+  ]
+ },
+ "g61": {
+  "file": "cases-g61.bin",
+  "nk": 61,
+  "dt": 20.0,
+  "nsteps": 4,
+  "columns": [
+   {
+    "family": "convective",
+    "member": 0
+   },
+   {
+    "family": "convective",
+    "member": 1
+   },
+   {
+    "family": "convective",
+    "member": 2
+   },
+   {
+    "family": "stable",
+    "member": 0
+   },
+   {
+    "family": "stable",
+    "member": 1
+   },
+   {
+    "family": "stable",
+    "member": 2
+   },
+   {
+    "family": "stratocu",
+    "member": 0
+   },
+   {
+    "family": "stratocu",
+    "member": 1
+   },
+   {
+    "family": "stratocu",
+    "member": 2
+   },
+   {
+    "family": "coldpool",
+    "member": 0
+   },
+   {
+    "family": "coldpool",
+    "member": 1
+   },
+   {
+    "family": "coldpool",
+    "member": 2
+   },
+   {
+    "family": "icecloud",
+    "member": 0
+   },
+   {
+    "family": "icecloud",
+    "member": 1
+   },
+   {
+    "family": "icecloud",
+    "member": 2
+   },
+   {
+    "family": "shallowcu",
+    "member": 0
+   },
+   {
+    "family": "shallowcu",
+    "member": 1
+   },
+   {
+    "family": "shallowcu",
+    "member": 2
+   }
+  ]
+ },
+ "g35": {
+  "file": "cases-g35.bin",
+  "nk": 35,
+  "dt": 150.0,
+  "nsteps": 4,
+  "columns": [
+   {
+    "family": "convective",
+    "member": 0
+   },
+   {
+    "family": "convective",
+    "member": 1
+   },
+   {
+    "family": "convective",
+    "member": 2
+   },
+   {
+    "family": "stable",
+    "member": 0
+   },
+   {
+    "family": "stable",
+    "member": 1
+   },
+   {
+    "family": "stable",
+    "member": 2
+   },
+   {
+    "family": "stratocu",
+    "member": 0
+   },
+   {
+    "family": "stratocu",
+    "member": 1
+   },
+   {
+    "family": "stratocu",
+    "member": 2
+   },
+   {
+    "family": "coldpool",
+    "member": 0
+   },
+   {
+    "family": "coldpool",
+    "member": 1
+   },
+   {
+    "family": "coldpool",
+    "member": 2
+   },
+   {
+    "family": "icecloud",
+    "member": 0
+   },
+   {
+    "family": "icecloud",
+    "member": 1
+   },
+   {
+    "family": "icecloud",
+    "member": 2
+   },
+   {
+    "family": "shallowcu",
+    "member": 0
+   },
+   {
+    "family": "shallowcu",
+    "member": 1
+   },
+   {
+    "family": "shallowcu",
+    "member": 2
+   }
+  ]
+ }
+}

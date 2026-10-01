@@ -538,9 +538,10 @@ refuse loudly), and completed the third hour in 46.1 s. Torn or
 truncated checkpoint sets are skipped with printed reasons.
 
 **What may change between the leg and the resume:** the forecast length
-(`run_seconds`) and the output/restart cadence (`history_interval_s`,
-`restart_interval_s`) -- that is the whole tolerance, on every route
-that checkpoints, and extending the run is its point. Everything else
+(`run_seconds`), the output/restart cadence (`history_interval_s`,
+`restart_interval_s`) and each domain's history window
+(`history_begin_s`, `history_end_s`) -- that is the whole tolerance, on
+every route that checkpoints, and extending the run is its point. Everything else
 (geometry, timestep, physics, nesting, prepared inputs) is trajectory
 identity: change one and the restart is refused by name, in one
 sentence, exit 2.

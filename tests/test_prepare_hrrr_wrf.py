@@ -1693,7 +1693,8 @@ def _legacy_public_wrapper_extends_one_hour_without_rebuilding_prefix(
     ),
 )
 def test_public_wrapper_preserves_absolute_source_leads_and_rebases_model_time(
-        tmp_path: Path, monkeypatch, physics_profile: str) -> None:
+        tmp_path: Path, monkeypatch, pinned_thompson_tables,
+        physics_profile: str) -> None:
     commands, output = _run_public_wrapper_on_fake_children(
         tmp_path, monkeypatch, physics_profile)
     _assert_source_leads_and_model_time(commands, output, physics_profile)
@@ -1723,7 +1724,8 @@ def test_public_wrapper_forwards_cuda_host_workers(
 
 def _run_public_wrapper_on_fake_children(
         tmp_path, monkeypatch, physics_profile, *, extra_arguments=(),
-        preparation=None, experiment_config=True):
+        preparation=None, experiment_config=True, static_receipt_bytes=None,
+        authority_suffix=""):
     if preparation is None:
         preparation = _cuda_preparation_receipt()
     source = tmp_path / "source"
@@ -1740,7 +1742,13 @@ def _run_public_wrapper_on_fake_children(
     namelist = tmp_path / "namelist.input"
     for path in (static_cache, static_receipt, namelist):
         path.write_bytes(b"fixture")
+    if static_receipt_bytes is not None:
+        static_receipt.write_bytes(static_receipt_bytes)
     authority = _configured_wrapper_input(tmp_path, namelist, physics_profile)
+    if authority_suffix:
+        authority.write_text(
+            authority.read_text(encoding="utf-8") + authority_suffix,
+            encoding="utf-8")
     decoder = tmp_path / "hrrr_grib2_bridge"
     decoder.write_bytes(b"decoder")
     monkeypatch.setattr(prepare, "_decoder", lambda _env: decoder)
@@ -1811,6 +1819,49 @@ def _run_public_wrapper_on_fake_children(
     return commands, output
 
 
+@pytest.mark.parametrize("attested", [False, True])
+def test_a_prebuilt_static_attesting_d01_smoothing_goes_through_the_builder(
+        tmp_path: Path, monkeypatch, attested: bool) -> None:
+    """The breakage: a default run linked a smoothed prebuilt static.
+
+    On the --static-cache route a preparation with no carrier and default
+    d01 smoothing linked the prebuilt static unchecked.  The builder's own
+    refusal of a static built under another d01 smoothing ("was built with
+    d01 terrain smoothing") never ran, and the root seam passes a default
+    request, so a static whose receipt attests 1-2-1 x3 integrated its
+    smoothed terrain under a default configuration.  Such a static now goes
+    through the builder, which holds it to the request; one that attests no
+    smoothing is still linked byte for byte.
+    """
+    from gpuwm.static.terrain_smoothing import TerrainSmoothing
+
+    receipt = (json.dumps({"terrain_smoothing": {
+        "d01": TerrainSmoothing("1-2-1", 3).echo()}}).encode("utf-8")
+               if attested else None)
+    # The wrapper's sub-kilometre root takes the grid-spacing default
+    # carrier, which goes through the builder whatever its receipt says;
+    # the opt-out is a run with no carrier that replaces statics.
+    commands, output = _run_public_wrapper_on_fake_children(
+        tmp_path, monkeypatch, WSM6_PROFILE_ID,
+        static_receipt_bytes=receipt,
+        authority_suffix=('\n[static.highres]\nenabled = false\n'
+                          'cache_root = "cache"\n'))
+    builders = [command for command in commands
+                if any(value.endswith("hrrr_build_native_static.py")
+                       for value in command)]
+    if attested:
+        (builder,) = builders
+        assert builder[builder.index("--static-receipt") + 1] == str(
+            (tmp_path / "static.json").resolve())
+        assert builder[builder.index("--output") + 1] == str(
+            output / "native-static.npz")
+        assert not (output / "native-static-receipt.json").exists()
+    else:
+        assert builders == []
+        linked = output / "native-static-receipt.json"
+        assert linked.read_bytes() == b"fixture"
+
+
 def test_a_namelist_only_preparation_builds_the_static_the_benchmark_checks(
         tmp_path: Path, monkeypatch) -> None:
     """The breakage: a namelist-only preparation of a 1 km root was refused.
@@ -1841,7 +1892,9 @@ def test_a_namelist_only_preparation_builds_the_static_the_benchmark_checks(
     table = json.loads(builder[builder.index("--static-highres") + 1])
     case_date = builder[builder.index("--case-date") + 1]
     assert case_date == "2026-07-18"
-    built = production.parse_static_table(
+    # The carrier itself, as the identity a seal records (A169: the
+    # [static] table alone dropped d01's smoothing and the urban legend).
+    built = production.parse_sealed_static_highres(
         table, source="--static-highres", base_dir=tmp_path)
     assert production.default_row_of(built) is not None
 

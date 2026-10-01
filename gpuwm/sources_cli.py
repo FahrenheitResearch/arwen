@@ -45,6 +45,7 @@ _COLUMNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("runnable", ("maturity", "runnable")),
     ("intent", ("run_plan", "intent_chain")),
     ("fetch", ("fetch", "kind")),
+    ("posting", ("fetch", "posting", "shape")),
 )
 
 

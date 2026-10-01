@@ -1393,6 +1393,125 @@ def author_input_manifest(
     # be replayed under a decoder that never ran -- evidence naming the
     # wrong binary is worse than no evidence, so the two routes seal
     # different rows and `decode_composed_source` refuses a mismatch.
+    decoders = _manifest_decoders(
+        mapping, composition, contributing_mappings,
+        grib1_bridge=grib1_bridge, grib2_inventory=grib2_inventory,
+        grib2_dump=grib2_dump)
+    # A cross-source composition may have no terrain supplement (terrain
+    # bound to a contributing source) and adds one data/provenance role per
+    # field_sources binding; the manifest's role inventory is exactly the
+    # union the composition declares, either way.
+    _require_role_inventory(composition, supplements, provenance)
+    return _author_manifest_payload(
+        output_path, mapping_path=mapping_path,
+        composition_path=composition_path, mapping=mapping,
+        mapping_snapshot=mapping_snapshot,
+        composition_snapshot=composition_snapshot, primary=primary,
+        supplements=supplements, provenance=provenance, decoders=decoders,
+        member=member, member_identity=member_identity,
+        replace_different=replace_different)
+
+
+def planned_input_manifest(
+    output_path: str | Path,
+    *,
+    mapping_path: str | Path,
+    composition_path: str | Path,
+    primary_files: Sequence[str | Path],
+    supplement_files: Mapping[str, str | Path | Sequence[str | Path]],
+    provenance_files: Mapping[str, str | Path],
+    planned: Sequence[str | Path],
+    grib1_bridge: str | Path | None = None,
+    grib2_inventory: str | Path | None = None,
+    grib2_dump: str | Path | None = None,
+    contributing_mappings: Mapping[str, str | Path] | None = None,
+) -> dict[str, object]:
+    """The manifest :func:`author_input_manifest` writes once the planned files exist.
+
+    An as-posted preparation's head is written from its first leads, so the
+    later leads' objects are not there yet.  This is the same document with
+    the byte count and digest of every file in ``planned`` (the lead
+    objects the fetch has yet to post) left ``None``; every other row is
+    what the author would write now.  The seal authors the real manifest
+    with :func:`author_input_manifest`, and the head's input plan holds
+    it to this one row for row.
+    """
+
+    output_path = Path(output_path).resolve()
+    mapping_path = Path(mapping_path).resolve()
+    composition_path = Path(composition_path).resolve()
+    (
+        mapping_snapshot,
+        composition_snapshot,
+        mapping,
+        composition,
+    ) = _load_contract_snapshots(mapping_path, composition_path)
+    primary = tuple(Path(path).resolve() for path in primary_files)
+    if not primary or len(set(primary)) != len(primary):
+        raise ValueError("primary file inventory must be non-empty and unique")
+    supplements: dict[str, tuple[Path, ...]] = {}
+    for role, raw in supplement_files.items():
+        values = (raw,) if isinstance(raw, (str, Path)) else tuple(raw)
+        supplements[str(role)] = tuple(Path(path).resolve() for path in values)
+    provenance = {
+        str(role): Path(path).resolve() for role, path in provenance_files.items()
+    }
+    decoders = _manifest_decoders(
+        mapping, composition, contributing_mappings,
+        grib1_bridge=grib1_bridge, grib2_inventory=grib2_inventory,
+        grib2_dump=grib2_dump)
+    _require_role_inventory(composition, supplements, provenance)
+    later = {Path(path).resolve() for path in planned}
+    fingerprints: dict[Path, tuple] = {
+        mapping_path: (mapping_snapshot.sha256, mapping_snapshot.size, 0),
+        composition_path: (composition_snapshot.sha256,
+                           composition_snapshot.size, 0),
+    }
+    for role, path in decoders.items():
+        snapshot = _verified_decoder_snapshot(path, role)
+        fingerprints[path] = (snapshot.sha256, snapshot.size, 0)
+    for path in (*primary, *(item for paths in supplements.values()
+                             for item in paths), *provenance.values()):
+        if path in later:
+            fingerprints[path] = (None, None, 0)
+        elif path not in fingerprints:
+            snapshot = _snapshot_authority(path)
+            fingerprints[path] = (snapshot.sha256, snapshot.size, 0)
+    parent = output_path.parent
+    return {
+        "schema": INPUT_MANIFEST_SCHEMA,
+        "mapping_sha256": fingerprints[mapping_path][0],
+        "composition_sha256": fingerprints[composition_path][0],
+        "primary_files": [
+            _path_row(path, parent, fingerprints[path]) for path in primary
+        ],
+        "supplements": {
+            role: _inventory_row(paths, parent, fingerprints)
+            for role, paths in supplements.items()
+        },
+        "provenance": {
+            role: _path_row(path, parent, fingerprints[path])
+            for role, path in provenance.items()
+        },
+        "decoders": {
+            role: _path_row(path, parent, fingerprints[path])
+            for role, path in decoders.items()
+        },
+    }
+
+
+def manifest_row_path(path: str | Path, manifest_path: str | Path) -> str:
+    """How a composition-inputs manifest at ``manifest_path`` spells ``path``."""
+
+    return _path_row(Path(path).resolve(),
+                     Path(manifest_path).resolve().parent, ("", 0, 0))["path"]
+
+
+def _manifest_decoders(mapping, composition, contributing_mappings, *,
+                       grib1_bridge, grib2_inventory, grib2_dump
+                       ) -> dict[str, Path]:
+    """The decoder rows a composition-inputs manifest seals."""
+
     engine_binary = None
     if _mapped_engine_choice(
         grib1_bridge=grib1_bridge,
@@ -1443,7 +1562,7 @@ def author_input_manifest(
             ),
         )
         formats.add(str(donor_mapping["format"]))
-    decoders = _decoder_inventory(
+    return _decoder_inventory(
         # The historical single-format call shape survives; the union
         # tuple appears only when a contributing source really spans
         # another format.
@@ -1454,10 +1573,9 @@ def author_input_manifest(
         grib2_dump=grib2_dump,
         engine=engine_binary,
     )
-    # A cross-source composition may have no terrain supplement (terrain
-    # bound to a contributing source) and adds one data/provenance role per
-    # field_sources binding; the manifest's role inventory is exactly the
-    # union the composition declares, either way.
+
+
+def _require_role_inventory(composition, supplements, provenance) -> None:
     terrain = composition["supplements"].get("terrain_height")
     expected_supplements: set[str] = set()
     expected_provenance: set[str] = set()
@@ -1475,6 +1593,12 @@ def author_input_manifest(
         raise ValueError(
             "provenance role inventory differs from the composition contract"
         )
+
+
+def _author_manifest_payload(output_path: Path, *, mapping_path, composition_path,
+                             mapping, mapping_snapshot, composition_snapshot,
+                             primary, supplements, provenance, decoders,
+                             member, member_identity, replace_different):
     authorities = (
         mapping_path,
         composition_path,
@@ -1638,6 +1762,7 @@ def author_input_manifest(
 
 
 __all__ = [
+    "manifest_row_path", "planned_input_manifest",
     "DESCRIPTOR_SCHEMA",
     "MANIFEST_AUTHORING_SCHEMA",
     "MAPPING_AUTHORING_SCHEMA",

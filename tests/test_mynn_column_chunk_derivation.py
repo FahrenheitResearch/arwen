@@ -1,4 +1,14 @@
-"""The MYNN column width is the swept optimum, and the card's answer is kept.
+"""The MYNN column width is a measured policy, and the card's answer is kept.
+
+SINCE 2026-09-30 the kernels are level-major (level k of column c at
+k * ncol + c), and that reversed everything below: on a captured real
+288x288x59 call on an RTX 5090, 8,192 columns took 36.59 ms and one chunk
+of 82,944 took 13.65 ms, faster at every width between.  So the width a run
+walks is the widest the card's memory admits (1/16 of the card, 1/2 of what
+is free), capped at 98,304 columns and never below the 8,192 that shipped
+before; off a card the cap is priced.  The history that follows is the old
+layout's, and its sweeps are kept as history: the old optimum is now the
+minimum.
 
 ``mynn_dmp_mf_columns`` is 52% of all GPU time in a quiet root step of the
 299x299x59 + 282x129 pair, and it launches 128 blocks of 128 threads -- on a
@@ -71,6 +81,25 @@ CARD_TIGHT = dict(sm_count=68, max_threads_per_sm=1536,
                   free_bytes=3 * 1024 ** 3, total_bytes=6 * 1024 ** 3,
                   device_name="tight card")
 
+#: A 96 GB workstation card, quiet.
+CARD_96GIB = dict(sm_count=188, max_threads_per_sm=1536,
+                  registers_per_sm=65536, warp_size=32,
+                  free_bytes=94 * 1024 ** 3, total_bytes=95 * 1024 ** 3,
+                  device_name="96 GB card")
+
+#: A 24 GB card, quiet.
+CARD_24GIB = dict(sm_count=128, max_threads_per_sm=1536,
+                  registers_per_sm=65536, warp_size=32,
+                  free_bytes=23 * 1024 ** 3, total_bytes=24 * 1024 ** 3,
+                  device_name="24 GB card")
+
+#: The 2026-09-30 sweep on the level-major kernels, as the cap's own
+#: documentation states it: columns to milliseconds per MYNN call on a
+#: captured real 288x288x59 call, RTX 5090, sole tenant, persistent
+#: workspace, equal chunks.  Every arm wrote one digest.
+SWEEP_2026_09_30 = {8192: 36.59, 16384: 23.12, 24576: 19.26,
+                    32768: 16.38, 41472: 14.45, 82944: 13.65}
+
 #: The sweeps of record, as the shipped constant's own docstring states
 #: them: columns to median quiet root cycle in seconds, two passes per
 #: sweep, an RTX 5090, nz = 59, 2026-09-15.  The tests below read the
@@ -122,13 +151,164 @@ def _no_ambient_state(monkeypatch):
     monkeypatch.delenv(scratch.MYNN_PBL_COLUMN_CHUNK_ENV, raising=False)
     monkeypatch.setattr(scratch, "_RESOLVED", {})
     monkeypatch.setattr(scratch, "_PINNED", None)
+    monkeypatch.setattr(scratch, "_TILE_WALKED", {})
     monkeypatch.setattr(scratch, "probe_mynn_card", lambda device=None: None)
     monkeypatch.setattr(scratch, "MYNN_PBL_COLUMN_CHUNK",
                         scratch.MYNN_PBL_COLUMN_CHUNK_DEFAULT)
 
 
-def test_the_shipped_width_is_the_fastest_arm_of_the_sweep():
-    """Fixed means default: the default is the number that was measured.
+def test_the_run_width_is_the_widest_the_card_s_memory_admits_up_to_the_cap():
+    """Level-major kernels are faster at every wider chunk, so a run takes
+    what the card can spare: 1/16 of it, half of what is free, quantised,
+    capped at 98,304 columns, never below 8,192, and the cap off a card.
+
+    A width derived from memory never changes a bit (one thread, one whole
+    column, no neighbour), so this is a speed and memory policy only.
+    """
+    per = scratch.mynn_pbl_column_bytes(59)
+    assert per == 62952
+    expected = {
+        "96 GB card": (98304, "measured"),
+        "NVIDIA GeForce RTX 5090": (32768, "measured-vram-bounded"),
+        "24 GB card": (24576, "measured-vram-bounded"),
+        "10 GiB card": (8192, "measured-minimum"),
+        "tight card": (8192, "measured-minimum"),
+    }
+    for card in (CARD_96GIB, CARD_5090, CARD_24GIB, CARD_10GIB, CARD_TIGHT):
+        choice = scratch.choose_mynn_column_chunk(59, card=card, environ={})
+        assert (choice.chunk, choice.source) == expected[card["device_name"]]
+        assert choice.chunk <= scratch.MYNN_PBL_COLUMN_CHUNK_DEFAULT
+        assert choice.chunk >= scratch.MYNN_PBL_COLUMN_CHUNK_MINIMUM
+        assert choice.chunk % scratch.MYNN_PBL_CHUNK_VRAM_QUANTUM == 0
+        if choice.source == "measured-vram-bounded":
+            assert (choice.workspace_bytes
+                    <= card["total_bytes"]
+                    * scratch.MYNN_PBL_RUN_WIDTH_TOTAL_VRAM_FRACTION)
+    none = scratch.choose_mynn_column_chunk(59, card=None, environ={})
+    assert (none.chunk, none.source) == (98304, "measured-no-card")
+    assert scratch.MYNN_PBL_COLUMN_CHUNK == 98304, "the module-level knob"
+    # The sweep that set the policy: wider is faster at every arm, and one
+    # chunk per domain is the fastest.
+    widths = sorted(SWEEP_2026_09_30)
+    times = [SWEEP_2026_09_30[width] for width in widths]
+    assert times == sorted(times, reverse=True)
+    assert min(SWEEP_2026_09_30, key=SWEEP_2026_09_30.get) == 82944
+    documentation = _shipped_width_documentation()
+    for token in ("2026-09-30", "36.59", "13.65", "98,304", "level-major"):
+        assert token in documentation, token
+
+
+def test_a_streamed_tile_buffer_walks_and_is_priced_at_the_2_8_0_width():
+    """Every tile buffer holds its own MYNN workspace, so it keeps 8,192.
+
+    At the run's width, two buffers of a 286x286 window each held 4.96 GiB
+    of scratch off a card (the 98,304-column cap) and priced the 572x524x49
+    icon-eu MYNN forecast of tests/test_streamed_pricing_window.py at 22.80
+    GiB streamed against 20.14 GiB resident; a streamed plan priced above
+    its resident run sends the run to the wrong route.  So a buffer walks
+    :data:`MYNN_PBL_COLUMN_CHUNK_MINIMUM` on every card, and the registry
+    a buffer is priced from declares exactly that workspace.
+    """
+    from gpuwm.config import RunConfig
+    from gpuwm.core import preflight as pf
+
+    minimum = scratch.MYNN_PBL_COLUMN_CHUNK_MINIMUM
+    assert minimum == 8192
+    assert scratch.resolve_mynn_column_chunk(49) == 98304, "no card: the cap"
+    assert scratch.resolve_mynn_tile_column_chunk(49) == minimum
+    scratch._RESOLVED.clear()
+    for card, run_width in ((CARD_96GIB, 98304), (CARD_5090, 32768),
+                            (CARD_24GIB, 24576), (CARD_10GIB, 8192)):
+        scratch.probe_mynn_card = lambda device=None, card=card: card
+        scratch._RESOLVED.clear()
+        assert scratch.resolve_mynn_column_chunk(59) == run_width
+        assert scratch.resolve_mynn_tile_column_chunk(59) == minimum
+
+    cfg = RunConfig(nx=299, ny=299, nz=59, dx=2700.0, dy=2700.0,
+                    ztop=20000.0, dt=12.0, run_seconds=60.0, moist=True,
+                    mp_physics=28, sf_sfclay_physics=5,
+                    sf_surface_physics=3, bl_pbl_physics=5)
+    assert pf.mynn_pbl_column_chunk(cfg) == 8192, "the 10 GiB card's width"
+    scratch.probe_mynn_card = lambda device=None: CARD_5090
+    scratch._RESOLVED.clear()
+    assert pf.mynn_pbl_column_chunk(cfg) == 32768
+    assert pf.mynn_pbl_column_chunk(cfg, tile_buffer=True) == minimum
+    small = RunConfig(nx=50, ny=20, nz=59, dx=900.0, dy=900.0,
+                      ztop=20000.0, dt=3.0, run_seconds=60.0, moist=True,
+                      mp_physics=28, sf_sfclay_physics=5,
+                      sf_surface_physics=3, bl_pbl_physics=5)
+    assert pf.mynn_pbl_column_chunk(small, tile_buffer=True) == 1000
+    # The registry a buffer is priced from is the workspace it walks: the
+    # same slots, the chunk-shaped ones at the tile width.
+    run_slots = pf.mynn_pbl_scratch_slots(cfg)
+    tile_slots = pf.mynn_pbl_scratch_slots(cfg, tile_buffer=True)
+    assert set(tile_slots) == set(run_slots)
+    assert tile_slots == {
+        **scratch.mynn_pbl_scratch_shapes(minimum, 59),
+        **scratch.mynn_pbl_index_shapes(minimum, 59),
+        **scratch.mynn_pbl_flag_shapes(),
+        **scratch.mynn_pbl_tendency_field_shapes(59, 299, 299)}
+    assert (pf.scratch_slot_registry(cfg, tile_buffer=True)
+            == {**pf.scratch_slot_registry(cfg), **tile_slots})
+    # Pricing writes nothing into the receipt; the solver's walk does, and
+    # the run's own width stays what the card chose.
+    assert "tile_buffer_chunk" not in scratch.mynn_column_chunk_receipt()
+    scratch.resolve_mynn_tile_column_chunk(59, walking=True)
+    entry = scratch.mynn_column_chunk_receipt()
+    assert entry["tile_buffer_chunk"] == minimum
+    assert entry["chunk"] == 32768
+    # The marker the prepared factory sets on a buffer is classified in the
+    # restart manifest: unclassified, it refused every buffer's streaming
+    # inventory, so no streamed forecast could build its buffers.
+    import inspect
+
+    from gpuwm.core import streaming
+    from gpuwm.io.restart import classify_state_attr
+
+    assert "tile._tile_buffer = True" in inspect.getsource(
+        streaming.prepared_tile_state_factory)
+    assert classify_state_attr("_tile_buffer") == "infra"
+
+
+def test_a_pin_or_an_override_reaches_a_tile_buffer_verbatim(monkeypatch):
+    """A capacity measurement that sets the width walks what it asked for.
+
+    ``tilestream.shared_workspace.set_mynn_column_chunk`` pins a width to
+    measure a tile ceiling with, and the operator override replaces the
+    width verbatim; neither may be quietly replaced on a buffer.
+    """
+    scratch.probe_mynn_card = lambda device=None: CARD_5090
+    monkeypatch.setenv(scratch.MYNN_PBL_COLUMN_CHUNK_ENV, "24576")
+    assert scratch.resolve_mynn_tile_column_chunk(59) == 24576
+    monkeypatch.delenv(scratch.MYNN_PBL_COLUMN_CHUNK_ENV)
+    scratch._RESOLVED.clear()
+    scratch.pin_mynn_column_chunk(4096)
+    assert scratch.resolve_mynn_tile_column_chunk(59) == 4096
+    scratch.pin_mynn_column_chunk(40960)
+    assert scratch.resolve_mynn_tile_column_chunk(59) == 40960
+    scratch.pin_mynn_column_chunk(None)
+    assert scratch.resolve_mynn_tile_column_chunk(59) == 8192
+
+
+def test_equal_pieces_leave_no_short_last_call():
+    """82,944 columns at a 65,536 width walk as two calls of 41,472, not
+    65,536 and 17,408 (15.82 ms against 14.45 on the 2026-09-30 sweep)."""
+    assert scratch.mynn_column_pieces(82944, 65536) == 41472
+    assert scratch.mynn_column_pieces(82944, 98304) == 82944
+    assert scratch.mynn_column_pieces(82944, 32768) == 27648
+    assert scratch.mynn_column_pieces(1000, 8192) == 1000
+    assert scratch.mynn_column_pieces(8193, 8192) == 4097
+    for ncol in (1, 7, 8192, 36378, 82944, 360000):
+        for width in (1, 1000, 8192, 32768, 98304):
+            piece = scratch.mynn_column_pieces(ncol, width)
+            assert 1 <= piece <= min(ncol, width)
+            assert -(-ncol // piece) == -(-ncol // width)
+    with pytest.raises(ValueError):
+        scratch.mynn_column_pieces(0, 8192)
+
+
+def test_the_old_layout_s_width_was_the_fastest_arm_of_its_sweep():
+    """History: on the old layout, the default was the number measured.
 
     The sweeps of record are the twenty arms of 2026-09-15 on an RTX 5090,
     ``tools/mynn_chunk_sweep/summary.txt`` (restated in the documentation
@@ -149,13 +329,10 @@ def test_the_shipped_width_is_the_fastest_arm_of_the_sweep():
     """
     fastest = min(SWEEP_2026_09_15, key=SWEEP_2026_09_15.get)
     assert fastest == 8192
-    assert scratch.MYNN_PBL_COLUMN_CHUNK_DEFAULT == fastest
-    assert scratch.MYNN_PBL_COLUMN_CHUNK == fastest, "the module-level knob"
+    # The old optimum is the new minimum: a card with no room runs what it
+    # ran before and never less.
+    assert scratch.MYNN_PBL_COLUMN_CHUNK_MINIMUM == fastest
     assert fastest < scratch.MYNN_PBL_COLUMN_CHUNK_FLOOR == 16384
-    for card in (CARD_5090, CARD_10GIB, CARD_TIGHT, None):
-        choice = scratch.choose_mynn_column_chunk(59, card=card, environ={})
-        assert choice.chunk == fastest, card
-        assert choice.source == "pinned-measured", card
     # The citation travels with the constant, or the next reader has a bare
     # magic number and no way to argue with it -- and BOTH sweeps travel
     # with it, because the upward one on its own endorses 16,384 and a
@@ -177,7 +354,7 @@ def test_the_shipped_width_beats_every_other_arm_by_more_than_the_spread():
     """
     ranked = sorted(SWEEP_2026_09_15.items(), key=lambda item: item[1])
     (best, best_s), (_second, second_s) = ranked[0], ranked[1]
-    assert best == scratch.MYNN_PBL_COLUMN_CHUNK_DEFAULT
+    assert best == scratch.MYNN_PBL_COLUMN_CHUNK_MINIMUM
     assert second_s - best_s > 9 * WORST_PASS_SPREAD
 
 
@@ -192,7 +369,7 @@ def test_the_optimum_is_interior_and_not_the_end_of_a_ladder():
     ceiling term -- card or VRAM -- can be the binding term on this card.
     """
     widths = sorted(SWEEP_2026_09_15)
-    best = scratch.MYNN_PBL_COLUMN_CHUNK_DEFAULT
+    best = scratch.MYNN_PBL_COLUMN_CHUNK_MINIMUM
     assert widths[0] < best < widths[-1], "the winner is not an endpoint"
     seconds = [SWEEP_2026_09_15[width] for width in widths]
     turn = widths.index(best)
@@ -236,9 +413,9 @@ def test_this_card_would_be_filled_in_one_wave_by_the_derived_width():
     # taking this road, stated rather than discovered at allocation time.
     assert choice.workspace_bytes == scratch.mynn_pbl_scratch_bytes(65280, 59)
     assert 3900 < choice.workspace_bytes / 2 ** 20 < 3930
-    # And it is not what runs.
+    # And it is not what runs: the run width takes 1/16 of the card.
     assert scratch.choose_mynn_column_chunk(
-        59, card=CARD_5090, environ={}).chunk == 8192
+        59, card=CARD_5090, environ={}).chunk == 32768
 
 
 def test_a_smaller_card_derives_a_smaller_width_from_its_own_terms():
@@ -269,27 +446,27 @@ def test_a_card_with_no_room_derives_the_width_2_7_4_shipped():
     assert choice.vram_ceiling < scratch.MYNN_PBL_COLUMN_CHUNK_FLOOR
     assert choice.chunk == scratch.MYNN_PBL_COLUMN_CHUNK_FLOOR == 16384
     assert choice.source == "floor"
-    assert scratch.MYNN_PBL_COLUMN_CHUNK_DEFAULT < choice.chunk
+    assert scratch.MYNN_PBL_COLUMN_CHUNK_MINIMUM < choice.chunk
     # The floor binds the derivation only.  What this card RUNS is the
-    # shipped width, which its memory holds with room to spare.
-    assert scratch.choose_mynn_column_chunk(
-        59, card=CARD_TIGHT, environ={}).chunk == 8192
+    # minimum, the width that shipped before, which its memory holds.
+    run = scratch.choose_mynn_column_chunk(59, card=CARD_TIGHT, environ={})
+    assert (run.chunk, run.source) == (8192, "measured-minimum")
 
 
 def test_no_card_keeps_the_floor_and_touches_no_runtime():
     """``gpuwm domain`` on a CPU-only box prices what the card will run.
 
     ``probe_mynn_card`` returns None off a GPU, and the derivation must not
-    try to make one up.  Since the default is pinned, the CPU-only estimate
-    and the width a 5090 runs are the same 8,192 columns, which is what
-    makes a preflight on a laptop worth reading.
+    try to make one up.  Off a card the run width is the cap, the widest
+    any card runs, so a preflight on a laptop never prices less MYNN
+    workspace than a card will take.
     """
     choice = scratch.derive_mynn_column_chunk(59, card=None, environ={})
     assert choice.chunk == scratch.MYNN_PBL_COLUMN_CHUNK_FLOOR
     assert choice.source == "floor-no-card"
     assert choice.card_ceiling is None and choice.free_bytes is None
-    assert scratch.choose_mynn_column_chunk(
-        59, card=None, environ={}).chunk == 8192
+    run = scratch.choose_mynn_column_chunk(59, card=None, environ={})
+    assert (run.chunk, run.source) == (98304, "measured-no-card")
 
 
 def test_the_operator_override_is_honoured_verbatim_and_named():
@@ -401,21 +578,21 @@ def test_the_registry_and_the_solver_are_handed_one_width():
     scratch.probe_mynn_card = lambda device=None: next(cards)
     first = scratch.resolve_mynn_column_chunk(59)
     second = scratch.resolve_mynn_column_chunk(59)
-    assert first == second == 8192
+    assert first == second == 32768
 
     cfg = RunConfig(nx=299, ny=299, nz=59, dx=2700.0, dy=2700.0,
                     ztop=20000.0, dt=12.0, run_seconds=60.0, moist=True,
                     mp_physics=28, sf_sfclay_physics=5,
                     sf_surface_physics=3, bl_pbl_physics=5)
-    assert pf.mynn_pbl_column_chunk(cfg) == 8192 < 299 * 299
+    assert pf.mynn_pbl_column_chunk(cfg) == 32768 < 299 * 299
     nest = RunConfig(nx=282, ny=129, nz=59, dx=900.0, dy=900.0,
                      ztop=20000.0, dt=3.0, run_seconds=60.0, moist=True,
                      mp_physics=28, sf_sfclay_physics=5,
                      sf_surface_physics=3, bl_pbl_physics=5)
-    # The nest has 36,378 columns, so it walks five chunks of the shared
-    # width and declares the same workspace the parent did -- which is the
-    # bounded-workspace property this module exists for.
-    assert pf.mynn_pbl_column_chunk(nest) == 8192 < 282 * 129
+    # The nest has 36,378 columns, so it walks two equal chunks of the
+    # shared width and declares the same workspace the parent did -- which
+    # is the bounded-workspace property this module exists for.
+    assert pf.mynn_pbl_column_chunk(nest) == 32768 < 282 * 129
     # A domain narrower than the width asks only for its own columns.
     small = RunConfig(nx=50, ny=20, nz=59, dx=900.0, dy=900.0,
                       ztop=20000.0, dt=3.0, run_seconds=60.0, moist=True,
@@ -436,7 +613,7 @@ def test_the_width_in_force_is_published_where_the_knob_reads_it(monkeypatch):
     import sys
 
     scratch.probe_mynn_card = lambda device=None: CARD_5090
-    assert scratch.resolve_mynn_column_chunk(59) == 8192
+    assert scratch.resolve_mynn_column_chunk(59) == 32768
     scratch._RESOLVED.clear()
     monkeypatch.setenv(scratch.MYNN_PBL_COLUMN_CHUNK_ENV, "24576")
     assert scratch.resolve_mynn_column_chunk(59) == 24576
@@ -455,12 +632,12 @@ def test_a_pin_outranks_the_default_and_can_be_released():
     the measurement.
     """
     scratch.probe_mynn_card = lambda device=None: CARD_5090
-    assert scratch.resolve_mynn_column_chunk(59) == 8192
+    assert scratch.resolve_mynn_column_chunk(59) == 32768
     scratch.pin_mynn_column_chunk(4096)
     assert scratch.resolve_mynn_column_chunk(59) == 4096
     assert scratch.mynn_column_chunk_receipt()["source"] == "pinned"
     scratch.pin_mynn_column_chunk(None)
-    assert scratch.resolve_mynn_column_chunk(59) == 8192
+    assert scratch.resolve_mynn_column_chunk(59) == 32768
     with pytest.raises(ValueError):
         scratch.pin_mynn_column_chunk(0)
 
@@ -483,8 +660,8 @@ def test_the_receipt_states_the_width_and_what_the_card_would_have_asked():
                   "threads_per_block", "column_bytes", "workspace_bytes",
                   "override_env", "would_have_derived"):
         assert field in entry, field
-    assert entry["chunk"] == 8192
-    assert entry["source"] == "pinned-measured"
+    assert entry["chunk"] == 32768
+    assert entry["source"] == "measured-vram-bounded"
     # The floor rides the receipt as the DERIVATION's bound, which is the
     # only reason the width above it is allowed to be narrower than it.
     assert entry["floor"] == scratch.MYNN_PBL_COLUMN_CHUNK_FLOOR == 16384
@@ -503,11 +680,11 @@ def test_the_receipt_states_the_width_and_what_the_card_would_have_asked():
     assert derived["card_ceiling"] == 65280
     assert derived["device_name"] == "NVIDIA GeForce RTX 5090"
     assert "card_ceiling" not in entry and "sm_count" not in entry
-    # 3.3 GiB is what the derivation would have cost over the shipped width,
-    # and it is the figure lever 1 -- both legs resident on one card -- has
-    # to be priced against.
+    # 1.9 GiB is what the derivation would have cost over the width that
+    # runs, the figure lever 1 -- both legs resident on one card -- has to
+    # be priced against.
     assert (derived["workspace_bytes"]
-            - entry["workspace_bytes"]) > 3.3 * 1024 ** 3
+            - entry["workspace_bytes"]) > 1.9 * 1024 ** 3
 
 
 def test_the_per_column_cost_is_the_scheme_s_own_accounting():

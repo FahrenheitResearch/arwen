@@ -1,0 +1,37 @@
+[
+  {
+    "function": "exp",
+    "samples": 268435456,
+    "mismatches": 0,
+    "seconds": 1.5190483999904245,
+    "examples": []
+  },
+  {
+    "function": "log",
+    "samples": 268435456,
+    "mismatches": 0,
+    "seconds": 1.4340366059914231,
+    "examples": []
+  },
+  {
+    "function": "pow",
+    "samples": 268435456,
+    "mismatches": 0,
+    "seconds": 1.7763178260065615,
+    "examples": []
+  },
+  {
+    "function": "cos",
+    "samples": 268435456,
+    "mismatches": 0,
+    "seconds": 2.408260348951444,
+    "examples": []
+  },
+  {
+    "function": "acos",
+    "samples": 268435456,
+    "mismatches": 0,
+    "seconds": 1.7921277228742838,
+    "examples": []
+  }
+]

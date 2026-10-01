@@ -120,12 +120,13 @@
 
 __device__ __forceinline__ bool nt_geometry_ok(
         int expect_tpb, int expect_nblocks, int stage_id,
-        int *__restrict__ geom_report) {
+        int *__restrict__ geom_report, const int *llo3_mask) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
         /* what this launch ACTUALLY had, not what it was told */
         geom_report[stage_id] = (int)((gridDim.x << 16) | (blockDim.x & 0xffff));
     }
-    return (int)blockDim.x == expect_tpb && (int)gridDim.x == expect_nblocks;
+    return (int)blockDim.x == expect_tpb && (int)gridDim.x == expect_nblocks
+        && llo3_mask[0] != 2;
 }
 
 #ifndef NT_DXREF
@@ -234,13 +235,14 @@ extern "C" __global__ void ntiedtke_prep(
         float *__restrict__ scale_fac2,
         float *__restrict__ delt_out,
         int ncol, int nz, float dt, int stepcu, int itimestep, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_PREP,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_PREP, order_report, ticket);
 
 #define NT_IN(a, k)  (a)[(size_t)(k) * (size_t)ncol + (size_t)i]
@@ -452,13 +454,14 @@ extern "C" __global__ void ntiedtke_convert(
         float *__restrict__ pqte,
         int ncol, int nz,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_CONVERT,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_CONVERT, order_report, ticket);
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
 #define A(a, k) (a)[(size_t)(k) * (size_t)ncol + (size_t)i]
@@ -532,13 +535,14 @@ extern "C" __global__ void ntiedtke_cuinin(
         int *__restrict__ klab, int *__restrict__ klwmin,
         int ncol, int nz,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_CUININ,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_CUININ, order_report, ticket);
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
 #define A(a, k) (a)[(size_t)(k) * (size_t)ncol + (size_t)i]
@@ -873,13 +877,14 @@ extern "C" __global__ void ntiedtke_cutypen(
         int *__restrict__ kdpl_o, float *__restrict__ wbase_o,
         int ncol, int nz,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_CUTYPEN,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_CUTYPEN, order_report, ticket);
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
     const int klev = nz, klevm1 = nz - 1;
@@ -986,13 +991,21 @@ extern "C" __global__ void ntiedtke_cutypen(
     }
 
     for (int levels = klevm1 - 1; levels >= klev / 2 + 1; --levels) {
-        for (int jk = 1; jk <= klev; ++jk) {
-            NTC(plu, jk) = 0.0f; NTC(ptu, jk) = 0.0f; NTC(pqu, jk) = 0.0f;
-            NTC(dh, jk) = 0.0f;  NTC(dhen, jk) = 0.0f; NTC(kup, jk) = 0.0f;
-            NTC(vptu, jk) = 0.0f; NTC(vten, jk) = 0.0f;
-            NTC(abuoy, jk) = 0.0f; NTC(zbuo, jk) = 0.0f;
-            NTC(klab, jk) = 0;
+        // Inactive trials cannot update outputs. Keep the final scratch reset.
+        if ((deepflag || levels < itoppacel) && levels > klev / 2 + 1)
+            continue;
+        // Only the final trial needs to leave every unused scratch row clear.
+        if (levels == klev / 2 + 1) {
+            for (int jk = 1; jk <= klev; ++jk) {
+                NTC(plu, jk) = 0.0f; NTC(ptu, jk) = 0.0f; NTC(pqu, jk) = 0.0f;
+                NTC(dh, jk) = 0.0f;  NTC(dhen, jk) = 0.0f; NTC(kup, jk) = 0.0f;
+                NTC(vptu, jk) = 0.0f; NTC(vten, jk) = 0.0f;
+                NTC(abuoy, jk) = 0.0f; NTC(zbuo, jk) = 0.0f;
+                NTC(klab, jk) = 0;
+            }
         }
+        // The seed liquid and each visited label are read before replacement.
+        NTC(plu, levels + 1) = 0.0f;
         kcbot = levels;  kctop = levels;
         lldcum = false;
         bool resetflag = false;
@@ -1042,6 +1055,7 @@ extern "C" __global__ void ntiedtke_cutypen(
                     __fadd_rn(NTC(vptu, jk + 1), -NTC(vten, jk + 1)),
                     NTC(vten, jk + 1));
             }
+            NTC(klab, jk) = 0;
             nt_ascent_step(jk, levels, klev, ncol, i, true,
                            ptu, pqu, plu, dh, dhen, kup, vptu, vten, zbuo,
                            abuoy, klab, ptenh, pqenh, pgeo, pgeoh, paph,
@@ -1220,13 +1234,14 @@ extern "C" __global__ void ntiedtke_midlevel(
         float *__restrict__ dmfde,
         int ncol, int nz,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_MIDLEVEL,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_MIDLEVEL, order_report, ticket);
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
 
@@ -1299,13 +1314,14 @@ extern "C" __global__ void ntiedtke_mfub(
         int tiedtke_closure,
         int ncol, int nz, float dt,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_MFUB,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_MFUB, order_report, ticket);
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
     const int klev = nz;
@@ -1483,13 +1499,14 @@ extern "C" __global__ void ntiedtke_closure(
         int tiedtke_closure,
         int ncol, int nz, float dt,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_CLOSURE,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_CLOSURE, order_report, ticket);
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
     const int klev = nz;
@@ -1723,14 +1740,17 @@ extern "C" __global__ void ntiedtke_cuascn(
         int llo3,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
         /* The geometry tail NtStages.launch appends, always last. */
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_CUASCN,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_CUASCN, order_report, ticket);
+    // The deferred mask is uniform across this chunk.
+    if (llo3 < 0) llo3 = llo3_mask[0] & 1;
 
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
 #define NTC(a, k) (a)[(size_t)(k) * (size_t)ncol + (size_t)i]
@@ -2173,13 +2193,14 @@ extern "C" __global__ void ntiedtke_cudtdqn(
         float *__restrict__ pcte,
         int ncol, int klev, int ktopm2,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_CUDTDQN,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_CUDTDQN, order_report, ticket);
     if (!ldcum[i]) return;
 
@@ -2279,13 +2300,14 @@ extern "C" __global__ void ntiedtke_cududvn(
         float *__restrict__ zmfdv,
         int ncol, int klev, int ktopm2,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_CUDUDVN,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_CUDUDVN, order_report, ticket);
     if (!ldcum[i]) return;
 
@@ -2435,13 +2457,14 @@ extern "C" __global__ void ntiedtke_cudlfsn(
         int *__restrict__ lddraf,
         int ncol, int klev,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_CUDLFSN,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_CUDLFSN, order_report, ticket);
 
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
@@ -2549,13 +2572,14 @@ extern "C" __global__ void ntiedtke_cuddrafn(
         float *__restrict__ prfl,            /* UPDATED */
         int ncol, int klev,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_CUDDRAFN,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_CUDDRAFN, order_report, ticket);
 
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
@@ -2737,13 +2761,14 @@ extern "C" __global__ void ntiedtke_cuflxn(
         float *__restrict__ prain,
         int ncol, int klev, float ztmst,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_CUFLXN,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_CUFLXN, order_report, ticket);
 
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
@@ -3033,13 +3058,14 @@ extern "C" __global__ void ntiedtke_cloud_depth(
         float *__restrict__ pdmfdp,
         float *__restrict__ pdpmel,
         int ncol, int klev,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_DEPTH,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_DEPTH, order_report, ticket);
 
 #define NTC(a, k) (a)[(size_t)(k) * (size_t)ncol + (size_t)i]
@@ -3124,13 +3150,14 @@ extern "C" __global__ void ntiedtke_adjust(
         float *__restrict__ pssfc,
         int ncol, int klev, float ztmst,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_ADJUST,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_ADJUST, order_report, ticket);
 
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
@@ -3261,13 +3288,14 @@ extern "C" __global__ void ntiedtke_momentum_rescale(
         float *__restrict__ zmfdus,
         int ncol, int klev, float ztmst,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_MRESCALE,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_MRESCALE, order_report, ticket);
 
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
@@ -3345,13 +3373,14 @@ extern "C" __global__ void ntiedtke_updraft_scale(
         float *__restrict__ pmfdde_rate,
         int ncol, int klev, float ztmst,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_USCALE,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_USCALE, order_report, ticket);
 
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
@@ -3463,13 +3492,14 @@ extern "C" __global__ void ntiedtke_momentum_profile(
         float *__restrict__ pud,
         float *__restrict__ pvd,
         int ncol, int klev,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_MPROFILE,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_MPROFILE, order_report, ticket);
     if (!ldcum[i]) return;
 
@@ -3586,13 +3616,14 @@ extern "C" __global__ void ntiedtke_ke_dissipation(
         float *__restrict__ zuv2,            /* (nz+2, ncol) scratch */
         int ncol, int klev,
         float cp, float rd, float rv, float xlv, float xlf, float grav,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_KEDIS,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_KEDIS, order_report, ticket);
 
     const NtConst c = nt_init(cp, rd, rv, xlv, xlf, grav);
@@ -3690,13 +3721,14 @@ extern "C" __global__ void ntiedtke_post_run(
         float *__restrict__ raincv,
         float *__restrict__ pratec,
         int ncol, int klev, int stepcu, float dt,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_POSTRUN,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_POSTRUN, order_report, ticket);
 
 #define NTC(a, k) (a)[(size_t)(k) * (size_t)ncol + (size_t)i]
@@ -3785,13 +3817,14 @@ extern "C" __global__ void ntiedtke_post_conversion(
         float *__restrict__ pu, float *__restrict__ pv,
         float *__restrict__ zprecc,        /* per column */
         int ncol, int klev, float delt,
+        const int *__restrict__ llo3_mask,
         int expect_tpb, int expect_nblocks,
         int *__restrict__ geom_report,
         int *__restrict__ order_report, int *__restrict__ ticket) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= ncol) return;
     if (!nt_geometry_ok(expect_tpb, expect_nblocks, NT_STAGE_POSTCONV,
-                        geom_report)) return;
+                        geom_report, llo3_mask)) return;
     nt_stage_ticket(NT_STAGE_POSTCONV, order_report, ticket);
 
 #define NTC(a, k) (a)[(size_t)(k) * (size_t)ncol + (size_t)i]

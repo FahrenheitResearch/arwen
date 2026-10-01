@@ -49,6 +49,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from gpuwm import capabilities
@@ -490,7 +491,9 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
                      render_section: str | None = None,
                      run_stamp: bool = run_stamp_module.DEFAULT_RUN_STAMP,
                      claim: bool = False,
-                     transport: str | None = None) -> dict:
+                     transport: str | None = None,
+                     as_posted: bool | None = None,
+                     late_after_minutes: float | None = None) -> dict:
     """Everything the five stages need, or a refusal saying why not.
 
     ``transport`` is ``gpuwm go --transport``: it wins over the config's
@@ -815,6 +818,16 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         "transport": pinned,
         "transport_from": pinned_from,
         "transport_table": fetch_table.get("transport"),
+        # How the fetch stage waits for its source (DESIGN A136 3.2): the
+        # flag over the table, None for the default (as posted, the
+        # source row's budget).
+        "as_posted": (as_posted if as_posted is not None
+                      else fetch_table.get("as_posted")),
+        "late_after_minutes": (
+            None if (as_posted if as_posted is not None
+                     else fetch_table.get("as_posted")) is False
+            else late_after_minutes if late_after_minutes is not None
+            else fetch_table.get("late_after_minutes")),
         "area": str(fetch_table["area"]),
         "data": data,
         "profile": profile,
@@ -1007,6 +1020,11 @@ def fetch_command(plan: dict) -> list[str]:
         command.append("--all-levels")
     if plan.get("transport") is not None:
         command.extend(("--transport", str(plan["transport"])))
+    if plan.get("as_posted") is not None:
+        command.append("--as-posted" if plan["as_posted"] else "--whole-cycle")
+    if plan.get("late_after_minutes") is not None:
+        command.extend(("--late-after-minutes",
+                        f"{float(plan['late_after_minutes']):g}"))
     return command
 
 
@@ -1035,9 +1053,10 @@ def manifest_command(plan: dict, bridge: Path) -> list[str]:
             "--manifest-out", str(front_door_manifest(plan))]
 
 
-def prepare_command(plan: dict, bridge: Path, *, manifest: Path,
-                    manifest_sha256: str, cycle_stamp: str,
-                    geog_root: Path) -> list[str]:
+def prepare_command(plan: dict, bridge: Path, *, manifest: Path | None,
+                    manifest_sha256: str | None, cycle_stamp: str,
+                    geog_root: Path,
+                    as_posted: Path | None = None) -> list[str]:
     """The rw-wps invocation, composed from the artifacts on disk.
 
     Every value here is either from the plan or read back from a file a
@@ -1046,6 +1065,11 @@ def prepare_command(plan: dict, bridge: Path, *, manifest: Path,
     prints; composing it from the same inputs rather than parsing that
     printed line is what keeps it working when the printed line moves
     behind ``--explain``.
+
+    ``as_posted`` is the posting folder of a fetch running beside this
+    preparation (DESIGN A136 2.5): the preparation then waits for each
+    lead's marker there and its seal writes the manifest, so it is given
+    no manifest to bind.
     """
 
     preprocessing = []
@@ -1070,8 +1094,9 @@ def prepare_command(plan: dict, bridge: Path, *, manifest: Path,
             "--wps-namelist", str(plan["authority"] / "namelist.wps"),
             "--experiment-config",
             str(plan["authority"] / "experiment.toml"),
-            "--source-manifest", str(manifest),
-            "--source-manifest-sha256", manifest_sha256,
+            *(["--as-posted", str(as_posted)] if as_posted is not None
+              else ["--source-manifest", str(manifest),
+                    "--source-manifest-sha256", manifest_sha256]),
             # Forwarded only when the config is bound to one: the GFS
             # front door no longer substitutes WSM6 for an absent
             # profile (the defect that once made this flag mandatory in
@@ -1193,7 +1218,9 @@ def forecast_command(plan: dict, digests: dict, *,
                ["--proof-sha256", digests["proof"],
                 "--source-manifest-sha256", digests["source_manifest"],
                 "--prepared-content-sha256", digests["prepared_content"]])
-    if "prepared_head" in digests:
+    # An as-posted head names no manifest: its seal writes one, held to
+    # the input plan the head digest binds (head_digests).
+    if "prepared_head" in digests and digests.get("source_manifest"):
         binding[2:2] = ["--source-manifest-sha256",
                         digests["source_manifest"]]
     return [sys.executable, "-m", str(plan["runner"]),
@@ -1214,7 +1241,9 @@ def forecast_command(plan: dict, digests: dict, *,
 
 def tree_forecast_command(plan: dict, *,
                           digests: dict | None = None,
-                          early_render: str | None = None) -> list[str]:
+                          early_render: str | None = None,
+                          prepared_head_sha256: str | None = None
+                          ) -> list[str]:
     """The fifth stage for a DOMAIN TREE.
 
     The tree runner binds ONE digest where the single-domain runner
@@ -1237,26 +1266,38 @@ def tree_forecast_command(plan: dict, *,
     the file each value will be read from.  Left ``None`` -- every real
     run -- the two are read off disk exactly as before, so this
     function's output on the live path is byte-identical.
+
+    ``prepared_head_sha256`` binds a chained tree at its head instead of
+    its sealed document (``--prepared-head-sha256``): the runner restores
+    from the head and binds the seal at the end.
     """
 
     from gpuwm.fetch import sha256_file
 
     prepared = Path(plan["prepared"])
     config = Path(plan["authority"]) / "experiment.toml"
-    if digests is None:
+    if prepared_head_sha256 is not None:
+        if not config.is_file():
+            raise GoRefusal(
+                f"the authority stage wrote no {config}, so the tree "
+                "forecast has no experiment config to bind")
+        binding = ["--prepared-head-sha256", str(prepared_head_sha256)]
+        config_digest = sha256_file(config)
+    elif digests is None:
         receipt = _hierarchy_document(prepared)
         if not config.is_file():
             raise GoRefusal(
                 f"the authority stage wrote no {config}, so the tree "
                 "forecast has no experiment config to bind")
-        receipt_digest = sha256_file(receipt)
+        binding = ["--preparation-receipt-sha256", sha256_file(receipt)]
         config_digest = sha256_file(config)
     else:
-        receipt_digest = digests["preparation_receipt"]
+        binding = ["--preparation-receipt-sha256",
+                   digests["preparation_receipt"]]
         config_digest = digests["experiment_config"]
     return [sys.executable, "-m", str(plan["runner"]),
             "--prepared-root", str(prepared),
-            "--preparation-receipt-sha256", receipt_digest,
+            *binding,
             "--experiment-config", str(config),
             "--experiment-config-sha256", config_digest,
             *_profile_flags(plan),
@@ -1376,7 +1417,9 @@ def _run_forecast(plan: dict, digests: dict, *, explain: bool,
     # (which is run-plan, and which does host) is unchanged.
     hosted = observer is not None and getattr(observer, "hosts_forecast", True)
     early = None if hosted else _early_render_products(plan)
-    command = (tree_forecast_command(plan, early_render=early)
+    command = (tree_forecast_command(
+                   plan, early_render=early,
+                   prepared_head_sha256=digests.get("prepared_head"))
                if plan.get("domains", 1) > 1
                else forecast_command(plan, digests, early_render=early))
     progress = plan["run"] / "progress.json"
@@ -1478,7 +1521,8 @@ def head_digests(prepared_root: Path, head_sha256: str) -> dict:
     Read from ``boundary-stream/head.json``, which carries its own digest
     and is checked against it on the read: the same relay rule as
     :func:`proof_digests`, for a preparation whose proof does not exist
-    yet.
+    yet.  An as-posted head carries one: it binds the input plan, and the
+    manifest does not exist until its seal (``source_manifest`` None).
     """
 
     from gpuwm.ingest.boundary_stream import BoundaryStreamError, bind_head
@@ -1488,7 +1532,7 @@ def head_digests(prepared_root: Path, head_sha256: str) -> dict:
     except BoundaryStreamError as error:
         raise GoRefusal(str(error)) from None
     return {"prepared_head": str(head["head_sha256"]),
-            "source_manifest": head["basis"]["input_manifest_sha256"]}
+            "source_manifest": head["basis"].get("input_manifest_sha256")}
 
 
 def wrfout_frames(plan: dict) -> list[Path]:
@@ -2410,12 +2454,43 @@ def _progress_note(progress: Path | None) -> str:
         return ""
     if not isinstance(payload, dict):
         return ""
+    from gpuwm.source_posting import SCHEDULE_SCHEMA
+
+    # The as-posted fetch's schedule is the progress file of a fetch run
+    # beside the preparation.
+    if payload.get("schema") == SCHEDULE_SCHEMA:
+        return _posting_note(payload)
     status = payload.get("status")
     model = payload.get("model_elapsed_seconds")
     parts = [str(status)] if isinstance(status, str) else []
     if isinstance(model, (int, float)) and model > 0:
         parts.append(f"{float(model):.0f} model seconds")
     return (", " + ", ".join(parts)) if parts else ""
+
+
+def _posting_note(schedule: dict) -> str:
+    """The fetch's beat line as posted: leads in, and the lead it waits for.
+
+    Said from the fetch's own schedule, so the terminal says the run waits
+    on its source, not that a stage is merely taking a while: before the
+    first leads post nothing else of the run moves.
+    """
+
+    rows = [row for row in schedule.get("leads") or ()
+            if isinstance(row, dict)]
+    if not rows:
+        return ""
+    ready = sum(1 for row in rows if row.get("state") == "ready")
+    note = f", {ready} of {len(rows)} leads in"
+    waiting = next((row for row in rows if row.get("state") == "waiting"),
+                   None)
+    if waiting is not None:
+        expected = str(waiting.get("expected_at") or "")
+        when = (f" (scheduled from about {expected[11:16]}Z)"
+                if len(expected) >= 16 else "")
+        note += (f", waiting for {schedule.get('source')} "
+                 f"f{int(waiting.get('lead', 0)):03d}, not posted yet{when}")
+    return note
 
 
 def _heartbeat_note(status: str) -> str | None:
@@ -2435,6 +2510,10 @@ def _heartbeat_note(status: str) -> str | None:
         return ", " + write_phase_words(status.removeprefix("writing:"))
     if status.startswith(("preparing:", "finalizing:")):
         return ", " + status.replace(":", " ").replace("-", " ")
+    if status.startswith("waiting:"):
+        # A seam wait says what it waits on: a source lead not posted yet,
+        # or the preparation still building the interval.
+        return ", waiting on the " + status.removeprefix("waiting:")
     return None
 
 
@@ -2579,7 +2658,8 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
                heartbeat_seconds: float = HEARTBEAT_SECONDS,
                observer=None, door: str = "go",
                env: dict | None = None,
-               shown: list[str] | None = None) -> None:
+               shown: list[str] | None = None,
+               stopped: Callable[[], bool] | None = None) -> None:
     """Run one stage; replay everything it said and stop if it failed.
 
     Output is captured so the default is one line per stage, and
@@ -2618,6 +2698,16 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
     ``stage_begin`` event carries ``shown``, frames spelled out, because
     a recorded command naming that file names nothing once the stage is
     over.
+
+    ``stopped`` answers whether the chain itself ended this stage (the
+    as-posted fetch beside a preparation or forecast that failed,
+    :meth:`_BesideStage.stop`).  A stage the chain stopped that then exits
+    nonzero is said as stopped, not failed: no FAILED line, no "stopped
+    at" sentence and no ``stage_failed`` or failed ``stage_end`` for the
+    observer, and :class:`GoStageStopped` is raised.  The breakage this
+    prevents: a preparation that failed while the fetch still ran was
+    reported as a failed fetch with the fetch's exit 130 (the interrupt
+    code), on the terminal and in a hosting run's failure record.
     """
 
     print(f"  .. {label}", flush=True)
@@ -2732,6 +2822,10 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
             command, 124, completed.stdout,
             (completed.stderr or "").rstrip() + "\n" + box["watchdog_failure"])
     output = (completed.stdout or "") + (completed.stderr or "")
+    if completed.returncode != 0 and stopped is not None and stopped():
+        print(f"  stopped {label} (exit {completed.returncode}; ended by "
+              f"{door} because a stage beside it failed)", flush=True)
+        raise GoStageStopped(completed.returncode)
     if completed.returncode != 0:
         print(f"  FAILED  {label} (exit {completed.returncode})")
         # The stage's own refusal is usually its last few lines; replay
@@ -2903,6 +2997,322 @@ _FAILURE_TAIL_LINES = 30
 run_stage = _run_stage
 
 
+# ---------------------------------------------------------------------------
+# The as-posted fetch, run beside the preparation (DESIGN A136 2.5)
+# ---------------------------------------------------------------------------
+
+#: How much earlier than this fetch's launch a posting schedule may be dated
+#: and still be this fetch's: a filesystem that keeps modification times to
+#: two seconds (FAT) dates a fresh write up to that much early.
+_FRESH_SCHEDULE_SLACK_SECONDS = 2.0
+#: How often the chain looks for the fetch's posting schedule.
+_POSTING_POLL_SECONDS = 0.2
+#: How long a fetch that has said it is failing (its own ``failed.json``,
+#: ``source_behind``) is given to end on its own once the preparation has
+#: failed on that record, before the chain stops it.  It exits right after
+#: writing the record, but on a loaded host (node-4 under a full test
+#: battery, 1.5 GiB of free RAM) it took longer than the 2 s every other
+#: stop allows (:data:`END_STAGE_GRACE_SECONDS`), the chain stopped it, and
+#: the preparation that failed because of it was named the run's failure.
+_SAID_FAILURE_GRACE_SECONDS = 30.0
+#: The failure codes this chain writes into the fetch's ``failed.json`` when
+#: the fetch ended without writing one, so a preparation waiting on a lead
+#: marker ends by name (``PostedLeads``) instead of waiting for a marker
+#: nothing will write.  The fetch's own ``source_behind`` is never replaced.
+FETCH_FAILED_CODE = "fetch_failed"
+FETCH_INCOMPLETE_CODE = "fetch_incomplete"
+#: The fetch was ended by the chain because a stage beside it failed: not a
+#: failure of the fetch, and still an end to a wait on a marker, because a
+#: preparation process can outlive its stage (a killed stage wrapper leaves
+#: the preparer it started waiting on the next lead).
+FETCH_STOPPED_CODE = "fetch_stopped"
+
+
+def posting_folder(plan: dict) -> Path:
+    """The ``posting/`` folder this chain's fetch publishes lead markers in."""
+
+    from gpuwm.source_posting import POSTING_DIRNAME
+
+    return Path(plan["data"]) / POSTING_DIRNAME
+
+
+def posts_beside_preparation(plan: dict) -> bool:
+    """Whether this chain fetches and prepares at once (DESIGN A136 2.5).
+
+    As posted (the default; ``--whole-cycle`` or ``as_posted = false`` is
+    the old order), for a source whose preparation waits on posted leads
+    (:func:`gpuwm.source_cli.prepares_as_posted`), one domain or a tree: a
+    tree's children bind the input plan at its head and its seal writes
+    the one-shot tree (``gfs_direct._prepare_chained_gfs_tree``), so every
+    nest shape, moving and delayed nests included, starts on its start
+    leads.
+    """
+
+    from gpuwm.source_cli import prepares_as_posted
+
+    return (plan.get("as_posted") is not False
+            and prepares_as_posted(str(plan["source"])))
+
+
+def _fresh_schedule(folder: Path, plan: dict, *, since: float) -> bool:
+    """Whether ``folder`` holds this fetch's schedule of this window.
+
+    A schedule left by an earlier fetch into the same download is not this
+    run's: its window may have been fetched whole since, and its markers
+    would then describe files the fetch has replaced.
+    """
+
+    from gpuwm.ingest.boundary_stream import read_replaced_json
+    from gpuwm.source_posting import POSTING_SCHEDULE_NAME
+
+    path = Path(folder) / POSTING_SCHEDULE_NAME
+    try:
+        if path.stat().st_mtime < since - _FRESH_SCHEDULE_SLACK_SECONDS:
+            return False
+        schedule = read_replaced_json(path)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(schedule, dict):
+        return False
+    cycle = str(plan.get("cycle") or "")[:13]
+    return (schedule.get("source") == plan.get("source")
+            and str(schedule.get("cycle") or "")[:13] == cycle)
+
+
+def _record_fetch_end(folder: Path, plan: dict, *, since: float,
+                      error: BaseException | None,
+                      stopped: bool = False) -> None:
+    """Tell a preparation waiting on lead markers that no more will come.
+
+    Written only into this fetch's own schedule's folder, only when the
+    fetch did not say why itself (its ``source_behind`` record stands),
+    and on success only when a lead of the schedule has no marker.  Never
+    raises: the chain reports the fetch's own failure either way.
+    ``stopped``: the chain ended the fetch because a stage beside it
+    failed, so the record says that (``fetch_stopped``), not a failure of
+    the fetch.
+    """
+
+    from gpuwm.ingest.boundary_stream import (
+        _write_json_atomic, posted_lead_marker_name, read_replaced_json,
+    )
+    from gpuwm.source_posting import (POSTING_FAILED_NAME,
+                                      POSTING_SCHEDULE_NAME)
+
+    folder = Path(folder)
+    try:
+        if (not _fresh_schedule(folder, plan, since=since)
+                or (folder / POSTING_FAILED_NAME).exists()):
+            return
+        schedule = read_replaced_json(folder / POSTING_SCHEDULE_NAME)
+        leads = [int(row["lead"]) for row in schedule.get("leads") or ()]
+        missing = [lead for lead in leads
+                   if not (folder / posted_lead_marker_name(lead)).is_file()]
+        if (error is None or stopped) and not missing:
+            return
+        if stopped:
+            code, message = FETCH_STOPPED_CODE, (
+                "the fetch stage was stopped because a stage beside it "
+                "failed; no later lead will be fetched for this run")
+        elif error is not None:
+            detail = getattr(error, "diagnostic", None) or str(error)
+            code, message = FETCH_FAILED_CODE, (
+                f"the fetch stage failed (exit "
+                f"{getattr(error, 'code', '?')}): {detail}".strip())
+        else:
+            code, message = FETCH_INCOMPLETE_CODE, (
+                "the fetch stage ended without a marker for "
+                + ", ".join(f"f{lead:03d}" for lead in missing))
+        _write_json_atomic(folder / POSTING_FAILED_NAME, {
+            "code": code, "source": schedule.get("source"),
+            "cycle": schedule.get("cycle"),
+            "lead": missing[0] if missing else None,
+            "leads_missing": missing, "message": message,
+        })
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return
+
+
+def _end_process(process, *, grace: float) -> None:
+    """End one stage subprocess this chain started, as end_stage_processes does."""
+
+    if process is None or process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            import signal
+
+            process.send_signal(signal.SIGINT)
+        else:
+            process.terminate()
+    except OSError:
+        return
+    try:
+        process.wait(grace)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+            process.wait(grace)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
+class _BesideStage:
+    """One chain stage run on its own thread, beside the stages after it.
+
+    The as-posted fetch (DESIGN A136 2.5) publishes each lead's marker as
+    the lead posts while the preparation waits on those markers and the
+    forecast on the preparation, so it cannot finish before they start.
+    It runs exactly as every other stage does (:func:`_run_stage`:
+    captured, a heartbeat while it runs, replayed and told to the observer
+    if it fails); only the waiting moves off the chain's thread.  When it
+    ends without a marker for every lead it tells the preparation so
+    (:func:`_record_fetch_end`).
+    """
+
+    def __init__(self, label: str, command: list[str], *, plan: dict,
+                 explain: bool, observer=None, progress: Path | None = None):
+        import contextvars
+
+        self.label = label
+        self.command = list(command)
+        self.plan = plan
+        self.progress = progress
+        self.launched = time.time()
+        self._box: dict[str, BaseException] = {}
+        #: Set by :meth:`stop` before it signals the stage: the chain ended
+        #: it, so its exit is not a failure of its own (``_run_stage``'s
+        #: ``stopped``).
+        self._stopped = threading.Event()
+        context = contextvars.copy_context()
+        self._thread = threading.Thread(
+            target=context.run, args=(self._run, explain, observer),
+            name=f"go-beside-{label}", daemon=True)
+        self._thread.start()
+
+    def _run(self, explain: bool, observer) -> None:
+        error = None
+        try:
+            _run_stage(self.label, self.command, explain=explain,
+                       observer=observer, progress=self.progress,
+                       stopped=self._stopped.is_set)
+        except BaseException as failure:  # noqa: BLE001 - see result()
+            error = failure
+            if not self._stopped.is_set():
+                self._box["error"] = failure
+        finally:
+            # A fetch the chain stopped says so (fetch_stopped), not "the
+            # fetch stage failed (exit 130)", which misnamed the failure
+            # for a reader of posting/.  It still writes a record: a
+            # preparer can outlive its stage (a killed stage wrapper leaves
+            # the preparer it started), and without one it waited forever
+            # for a marker nothing would write.
+            _record_fetch_end(posting_folder(self.plan), self.plan,
+                              since=self.launched, error=error,
+                              stopped=self._stopped.is_set())
+
+    def running(self) -> bool:
+        return self._thread.is_alive()
+
+    def failure(self) -> BaseException | None:
+        """The stage's own failure, once it has ended with one; else ``None``."""
+
+        return self._box.get("error")
+
+    def said_failure(self) -> bool:
+        """Whether the fetch has failed on its own, or has said it is failing.
+
+        Its own ``posting/failed.json`` (a lead past its budget writes
+        ``source_behind`` and then exits 75) is written before the stage
+        ends, so a preparation can fail on it first; the fetch clears the
+        file when it starts, so one found here is this fetch's.
+        """
+
+        from gpuwm.source_posting import POSTING_FAILED_NAME
+
+        return ("error" in self._box
+                or (posting_folder(self.plan) / POSTING_FAILED_NAME).is_file())
+
+    def settle(self, *, fetch_first: bool,
+               grace: float = END_STAGE_GRACE_SECONDS,
+               said_grace: float = _SAID_FAILURE_GRACE_SECONDS
+               ) -> BaseException | None:
+        """After the chain beside this stage failed: the chain's failure, if it is this one's.
+
+        ``fetch_first``: the fetch had failed, or said it was failing,
+        before the preparation or forecast failed (so they failed because
+        of it).  Then the fetch is ending on its own; it is given
+        ``said_grace`` to end, and its failure (its exit code and words) is
+        the chain's.  Otherwise, or if it did not end with a failure, the
+        fetch is stopped within ``grace`` (a download for a run that has
+        ended) and ``None`` returned: the stage that failed first is the
+        chain's failure.
+        """
+
+        if fetch_first:
+            self._thread.join(said_grace)
+            failed = self.failure()
+            if failed is not None:
+                return failed
+        self.stop(grace=grace)
+        return None
+
+    def result(self) -> None:
+        """Wait for the stage to end; raise its failure if it failed."""
+
+        self._thread.join()
+        if "error" in self._box:
+            raise self._box["error"]
+
+    def _processes(self) -> list:
+        with _STAGE_PROCESSES_LOCK:
+            return [process for process in _STAGE_PROCESSES.values()
+                    if getattr(process, "args", None) == self.command]
+
+    def pid(self) -> int | None:
+        processes = self._processes()
+        return getattr(processes[0], "pid", None) if processes else None
+
+    def stop(self, *, grace: float = END_STAGE_GRACE_SECONDS) -> None:
+        """End the stage's process when the chain failed before it ended.
+
+        Not on an interrupt: Ctrl-C reached the stage with the rest of the
+        foreground process group, and the interrupt contract kills no child
+        (:class:`GoInterrupted`).  On a failure the chain returns, and a
+        fetch left running would go on downloading for a run that has
+        ended.
+        """
+
+        self._stopped.set()
+        for process in self._processes():
+            _end_process(process, grace=grace)
+        self._thread.join(grace)
+
+
+def _await_posting(beside: _BesideStage, plan: dict) -> Path | None:
+    """The posting folder once the fetch beside the chain has scheduled its window.
+
+    ``None`` when the fetch ended without waiting on any lead: its window
+    was already here whole (a cached download), or its source is not
+    waited on, so there are no lead markers and the preparation binds the
+    whole window as before.  A fetch that failed first raises its failure.
+    """
+
+    folder = posting_folder(plan)
+    try:
+        while True:
+            if _fresh_schedule(folder, plan, since=beside.launched):
+                return folder
+            if not beside.running():
+                if _fresh_schedule(folder, plan, since=beside.launched):
+                    return folder
+                beside.result()
+                return None
+            time.sleep(_POSTING_POLL_SECONDS)
+    except KeyboardInterrupt:
+        raise GoInterrupted(beside.label, beside.pid()) from None
+
+
 class GoStageFailed(Exception):
     """A stage exited nonzero; its output has already been replayed.
 
@@ -2920,6 +3330,14 @@ class GoStageFailed(Exception):
         self.code = code
         #: The stage's own last lines, or ``""`` when it produced none.
         self.diagnostic = diagnostic
+
+
+class GoStageStopped(GoStageFailed):
+    """A stage the chain ended itself exited nonzero (``_run_stage``'s ``stopped``).
+
+    Not the chain's failure: the stage beside it that failed is.  Nothing
+    was said to the observer and no failure lines were replayed.
+    """
 
 
 def _tree_bytes(root) -> int:
@@ -3433,8 +3851,22 @@ def _require_forecast_device() -> None:
     """Prove the GPU can run kernels before a launch downloads its inputs."""
     from gpuwm.doctor import _cuda_headers_check
     from gpuwm.explain import layered
+    from gpuwm.local_gpu import NO_LOCAL_GPU_ENV, no_local_gpu
 
     checked = _cuda_headers_check()
+    if checked.status == "info" and no_local_gpu():
+        # The probe did not run: this environment forbids the process the
+        # card, and "info" is the not-judged verdict the headers check
+        # gives under the switch.  Said by name, because "GPU readiness
+        # is info: device not touched" read as a card the probe had
+        # misjudged, and a launch from a shell that exported the switch
+        # was retried as a flake.  A measured verdict ("missing") keeps
+        # its own remedy below whatever the environment says.
+        raise GoRefusal(layered(
+            f"{NO_LOCAL_GPU_ENV} is set in this environment, so this "
+            "process may not open the local card and no forecast can run. "
+            f"Next: unset {NO_LOCAL_GPU_ENV} and launch again",
+            checked.detail))
     if checked.status != "verified":
         raise GoRefusal(layered(
             f"GPU readiness is {checked.status}: {checked.brief or checked.detail}. "
@@ -3549,6 +3981,18 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
         # is only here with ``auto``, which asks for what no flag asks
         # for, and the experiment route has no transport option at all.
         options["transport"] = flag_transport
+    posting_flags = _posting_options(args)
+    if posting_flags and not acquires:
+        # Breakage it prevents: a posting rule on a run with no fetch
+        # stage would be accepted and read by nothing.
+        raise GoRefusal(
+            f"{', '.join(sorted(posting_flags))} set how the fetch stage "
+            "waits for its source, and this run takes its inputs from "
+            "[case_data] or an existing prepared bundle. Next: omit them.")
+    options.update({key: value for key, value in (
+        ("as_posted", False if getattr(args, "whole_cycle", False) else None),
+        ("late_after_minutes", getattr(args, "late_after_minutes", None)),
+    ) if value is not None})
     if not declared_inputs and prepared_root is None and data_dir is not None:
         options["data_dir"] = str(data_dir.resolve())
     elif prepared_root is not None and args.data_dir is not None:
@@ -3846,9 +4290,152 @@ def _extend_outdir(args, config: Path, payload: dict) -> None:
         args.outdir = spelled
 
 
+def _posting_options(args) -> dict[str, object]:
+    """The posting flags ``gpuwm go`` was given (DESIGN A136 3.1)."""
+
+    said = {}
+    if getattr(args, "whole_cycle", False):
+        said["--whole-cycle"] = True
+    if getattr(args, "late_after_minutes", None) is not None:
+        said["--late-after-minutes"] = args.late_after_minutes
+    if getattr(args, "no_probe", False) and not getattr(args, "readiness", False):
+        raise GoRefusal("--no-probe belongs to --readiness.")
+    return said
+
+
+def _flag_cycle(args, payload: dict) -> str | None:
+    """``gpuwm go --cycle``, checked: ``latest`` or a concrete cycle, or None.
+
+    Breakage the refusal prevents: a cycle on a run whose inputs are named
+    files, an existing prepared bundle or a checkpoint would be accepted
+    and read by nothing, and the run would start at those inputs' own
+    time while its command named another.
+    """
+
+    value = getattr(args, "cycle", None)
+    if value is None:
+        return None
+    value = str(value).strip()
+    fetch_table = payload.get("fetch")
+    if (not isinstance(fetch_table, dict)
+            or not {"source", "cycle"} <= fetch_table.keys()
+            or "case_data" in payload
+            or any(getattr(args, key, None) is not None
+                   for key in ("prepared_root", "restart", "wps_namelist"))):
+        raise GoRefusal(
+            f"--cycle {value} names the cycle a download route fetches, and "
+            "this run takes its inputs from [case_data], an existing "
+            "prepared bundle or a checkpoint, whose times a cycle cannot "
+            "move. Next: omit --cycle.")
+    if value.lower() == "latest":
+        return "latest"
+    from gpuwm.fetch import parse_cycle
+
+    try:
+        return parse_cycle(value, str(fetch_table["source"])).strftime("%Y-%m-%dT%H")
+    except ValueError as error:
+        raise GoRefusal(str(error)) from error
+
+
+def _at_flag_cycle(args, config: Path, payload: dict, cycle: str
+                   ) -> tuple[Path, dict]:
+    """The config re-timed to ``gpuwm go --cycle`` (DESIGN A136 3.1, 3.7).
+
+    ``latest`` is answered first by the fetch's own resolver under this
+    run's posting rule (as posted unless ``--whole-cycle`` or the config's
+    ``as_posted = false``), so the run and its receipt name a concrete
+    cycle.  A cycle other than the config's own is published by
+    :func:`gpuwm.companion_setups.retime_to_cycle` under
+    ``<outdir>/cycles/<cycle>/`` with the route files rendered again, and
+    the launch continues on that file with the original's output folder,
+    so every route (the stage composer, the native chains, run-plan's)
+    runs the re-timed config the way it runs any other.
+    """
+
+    import tomllib
+
+    from gpuwm import runplan
+    from gpuwm.companion_setups import retime_to_cycle
+    from gpuwm.fetch import parse_cycle
+
+    fetch_table = payload["fetch"]
+    source = str(fetch_table["source"])
+    if cycle == "latest":
+        from gpuwm.cli import _join_negative_coordinates
+
+        pinned, _from = pinned_transport(fetch_table, getattr(args, "transport", None))
+        hints = pin_request(config_fetch_request(payload), pinned)
+        hints["cycle"] = "latest"
+        if getattr(args, "whole_cycle", False):
+            hints["as_posted"] = False
+        arguments = _join_negative_coordinates(
+            runplan._fetch_arguments_from_hints(hints, out=Path("latest")))
+        try:
+            arguments, _resolutions, _warnings = runplan.resolve_fetch_cycle(arguments)
+        except (ValueError, RuntimeError) as error:
+            raise GoRefusal(f"--cycle latest: {error}") from error
+        cycle = runplan._parse_fetch_arguments(arguments).cycle
+        print(f"go: --cycle latest is {cycle} for {source}")
+    moment = parse_cycle(cycle, source)
+    if moment == parse_cycle(str(fetch_table["cycle"]), source):
+        return config, payload
+    if getattr(args, "outdir", None) is None:
+        # The original's own output folder, so the run lands where a run
+        # of this config always lands, in its own cycle-stamped folder.
+        args.outdir = config.parent / f"{config.stem}-go"
+    out = Path(args.outdir) / "cycles" / cycle / config.name
+    try:
+        result = retime_to_cycle(config, moment, out)
+    except ValueError as error:
+        raise GoRefusal(f"--cycle {cycle}: {error}") from error
+    print(f"go: --cycle {cycle}: {config} re-timed to start "
+          f"{result['start_time'].replace('T', ' ')} UTC, as {out}")
+    args.config = out
+    return out, tomllib.loads(out.read_text(encoding="utf-8"))
+
+
+def _go_readiness(payload: dict, options: dict, pinned: str | None, *,
+                  no_probe: bool) -> int:
+    """``gpuwm go CONFIG --readiness``: the config's window, answered, run nothing."""
+
+    from gpuwm import runplan as plans
+    from gpuwm import source_readiness as readiness
+    from gpuwm.fetch import readiness_for_fetch
+
+    hints = pin_request(config_fetch_request(payload), pinned)
+    for key in ("as_posted", "late_after_minutes"):
+        if options.get(key) is not None:
+            hints[key] = options[key]
+    if hints.get("as_posted") is False:
+        hints.pop("late_after_minutes", None)
+    arguments = plans._fetch_arguments_from_hints(hints, out=Path("readiness"))
+    from gpuwm.cli import _join_negative_coordinates
+
+    parsed = plans._parse_fetch_arguments(_join_negative_coordinates(arguments))
+    try:
+        document, code = readiness_for_fetch(parsed, no_probe=no_probe)
+    except ValueError as error:
+        raise GoRefusal(f"--readiness: {error}") from error
+    readiness.print_document(document)
+    print(f"go: readiness {document['state']}"
+          + (f" ({document['refusal']})" if document.get("refusal") else "")
+          + (f"; expected ready at {document['expected_ready_at']}"
+             if document.get("expected_ready_at") else ""), file=sys.stderr)
+    return code
+
+
 def go_main(args, *, observer=None) -> int:
-    """Launch through the source's existing native preparation chain."""
-    with _each_advisory_once():
+    """Launch through the source's existing native preparation chain.
+
+    ``--no-memory-gate`` is held for the whole chain, so the forecast
+    runner go starts (a subprocess, or hosted here) skips the same envelope
+    go's own gate skipped.  It used to stop at go's gate, and the runner
+    then refused that envelope again after the fetch and the preparation.
+    """
+    from gpuwm.core.resident_admission import memory_gate_override
+
+    with memory_gate_override(getattr(args, "no_memory_gate", False)), \
+            _each_advisory_once():
         return _go_launch(args, observer=observer)
 
 
@@ -3866,6 +4453,31 @@ def _go_launch(args, *, observer=None) -> int:
                 else "does not exist")
         raise GoRefusal(f"{config} {what}. Next: gpuwm domain --help")
     payload = tomllib.loads(config.read_text(encoding="utf-8"))
+    cycle = _flag_cycle(args, payload)
+    if getattr(args, "readiness", False) or getattr(args, "no_probe", False):
+        # Every route answers the same question here, before any gate or
+        # folder: the window the config's [fetch] table asks for, at
+        # --cycle when it names one (``latest`` is the readiness
+        # document's own cycle_basis).
+        _posting_options(args)
+        if cycle is not None:
+            payload = {**payload, "fetch": {**payload["fetch"], "cycle": cycle}}
+        fetch_table = payload.get("fetch")
+        if (not isinstance(fetch_table, dict)
+                or not {"source", "cycle"} <= fetch_table.keys()):
+            # Breakage it prevents: a config with no download would be
+            # answered for a window nobody fetches.
+            raise GoRefusal(
+                "--readiness answers for the window a config fetches, and "
+                "this config has no [fetch] source and cycle.")
+        pinned, _from = pinned_transport(fetch_table,
+                                         getattr(args, "transport", None))
+        return _go_readiness(payload, {
+            "as_posted": False if getattr(args, "whole_cycle", False) else None,
+            "late_after_minutes": getattr(args, "late_after_minutes", None)},
+            pinned, no_probe=getattr(args, "no_probe", False))
+    if cycle is not None:
+        config, payload = _at_flag_cycle(args, config, payload, cycle)
     _extend_outdir(args, config, payload)
     if ("case_data" in payload or getattr(args, "prepared_root", None) is not None
             or getattr(args, "restart", None) is not None
@@ -4014,7 +4626,11 @@ def _go_prepared_main(args, *, observer=None) -> int:
                                 args, "render_products", None),
                             render_section=section,
                             run_stamp=run_stamp_module.run_stamp_enabled(args),
-                            transport=getattr(args, "transport", None))
+                            transport=getattr(args, "transport", None),
+                            as_posted=(False if getattr(args, "whole_cycle", False)
+                                       else None),
+                            late_after_minutes=getattr(
+                                args, "late_after_minutes", None))
     bridge = resolve_bridge()
     geog_root = (Path(args.geog_root) if getattr(args, "geog_root", None)
                  else default_geog_root())
@@ -4036,20 +4652,35 @@ def _go_prepared_main(args, *, observer=None) -> int:
         if plan.get("tiles"):
             print(f"go: {plan['tiles']['sentence']}")
         print("")
+        beside = posts_beside_preparation(plan)
         for label, command in (
                 ("1. authority", authority_command(plan)),
-                ("2. fetch", fetch_command(plan)),
-                ("3. manifest", manifest_command(plan, bridge)),
+                ("2. fetch" + (" (as posted, beside step 4, which starts on "
+                               "the window's first leads)" if beside else ""),
+                 fetch_command(plan)),
+                ("3. manifest" + (" (only for a window the fetch finds "
+                                  "already here whole; as posted, step 4's "
+                                  "seal writes it)" if beside else ""),
+                 manifest_command(plan, bridge)),
         ):
             print(f"{label}\n     {printable(command)}")
         # The last two carry values that do not exist yet.  Naming the
         # FILE each one is read from beats printing a plausible-looking
         # hash: the point of a dry run is to show what will happen, and
         # what will happen is a read from that artifact.
-        print("4. prepare\n     " + printable(prepare_command(
+        whole = printable(prepare_command(
             plan, bridge, manifest=manifest,
             manifest_sha256="<sha256 of " + manifest.name + ", after step 3>",
-            cycle_stamp=cycle_stamp, geog_root=geog_root)))
+            cycle_stamp=cycle_stamp, geog_root=geog_root))
+        if beside:
+            print("4. prepare\n     " + printable(prepare_command(
+                plan, bridge, manifest=None, manifest_sha256=None,
+                cycle_stamp=cycle_stamp, geog_root=geog_root,
+                as_posted=posting_folder(plan))))
+            print("     # or, for a window already here whole, after step "
+                  "3:\n     " + whole)
+        else:
+            print("4. prepare\n     " + whole)
         # Branched the way the real run branches in `_run_forecast`: a
         # tree binds ONE preparation receipt, so printing the
         # single-domain three-digest relay for it would show a command
@@ -4163,6 +4794,7 @@ def _go_prepared_main(args, *, observer=None) -> int:
         if chain is not None:
             _disk_admission(plan, args)
 
+        hosted_relay = None
         # THE STAGE TIMINGS START LANDING ON DISK HERE, by default, for
         # a caller that passed no flags and asked for no observer.
         #
@@ -4190,32 +4822,88 @@ def _go_prepared_main(args, *, observer=None) -> int:
 
         _run_stage("authority", authority_command(plan), explain=explain,
                    observer=observer)
-        _run_stage("fetch", fetch_command(plan), explain=explain,
-                   observer=observer)
-        _run_stage("manifest", manifest_command(plan, bridge),
-                   observer=observer,
-                   explain=explain)
-        manifest = front_door_manifest(plan)
-        if not manifest.is_file():
-            raise GoRefusal(
-                f"the manifest stage wrote no {manifest}, so the "
-                "preparation stage has nothing to bind against")
-        prepare_stage_command = prepare_command(
-            plan, bridge, manifest=manifest,
-            manifest_sha256=sha256_file(manifest),
-            cycle_stamp=cycle_stamp, geog_root=geog_root)
+        # AS POSTED (DESIGN A136 2.5): the fetch runs beside the
+        # preparation, which starts once the fetch has scheduled the
+        # window and waits for each lead's marker, and whose seal writes
+        # the input manifest, so there is no manifest stage.  A fetch that
+        # found its window already here whole schedules nothing, and the
+        # chain binds the whole window as before.
+        posting = None
+        if posts_beside_preparation(plan):
+            from gpuwm.source_posting import POSTING_SCHEDULE_NAME
+
+            # Its beat line reads the fetch's own schedule: the leads in,
+            # and the lead it waits for (_posting_note).
+            beside = _BesideStage(
+                "fetch", fetch_command(plan), plan=plan, explain=explain,
+                observer=observer,
+                progress=posting_folder(plan) / POSTING_SCHEDULE_NAME)
+            posting = _await_posting(beside, plan)
+        else:
+            _run_stage("fetch", fetch_command(plan), explain=explain,
+                       observer=observer)
+        if posting is None:
+            beside = None
+            _run_stage("manifest", manifest_command(plan, bridge),
+                       observer=observer,
+                       explain=explain)
+            manifest = front_door_manifest(plan)
+            if not manifest.is_file():
+                raise GoRefusal(
+                    f"the manifest stage wrote no {manifest}, so the "
+                    "preparation stage has nothing to bind against")
+            prepare_stage_command = prepare_command(
+                plan, bridge, manifest=manifest,
+                manifest_sha256=sha256_file(manifest),
+                cycle_stamp=cycle_stamp, geog_root=geog_root)
+        else:
+            print("go: the fetch runs beside the preparation, which starts "
+                  "on the window's first leads and waits for each later "
+                  "one as it posts", flush=True)
+            hosted_events = (getattr(observer, "events", None)
+                             if chain is None else None)
+            if hosted_events is not None:
+                # A hosting run (gpuwm run-plan) keeps its own stream, where
+                # go's own relay of the posting folder is not open.
+                hosted_relay = chain_events.HostedPostingRelay(
+                    hosted_events, data_dir=plan["data"])
+                hosted_relay.start(
+                    since_unix_ms=int(beside.launched * 1000))
+            prepare_stage_command = prepare_command(
+                plan, bridge, manifest=None, manifest_sha256=None,
+                cycle_stamp=cycle_stamp, geog_root=geog_root,
+                as_posted=posting)
         announce_policy_backend(prepare_stage_command)
 
+        # Whether the fetch beside the chain had failed (or said it was
+        # failing) when the preparation or the forecast first failed: then
+        # they failed because of it and its failure is the chain's, and
+        # otherwise the first of them to fail is (_BesideStage.settle).
+        first_failure: dict[str, bool] = {}
+        first_failure_lock = threading.Lock()
+
+        def _failing() -> None:
+            if beside is None:
+                return
+            with first_failure_lock:
+                first_failure.setdefault("fetch_first",
+                                         beside.said_failure())
+
         def prepare():
-            _run_stage("prepare", prepare_stage_command, explain=explain,
-                       # Not `prepared/progress.json`: the stage builds its
-                       # product in a staging directory and publishes it
-                       # with one rename (at its head, when chained), so
-                       # the progress file lives beside it.  The path is
-                       # asked of the publisher rather than spelled here,
-                       # so the writer and this poller cannot disagree.
-                       progress=prepare_progress_path(plan["prepared"]),
-                       observer=observer)
+            try:
+                _run_stage("prepare", prepare_stage_command, explain=explain,
+                           # Not `prepared/progress.json`: the stage builds
+                           # its product in a staging directory and publishes
+                           # it with one rename (at its head, when chained),
+                           # so the progress file lives beside it.  The path
+                           # is asked of the publisher rather than spelled
+                           # here, so the writer and this poller cannot
+                           # disagree.
+                           progress=prepare_progress_path(plan["prepared"]),
+                           observer=observer)
+            except BaseException:
+                _failing()
+                raise
 
         # `--keep-checkpoints`, or its default of one set when this chain
         # was typed rather than hosted.  Every other `go` route hands the
@@ -4232,11 +4920,12 @@ def _go_prepared_main(args, *, observer=None) -> int:
             # A hierarchy proof carries no single prepared-cache identity,
             # and proof_digests says so by refusing.  The tree arm reads its
             # own one digest instead, so it is not asked for here.  A
-            # chained head binds by its head digest (head_digests).
-            digests = ({} if plan.get("domains", 1) > 1
-                       else proof_digests(plan["prepared"])
-                       if head_sha256 is None
-                       else head_digests(plan["prepared"], head_sha256))
+            # chained head binds by its head digest (head_digests), a
+            # tree's as a single domain's.
+            digests = (head_digests(plan["prepared"], head_sha256)
+                       if head_sha256 is not None
+                       else {} if plan.get("domains", 1) > 1
+                       else proof_digests(plan["prepared"]))
             # The first frame the forecast commits is the analysis, and an
             # observer that wants it rendered as it lands is told so before
             # the forecast starts -- with THIS plan, the one the render
@@ -4244,9 +4933,13 @@ def _go_prepared_main(args, *, observer=None) -> int:
             # the hook (there is no such thing in tree, but `go` takes any
             # duck) must not be a reason a chain stops.
             _notify(observer, "arm_first_products", render_plan=plan)
-            with _checkpoint_retention(keep):
-                _run_forecast(plan, digests, explain=explain,
-                              observer=observer)
+            try:
+                with _checkpoint_retention(keep):
+                    _run_forecast(plan, digests, explain=explain,
+                                  observer=observer)
+            except BaseException:
+                _failing()
+                raise
 
         def head_ready(head_sha256):
             print("go: preparation head published; the forecast starts "
@@ -4254,19 +4947,55 @@ def _go_prepared_main(args, *, observer=None) -> int:
                   flush=True)
             _notify(observer, "prepare_head_ready", head_sha256=head_sha256)
 
-        from gpuwm.ingest.boundary_stream import (
-            run_chained, say_prepared_sealed,
-        )
+        from gpuwm.ingest.boundary_stream import run_chained
 
-        if plan.get("domains", 1) > 1:
-            # A domain tree is prepared sealed (its hierarchy needs every
-            # root interval before its children), so it runs in order.
-            say_prepared_sealed("domain_tree")
-            prepare()
-            forecast(None)
-        else:
+        # One domain or a tree: a GFS-series tree is chained like a single
+        # domain (gfs_direct._prepare_chained_gfs_tree), and the tree
+        # runner binds its head (--prepared-head-sha256).  A preparation
+        # that publishes at its seal says why itself, and run_chained then
+        # starts the forecast after that seal.
+        try:
             run_chained(prepared_root=plan["prepared"], prepare=prepare,
-                        forecast=forecast, on_head=head_ready)
+                        forecast=forecast, on_head=head_ready,
+                        observer=observer)
+        except BaseException as stopped:
+            if hosted_relay is not None:
+                # What the fetch published before the chain stopped reaches
+                # the hosting run's stream, and nothing after it does.
+                hosted_relay.stop()
+                hosted_relay = None
+            if beside is not None and not isinstance(
+                    stopped, (GoInterrupted, KeyboardInterrupt)):
+                # Not on Ctrl-C: the interrupt contract kills no child.
+                # When the fetch failed first (a lead later than its
+                # budget, a host refusal) and the preparation or forecast
+                # stopped because of it, the fetch's failure is the chain's,
+                # with its exit code and its words.  When the preparation
+                # or forecast failed first, the run is over and so is its
+                # download: the fetch is stopped, said as stopped, and the
+                # stage that failed is the chain's failure.
+                with first_failure_lock:
+                    fetch_first = first_failure.get(
+                        "fetch_first", beside.said_failure())
+                failed = beside.settle(fetch_first=fetch_first)
+                if failed is not None:
+                    # The observer may have heard the stage that failed
+                    # because of the fetch before the fetch's own failure
+                    # (a fetch writes its source_behind record before it
+                    # exits), so the chain names its failure once more.
+                    _notify(observer, "chain_failed", label=beside.label,
+                            exit_code=getattr(failed, "code", 1),
+                            diagnostic=getattr(failed, "diagnostic", ""))
+                    raise failed from None
+            raise
+        if beside is not None:
+            # Every lead's marker was read by the seal, so the fetch has
+            # published its whole window; it ends here, and a failure it
+            # met after that is still the chain's.
+            beside.result()
+        if hosted_relay is not None:
+            hosted_relay.stop()
+            hosted_relay = None
         rendered = _render_stage(plan, explain=explain,
                                  observer=observer)
     except GoRefusal:
@@ -4456,6 +5185,32 @@ def register_cli(subparsers) -> None:
                              "of the source's endpoint ladder, the value `gpuwm "
                              "fetch --transport` takes; wins over the config's "
                              "[fetch] transport, and the plan says which it used")
+    parser.add_argument("--cycle", default=None, metavar="YYYY-MM-DDTHH|latest",
+                        help="download routes only: run the config at this "
+                             "cycle; wins over the config's [fetch] cycle the "
+                             "way --transport does. The config is re-timed "
+                             "(start time, delayed nests, namelists) into "
+                             "<outdir>/cycles/<cycle>/; latest is resolved "
+                             "once, under the run's posting rule (as posted: "
+                             "the newest cycle whose start needs are posted)")
+    parser.add_argument("--whole-cycle", action="store_true", dest="whole_cycle",
+                        help="download routes only: the fetch stage waits for "
+                             "the whole cycle (the old rule) instead of taking "
+                             "each lead as it posts; wins over the config's "
+                             "[fetch] as_posted")
+    parser.add_argument("--late-after-minutes", type=float, default=None,
+                        dest="late_after_minutes", metavar="MIN",
+                        help="download routes only: how far past its scheduled "
+                             "time a lead may be before the run stops with exit "
+                             "75; wins over the config's [fetch] "
+                             "late_after_minutes and the source row's budget")
+    parser.add_argument("--readiness", action="store_true",
+                        help="print gpuwm.readiness.v1 for the config's fetch "
+                             "window on stdout and run nothing: exit 0 ready, "
+                             "75 not yet, 2 refused")
+    parser.add_argument("--no-probe", action="store_true", dest="no_probe",
+                        help="with --readiness: compute the schedule from the "
+                             "source table only and ask no host")
     parser.add_argument("--supplement", action="append", metavar="ROLE=PATH",
                         help="explicit preparation donor; repeat for multiple files. "
                              "HRRR accepts PMSL=GRIB inside --data-dir and binds its "
@@ -4504,7 +5259,10 @@ def register_cli(subparsers) -> None:
                         dest="no_memory_gate",
                         help="skip the before-launch memory check that "
                              "refuses a configuration whose binding phase "
-                             "cannot fit this card's free VRAM")
+                             "cannot fit this card's free VRAM, and the "
+                             "forecast runner's own check of the same "
+                             "envelope; a model state too big to build at "
+                             "all is still refused")
     parser.set_defaults(func=go_main)
     return parser
 

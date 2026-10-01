@@ -88,42 +88,14 @@ class NativeHierarchyExportResult:
             MappingProxyType(dict(self.moisture_floor_receipts)))
 
 
-def initialize_and_export_native_hierarchy(
-        *, exp, root_node, catalog, artifact_output: Path,
-        wrf_output: Path, root_initial_result, root_met, root_soil,
-        root_static_fields, root_boundaries,
-        bridge_manifest_sha256: str, source_manifest_sha256: str,
-        namelist_sha256: str, forcing_hours: Sequence[int] | None = None,
-        forcing_offsets_seconds: Sequence[int] | None = None,
-        source_identity: Mapping[str, object], source_orography=None,
-        workers: int = 8, preprocess_backend="cpu", cpu_bridge=None,
-        boundary_interval_seconds: int = 3600, scratch_arena=None,
-        dycore_state_workspace=None, sfcp_to_sfcp: bool = True,
-        soil_layer_contract=None,
-        root_metadata: Mapping[str, object] | None = None,
-        input_provenance: Mapping[str, object] | None = None,
-        artifact_manifest_reference: str | None = None,
-        stock_wrf_export: str = "required",
-) -> NativeHierarchyExportResult:
-    """Prepare children in parallel, join artifacts, and emit WRF files.
-
-    The caller supplies the already prepared root because its complete source
-    time series owns the sole external LBC sequence.  Child static/source
-    mapping is launched concurrently with an explicit worker budget, then
-    finalized at parent barriers before the atomic artifact tree and final
-    ``wrfinput_d01..dNN``/``wrfbdy_d01`` directory are written.
-
-    ``stock_wrf_export`` says what that last step is worth to the caller;
-    see :data:`STOCK_WRF_EXPORT_MODES`.  It defaults to ``"required"``,
-    the behaviour every caller had when the export was an unconditional
-    call, so opting into the softer modes is a decision a source adapter
-    makes explicitly rather than one it inherits.
-    """
-
+def _require_export_mode(stock_wrf_export: str) -> None:
     if stock_wrf_export not in STOCK_WRF_EXPORT_MODES:
         raise ValueError(
             f"stock_wrf_export must be one of {list(STOCK_WRF_EXPORT_MODES)}, "
             f"got {stock_wrf_export!r}")
+
+
+def _require_root(exp, root_node, root_initial_result) -> None:
     # This export prepares every declared child up front and writes it to
     # wrfinput_dNN; a dormant nest has no fired placement to prepare AT,
     # and nothing here watches its trigger.  Refused by name.
@@ -134,6 +106,10 @@ def initialize_and_export_native_hierarchy(
             "root node and root initial result do not share the same state")
     if int(root_node.cfg.grid_id) != int(exp.domains[0].grid_id):
         raise ValueError("root node does not match the experiment root domain")
+
+
+def _require_export_inputs(root_node, root_boundaries, input_provenance,
+                           artifact_output, wrf_output) -> dict:
     if getattr(root_node.state, "lateral_boundaries", None) is not \
             root_boundaries:
         raise ValueError("root state does not carry the supplied boundaries")
@@ -150,7 +126,25 @@ def initialize_and_export_native_hierarchy(
                         (Path(wrf_output), "WRF output")):
         if path.exists():
             raise FileExistsError(f"refusing to overwrite {label} path {path}")
-    timings: dict[str, float] = {}
+    return provenance
+
+
+def initialize_native_hierarchy_children(
+        *, exp, root_node, catalog, root_initial_result,
+        source_orography=None, workers: int = 8, preprocess_backend="cpu",
+        cpu_bridge=None, scratch_arena=None, dycore_state_workspace=None,
+        sfcp_to_sfcp: bool = True, soil_layer_contract=None,
+) -> tuple[tuple, float]:
+    """Prepare every child from the root's START state; no boundary needed.
+
+    A child reads one source snapshot (its start time,
+    ``nest_init._initial_snapshot``) and the root's initial terrain, base
+    column and geopotential; none of the root's lateral boundaries.  So a
+    chained tree prepares its children into its head, before any root
+    boundary interval exists.  Returns ``(child_results, seconds)``.
+    """
+
+    _require_root(exp, root_node, root_initial_result)
     started = time.perf_counter()
     with prep_stage("child_initialize", label="Initialize child domains",
                     backend=preprocess_backend, count=len(exp.domains) - 1):
@@ -162,7 +156,37 @@ def initialize_and_export_native_hierarchy(
             state_backend="preprocess",
             sfcp_to_sfcp=sfcp_to_sfcp,
             soil_layer_contract=soil_layer_contract)
-    timings["parallel_child_initialization"] = time.perf_counter() - started
+    return tuple(child_results), time.perf_counter() - started
+
+
+def export_native_hierarchy(
+        *, exp, root_node, artifact_output: Path, wrf_output: Path,
+        root_initial_result, root_met, root_soil, root_static_fields,
+        root_boundaries, child_results, child_initialization_seconds: float,
+        bridge_manifest_sha256: str, source_manifest_sha256: str,
+        namelist_sha256: str, forcing_hours: Sequence[int] | None = None,
+        forcing_offsets_seconds: Sequence[int] | None = None,
+        source_identity: Mapping[str, object],
+        boundary_interval_seconds: int = 3600,
+        root_metadata: Mapping[str, object] | None = None,
+        input_provenance: Mapping[str, object] | None = None,
+        artifact_manifest_reference: str | None = None,
+        stock_wrf_export: str = "required",
+) -> NativeHierarchyExportResult:
+    """Join the root (with its whole boundary set) and its children, then export.
+
+    The second half of :func:`initialize_and_export_native_hierarchy`: the
+    atomic artifact tree and the unchanged-WRF companion files.  A chained
+    tree calls it at its seal, once every root interval exists.
+    """
+
+    _require_export_mode(stock_wrf_export)
+    _require_root(exp, root_node, root_initial_result)
+    provenance = _require_export_inputs(
+        root_node, root_boundaries, input_provenance, artifact_output,
+        wrf_output)
+    timings: dict[str, float] = {
+        "parallel_child_initialization": float(child_initialization_seconds)}
 
     started = time.perf_counter()
     with prep_stage("hierarchy_artifacts", label="Write hierarchy artifacts"):
@@ -213,13 +237,25 @@ def initialize_and_export_native_hierarchy(
                 export_stage.update(outcome="refused", reason=str(error))
     timings["direct_stock_wrf_export"] = time.perf_counter() - started
     timings["total"] = sum(timings.values())
+    return NativeHierarchyExportResult(
+        artifacts=artifact_build,
+        wrf_manifest=wrf_manifest,
+        timings_seconds=timings,
+        moisture_floor_receipts=hierarchy_moisture_floor_receipts(
+            exp, root_initial_result, child_results))
+
+
+def hierarchy_moisture_floor_receipts(exp, root_initial_result,
+                                      child_results) -> dict:
+    """Each domain's moisture-floor receipt, root first, by domain label."""
+
     # Root first, then the children in the experiment's declared order,
     # each under the domain label every other by-domain receipt in the
     # tree uses.  The same positional pairing
-    # `write_native_hierarchy_artifacts` above works from -- and refuses
-    # by domain name when it disagrees -- so the label a block gets here
-    # is the label that call already bound the child to.
-    floor_receipts = moisture_floor_proof_entries(
+    # `write_native_hierarchy_artifacts` works from -- and refuses by
+    # domain name when it disagrees -- so the label a block gets here is
+    # the label that call already bound the child to.
+    return dict(moisture_floor_proof_entries(
         ((f"d{int(domain.grid_id):02d}", result)
          for domain, result in zip(
              exp.domains,
@@ -230,16 +266,80 @@ def initialize_and_export_native_hierarchy(
             "this domain's initialization result carries no moisture-floor "
             "field, so it came from an ingest predating the receipt; "
             "re-prepare the hierarchy to record whether its vapour was "
-            "floored on the way in"))
-    return NativeHierarchyExportResult(
-        artifacts=artifact_build,
-        wrf_manifest=wrf_manifest,
-        timings_seconds=timings,
-        moisture_floor_receipts=floor_receipts)
+            "floored on the way in")))
+
+
+def initialize_and_export_native_hierarchy(
+        *, exp, root_node, catalog, artifact_output: Path,
+        wrf_output: Path, root_initial_result, root_met, root_soil,
+        root_static_fields, root_boundaries,
+        bridge_manifest_sha256: str, source_manifest_sha256: str,
+        namelist_sha256: str, forcing_hours: Sequence[int] | None = None,
+        forcing_offsets_seconds: Sequence[int] | None = None,
+        source_identity: Mapping[str, object], source_orography=None,
+        workers: int = 8, preprocess_backend="cpu", cpu_bridge=None,
+        boundary_interval_seconds: int = 3600, scratch_arena=None,
+        dycore_state_workspace=None, sfcp_to_sfcp: bool = True,
+        soil_layer_contract=None,
+        root_metadata: Mapping[str, object] | None = None,
+        input_provenance: Mapping[str, object] | None = None,
+        artifact_manifest_reference: str | None = None,
+        stock_wrf_export: str = "required",
+) -> NativeHierarchyExportResult:
+    """Prepare children in parallel, join artifacts, and emit WRF files.
+
+    The caller supplies the already prepared root because its complete source
+    time series owns the sole external LBC sequence.  Child static/source
+    mapping is launched concurrently with an explicit worker budget, then
+    finalized at parent barriers before the atomic artifact tree and final
+    ``wrfinput_d01..dNN``/``wrfbdy_d01`` directory are written.
+
+    ``stock_wrf_export`` says what that last step is worth to the caller;
+    see :data:`STOCK_WRF_EXPORT_MODES`.  It defaults to ``"required"``,
+    the behaviour every caller had when the export was an unconditional
+    call, so opting into the softer modes is a decision a source adapter
+    makes explicitly rather than one it inherits.
+
+    The two halves are :func:`initialize_native_hierarchy_children` and
+    :func:`export_native_hierarchy`; a chained tree calls them at its head
+    and at its seal.
+    """
+
+    _require_export_mode(stock_wrf_export)
+    _require_root(exp, root_node, root_initial_result)
+    _require_export_inputs(root_node, root_boundaries, input_provenance,
+                           artifact_output, wrf_output)
+    child_results, child_seconds = initialize_native_hierarchy_children(
+        exp=exp, root_node=root_node, catalog=catalog,
+        root_initial_result=root_initial_result,
+        source_orography=source_orography, workers=workers,
+        preprocess_backend=preprocess_backend, cpu_bridge=cpu_bridge,
+        scratch_arena=scratch_arena,
+        dycore_state_workspace=dycore_state_workspace,
+        sfcp_to_sfcp=sfcp_to_sfcp, soil_layer_contract=soil_layer_contract)
+    return export_native_hierarchy(
+        exp=exp, root_node=root_node, artifact_output=artifact_output,
+        wrf_output=wrf_output, root_initial_result=root_initial_result,
+        root_met=root_met, root_soil=root_soil,
+        root_static_fields=root_static_fields,
+        root_boundaries=root_boundaries, child_results=child_results,
+        child_initialization_seconds=child_seconds,
+        bridge_manifest_sha256=bridge_manifest_sha256,
+        source_manifest_sha256=source_manifest_sha256,
+        namelist_sha256=namelist_sha256, forcing_hours=forcing_hours,
+        forcing_offsets_seconds=forcing_offsets_seconds,
+        source_identity=source_identity,
+        boundary_interval_seconds=boundary_interval_seconds,
+        root_metadata=root_metadata, input_provenance=input_provenance,
+        artifact_manifest_reference=artifact_manifest_reference,
+        stock_wrf_export=stock_wrf_export)
 
 
 __all__ = [
     "NativeHierarchyExportResult",
     "STOCK_WRF_EXPORT_MODES",
+    "export_native_hierarchy",
+    "hierarchy_moisture_floor_receipts",
     "initialize_and_export_native_hierarchy",
+    "initialize_native_hierarchy_children",
 ]

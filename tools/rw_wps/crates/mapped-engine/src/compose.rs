@@ -996,7 +996,21 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
     // field inventory -- and none of them reads a primary array, which is
     // what makes the composition resolvable before the series exists.
     let partitioned = partition_mapping(&mapping, false)?;
-    let mut stream = crate::engine::DecodeStream::open(&partitioned, &primary, progress)?;
+    // A terrain derived from the primary (`when_absent`) reads the first
+    // valid time's columns beside its full-grid surface fields, so the
+    // fields it names are never decoded over the atmospheric window.
+    let mut keep_whole: BTreeSet<String> = BTreeSet::new();
+    if composition.terrain.is_some() {
+        if let Some(operation) = mapping.field(EXTERNAL_FIELD).ok().and_then(|field| field.when_absent()) {
+            for label in WHEN_ABSENT_FIELDS {
+                if let Some(name) = operation.get(label).and_then(Node::as_str) {
+                    keep_whole.insert(name.to_owned());
+                }
+            }
+        }
+    }
+    let mut stream = crate::engine::DecodeStream::open_within(
+        &partitioned, &primary, progress, invocation.atmospheric_window, &keep_whole)?;
     let aliased = stream.aliased().clone();
     progress(json!({
         "event": "composed_primary",
@@ -1142,6 +1156,7 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
     }
 
     let mut series = stream.summary().clone();
+    series.lead_batch = invocation.lead_batch;
     if let Some((member, _identity)) = &member_binding {
         // The composed clock is restated under the bound member so the
         // frameset's keys and the slices it pulls agree; the records
@@ -1163,21 +1178,21 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             .as_ref()
             .expect("compose requires --output"),
     );
-    // One valid time at a time, end to end: the primary slice is
-    // decoded, the composition's joins are applied to it, the frame is
-    // materialized and written, and all of it is dropped before the next
-    // valid time is read.
+    // One valid time end to end: the primary slice is decoded, the
+    // composition's joins are applied to it, the frame is materialized
+    // and written, and all of it is dropped.  Several valid times do
+    // this at once when the series allows it (`lanes`), each on its own
+    // decode, and they are still written one at a time, in order.
     let source_keys: Vec<crate::assemble::TimeKey> = stream.keys().to_vec();
-    let mut position = 0usize;
-    let document = crate::frames::write_frameset_with_window(
-        &output, &union, &series, &digests, invocation.atmospheric_window, |key| {
-        let source_key = source_keys[position].clone();
-        position += 1;
-        // The frameset's key and the decode's key differ only in the
-        // member the manifest binds; if they ever differed in the VALID
-        // TIME, the composition would be applied to a different forcing
-        // time than the frame being written, so it refuses by naming
-        // both rather than composing the wrong one.
+    // A window granted before the first record was decoded is published
+    // by every frame, on either writer (`DecodeStream::decode_window`).
+    let decode_window = stream.decode_window().cloned();
+    // The frameset's key and the decode's key differ only in the
+    // member the manifest binds; if they ever differed in the VALID
+    // TIME, the composition would be applied to a different forcing
+    // time than the frame being written, so it refuses by naming both
+    // rather than composing the wrong one.
+    let same_time = |key: &crate::assemble::TimeKey, source_key: &crate::assemble::TimeKey| {
         if key.0 != source_key.0 {
             return Err(mapping_invalid(format!(
                 "the composed frameset asked for {} while the decode is at \
@@ -1186,12 +1201,15 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
                 crate::frames::naive_isoformat(source_key.0)
             )));
         }
-        let mut slice = stream.slice(&source_key)?;
+        Ok(())
+    };
+    let compose_slice = |mut slice: crate::assemble::DecodedCollection,
+                         source_key: &crate::assemble::TimeKey| {
         if let Some(plan) = &terrain_plan {
-            crate::join::apply_terrain(plan, &mut slice, &source_key)?;
+            crate::join::apply_terrain(plan, &mut slice, source_key)?;
         }
         for (plan, donor) in &borrowed {
-            crate::join::apply_bound_fields(plan, donor, &mut slice, &source_key)?;
+            crate::join::apply_bound_fields(plan, donor, &mut slice, source_key)?;
         }
         // The manifest's explicit member binding lands LAST, after every
         // join: the composition operates on the identity the bytes carry
@@ -1201,7 +1219,47 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
             slice = bind_manifest_member(slice, member)?;
         }
         Ok(slice)
-    })?;
+    };
+    // How many valid times are in flight is not announced: the progress
+    // stream is part of the byte-identity gate (docs/dev/decode-vendor-
+    // design.md, "THE GATE") and must not change with the worker count.
+    let lanes = if stream.times_are_independent() {
+        crate::threads::lanes(
+            stream.per_time_bytes(), &stream.field_bytes(), stream.held_bytes(), source_keys.len())
+    } else {
+        1
+    };
+    let document = if lanes > 1 {
+        let first = std::sync::Mutex::new(stream.take_first());
+        let stream = &stream;
+        crate::frames::write_frameset_lanes(
+            &output, &union, &series, &digests, invocation.atmospheric_window, decode_window,
+            lanes, |index, key| {
+                let source_key = &source_keys[index];
+                same_time(key, source_key)?;
+                let held = if index == 0 {
+                    first.lock().ok().and_then(|mut slot| slot.take())
+                } else {
+                    None
+                };
+                let slice = match held {
+                    Some(collection) => collection,
+                    None => stream.slice_detached(source_key)?,
+                };
+                compose_slice(slice, source_key)
+            },
+        )?
+    } else {
+        let mut position = 0usize;
+        crate::frames::write_frameset_with_decode_window(
+            &output, &union, &series, &digests, invocation.atmospheric_window, decode_window, |key| {
+            let source_key = source_keys[position].clone();
+            position += 1;
+            same_time(key, &source_key)?;
+            let slice = stream.slice(&source_key)?;
+            compose_slice(slice, &source_key)
+        })?
+    };
     let frame_count = document
         .get("frames")
         .and_then(Value::as_array)

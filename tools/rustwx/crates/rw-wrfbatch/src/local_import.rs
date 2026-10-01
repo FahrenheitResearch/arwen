@@ -1945,33 +1945,27 @@ fn format_valid_unix(unix: i64) -> String {
         .unwrap_or_else(|| format!("unix:{unix}"))
 }
 
+/// The run origin of a file only the netcrust reader opens.  The same rule
+/// as the raw wrf-core route ([`wrf_run_origin`]): a wrfout that falls back
+/// to netcrust carries the same two stamps, and a delayed nest must not draw
+/// under one reader and be refused under the other.
 fn explicit_netcdf_reference_time(nc: &NcFile) -> Result<Option<i64>, ImportError> {
-    let mut found = None::<(String, i64)>;
-    for name in ["START_DATE", "SIMULATION_START_DATE"] {
+    let read = |name: &str| -> Result<Option<i64>, ImportError> {
         let Some(attribute) = nc.attribute(name) else {
-            continue;
+            return Ok(None);
         };
         let Some(value) = attribute.as_string() else {
-            continue;
+            return Ok(None);
         };
-        let parsed = parse_utc_timestamp(value).ok_or_else(|| {
+        parse_utc_timestamp(value).map(Some).ok_or_else(|| {
             ImportError::TimeAxis(format!(
                 "global attribute {name} is not a valid UTC timestamp"
             ))
-        })?;
-        if let Some((prior_name, prior)) = &found {
-            if *prior != parsed {
-                return Err(ImportError::TimeAxis(format!(
-                    "conflicting forecast reference attributes {prior_name}={} and {name}={}",
-                    format_valid_unix(*prior),
-                    format_valid_unix(parsed)
-                )));
-            }
-        } else {
-            found = Some((name.to_string(), parsed));
-        }
-    }
-    Ok(found.map(|(_, value)| value))
+        })
+    };
+    let start_date = read("START_DATE")?;
+    let simulation_start = read("SIMULATION_START_DATE")?;
+    wrf_run_origin(start_date, simulation_start).map_err(ImportError::TimeAxis)
 }
 
 fn source_records_from_labels(
@@ -2470,6 +2464,29 @@ pub(crate) fn netcdf_initial_condition_disclosure(nc: &NcFile) -> Option<String>
     compose_initial_condition_disclosure(lead as i64, source, cycle)
 }
 
+/// The producing model's name a file carries for the metadata row
+/// (`GPUWM_MODEL_LABEL`, see `rustwx_products::shared_context`), read the
+/// same way under both readers.  `Ok(None)` when the file names no model,
+/// which is every stock WRF file; `Err` names a label the row cannot take.
+pub(crate) fn model_label(file: &WrfFile) -> Result<Option<String>, String> {
+    match file.global_attr_str(rustwx_products::shared_context::MODEL_LABEL_ATTRIBUTE) {
+        Ok(raw) => rustwx_products::shared_context::checked_model_label(&raw),
+        Err(_) => Ok(None),
+    }
+}
+
+/// [`model_label`] for a file only the netcrust reader could open.
+pub(crate) fn netcdf_model_label(nc: &NcFile) -> Result<Option<String>, String> {
+    let Some(attribute) = nc.attribute(rustwx_products::shared_context::MODEL_LABEL_ATTRIBUTE)
+    else {
+        return Ok(None);
+    };
+    match attribute.as_string() {
+        Some(raw) => rustwx_products::shared_context::checked_model_label(raw),
+        None => Ok(None),
+    }
+}
+
 /// `2026-08-01T00:00:00Z` -> `08/01 00Z`, the spelling the `Init` and
 /// `Valid` tokens already use, so one subtitle holds one date format.
 fn format_cycle_label(unix_seconds: i64) -> String {
@@ -2478,29 +2495,60 @@ fn format_cycle_label(unix_seconds: i64) -> String {
         .unwrap_or_else(|| format_valid_unix(unix_seconds))
 }
 
+/// The run origin a WRF file's two start stamps give.
+///
+/// WRF writes a domain's OWN start into `START_DATE` and the head grid's
+/// start into `SIMULATION_START_DATE` (`share/output_wrf.F`; gpuwm's writer,
+/// `gpuwm/io/wrfout.py` `wrf_global_attrs`, does the same), so the two differ
+/// by design on a nest that starts after the forecast and on a restart
+/// file.  The run origin every lead is measured from, and the store run is
+/// keyed on, is `SIMULATION_START_DATE`: it is identical on every domain of
+/// one run, so a delayed nest's frame valid at 14Z reads F+02 beside the
+/// parent's F+02.  Neither stamp is a frame's valid time; that comes from
+/// `Times`.  With only one stamp readable, that one is the origin, as
+/// before.
+///
+/// Refused: a `START_DATE` before `SIMULATION_START_DATE`.  No WRF domain
+/// starts before its simulation, so one of the two stamps is wrong, and
+/// either choice would measure every lead, the `Init` label and the run's
+/// store key from a guessed origin.
+pub(crate) fn wrf_run_origin(
+    start_date: Option<i64>,
+    simulation_start: Option<i64>,
+) -> Result<Option<i64>, String> {
+    match (start_date, simulation_start) {
+        (Some(start), Some(simulation)) if start < simulation => Err(format!(
+            "conflicting WRF references START_DATE={} and SIMULATION_START_DATE={}: the domain starts before its simulation, which no WRF writer produces, so one stamp is wrong and every lead, the Init label and the run's store key would be measured from a guessed origin",
+            format_valid_unix(start),
+            format_valid_unix(simulation)
+        )),
+        (_, Some(simulation)) => Ok(Some(simulation)),
+        (start, None) => Ok(start),
+    }
+}
+
 fn parse_matching_wrf_reference_attributes(
     attributes: &[(&str, String)],
 ) -> Result<(Option<i64>, Vec<String>), String> {
-    let mut found = None::<(String, i64)>;
+    let mut start_date = None::<i64>;
+    let mut simulation_start = None::<i64>;
     let mut malformed = Vec::new();
     for (name, value) in attributes {
         let Some(parsed) = parse_utc_timestamp(value) else {
             malformed.push(format!("{name}={value:?} is not a valid UTC timestamp"));
             continue;
         };
-        if let Some((prior_name, prior)) = &found {
-            if *prior != parsed {
+        match *name {
+            "START_DATE" => start_date = Some(parsed),
+            "SIMULATION_START_DATE" => simulation_start = Some(parsed),
+            other => {
                 return Err(format!(
-                    "conflicting WRF references {prior_name}={} and {name}={}",
-                    format_valid_unix(*prior),
-                    format_valid_unix(parsed)
-                ));
+                    "{other} is not a WRF run-origin attribute; only START_DATE and SIMULATION_START_DATE are read as one, and an unknown stamp would be dropped without a word"
+                ))
             }
-        } else {
-            found = Some(((*name).to_string(), parsed));
         }
     }
-    Ok((found.map(|(_, value)| value), malformed))
+    Ok((wrf_run_origin(start_date, simulation_start)?, malformed))
 }
 
 /// Infer the WRF initialization time from authoritative absolute `Times` and
@@ -2685,6 +2733,7 @@ fn preflight_local_sources(
 ) -> Result<(Vec<LocalSourcePlan>, String), ImportError> {
     let mut expected_shape = None::<(usize, usize)>;
     let mut sources = Vec::<(PathBuf, SourceTimeAxis)>::with_capacity(files.len());
+    let mut model_labels = Vec::<Option<String>>::with_capacity(files.len());
     for path in files {
         // Probe wrf-core first so common raw wrfouts do not pay netcrust's
         // expensive eager metadata indexing twice (preflight + processing).
@@ -2701,6 +2750,10 @@ fn preflight_local_sources(
                 rustwx_products::shared_context::set_initial_condition_disclosure(
                     initial_condition_disclosure(&file),
                 );
+                model_labels.push(model_label(&file).unwrap_or_else(|reason| {
+                    eprintln!("IMPORT_NOTE	{reason}; the plots keep the store identity");
+                    None
+                }));
                 (
                     wrf_source_times(&file, path).map_err(ImportError::TimeAxis)?,
                     (file.nx, file.ny),
@@ -2711,6 +2764,10 @@ fn preflight_local_sources(
                 rustwx_products::shared_context::set_initial_condition_disclosure(
                     netcdf_initial_condition_disclosure(&nc),
                 );
+                model_labels.push(netcdf_model_label(&nc).unwrap_or_else(|reason| {
+                    eprintln!("IMPORT_NOTE	{reason}; the plots keep the store identity");
+                    None
+                }));
                 (
                     netcdf_source_times(&nc, path)?,
                     netcdf_grid_shape(&nc, path)?,
@@ -2721,6 +2778,11 @@ fn preflight_local_sources(
             .map_err(ImportError::TimeAxis)?;
         sources.push((path.clone(), source_times));
     }
+    // One run per invocation, as the disclosure above: the model the files
+    // name is the run's, when every file names the same one.
+    rustwx_products::shared_context::set_model_label(
+        rustwx_products::shared_context::agreed_model_label(&model_labels),
+    );
     let timeline = ForecastHourTimeline::plan_all(&sources).map_err(ImportError::TimeAxis)?;
     let mut plans = Vec::with_capacity(sources.len());
     for (index, (path, _)) in sources.into_iter().enumerate() {
@@ -5787,6 +5849,80 @@ mod tests {
         assert!(error.contains("conflicting WRF references"), "{error}");
     }
 
+    /// A137: WRF writes a nest's own start into START_DATE and the head
+    /// grid's into SIMULATION_START_DATE, so a nest that starts after the
+    /// forecast carries a later START_DATE by design, and every one of its
+    /// frames was refused as "conflicting WRF references".
+    #[test]
+    fn a_delayed_nest_start_measures_leads_from_the_simulation_start() {
+        let simulation = parse_utc_timestamp("2026-09-29_12:00:00").unwrap();
+        let nest = parse_utc_timestamp("2026-09-29_13:00:00").unwrap();
+        let attributes = |start: &str, simulation: &str| {
+            vec![
+                ("START_DATE", start.to_string()),
+                ("SIMULATION_START_DATE", simulation.to_string()),
+            ]
+        };
+
+        // The delayed nest: the run's origin, not the nest's own start.
+        let (reference, malformed) = parse_matching_wrf_reference_attributes(&attributes(
+            "2026-09-29_13:00:00",
+            "2026-09-29_12:00:00",
+        ))
+        .unwrap();
+        assert_eq!(reference, Some(simulation));
+        assert!(malformed.is_empty(), "{malformed:?}");
+        // The order the stamps are read in does not choose the answer.
+        let swapped = vec![
+            ("SIMULATION_START_DATE", "2026-09-29_12:00:00".to_string()),
+            ("START_DATE", "2026-09-29_13:00:00".to_string()),
+        ];
+        assert_eq!(
+            parse_matching_wrf_reference_attributes(&swapped).unwrap().0,
+            Some(simulation)
+        );
+
+        // A domain that starts with the run is unchanged.
+        assert_eq!(
+            parse_matching_wrf_reference_attributes(&attributes(
+                "2026-09-29_12:00:00",
+                "2026-09-29_12:00:00"
+            ))
+            .unwrap()
+            .0,
+            Some(simulation)
+        );
+        // One readable stamp is the origin, as before.
+        let (reference, malformed) = parse_matching_wrf_reference_attributes(&attributes(
+            "2026-09-29_13:00:00",
+            "not-a-time",
+        ))
+        .unwrap();
+        assert_eq!(reference, Some(nest));
+        assert_eq!(malformed.len(), 1);
+
+        // A domain that starts before its simulation is refused, naming
+        // both stamps and what a guess would break.
+        let error = parse_matching_wrf_reference_attributes(&attributes(
+            "2026-09-29_11:00:00",
+            "2026-09-29_12:00:00",
+        ))
+        .unwrap_err();
+        assert!(
+            error.contains("START_DATE=2026-09-29 11:00:00Z")
+                && error.contains("SIMULATION_START_DATE=2026-09-29 12:00:00Z")
+                && error.contains("guessed origin"),
+            "{error}"
+        );
+
+        // The section renderer shares the rule.
+        assert_eq!(wrf_run_origin(Some(nest), Some(simulation)), Ok(Some(simulation)));
+        assert_eq!(wrf_run_origin(Some(nest), None), Ok(Some(nest)));
+        assert_eq!(wrf_run_origin(None, Some(simulation)), Ok(Some(simulation)));
+        assert_eq!(wrf_run_origin(None, None), Ok(None));
+        assert!(wrf_run_origin(Some(simulation), Some(nest)).is_err());
+    }
+
     #[test]
     fn xtime_reference_fallback_fails_closed_on_unsound_axes() {
         let origin = parse_utc_timestamp("1974-04-03_23:00:00").unwrap();
@@ -7510,6 +7646,306 @@ mod source_time_fixture_tests {
                 .unwrap_or_else(|err| panic!("{name}: the raw-wrfout reader opens it: {err}"));
             let axis = wrf_source_times(&file, &path).unwrap_or_else(|err| panic!("{name}: {err}"));
             assert_hour_twelve(&axis, name);
+        }
+    }
+}
+
+/// A137 on a written file, through both readers: a wrfout-shaped d03 that
+/// starts an hour after its simulation, stamped the way WRF and gpuwm's
+/// writer stamp a delayed nest (START_DATE its own start, XTIME minutes
+/// since it, SIMULATION_START_DATE the run's).
+#[cfg(test)]
+mod delayed_nest_time_tests {
+    use super::*;
+    use netcdf_writer::{AttrValue, NcFormat, NcType, NcWriter, Schema, VarData};
+
+    const SIMULATION: &str = "2026-09-29_12:00:00";
+    const NEST: &str = "2026-09-29_13:00:00";
+    const FRAMES: [&str; 2] = ["2026-09-29_13:00:00", "2026-09-29_14:00:00"];
+
+    fn write_nest(start_date: &str, tag: &str) -> (PathBuf, PathBuf) {
+        let folder = std::env::temp_dir().join(format!(
+            "rw-delayed-nest-{tag}-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join(format!("wrfout_d03_{}", FRAMES[0].replace(':', "_")));
+        let mut schema = Schema::new(NcFormat::Offset64);
+        let time = schema.def_dim("Time", 0, true).unwrap();
+        let strlen = schema.def_dim("DateStrLen", 19, false).unwrap();
+        let bottom_top = schema.def_dim("bottom_top", 1, false).unwrap();
+        let south_north = schema.def_dim("south_north", 2, false).unwrap();
+        let west_east = schema.def_dim("west_east", 2, false).unwrap();
+        for (name, value) in [
+            ("TITLE", " OUTPUT FROM WRF V4.6.1 MODEL"),
+            ("START_DATE", start_date),
+            ("SIMULATION_START_DATE", SIMULATION),
+        ] {
+            schema
+                .put_global_attr(name, AttrValue::Text(value.into()))
+                .unwrap();
+        }
+        for (name, value) in [("MAP_PROJ", 1i32), ("GRID_ID", 3), ("PARENT_ID", 2)] {
+            schema
+                .put_global_attr(name, AttrValue::Ints(vec![value]))
+                .unwrap();
+        }
+        for (name, value) in [
+            ("DX", 1333.3334f32),
+            ("DY", 1333.3334),
+            ("TRUELAT1", 30.0),
+            ("TRUELAT2", 60.0),
+            ("STAND_LON", -97.5),
+            ("CEN_LAT", 35.5),
+            ("CEN_LON", -97.5),
+        ] {
+            schema
+                .put_global_attr(name, AttrValue::Floats(vec![value]))
+                .unwrap();
+        }
+        let times = schema
+            .def_var("Times", NcType::Char, &[time, strlen])
+            .unwrap();
+        let xtime = schema.def_var("XTIME", NcType::Float, &[time]).unwrap();
+        let origin = format!("minutes since {}", start_date.replacen('_', " ", 1));
+        schema
+            .put_var_attr(xtime, "units", AttrValue::Text(origin.clone()))
+            .unwrap();
+        schema
+            .put_var_attr(xtime, "description", AttrValue::Text(origin))
+            .unwrap();
+        let plane = |schema: &mut Schema, name: &str| {
+            schema
+                .def_var(name, NcType::Float, &[time, south_north, west_east])
+                .unwrap()
+        };
+        let xlat = plane(&mut schema, "XLAT");
+        let xlong = plane(&mut schema, "XLONG");
+        let t2 = plane(&mut schema, "T2");
+        // The four-dimensional T the raw-wrfout reader keys on.
+        let theta = schema
+            .def_var("T", NcType::Float, &[time, bottom_top, south_north, west_east])
+            .unwrap();
+        let mut writer = NcWriter::create(&path, schema).unwrap();
+        let start = parse_utc_timestamp(start_date).unwrap();
+        for (record, label) in FRAMES.iter().enumerate() {
+            let record_number = record as u64;
+            let minutes = (parse_utc_timestamp(label).unwrap() - start) as f32 / 60.0;
+            writer
+                .write_record(record_number, times, VarData::Char(label.as_bytes()))
+                .unwrap();
+            writer
+                .write_record(record_number, xtime, VarData::F32(&[minutes]))
+                .unwrap();
+            writer
+                .write_record(record_number, xlat, VarData::F32(&[35.4, 35.4, 35.41, 35.41]))
+                .unwrap();
+            writer
+                .write_record(record_number, xlong, VarData::F32(&[-97.5, -97.49, -97.5, -97.49]))
+                .unwrap();
+            writer
+                .write_record(record_number, t2, VarData::F32(&[290.0, 291.0, 292.0, 293.0]))
+                .unwrap();
+            writer
+                .write_record(record_number, theta, VarData::F32(&[1.0, 2.0, 3.0, 4.0]))
+                .unwrap();
+        }
+        writer.finish().unwrap();
+        (folder, path)
+    }
+
+    fn both_readers(path: &Path) -> [(&'static str, Result<SourceTimeAxis, String>); 2] {
+        let raw = WrfFile::open(path)
+            .map_err(|err| err.to_string())
+            .and_then(|file| wrf_source_times(&file, path));
+        let generic = netcrust::open(path)
+            .map_err(|err| err.to_string())
+            .and_then(|nc| netcdf_source_times(&nc, path).map_err(|err| err.to_string()));
+        [("wrf-core", raw), ("netcrust", generic)]
+    }
+
+    #[test]
+    fn a_delayed_nest_reads_its_frames_on_the_runs_lead_clock_through_both_readers() {
+        let (folder, path) = write_nest(NEST, "later");
+        let answers = both_readers(&path);
+        let _ = std::fs::remove_dir_all(&folder);
+        for (reader, answer) in answers {
+            let axis = answer.unwrap_or_else(|err| panic!("{reader} refused the delayed nest: {err}"));
+            assert_eq!(axis.reference_unix, parse_utc_timestamp(SIMULATION), "{reader}");
+            let valid = axis.records.iter().map(|r| r.valid_unix).collect::<Vec<_>>();
+            let expected = FRAMES
+                .iter()
+                .map(|label| parse_utc_timestamp(label).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(valid, expected, "{reader}: valid times come from Times");
+
+            // The planned timeline puts 13Z at F+01 and 14Z at F+02, the
+            // leads the parent's frames of the same instants carry.
+            let timeline = ForecastHourTimeline::plan_all(&[(path.clone(), axis)])
+                .unwrap_or_else(|err| panic!("{reader}: {err}"));
+            assert!(!timeline.is_exact_time_axis(), "{reader}");
+            let slots = timeline.records_for_source(0).unwrap();
+            assert_eq!(
+                slots.iter().map(|r| r.storage_slot).collect::<Vec<_>>(),
+                vec![1, 2],
+                "{reader}"
+            );
+            assert!(
+                timeline
+                    .run_name("identity", "light")
+                    .starts_with("local_20260929120000_"),
+                "{reader}: the store run is keyed on the run's start"
+            );
+        }
+    }
+
+    #[test]
+    fn a_domain_that_starts_before_its_simulation_is_refused_by_both_readers() {
+        let (folder, path) = write_nest("2026-09-29_11:00:00", "earlier");
+        let answers = both_readers(&path);
+        let _ = std::fs::remove_dir_all(&folder);
+        for (reader, answer) in answers {
+            let error = match answer {
+                Ok(axis) => panic!("{reader} accepted it with origin {:?}", axis.reference_unix),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains("START_DATE=2026-09-29 11:00:00Z")
+                    && error.contains("SIMULATION_START_DATE=2026-09-29 12:00:00Z")
+                    && error.contains("guessed origin"),
+                "{reader}: {error}"
+            );
+        }
+    }
+}
+
+/// The model label a wrfout-shaped file names (`GPUWM_MODEL_LABEL`, which
+/// a hex frame and a global tape carry so their maps stop saying WRF), read
+/// from a written file through both readers, so a reader that lost the
+/// attribute would fail here rather than as a map saying WRF again.
+#[cfg(test)]
+mod model_label_reader_tests {
+    use super::*;
+    use netcdf_writer::{AttrValue, NcFormat, NcType, NcWriter, Schema, VarData};
+
+    const FRAME: &str = "2026-09-29_06:00:00";
+
+    fn write_frame(label: Option<&str>, tag: &str) -> (PathBuf, PathBuf) {
+        let folder = std::env::temp_dir().join(format!(
+            "rw-model-label-{tag}-{}-{}",
+            std::process::id(),
+            now_unix()
+        ));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join(format!("wrfout_d01_{}", FRAME.replace(':', "_")));
+        let mut schema = Schema::new(NcFormat::Offset64);
+        let time = schema.def_dim("Time", 0, true).unwrap();
+        let strlen = schema.def_dim("DateStrLen", 19, false).unwrap();
+        let bottom_top = schema.def_dim("bottom_top", 1, false).unwrap();
+        let south_north = schema.def_dim("south_north", 2, false).unwrap();
+        let west_east = schema.def_dim("west_east", 2, false).unwrap();
+        for (name, value) in [
+            ("TITLE", " OUTPUT FROM WRF V4.6.1 MODEL"),
+            ("START_DATE", "2026-09-29_00:00:00"),
+            ("SIMULATION_START_DATE", "2026-09-29_00:00:00"),
+        ] {
+            schema
+                .put_global_attr(name, AttrValue::Text(value.into()))
+                .unwrap();
+        }
+        if let Some(label) = label {
+            schema
+                .put_global_attr(
+                    rustwx_products::shared_context::MODEL_LABEL_ATTRIBUTE,
+                    AttrValue::Text(label.into()),
+                )
+                .unwrap();
+        }
+        for (name, value) in [("MAP_PROJ", 1i32), ("GRID_ID", 1), ("PARENT_ID", 0)] {
+            schema
+                .put_global_attr(name, AttrValue::Ints(vec![value]))
+                .unwrap();
+        }
+        for (name, value) in [
+            ("DX", 750.0f32),
+            ("DY", 750.0),
+            ("TRUELAT1", 30.0),
+            ("TRUELAT2", 60.0),
+            ("STAND_LON", -122.0),
+            ("CEN_LAT", 37.7),
+            ("CEN_LON", -122.3),
+        ] {
+            schema
+                .put_global_attr(name, AttrValue::Floats(vec![value]))
+                .unwrap();
+        }
+        let times = schema
+            .def_var("Times", NcType::Char, &[time, strlen])
+            .unwrap();
+        let plane = |schema: &mut Schema, name: &str| {
+            schema
+                .def_var(name, NcType::Float, &[time, south_north, west_east])
+                .unwrap()
+        };
+        let xlat = plane(&mut schema, "XLAT");
+        let xlong = plane(&mut schema, "XLONG");
+        // The four-dimensional T the raw-wrfout reader keys on.
+        let theta = schema
+            .def_var("T", NcType::Float, &[time, bottom_top, south_north, west_east])
+            .unwrap();
+        let mut writer = NcWriter::create(&path, schema).unwrap();
+        writer
+            .write_record(0, times, VarData::Char(FRAME.as_bytes()))
+            .unwrap();
+        writer
+            .write_record(0, xlat, VarData::F32(&[37.7, 37.7, 37.71, 37.71]))
+            .unwrap();
+        writer
+            .write_record(0, xlong, VarData::F32(&[-122.3, -122.29, -122.3, -122.29]))
+            .unwrap();
+        writer
+            .write_record(0, theta, VarData::F32(&[1.0, 2.0, 3.0, 4.0]))
+            .unwrap();
+        writer.finish().unwrap();
+        (folder, path)
+    }
+
+    fn both_readers(path: &Path) -> [(&'static str, Result<Option<String>, String>); 2] {
+        let raw = WrfFile::open(path)
+            .map_err(|err| err.to_string())
+            .and_then(|file| model_label(&file));
+        let generic = netcrust::open(path)
+            .map_err(|err| err.to_string())
+            .and_then(|nc| netcdf_model_label(&nc));
+        [("wrf-core", raw), ("netcrust", generic)]
+    }
+
+    #[test]
+    fn both_readers_take_the_model_label_a_file_names_and_none_from_a_stock_wrfout() {
+        for (label, expected, tag) in [
+            (Some("WOOF Hex"), Some("WOOF Hex"), "hex"),
+            (Some("  ArWen   Global "), Some("ArWen Global"), "global"),
+            (None, None, "stock"),
+        ] {
+            let (folder, path) = write_frame(label, tag);
+            let answers = both_readers(&path);
+            let _ = std::fs::remove_dir_all(&folder);
+            for (reader, answer) in answers {
+                let read = answer.unwrap_or_else(|err| panic!("{reader} ({tag}): {err}"));
+                assert_eq!(read.as_deref(), expected, "{reader} ({tag})");
+            }
+        }
+    }
+
+    #[test]
+    fn both_readers_refuse_a_label_the_metadata_row_cannot_take() {
+        let (folder, path) = write_frame(Some("Hex | F001"), "split");
+        let answers = both_readers(&path);
+        let _ = std::fs::remove_dir_all(&folder);
+        for (reader, answer) in answers {
+            let error = answer.expect_err(reader);
+            assert!(error.contains("separator"), "{reader}: {error}");
         }
     }
 }

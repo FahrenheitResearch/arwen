@@ -8,9 +8,11 @@
 //! * the column maximum of each hydrometeor mixing ratio, so a
 //!   condensate map is one row a user can name instead of a stored
 //!   plane spelled `var:`;
-//! * a simulated infrared brightness temperature, the temperature at the
-//!   level where the column's cloud optical depth reaches one, and the
-//!   skin temperature where it never does.
+//! * a simulated infrared brightness temperature: the cloud-top
+//!   temperature of the WRF-Python / NCL `wrfcttcalc` routine, the
+//!   temperature at the pressure where the cloud optical depth integrated
+//!   down from the model top reaches one, and the lowest model level's
+//!   temperature where it never does.
 //!
 //! Every plane goes to the store under a canonical selector, so the
 //! catalog rows in `rustwx-models` resolve it the way they resolve every
@@ -23,18 +25,32 @@ use wrf_core::WrfFile;
 
 use crate::wrf_process::{WrfHourFields, WrfProcessOptions, WrfProductGroup, push_canonical_values};
 
-/// Gravity, the constant the model's own column-mass measure uses.
+/// Gravity, the constant the model's own column-mass measure uses, and
+/// the one `wrfcttcalc` divides its pressure thicknesses by.
 const G: f64 = 9.81;
 /// Kelvin at 0 C.
 const T_FREEZE_K: f64 = 273.15;
 /// Mass absorption coefficients for the simulated infrared brightness
-/// temperature, in m2 kg-1: cloud liquid and cloud ice, as the WRF
-/// cloud-top temperature diagnostic uses them.
-const IR_ABSORPTION_LIQUID: f64 = 0.145;
-const IR_ABSORPTION_ICE: f64 = 0.272;
+/// temperature, in m2 per GRAM of condensate, applied to a mixing ratio
+/// in g kg-1 and a layer mass in kg m-2: cloud liquid and cloud ice, as
+/// `wrfcttcalc` states them (`ABSCOEF` and `ABSCOEFI` in WRF-Python's
+/// `wrf_constants.f90`).  Applied to a ratio in kg kg-1 they give an
+/// optical depth a thousand times too small, and thin cirrus drew the
+/// ground's temperature.
+const IR_ABSORPTION_LIQUID_M2_PER_G: f64 = 0.145;
+const IR_ABSORPTION_ICE_M2_PER_G: f64 = 0.272;
+/// Grams per kilogram, to put a stored kg kg-1 ratio in the units the
+/// coefficients above are per.
+const GRAMS_PER_KILOGRAM: f64 = 1000.0;
 /// The optical depth, integrated from the model top, at which the column
 /// is opaque and its temperature there is the brightness temperature.
 const IR_OPAQUE_OPTICAL_DEPTH: f64 = 1.0;
+/// `wrfcttcalc`'s surface-pressure extrapolation: the dry-air gas
+/// constant (J kg-1 K-1), the US standard atmosphere lapse rate (K m-1)
+/// and the ratio of the gas constants of dry air and water vapour.
+const IR_RD: f64 = 287.0;
+const IR_STANDARD_LAPSE_RATE_K_PER_M: f64 = 0.0065;
+const IR_EPS: f64 = 0.622;
 
 /// One catalog row this module writes: the store name a product resolves,
 /// the filter key `--only` and `--skip` match beside it, and the row's
@@ -450,59 +466,121 @@ pub(crate) fn supercooled_water_path(
     out
 }
 
-/// A simulated infrared brightness temperature, K: integrating cloud
-/// optical depth downward from the model top with the mass absorption
-/// coefficients above, the temperature at the level where the depth
-/// reaches one (interpolated in depth between the level above and the
-/// level that crosses), and the skin temperature where the whole column
-/// stays thinner than that.  Liquid is cloud water; ice is cloud ice plus
-/// snow, the split the tree's own radiation code makes.
+/// A simulated infrared brightness temperature, K: the cloud-top
+/// temperature of `wrfcttcalc` (WRF-Python's `fortran/wrf_fctt.f90`, the
+/// NCL `wrf_ctt` routine, both carried over from RIP), computed the way
+/// that routine computes it:
+///
+/// * Each mass level's layer is bounded by the full levels halfway in
+///   pressure to its neighbours.  The lowest layer reaches down to a
+///   surface pressure extrapolated from the lowest level along the US
+///   standard atmosphere lapse rate at that level's virtual temperature.
+/// * A layer's optical depth is `(0.145 qc + 0.272 qi) dp / g`: the
+///   coefficients in m2 g-1, the mixing ratios in g kg-1, `dp` the
+///   layer's thickness in total pressure, Pa.  It is summed from the top
+///   down, starting one level below the model top, because the
+///   reference's loop does not integrate the top level.
+/// * A file without cloud ice counts cloud water colder than 0 C at the
+///   ice coefficient, the reference's split for a warm-rain scheme.
+/// * Where the sum reaches one, the pressure there is interpolated
+///   linearly in depth across the crossing layer and kept inside the
+///   model's own pressure range, and the brightness temperature is the
+///   temperature at that pressure, interpolated linearly in pressure
+///   between the two mass levels that bracket it.
+/// * A column that never reaches one takes the lowest level's pressure,
+///   so it reads the lowest model level's temperature: the reference's
+///   default fill, which its documentation calls the surface temperature.
+///
+/// One divergence, with no effect on any value: the surface pressure is
+/// extrapolated over the height of the lowest level above the terrain,
+/// as RIP defines it.  `wrfcttcalc` reads `ght(i,j,nz)` there, which on
+/// WRF-Python's bottom-up arrays is the model top (RIP's arrays run top
+/// down), and extrapolates to several times the real surface pressure.
+/// The value cannot tell the two apart: in the lowest layer the crossing
+/// pressure is the layer's top plus `(1 - depth above) g / extinction`
+/// whatever surface bounds the layer, and the result is clamped to the
+/// lowest level's pressure, which is also what a column that does not
+/// cross reads.  The test module's transcription keeps the reference's
+/// reading, and the two agree on a column whose only condensate is in
+/// that layer.
+///
+/// Inputs are `[nz, cells]` bottom to top with mixing ratios in kg kg-1;
+/// `terrain_m` is `[cells]`.  With fewer than two levels there is no
+/// layer to integrate, and every cell is NaN, where the reference writes
+/// its missing value.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn simulated_infrared_brightness_temperature(
     cloud_water: &[f64],
-    cloud_ice: &[f64],
-    snow: Option<&[f64]>,
+    cloud_ice: Option<&[f64]>,
+    water_vapour: &[f64],
+    pressure_pa: &[f64],
     temperature_k: &[f64],
-    layer_mass: &[f64],
-    skin_temperature_k: &[f64],
+    height_msl_m: &[f64],
+    terrain_m: &[f64],
     nz: usize,
     cells: usize,
 ) -> Vec<f32> {
     let mut out = vec![f32::NAN; cells];
+    if nz < 2 {
+        return out;
+    }
     for (cell, slot) in out.iter_mut().enumerate() {
-        let mut depth_above = 0.0f64;
-        let mut temperature_above = f64::NAN;
-        let mut found = None;
-        for k in (0..nz).rev() {
-            let index = k * cells + cell;
-            let liquid = cloud_water[index].max(0.0);
-            let ice = cloud_ice[index].max(0.0) + snow.map_or(0.0, |snow| snow[index].max(0.0));
-            let depth = depth_above
-                + (IR_ABSORPTION_LIQUID * liquid + IR_ABSORPTION_ICE * ice) * layer_mass[index];
-            let temperature = temperature_k[index];
+        let at = |field: &[f64], k: usize| field[k * cells + cell];
+        let pressure = |k: usize| at(pressure_pa, k);
+        let temperature = |k: usize| at(temperature_k, k);
+
+        let vapour = at(water_vapour, 0);
+        let virtual_k = temperature(0) * (IR_EPS + vapour) / (IR_EPS * (1.0 + vapour));
+        let height_agl_m = at(height_msl_m, 0) - terrain_m[cell];
+        let surface_pa = pressure(0)
+            * (virtual_k / (virtual_k + IR_STANDARD_LAPSE_RATE_K_PER_M * height_agl_m))
+                .powf(-G / (IR_RD * IR_STANDARD_LAPSE_RATE_K_PER_M));
+
+        let mut depth = 0.0f64;
+        let mut cloud_top_pa = pressure(0);
+        for k in (0..nz - 1).rev() {
+            let top_pa = 0.5 * (pressure(k + 1) + pressure(k));
+            let bottom_pa = if k == 0 {
+                surface_pa
+            } else {
+                0.5 * (pressure(k) + pressure(k - 1))
+            };
+            let thickness_pa = bottom_pa - top_pa;
+            let liquid_g_per_kg = GRAMS_PER_KILOGRAM * at(cloud_water, k);
+            let extinction = match cloud_ice {
+                Some(ice) => {
+                    IR_ABSORPTION_LIQUID_M2_PER_G * liquid_g_per_kg
+                        + IR_ABSORPTION_ICE_M2_PER_G * GRAMS_PER_KILOGRAM * at(ice, k)
+                }
+                None if temperature(k) < T_FREEZE_K => IR_ABSORPTION_ICE_M2_PER_G * liquid_g_per_kg,
+                None => IR_ABSORPTION_LIQUID_M2_PER_G * liquid_g_per_kg,
+            };
+            let depth_above = depth;
+            depth += extinction * thickness_pa / G;
             if depth >= IR_OPAQUE_OPTICAL_DEPTH {
-                let fraction = if depth > depth_above {
-                    (IR_OPAQUE_OPTICAL_DEPTH - depth_above) / (depth - depth_above)
-                } else {
-                    1.0
-                };
-                found = Some(if temperature_above.is_finite() {
-                    temperature_above + fraction * (temperature - temperature_above)
-                } else {
-                    temperature
-                });
+                let fraction = (IR_OPAQUE_OPTICAL_DEPTH - depth_above) / (depth - depth_above);
+                cloud_top_pa = (top_pa + fraction * thickness_pa)
+                    .max(pressure(nz - 1))
+                    .min(pressure(0));
                 break;
             }
-            depth_above = depth;
-            temperature_above = temperature;
         }
-        *slot = found.unwrap_or(skin_temperature_k[cell]) as f32;
+
+        for k in (0..nz - 1).rev() {
+            let (upper_pa, lower_pa) = (pressure(k + 1), pressure(k));
+            if cloud_top_pa >= upper_pa && cloud_top_pa <= lower_pa {
+                let fraction = (cloud_top_pa - upper_pa) / (lower_pa - upper_pa);
+                *slot = (temperature(k + 1) + fraction * (temperature(k) - temperature(k + 1))) as f32;
+                break;
+            }
+        }
     }
     out
 }
 
 /// Write every selected column plane for one frame.  A plane whose inputs
 /// the file does not carry (a scheme without graupel, a file without
-/// TSK) is a note, never a failed import.
+/// QVAPOR) is a note, never a failed import.
 pub(crate) fn push_column_planes(
     fields: &mut WrfHourFields,
     file: &WrfFile,
@@ -546,7 +624,7 @@ pub(crate) fn push_column_planes(
     let mut height_agl: Option<Vec<f64>> = None;
     let mut hydrometeor: std::collections::BTreeMap<&'static str, Option<std::rc::Rc<Vec<f64>>>> =
         std::collections::BTreeMap::new();
-    let mut read_hydrometeor = |name: &'static str| -> Option<std::rc::Rc<Vec<f64>>> {
+    let mut read_volume = |name: &'static str| -> Option<std::rc::Rc<Vec<f64>>> {
         hydrometeor
             .entry(name)
             .or_insert_with(|| {
@@ -569,7 +647,7 @@ pub(crate) fn push_column_planes(
                 cells,
                 T_FREEZE_K + f64::from(celsius),
             ),
-            ColumnPlaneKind::ColumnMaximum { variable, .. } => match read_hydrometeor(variable) {
+            ColumnPlaneKind::ColumnMaximum { variable, .. } => match read_volume(variable) {
                 Some(field) => column_maximum(&field, nz, cells),
                 None => {
                     fields
@@ -579,7 +657,7 @@ pub(crate) fn push_column_planes(
                 }
             },
             ColumnPlaneKind::SupercooledWaterPath { bottom_m, top_m } => {
-                let Some(cloud_water) = read_hydrometeor("QCLOUD") else {
+                let Some(cloud_water) = read_volume("QCLOUD") else {
                     fields
                         .notes
                         .push(format!("{} skipped: QCLOUD not in the file", plane.store_name));
@@ -609,41 +687,36 @@ pub(crate) fn push_column_planes(
                 )
             }
             ColumnPlaneKind::SimulatedInfrared => {
-                let (Some(cloud_water), Some(cloud_ice)) =
-                    (read_hydrometeor("QCLOUD"), read_hydrometeor("QICE"))
+                let (Some(cloud_water), Some(water_vapour)) =
+                    (read_volume("QCLOUD"), read_volume("QVAPOR"))
                 else {
                     fields.notes.push(format!(
-                        "{} skipped: QCLOUD and QICE are both needed",
+                        "{} skipped: QCLOUD and QVAPOR are both needed",
                         plane.store_name
                     ));
                     continue;
                 };
-                let snow = read_hydrometeor("QSNOW");
-                let skin = match file.read_var("TSK", timeidx) {
-                    Ok(values) if values.len() == cells => values,
+                // Without cloud ice the reference splits cloud water by
+                // temperature, so a warm-rain scheme still draws.
+                let cloud_ice = read_volume("QICE");
+                let pressure_pa = match file.full_pressure(timeidx) {
+                    Ok(values) if values.len() == nz * cells => values,
                     _ => {
-                        fields
-                            .notes
-                            .push(format!("{} skipped: TSK not in the file", plane.store_name));
+                        fields.notes.push(format!(
+                            "{} skipped: the full pressure P + PB is not in the file",
+                            plane.store_name
+                        ));
                         continue;
                     }
                 };
-                if layer_mass.is_none() {
-                    match layer_dry_mass(file, timeidx, nz, cells) {
-                        Ok(mass) => layer_mass = Some(mass),
-                        Err(err) => {
-                            fields.notes.push(format!("{} skipped: {err}", plane.store_name));
-                            continue;
-                        }
-                    }
-                }
                 simulated_infrared_brightness_temperature(
                     &cloud_water,
-                    &cloud_ice,
-                    snow.as_ref().map(|snow| snow.as_slice()),
+                    cloud_ice.as_ref().map(|ice| ice.as_slice()),
+                    &water_vapour,
+                    &pressure_pa,
                     &columns.temperature_k,
-                    layer_mass.as_deref().expect("set above"),
-                    &skin,
+                    &columns.height_msl_m,
+                    &columns.terrain_m,
                     nz,
                     cells,
                 )
@@ -760,32 +833,343 @@ mod tests {
         assert!((from_levels[1] - 80_500.0 * 0.03 / G).abs() < 1e-6);
     }
 
+    /// `wrfcttcalc` from WRF-Python's `fortran/wrf_fctt.f90` (develop at
+    /// 44bbe878, read 2026-09-29), transcribed line for line for one
+    /// column, with its constants from `wrf_constants.f90`.  Fortran's
+    /// 1-based `k` is kept; the arrays run bottom to top, as WRF-Python
+    /// passes them; pressure is in hPa and the mixing ratios in g kg-1,
+    /// as `get_ctt` converts them before the call; `ght(i,j,nz)` is read
+    /// where the reference reads it; the fill and the threshold are the
+    /// defaults (`fill_nocloud = 0`, `opt_thresh = 1`).  Degrees C, or
+    /// `None` where the reference writes its missing value or nothing.
+    #[allow(clippy::too_many_arguments)]
+    fn reference_wrfcttcalc(
+        prs_hpa: &[f64],
+        tk_k: &[f64],
+        qci_g_per_kg: &[f64],
+        qcw_g_per_kg: &[f64],
+        qvp_g_per_kg: &[f64],
+        ght_m: &[f64],
+        ter: f64,
+        haveqci: bool,
+    ) -> Option<f64> {
+        const EPS: f64 = 0.622;
+        const USSALR: f64 = 0.0065;
+        const RD: f64 = 287.0;
+        const G: f64 = 9.81;
+        const ABSCOEFI: f64 = 0.272;
+        const ABSCOEF: f64 = 0.145;
+        const CELKEL: f64 = 273.15;
+        let opt_thresh = 1.0;
+        let nz = prs_hpa.len();
+        let prs = |k: usize| prs_hpa[k - 1];
+        let tk = |k: usize| tk_k[k - 1];
+        let qci = |k: usize| qci_g_per_kg[k - 1];
+        let qcw = |k: usize| qcw_g_per_kg[k - 1];
+        let qvp = |k: usize| qvp_g_per_kg[k - 1];
+        let ght = |k: usize| ght_m[k - 1];
+        let mut pf = vec![0.0f64; nz + 1];
+
+        let ratmix = 0.001 * qvp(1);
+        let arg1 = EPS + ratmix;
+        let arg2 = EPS * (1.0 + ratmix);
+        let vt = tk(1) * arg1 / arg2;
+        let agl_hgt = ght(nz) - ter;
+        let arg1 = -G / (RD * USSALR);
+        pf[nz] = prs(1) * (vt / (vt + USSALR * agl_hgt)).powf(arg1);
+
+        for k in 1..=nz - 1 {
+            let ripk = nz - k + 1;
+            pf[k] = 0.5 * (prs(ripk) + prs(ripk - 1));
+        }
+
+        let mut opdepthd = 0.0f64;
+        let mut prsctt = -1.0f64;
+        for k in 2..=nz {
+            let opdepthu = opdepthd;
+            let ripk = nz - k + 1;
+            let dp = if k != 1 {
+                100.0 * (pf[k] - pf[k - 1])
+            } else {
+                200.0 * (pf[1] - prs(nz))
+            };
+            if !haveqci {
+                if tk(ripk) < CELKEL {
+                    opdepthd = opdepthu + ABSCOEFI * qcw(ripk) * dp / G;
+                } else {
+                    opdepthd = opdepthu + ABSCOEF * qcw(ripk) * dp / G;
+                }
+            } else {
+                opdepthd += (ABSCOEF * qcw(ripk) + ABSCOEFI * qci(ripk)) * dp / G;
+            }
+            if opdepthd < opt_thresh && k < nz {
+                continue;
+            } else if opdepthd < opt_thresh && k == nz {
+                prsctt = prs(1);
+                break;
+            } else {
+                let fac = (1.0 - opdepthu) / (opdepthd - opdepthu);
+                prsctt = pf[k - 1] + fac * (pf[k] - pf[k - 1]);
+                prsctt = prs(1).min(prs(nz).max(prsctt));
+                break;
+            }
+        }
+
+        if prsctt > -1.0 {
+            for k in 2..=nz {
+                let ripk = nz - k + 1;
+                let p1 = prs(ripk + 1);
+                let p2 = prs(ripk);
+                if prsctt >= p1 && prsctt <= p2 {
+                    let fac = (prsctt - p1) / (p2 - p1);
+                    let arg1 = fac * (tk(ripk) - tk(ripk + 1)) - CELKEL;
+                    return Some(tk(ripk + 1) + arg1);
+                }
+            }
+            None
+        } else {
+            None
+        }
+    }
+
+    /// A stand-in sounding, bottom to top: pressure (hPa), temperature
+    /// (K), height above sea level (m) and water vapour (kg kg-1), over
+    /// terrain at [`STAND_IN_TERRAIN_M`].
+    const STAND_IN_PRESSURE_HPA: [f64; 12] =
+        [1000.0, 975.0, 925.0, 850.0, 750.0, 650.0, 550.0, 450.0, 350.0, 275.0, 200.0, 150.0];
+    const STAND_IN_TEMPERATURE_K: [f64; 12] =
+        [293.0, 291.5, 288.0, 283.0, 276.0, 268.0, 259.0, 248.0, 234.0, 224.0, 217.0, 215.0];
+    const STAND_IN_HEIGHT_MSL_M: [f64; 12] = [
+        190.0, 400.0, 830.0, 1500.0, 2500.0, 3600.0, 4900.0, 6400.0, 8200.0, 9900.0, 12000.0, 13700.0,
+    ];
+    const STAND_IN_VAPOUR: [f64; 12] = [
+        0.012, 0.011, 0.009, 0.007, 0.005, 0.003, 0.0015, 0.0006, 0.0002, 5.0e-5, 2.0e-5, 1.0e-5,
+    ];
+    const STAND_IN_TERRAIN_M: f64 = 150.0;
+
+    /// One stand-in column's condensate, kg kg-1, on the levels named.
+    struct StandIn {
+        what: &'static str,
+        cloud_water: &'static [(usize, f64)],
+        cloud_ice: &'static [(usize, f64)],
+    }
+
+    const STAND_INS: &[StandIn] = &[
+        StandIn {
+            what: "clear",
+            cloud_water: &[],
+            cloud_ice: &[],
+        },
+        StandIn {
+            what: "thin cirrus, 0.01 g kg-1 of ice at 350 and 275 hPa",
+            cloud_water: &[],
+            cloud_ice: &[(8, 1.0e-5), (9, 1.0e-5)],
+        },
+        StandIn {
+            what: "stratocumulus, 0.3 g kg-1 of water at 925 and 850 hPa",
+            cloud_water: &[(2, 3.0e-4), (3, 3.0e-4)],
+            cloud_ice: &[],
+        },
+        StandIn {
+            what: "a deep storm under an anvil",
+            cloud_water: &[(3, 1.0e-3), (4, 1.0e-3), (5, 1.0e-3), (6, 5.0e-4), (7, 2.0e-4)],
+            cloud_ice: &[(7, 1.0e-4), (8, 1.0e-4), (9, 1.0e-4), (10, 1.0e-4)],
+        },
+        StandIn {
+            what: "fog on the lowest level only, opaque inside its own layer",
+            cloud_water: &[(0, 2.0e-4)],
+            cloud_ice: &[],
+        },
+        StandIn {
+            what: "haze on the lowest level only, too thin for its own layer",
+            cloud_water: &[(0, 5.0e-6)],
+            cloud_ice: &[],
+        },
+        StandIn {
+            what: "ice on the top level only, which the reference does not integrate",
+            cloud_water: &[],
+            cloud_ice: &[(11, 1.0e-3)],
+        },
+        StandIn {
+            what: "supercooled water at 550 hPa",
+            cloud_water: &[(6, 2.0e-5)],
+            cloud_ice: &[],
+        },
+    ];
+
+    /// Every stand-in as one `[nz, cells]` field set, a cell per column,
+    /// each column's temperatures offset by a tenth of a kelvin per cell so
+    /// a column read from its neighbour shows.
+    struct StandInFields {
+        nz: usize,
+        cells: usize,
+        pressure_pa: Vec<f64>,
+        temperature_k: Vec<f64>,
+        height_msl_m: Vec<f64>,
+        vapour: Vec<f64>,
+        cloud_water: Vec<f64>,
+        cloud_ice: Vec<f64>,
+        terrain_m: Vec<f64>,
+    }
+
+    fn stand_in_fields() -> StandInFields {
+        let nz = STAND_IN_PRESSURE_HPA.len();
+        let cells = STAND_INS.len();
+        let mut fields = StandInFields {
+            nz,
+            cells,
+            pressure_pa: vec![0.0; nz * cells],
+            temperature_k: vec![0.0; nz * cells],
+            height_msl_m: vec![0.0; nz * cells],
+            vapour: vec![0.0; nz * cells],
+            cloud_water: vec![0.0; nz * cells],
+            cloud_ice: vec![0.0; nz * cells],
+            terrain_m: vec![STAND_IN_TERRAIN_M; cells],
+        };
+        for (cell, stand_in) in STAND_INS.iter().enumerate() {
+            for k in 0..nz {
+                let index = k * cells + cell;
+                fields.pressure_pa[index] = STAND_IN_PRESSURE_HPA[k] * 100.0;
+                fields.temperature_k[index] = STAND_IN_TEMPERATURE_K[k] + 0.1 * cell as f64;
+                fields.height_msl_m[index] = STAND_IN_HEIGHT_MSL_M[k];
+                fields.vapour[index] = STAND_IN_VAPOUR[k];
+            }
+            for &(k, q) in stand_in.cloud_water {
+                fields.cloud_water[k * cells + cell] = q;
+            }
+            for &(k, q) in stand_in.cloud_ice {
+                fields.cloud_ice[k * cells + cell] = q;
+            }
+        }
+        fields
+    }
+
+    /// The reference's answer for one cell of `fields`, K.
+    fn reference_kelvin(fields: &StandInFields, cell: usize, haveqci: bool) -> f64 {
+        let level = |field: &[f64], scale: f64| -> Vec<f64> {
+            (0..fields.nz)
+                .map(|k| field[k * fields.cells + cell] * scale)
+                .collect()
+        };
+        let celsius = reference_wrfcttcalc(
+            &level(&fields.pressure_pa, 0.01),
+            &level(&fields.temperature_k, 1.0),
+            &level(&fields.cloud_ice, 1000.0),
+            &level(&fields.cloud_water, 1000.0),
+            &level(&fields.vapour, 1000.0),
+            &level(&fields.height_msl_m, 1.0),
+            fields.terrain_m[cell],
+            haveqci,
+        )
+        .expect("the reference brackets every stand-in's cloud top");
+        celsius + T_FREEZE_K
+    }
+
     #[test]
-    fn the_brightness_temperature_is_the_opaque_level_or_the_skin() {
-        // Three levels: a thick liquid cloud on the middle one.  With
-        // 1000 kg m-2 of air per layer (a 100 hPa layer), 0.145 * q * 1000
-        // reaches one at q = 6.9 g kg-1; a 20 g kg-1 cloud is opaque inside
-        // the level.
-        let qc = column(&[0.0, 0.02, 0.0]);
-        let qi = column(&[0.0, 0.0, 0.0]);
-        let t = column(&[290.0, 270.0, 250.0]);
-        let mass = column(&[1000.0, 1000.0, 1000.0]);
-        let skin = vec![300.0];
-        let tb = simulated_infrared_brightness_temperature(&qc, &qi, None, &t, &mass, &skin, 3, 1)[0];
-        // The depth goes from 0 above the level to 2.9 through it; one is
-        // reached 34.5 percent of the way down from the level above (250 K)
-        // toward the cloud level (270 K).
-        let expected = 250.0 + (1.0 / 2.9) * 20.0;
-        assert!((f64::from(tb) - expected).abs() < 1e-3, "{tb} vs {expected}");
-        // No cloud: the skin temperature.
-        let clear = column(&[0.0, 0.0, 0.0]);
-        let tb = simulated_infrared_brightness_temperature(&clear, &qi, None, &t, &mass, &skin, 3, 1)[0];
-        assert_eq!(tb, 300.0);
-        // Snow counts as ice: a thick anvil on the top level reads its own
-        // temperature.
-        let snow = column(&[0.0, 0.0, 0.05]);
-        let tb = simulated_infrared_brightness_temperature(&clear, &qi, Some(&snow), &t, &mass, &skin, 3, 1)[0];
-        assert_eq!(tb, 250.0);
+    fn the_brightness_temperature_is_the_reference_cloud_top_temperature_on_stand_in_columns() {
+        let fields = stand_in_fields();
+        let ours = simulated_infrared_brightness_temperature(
+            &fields.cloud_water,
+            Some(fields.cloud_ice.as_slice()),
+            &fields.vapour,
+            &fields.pressure_pa,
+            &fields.temperature_k,
+            &fields.height_msl_m,
+            &fields.terrain_m,
+            fields.nz,
+            fields.cells,
+        );
+        for (cell, stand_in) in STAND_INS.iter().enumerate() {
+            let expected = reference_kelvin(&fields, cell, true);
+            let got = f64::from(ours[cell]);
+            assert!(
+                (got - expected).abs() < 1.0e-4,
+                "{}: {got} K, the reference {expected} K",
+                stand_in.what
+            );
+        }
+
+        // The units: 0.01 g kg-1 of ice over a 75 hPa layer is an optical
+        // depth of 0.272 * 0.01 * 7500 / 9.81 = 2.1, so thin cirrus is
+        // opaque and reads its own temperature, about 224 K.  Taken per
+        // kilogram, the same ice is 0.002 deep and the column read the
+        // lowest level, 293 K.
+        let cirrus = f64::from(ours[1]);
+        assert!((220.0..228.0).contains(&cirrus), "thin cirrus reads {cirrus} K");
+        // A clear column, and a column whose only condensate is too thin
+        // or on the top level, reads the lowest model level.
+        for cell in [0, 5, 6] {
+            let lowest = fields.temperature_k[cell];
+            assert!(
+                (f64::from(ours[cell]) - lowest).abs() < 1.0e-4,
+                "{}: {} K, the lowest level {lowest} K",
+                STAND_INS[cell].what,
+                ours[cell]
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_without_cloud_ice_counts_supercooled_water_at_the_ice_coefficient() {
+        let fields = stand_in_fields();
+        let without_ice = simulated_infrared_brightness_temperature(
+            &fields.cloud_water,
+            None,
+            &fields.vapour,
+            &fields.pressure_pa,
+            &fields.temperature_k,
+            &fields.height_msl_m,
+            &fields.terrain_m,
+            fields.nz,
+            fields.cells,
+        );
+        let with_ice = simulated_infrared_brightness_temperature(
+            &fields.cloud_water,
+            Some(fields.cloud_ice.as_slice()),
+            &fields.vapour,
+            &fields.pressure_pa,
+            &fields.temperature_k,
+            &fields.height_msl_m,
+            &fields.terrain_m,
+            fields.nz,
+            fields.cells,
+        );
+        for (cell, stand_in) in STAND_INS.iter().enumerate() {
+            let expected = reference_kelvin(&fields, cell, false);
+            let got = f64::from(without_ice[cell]);
+            assert!(
+                (got - expected).abs() < 1.0e-4,
+                "{} without cloud ice: {got} K, the reference {expected} K",
+                stand_in.what
+            );
+        }
+        // The supercooled layer is deeper at the ice coefficient, so its
+        // top reads colder than it does in a file whose ice field says it
+        // is water.
+        let supercooled = STAND_INS.len() - 1;
+        assert!(
+            without_ice[supercooled] + 0.5 < with_ice[supercooled],
+            "{} K without cloud ice, {} K with it",
+            without_ice[supercooled],
+            with_ice[supercooled]
+        );
+    }
+
+    #[test]
+    fn a_column_with_one_level_has_no_layer_and_is_nan() {
+        let one = column(&[1.0e-3]);
+        let out = simulated_infrared_brightness_temperature(
+            &one,
+            Some(one.as_slice()),
+            &column(&[0.01]),
+            &column(&[100_000.0]),
+            &column(&[290.0]),
+            &column(&[200.0]),
+            &[150.0],
+            1,
+            1,
+        );
+        assert!(out[0].is_nan(), "{}", out[0]);
     }
 
     #[test]

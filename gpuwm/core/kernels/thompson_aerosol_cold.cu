@@ -444,7 +444,7 @@ extern "C" __global__ void thompson_aa_cold_network(
     const float tempc = temp0 - 273.15f;
     const float inverse_temp = 1.0f / temp0;
     const float diffusivity = 2.11e-5f
-        * powf(temp0 / 273.15f, 1.94f)
+        * powf(__fdiv_rn(temp0, 273.15f), 1.94f)
         * (101325.0f / pressure[idx]);
     const float viscosity = (1.718f + 0.0049f * tempc
         - 1.2e-5f * tempc * tempc) * 1.0e-5f;
@@ -645,7 +645,7 @@ extern "C" __global__ void thompson_aa_cold_network(
         }
         graupel_lambda = lambda;
         graupel_ilam = 1.0 / lambda;
-        const float graupel_number = (1.0f / 6.0f) * graupel_mass / am_g
+        const float graupel_number = __fdiv_rn((1.0f / 6.0f) * graupel_mass, am_g)
             * (float)(lambda * lambda * lambda);
         graupel_intercept = (double)graupel_number * lambda;
         graupel_diameter = (float)(4.0 * graupel_ilam);
@@ -710,7 +710,7 @@ extern "C" __global__ void thompson_aa_cold_network(
         if (ice_number <= 1.0e-6f) {
             const double lambda5 = 4.0 / 5.0e-6;
             ice_number = fminf(999.0e3f,
-                (1.0f / 6.0f) * ice_mass / am_i
+                __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
                 * (float)(lambda5 * lambda5 * lambda5));
         }
         double lambda = (double)powf(
@@ -721,13 +721,13 @@ extern "C" __global__ void thompson_aa_cold_network(
             lambda = 4.0 / 5.0e-6;
             inverse_lambda = 1.0 / lambda;
             ice_number = fminf(999.0e3f,
-                (1.0f / 6.0f) * ice_mass / am_i
+                __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
                 * (float)(lambda * lambda * lambda));
             mean_diameter = 5.0e-6f;
         } else if (mean_diameter > 300.0e-6f) {
             lambda = 4.0 / 300.0e-6;
             inverse_lambda = 1.0 / lambda;
-            ice_number = (1.0f / 6.0f) * ice_mass / am_i
+            ice_number = __fdiv_rn((1.0f / 6.0f) * ice_mass, am_i)
                 * (float)(lambda * lambda * lambda);
             mean_diameter = 300.0e-6f;
         }
@@ -832,7 +832,7 @@ extern "C" __global__ void thompson_aa_cold_network(
     if (rain_active) {
         const int rain_mass_bin = thompson_aa_decade_index(rain_mass, -6, 37);
         const double table_rain_intercept =
-            (double)((1.0f / 6.0f) * rain_mass / am_r)
+            (double)(__fdiv_rn((1.0f / 6.0f) * rain_mass, am_r))
             * rain_lambda * rain_lambda * rain_lambda * rain_lambda;
         const int rain_intercept_bin =
             thompson_aa_decade_index_double(table_rain_intercept, 6, 37);
@@ -860,7 +860,7 @@ extern "C" __global__ void thompson_aa_cold_network(
 
         if (rain_mass >= 1.0e-6f && snow_mass >= 1.0e-6f) {
             const int snow_bin = thompson_aa_decade_index(snow_mass, -6, 37);
-            const int raw_temp_bin = (int)((tempc - 2.5f) / 5.0f) - 1;
+            const int raw_temp_bin = (int)(__fdiv_rn((tempc - 2.5f), 5.0f)) - 1;
             const int temp_bin = min(9, max(1, -raw_temp_bin)) - 1;
             const size_t table_idx = (size_t)snow_bin
                 + (size_t)37 * ((size_t)temp_bin
@@ -1369,7 +1369,7 @@ extern "C" __global__ void thompson_aa_cold_network(
             * thompson_aa_powf_cr(
                 smob, thompson_field_b(snow_tc0, deposition_moment));
         const float snow_capacitance = fmaxf(0.15f, fminf(
-            0.15f + (tempc + 1.5f) * (0.5f - 0.15f) / (-30.0f + 1.5f), 0.5f));
+            0.15f + __fdiv_rn((tempc + 1.5f) * (0.5f - 0.15f), (-30.0f + 1.5f)), 0.5f));
         const float ventilation_coefficient = 0.28f
             * powf(0.632f, 1.0f / 3.0f) * sqrtf(40.0f);
         const float moment_sum = 0.86f * snow_first_moment
@@ -1435,8 +1435,8 @@ extern "C" __global__ void thompson_aa_cold_network(
         const float diagnosed_intercept = powf(10.0f, intercept_power);
         float lambda = powf(
             diagnosed_intercept * am_g * 6.0f / graupel_mass, 0.25f);
-        float number_per_kg = (1.0f / 6.0f) * graupel_mass
-            * powf(lambda, 3.0f) / am_g / rho;
+        float number_per_kg = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+            * powf(lambda, 3.0f), am_g) / rho;
         number_per_kg = fmaxf(1.0e-6f, number_per_kg);
         float graupel_number = fmaxf(1.0e-6f, number_per_kg * rho);
         lambda = powf(am_g * 6.0f * graupel_number / graupel_mass,
@@ -1445,13 +1445,13 @@ extern "C" __global__ void thompson_aa_cold_network(
         if (mvd > 25.4e-3f) {
             mvd = 25.4e-3f;
             lambda = 3.672f / mvd;
-            graupel_number = (1.0f / 6.0f) * graupel_mass
-                * powf(lambda, 3.0f) / am_g;
+            graupel_number = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+                * powf(lambda, 3.0f), am_g);
         } else if (mvd < 50.0e-6f) {
             mvd = 50.0e-6f;
             lambda = 3.672f / mvd;
-            graupel_number = (1.0f / 6.0f) * graupel_mass
-                * powf(lambda, 3.0f) / am_g;
+            graupel_number = __fdiv_rn((1.0f / 6.0f) * graupel_mass
+                * powf(lambda, 3.0f), am_g);
         }
         const float inverse_lambda = 1.0f / lambda;
         const float intercept = graupel_number * lambda;

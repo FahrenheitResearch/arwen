@@ -16,6 +16,7 @@ run it.
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import sys
 from dataclasses import dataclass, field
@@ -33,6 +34,17 @@ PORT_PROOF_RELPATH = "tools/run_cuda_v841_full_physics_x4.py"
 PORT_FORECAST_RELPATH = "tools/run_cuda_v841_forecast.py"
 PORT_MESH_BINDING_RELPATH = "tools/mpas_mesh_binding.py"
 PORT_SRC_RELDIR = "src"
+
+#: The port's Python package, one row per source layout the port has
+#: shipped, newest first.  The port renamed ``mpas_port`` to ``hexcore``
+#: in its 0.2.0 package rename (2026-08-28); its tools import whichever
+#: one the tree holds.  A bound tree's package is the first row whose
+#: ``src/<package>/__init__.py`` exists (:func:`port_package`), and every
+#: port import in this seam goes through it (:meth:`PortBinding.module`).
+#: The spine prices a leg with that package's ``device_admission`` module,
+#: found by the same rows in the same order
+#: (``gpuwm.cycle.mpas_bridge.PARENT_DEVICE_FOOTPRINT``).
+PORT_PACKAGES = ("hexcore", "mpas_port")
 
 #: Every symbol this seam calls on the proof module.  Checked up front so
 #: a binding failure names the whole list rather than dying on the first
@@ -53,7 +65,7 @@ REQUIRED_FORECAST_SYMBOLS = (
 )
 
 #: The prognostic fields that cross the anchor boundary, in the order
-#: :class:`mpas_port.state.PrognosticState` declares them.
+#: the port's ``state.PrognosticState`` declares them.
 PROGNOSTIC_FIELDS = ("rho", "rho_theta", "rho_u", "rho_w", "scalars")
 
 #: The saved-diagnostics sidecar.  MPAS carries ``theta_m`` and ``exner``
@@ -69,7 +81,7 @@ SAVED_DIAGNOSTIC_FIELDS = ("theta_m", "exner", "density_perturbation",
 #:
 #: MPAS's prognostic mass variable is ``rho_zz`` and its equation of
 #: state is ``exner = (zz*(rd/p0)*rho_theta) ** (rd/cv)``
-#: (``mpas_port.cuda_backend.recovery::pressure_point``).  ``zz`` is
+#: (the port's ``cuda_backend.recovery::pressure_point``).  ``zz`` is
 #: therefore not decoration on the boundary: without it nothing outside
 #: the port can recompute exner, and the spine's consistency instrument
 #: spent a whole closed-loop proof reading 0.407 on a correct state for
@@ -114,11 +126,18 @@ class PortBinding:
     proof: Any
     forecast: Any
     mesh_binding: Any
+    #: The row of :data:`PORT_PACKAGES` this tree holds.
+    package: str
     source_receipt: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def dt_seconds(self) -> float:
         return float(self.proof.DT_SECONDS)
+
+    def module(self, name: str) -> Any:
+        """The port module ``name`` (``state``, ``driver``, ...) from the
+        package this tree holds, so no call site spells a package name."""
+        return importlib.import_module(f"{self.package}.{name}")
 
 
 def _load_module(name: str, path: Path) -> Any:
@@ -130,6 +149,15 @@ def _load_module(name: str, path: Path) -> Any:
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def port_package(port_root: str | Path) -> str | None:
+    """The first row of :data:`PORT_PACKAGES` the tree holds, or ``None``."""
+    src = Path(port_root).expanduser() / PORT_SRC_RELDIR
+    for package in PORT_PACKAGES:
+        if (src / package / "__init__.py").is_file():
+            return package
+    return None
 
 
 def bind_port(port_root: str | Path, *,
@@ -153,12 +181,27 @@ def bind_port(port_root: str | Path, *,
                      (PORT_SRC_RELDIR, PORT_PROOF_RELPATH,
                       PORT_FORECAST_RELPATH, PORT_MESH_BINDING_RELPATH)
                      if not (root / candidate).exists()]
+    packages = [f"{PORT_SRC_RELDIR}/{name}" for name in PORT_PACKAGES]
     if missing_files:
         raise PortBindingError(
             "port root is missing members this seam binds to",
             port_root=str(root), missing=missing_files, looked_in=looked_in,
-            remedy="point --port-root at the tree that holds src/mpas_port "
-                   "and tools/run_cuda_v841_*.py, not at its parent")
+            remedy=f"point --port-root at the tree that holds one of "
+                   f"{', '.join(packages)} and tools/run_cuda_v841_*.py, "
+                   "not at its parent")
+
+    # Refused here, in the worker, before any tool loads: a tree with
+    # neither package passes the member check above, and the worker then
+    # stopped at its first port import with "No module named ..." after
+    # the spine had already priced the leg.
+    package = port_package(root)
+    if package is None:
+        raise PortBindingError(
+            "the port tree holds none of the port packages this seam "
+            "imports", port_root=str(root), looked_for=packages,
+            remedy="point --port-root at a port checkout whose src/ holds "
+                   "one of those packages; a port in a new layout is one "
+                   "more row of mpas_cycle_bridge.portbind.PORT_PACKAGES")
 
     src = str(root / PORT_SRC_RELDIR)
     if src not in sys.path:
@@ -190,7 +233,8 @@ def bind_port(port_root: str | Path, *,
     if verify_frozen_sources:
         receipt = dict(proof.require_frozen_execution_sources())
     return PortBinding(root=root, proof=proof, forecast=forecast,
-                       mesh_binding=mesh_binding, source_receipt=receipt)
+                       mesh_binding=mesh_binding, package=package,
+                       source_receipt=receipt)
 
 
 # --------------------------------------------------------------------------
@@ -200,7 +244,7 @@ def bind_port(port_root: str | Path, *,
 def prognostic_state(binding: PortBinding,
                      mapping: Mapping[str, np.ndarray]) -> Any:
     """Build the port's :class:`PrognosticState` from an anchor mapping."""
-    from mpas_port.state import PrognosticState
+    PrognosticState = binding.module("state").PrognosticState
 
     missing = [name for name in PROGNOSTIC_FIELDS if name not in mapping]
     if missing:
@@ -218,7 +262,7 @@ def prognostic_state(binding: PortBinding,
 def saved_diagnostics(binding: PortBinding,
                       mapping: Mapping[str, np.ndarray]) -> Any:
     """Build :class:`DrySavedDiagnostics` from an anchor's derived block."""
-    from mpas_port.driver import DrySavedDiagnostics
+    DrySavedDiagnostics = binding.module("driver").DrySavedDiagnostics
 
     missing = [name for name in SAVED_DIAGNOSTIC_FIELDS
                if name not in mapping]
@@ -302,9 +346,11 @@ def download_stack(binding: PortBinding, stack: Mapping[str, Any], *,
     the clock reads exactly F030: a cycle boundary lands where the cycle
     clock puts it.
     """
-    from mpas_port.cuda_dualrun import fingerprint_atmosphere
-    from mpas_port.driver import DrySavedDiagnostics
     from types import SimpleNamespace
+
+    fingerprint_atmosphere = binding.module(
+        "cuda_dualrun").fingerprint_atmosphere
+    DrySavedDiagnostics = binding.module("driver").DrySavedDiagnostics
 
     driver = stack["driver"]
     backend = stack["backend"]

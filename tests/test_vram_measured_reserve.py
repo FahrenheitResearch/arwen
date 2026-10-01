@@ -33,6 +33,8 @@ Every number below comes from
 
 from __future__ import annotations
 
+import math
+
 import dataclasses
 import json
 from datetime import datetime, timezone
@@ -286,16 +288,24 @@ def test_auto_still_refuses_a_geometry_that_does_not_fit_the_measured_card():
 # 3. the pool-slack term is a pool property, not a driver-model one
 # ---------------------------------------------------------------------------
 
-def test_pool_slack_is_charged_on_linux_as_well_as_windows():
-    """The CuPy pool holds past the itemization on BOTH driver models."""
+def test_pool_headroom_is_priced_identically_on_both_driver_models():
+    """The CuPy pool holds past the itemization on BOTH driver models.
+
+    Since A163 that headroom is priced ONCE, inside the estimate
+    (:data:`gpuwm.core.preflight.FORECAST_POOL_HEADROOM`, measured), so
+    the envelope over a given estimate is the bare affine sum on both
+    driver models; the 20% slack term it used to add here priced the
+    same headroom a second time.
+    """
 
     common = dict(alloc_estimate_bytes=4 * GIB, non_pool_bytes=GIB,
                   domains=1)
     linux = pf.machine_peak_envelope_bytes(**common, family="linux")
     windows = pf.machine_peak_envelope_bytes(**common, family="windows")
     bare = (4 * GIB + GIB + pf.ENVELOPE_UNMODELLED_BYTES)
-    assert linux > bare, "the Linux envelope charges no pool slack"
-    assert linux == windows
+    assert linux == windows == bare
+    assert pf.FORECAST_POOL_HEADROOM == round(
+        pf.FORECAST_PEAK_RATIO_MEASURED + pf.FORECAST_PEAK_RATIO_SAFETY, 2)
 
 
 def test_pool_slack_is_charged_by_radiation_lane_not_driver_model():
@@ -310,13 +320,17 @@ def test_pool_slack_is_charged_by_radiation_lane_not_driver_model():
 
     common = dict(alloc_estimate_bytes=4 * GIB, non_pool_bytes=GIB,
                   domains=1)
+    # A163 (2026-09-30): the lanes split no longer.  Re-measured on
+    # current code the legacy lane peaked at 0.96-1.07x its subtotal over
+    # the itemized non-pool (the 1.13-1.47x above predates #310's batch
+    # narrowing), and the worst row was an RTE-RRTMGP one, so the one
+    # measured margin inside the estimate prices both lanes.
     for family in ("linux", "windows"):
         legacy = pf.machine_peak_envelope_bytes(
             **common, family=family, legacy_radiation=True)
         modern = pf.machine_peak_envelope_bytes(
             **common, family=family, legacy_radiation=False)
-        assert legacy - modern == pytest.approx(
-            pf.POOL_SLACK_FRACTION * 4 * GIB, abs=1)
+        assert legacy == modern
 
 
 def test_not_saying_which_radiation_lane_charges_the_slack():
@@ -335,22 +349,51 @@ def test_not_saying_which_radiation_lane_charges_the_slack():
 
 @pytest.mark.parametrize("run", RECEIPT["runs"], ids=lambda r: (
     f"{r['node'].split()[-1]}-{r['model']}"))
-def test_the_envelope_bounds_every_measured_run(run):
+def test_the_pre_310_receipts_are_superseded_by_the_current_remeasure(run):
     """Fifteen whole forecasts, two Linux cards, sampled at 20 Hz.
 
-    The envelope is re-formed from each run's own itemized estimate and
-    its own MEASURED non-pool residency, so this tests the envelope's
-    FORM rather than re-testing the estimator.  An envelope that does
-    not bound a measured peak is not an envelope.
-    """
+    They were measured on 2026-08-20, before #310 (1a665e3fc3,
+    2026-08-24) narrowed the legacy-RRTMG batch width to the device, and
+    their pool held 1.35-1.37x the itemized subtotal.  A163 re-measured
+    the same shape (default suite, legacy RRTMG, 300 x 300 x 49) on
+    current code on both cards, and the margin is set from those rows, so
+    this pin moved from "the envelope bounds these receipts" to: each
+    receipt sits above the current re-measure of its shape on its card
+    (the mechanism it measured is gone), and the re-measure is bounded by
+    the envelope that ships.
 
-    estimate = int(run["alloc_estimate_gib"] * GIB)
-    measured_non_pool = int(run["measured_non_pool_gib"] * GIB)
+    The receipts were 6 h forecasts and the re-measure 20 min, and the
+    note this slack was set from said retention can build with run
+    length.  So the battery carries a 6 h legacy-RRTMG forecast on current
+    code too (the default suite, 500 x 500 x 49, the card's size): its
+    peak sits inside the 20 min margin and under the envelope, so run
+    length builds nothing the margin does not already hold.
+    """
+    assert RECEIPT["campaign"].endswith("2026-08-20")
+    card = run["node"].split(" ", 1)[1] if " " in run["node"] else run["node"]
+    subtotal = run["alloc_estimate_gib"] * GIB / pf.ALLOCATOR_HEADROOM
+    receipt_ratio = ((run["device_peak_gib"] - run["measured_non_pool_gib"])
+                     * GIB / subtotal)
+    rows = [row for row in pf.FORECAST_PEAK_BATTERY
+            if row[0] == "default suite, legacy RRTMG 300x300x49"
+            and row[1] in card]
+    assert len(rows) == 1, card
+    _label, _card, _lane, domains, s, non_pool, peak, _pool, _held = rows[0]
+    assert (peak - non_pool) / s < receipt_ratio
     envelope = pf.machine_peak_envelope_bytes(
-        alloc_estimate_bytes=estimate,
-        non_pool_bytes=measured_non_pool,
-        domains=run["domains"], family="linux")
-    assert envelope >= int(run["device_peak_gib"] * GIB)
+        alloc_estimate_bytes=math.ceil(pf.FORECAST_POOL_HEADROOM * s),
+        non_pool_bytes=non_pool, domains=domains, family="linux")
+    assert envelope >= peak
+    long = [row for row in pf.FORECAST_PEAK_BATTERY
+            if row[2] == "legacy-rrtmg" and row[0].endswith(", 6 h")]
+    assert long, "no legacy-RRTMG run of the receipts' length"
+    for _l, _c, _lane, domains, s, non_pool, peak, _pool, _held in long:
+        assert ((peak - non_pool - pf.ENVELOPE_UNMODELLED_BYTES) / s
+                <= pf.FORECAST_PEAK_RATIO_MEASURED)
+        assert pf.machine_peak_envelope_bytes(
+            alloc_estimate_bytes=math.ceil(pf.FORECAST_POOL_HEADROOM * s),
+            non_pool_bytes=non_pool, domains=domains,
+            family="linux") >= peak
 
 
 # ---------------------------------------------------------------------------

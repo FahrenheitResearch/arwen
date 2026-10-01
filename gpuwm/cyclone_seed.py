@@ -14,6 +14,8 @@ from typing import Mapping
 
 import numpy as np
 
+from gpuwm.core import portable_math as pm
+
 EARTH_RADIUS_M = 6371229.0
 
 
@@ -65,8 +67,8 @@ def _coordinates(fields: Mapping[str, object]) -> tuple[np.ndarray, np.ndarray]:
 def _distance_km(lat, lon, point):
     phi, phi0 = np.deg2rad(lat), np.deg2rad(point[0])
     dl = np.deg2rad((lon - point[1] + 180.) % 360. - 180.)
-    h = np.sin((phi - phi0) / 2.) ** 2 + np.cos(phi) * np.cos(phi0) * np.sin(dl / 2.) ** 2
-    return 2 * EARTH_RADIUS_M / 1000 * np.arcsin(np.sqrt(np.clip(h, 0., 1.)))
+    h = pm.sin((phi - phi0) / 2.) ** 2 + pm.cos(phi) * pm.cos(phi0) * pm.sin(dl / 2.) ** 2
+    return 2 * EARTH_RADIUS_M / 1000 * pm.arcsin(np.sqrt(np.clip(h, 0., 1.)))
 
 
 def _pressure_plane(fields, inventory, name, pressure_pa, shape):
@@ -105,7 +107,7 @@ def _pressure_plane(fields, inventory, name, pressure_pa, shape):
     out = np.full(shape, np.nan)
     out[exact] = v0[exact]
     if bracket.any():
-        weight = np.log(pressure_pa / p0[bracket]) / np.log(p1[bracket] / p0[bracket])
+        weight = pm.log(pressure_pa / p0[bracket]) / pm.log(p1[bracket] / p0[bracket])
         out[bracket] = v0[bracket] + weight * (v1[bracket] - v0[bracket])
     return out
 
@@ -119,14 +121,15 @@ def relative_vorticity(u, v, lat, lon):
     lam = np.unwrap(np.unwrap(lam, axis=1), axis=0)
     pj, pi = np.gradient(phi)
     lj, li = np.gradient(lam)
-    xj, xi = EARTH_RADIUS_M * np.cos(phi) * lj, EARTH_RADIUS_M * np.cos(phi) * li
+    cos_phi = pm.cos(phi)
+    xj, xi = EARTH_RADIUS_M * cos_phi * lj, EARTH_RADIUS_M * cos_phi * li
     yj, yi = EARTH_RADIUS_M * pj, EARTH_RADIUS_M * pi
     uj, ui = np.gradient(u)
     vj, vi = np.gradient(v)
     determinant = xi * yj - xj * yi
     with np.errstate(invalid="ignore", divide="ignore"):
         curl = ((vi * yj - vj * yi) - (uj * xi - ui * xj)) / determinant
-        curl += u * np.tan(phi) / EARTH_RADIUS_M
+        curl += u * pm.tan(phi) / EARTH_RADIUS_M
     usable = np.isfinite(curl) & (np.abs(determinant) > 0.) & (np.abs(lat) < 89.)
     return np.where(usable, curl, np.nan)
 

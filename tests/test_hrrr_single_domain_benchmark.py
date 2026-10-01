@@ -1123,7 +1123,7 @@ def test_native_hrrr_noahmp_warns_without_registry_acknowledgement(tmp_path, cap
 
 
 def test_native_hrrr_thompson_profile_is_guarded_and_table_bound(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, pinned_thompson_tables):
     path = tmp_path / "namelist.input"
     _write_native_physics_namelist(path, mp_physics=8)
     with pytest.raises(RuntimeError, match="GPUWM_EXPERIMENTAL_THOMPSON_MP8=1"):
@@ -1162,7 +1162,7 @@ def test_native_hrrr_thompson_profile_is_guarded_and_table_bound(
 
 
 def test_the_guarded_mp8_refusal_names_both_variables_with_values(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, pinned_thompson_tables):
     """One refusal carries the whole launch contract, not half of it.
 
     A field run of the shipped 1.5.0 wheel set the first variable, was
@@ -1229,6 +1229,9 @@ def test_native_hrrr_real74_suite_profiles_bind_exact_namelist_and_runtime(
         "diff_6th_opt": 2,
         "diff_6th_factor": 0.12,
         "diff_6th_slopeopt": 1,
+        # Every template states the urban component since the urban canopy
+        # models joined the registry; the native run is urban-off.
+        "sf_urban_physics": 0,
         "radiation_scheme_ids": [4, 4],
     }
     assert receipt["radiation_substitution"]["contract"] \
@@ -2325,7 +2328,8 @@ def test_every_shipped_profile_resolves_every_per_profile_table(profile):
                     profile, section, key, observed, expected)
 
 
-def test_battery_composition_namelist_passes_the_profile_contract(tmp_path):
+def test_battery_composition_namelist_passes_the_profile_contract(
+        tmp_path, pinned_thompson_tables):
     """The exact gate the 2026-08-04 case run refused at, CPU-side.
 
     The battery composition's rendered native namelist, validated through

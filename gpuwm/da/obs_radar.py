@@ -254,6 +254,30 @@ def _radar_window(document, index, shape):
     return (j0, j1, i0, i1)
 
 
+def velocity_batch_points(document, *,
+                          radars: Sequence[str] | None = None) -> list[int]:
+    """Gridpoints of each radial-velocity batch this document yields.
+
+    One entry per radar :func:`radar_grid_to_gridded_obs` builds a batch
+    for, in its order: the radar's window where the file stores one, the
+    whole grid where it does not (the same :func:`_radar_window` answer
+    the adapter builds on).
+    """
+    shape = observation_shape(document)
+    wanted = None if radars is None else {str(r) for r in radars}
+    points = []
+    for index, radar in enumerate(document["radars"]):
+        if wanted is not None and str(radar["id"]) not in wanted:
+            continue
+        window = _radar_window(document, index, shape)
+        if window is None:
+            points.append(shape[0] * shape[1] * shape[2])
+        else:
+            j0, j1, i0, i1 = window
+            points.append(shape[0] * (j1 - j0 + 1) * (i1 - i0 + 1))
+    return points
+
+
 def _batch(name, values, errors, mask, simulated, localization, shape, *,
            window=None):
     """One validated :class:`GriddedObs`.  Every failure is named.

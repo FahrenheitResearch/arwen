@@ -397,7 +397,7 @@ def test_nested_finalizer_still_forces_every_supplied_scalar_back():
     from gpuwm.boundary_fields import SCALAR_ARRAY_BOUNDARY_FIELDS
     from gpuwm.ingest import lateral_bc
 
-    assert set(SCALAR_ARRAY_BOUNDARY_FIELDS) == {'nwfa', 'nifa'}
+    assert set(SCALAR_ARRAY_BOUNDARY_FIELDS) == {'nwfa', 'nifa', 'nc', 'nr', 'ni'}
     fields = {'u': 0, 'v': 0, 'theta': 0, 'phi': 0, 'mu': 0,
               'qv': 0, 'nwfa': 0, 'nifa': 0}
     forced = []

@@ -632,6 +632,17 @@ extern "C" __global__ void rlw_setcoef(
     int laytrop = laytrop_v[col]; \
     (void)laytrop; (void)wx; (void)chi_mls; (void)oneminus;
 
+// Address-only mapping for the generated per-g-point band helpers.
+#define TAUGB_GPOINT_PROLOGUE \
+    long long element = (long long)blockIdx.x * blockDim.x + threadIdx.x; \
+    long long tid = element / 16; \
+    int gpoint = (int)(element % 16) + 1; \
+    if (tid >= (long long)ncol * nl) return; \
+    int col = (int)(tid / nl); \
+    int lay = (int)(tid % nl) + 1; \
+    int laytrop = laytrop_v[col]; \
+    (void)laytrop; (void)wx; (void)chi_mls; (void)oneminus;
+
 extern "C" __global__ void rlw_taugb1(
     int ncol, int nl, const int* __restrict__ laytrop_v,
     const float* __restrict__ fs, const int* __restrict__ isv,

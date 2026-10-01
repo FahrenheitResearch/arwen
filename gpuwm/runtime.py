@@ -109,6 +109,12 @@ INITIAL_PERTURBATION_RECEIPT_NAME = "initial-perturbation.json"
 #: a domain (:func:`gpuwm.terrain_clock.clock_receipt`).  Absent when no
 #: domain changed, so such a run directory is the one it always was.
 TERRAIN_CLOCK_RECEIPT_NAME = "terrain-clock.json"
+#: The acoustic derivation of a ``gpuwm run`` whose off-centering floor
+#: raised a domain's default ``epssm``
+#: (:func:`gpuwm.acoustic_adaptation.acoustic_receipt`).  Absent when no
+#: domain's epssm moved, so such a run directory is the one it always was;
+#: the prepared and wrfinput doors carry the same record in their receipt.
+ACOUSTIC_RECEIPT_NAME = "acoustic-offcentering.json"
 FEEDBACK_EXPERIMENTAL_WARNING = (
     "WARNING: feedback = 1 is EXPERIMENTAL and is not certified against "
     "stock WRF yet; the certification reference is in progress."
@@ -946,7 +952,8 @@ def _initialize_real_case_physics(
         trace_gas_overrides=trace_gas_overrides,
         column_chunk=radiation_column_chunk)
     landuse = initialize_landuse(
-        static["LU_INDEX"], soil_type=reconciled_soil_type,
+        static["LU_INDEX"], urban_legend=int(getattr(cfg, "sf_urban_physics", 0)) > 0,
+        soil_type=reconciled_soil_type,
         landmask=static["LANDMASK"], snow=soil.snow_water, xice=soil.xice,
         valid_time=start_time,
         cen_lat=(float(getattr(grid, "cen_lat", np.mean(lat)))
@@ -1003,6 +1010,15 @@ def _initialize_real_case_physics(
     driver.fields["v10"][...] = 0.5 * (met0["V10"][:-1]
                                         + met0["V10"][1:])
 
+    if getattr(cfg, "sf_surface_mosaic", 0) == 1:
+        from gpuwm.core.noah_mosaic_door import attach_noah_mosaic_to_driver
+        # initialize_landuse above runs at its own default,
+        # fractional_seaice=False; the tiles take the same sea-ice split.
+        attach_noah_mosaic_to_driver(
+            driver, cfg, landusef=static.get("LANDUSEF"), processed=False,
+            landuse_attrs=landuse_attrs, landmask=static["LANDMASK"],
+            fractional_seaice=False)
+
 
 def case_static_fields(grid, geog_root, *, selection: GeogSelection,
                        static_highres=None, domain_id: int = 1,
@@ -1049,6 +1065,8 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                       water_temperature_policy=None,
                       soil_texture_downscale: bool = True,
                       store_request=None, cam_ozone=None,
+                      smooth_cg_topo: bool = False, blend_width: int = 5,
+                      preprocess_backend: str = "auto",
                       ) -> PreparedRealCase:
     """Run the real-case setup pipeline for one domain.
 
@@ -1067,6 +1085,9 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     state (a bubble inside the relax zone would enter it; interior
     bubbles leave every boundary strip byte-identical).  This is the
     coarse/single domain, so a bubble center outside the grid refuses.
+    ``preprocess_backend`` is where the transforms run when no
+    ``store_request`` names it: ``auto`` (the default) decides from the
+    card, ``cuda`` and ``cpu`` pin it.
     """
     from gpuwm.ingest.soil import (door_reconciled_soil_category,
                                    soil_source_orography)
@@ -1165,7 +1186,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
         "experiment" if store_request is None else "experiment-host-store",
         [cfg], SourceInventory.from_snapshot(first_source),
         boundary_intervals=len(times) - 1))
-    requested_backend = ("auto" if store_request is None
+    requested_backend = (preprocess_backend if store_request is None
                          else store_request.backend)
     release_backend = resolve_preprocess_backend(
         requested_backend, price=preparation_price)
@@ -1177,6 +1198,15 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
               "host state, row-slab GPU physics")
     final_met = None
     met = result = None
+    from types import SimpleNamespace
+
+    from gpuwm.ingest.cg_topo import RootTerrainBlend
+    terrain_blend = RootTerrainBlend(
+        SimpleNamespace(smooth_cg_topo=bool(smooth_cg_topo)
+                        and int(static_domain_id) == 1,
+                        spec_bdy_width=int(cfg.spec_bdy_width),
+                        blend_width=int(blend_width)),
+        static, route="case_data")
     for position, index in enumerate(order):
         valid_time = times[index]
         if position:
@@ -1195,6 +1225,11 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
             target_landmask=np.asarray(static["LANDMASK"]) >= 0.5,
             water_temperature_statics=water_statics,
             backend=release_backend)
+        # WRF's smooth_cg_topo (gpuwm.ingest.cg_topo), once, before the
+        # first initialization reads the root terrain.
+        terrain_blend.before_initialize(
+            source_orography if source_orography is not None
+            else met.fields.get("SOURCE_OROGRAPHY"))
         if store_request is not None:
             from gpuwm.ingest.case_store import admit_case_initialization
             admit_case_initialization(store_request, cfg, met, times)
@@ -1404,6 +1439,16 @@ def prepare_root_experiment_case(exp: ExperimentConfig,
     declared_orography = data.source_orography
     from gpuwm.core.cam_ozone import cam_ozone_setup
     cam = cam_ozone_setup(exp=exp, dc=dc, grid=grid)
+    # A declared backend (``[case_data] preprocess_backend`` or ``gpuwm run
+    # --preprocess-backend``) pins this preparation, host store included;
+    # silence keeps ``auto``, which reads the card and can land on either.
+    pinned = getattr(data, "preprocess_backend", None)
+    if pinned is not None:
+        print(f"  preparation backend: {pinned}, as declared "
+              "([case_data] preprocess_backend or --preprocess-backend)")
+    if pinned is not None and store_request is not None:
+        from dataclasses import replace as _replace
+        store_request = _replace(store_request, backend=pinned)
     return prepare_real_case(
         cfg, grid=grid, geog_root=data.geog_root,
         source_orography_path=(declared_orography.path
@@ -1425,7 +1470,10 @@ def prepare_root_experiment_case(exp: ExperimentConfig,
         static_domain_id=dc.grid_id,
         initial_perturbation=exp.perturbation,
         **({"store_request": store_request} if store_request is not None else {}),
+        **({"preprocess_backend": pinned} if pinned is not None else {}),
         constant_glw_wm2=declared_constant_glw(exp),
+        smooth_cg_topo=bool(exp.smooth_cg_topo and dc.parent_id == 0),
+        blend_width=int(exp.blend_width),
         **({"cam_ozone": cam} if cam is not None else {}))
 
 
@@ -1536,7 +1584,8 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
         data, domain_id=dc.grid_id)
     landuse_attrs = geog_selection.landuse_global_attrs()
     landuse = initialize_landuse(
-        static["LU_INDEX"], soil_type=static["SCT_DOM"],
+        static["LU_INDEX"], urban_legend=int(getattr(cfg, "sf_urban_physics", 0)) > 0,
+        soil_type=static["SCT_DOM"],
         landmask=static["LANDMASK"], snow=soil.snow_water, xice=soil.xice,
         valid_time=domain_start_time,
         cen_lat=float(getattr(initialized.grid, "cen_lat", np.mean(lat))),
@@ -1582,6 +1631,14 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
                                          + met0["U10"][:, 1:])
     driver.fields["v10"][...] = 0.5 * (met0["V10"][:-1]
                                          + met0["V10"][1:])
+    if getattr(cfg, "sf_surface_mosaic", 0) == 1:
+        from gpuwm.core.noah_mosaic_door import attach_noah_mosaic_to_driver
+        # initialize_landuse above runs at its own default,
+        # fractional_seaice=False; the tiles take the same sea-ice split.
+        attach_noah_mosaic_to_driver(
+            driver, cfg, landusef=static.get("LANDUSEF"), processed=False,
+            landuse_attrs=landuse_attrs, landmask=static["LANDMASK"],
+            fractional_seaice=False)
     from gpuwm.core.cam_ozone import configure_cam_ozone
     configure_cam_ozone(state, cfg, exp=exp, dc=dc, grid=initialized.grid)
     return PreparedRealCase(
@@ -1676,7 +1733,8 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
     else:
         attrs = dict(landuse_attrs)
     landuse = initialize_landuse(
-        static["LU_INDEX"], soil_type=static["SCT_DOM"],
+        static["LU_INDEX"], urban_legend=int(getattr(cfg, "sf_urban_physics", 0)) > 0,
+        soil_type=static["SCT_DOM"],
         landmask=static["LANDMASK"],
         snow=land.get("snow", 0.0), xice=land.get("xice", 0.0),
         valid_time=now,
@@ -1749,8 +1807,11 @@ class RealRelocationChildPreparer:
       same-landmask-class donors), and rebuild the physics driver
       against the NEW statics through the same ``initialize_landuse`` /
       ``initialize_physics`` / radiation wiring the t=0 child preparer
-      uses.  Accumulators are re-initialised, per leg 1's contract, and
-      the receipt says so.
+      uses.  The rebuild re-initialises the accumulators; the physics
+      continuation then carries them on the overlap, and fresh ground
+      takes the parent's accumulated precipitation
+      (:func:`gpuwm.core.physics_continuation.parent_strip_accumulations`),
+      and the receipt says so.
     * ``after_move(node)`` -- once the node carries the new placement:
       refresh the run's prepared-case bookkeeping and the domain's
       wrfout metadata/global attributes so later frames describe the
@@ -1880,13 +1941,17 @@ class RealRelocationChildPreparer:
         # the freshly exposed strip cold-starts.  Before this landed the
         # whole child cold-started at every move, which is the reported
         # moving-nest KF artifact (2026-08-16).
-        from gpuwm.core.physics_continuation import (restore_carriers,
-                                                     restore_continuation,
-                                                     shift_carriers,
-                                                     shift_continuation)
+        from gpuwm.core.physics_continuation import (
+            accumulation_ring, parent_strip_accumulations, restore_carriers,
+            restore_continuation, shift_carriers, shift_continuation)
 
-        shifted = shift_continuation(
-            captured.get("continuation", {}) or {}, plan)
+        continuation_capture = captured.get("continuation", {}) or {}
+        strip, strip_receipt = parent_strip_accumulations(
+            parent_node, new_dc, continuation_capture)
+        ring = accumulation_ring(getattr(new_dc, "run", None))
+        strip_receipt["old_ring_cells"] = ring
+        shifted = shift_continuation(continuation_capture, plan, strip=strip,
+                                     ring=ring)
         new_state = getattr(initialized, "state", None)
         new_driver = getattr(new_state, "physics", None)
         if new_state is not None and new_driver is not None:
@@ -1940,6 +2005,7 @@ class RealRelocationChildPreparer:
                 - set(captured["fields"])),
             "accumulators_reinitialized": not continuation["restored"],
             "physics_continuation": continuation,
+            "strip_accumulations": strip_receipt,
             "radiation_carriers": carriers,
             "driver_rebuild_seconds": driver_seconds,
             "preparer_seconds": _time.perf_counter() - started,
@@ -1955,7 +2021,8 @@ class RealRelocationChildPreparer:
         """
         from gpuwm.core.nest_relocation import RelocationRefusal
         from gpuwm.core.physics_continuation import (
-            restore_carriers, restore_continuation, shift_carriers, shift_continuation)
+            accumulation_ring, parent_strip_accumulations, restore_carriers,
+            restore_continuation, shift_carriers, shift_continuation)
         from gpuwm.ingest.relocation_continuation import stage_relocation_continuation
         from tilestream.physics_inventory import set_carrier_scalars
 
@@ -1966,7 +2033,13 @@ class RealRelocationChildPreparer:
         scalars = captured.get("scalar_carriers")
         if scalars is None:
             raise RelocationRefusal("window reconstruction requires canonical streamed scalar carriers")
-        shifted = shift_continuation(captured.get("continuation") or {}, staged.plan)
+        continuation_capture = captured.get("continuation") or {}
+        strip, strip_receipt = parent_strip_accumulations(
+            parent_node, new_dc, continuation_capture)
+        ring = accumulation_ring(getattr(new_dc, "run", None))
+        strip_receipt["old_ring_cells"] = ring
+        shifted = shift_continuation(continuation_capture, staged.plan,
+                                     strip=strip, ring=ring)
         radiation = captured.get("carriers") or {}
         radiative_fields = shift_carriers(radiation.get("fields") or {}, staged.plan, staged.fill)
         lat, _ = footprint.grid.latlon_mass()
@@ -2000,6 +2073,7 @@ class RealRelocationChildPreparer:
                 "fields_moved": sorted(staged.land),
                 "accumulators_reinitialized": False,
                 "physics_continuation": continuation,
+                "strip_accumulations": strip_receipt,
                 "radiation_carriers": carriers,
                 "driver_rebuild_seconds": driver_seconds,
                 "preparation": "global host donors followed by bounded device windows",
@@ -2750,6 +2824,13 @@ class RealSpawnChildPreparer:
     then the shared :func:`rebuild_child_driver_from_land_state`, byte
     for byte the sequence a relocation runs.
 
+    ACCUMULATED PRECIPITATION starts from the parent's, not zero
+    (:func:`gpuwm.core.physics_continuation.seed_birth_accumulations`): a
+    living nest moves, and each move seeds its new ground with the
+    parent's rain since the run began, so ground it has held since birth
+    must count from the same start or every move leaves a band of extra
+    rain on its leading edge.  The other accumulators are re-initialised.
+
     ``last_receipt`` is the duck-typed seam the runner reads (the
     relocation runner's idiom), so the land accounting reaches the spawn
     receipt instead of dying here.
@@ -2797,6 +2878,10 @@ class RealSpawnChildPreparer:
             exp=self.exp, data=self.data, model=self.model,
             initialized=initialized, child_dc=child_dc,
             parent_node=parent_node, land=land["fields"])
+        from gpuwm.core.physics_continuation import seed_birth_accumulations
+
+        precipitation = seed_birth_accumulations(
+            initialized.state, parent_node, child_dc)
         context = self.model._activation_context or {}
         snow = land["fields"].get("snow")
         # The newborn's own "initial result" IS the materialized child:
@@ -2819,6 +2904,7 @@ class RealSpawnChildPreparer:
         self.last_receipt = {
             "land_surface": land["receipt"],
             "accumulators_reinitialized": True,
+            "precipitation_accumulations": precipitation,
             "driver_rebuild_seconds": driver_seconds,
             "preparer_seconds": _time.perf_counter() - started,
         }
@@ -4991,10 +5077,30 @@ def _write_terrain_clock_receipt(outdir, adaptations) -> Path | None:
         return None
     from gpuwm.terrain_clock import clock_receipt
 
-    encoded = (json.dumps(clock_receipt(adaptations), indent=2,
-                          sort_keys=True, allow_nan=False)
-               + "\n").encode("utf-8")
-    path = Path(outdir) / TERRAIN_CLOCK_RECEIPT_NAME
+    return _publish_receipt(outdir, TERRAIN_CLOCK_RECEIPT_NAME,
+                            clock_receipt(adaptations))
+
+
+def _write_acoustic_receipt(outdir, adaptations) -> Path | None:
+    """Publish the acoustic derivation when the off-centering floor raised
+    a domain's default epssm, so the run's own folder says which domain
+    ran which value and why (A171)."""
+
+    if not any(getattr(adaptation, "offcentering_raised", False)
+               for adaptation in adaptations):
+        return None
+    from gpuwm.acoustic_adaptation import acoustic_receipt
+
+    return _publish_receipt(outdir, ACOUSTIC_RECEIPT_NAME,
+                            acoustic_receipt(adaptations))
+
+
+def _publish_receipt(outdir, name: str, document) -> Path:
+    """One receipt written whole: a partial file renamed into place."""
+
+    encoded = (json.dumps(document, indent=2, sort_keys=True,
+                          allow_nan=False) + "\n").encode("utf-8")
+    path = Path(outdir) / name
     temporary = path.with_name(f".{path.name}.partial-{os.getpid()}")
     with temporary.open("wb") as stream:
         stream.write(encoded)
@@ -5105,6 +5211,7 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     exp, clock = _terrain_clock_for_case(exp, data, acoustic, terrain,
                                          grids, reach)
     _write_terrain_clock_receipt(outdir, clock)
+    _write_acoustic_receipt(outdir, acoustic)
     if len(exp.domains) == 1:
         # Frozen cardinal path: retain Task-2's exact preparation, loop,
         # output order, and single-file v3/v2 restart shims.
@@ -5141,9 +5248,29 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         # decision so the route that uses it prices it once.
         resident_estimate = _streaming.cold_single_domain_admission(
             exp, machine=planning_machine, options=single_tiles)
+        # The card a resident or a pinned road is admitted on, read before
+        # the fetch: the planning machine when the planner already read it.
+        admission_machine = _streaming.cold_admission_machine(
+            planning_machine, options=single_tiles)
         single_decision = _streaming.cold_single_domain_decision(
             exp, machine=planning_machine, cfg=dc.run, options=single_tiles,
             estimate=resident_estimate)
+        # A pinned tiling, priced on this card before the fetch: the
+        # decision takes it from the configuration alone, and buffers that
+        # cannot fit stopped in a CUDA out-of-memory while being built.
+        _streaming.admit_pinned_road(dc.run, single_tiles, single_decision,
+                                     machine=admission_machine)
+        if not (single_decision.stream and single_decision.store == "host"):
+            # THE FORECAST THIS ARM HOLDS ON THE CARD, admitted before the
+            # fetch.  The preparation price admits the transforms and the
+            # state; the physics driver attaches after it, and with no
+            # [tiles] block nothing priced the two together, so a case whose
+            # state fitted and whose physics did not (7.8 GiB more at
+            # 1792x1024x55 mp=8) died in CUDA at the physics attach after
+            # its download.  Same estimate the review prices.
+            _streaming.admit_resident_road(
+                exp, single_decision, machine=admission_machine,
+                what="this run, held resident on the card")
         catalog = build_input_catalog(data)
         snapshots = forcing_snapshots(data, catalog)
         times = forcing_schedule(exp, data, snapshots)
@@ -5284,6 +5411,21 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     cold_tree = _streaming.cold_tree_streaming_decision(
         exp, _streaming.cold_tree_admission_nodes(exp),
         machine=planning_machine, decisions=cold_decisions)
+    if cold_tree is None:
+        # NOTHING STREAMS, SO THE WHOLE TREE IS RESIDENT, and it is admitted
+        # here, before the fetch and before build_experiment allocates the
+        # shared workspaces and the first domain.  With no [tiles] block the
+        # walk above consults nothing, and a tree too big for the card
+        # stopped in a CUDA out-of-memory part way through its build.  The
+        # same estimate the plan review prices (the shared admission
+        # estimate, every domain's state, physics and workspaces together)
+        # on the card's own profile, as the prepared tree runner and this
+        # function's single-domain arm take it; --no-memory-gate skips it.
+        _streaming.admit_resident_road(
+            exp, None,
+            machine=_streaming.cold_admission_machine(
+                planning_machine, options=getattr(exp, "tiles", None)),
+            what="this domain tree, held resident on the card")
     model = build_experiment(exp, data)
     print(resolved_tree_config_report(exp, data, model._input_catalog))
     return _run_built_experiment(

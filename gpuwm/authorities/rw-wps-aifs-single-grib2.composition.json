@@ -1,17 +1,21 @@
 {
   "schema": "gpuwm-mapped-composition-v2",
-  "name": "aifs-single-primary-with-analysis-step-in-band-terrain-and-two-layer-soil",
+  "name": "aifs-single-primary-with-step0-statics-and-two-layer-soil",
   "mapping_binding": "input_manifest_sha256",
-  "supplements": {
-    "terrain_height": {
+  "supplements": {},
+  "field_sources": {
+    "step0_statics": {
+      "source_id": "ecmwf-aifs-single-oper-step0-donor-grib2-native",
+      "mapping_role": "aifs_single_step0_donor_mapping",
+      "mapping_sha256": "99adc3a8894c2d19ba37d6da6d53418a95dcf32c2b1094b86e8ccd1feecb7b02",
       "data_role": "aifs_single_in_band_surface",
       "provenance_role": "aifs_single_in_band_surface_provenance",
-      "format": "grib2",
-      "field": "terrain_height",
-      "selector_authority": "mapping_field_exact",
+      "fields": [
+        "terrain_height",
+        "land_fraction"
+      ],
       "grid_alignment": "exact_coordinate_subset",
-      "time_alignment": "cycle_invariant_broadcast",
-      "require_invariant_across_time": true
+      "time_alignment": "source_cycle_analysis_broadcast"
     }
   },
   "soil_layers": {

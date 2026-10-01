@@ -23,6 +23,8 @@ pub mod panel;
 pub mod grib_import;
 #[path = "local_import.rs"]
 pub mod local_import;
+#[path = "nest_move.rs"]
+mod nest_move;
 #[path = "postproc_severe.rs"]
 pub mod postproc_severe;
 #[path = "wrf_process.rs"]

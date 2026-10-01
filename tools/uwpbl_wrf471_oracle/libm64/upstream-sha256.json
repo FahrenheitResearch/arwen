@@ -1,0 +1,13 @@
+{
+  "upstream\\acos.c": "ecd6173837214367f0140c038c615a4f37d27795c0cc74e16bdaa59f7df8cff1",
+  "upstream\\cos.c": "04bffbc8b483c886f78f2c9ab3f2a1ca318dda78ab637a2983a4a9d82374e9d9",
+  "upstream\\exp.c": "219b5f666c84864e80ef5ef33bc5453b4702ea74fc5cbf997c3dfacdcf5738cf",
+  "upstream\\exp_data.c": "a5e84677e7693c7d22195f86faac5fdc6f92bff7ea2e54c0e7888203a78ffc24",
+  "upstream\\LICENSE-Arm.txt": "650afbf29f214451e02241adc42534e82c9d6ae2b38e2444b92b5a1ffcaf9346",
+  "upstream\\log.c": "10e3774a72279c75d3842bc651a9d81e8fe31f9717caac736a603170ed509530",
+  "upstream\\log_data.c": "327cf1819870930486eecb5491c68d5887a712b954e5ec82f3f70bfd9e46fdd3",
+  "upstream\\math_config.h": "349a7cab00e14cf51c26ada62832eeeddc0a85de302f0ab2b6ff87713db01015",
+  "upstream\\pow.c": "4497df6d64e0043c04df2cb308ae2918922b0f53e10f133006fba4e9eb5e8fb7",
+  "upstream\\pow_common.h": "367906e9face47b4ad4b3c08cae7d3d5b6737d9462881ce1a5fdbebd1f0e9325",
+  "upstream\\pow_log_data.c": "d28818bd95355e6854766a3818a6ec0866f7afcef592fe1e836d05d3f465392e"
+}

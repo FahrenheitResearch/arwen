@@ -245,6 +245,8 @@ _ROOT_SMOOTH_FACTOR = 4
 class NestDivideRefusal(RuntimeError):
     """The nest divide cannot represent the step the controller asked for."""
 
+    exit_code = 2
+
 
 def nest_ticks_from_parent(parent_ticks: int, own_ticks: int, *,
                            subtree_lattice: int = 1,
@@ -268,11 +270,12 @@ def nest_ticks_from_parent(parent_ticks: int, own_ticks: int, *,
       parent step.  MEASURED: that killed a live run at outer step 4 with
       "MYJ returned non-finite rublten".
 
-    The real fix is upstream of this, in
-    :meth:`AdaptiveClockDriver._quantise_root`: the ROOT's step is snapped
-    to a multiple of the tree's ratio lattice, so a divisor near the
-    ceiling always exists.  This function stays exact about what it can
-    do alone, and the caller guarantees it is asked a reasonable question.
+    Root smoothing supplies useful divisors, but cannot guarantee one near
+    every CFL ceiling: 6276 ticks is 12 x 523 and still needs 523 substeps
+    for a child requesting 450 ticks. The driver's mandatory
+    :meth:`AdaptiveClockDriver._bounded_nest_step` shortens such a parent
+    before any domain advances. This function remains exact about the
+    representation and bound it can satisfy alone.
     """
     if own_ticks <= 0:
         raise ValueError(f"nest step must be positive, got {own_ticks}")
@@ -550,6 +553,31 @@ class AdaptiveClockDriver:
         # at init and it has no freshness contract.  gpuwm has both, so
         # the parent's flag is propagated.
         root_stepping = False
+        lattice_proposals = {}
+        lattice_cfls = {}
+        optimize_lattice = bool(getattr(
+            self.model.root.cfg.run, "adaptive_nest_lattice", False))
+        if self.model.root.children:
+            # The bounded exact divide is required for every tree. Read each
+            # CFL once before changing a domain's applied step or memory.
+            for gid in self.order:
+                clock = clocks[gid]
+                if int(clock.ticks) < int(clock.spec.start_ticks):
+                    continue
+                ctl = self.controllers[gid]
+                vert, horiz = self.cfl_source(gid)
+                lattice_cfls[gid] = (vert, horiz)
+                applied = self._last_applied.get(gid)
+                if (ctl.started and not ctl.stepping_to_time
+                        and applied is not None and applied > 0
+                        and applied != ctl.last_dt):
+                    scale = float(ctl.last_dt / applied)
+                    vert, horiz = vert * scale, horiz * scale
+                lattice_proposals[gid] = (
+                    ctl.next_dt(max_vert_cfl=vert, max_horiz_cfl=horiz)
+                    if ctl.started else ctl.last_dt)
+                self._refuse_sub_tick(self.model.node(gid),
+                                      lattice_proposals[gid])
         for gid in self.order:
             node = self.model.node(gid)
             clock = clocks[gid]
@@ -573,7 +601,8 @@ class AdaptiveClockDriver:
             if int(clock.ticks) < int(clock.spec.start_ticks):
                 continue
             ctl = self.controllers[gid]
-            vert, horiz = self.cfl_source(gid)
+            vert, horiz = (lattice_cfls[gid] if lattice_cfls
+                           else self.cfl_source(gid))
             # THE CONTROLLER SEES ITS OWN PROPOSAL, NEVER THE QUANTISED
             # STEP.  The CFL just measured was measured on the step the
             # model TOOK -- the proposal floored to the root lattice, or
@@ -611,7 +640,8 @@ class AdaptiveClockDriver:
                 dt = ctl.first_step()
                 stepping = False
             else:
-                dt = ctl.next_dt(max_vert_cfl=vert, max_horiz_cfl=horiz)
+                dt = (lattice_proposals[gid] if lattice_proposals else
+                      ctl.next_dt(max_vert_cfl=vert, max_horiz_cfl=horiz))
                 stepping = False
             if node.parent is None:
                 # The starting step must honor alarms too: a configured
@@ -656,7 +686,15 @@ class AdaptiveClockDriver:
             proposed = dt
 
             if node.parent is None:
-                dt = self._quantise_root(dt)
+                # A tiny alarm remainder can be below the smoothing unit.
+                # Its one-unit floor must not enlarge the sanctioned step.
+                dt = min(dt, self._quantise_root(dt))
+                # Keep alarm landings and run-end clamps on their original
+                # path. Selection never feeds back into controller memory.
+                if lattice_proposals:
+                    dt = self._bounded_nest_step(dt, lattice_proposals)
+                if optimize_lattice and lattice_proposals and not root_stepping:
+                    dt = self._nest_lattice_step(dt, lattice_proposals)
 
             if node.parent is not None:
                 parent_ticks = clocks[
@@ -961,13 +999,115 @@ class AdaptiveClockDriver:
             node, baseline or dt,
             observed=self._radiation_actual.get(int(run.grid_id)))
 
+    def _nest_tick_steps(self, root_ticks: int,
+                         proposals: dict[int, Fraction]) -> dict[int, int]:
+        """The exact bounded divides for all active domains, without mutation."""
+        root_gid = int(self.model.root.cfg.grid_id)
+        steps = {root_gid: root_ticks}
+        for gid in self.order:
+            if gid == root_gid or gid not in proposals:
+                continue
+            node = self.model.node(gid)
+            parent_gid = int(node.parent.cfg.grid_id)
+            if parent_gid not in steps:
+                continue
+            steps[gid] = nest_ticks_from_parent(
+                steps[parent_gid], ticks_of(proposals[gid], self.tick_den),
+                subtree_lattice=self.subtree_lattice.get(gid, 1),
+                max_substeps=MAX_NEST_SUBSTEP_FACTOR * max(1, int(
+                    getattr(node.cfg, "parent_time_step_ratio", 1) or 1)),
+                grid_id=gid)
+        return steps
+
+    def _bounded_nest_step(self, proposal: Fraction,
+                           proposals: dict[int, Fraction]) -> Fraction:
+        """Shorten an unrepresentable parent step before any domain advances.
+
+        A multiple of the ratio lattice can still have no affordable divisor
+        below a child's CFL ceiling. The bounded halving ladder repairs that
+        arithmetic in the parent, including alarm and run-end steps. It also
+        handles a flow that needs more than the allowed substeps per period.
+        Each retry strictly reduces integer ticks; one tick divides every
+        positive child proposal, so the search terminates without raising
+        any CFL ceiling or changing controller memory.
+        """
+        ticks = ticks_of(proposal, self.tick_den)
+        unit = max(1, self.nest_lattice) * self.root_smooth_factor
+        while True:
+            try:
+                self._nest_tick_steps(ticks, proposals)
+            except NestDivideRefusal:
+                ticks = max(1, ticks // 2)
+                if ticks >= unit:
+                    ticks = (ticks // unit) * unit
+            else:
+                return Fraction(ticks, self.tick_den)
+
+    def _nest_lattice_step(self, proposal: Fraction,
+                           proposals: dict[int, Fraction]) -> Fraction:
+        """Choose the least cell-steps per second; ties keep the larger step.
+
+        Exact rational costs make the choice independent of timing and
+        floating-point summation order. Equal costs keep the longer step.
+        """
+        candidates = {proposal}
+        root_gid = int(self.model.root.cfg.grid_id)
+        for gid, own in proposals.items():
+            if gid == root_gid or own <= 0:
+                continue
+            for multiple in range(1, int(proposal // own) + 1):
+                candidate = self._quantise_root(own * multiple)
+                # Keep cost candidates inside the sanctioned root ceiling.
+                if 0 < candidate <= proposal:
+                    candidates.add(candidate)
+
+        def cost(dt):
+            steps = {root_gid: ticks_of(dt, self.tick_den)}
+            total = Fraction(0)
+            for gid in self.order:
+                if gid not in proposals:
+                    continue
+                node = self.model.node(gid)
+                if node.parent is not None:
+                    parent_gid = int(node.parent.cfg.grid_id)
+                    if parent_gid not in steps:
+                        continue
+                    steps[gid] = nest_ticks_from_parent(
+                        steps[parent_gid], ticks_of(proposals[gid], self.tick_den),
+                        subtree_lattice=self.subtree_lattice.get(gid, 1),
+                        max_substeps=MAX_NEST_SUBSTEP_FACTOR * max(1, int(
+                            getattr(node.cfg, "parent_time_step_ratio", 1) or 1)),
+                        grid_id=gid)
+                run = node.cfg.run
+                total += Fraction(int(run.nx) * int(run.ny) * int(run.nz),
+                                  steps[gid])
+            return total
+
+        best = proposal
+        try:
+            best_cost = cost(proposal)
+        except NestDivideRefusal:
+            # An invalid proposal must not hide a legal shorter candidate.
+            best_cost = None
+        for candidate in sorted(candidates, reverse=True):
+            try:
+                candidate_cost = cost(candidate)
+            except NestDivideRefusal:
+                # A candidate may have poorer divisors than the sanctioned
+                # proposal; it must not introduce a divide collapse.
+                continue
+            if best_cost is None or candidate_cost < best_cost:
+                best, best_cost = candidate, candidate_cost
+        if best_cost is None:
+            cost(proposal)
+        return best
+
     def _quantise_root(self, dt: Fraction) -> Fraction:
         """Snap the root's step DOWN to a SMOOTH multiple of the lattice.
 
         Down, never up: rounding up would hand the nests a step the
-        parent's CFL did not sanction.  Floored at one lattice unit so a
-        shrinking root cannot reach zero here -- the sub-tick refusal in
-        :meth:`_apply` is what catches a genuinely diverging run.
+        parent's CFL did not sanction. Below the smoothing unit, retain
+        whole ticks so short alarm remainders cannot be enlarged.
 
         Smooth, not merely on the ratio lattice: being on the lattice
         makes the nominal divide exact and leaves the cofactor free to be
@@ -998,7 +1138,7 @@ class AdaptiveClockDriver:
         lattice = max(1, self.nest_lattice) * self.root_smooth_factor
         snapped = (ticks // lattice) * lattice
         if snapped <= 0:
-            snapped = lattice
+            snapped = max(1, ticks)
         return Fraction(snapped, self.tick_den)
 
     def _to_next_alarm_anywhere(self, clocks) -> Fraction:
@@ -1043,13 +1183,25 @@ class AdaptiveClockDriver:
                 if not interval:
                     continue
                 origin = clock.spec.start_ticks if phased else 0
+                if clock.ticks < origin:
+                    continue
+                if phased:
+                    # The history lattice is anchored at the begin offset
+                    # (WRF's history_begin), and the first frame there is
+                    # a landing like any other.
+                    origin += clock.spec.history_begin_ticks
                 elapsed = clock.ticks - origin
                 if elapsed < 0:
+                    due = origin
+                else:
+                    remaining = (-elapsed) % interval
+                    if remaining == 0:
+                        remaining = interval
+                    due = clock.ticks + remaining
+                if (phased and clock.spec.history_end_ticks is not None
+                        and due - clock.spec.start_ticks
+                        > clock.spec.history_end_ticks):
                     continue
-                remaining = (-elapsed) % interval
-                if remaining == 0:
-                    remaining = interval
-                due = clock.ticks + remaining
                 if best is None or due < best:
                     best = due
         if best is None or now is None:

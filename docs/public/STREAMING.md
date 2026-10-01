@@ -1,24 +1,220 @@
-# Chunked forecast streaming
+# Streaming: forecasts that run as their source posts
 
 **This page is not [Tiling a domain that does not fit on the card](TILES.md).**
 That page is the `[tiles]` table, which runs one domain out of core by
-cycling it through the card a tile at a time. This page is a fetch-and-run
-cadence over a live HRRR cycle. The two share no configuration and no code
-path, and either can be used without the other.
+cycling it through the card a tile at a time. This page is about when a
+forecast starts and waits against a data source that is still posting its
+cycle. The two share no configuration and no code path, and either can be
+used without the other.
 
-`gpuwm stream PLAN.toml` follows an uploading HRRR cycle with sealed hourly
-forecast legs. It uses the Rust full-file fetch path, prepares a new immutable
-forcing prefix, resumes from the preceding tree checkpoint, requires initial
-and final health PASS, and hashes every authority receipt and checkpoint
-member into a durable chain. It never changes forcing inside a live model
-process.
+A source such as GFS, GEFS, HRRR or ICON posts a cycle one forecast hour at a
+time, over one to three hours. A forecast that runs as the source posts
+starts once the cycle's **first** hours are posted, and waits whenever it
+reaches an hour the source has not posted yet. A forecast that waits for the
+whole cycle starts only once the **last** hour is posted. Both produce the
+same bytes from the same cycle; only the start time differs.
+
+## What your engine does
+
+Two things decide how early a forecast can start.
+
+1. **Chained preparation.** A forecast starts at its preparation's head
+   (the start state and the first boundary interval) and steps while the
+   later intervals are prepared beside it. This is on by default;
+   `GPUWM_CHAINED_PREP=0` turns it off. It holds for one domain and for a
+   domain tree from native HRRR, a mapped source or the GFS series,
+   prepared on the CPU or the card: the nests, including nests that start
+   later and nests that follow a storm (a `gpuwm cyclone-setup`
+   configuration), are prepared into the head, and the forecast waits only
+   at the root's intervals. A GFS tree also prepares as its hours post.
+   The other routes [Pipeline stages](PIPELINE-STAGES.md) lists are
+   prepared whole before their forecast starts, and a `[tiles]` run whose
+   outermost domain streams from a host store starts at the seal, because
+   that store is read from the sealed preparation.
+2. **Fetching as the source posts.** An engine that fetches each hour as the
+   source posts it answers the readiness question (`--readiness` on
+   `gpuwm go`, `gpuwm fetch` and `gpuwm run-plan`) and takes
+   `as_posted = true` under `[fetch]`, its default. An engine without it
+   fetches a cycle once its last hour is posted: `latest` means the newest
+   cycle whose last hour is posted, and a named cycle whose last hour is
+   missing is refused. New forecast's **Data posting** row says which of the
+   two your engine does, and the MCP run tools refuse `as_posted: true` on an
+   engine without it rather than start hours later than asked.
+
+Whichever applies, every wait is reported the same way (below).
+
+## Starting at the first hours
+
+On an engine that fetches as the source posts, a run can start once one host
+holds every object of its **start needs**:
+
+- the window's first lead (the analysis) and the first boundary interval
+  after it;
+- the route's lead-free objects and the step-0 objects bound to the first
+  lead (AIFS and GEM GDPS statics);
+- a same-cycle donor lead the route declares (AI-GFS and AI-GEFS take the
+  cycle's GDAS analysis);
+- for a domain tree, each nest's own start lead when the nest starts later
+  than the forecast;
+- for a source that posts its cycle whole, the last lead.
+
+After that the forecast waits for a later hour only when the model reaches
+it. For every rolling source measured the model outruns the posting, so a
+run launched at its first hours spends most of its time at seams, waiting
+minutes each.
+
+When each lead is expected comes from the source table: the earliest posting
+seen per cycle hour, plus a per-lead slope, the same rows `latest` already
+reads. Such an engine's rows also say how the cycle posts (`shape`), how late
+a lead may be before the run stops (`late_after_minutes`) and how often a due
+lead is asked about. `gpuwm sources ID --json` prints a source's row.
+
+How each kind of source posts:
+
+| Shape | Sources | What a run waits for |
+|---|---|---|
+| rolling | hrrr, hrrr-prs, gfs, gefs, rap, rrfs, icon-global, icon-eu, icon-d2, gem-gdps, aifs | the first hours, then each hour at its seam |
+| whole cycle | ecmwf-open-data, gdas | the cycle, which appears complete at once |
+| donor gated | aigfs, aigefs | the same-cycle GDAS analysis, after which every lead is posted |
+| archive | era5 (keyless ARCO copy), 20crv3-cf | nothing: a window before the archive's end starts at once, one past it is refused naming the end |
+| brokered | era5 (Copernicus CDS), era5-l137 | the job's file |
+
+A tree adds nothing to its root's shape.
+
+### Settings
+
+```toml
+[fetch]
+source = "gefs"
+cycle = "2026-09-30T12"
+hours = 48
+as_posted = true           # the default; false waits for the whole cycle
+late_after_minutes = 60    # the default is the source row's own budget
+```
+
+`as_posted = false` (`--whole-cycle` on `gpuwm go` and `gpuwm fetch`) is a
+choice, not a workaround: the run's output is the same either way. New
+forecast offers it as **Wait for the whole cycle**, off by default. A run
+plan carries the same choice as the `as_posted` run option, and
+`late_after_minutes` as a run option or `--late-after-minutes`.
+
+### The readiness question
+
+The readiness question prints one `gpuwm.readiness.v1` JSON document on
+stdout and runs nothing: the source, cycle and window, the posting facts,
+each start need with its expected time, its late time and the host's answer
+(`posted`, `not_posted`, `not_heard`, or none when not asked),
+`expected_ready_at`, `expected_final_at`, and `state` (`ready`, `waiting`,
+`refused` or `unprobeable`). With `--no-probe` it asks no host and gives the
+schedule alone. Its exit code is **0** ready (or a source that cannot be
+asked), **75** not ready yet (with `retry_after_seconds`), **2** refused: the
+window can never start, and `refusal` says why.
+
+## Waiting at a seam
+
+A forecast that reaches a boundary interval not there yet waits between two
+steps, after that instant's frames and checkpoint are written, and says why in
+four places:
+
+- **Events** (`events.jsonl`, relayed by `gpuwm go` and emitted by
+  `gpuwm run-plan`): `source_wait_started`, `source_wait_progress` every 60 s
+  and `source_wait_finished` when a source hour is not posted yet, each with
+  the source, cycle, lead, its expected and late times and the model time
+  reached; `boundary_wait_started` and `boundary_wait_finished` with
+  `cause: "preparation"` when the hour is posted and its interval is still
+  being prepared. [run-plan.md](../run-plan.md) lists every field.
+- **`progress.json`** (`evidence/progress.json` for a domain tree): a
+  `waiting` block with `on` (`source` or `preparation`), `phase`,
+  `since_utc`, the lead and its times, and the interval, dropped when the
+  wait ends.
+- **`run-progress.json`**: status `waiting:source` or `waiting:preparation`
+  with a `wait` record. The watchdog times a source wait against the lead's
+  late time plus 120 s and a preparation wait against the preparation's
+  silence limit, never against the step time, so a long wait is not taken
+  for a stalled forecast. Under `gpuwm run-plan` (which `gpuwm go` uses for
+  a mapped source), a run whose forecast failed while its preparation still
+  runs says `waiting:preparation` until the preparation ends, so a retry can
+  reuse it, and then reports the failure.
+- **The run's page and My forecasts**: the live line says what the run
+  waits for, when that hour was expected and when it counts as late, the
+  model time reached and how long it has waited.
+  `GET /api/runs/RUN/status` carries the same facts in its `wait` block.
+
+The terminal says it too:
+
+```text
+forecast: waiting at 27:00 (valid 2026-10-01T15Z) for gefs f030, not posted yet (scheduled from about 15:53Z)
+forecast: gefs f030 arrived after 38 s; stepping
+```
+
+## When a source falls behind
+
+On an engine that fetches as the source posts, a lead not posted by its
+expected time plus `late_after_minutes` stops the run with **exit 75**. The forecast stops at the seam; the frames already
+written stay, and so does a checkpoint written at the seam. The run emits
+`source_behind` (the lead, its expected and late times, the last answer,
+the model time reached, the frames kept and the checkpoint) and then `failed`
+with `error_class: "SourceBehind"`. The message names the lead:
+
+```text
+gefs f030 of the 2026-09-30T12 cycle has not posted by 16:53Z, 60 min after its scheduled
+time (15:53Z; the source table's late_after_minutes is 60). The forecast stopped at 27:00
+(valid 2026-10-01T15Z); the frames through that time are kept.
+what to do: launch the same config again once f030 posts (it resumes from the fetched
+prefix), or raise [fetch] late_after_minutes for this source.
+```
+
+A host that could not be heard at all is said as such, never as the
+publisher being late. To resume the forecast from the checkpoint at the
+seam, run `gpuwm go CONFIG --prepared-root PREPARED --restart CHECKPOINT`.
+Do not retry in a loop: a lead is later than its budget.
+
+Exit codes of `gpuwm go`, `gpuwm run-plan` and an as-posted fetch: **0**
+completed, **1** failed, **2** refused before any work, **75** the source
+fell behind, **130** interrupted.
+
+## Launching from a schedule
+
+A site that launches runs on a clock launches at the first hours posted, not
+the last:
+
+1. **Launch time.** For each product (source, cycle hours, window, domain),
+   launch at `expected_ready_at`, the latest expected time among the start
+   needs. It comes from the readiness question with `--no-probe`, or from
+   the source's row in `gpuwm sources ID --json`. It is not
+   `expected_final_at`.
+2. **Box start.** Start the machine that long before, less its boot time.
+3. **Ask on the box.** Ask the readiness question of the run plan: on 0,
+   launch; on 75, launch anyway (the run waits for its start needs up to
+   their late time and reports `phase: start` waits) or ask again after
+   `retry_after_seconds`; on 2, skip this cycle and report the refusal.
+4. **Name the cycle.** Launch with the cycle named, never `latest`: a minute
+   early, `latest` is still the previous cycle, and the run would forecast
+   from stale data.
+5. **Follow the run** through `events.jsonl` (`posting_schedule`,
+   `lead_posted`, `lead_ready`, the waits, `source_behind` and the last
+   event) and the `waiting` block of `progress.json`.
+6. **On exit 75**, the next cycle's launch is the retry, unless the product
+   needs this cycle; then launch again once the readiness question shows the
+   late lead posted.
+
+On an engine that fetches a cycle only once its last hour is posted, the same
+schedule launches at `expected_final_at` instead, and step 3 is the run's own
+start check.
+
+## Following an HRRR cycle with `gpuwm stream`
+
+`gpuwm stream PLAN.toml` is the older controller for one case: it follows an
+uploading HRRR cycle with a nested domain tree, one sealed hourly leg at a
+time. Each leg is a new process that fetches the new hour, extends the root
+preparation, rebuilds the nested hierarchy in full and resumes the forecast
+from the preceding tree checkpoint. It stays until the native HRRR route and
+its trees run as posted through `gpuwm go`; after that a schedule that names
+each cycle does its job.
 
 The experiment must contain at least two domains and set
-`restart_interval_s = 3600`. `gpuwm domain --polygon ...` can fit every domain
-level around a local GeoJSON Polygon, MultiPolygon, Feature, or
-FeatureCollection with one buffer per level. The streaming plan also needs the
-native root-domain JSON and the WPS/native/stock WRF namelists used by the
-ordinary prepared-hierarchy route.
+`restart_interval_s = 3600`. The plan also needs the native root-domain JSON
+and the WPS, native and stock WRF namelists of the prepared-hierarchy route.
 
 ```toml
 schema = "gpuwm-stream-plan-v1"
@@ -56,16 +252,11 @@ allow_shared_gpu = false
 ```
 
 `physics_profile` was `wsm6-ysu-mm5-noah-no-radiation-v1` in this plan
-through 1.8.7. Read that name carefully if you have it in a plan of your
-own: it does not run "no radiation", it runs Dudhia **shortwave** with
-longwave **off**, so nothing computes the downward longwave the land
-surface reads and a streaming job that crosses local night is running the
-1.7.1 dewpoint-collapse configuration. The template's registry entry now
-says so in its own warnings. `thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1`
-is the HRRR route's default and runs both radiation streams; it is what
-this plan hands you now. It ran the legacy RRTMG engines under the name
-`thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1` through 2.7.5; that profile
-is still selectable and is the same suite on the other 4/4 engine.
+through 1.8.7. That name does not run "no radiation": it runs Dudhia
+shortwave with longwave off, so nothing computes the downward longwave the
+land surface reads, and a job that crosses local night runs the 1.7.1
+dewpoint-collapse configuration. `thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1`
+is the HRRR route's default and runs both radiation streams.
 
 Run it once:
 
@@ -73,103 +264,31 @@ Run it once:
 gpuwm stream PLAN.toml
 ```
 
-`cycle = "latest"` is resolved when the command starts. For a multi-cycle
-job, each later cycle must be the exact hourly successor; the controller
-refuses to leapfrog a missed cycle. `cycle_count` is bounded, so a completed
-plan is idempotent. Use a new work root for a new bounded job.
-
-`target_lead` defaults to 1. Set a larger value deliberately: every hourly
-lead retains a complete root preparation, prepared hierarchy, forecast run,
-and tree-checkpoint generation. A target of 18 therefore retains 18 such
-generations; an extended-cycle target of 48 retains 48. The controller never
-deletes older generations.
-
-`gpu_uuid` selects the physical GPU by UUID, independently of CUDA ordinal
-ordering. With the default `allow_shared_gpu = false`, the controller holds
-the supervisor UUID lock and refuses unrelated compute processes on that GPU.
-Set `allow_shared_gpu = true` only when deliberate GPU sharing is acceptable.
-
-## What is incremental
-
-The root preparation is a real one-hour extension. For fNNN after f001 it
-decodes only the terminal overlap hour and the newly available hour, proves
-the old source and bridge manifests are unchanged prefixes, then hardlinks
-the immutable prepared-cache arrays, bridge payloads, and static artifacts
-from the preceding root. On a drive without hard links (exFAT, FAT32) or
-across two drives it copies them instead, checks each copy byte for byte
-against its original, and prints one line saying the copies cost disk; a copy
-the disk cannot hold is refused by name before its first byte.
-
-The nested hierarchy is currently rebuilt in full for each hourly leg. Each
-forecast is also a new sealed process: it restores the preceding tree
-checkpoint and integrates to the new endpoint. No running process observes a
-forcing-file mutation.
-
-When `cache_dir` is set, the full forcing objects are retained twice: once in
-the cycle source tree and once in the fetch cache. The initial
-`disk-capacity.json` prices every source hour, the cache copy, retained
-forecast generations including t=0 and configured history cadence, and a
-fixed 2 GiB margin. Before each fetch, `disk-headroom.json` rechecks the next
-source/cache writes, one generation, and a 512 MiB emergency margin. A shared
-work/cache filesystem is charged one combined requirement against one free
-space observation; split filesystems are gated independently and their free
-space is never summed. Headroom has three fail-closed source-prefix states: a
-strictly verified requested prefix has zero source/cache write demand; a
-strictly verified predecessor prefix prices only the new terminal hour; and
-any corrupt, partial, or otherwise unverified predecessor prices replacement
-of the complete f000..fNNN prefix (using every sealed HEAD size, with the
-enforced envelope as fallback). Generation and the emergency margin remain
-gated in every state.
-
-The enforced full-object reservation envelope is 8 GiB per source hour for
-the combined atmosphere and soil products. An observation above that envelope
-refuses before download so a future object cannot invalidate the initial
-capacity receipt.
-
-The work root contains:
-
-- `stream-summary.json`: the cross-cycle hash chain.
-- `cycles/<cycle>/chain-summary.json`: the per-cycle PASS timeline.
-- `cycles/<cycle>/legs/fNNN/chain-link.json`: the availability observation,
-  stage timestamps, prior-checkpoint hashes, output-checkpoint hashes, health,
-  and authority-artifact hashes for one sealed leg.
-- `active-cycle.json`: the atomic crash-resume marker.
-
-Rerunning the same plan verifies every retained link and artifact before it
-adopts completed work. It also recomputes the outer cycle count and chain tail,
-requires status/count agreement, and proves every cycle is the exact hourly
-successor of the preceding cycle. Incomplete create-only outputs are moved to an
-`interrupted` quarantine name and rebuilt; verified fetch files remain in the
-production source directory and are reused by the fetcher's normal digest and
-inventory bars.
-
-## Availability and timeline semantics
-
-The S3 watcher requires both forcing objects (`wrfnat` and `wrfprs`) and both
-of their `.idx` indexes. It records URL, Content-Length, ETag when supplied,
-Last-Modified, and first-observed time for each. After fetch it repeats the
-object/index observations and refuses identity drift. The fetch manifest then
-binds the effective URLs and transports to downloaded byte counts, sizes, and
-SHA-256 digests.
-
-The timeline reference is `forcing_set_first_observed_at`: when this running
-controller first observed the complete four-resource set. It is not a
-fabricated producer upload/completion timestamp. `remote_ready_last_modified_at`
-is the maximum serving-endpoint HTTP Last-Modified value and is labelled with
-that narrower meaning.
-
-Each timeline row reports distinct root and hierarchy preparation intervals:
-`root_preparation_started_at`, `root_preparation_completed_at`,
-`root_preparation_seconds`, `hierarchy_preparation_started_at`,
-`hierarchy_preparation_completed_at`, and
-`hierarchy_preparation_seconds`. `preparation_completed_at` is retained as a
-compatibility alias for `hierarchy_preparation_completed_at`. Fetch and
-forecast intervals and availability-to-completion durations are reported
-separately.
-
-Local deterministic tests prove controller restart, manifest integrity,
-public root-prefix extension, production hierarchy artifact/preflight
-contracts, and restart-set compatibility. They are not evidence of live HRRR
-latency or GPU forecast advancement. Only an unattended run against a real
-uploading cycle, using the shipped hierarchy and forecast commands, supports
-the operational timeline and per-leg validity claim.
+- `cycle = "latest"` is resolved when the command starts. Each later cycle
+  must be the exact hourly successor; the controller refuses to leapfrog a
+  missed cycle. `cycle_count` is bounded, so a completed plan is idempotent.
+- `target_lead` defaults to 1. Every hourly lead keeps a complete root
+  preparation, prepared hierarchy, forecast run and tree-checkpoint
+  generation, and the controller never deletes older generations.
+- `gpu_uuid` selects the GPU by UUID. With `allow_shared_gpu = false` the
+  controller holds the supervisor UUID lock and refuses other compute
+  processes on that GPU.
+- The watcher requires `wrfnat`, `wrfprs` and both `.idx` indexes, records
+  each one's URL, Content-Length, ETag, Last-Modified and first-observed
+  time, and refuses identity drift after the fetch. The fetch manifest binds
+  the URLs and transports to byte counts, sizes and SHA-256 digests.
+- The initial `disk-capacity.json` prices every source hour, the cache copy,
+  the kept forecast generations and a 2 GiB margin; before each fetch,
+  `disk-headroom.json` rechecks the next writes, one generation and a
+  512 MiB margin. A full-object envelope of 8 GiB per source hour refuses
+  an observation above it before download.
+- The work root holds `stream-summary.json` (the cross-cycle hash chain),
+  `cycles/<cycle>/chain-summary.json`, one
+  `cycles/<cycle>/legs/fNNN/chain-link.json` per sealed leg, and
+  `active-cycle.json`, the crash-resume marker. A rerun verifies every kept
+  link and artifact before it adopts completed work.
+- The timeline reference `forcing_set_first_observed_at` is when this
+  controller first saw the complete four-object set, not a producer upload
+  time; `remote_ready_last_modified_at` is the newest Last-Modified. Each
+  timeline row reports the root and hierarchy preparation intervals
+  separately.

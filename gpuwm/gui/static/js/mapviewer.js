@@ -6,7 +6,7 @@
 //   controls go in), looks, links (more controls for the top right), onchange()}; route: the page name the
 //   address keeps ("results" or "watch"), so a picked map survives a reload.
 
-import { h, append, bar, fill, paceLine, prepLine } from "./core.js";
+import { h, append, bar, fill, paceLine, prepLine, waitLine } from "./core.js";
 import * as api from "./api.js";
 import { notice, errorText } from "./router.js";
 import { grids, gridOutline, domainNumber, placesAt, gridForPicture, borrowGeoref, lonLatBox, boundsBox, screenRings,
@@ -664,6 +664,8 @@ export async function openViewer(app, runId, wanted = null, route = "results") {
     if (forecasting && st.run_seconds && st.model_seconds !== null && st.model_seconds !== undefined) words.push(hourWords(st.model_seconds, st.run_seconds, V.model_hour));
     if (st.seconds_left !== null && st.seconds_left !== undefined) words.push(fill(V.left, { left: leftWords(st.seconds_left) }));
     if (forecasting) words.push(...prep);
+    // a forecast at a seam says what it waits on: a source hour not posted yet, or the preparation
+    if (forecasting) words.push(...waitLine(st, w.wait));
     // every grid is drawn as its frames land, so a nested run names its grids and the one that sets the pace
     const pace = paceLine(st, V);
     if (pace) words.push(pace);

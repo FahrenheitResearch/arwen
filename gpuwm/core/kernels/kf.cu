@@ -71,9 +71,8 @@
  *   block_base + (s * nz + k) * KFWS_LANES + t
  * and a warp reading arr[k] touches 32 consecutive floats.
  *
- * KFWS_LANES is the launch block, fixed: gpuwm/core/kf.py's _TPB and
- * tests/test_kf_workspace.py both pin it, and a launch at any other block
- * width would alias lanes.
+ * KFWS_LANES is one warp.  Blocks may contain several warps, and the
+ * workspace base maps each warp to its own region before choosing a lane.
  */
 #define KFWS_LANES 32
 
@@ -102,8 +101,9 @@ struct KfColI {
                    * (size_t)KFWS_LANES)})
 /* This thread's lane inside its block's workspace region. */
 #define KFWS_LANE_BASE(ws, kp) \
-    ((ws) + (size_t)blockIdx.x * (size_t)KFWS_SLOTS * (size_t)(kp) \
-            * (size_t)KFWS_LANES + (size_t)threadIdx.x)
+    ((ws) + ((size_t)blockIdx.x * (blockDim.x / KFWS_LANES) \
+             + threadIdx.x / KFWS_LANES) * KFWS_SLOTS * (kp) \
+             * KFWS_LANES + threadIdx.x % KFWS_LANES)
 
 #define KF_PHASE_WARM_RAIN 0
 #define KF_PHASE_NO_SEPARATE_SNOW 1
@@ -128,11 +128,11 @@ __device__ __forceinline__ float kf_thetae(
         const float* __restrict__ log_ratio) {
     float q = fmaxf(qv, 1.0e-9f);
     float ee = q * pressure / (0.622f + q);
-    float a1 = fmaxf(ee / 611.2f, 0.001f);
-    float position = (a1 - 0.001f) / 0.075f;
+    float a1 = fmaxf(__fdiv_rn(ee, 611.2f), 0.001f);
+    float position = __fdiv_rn((a1 - 0.001f), 0.075f);
     int index = min(max((int)truncf(position), 0), 198);
     float base = 0.001f + 0.075f * index;
-    float fraction = kf_clip((a1 - base) / 0.075f, 0.0f, 1.0f);
+    float fraction = kf_clip(__fdiv_rn((a1 - base), 0.075f), 0.0f, 1.0f);
     float tlog = (1.0f - fraction) * log_ratio[index]
                  + fraction * log_ratio[index + 1];
     float dewpoint = (17.67f * 273.15f - 29.65f * tlog) / (17.67f - tlog);
@@ -206,8 +206,8 @@ __device__ __forceinline__ void kf_prof5(float equilibrium,
                         - e45 * (0.5f + equilibrium * equilibrium / 2.0f
                                  - equilibrium));
     }
-    *entrainment /= normalization;
-    *detrainment /= normalization;
+    *entrainment = __fdiv_rn(*entrainment, normalization);
+    *detrainment = __fdiv_rn(*detrainment, normalization);
 }
 
 __device__ __forceinline__ void kf_tpmix2(
@@ -281,7 +281,7 @@ __device__ __forceinline__ void kf_condload(
     float fresh = *qnew_liquid + *qnew_ice;
     float estimated = 0.5f * (total + fresh);
     float g1 = fmaxf(*w2 + buoyancy_term - entrainment_term
-                     - 2.0f*9.81f*layer_depth*estimated/1.5f, 0.0f);
+                     - __fdiv_rn(2.0f*9.81f*layer_depth*estimated, 1.5f), 0.0f);
     float wavg = 0.5f * (sqrtf(*w2) + sqrtf(g1));
     float conversion = 0.03f * layer_depth / wavg;
     float fresh_liquid_ratio = *qnew_liquid / (fresh + 1.0e-8f);
@@ -295,7 +295,7 @@ __device__ __forceinline__ void kf_condload(
     *ice_out = (1.0f - liquid_ratio) * fallout;
     float drag = 0.5f * (old_total + total - 0.2f * fresh);
     *w2 += buoyancy_term - entrainment_term
-           - 2.0f*9.81f*layer_depth*drag/1.5f;
+           - __fdiv_rn(2.0f*9.81f*layer_depth*drag, 1.5f);
     if (fabsf(*w2) < 1.0e-4f) *w2 = 1.0e-4f;
     *liquid = liquid_ratio*total + fresh_liquid_ratio*0.4f*fresh;
     *ice = (1.0f-liquid_ratio)*total
@@ -318,7 +318,87 @@ __device__ __forceinline__ float kf_mixed_virtual_temperature(
     return temperature * (1.0f + 0.608f*qv - liquid - ice);
 }
 
-extern "C" __global__
+// Prediction only changes column order; every column still runs the scheme.
+__device__ __noinline__ bool kf_predict_trigger(
+        const float* temperature, const float* qv, const float* pressure,
+        const float* dz, const float* w, const float* log_ratio,
+        float* workspace, int nz, int ncol, int column, float dx) {
+    KfCol z = KFWS_AT(workspace, 0, nz);
+    KfCol dp = KFWS_AT(workspace, 1, nz);
+    KfCol qenv = KFWS_AT(workspace, 3, nz);
+    float z_interface = 0.0f;
+    for (int k = 0; k < nz; ++k) {
+        int index = k * ncol + column;
+        float depth = dz[index];
+        z[k] = z_interface + 0.5f * depth;
+        z_interface += depth;
+        float qsat = kf_qsat(temperature[index], pressure[index]);
+        qenv[k] = kf_clip(fminf(qv[index], qsat), 1.0e-6f, 1.0f);
+        float tv = temperature[index] * (1.0f + 0.608f * qenv[k]);
+        float rho = pressure[index] / (287.0f * tv);
+        dp[k] = rho * 9.81f * depth;
+    }
+    float surface_pressure = pressure[column];
+    float threshold = surface_pressure - 1500.0f;
+    for (int candidate = 0; candidate < nz; ++candidate) {
+        if (candidate > 0) {
+            float p = pressure[candidate * ncol + column];
+            if (p < surface_pressure - 30000.0f) break;
+            if (p >= threshold) continue;
+            threshold -= 1500.0f;
+        }
+        float sum_dp = 0.0f;
+        int top = candidate;
+        while (top < nz && sum_dp <= 5000.0f) sum_dp += dp[top++];
+        if (sum_dp <= 5000.0f || top >= nz) continue;
+        float sum_t = 0.0f, sum_q = 0.0f, sum_z = 0.0f, sum_p = 0.0f;
+        for (int k = candidate; k < top; ++k) {
+            int index = k * ncol + column;
+            sum_t += dp[k] * temperature[index];
+            sum_q += dp[k] * qenv[k];
+            sum_z += dp[k] * z[k];
+            sum_p += dp[k] * pressure[index];
+        }
+        float tm = sum_t / sum_dp;
+        float qm = sum_q / sum_dp;
+        float zm = sum_z / sum_dp;
+        float pm = sum_p / sum_dp;
+        float emix = fmaxf(qm * pm / (0.622f + qm), 0.6112f);
+        float a1 = fmaxf(__fdiv_rn(emix, 611.2f), 0.001f);
+        float position = __fdiv_rn((a1 - 0.001f), 0.075f);
+        int li = min(max((int)truncf(position), 0), 198);
+        float base = 0.001f + 0.075f * li;
+        float lf = kf_clip(__fdiv_rn((a1 - base), 0.075f), 0.0f, 1.0f);
+        float tlog = (1.0f - lf) * log_ratio[li] + lf * log_ratio[li + 1];
+        float dewpoint = (17.67f * 273.15f - 29.65f * tlog)
+                         / (17.67f - tlog);
+        float lcl_t = dewpoint
+            - (0.212f + 1.571e-3f * (dewpoint - 273.16f)
+               - 4.36e-4f * (tm - 273.16f)) * (tm - dewpoint);
+        lcl_t = fminf(lcl_t, tm);
+        float lcl_z = zm + __fdiv_rn(lcl_t - tm, -9.81f / 1004.5f);
+        int lk = 0;
+        while (lk < nz && z[lk] < lcl_z) ++lk;
+        if (lk <= 0 || lk >= nz - 2) continue;
+        float fz = kf_clip((lcl_z - z[lk - 1]) / (z[lk] - z[lk - 1]),
+                           0.0f, 1.0f);
+        float env_lcl = ((1.0f - fz) * temperature[(lk - 1) * ncol + column]
+                         + fz * temperature[lk * ncol + column]);
+        float qenv_lcl = ((1.0f - fz) * qenv[lk - 1]
+                          + fz * qenv[lk]);
+        float wlcl = ((1.0f - fz) * w[(lk - 1) * ncol + column]
+                      + fz * w[lk * ncol + column]);
+        float w_threshold = 0.02f * fminf(__fdiv_rn(lcl_z, 2000.0f), 1.0f);
+        float w_scaled = __fdiv_rn(wlcl * dx, 25000.0f) - w_threshold;
+        float perturbation = (w_scaled < 1.0e-4f)
+            ? 0.0f : 4.64f * powf(w_scaled, 0.33f);
+        if (lcl_t + perturbation < env_lcl) continue;
+        return true;
+    }
+    return false;
+}
+
+extern "C" __global__ __launch_bounds__(256)
 void kf_column(
         const float* __restrict__ u,
         const float* __restrict__ v,
@@ -362,10 +442,31 @@ void kf_column(
     // each tile reuses the same allocation.
     int column = col0 + blockDim.x * blockIdx.x + threadIdx.x;
     int ncol = ny * nx;
-    if (column >= ncol) return;
     if (nz < 8 || nz > KF_KMAX) return;
 
     float* kfws = KFWS_LANE_BASE(ws, nz);
+    __shared__ int order[256];
+    __shared__ int counts[8];
+    bool predicted = column < ncol && kf_predict_trigger(
+        temperature, qv, pressure, dz, w, log_ratio,
+        kfws, nz, ncol, column, dx);
+    int lane = threadIdx.x % 32;
+    int warp = threadIdx.x / 32;
+    unsigned ballot = __ballot_sync(0xffffffffu, predicted);
+    int before = __popc(ballot & ((1u << lane) - 1u));
+    if (lane == 0) counts[warp] = __popc(ballot);
+    __syncthreads();
+    int preceding = 0, total = 0;
+    for (int j = 0; j < blockDim.x / 32; ++j) {
+        if (j < warp) preceding += counts[j];
+        total += counts[j];
+    }
+    int position = predicted ? preceding + before
+        : total + threadIdx.x - preceding - before;
+    order[position] = column;
+    __syncthreads();
+    column = order[threadIdx.x];
+    if (column >= ncol) return;
     KfCol z = KFWS_AT(kfws, 0, nz);
     KfCol dp = KFWS_AT(kfws, 1, nz);
     KfCol qsat_env = KFWS_AT(kfws, 2, nz);
@@ -539,11 +640,11 @@ void kf_column(
         float zm = sum_z / sum_dp;
         float pm = sum_p / sum_dp;
         float emix = fmaxf(qm * pm / (0.622f + qm), 0.6112f);
-        float a1 = fmaxf(emix / 611.2f, 0.001f);
-        float position = (a1 - 0.001f) / 0.075f;
+        float a1 = fmaxf(__fdiv_rn(emix, 611.2f), 0.001f);
+        float position = __fdiv_rn((a1 - 0.001f), 0.075f);
         int li = min(max((int)truncf(position), 0), 198);
         float base = 0.001f + 0.075f * li;
-        float lf = kf_clip((a1 - base) / 0.075f, 0.0f, 1.0f);
+        float lf = kf_clip(__fdiv_rn((a1 - base), 0.075f), 0.0f, 1.0f);
         float tlog = (1.0f - lf) * log_ratio[li] + lf * log_ratio[li + 1];
         float dewpoint = (17.67f * 273.15f - 29.65f * tlog)
                          / (17.67f - tlog);
@@ -551,7 +652,7 @@ void kf_column(
             - (0.212f + 1.571e-3f * (dewpoint - 273.16f)
                - 4.36e-4f * (tm - 273.16f)) * (tm - dewpoint);
         lcl_t = fminf(lcl_t, tm);
-        float lcl_z = zm + (lcl_t - tm) / (-9.81f / 1004.5f);
+        float lcl_z = zm + __fdiv_rn(lcl_t - tm, -9.81f / 1004.5f);
         int lk = 0;
         while (lk < nz && z[lk] < lcl_z) ++lk;
         if (lk <= 0 || lk >= nz - 2) continue;
@@ -563,8 +664,8 @@ void kf_column(
                           + fz * qenv[lk]);
         float wlcl = ((1.0f - fz) * w[(lk - 1) * ncol + column]
                       + fz * w[lk * ncol + column]);
-        float w_threshold = 0.02f * fminf(lcl_z / 2000.0f, 1.0f);
-        float w_scaled = wlcl * dx / 25000.0f - w_threshold;
+        float w_threshold = 0.02f * fminf(__fdiv_rn(lcl_z, 2000.0f), 1.0f);
+        float w_scaled = __fdiv_rn(wlcl * dx, 25000.0f) - w_threshold;
         float perturbation = (w_scaled < 1.0e-4f)
             ? 0.0f : 4.64f * powf(w_scaled, 0.33f);
         if (lcl_t + perturbation < env_lcl) continue;
@@ -583,7 +684,7 @@ void kf_column(
 
     thetae = kf_thetae(pmix, tmix, qmix, log_ratio);
     radius = trigger_w < 0.0f ? 1000.0f
-        : (trigger_w > 0.1f ? 2000.0f : 1000.0f + 1000.0f*trigger_w/0.1f);
+        : (trigger_w > 0.1f ? 2000.0f : 1000.0f + __fdiv_rn(1000.0f*trigger_w, 0.1f));
     tv_lcl = tlcl * (1.0f + 0.608f * qmix);
     rho_lcl = plcl / (287.0f * tv_lcl);
     base_mass_flux = rho_lcl * 0.01f * dx * dx;
@@ -642,7 +743,7 @@ void kf_column(
             be = (tvu_below+tvu)/(tv_env[nk]+tv_env[nk1])-1.0f;
             layer_depth = z[nk1]-z[nk];
         }
-        float boterm = 2.0f*layer_depth*9.81f*be/1.5f;
+        float boterm = __fdiv_rn(2.0f*layer_depth*9.81f*be, 1.5f);
         float enterm = 2.0f*rei*w2/upold;
         kf_condload(layer_depth, boterm, enterm, &qliq[nk1], &qice[nk1],
                     &w2, &qnewlq, &qnewice, &qlqout[nk1], &qicout[nk1]);
@@ -946,7 +1047,7 @@ void kf_column(
                     float qsrh = 0.622f*es/(pressure[index]-es);
                     if (qsrh < downdraft_q[nd]) {
                         qsrh = downdraft_q[nd];
-                        t1rh = downdraft_t[nd]+(qss-qsrh)*latent/1004.5f;
+                        t1rh = downdraft_t[nd]+__fdiv_rn((qss-qsrh)*latent, 1004.5f);
                     }
                     downdraft_t[nd] = t1rh;
                     qss = qsrh;
@@ -1009,7 +1110,7 @@ void kf_column(
     float dxsq = dx*dx;
     float aincmx = 1000.0f;
     int lmax = max(klcl, lfs);
-    for (int nk=0; nk<nz; ++nk) cell_mass[nk] = dp[nk]*dxsq/9.81f;
+    for (int nk=0; nk<nz; ++nk) cell_mass[nk] = __fdiv_rn(dp[nk]*dxsq, 9.81f);
     for (int nk=source_bottom; nk<=lmax; ++nk) {
         float draft_inflow = uer[nk]-der[nk];
         if (draft_inflow > 1.0e-3f)
@@ -1067,7 +1168,7 @@ void kf_column(
         for (int nk=0; nk<nz; ++nk) {
             theta_pa[nk] = theta_env[nk];
             qpa[nk] = qenv[nk];
-            fxm[nk] = omega[nk]*dxsq/9.81f;
+            fxm[nk] = __fdiv_rn(omega[nk]*dxsq, 9.81f);
         }
         for (int ntc=0; ntc<nstep; ++ntc) {
             for (int nk=0; nk<=cloud_top; ++nk)
@@ -1139,17 +1240,17 @@ void kf_column(
             float dssdt = qss*(17.67f*273.15f-17.67f*29.65f)
                            /((tmix_g-29.65f)*(tmix_g-29.65f));
             float dq = (qmix_g-qss)/(1.0f+latent*dssdt/cpm);
-            tmix_g += latent/1004.5f*dq;
+            tmix_g += __fdiv_rn(latent, 1004.5f)*dq;
             qmix_g -= dq;
             tlcl_g = tmix_g;
         } else {
             qmix_g = fmaxf(qmix_g, 0.0f);
             float emix = qmix_g*pmix/(0.622f+qmix_g);
-            float a1 = emix/611.2f;
-            float position = (a1-0.001f)/0.075f;
+            float a1 = __fdiv_rn(emix, 611.2f);
+            float position = __fdiv_rn((a1-0.001f), 0.075f);
             int li = (int)position;
             float value = li*0.075f+0.001f;
-            float fraction = (a1-value)/0.075f;
+            float fraction = __fdiv_rn((a1-value), 0.075f);
             float tlog = fraction*log_ratio[li+1]
                          +(1.0f-fraction)*log_ratio[li];
             float dewpoint = (17.67f*273.15f-29.65f*tlog)/(17.67f-tlog);
@@ -1158,7 +1259,7 @@ void kf_column(
             tlcl_g = fminf(tlcl_g, tmix_g);
         }
         float tvlcl_g = tlcl_g*(1.0f+0.608f*qmix_g);
-        float zlcl_g = zmix+(tlcl_g-tmix_g)/(-9.81f/1004.5f);
+        float zlcl_g = zmix+__fdiv_rn(tlcl_g-tmix_g, -9.81f/1004.5f);
         int klcl_g = 0;
         while (klcl_g<nz && z[klcl_g]<zlcl_g) ++klcl_g;
         if (klcl_g <= 0 || klcl_g > cloud_top) return;

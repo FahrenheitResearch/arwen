@@ -547,3 +547,111 @@ def test_regular_source_hierarchy_emits_corridors_only_on_opt_in(
 
     with pytest.raises(ValueError, match="not child domains"):
         _call(tmp_path, monkeypatch, statics_corridor=(1,))
+
+
+def test_a_chained_head_builds_the_corridor_its_seal_copies(
+        tmp_path, monkeypatch):
+    """A136 L7d: a moving tree's corridor is built into its head.
+
+    The corridor is child-resolution statics over the ground a nest can
+    reach; it needs the geography and the tree but no boundary time, so a
+    chained tree builds it at its head, where a head-bound forecast moves
+    its nest over it.  The seal then copies the head's set into the
+    one-shot tree instead of building it again, and the sealed set is byte
+    for byte the one-shot tree's.  The breakage this prevents: every
+    moving and cyclone tree's forecast waited for the seal; and a head set
+    that changed before the seal is refused rather than sealed.
+    """
+
+    from pathlib import Path
+
+    import gpuwm.static.corridor as corridor_module
+
+    builds = []
+
+    def fake_build(*, child_dc, parent_run, reference_grid, static_catalog,
+                   frame_kwargs, window, reach):
+        grid_id = int(child_dc.grid_id)
+        builds.append(grid_id)
+        return SimpleNamespace(
+            grid_id=grid_id,
+            fields={"HGT_M": np.full((4, 3), float(grid_id)),
+                    "LANDMASK": np.eye(4, 3)},
+            entry={"schema": corridor_module.STATICS_CORRIDOR_SCHEMA,
+                   "status": "READY", "grid_id": grid_id})
+
+    monkeypatch.setattr(
+        corridor_module, "build_child_statics_corridor", fake_build)
+
+    # The one-shot tree: the reference set.
+    oneshot, _ = _call(tmp_path, monkeypatch, statics_corridor="all")
+    oneshot_set = tmp_path / "artifacts" / "statics-corridor"
+    assert builds == [2, 3]
+
+    # The chained head, then its seal.
+    builds.clear()
+    exp, boundaries, initial, snapshots = _inputs(tmp_path, 3)
+    monkeypatch.setattr(
+        source_hierarchy, "initialize_native_hierarchy_children",
+        lambda **_kwargs: ((), 0.0))
+    monkeypatch.setattr(
+        source_hierarchy, "export_native_hierarchy",
+        lambda **_kwargs: "native-result")
+    grids = tuple(_Grid(f"d{grid_id:02d}-grid", 17 + grid_id)
+                  for grid_id in range(1, 4))
+    head_artifacts = tmp_path / "chained" / "hierarchy-head"
+    head = source_hierarchy.prepare_regular_source_hierarchy_head(
+        exp=exp, grids=grids, snapshots=snapshots, forcing_hours=(0, 1, 2),
+        wps_namelist=tmp_path / "namelist.wps", geog_root=tmp_path / "geog",
+        source_name="GFS", root_initial_result=initial,
+        source_manifest_sha256="b" * 64, statics_corridor="all",
+        head_artifacts=head_artifacts)
+    assert builds == [2, 3]
+    assert dict(head.statics_corridor_receipt) == dict(
+        oneshot.statics_corridor_receipt)
+    head_set = head_artifacts / "statics-corridor"
+
+    def files(folder: Path) -> dict:
+        return {path.name: path.read_bytes()
+                for path in sorted(folder.iterdir())}
+
+    assert files(head_set) == files(oneshot_set)
+
+    def seal(artifact_output):
+        return source_hierarchy.seal_regular_source_hierarchy(
+            head, artifact_output=artifact_output,
+            wrf_output=tmp_path / "chained" / "wrf",
+            root_initial_result=initial, root_met="met", root_soil="soil",
+            root_static_fields={}, root_boundaries=boundaries,
+            bridge_manifest_sha256="a" * 64,
+            source_manifest_sha256="b" * 64, namelist_sha256="c" * 64,
+            source_identity={"adapter": "gfs"},
+            head_artifacts=head_artifacts)
+
+    sealed = seal(tmp_path / "chained" / "hierarchy-artifacts")
+    # Copied, not built again, and equal to the one-shot tree's bytes.
+    assert builds == [2, 3]
+    assert dict(sealed.statics_corridor_receipt) == dict(
+        oneshot.statics_corridor_receipt)
+    assert files(tmp_path / "chained" / "hierarchy-artifacts"
+                 / "statics-corridor") == files(oneshot_set)
+
+    # A head set whose bytes changed since its receipt is not sealed.  One
+    # byte in the middle flips: an .npz ends in a zip trailer whose last
+    # byte is already zero, so zeroing the last byte changed nothing.
+    cache = head_set / "d03.npz"
+    tampered = bytearray(cache.read_bytes())
+    tampered[len(tampered) // 2] ^= 0xFF
+    cache.write_bytes(bytes(tampered))
+    with pytest.raises(corridor_module.CorridorRefusal, match="d03"):
+        seal(tmp_path / "tampered" / "hierarchy-artifacts")
+    # And a head that built its set cannot be sealed without it.
+    with pytest.raises(ValueError, match="head's artifact folder"):
+        source_hierarchy.seal_regular_source_hierarchy(
+            head, artifact_output=tmp_path / "no-head" / "artifacts",
+            wrf_output=tmp_path / "no-head" / "wrf",
+            root_initial_result=initial, root_met="met", root_soil="soil",
+            root_static_fields={}, root_boundaries=boundaries,
+            bridge_manifest_sha256="a" * 64,
+            source_manifest_sha256="b" * 64, namelist_sha256="c" * 64,
+            source_identity={"adapter": "gfs"})

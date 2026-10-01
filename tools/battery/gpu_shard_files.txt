@@ -70,6 +70,9 @@
 # closures, the open lateral boundary, the mass closure under a map factor,
 # the TKE budget, the small-step lateral wrap, the terrain metric.
 # ---------------------------------------------------------------------------
+tests/test_noah_mosaic_driver.py
+tests/test_noah_mosaic_wrf471_parity.py
+tests/test_noah_mosaic_ucm_wrf471_parity.py
 tests/test_openbc.py
 tests/test_diff6.py
 tests/test_diff6_boundary_face.py
@@ -248,6 +251,22 @@ tests/test_ruc_device_column.py
 tests/test_ruc_gpu.py
 tests/test_ruc_nzs_device.py
 
+# SHARD 1g2: the fused RUC land-surface call (lane speed-ruc, 2.8.1).  The
+# forecast's RUC step became six kernels: the fused driver prologue, three
+# fused sfctmp stages generated from the array orchestration, the epilogue
+# and a conditional commit.  These files hold every output word of the fused
+# call equal to the retained orchestration's, call after call, at both soil
+# geometries, and hold every refusal to the orchestration's first message.
+# GPU-bound by conftest._cupy_scope; MEASURED under GPUWM_NO_LOCAL_GPU=1 one
+# file at a time:
+#
+#   test_ruc_sfctmp_fused   45/45  skipped on CPU
+#   test_ruc_lsm_fused      45/45  skipped on CPU
+#   test_ruc_gpu_cache       5/5   skipped on CPU
+tests/test_ruc_sfctmp_fused.py
+tests/test_ruc_lsm_fused.py
+tests/test_ruc_gpu_cache.py
+
 # SHARD 1h: the device MYNN entry points whose admission surface this
 # branch CHANGED.  Same rule as 1f and 1g -- which touched file is on no
 # list -- and the one entry here is the case that proves the rule was
@@ -271,6 +290,11 @@ tests/test_ruc_nzs_device.py
 # here and not on stage1_files.txt.  Its CPU twin tests/test_mynn_pbl.py
 # runs 60 rows on a CPU and went to stage1_files.txt instead.
 tests/test_mynn_pbl_gpu.py
+#
+# The MYNN validation batch (one flag read per call site instead of one
+# per check) keeps every mask's predicate at each grid width and edge
+# value; all of its rows are device rows.
+tests/test_mynn_validation_batching.py
 
 # SHARD 1i: the P3 (mp_physics=50) device legs.  Same rule as 1f, 1g and
 # 1h -- a device file on no list is asked by nobody -- and P3 is the case
@@ -323,6 +347,17 @@ tests/test_mpas_column_batch_gpu.py
 # campaign gate's on-card half); its CPU half runs on stage 1, exactly the
 # shard-1b shape.
 tests/test_p3_front_door.py
+
+# SHARD 1l: the UW moist-turbulence PBL (bl_pbl_physics=9, WRF v4.7.1
+# CAMUWPBL).  The product launcher against WRF's own words on the packaged
+# oracle fixtures, the physics-driver seam end to end with its restart
+# round trip, and the float32 flush-to-zero lanes on the card; each file's
+# CPU half runs on stage 1 or on its own module there.  A new port that
+# still co-moves with fixes, so shard 1 rather than the reference-family
+# shard.
+tests/test_uwpbl_launcher_wrf471_parity.py
+tests/test_uwpbl_driver_seam.py
+tests/test_uwpbl_ftz_wrf471_parity.py
 
 # ---------------------------------------------------------------------------
 # The cumulus reference family occupies shard 2 at the explicit marker.
@@ -406,6 +441,223 @@ tests/test_nssl2_gpu.py
 # dropped it.  Whole-module GPU by pytestmark, so on a CPU leg it would
 # collect and skip every row while the line read as coverage.
 tests/test_radar_staging_gpu.py
+
+# SHARD 1m: the 2026-09-30 speed lanes' device legs (lanes speed-mynn,
+# speed-rrtmg-legacy, speed-rte-rrtmgp, speed-megakernel, speed-ruc and
+# speed-dycore-host, merged at 74a4374af).  Each lane holds its fused or
+# device-resident path equal to the path it replaced word for word, and
+# those comparisons need a card.  The lanes appended all of these to
+# tools/battery/stage1_files.txt, where under GPUWM_NO_LOCAL_GPU=1 and the
+# leg's marker expression they collected, MEASURED on node-4 at 74a4374af
+# one list at a time:
+#
+#   whole files, moved off stage 1 (0 CPU rows each):
+#   test_physics_fused_glue          575/575  skipped on CPU
+#   test_rrtmg_legacy_prep_device    126/126
+#   test_rrtmg_mcica                  80/80
+#   test_mynn_seaice_fused            41/41
+#   test_rrtmg_legacy_device_glue     39/39
+#   test_rrtmgp_night                 24/24
+#   test_surface_w_fused              16/16
+#   test_physics_fused_column         11/11
+#   test_rrtmgp_mcica                 11/11
+#   test_rrtmg_lw_batched_layout      10/10
+#   test_rrtmg_sw_layout_identity      8/8
+#   test_face_mass_fused               5/5
+#   test_rk_bookkeeping                3/3
+#   test_ruc_constant_cache            3/3
+#   test_physics_fused_block          module skipped at collection
+#
+#   device halves of files that stay on stage 1 for their CPU rows:
+#   test_nest_interp                  40 of 73
+#   test_nest_coupler                 20 of 52
+#   test_rrtmgp_optics                12 of 14
+#   test_rrtmg_lw_speed_identity       6 of 10
+#   test_held_heating_fused            2 of 3
+#   test_mynn_radiation_coupling       1 of 18
+#
+# A device row on no list is asked by nobody, which is the rule 1f-1l
+# already apply.
+#
+# The megakernel lane's four whole files above (test_physics_fused_glue,
+# test_mynn_seaice_fused, test_physics_fused_column and
+# test_physics_fused_block) left the tree with the lane's revert (A147),
+# and their rows left this shard with them.
+tests/test_rrtmg_legacy_device_glue.py
+tests/test_rrtmg_legacy_prep_device.py
+tests/test_rrtmg_mcica.py
+tests/test_rrtmg_lw_batched_layout.py
+tests/test_rrtmg_sw_layout_identity.py
+tests/test_rrtmgp_night.py
+tests/test_rrtmgp_mcica.py
+tests/test_surface_w_fused.py
+tests/test_face_mass_fused.py
+tests/test_rk_bookkeeping.py
+tests/test_ruc_constant_cache.py
+tests/test_nest_interp.py
+tests/test_nest_coupler.py
+tests/test_rrtmgp_optics.py
+tests/test_rrtmg_lw_speed_identity.py
+tests/test_held_heating_fused.py
+tests/test_mynn_radiation_coupling.py
+# SHARD 1n: the Thompson speed lane's device legs (the exact empty-column
+# and empty-cell shortcuts, the level-parallel fallout kernels, the cold and
+# warm source launch widths, the single-read table load and the fused
+# adapter launches), each held bit for bit against the full sweeps (the unit
+# compiled with THOMPSON_NO_EXACT_SHORTCUTS), the former launch, loader or
+# sequence.  The lane appended them after the New Tiedtke family, inside
+# the weekly shard, whose rule admits only the frozen cumulus oracle
+# families; they are per-cut device gates.  test_thompson_speed_tables also
+# keeps its CPU half on stage 1.
+tests/test_thompson_speed_shortcuts.py
+tests/test_thompson_speed_blocks.py
+tests/test_thompson_speed_cold_blocks.py
+tests/test_thompson_speed_warm_blocks.py
+tests/test_thompson_speed_tables.py
+tests/test_thompson_speed_glue.py
+# SHARD 1o: the two-moment speed lane's device legs, each held bit for bit
+# against the path it replaced: the one-launch microphysics ring guard
+# (mp_ring_copy) against the slice-copy body, NaN payloads and the float64
+# fallback included; Morrison sedimentation, finalize and fused preparation
+# against readable base kernels (tests/data/morrison_*_base.cu) and the CuPy
+# ufunc chain; the P3 level arms against the sequential unfused reference;
+# NSSL sedimentation in one six-row launch, the device gamma table and graph
+# captures against the frozen base kernels; and Milbrandt-Yau
+# category-parallel sedimentation against its frozen base kernel.  The lane
+# appended them after the New Tiedtke family, inside the weekly shard, whose
+# rule admits only the frozen cumulus oracle families; they are per-cut
+# device gates.
+tests/test_mp_ring_fused_gpu.py
+tests/test_morrison_speed_sediment.py
+tests/test_morrison_speed_finalize.py
+tests/test_morrison_speed_prepare.py
+tests/test_p3_speed_levels.py
+tests/test_nssl2_speed_fused_sediment.py
+tests/test_nssl2_speed_gamma.py
+tests/test_nssl2_speed_graph.py
+tests/test_nssl2_speed_rain.py
+tests/test_nssl2_speed_small.py
+tests/test_milbrandt2_speed_shared.py
+# SHARD 1p: the default-pieces speed lane's device legs (Noah-MP slab caches
+# and write-back, KF column ordering and output initialization, New Tiedtke
+# argument cache, fused group and LLO3 device path, the Shin-Hong workspace,
+# and the fused cumulus clock, Noah forcing, SFCDIAGS and tendency coupling).
+# Each holds the new device path equal to the one it replaced word for word.
+# The lane appended them to tools/battery/stage1_files.txt, where under
+# GPUWM_NO_LOCAL_GPU=1 and the leg's marker expression they collected,
+# measured on weather-node-2 after the forward merge of 1e2bf43da:
+#
+#   whole files, moved off stage 1 (0 CPU rows each):
+#   test_tendency_coupling_fused      64/64  deselected on CPU
+#   test_cumulus_clock_fused          18/18
+#   test_noahmp_parameter_cache       14/14
+#   test_shinhong_workspace           12/12
+#   test_kf_output_initialization     12/12
+#   test_kf_workspace                  8/8
+#   test_ntiedtke_device_llo3          5/5
+#   test_ntiedtke_argument_cache       3/3
+#   test_noah_forcing_fused            2/2
+#   test_noahmp_writeback_arithmetic   2/2
+#   test_noah_sfcdiags_fused           1/1
+#
+#   device half of a file that stays on stage 1 for its CPU row:
+#   test_ntiedtke_fused                1 of 2
+#
+# test_gf_engine_smoke and test_ntiedtke_prep_parity were also appended to
+# stage 1 and collect 0 CPU rows there; both were already SHARD-2 entries,
+# so they leave stage 1 and stay where they were.
+tests/test_tendency_coupling_fused.py
+tests/test_cumulus_clock_fused.py
+tests/test_noahmp_parameter_cache.py
+tests/test_shinhong_workspace.py
+tests/test_kf_output_initialization.py
+tests/test_kf_workspace.py
+tests/test_ntiedtke_device_llo3.py
+tests/test_ntiedtke_argument_cache.py
+tests/test_noah_forcing_fused.py
+tests/test_noahmp_writeback_arithmetic.py
+tests/test_noah_sfcdiags_fused.py
+tests/test_ntiedtke_fused.py
+
+# SHARD 1q: the urban canopy models' device legs (sf_urban_physics 1-3).
+#
+# Every file below grades a CUDA column against WRF v4.7.1's own urban
+# routines (the UCM, BEP, BEP_BEM, MYJURB, YSU's flag_bep arm, Noah's
+# urban hand-over) or runs the physics driver with an urban model.  Their
+# fixture halves run on stage 1; the device halves skip on a CPU leg,
+# which is why they are here.  Every file passes under both NVRTC 13.4.92
+# (cupy-cuda13x) and 12.9.86 (cupy-cuda12x, the default [gpu] extra): the
+# YSU flag_bep table is kept per NVRTC build (DTHETA 1 ULP vs 91), and the
+# UCM stays bitwise on both since urban_ucm.cu stopped handing NVRTC 12.9
+# constant __fadd_rn/__fsub_rn pairs to fold.
+tests/test_urban_default_off_identity.py
+tests/test_urban_noah_hook_wrf471_parity.py
+tests/test_urban_ucm_noah_wrf471_parity.py
+tests/test_urban_ucm_driver.py
+tests/test_urban_bep_wrf471_parity.py
+tests/test_urban_bep_couple_wrf471_parity.py
+tests/test_urban_bem_wrf471_parity.py
+tests/test_myjurb_wrf471_parity.py
+tests/test_ysu_bep_wrf471_parity.py
+# The declared rural-drag divergence of the flag_bep arm: the column test
+# (a non-urban column under BEP against urban off) and its WRF-against-WRF
+# record.
+tests/test_ysu_bep_rural_drag.py
+
+# SHARD 1r: A146's compiler census.  NVRTC compiles a float division by a
+# compile-time constant as a multiply by the rounded reciprocal on
+# compute_100/120 (every Blackwell card) under the -ftz=true CuPy appends,
+# one ULP off for up to 65 percent of inputs.  The census compiles every
+# production unit for compute_89 (no div.rn by an immediate) and for
+# compute_120 under -ftz=false against -ftz=true line by line (no div.rn
+# that becomes a reciprocal multiply), which sees divisors the source scan
+# cannot.  The line reference is the same architecture since A174: a
+# compute_89 one read NVRTC 12.9.86's out-of-line powf and logf on
+# compute_120 as rewrites.  It needs CuPy's NVRTC, which
+# the CPU legs do not open under GPUWM_NO_LOCAL_GPU, so it collected 0 of 5
+# on every leg until it was listed here (review of 4810400f1).  The source
+# scan half is tests/test_literal_division_source_gate.py, on the always
+# and stage-1 lists.
+tests/test_literal_division_gate.py
+# A160: NVRTC's cache key ignores -ftz for a fixed program name.  Its card
+# rows compile in fresh processes sharing one cache, both orders, and read
+# the flush mode back (the keyed helper and both CuPy routes honour it;
+# the mechanism row fails the day NVIDIA keys the flag).  Its CPU rows
+# are on the stage-1 list.
+tests/test_nvrtc_cache_key.py
+# SHARD 1n: WRF v4.7.1 slope_rad / topo_shading (lane 281-namelist-gaps).
+# The slope, shadow, diffuse-fraction and surface-adjustment kernels are
+# held bit for bit to WRF's own Fortran (tools/wrf_topo_radiation_v471_oracle),
+# and those comparisons need a card; the file's fixture, libm-seam, health
+# and restart-class rows run on stage 1.
+tests/test_topo_radiation.py
+
+# SHARD 1r: A158, WRF's implicit-explicit vertical advection
+# (zadvect_implicit, lane 281-zadvect-implicit).  The IEVA kernels held word
+# for word to WRF 4.7.1's compiled routines (tools/ieva_wrf_oracle) and the
+# uniform-theta guard: a 300 K atmosphere moved 4.17 K in one 40 s step
+# before the fix.  Both need a card; the import, refusal and pricing rows
+# run on stage 1.
+tests/test_zadvect_implicit.py
+
+# SHARD 1s: A165, WRF's w_crit_cfl (lane 281-w-crit-cfl).  The w_damp
+# kernel held word for word to WRF 4.7.1's compiled w_damp
+# (tools/w_damp_wrf_oracle) at w_crit_cfl 1.0 and 2.0, with and without
+# zadvect_implicit, and the CFL probe's damped-cell count on the same
+# onset.  The option, importer, refusal and fixture rows run on stage 1.
+tests/test_w_crit_cfl.py
+
+# SHARD 1t: A167, the MYNN surface and PBL-driver ULP tables, keyed by card
+# and compiler (tests/_toolchain_rows.py).  A146 re-recorded their sm_120
+# rows under NVRTC 13.4 only, so under 12.9.86, the compiler of the default
+# [gpu] extra, these five files and test_mynn_pbl_gpu.py failed 35 tests
+# by name on Blackwell, and only test_mynn_pbl_gpu.py was on any list: no
+# cut would have run the other 34.  Their device rows need a card.
+tests/test_mynn_pbl_driver_gpu.py
+tests/test_mynn_surface_coarse.py
+tests/test_mynn_surface_driver_gpu.py
+tests/test_mynn_surface_gpu.py
+tests/test_mynn_surface_water_gpu.py
 
 # SHARD-2-BEGIN
 tests/test_gf_deep_cuda.py

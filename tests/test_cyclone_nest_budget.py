@@ -7,6 +7,7 @@ overlap floor admits.  Both are measured through the same functions the
 door uses, never against a copied number.
 """
 import argparse
+import dataclasses
 import json
 import math
 import re
@@ -119,6 +120,8 @@ def test_a_budget_chooses_the_largest_rung_that_fits_with_the_admission_margin()
     assert envelope <= budget - dw.fit_headroom_bytes(budget)
     assert nest["peak_envelope_bytes"] == envelope
     assert nest["budget_bytes"] == budget
+    # The ladder chose it, so the headroom the document names was held back.
+    assert nest["headroom_bytes"] == dw.fit_headroom_bytes(budget)
 
     _text, exp = tc.configuration_text(cycle=CYCLE, point=POINT, hours=3)
     if chosen + 2 in tc._nest_ladder(exp):
@@ -249,7 +252,14 @@ def test_a_budget_sized_proposal_reduces_from_the_layout_it_chose():
 # to a form, and offered "raise --nest-budget-gib" as the way out.  24 GiB is
 # not under a 4.8 GiB floor; the card is, raising the flag cannot move a card,
 # and the way that does work -- drop the flag -- was not named.
-SMALL_CARD = dw.SizingBudget(6.0, int(5.25 * dw.GIB), None, "fixture",
+#
+# 5.15 GiB free, 5.25 until A163 measured the forecast margin at 1.13 of
+# the subtotal: at 5.25 the flagless door now fits the whole preset
+# (200x160 / 160x160) unchanged, so that card was no longer one the floor
+# is too big for.  Read at 5.25, 5.15, 5.1, 5.05, 5.0 and 4.9 GiB: from
+# 5.15 down the refusal's measured way out is the layout dropping the flag
+# authors.
+SMALL_CARD = dw.SizingBudget(6.0, int(5.15 * dw.GIB), None, "fixture",
                              measured=False)
 
 
@@ -318,46 +328,187 @@ def test_the_floor_price_is_named_on_the_default_tile_mode_too():
     assert f"which prices {resident} bytes here" in str(refusal.value)
     assert refusal.value.memory["bound_by"] == "card"
 
-# The number the floor is compared against is the fit TARGET ------------------
+# The floor is judged the way the preset is judged without the flag -----------
 #
-# The admission stops short of the budget by `fit_headroom_bytes` so nothing
-# lands on the wall, and the refusal printed the raw budget: just above the
-# floor that printed a budget LARGER than the price beside a sentence saying
-# the price did not fit, and a reader who raised the flag to just over the
-# printed price was refused again.
-@pytest.mark.parametrize("budget_gib", [4.9, 5.0])
-def test_the_floor_refusal_prints_the_target_that_actually_binds(budget_gib):
+# The floor IS the preset nest, so `--nest-budget-gib` holds it to the number
+# this door holds the preset to when the flag is dropped: the budget, with no
+# fit headroom held back (the headroom is what a nest GROWN past the floor
+# leaves unspent).  It was held to the fit target, the budget less that
+# headroom, and on the band between the two the flag refused the very layout
+# the flagless door authors on that much free memory (A175): on SMALL_CARD,
+# below, the card's own, since the flag asks for more than the card has; on
+# the 16 GiB fixture, the budget the flag names.
+FLOOR = tc._nest_dimensions(tc.PRESET_NEST_PARENT_CELLS)
+
+
+def layout(plan):
+    return [[d["nx"], d["ny"]] for d in plan["domains"]]
+
+
+# Refused against the fit target until A175, inside the budget all along (read
+# at 0.05 GiB steps from 4.6 to 5.05 at the 1.13 margin: 4.75 through 4.95).
+@pytest.mark.parametrize("budget_gib", [4.75, 4.85, 4.95])
+def test_a_floor_inside_its_budget_is_the_preset_and_not_a_refusal(budget_gib):
+    narrowed, bound = tc._budget_sizing(CARD, budget_gib)
+    assert bound == "request"
+    cost, budget = priced(FLOOR, narrowed)
+    # The band the floor was refused in: over the fit target, inside the
+    # budget.
+    assert budget - dw.fit_headroom_bytes(budget) < cost <= budget
+    plan = tc.plan_cyclone(cycle=CYCLE, point=POINT, sizing=CARD, hours=3,
+                           tiles="off", nest_budget_gib=budget_gib)
+    assert plan["nest"]["dimensions"] == list(tc.CHILD_DIMS)
+    assert plan["nest"]["budget_bytes"] == budget
+    assert plan["nest"]["peak_envelope_bytes"] == cost
+    assert plan["fitting"]["changed"] is False
+    # Admitted as requested holds no headroom back, and the document says so
+    # rather than naming bytes unspent that the envelope spent.
+    assert plan["nest"]["headroom_bytes"] == 0
+    # One answer: the flagless door on a card whose free memory is this
+    # budget authors the same preset, unchanged, and reports it the same way.
+    dropped = tc.plan_cyclone(cycle=CYCLE, point=POINT, sizing=narrowed,
+                              hours=3, tiles="off")
+    assert dropped["fitting"]["changed"] is False
+    assert layout(dropped) == layout(plan)
+    assert dropped["nest"]["headroom_bytes"] == 0
+    assert dropped["memory"]["budget_bytes"] == budget
+
+
+@pytest.mark.parametrize("budget_gib", [4.6, 4.7])
+def test_the_floor_refusal_quotes_the_budget_it_was_compared_against(budget_gib):
+    """The number printed is the number compared, so a refused floor's price
+    is above it and raising the flag past that price is the way out."""
     with pytest.raises(MemoryAdmissionError) as refusal:
         tc.plan_cyclone(cycle=CYCLE, point=POINT, sizing=CARD, hours=3,
                         tiles="off", nest_budget_gib=budget_gib)
     text = str(refusal.value)
     budget = refusal.value.memory["budget_bytes"]
-    headroom = dw.fit_headroom_bytes(budget)
-    target = budget - headroom
-    cost, _budget = priced(tc._nest_dimensions(tc.PRESET_NEST_PARENT_CELLS),
-                           tc._budget_sizing(CARD, budget_gib)[0])
-    # The band this refusal was wrong in: the price is under the raw budget
-    # and over the target, so the raw budget cannot be the number quoted.
-    assert target < cost <= budget
-    assert f"{target} byte fit target" in text
-    assert f"{headroom} bytes of headroom" in text
-    assert f"prices {cost} bytes here" in text
-    assert f"against a {budget} byte budget." not in text
+    narrowed = tc._budget_sizing(CARD, budget_gib)[0]
+    cost, priced_budget = priced(FLOOR, narrowed)
+    assert budget == priced_budget < cost
+    assert f"prices {cost} bytes here, against a {budget} byte budget." in text
+    assert "fit target" not in text and "headroom" not in text
+    assert "raise --nest-budget-gib until it clears what the floor prices" \
+        in text
+    # And the flagless door on a card whose free memory is this budget
+    # shrinks the preset: the refusal is where the two doors part.
+    dropped = tc.plan_cyclone(cycle=CYCLE, point=POINT, sizing=narrowed,
+                              hours=3, tiles="off")
+    assert dropped["fitting"]["changed"] is True
 
 
-# ... AND THE FIT TARGET IS ONLY THE FLAT ROAD'S BOUND ------------------------
+def _both_doors(sizing, tiles, budget_gib):
+    """``(flagless plan, flagged plan or the flag's refusal)`` on one card."""
+    dropped = tc.plan_cyclone(cycle=CYCLE, point=POINT, sizing=sizing,
+                              hours=3, tiles=tiles)
+    try:
+        return dropped, tc.plan_cyclone(cycle=CYCLE, point=POINT,
+                                        sizing=sizing, hours=3, tiles=tiles,
+                                        nest_budget_gib=budget_gib)
+    except MemoryAdmissionError as refusal:
+        return dropped, refusal
+
+
+def _assert_one_answer(dropped, flagged, reason):
+    """The flag refuses exactly where dropping it shrinks the preset, and
+    admits, never below the floor, exactly where dropping it keeps it."""
+    preset = [list(tc.ROOT_DIMS), list(tc.CHILD_DIMS)]
+    if isinstance(flagged, MemoryAdmissionError):
+        assert flagged.memory["reason"] == reason
+        assert dropped["fitting"]["changed"] is True
+        assert layout(dropped) != preset
+        return "refused"
+    assert dropped["fitting"]["changed"] is False
+    assert layout(dropped) == preset
+    assert flagged["nest"]["parent_cells"] >= tc.PRESET_NEST_PARENT_CELLS
+    assert layout(flagged)[0] == list(tc.ROOT_DIMS)
+    # Whatever chose it, the headroom the document names was held back.
+    nest = flagged["nest"]
+    assert nest["headroom_bytes"] in {0, dw.fit_headroom_bytes(nest["budget_bytes"])}
+    assert (nest["peak_envelope_bytes"]
+            <= nest["budget_bytes"] - nest["headroom_bytes"])
+    return "admitted"
+
+
+# Free sizes across the band, SMALL_CARD with a budget the card cannot honour.
+# At 57066783c (margin 1.13), at 0.025 GiB steps from 5.1 to 5.6: `--tiles
+# off` disagreed from 5.25 through 5.475 (the flag refused naming 180x144 /
+# 144x144, then 190x152 / 152x152, while dropping it kept 200x160 / 160x160);
+# `--tiles auto` agreed throughout, because the tree road's withholding binds
+# below both numbers there.  The sweep starts two steps under the band and
+# ends two over it, so both answers are reached on each road.
+CARD_SWEEP_OFF = [round(5.2 + 0.025 * k, 3) for k in range(15)]
+CARD_SWEEP_AUTO = [round(5.2 + 0.05 * k, 3) for k in range(8)]
+
+
+@pytest.mark.parametrize("tiles,free_gib",
+                         [("off", f) for f in CARD_SWEEP_OFF]
+                         + [("auto", f) for f in CARD_SWEEP_AUTO])
+def test_the_card_bound_flag_and_the_flagless_door_give_one_answer(tiles,
+                                                                    free_gib):
+    card = dataclasses.replace(SMALL_CARD, free_bytes=int(free_gib * dw.GIB))
+    dropped, flagged = _both_doors(card, tiles, 24.0)
+    answer = _assert_one_answer(dropped, flagged, "nest-floor-card")
+    if answer == "refused":
+        # And the way out it names is that shrunken layout, measured.
+        assert flagged.memory["bound_by"] == "card"
+        assert flagged.memory["unbudgeted_alternative"] == layout(dropped)
+    else:
+        assert flagged["nest"]["budget_bound_by"] == "card"
+
+
+def test_the_card_sweep_reaches_both_answers_on_both_roads():
+    """A sweep that never crossed the edge would prove nothing about it."""
+    for tiles, sweep in (("off", CARD_SWEEP_OFF), ("auto", CARD_SWEEP_AUTO)):
+        answers = set()
+        for free_gib in (sweep[0], sweep[-1]):
+            card = dataclasses.replace(SMALL_CARD,
+                                       free_bytes=int(free_gib * dw.GIB))
+            answers.add(_assert_one_answer(*_both_doors(card, tiles, 24.0),
+                                           "nest-floor-card"))
+        assert answers == {"refused", "admitted"}, tiles
+
+
+# The same question with the budget the flag names as the bound, on the 16
+# GiB fixture: the flagless door is asked on a card whose free memory IS that
+# budget (`_budget_sizing`'s own narrowing).  Across the old band 4.75 to 4.95
+# and one step either side.
+REQUEST_SWEEP = [round(4.7 + 0.05 * k, 3) for k in range(7)]
+
+
+@pytest.mark.parametrize("budget_gib", REQUEST_SWEEP)
+def test_the_request_bound_flag_and_the_flagless_door_give_one_answer(
+        budget_gib):
+    narrowed, bound = tc._budget_sizing(CARD, budget_gib)
+    assert bound == "request"
+    dropped = tc.plan_cyclone(cycle=CYCLE, point=POINT, sizing=narrowed,
+                              hours=3, tiles="off")
+    try:
+        flagged = tc.plan_cyclone(cycle=CYCLE, point=POINT, sizing=CARD,
+                                  hours=3, tiles="off",
+                                  nest_budget_gib=budget_gib)
+    except MemoryAdmissionError as refusal:
+        flagged = refusal
+    answer = _assert_one_answer(dropped, flagged, "nest-budget-floor")
+    if answer == "admitted":
+        assert flagged["nest"]["budget_bound_by"] == "request"
+
+
+# ... AND THE BUDGET IS ONLY THE FLAT ROAD'S BOUND ----------------------------
 #
-# The band above is measured on `--tiles off`.  On the DEFAULT `--tiles auto`
-# the tree walk withholds the following nest's rebuild transient before it
-# compares anything, so it refuses against a budget SMALLER than the fit
-# target, and the same contradiction survived one road over: 5.025 through
-# 5.045 GiB refuse while printing a fit target ABOVE the price, and 5.05
-# admits.  The number the sentence quotes has to be the one that bound, which
-# is at or under the price.  (Measured on the 50 hPa model top the GFS
+# On the DEFAULT `--tiles auto` the tree walk withholds the following nest's
+# rebuild transient before it compares anything, so it refuses against a
+# budget SMALLER than the flat road's, and smaller than the fit target too:
+# 4.99 through 5.005 GiB refuse while the fit target sits ABOVE the price, and
+# 5.01 admits.  The number the sentence quotes has to be the one that bound,
+# which is at or under the price.  (Measured on the 50 hPa model top the GFS
 # emission carries; the band sat 0.01 GiB higher on the old 100 hPa top, and
 # at 5.035 through 5.05 while the RRTMGP solver's frame was priced at a stale
-# 5,152 B, which charged this tree 8,355,840 B more.)
-TILE_BAND = [5.025, 5.03, 5.035, 5.04, 5.045]
+# 5,152 B, which charged this tree 8,355,840 B more.  It sat at 5.025
+# through 5.045, admitting at 5.05, on the plan's 1.15 margin; A163 measured
+# the forecast margin at 1.13 of the subtotal, read again at 0.005 GiB steps
+# from 4.85 to 5.07.)
+TILE_BAND = [4.99, 4.995, 5.0, 5.005]
 
 
 @pytest.mark.parametrize("budget_gib", TILE_BAND)
@@ -383,10 +534,10 @@ def test_the_default_tile_modes_refusal_quotes_the_bound_that_bound_it(budget_gi
 
 
 def test_the_tile_roads_band_ends_where_its_own_budget_clears_the_price():
-    """And it ends there rather than where the fit target does, which is the
-    whole reason the target cannot be the number quoted."""
+    """And it ends there rather than where the flat road's budget or the fit
+    target does, which is the whole reason neither can be the number quoted."""
     plan = tc.plan_cyclone(cycle=CYCLE, point=POINT, sizing=CARD, hours=3,
-                           tiles="auto", nest_budget_gib=5.05)
+                           tiles="auto", nest_budget_gib=5.01)
     assert plan["nest"]["dimensions"] == list(tc.CHILD_DIMS)
 
 
@@ -416,7 +567,7 @@ def test_the_bound_is_read_off_the_walk_rather_than_recomputed():
     assert carried["withheld_for"] == "d02"
     assert carried["remedy"] and carried["remedy"] in str(error.value)
     # And an error that carries no walk carries no bound, which is what
-    # keeps the flat road's sentence quoting its fit target.
+    # keeps the flat road's sentence quoting its budget.
     assert tc._tile_road_bound(
         dw.DomainFitError("no phases", resource="vram")) is None
 

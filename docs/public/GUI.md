@@ -1,6 +1,6 @@
-# The Weather Library: `gpuwm gui`
+# ArWen in your browser: `gpuwm gui`
 
-`gpuwm gui` starts a small server on your own computer and opens the Weather Library in
+`gpuwm gui` starts a small server on your own computer and opens ArWen's page in
 your normal browser. It is the graphical door of ArWen 2.8. Nothing is fetched
 from the internet to draw the page, and nothing on it needs a build step.
 
@@ -31,7 +31,7 @@ data, set up once per computer with `gpuwm fetch-geog --datasets wrf`. Until it
 is, **Start** and **Run the best simulation for this event** refuse with that command and write
 nothing.
 
-1. `gpuwm gui`. The page opens on its main page; **New forecast** is in the
+1. `gpuwm gui`. The page opens on the storm wiki; **New forecast** is in the
    sidebar under the forecasts group.
 2. **Where**: click the map near latitude 39, longitude -97 to place the box, and
    pick Small (300 by 300 km). **Next**.
@@ -53,12 +53,12 @@ it the run stops at the prepare stage and the page says so.
 
 ## The pages
 
-The sidebar has the **Weather Library** group of storm pages, your forecasts, **Machines**, the
+The sidebar has the storm wiki, your forecasts, **Machines**, the
 **Assistant** (off until you turn it on) and **Settings**, and a search box
 (Ctrl+K) that finds events, places, forecasts and pages and opens the
 assistant.
 
-- **Weather Library** opens on its main page: 17 cited events, 11 tropical cyclones and
+- **Storm wiki** opens on its main page: 17 cited events, 11 tropical cyclones and
   6 tornadoes, with pages by kind, by place and by recent change. Each event page
   gives its observed facts, its sources and its place on the map, and **Simulate
   this event** offers the best simulation for your card, started by
@@ -85,7 +85,7 @@ assistant.
   forecasts lists the newest 4,000 and says how many there are in all.
 - **New forecast** is five steps beside a map: Where, When, How fine, Physics and
   Review and start. Where takes a click on the map, or **Find an event**, which searches the
-  Weather Library and fills in the event's box, date and length. When takes any date
+  storm wiki and fills in the event's box, date and length. When takes any date
   from 1940 on: a calendar with month and year jumps, a typed date such as
   `1999-05-03`, the hour, and quick picks (the newest run, yesterday, a week ago,
   a year ago). Under it every data source says whether it holds that start and,
@@ -167,9 +167,14 @@ run it again.
 The Physics step has one table per part of the model: microphysics, cumulus,
 the boundary layer, the surface layer, the land surface, radiation and
 turbulent mixing.
-Each scheme is one row with its cost against the default, or "not measured"
-where no cost has been measured. The data source's default set runs unless you
-pick another row, and **Starting points** offers whole sets to begin from.
+Each scheme is one row with its cost against the data source's own default
+set, or "not measured" where no cost has been measured. The default set for the
+run's finest grid runs unless you pick another row: the data source's own, or
+below 1 km Thompson with MYNN and RUC wherever the source admits it, the set
+`gpuwm domain` writes there; the step says when the two differ. With the auto
+nest ladder the finest grid is the one its fit lands on for the card, so the
+step, Start and the Article read the ladder the run gets. **Starting points**
+offers whole sets to begin from.
 
 Every pick is checked by the engine at this grid, place and time, the same
 check `gpuwm physics-catalog --check` makes in a terminal. When the picks match
@@ -182,7 +187,7 @@ scheme and cites that file.
 
 A mix that runs but matches no set starts too. The step says no named set
 matches, the Review row lists the picked schemes, and the engine writes them
-into the forecast's experiment over the data source's default set, with the
+into the forecast's experiment over the default set for its finest grid, with the
 cumulus the step showed. The Article names every scheme. In a terminal,
 `gpuwm domain --physics-choices JSON` writes a mix into a new experiment the
 same way, and this writes one into an experiment file you already have:
@@ -190,6 +195,11 @@ same way, and this writes one into an experiment file you already have:
 ```
 gpuwm physics-catalog --check MIX.json --into EXPERIMENT.toml --out MIX.toml
 ```
+
+`--into` writes a mix that names no set over the default at the file's finest
+grid. A file finer than 1 km written by 2.8.0 with no set named runs YSU and
+Noah, and a mix written into it now lands over MYNN and RUC; to keep its
+boundary layer and land surface, name its suite in the mix (`"suite"`).
 
 Only a mix the engine refuses has no Start, and the step gives the engine's
 reason and the nearest mixes that run. `gpuwm domain --cumulus grid` turns
@@ -314,7 +324,7 @@ tag (`gpuwm-gui` by default).
 ## The assistant
 
 The assistant is optional, and it is off until you turn it on. Off, nothing is
-downloaded, no model server runs and no card memory is used; the storm pages,
+downloaded, no model server runs and no card memory is used; the storm wiki,
 New forecast, your forecasts, Files and Machines work the same without it. The
 sidebar reads **Assistant (off)** with a line saying to turn it on in
 **Settings**, and Ctrl+K offers the same entry.
@@ -328,8 +338,8 @@ model off the card; **Remove its model** (or `gpuwm assistant off --remove`)
 deletes what it downloaded.
 
 Once on, the panel opens from **Assistant** in the sidebar, or from Ctrl+K and
-then **Open the assistant**. Ask about a storm in the Weather Library, one of your
-forecasts, or what fits this card. It answers from the Weather Library, the run
+then **Open the assistant**. Ask about a storm in the wiki, one of your
+forecasts, or what fits this card. It answers from the storm wiki, the run
 folder and the engine's fit check, and each answer says where it came from. A
 decision it makes shows its options under letters, each with its probability,
 or says the model server gives none. It can fill New forecast for you; nothing

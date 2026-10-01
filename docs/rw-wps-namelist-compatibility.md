@@ -87,6 +87,24 @@ Morrison it adds the corresponding number-moment variables to each
 the export manifest. Structural writer tests exercise 35, 49, and 80 mass
 levels. An unchanged-stock-WRF launch remains a separate live evidence gate.
 
+The root's specified lateral boundary is a declared divergence from stock
+WRF's default. `real.exe` writes water vapour alone among the moist species
+to `wrfbdy_d01` (WRF v4.7.1 `main/real_em.F:956`, `:1156`, `:1374`), and
+`have_bcs_moist` and `have_bcs_scalar` default to `.false.`
+(`Registry.EM_COMMON:2979-2980`), so every other moist species of a WRF run
+takes a flow-dependent boundary with zero inflow, and an analysed cloud or
+snow field drains out through the edges. ArWen's forecast carries every
+hydrometeor mass the source publishes on each forcing time: the canonical
+hydrometeor fields its mapping declares, or a native row's
+`boundary_species` column (`hrrr`, `hrrr-prs` and `icon-d2` today), with the
+number moments the Thompson cold start seeds from them on the same forcing
+time, and treats them as WRF does with both switches on: relaxed and
+specified on the ring, the masses forced back at the end of each step
+(`solve_em.F:2265-2267`, `:2346`, `:4701-4703`), the numbers moving by
+their boundary tendency. A source that publishes none keeps water vapour
+only. The exported `wrfbdy_d01` keeps `real.exe`'s water-vapour-only moist
+boundary, so a CPU WRF run from the export starts as `real.exe` would.
+
 The accepted companion state is presently YSU (`bl_pbl_physics=1`), classic
 MM5 surface layer (`sf_sfclay_physics=91`), four-layer Noah
 (`sf_surface_physics=2`, `num_soil_layers=4`), no urban state, nests whose

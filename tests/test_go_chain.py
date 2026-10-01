@@ -1627,7 +1627,7 @@ def test_explicit_runplan_latest_resolves_once_before_managed_cache_selection(
     monkeypatch.setattr(fetch, "resolve_latest_cycle", resolve)
     arguments, resolutions, _ = runplan.resolve_fetch_cycle(
         ["--source", "gfs", "--cycle", "latest", "--hours", "6",
-         "--forecast-start-hour", "3"])
+         "--forecast-start-hour", "3", "--whole-cycle"])
     cycle = arguments[arguments.index("--cycle") + 1]
     request = {"source": "gfs", "cycle": cycle, "hours": 6,
                "forecast_start_hour": 3, "area": "25,-105,45,-85"}

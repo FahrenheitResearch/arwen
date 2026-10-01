@@ -969,12 +969,473 @@ def test_standalone_package_boundary_scan_rejects_omitted_internal_imports(
         encoding="utf-8",
     )
 
-    assert _staged_internal_imports(tmp_path / "staged") == [{
+    assert _staged_internal_imports(
+            tmp_path / "staged", source_root=ROOT) == [{
         "path": "gpuwm/direct.py",
         "line": 1,
         "module": "gpuwm.io.restart",
         "kind": "from",
     }]
+
+
+def test_standalone_package_boundary_scan_reads_from_package_import_module(
+        tmp_path):
+    """``from gpuwm.core import pace`` imports gpuwm.core.pace.
+
+    The scan read it as an import of gpuwm.core, which is staged, so an
+    unstaged submodule imported that way passed and the staged package
+    raised ImportError at the call (A126: host_libm, and the staged map
+    projections with it).  A name the source tree has
+    no module for is an attribute and is not flagged; a staged submodule
+    passes; a missing package is reported once, as itself.
+    """
+
+    staged = tmp_path / "staged"
+    core = staged / "gpuwm" / "core"
+    core.mkdir(parents=True)
+    for package in (staged / "gpuwm", core):
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    (core / "constants.py").write_text("", encoding="utf-8")
+    (core / "user.py").write_text(
+        "from gpuwm.core import constants, pace\n"
+        "from . import pace as relative_pace\n"
+        "from gpuwm.core import not_a_module_anywhere\n"
+        "from gpuwm.io import restart\n",
+        encoding="utf-8",
+    )
+    assert (ROOT / "gpuwm" / "core" / "pace.py").is_file()
+    assert (ROOT / "gpuwm" / "io" / "restart.py").is_file()
+
+    assert _staged_internal_imports(staged, source_root=ROOT) == [
+        {"path": "gpuwm/core/user.py", "line": 1,
+         "module": "gpuwm.core.pace", "kind": "from"},
+        {"path": "gpuwm/core/user.py", "line": 2,
+         "module": "gpuwm.core.pace", "kind": "from"},
+        {"path": "gpuwm/core/user.py", "line": 4,
+         "module": "gpuwm.io", "kind": "from"},
+    ]
+
+
+def test_standalone_staging_refuses_an_unstaged_module_imported_from_its_package(
+        tmp_path, monkeypatch):
+    """The real staging refuses ``from gpuwm.core import pace``.
+
+    gpuwm/core/streaming.py imports the pace model that way, and pace is
+    not staged.  With its written reason removed from
+    _OPTIONAL_STAGED_IMPORTS the staging refuses by name, which it did
+    not do while the scan read the import as one of gpuwm.core.
+    """
+
+    import tools.build_rw_wps_release as release
+
+    key = ("gpuwm/core/streaming.py", "gpuwm.core.pace")
+    assert key in release._OPTIONAL_STAGED_IMPORTS
+    monkeypatch.setattr(release, "_OPTIONAL_STAGED_IMPORTS", {
+        k: v for k, v in release._OPTIONAL_STAGED_IMPORTS.items() if k != key})
+    with pytest.raises(RuntimeError) as refused:
+        _stage_or_skip(tmp_path / "rw-wps-python")
+    message = str(refused.value)
+    assert "unresolved internal imports" in message
+    assert "'module': 'gpuwm.core.pace'" in message
+    assert "'path': 'gpuwm/core/streaming.py'" in message
+
+
+def test_standalone_scan_reads_from_gpuwm_import_verify(tmp_path):
+    package = tmp_path / "staged" / "gpuwm"
+    package.mkdir(parents=True)
+    (package / "direct.py").write_text(
+        "from gpuwm import verify\n", encoding="utf-8")
+
+    assert _staged_verification_imports(tmp_path / "staged") == [{
+        "path": "gpuwm/direct.py",
+        "line": 1,
+        "module": "gpuwm.verify",
+        "kind": "from",
+    }]
+
+
+def _finish_a_staged_preparation(tmp_path, preamble=""):
+    """Run a mapped preparation to its handoff through the staged door.
+
+    A stand-in adapter child writes a finished bundle; ``preamble`` runs
+    in the child interpreter before gpuwm is imported.
+    """
+
+    from test_source_adapters import _mapped_args
+
+    staged = tmp_path / "rw-wps-python"
+    _stage_or_skip(staged)
+    root = tmp_path / "prepared"
+    argv = _mapped_args()
+    argv[argv.index("--output-root") + 1] = str(root)
+    adapter = tmp_path / "adapter.py"
+    adapter.write_text(
+        "import json, pathlib, sys\n"
+        "root = pathlib.Path(sys.argv[1])\n"
+        "root.mkdir()\n"
+        "(root / 'proof.json').write_text(json.dumps("
+        "{'schema': 'gpuwm-mapped-composition-proof-v1', 'status': 'READY'}))\n"
+        "(root / 'experiment.toml').write_text('[experiment]\\nname = \"x\"\\n')\n"
+        "(root / 'namelist.wps').write_text('&share\\n/\\n')\n",
+        encoding="utf-8",
+    )
+    script = preamble + r"""
+import json
+import os
+from pathlib import Path
+import sys
+
+staged = Path(os.environ["RW_WPS_STAGED_ROOT"]).resolve()
+import gpuwm.source_cli as source_cli
+assert Path(source_cli.__file__).resolve().is_relative_to(staged)
+source_cli._mapped_command = lambda args: [
+    sys.executable, os.environ["RW_WPS_ADAPTER"], str(args.output_root)]
+code = source_cli.main(json.loads(os.environ["RW_WPS_ARGV"]))
+assert code == 0, code
+for name in ("gpuwm.prepared_single_domain_forecast",
+             "gpuwm.prepared_domain_tree_forecast"):
+    assert name not in sys.modules, name
+"""
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(staged)
+    environment["RW_WPS_STAGED_ROOT"] = str(staged)
+    environment["RW_WPS_ADAPTER"] = str(adapter)
+    environment["RW_WPS_ARGV"] = json.dumps(argv)
+    completed = subprocess.run(
+        [sys.executable, "-P", "-c", script],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "Traceback" not in completed.stderr, completed.stderr
+    assert "prep: complete" in completed.stdout
+    assert "this installation prepares inputs only" in completed.stdout
+    assert "gpuwm.prepared_domain_tree_forecast" in completed.stdout
+    assert f"The prepared tree is {root}" in completed.stdout
+    assert "Run the forecast" not in completed.stdout
+    assert (root / "proof.json").is_file()
+    return completed
+
+
+def test_standalone_preparation_finishes_without_the_forecast_runners(tmp_path):
+    """A finished preparation hands off without a forecast to hand to.
+
+    The package stages prep_output and stage_cli but neither forecast
+    runner, and the handoff resolved the bundle through the runners'
+    schema tables: every finished `rw-wps` preparation ended in
+    "ImportError: cannot import name 'prepared_domain_tree_forecast'"
+    right after "prep: complete".  Run through the staged rw-wps door,
+    with a stand-in adapter child that writes a finished bundle.
+    """
+
+    _finish_a_staged_preparation(tmp_path)
+
+
+#: The finder an editable gpuwm install (``pip install -e .``, as the
+#: publish workflow's test job installs it) appends to ``sys.meta_path``,
+#: in setuptools' own shape: the top-level package maps to the checkout,
+#: and an immediate child the path finders miss resolves there.
+_EDITABLE_GPUWM_FINDER = r"""
+import importlib.util as _util
+import os as _os
+from importlib.machinery import PathFinder as _PathFinder
+from pathlib import Path as _Path
+import sys as _sys
+
+
+class _EditableGpuwmFinder:
+    MAPPING = {"gpuwm": str(_Path(_os.environ["RW_WPS_CHECKOUT"]) / "gpuwm")}
+
+    @classmethod
+    def find_spec(cls, fullname, path=None, target=None):
+        parent = fullname.rpartition(".")[0]
+        if parent in cls.MAPPING:
+            return _PathFinder.find_spec(fullname, path=[cls.MAPPING[parent]])
+        return None
+
+
+_sys.meta_path.append(_EditableGpuwmFinder)
+_spec = _util.find_spec("gpuwm.prepared_domain_tree_forecast")
+print("CHECKOUT RUNNER", _spec.origin)
+"""
+
+
+def test_standalone_preparation_ignores_a_runner_another_tree_provides(
+        tmp_path, monkeypatch):
+    """A runner only another gpuwm tree has is a runner this one lacks.
+
+    With gpuwm installed editable (publish.yml's test job) and the staged
+    package first on the path, ``importlib.util.find_spec`` found the
+    checkout's tree runner through the editable finder, so the handoff
+    resolved the bundle and importing that runner against the staged
+    gpuwm.core failed ("No module named 'gpuwm.core.adaptive_clock'").
+    The finder here is setuptools' shape; the handoff must end on the
+    preparation-only line and import neither runner.
+    """
+
+    checkout_runner = ROOT / "gpuwm" / "prepared_domain_tree_forecast.py"
+    assert checkout_runner.is_file()
+    monkeypatch.setenv("RW_WPS_CHECKOUT", str(ROOT))
+    completed = _finish_a_staged_preparation(
+        tmp_path, preamble=_EDITABLE_GPUWM_FINDER)
+    first = completed.stdout.splitlines()[0]
+    # The finder is in effect: it hands the checkout's runner to find_spec.
+    assert first.startswith("CHECKOUT RUNNER "), completed.stdout
+    assert Path(first.removeprefix("CHECKOUT RUNNER ")).resolve() == (
+        checkout_runner.resolve())
+
+
+def test_the_standalone_package_reports_its_own_distribution_version(tmp_path):
+    """A clean rw-wps install knows its version.
+
+    gpuwm/__init__.py read the ``gpuwm`` distribution alone, and a clean
+    install of the standalone package carries only ``rw-wps``: it
+    reported 0+unknown, and its installed runtime check refused every
+    clean install ("rw-wps version mismatch: metadata=2.8.1,
+    module=0+unknown").  Run in the staged tree with only an rw-wps
+    distribution on the path (``-S``: no site-packages).
+    """
+
+    import gpuwm
+
+    assert PYTHON_DISTRIBUTION in gpuwm.DISTRIBUTION_NAMES
+    assert gpuwm.DISTRIBUTION_NAMES[0] == gpuwm.DISTRIBUTION_NAME
+    staged = tmp_path / "rw-wps-python"
+    _stage_or_skip(staged)
+    site = tmp_path / "site"
+    info = site / "rw_wps-9.8.7.dist-info"
+    info.mkdir(parents=True)
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: rw-wps\nVersion: 9.8.7\n",
+        encoding="utf-8")
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join((str(staged), str(site)))
+    completed = subprocess.run(
+        [sys.executable, "-S", "-P", "-c",
+         "import gpuwm; print(gpuwm.__version__); print(gpuwm.__file__)"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    version, location = completed.stdout.splitlines()
+    assert version == "9.8.7"
+    assert Path(location).resolve().is_relative_to(staged.resolve())
+
+
+def test_a_staged_package_reads_its_own_version_beside_an_installed_gpuwm(
+        tmp_path):
+    """The staged package's runtime check passes beside another gpuwm.
+
+    install_gpuwm_native_wrf.sh installs the rw-wps wheel with ``pip
+    install --target`` and runs its runtime check with only that target
+    on PYTHONPATH, so an interpreter whose site-packages also carries
+    gpuwm (a venv, or a --user install) put a second gpuwm distribution
+    on the path.  gpuwm/__init__.py read the first distribution NAMED
+    gpuwm, reported that install's number, and the check refused ("rw-wps
+    version mismatch: metadata=9.8.7, module=1.2.3").  The staged tree
+    here carries the rw-wps .dist-info pip --target writes beside it and a
+    later site directory carries an installed gpuwm, package and all.
+    """
+
+    staged = tmp_path / "rw-wps-python"
+    _stage_or_skip(staged)
+    info = staged / "rw_wps-9.8.7.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: rw-wps\nVersion: 9.8.7\n",
+        encoding="utf-8")
+    (info / "RECORD").write_text(
+        _record_row("gpuwm/__init__.py", staged / "gpuwm" / "__init__.py")
+        + f"{info.name}/METADATA,,\n{info.name}/RECORD,,\n",
+        encoding="utf-8")
+    site = tmp_path / "site-packages"
+    (site / "gpuwm").mkdir(parents=True)
+    other = site / "gpuwm" / "__init__.py"
+    other.write_bytes(b"__version__ = '1.2.3'\n")
+    other_info = site / "gpuwm-1.2.3.dist-info"
+    other_info.mkdir()
+    (other_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: gpuwm\nVersion: 1.2.3\n",
+        encoding="utf-8")
+    (other_info / "RECORD").write_text(
+        _record_row("gpuwm/__init__.py", other)
+        + f"{other_info.name}/METADATA,,\n{other_info.name}/RECORD,,\n",
+        encoding="utf-8")
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join((str(staged), str(site)))
+    program = (
+        "import json, gpuwm;"
+        "from gpuwm.native_wrf_distribution import _installed_record_receipt;"
+        "print(json.dumps({'version': gpuwm.__version__,"
+        " 'file': gpuwm.__file__,"
+        " 'receipt': _installed_record_receipt()}))")
+    completed = subprocess.run(
+        [sys.executable, "-S", "-P", "-c", program],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert "version mismatch" not in completed.stderr, completed.stderr
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert Path(payload["file"]).resolve().is_relative_to(staged.resolve())
+    assert payload["version"] == "9.8.7"
+    assert payload["receipt"]["distribution_name"] == PYTHON_DISTRIBUTION
+    assert payload["receipt"]["distribution_version"] == "9.8.7"
+    assert payload["receipt"]["record_file_count"] == 1
+
+
+def _record_row(name, path):
+    import base64
+
+    digest = base64.urlsafe_b64encode(
+        hashlib.sha256(path.read_bytes()).digest()).decode().rstrip("=")
+    return f"{name},sha256={digest},{path.stat().st_size}\n"
+
+
+@pytest.mark.parametrize("layout", ["target", "home"])
+def test_the_installed_record_check_finds_the_console_scripts_pip_wrote(
+        tmp_path, monkeypatch, layout):
+    """The runtime check verifies every hashed RECORD row, scripts too.
+
+    install.sh installs the wheel with ``pip install --target``, whose
+    RECORD names the console scripts ``../../bin/<name>`` (relative to
+    the temporary home's lib/python) while pip moves them to
+    ``<target>/bin``.  Python 3.11 lists those rows and the check looked
+    two levels above the target, so every clean install there failed
+    ("installed wheel file is missing"); from Python 3.12 dist.files
+    drops rows missing at the literal path, so a deleted file passed.
+    ``home`` is ``pip install --home``, where the scripts do stay there.
+    """
+
+    import importlib.metadata
+
+    import gpuwm.native_wrf_distribution as distribution
+
+    if layout == "target":
+        root = tmp_path / "runtime"
+        scripts = root / "bin"
+    else:
+        root = tmp_path / "home" / "lib" / "python"
+        scripts = tmp_path / "home" / "bin"
+    info = root / f"rw_wps-{distribution.__version__}.dist-info"
+    info.mkdir(parents=True)
+    scripts.mkdir(parents=True)
+    (root / "gpuwm").mkdir()
+    module = root / "gpuwm" / "entry.py"
+    module.write_bytes(b"def main():\n    return 0\n")
+    script = scripts / "rw-wps"
+    script.write_bytes(b"#!/usr/bin/python3\nfrom gpuwm.entry import main\n")
+    (info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: rw-wps\n"
+        f"Version: {distribution.__version__}\n", encoding="utf-8")
+    (info / "RECORD").write_text(
+        _record_row("gpuwm/entry.py", module)
+        + _record_row("../../bin/rw-wps", script)
+        + "gpuwm/__pycache__/entry.cpython-311.pyc,,\n"
+        + f"{info.name}/RECORD,,\n", encoding="utf-8")
+    installed = importlib.metadata.PathDistribution(info)
+    monkeypatch.setattr(distribution, "metadata", SimpleNamespace(
+        distribution=lambda name: installed))
+
+    receipt = distribution._installed_record_receipt()
+    assert receipt["record_file_count"] == 2
+
+    script.write_bytes(b"#!/usr/bin/python3\nraise SystemExit(1)\n")
+    with pytest.raises(RuntimeError, match="RECORD mismatch for ../../bin/rw-wps"):
+        distribution._installed_record_receipt()
+    script.unlink()
+    with pytest.raises(FileNotFoundError, match="installed wheel file is missing"):
+        distribution._installed_record_receipt()
+
+
+def test_standalone_radar_grid_writer_is_staged(tmp_path):
+    """gpuwm.obs.write_radar_grid writes, or refuses by name.
+
+    The staged gpuwm.obs exports the radar-grid writer, whose default
+    engine opens gpuwm.io.classic_product; the package did not stage it,
+    so the call raised ImportError.  Where the Rust NetCDF writer loads,
+    the staged package writes a product and, where the Rust reader also
+    loads, reads it back; where the writer does not load, the refusal is
+    the named one, not an ImportError.
+    """
+
+    staged = tmp_path / "rw-wps-python"
+    _stage_or_skip(staged)
+    script = r"""
+import os
+from pathlib import Path
+import sys
+
+staged = Path(os.environ["RW_WPS_STAGED_ROOT"]).resolve()
+sys.path.append(os.environ["RW_WPS_TESTS"])
+import test_obs_radar_grid as helpers
+import gpuwm.io.classic_product
+import gpuwm.obs
+from gpuwm.io import nc_writer_bridge
+from gpuwm.obs.grid_product import ObsGridWriterUnavailable
+for module in (gpuwm.io.classic_product, gpuwm.obs):
+    assert Path(module.__file__).resolve().is_relative_to(staged), module
+
+grid = helpers._grid(nx=21, ny=21)
+volume = helpers._volume(grid, reflectivity=[5.0, 25.0, 45.0],
+                         velocity=[-10.0, 0.0, 10.0])
+observations, params = helpers._gridded(grid, volume)
+path = Path(os.environ["RW_WPS_WORK"]) / "radar-grid.nc"
+if nc_writer_bridge.unavailable_reason() is None:
+    receipt = gpuwm.obs.write_radar_grid(
+        path, observations, grid, valid_time="2026-07-28T20:03:16Z",
+        params=params)
+    assert receipt["schema"] == gpuwm.obs.RADAR_GRID_SCHEMA
+    assert path.stat().st_size == receipt["bytes"]
+    # The read-back needs the Rust NetCDF reader, a separate native: a
+    # bridge folder can hold the writer without it, so it is checked only
+    # where the reader resolves.
+    from gpuwm import netcdf_bridge
+    if netcdf_bridge.find_netcdf_bin() is not None:
+        read = gpuwm.obs.read_radar_grid(
+            path, expected_grid_identity=grid.identity_sha256())
+        assert read["schema"] == receipt["schema"]
+        assert read["dims"] == receipt["dims"]
+    print("WROTE", receipt["bytes"])
+else:
+    try:
+        gpuwm.obs.write_radar_grid(
+            path, observations, grid, valid_time="2026-07-28T20:03:16Z",
+            params=params)
+    except ObsGridWriterUnavailable as error:
+        print("REFUSED", error)
+    else:
+        raise AssertionError("wrote without a loadable Rust writer")
+"""
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(staged)
+    environment["RW_WPS_STAGED_ROOT"] = str(staged)
+    environment["RW_WPS_TESTS"] = str(ROOT / "tests")
+    environment["RW_WPS_WORK"] = str(tmp_path)
+    completed = subprocess.run(
+        [sys.executable, "-P", "-c", script],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    # Without the Rust static-fields library (publish.yml's test job
+    # builds no natives) the grid helper's projection prints its
+    # "[static] WORKAROUND" line first, so the outcome is found by line.
+    outcomes = [line for line in completed.stdout.splitlines()
+                if line.startswith(("WROTE ", "REFUSED "))]
+    assert len(outcomes) == 1, completed.stdout
 
 
 def test_cpu_native_export_modules_import_without_cupy():

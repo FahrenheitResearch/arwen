@@ -149,7 +149,7 @@ extern "C" __global__ void nssl2_initial_state(
     // Cloud ice: 100-micron solid-sphere initial mass.
     if (ice_number <= cxmin && ice > qxmin_init) {
         const float xims = 4.7123910329460728e-10f;
-        ice_number = rho * ice / xims;
+        ice_number = __fdiv_rn(rho * ice, xims);
     } else if (ice <= qxmin_cloud
                || (ice_number <= cxmin && ice <= qxmin_init)) {
         vapor += ice;
@@ -190,7 +190,7 @@ extern "C" __global__ void nssl2_initial_state(
     // a 2e5 m-4 intercept, distinct from the configurable runtime density.
     if (graupel_number <= 0.1f * cxmin && graupel > qxmin_init) {
         if (graupel_volume <= 0.0f) {
-            graupel_volume = graupel / 700.0f;
+            graupel_volume = __fdiv_rn(graupel, 700.0f);
         }
         const float zhfac = 2.2736419413860176e-9f;
         const float xgms = 9.8960235561662557e-9f;
@@ -217,7 +217,7 @@ extern "C" __global__ void nssl2_initial_state(
     // Hail: alphahl=1 maps the 4e4 m-4 intercept by g1hl/g0=8.75/20.
     if (hail_number <= 0.1f * cxmin && hail > qxmin_init) {
         if (hail_volume <= 0.0f) {
-            hail_volume = hail / 900.0f;
+            hail_volume = __fdiv_rn(hail, 900.0f);
         }
         const float zhlfac = 8.8419414012719244e-9f;
         const double lambda_inverse = pow(
@@ -285,14 +285,14 @@ extern "C" __global__ void nssl2_rain_self_collection(
             / (rain_density * fmaxf(1.0e-11f, number));
         if (mean_volume > maximum_mean_volume) {
             mean_volume = maximum_mean_volume;
-            number = rho * rain / (mean_volume * rain_density);
+            number = __fdiv_rn(rho * rain, (mean_volume * rain_density));
         } else if (mean_volume < minimum_volume) {
             mean_volume = minimum_volume;
-            number = rho * rain / (mean_volume * rain_density);
+            number = __fdiv_rn(rho * rain, (mean_volume * rain_density));
         }
 
         const float mean_volume_diameter = powf(
-            mean_volume * 6.0f / pi, 1.0f / 3.0f);
+            __fdiv_rn(mean_volume * 6.0f, pi), 1.0f / 3.0f);
         float rate = 0.0f;
 
         // Default icracrthresh=1 subtracts 0.1 mm before comparing with
@@ -400,8 +400,8 @@ extern "C" __global__ void nssl2_snow_aggregation(
     if (temperature_c < 0.0f && temperature_c >= -15.0f) {
         const float factor = 0.5f;
         if (temperature_c > -15.0f && temperature_c < -10.0f) {
-            efficiency = factor * expf(0.05f * -10.0f)
-                * (temperature_c + 15.0f) / 5.0f;
+            efficiency = __fdiv_rn(factor * expf(0.05f * -10.0f)
+                * (temperature_c + 15.0f), 5.0f);
         } else if (temperature_c >= -10.0f) {
             efficiency = factor * expf(
                 0.05f * fminf(temperature_c, 0.0f));
@@ -501,8 +501,8 @@ extern "C" __global__ void nssl2_ice_deposition_conversion(
 
     // Native two-moment ice reconstruction.  The diameter is the default
     // ixtaltype=1 column maximum dimension, not a sphere diameter.
-    ice_number = fmaxf(ice_number, ice * rho / ice_max_mass);
-    ice_number = fminf(ice_number, ice * rho / ice_min_mass);
+    ice_number = fmaxf(ice_number, __fdiv_rn(ice * rho, ice_max_mass));
+    ice_number = fminf(ice_number, __fdiv_rn(ice * rho, ice_min_mass));
     const float ice_mean_mass = fmaxf(
         ice * rho / ice_number, ice_min_mass);
     const float ice_diameter =
@@ -510,7 +510,7 @@ extern "C" __global__ void nssl2_ice_deposition_conversion(
 
     // Reproduce the 0.002-K native ice-saturation table exactly.
     int saturation_index = (int)(
-        (temperature - 163.15f) / 0.002f + 1.5f);
+        __fdiv_rn((temperature - 163.15f), 0.002f) + 1.5f);
     if (saturation_index < 1) saturation_index = 1;
     if (saturation_index > 1000001) saturation_index = 1000001;
     float table_temperature = __fadd_rn(
@@ -535,14 +535,14 @@ extern "C" __global__ void nssl2_ice_deposition_conversion(
         latent_sublimation * (1.0f / 1004.0f);
 
     const float vapor_diffusivity = 2.11e-5f
-        * powf(temperature / 273.15f, 1.94f)
+        * powf(__fdiv_rn(temperature, 273.15f), 1.94f)
         * (101325.0f / pressure);
     const float dynamic_viscosity = 1.832e-5f
         * (416.16f / (temperature + 120.0f))
-        * powf(temperature / 296.0f, 1.5f);
+        * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
     const float kinematic_viscosity = dynamic_viscosity / rho;
     const float thermal_conductivity =
-        2.43e-2f * dynamic_viscosity / 1.718e-5f;
+        __fdiv_rn(2.43e-2f * dynamic_viscosity, 1.718e-5f);
     const float schmidt = kinematic_viscosity / vapor_diffusivity;
     const float thermal_resistance =
         latent_sublimation * latent_sublimation
@@ -597,7 +597,7 @@ extern "C" __global__ void nssl2_ice_deposition_conversion(
     const float trial_temperature =
         __fmul_rn(trial_theta, exner_local);
     saturation_index = (int)(
-        (trial_temperature - 163.15f) / 0.002f + 1.5f);
+        __fdiv_rn((trial_temperature - 163.15f), 0.002f) + 1.5f);
     if (saturation_index < 1) saturation_index = 1;
     if (saturation_index > 1000001) saturation_index = 1000001;
     table_temperature = __fadd_rn(
@@ -736,8 +736,8 @@ extern "C" __global__ void nssl2_frozen_vapor_exchange(
     float ice_mean_mass = ice_min_mass;
     float ice_diameter = 1.0e-9f;
     if (ice_active) {
-        ice_number = fmaxf(ice_number, ice * rho / ice_max_mass);
-        ice_number = fminf(ice_number, ice * rho / ice_min_mass);
+        ice_number = fmaxf(ice_number, __fdiv_rn(ice * rho, ice_max_mass));
+        ice_number = fminf(ice_number, __fdiv_rn(ice * rho, ice_min_mass));
         ice_mean_mass = fmaxf(ice * rho / ice_number, ice_min_mass);
         ice_diameter = 0.1871f * powf(ice_mean_mass, 0.3429f);
     }
@@ -766,12 +766,12 @@ extern "C" __global__ void nssl2_frozen_vapor_exchange(
             snow_number = rho * snow / snow_mean_mass;
             snow_density = 0.0346159f
                 * sqrtf(snow_number / (snow * rho));
-            snow_diameter = sqrtf(snow_mean_mass / 0.069f);
+            snow_diameter = sqrtf(__fdiv_rn(snow_mean_mass, 0.069f));
         }
     }
 
     int saturation_index = (int)(
-        (temperature - 163.15f) / 0.002f + 1.5f);
+        __fdiv_rn((temperature - 163.15f), 0.002f) + 1.5f);
     if (saturation_index < 1) saturation_index = 1;
     if (saturation_index > 1000001) saturation_index = 1000001;
     float table_temperature = __fadd_rn(
@@ -795,14 +795,14 @@ extern "C" __global__ void nssl2_frozen_vapor_exchange(
     const float latent_over_cp = latent_sublimation * (1.0f / 1004.0f);
 
     const float vapor_diffusivity = 2.11e-5f
-        * powf(temperature / 273.15f, 1.94f)
+        * powf(__fdiv_rn(temperature, 273.15f), 1.94f)
         * (101325.0f / pressure);
     const float dynamic_viscosity = 1.832e-5f
         * (416.16f / (temperature + 120.0f))
-        * powf(temperature / 296.0f, 1.5f);
+        * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
     const float kinematic_viscosity = dynamic_viscosity / rho;
     const float thermal_conductivity =
-        2.43e-2f * dynamic_viscosity / 1.718e-5f;
+        __fdiv_rn(2.43e-2f * dynamic_viscosity, 1.718e-5f);
     const float schmidt = kinematic_viscosity / vapor_diffusivity;
     const float thermal_resistance = latent_sublimation * latent_sublimation
         / (thermal_conductivity * 461.5f * temperature * temperature);
@@ -877,7 +877,7 @@ extern "C" __global__ void nssl2_frozen_vapor_exchange(
             const float trial_temperature =
                 __fmul_rn(trial_theta, exner_local);
             saturation_index = (int)(
-                (trial_temperature - 163.15f) / 0.002f + 1.5f);
+                __fdiv_rn((trial_temperature - 163.15f), 0.002f) + 1.5f);
             if (saturation_index < 1) saturation_index = 1;
             if (saturation_index > 1000001) saturation_index = 1000001;
             table_temperature = __fadd_rn(
@@ -927,7 +927,7 @@ extern "C" __global__ void nssl2_frozen_vapor_exchange(
                     const float trial_temperature =
                         __fmul_rn(trial_theta, exner_local);
                     saturation_index = (int)(
-                        (trial_temperature - 163.15f) / 0.002f + 1.5f);
+                        __fdiv_rn((trial_temperature - 163.15f), 0.002f) + 1.5f);
                     if (saturation_index < 1) saturation_index = 1;
                     if (saturation_index > 1000001) {
                         saturation_index = 1000001;
@@ -1145,7 +1145,7 @@ extern "C" __global__ void nssl2_graupel_hail_vapor_exchange(
     }
 
     int saturation_index = (int)(
-        (temperature - 163.15f) / 0.002f + 1.5f);
+        __fdiv_rn((temperature - 163.15f), 0.002f) + 1.5f);
     if (saturation_index < 1) saturation_index = 1;
     if (saturation_index > 1000001) saturation_index = 1000001;
     float table_temperature = __fadd_rn(
@@ -1169,14 +1169,14 @@ extern "C" __global__ void nssl2_graupel_hail_vapor_exchange(
     const float latent_over_cp = latent_sublimation * (1.0f / 1004.0f);
 
     const float vapor_diffusivity = 2.11e-5f
-        * powf(temperature / 273.15f, 1.94f)
+        * powf(__fdiv_rn(temperature, 273.15f), 1.94f)
         * (101325.0f / pressure);
     const float dynamic_viscosity = 1.832e-5f
         * (416.16f / (temperature + 120.0f))
-        * powf(temperature / 296.0f, 1.5f);
+        * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
     const float kinematic_viscosity = dynamic_viscosity / rho;
     const float thermal_conductivity =
-        2.43e-2f * dynamic_viscosity / 1.718e-5f;
+        __fdiv_rn(2.43e-2f * dynamic_viscosity, 1.718e-5f);
     const float schmidt = kinematic_viscosity / vapor_diffusivity;
     const float ventilation_factor = powf(schmidt, 1.0f / 3.0f)
         * powf(kinematic_viscosity, -0.5f);
@@ -1202,10 +1202,10 @@ extern "C" __global__ void nssl2_graupel_hail_vapor_exchange(
     if (graupel_active) {
         const float drag = fmaxf(0.45f, fminf(
             1.2f,
-            0.45f + 0.55f
+            0.45f + __fdiv_rn(0.55f
                 * (800.0f - fmaxf(170.0f, fminf(800.0f,
-                                                graupel_density)))
-                / (800.0f - 170.0f)));
+                                                graupel_density))),
+                (800.0f - 170.0f))));
         const float drag_factor = powf(
             4.0f * 9.8f / (3.0f * drag), 0.25f);
         graupel_ventilation = 0.78f
@@ -1217,7 +1217,7 @@ extern "C" __global__ void nssl2_graupel_hail_vapor_exchange(
 
     float hail_ventilation = 0.0f;
     if (hail_active) {
-        int table = (int)((hail_density - 50.0f) / 100.0f) + 1;
+        int table = (int)(__fdiv_rn((hail_density - 50.0f), 100.0f)) + 1;
         table = min(9, max(1, table)) - 1;
         const float fraction = fmaxf(
             0.0f, 0.01f * (hail_density - mm_density[table]));
@@ -1263,7 +1263,7 @@ extern "C" __global__ void nssl2_graupel_hail_vapor_exchange(
             const float trial_temperature =
                 __fmul_rn(trial_theta, exner_local);
             saturation_index = (int)(
-                (trial_temperature - 163.15f) / 0.002f + 1.5f);
+                __fdiv_rn((trial_temperature - 163.15f), 0.002f) + 1.5f);
             if (saturation_index < 1) saturation_index = 1;
             if (saturation_index > 1000001) saturation_index = 1000001;
             table_temperature = __fadd_rn(
@@ -1313,7 +1313,7 @@ extern "C" __global__ void nssl2_graupel_hail_vapor_exchange(
                     const float trial_temperature =
                         __fmul_rn(trial_theta, exner_local);
                     saturation_index = (int)(
-                        (trial_temperature - 163.15f) / 0.002f + 1.5f);
+                        __fdiv_rn((trial_temperature - 163.15f), 0.002f) + 1.5f);
                     if (saturation_index < 1) saturation_index = 1;
                     if (saturation_index > 1000001) {
                         saturation_index = 1000001;
@@ -1373,10 +1373,10 @@ extern "C" __global__ void nssl2_graupel_hail_vapor_exchange(
     graupel_number += dt * graupel_sublimation_number_rate;
     hail_number += dt * hail_sublimation_number_rate;
     graupel_volume += dt * rho
-        * (graupel_deposition / 170.0f
+        * (__fdiv_rn(graupel_deposition, 170.0f)
            + graupel_sublimation / graupel_density);
     hail_volume += dt * rho
-        * (hail_deposition / 500.0f
+        * (__fdiv_rn(hail_deposition, 500.0f)
            + hail_sublimation / hail_density);
 
     // Default imaxdiaopt=3 bounds the mass-weighted diameter.  Converting
@@ -1512,7 +1512,7 @@ extern "C" __global__ void nssl2_bigg_rain_freezing(
             rain_number = rho * rain / (1000.0f * rain_mean_volume);
         }
         rain_characteristic_diameter = powf(
-            rain_mean_volume / pi, 1.0f / 3.0f);
+            __fdiv_rn(rain_mean_volume, pi), 1.0f / 3.0f);
     }
 
     // Existing predicted volume determines the density used by the final
@@ -1606,7 +1606,7 @@ extern "C" __global__ void nssl2_bigg_rain_freezing(
         rain_number -= dt * rain_number_freezing_rate;
         graupel += dt * rain_freezing_rate;
         graupel_number += dt * rain_number_freezing_rate;
-        graupel_volume += dt * rho * rain_freezing_rate / 900.0f;
+        graupel_volume += __fdiv_rn(dt * rho * rain_freezing_rate, 900.0f);
     }
 
     // Native post-process two-moment bounds.  Number transferred into a new
@@ -1697,10 +1697,10 @@ extern "C" __global__ void nssl2_warm_autoconversion(
             (1000.0f * fmaxf(1.0e-11f, rain_number));
         if (rain_mean_volume > rain_max_mean_volume) {
             rain_mean_volume = rain_max_mean_volume;
-            rain_number = rho * rain / (rain_mean_volume * 1000.0f);
+            rain_number = __fdiv_rn(rho * rain, (rain_mean_volume * 1000.0f));
         } else if (rain_mean_volume < rain_min_volume) {
             rain_mean_volume = rain_min_volume;
-            rain_number = rho * rain / (rain_mean_volume * 1000.0f);
+            rain_number = __fdiv_rn(rho * rain, (rain_mean_volume * 1000.0f));
         }
     }
 
@@ -1717,12 +1717,12 @@ extern "C" __global__ void nssl2_warm_autoconversion(
                 cloud_max_mass);
         } else {
             cloud_number = fmaxf(
-                cxmin, rho * cloud / cloud_max_mass);
+                cxmin, __fdiv_rn(rho * cloud, cloud_max_mass));
             cloud_mean_mass = fminf(
                 fmaxf(cloud * rho / cloud_number, cloud_min_mass),
                 cloud_max_mass);
         }
-        cloud_mean_volume = cloud_mean_mass / 1000.0f;
+        cloud_mean_volume = __fdiv_rn(cloud_mean_mass, 1000.0f);
         cloud_diameter = powf(
             cloud_mean_mass * (6.0f / (pi * 1000.0f)), 1.0f / 3.0f);
     }
@@ -1870,7 +1870,7 @@ extern "C" __global__ void nssl2_clear_air_activation(
 
     float temperature = theta * exner_local;
     int saturation_index = (int)(
-        (temperature - 163.15f) / 0.002f + 1.5f);
+        __fdiv_rn((temperature - 163.15f), 0.002f) + 1.5f);
     if (saturation_index < 1) saturation_index = 1;
     if (saturation_index > 1000001) saturation_index = 1000001;
     float table_temperature =
@@ -1881,7 +1881,7 @@ extern "C" __global__ void nssl2_clear_air_activation(
     const float saturation_ratio = vapor / saturation;
     const float supersaturation_percent =
         100.0f * (saturation_ratio - 1.0f);
-    const float background_ccn = 0.5e9f * rho / 1.225f;
+    const float background_ccn = __fdiv_rn(0.5e9f * rho, 1.225f);
     const float cloud_min_mass =
         1000.0f * 0.523599f * (4.0e-6f * 4.0e-6f * 4.0e-6f);
     const float cloud_max_mass =
@@ -1910,7 +1910,7 @@ extern "C" __global__ void nssl2_clear_air_activation(
             temperature =
                 (theta + trial_theta_perturbation) * exner_local;
             saturation_index = (int)(
-                (temperature - 163.15f) / 0.002f + 1.5f);
+                __fdiv_rn((temperature - 163.15f), 0.002f) + 1.5f);
             if (saturation_index < 1) saturation_index = 1;
             if (saturation_index > 1000001) saturation_index = 1000001;
             table_temperature =
@@ -1963,12 +1963,12 @@ extern "C" __global__ void nssl2_clear_air_activation(
                 * (4.0e-6f * 4.0e-6f * 4.0e-6f);
             activated = fminf(
                 background_ccn,
-                fmaxf(activated, rho * cloud / four_micron_mass));
+                fmaxf(activated, __fdiv_rn(rho * cloud, four_micron_mass)));
             activated = fminf(ccn_number, activated);
             ccn_number = fmaxf(0.0f, ccn_number - activated);
             cloud_number = fmaxf(cloud_number, activated);
             cloud_number = fminf(
-                cloud_number, rho * fmaxf(cloud, 0.0f) / cloud_min_mass);
+                cloud_number, __fdiv_rn(rho * fmaxf(cloud, 0.0f), cloud_min_mass));
             if (cloud_number > 1.0e-8f && cloud > 1.0e-13f) {
                 float mean_mass = rho * cloud / cloud_number;
                 if (mean_mass < cloud_min_mass
@@ -1993,7 +1993,7 @@ extern "C" __global__ void nssl2_clear_air_activation(
             const float target_ccn = rho * 408163264.0f;
             ccn_number = target_ccn
                 - fmaxf(0.0f, target_ccn - ccn_number)
-                    * expf(-dt / 3600.0f);
+                    * expf(__fdiv_rn(-dt, 3600.0f));
         }
     }
 
@@ -2020,7 +2020,7 @@ __device__ __forceinline__ float nssl2_water_supersaturation_percent(
 {
     const float temperature = theta * exner_local;
     int saturation_index = (int)(
-        (temperature - 163.15f) / 0.002f + 1.5f);
+        __fdiv_rn((temperature - 163.15f), 0.002f) + 1.5f);
     if (saturation_index < 1) saturation_index = 1;
     if (saturation_index > 1000001) saturation_index = 1000001;
     const float table_temperature =
@@ -2066,7 +2066,7 @@ extern "C" __global__ void nssl2_cloudy_water_adjustment(
 
     float temperature = theta * exner_local;
     int saturation_index = (int)(
-        (temperature - 163.15f) / 0.002f + 1.5f);
+        __fdiv_rn((temperature - 163.15f), 0.002f) + 1.5f);
     if (saturation_index < 1) saturation_index = 1;
     if (saturation_index > 1000001) saturation_index = 1000001;
     float table_temperature =
@@ -2110,7 +2110,7 @@ extern "C" __global__ void nssl2_cloudy_water_adjustment(
             fmaxf(cloud_min_mass, rho * cloud / cloud_number));
         cloud_number = rho * cloud / cloud_mean_mass;
     } else {
-        cloud_number = fmaxf(cxmin, rho * cloud / cloud_max_mass);
+        cloud_number = fmaxf(cxmin, __fdiv_rn(rho * cloud, cloud_max_mass));
         cloud_mean_mass = fminf(
             cloud_max_mass,
             fmaxf(cloud_min_mass, rho * cloud / cloud_number));
@@ -2161,11 +2161,11 @@ extern "C" __global__ void nssl2_cloudy_water_adjustment(
         // and transfer coefficient fixed through adaptive midpoint steps.
         const float dynamic_viscosity =
             1.832e-5f * (416.16f / (temperature + 120.0f))
-            * powf(temperature / 296.0f, 1.5f);
+            * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
         const float thermal_conductivity =
-            2.43e-2f * dynamic_viscosity / 1.718e-5f;
+            __fdiv_rn(2.43e-2f * dynamic_viscosity, 1.718e-5f);
         const float vapor_diffusivity =
-            2.11e-5f * powf(temperature / 273.15f, 1.94f)
+            2.11e-5f * powf(__fdiv_rn(temperature, 273.15f), 1.94f)
             * (101325.0f / pressure);
         const float vapor_pressure = 610.78f * saturation_table;
         const float resistance_heat =
@@ -2224,7 +2224,7 @@ extern "C" __global__ void nssl2_cloudy_water_adjustment(
                     const float midpoint_temperature =
                         temperature_trial + midpoint_temperature_change;
                     int midpoint_index = (int)(
-                        (midpoint_temperature - 163.15f) / 0.002f + 1.5f);
+                        __fdiv_rn((midpoint_temperature - 163.15f), 0.002f) + 1.5f);
                     if (midpoint_index < 1) midpoint_index = 1;
                     if (midpoint_index > 1000001) midpoint_index = 1000001;
                     const float midpoint_table_temperature =
@@ -2262,7 +2262,7 @@ extern "C" __global__ void nssl2_cloudy_water_adjustment(
                 const float final_temperature =
                     temperature_trial + temperature_change;
                 int final_index = (int)(
-                    (final_temperature - 163.15f) / 0.002f + 1.5f);
+                    __fdiv_rn((final_temperature - 163.15f), 0.002f) + 1.5f);
                 if (final_index < 1) final_index = 1;
                 if (final_index > 1000001) final_index = 1000001;
                 const float final_table_temperature =
@@ -2339,7 +2339,7 @@ extern "C" __global__ void nssl2_cloudy_water_adjustment(
                 * powf(fmaxf(w, 0.0f), twomey_velocity_exponent);
             nucleated = fminf(nucleated, ccn_number);
             nucleated = fminf(
-                nucleated, 0.5f * cloud_increment / cloud_min_mass);
+                nucleated, __fdiv_rn(0.5f * cloud_increment, cloud_min_mass));
             nucleated = fminf(
                 nucleated,
                 fmaxf(0.0f,
@@ -2372,7 +2372,7 @@ extern "C" __global__ void nssl2_cloudy_water_adjustment(
             const float target_ccn = rho * 408163264.0f;
             ccn_number = target_ccn
                 - fmaxf(0.0f, target_ccn - ccn_number)
-                    * expf(-dt / 3600.0f);
+                    * expf(__fdiv_rn(-dt, 3600.0f));
         }
     }
 
@@ -2427,7 +2427,7 @@ extern "C" __global__ void nssl2_primary_ice_nucleation(
             || !(layer_depth > 0.0f)) return;
 
     int saturation_index = (int)(
-        (temperature - 163.15f) / 0.002f + 1.5f);
+        __fdiv_rn((temperature - 163.15f), 0.002f) + 1.5f);
     if (saturation_index < 1) saturation_index = 1;
     if (saturation_index > 1000001) saturation_index = 1000001;
     const float table_temperature =
@@ -2446,8 +2446,8 @@ extern "C" __global__ void nssl2_primary_ice_nucleation(
     const float latent_vapor = 2500837.367f * powf(
         273.15f / bounded_temperature,
         0.167f + 3.67e-4f * bounded_temperature);
-    const float saturation_feedback = latent_vapor * latent_vapor
-        / (1004.0f * 461.5f);
+    const float saturation_feedback = __fdiv_rn(latent_vapor * latent_vapor,
+        (1004.0f * 461.5f));
     const float vapor_limit = 0.25f * fmaxf(
         (vapor - ice_saturation)
         / (1.0f + saturation_feedback * ice_saturation
@@ -2458,7 +2458,7 @@ extern "C" __global__ void nssl2_primary_ice_nucleation(
     float mass_rate = (initial_mass / rho) * velocity
         * nuclei_gradient / layer_depth;
     mass_rate = fminf(mass_rate, vapor_limit);
-    float number_rate = mass_rate * rho / initial_mass;
+    float number_rate = __fdiv_rn(mass_rate * rho, initial_mass);
     number_rate = fminf(
         number_rate, fmaxf(0.0f, 1.0e6f - ice_number) / dt);
     mass_rate = number_rate * initial_mass / rho;
@@ -2525,21 +2525,21 @@ extern "C" __global__ void nssl2_rain_evaporation(
             / (1000.0f * fmaxf(1.0e-11f, rain_number));
         if (mean_volume > rain_max_mean_volume) {
             mean_volume = rain_max_mean_volume;
-            rain_number = rho * rain / (1000.0f * mean_volume);
+            rain_number = __fdiv_rn(rho * rain, (1000.0f * mean_volume));
         } else if (mean_volume < rain_min_volume) {
             mean_volume = rain_min_volume;
-            rain_number = rho * rain / (1000.0f * mean_volume);
+            rain_number = __fdiv_rn(rho * rain, (1000.0f * mean_volume));
         }
 
         // For default imurain=1 and alphar=0, xdia(:,lr,1) is the
         // characteristic diameter 1/lambda, not mean-volume diameter.
         const float characteristic_diameter = powf(
-            mean_volume / pi, 1.0f / 3.0f);
+            __fdiv_rn(mean_volume, pi), 1.0f / 3.0f);
 
         // Reproduce WRF's 0.002-K saturation-table lookup.  The table itself
         // stores the default Soong-Ogura exponential at the quantized T.
         int saturation_index = (int)(
-            (temperature - 163.15f) / 0.002f + 1.5f);
+            __fdiv_rn((temperature - 163.15f), 0.002f) + 1.5f);
         if (saturation_index < 1) saturation_index = 1;
         if (saturation_index > 1000001) saturation_index = 1000001;
         const float table_temperature =
@@ -2554,14 +2554,14 @@ extern "C" __global__ void nssl2_rain_evaporation(
             273.15f / bounded_temperature,
             0.167f + 3.67e-4f * bounded_temperature);
         const float vapor_diffusivity = 2.11e-5f
-            * powf(temperature / 273.15f, 1.94f)
+            * powf(__fdiv_rn(temperature, 273.15f), 1.94f)
             * (101325.0f / pressure);
         const float dynamic_viscosity = 1.832e-5f
             * (416.16f / (temperature + 120.0f))
-            * powf(temperature / 296.0f, 1.5f);
+            * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
         const float kinematic_viscosity = dynamic_viscosity / rho;
         const float thermal_conductivity =
-            2.43e-2f * dynamic_viscosity / 1.718e-5f;
+            __fdiv_rn(2.43e-2f * dynamic_viscosity, 1.718e-5f);
         const float schmidt = kinematic_viscosity / vapor_diffusivity;
         const float ventilation_factor = powf(schmidt, 1.0f / 3.0f)
             * powf(kinematic_viscosity, -0.5f);
@@ -2592,7 +2592,7 @@ extern "C" __global__ void nssl2_rain_evaporation(
 
         const float number_rate = (rain_number / rain) * mass_rate;
         const float theta_rate = (1.0f / exner_local)
-            * ((latent_heat / 1004.0f) * mass_rate);
+            * ((__fdiv_rn(latent_heat, 1004.0f)) * mass_rate);
         theta += dt * theta_rate;
         vapor -= dt * mass_rate;
         rain += dt * mass_rate;
@@ -2672,12 +2672,12 @@ extern "C" __global__ void nssl2_rain_cloud_accretion(
                 cloud_max_mass);
         } else {
             local_cloud_number = fmaxf(
-                cxmin, rho * cloud / cloud_max_mass);
+                cxmin, __fdiv_rn(rho * cloud, cloud_max_mass));
             cloud_mass = fminf(
                 fmaxf(cloud * rho / local_cloud_number, cloud_min_mass),
                 cloud_max_mass);
         }
-        cloud_volume = cloud_mass / 1000.0f;
+        cloud_volume = __fdiv_rn(cloud_mass, 1000.0f);
         cloud_diameter = powf(
             cloud_mass * (6.0f / (pi * 1000.0f)), 1.0f / 3.0f);
     }
@@ -2690,10 +2690,10 @@ extern "C" __global__ void nssl2_rain_cloud_accretion(
             / (1000.0f * fmaxf(1.0e-11f, local_rain_number));
         if (rain_volume > rain_max_mean_volume) {
             rain_volume = rain_max_mean_volume;
-            local_rain_number = rho * rain / (1000.0f * rain_volume);
+            local_rain_number = __fdiv_rn(rho * rain, (1000.0f * rain_volume));
         } else if (rain_volume < rain_min_volume) {
             rain_volume = rain_min_volume;
-            local_rain_number = rho * rain / (1000.0f * rain_volume);
+            local_rain_number = __fdiv_rn(rho * rain, (1000.0f * rain_volume));
         }
         rain_volume_diameter = powf(
             rain_volume * (6.0f / pi), 1.0f / 3.0f);
@@ -2870,7 +2870,7 @@ __device__ __forceinline__ void nssl2_rain_sediment_impl(
             }
 
             const float diameter = powf(
-                (6.0f / pi) * mean_volume / (3.0f * 2.0f * 1.0f),
+                __fdiv_rn((6.0f / pi) * mean_volume, (3.0f * 2.0f * 1.0f)),
                 1.0f / 3.0f);
             const float density_factor = sqrtf(
                 1.225f * fminf(20.0f, 1.0f / rho[k]));
@@ -2908,7 +2908,7 @@ __device__ __forceinline__ void nssl2_rain_sediment_impl(
         substeps = 1;
     } else if (dt > 20.0f) {
         substeps = max(2,
-            (int)(dt * maximum_courant_rate / 0.7f) + 1);
+            (int)(__fdiv_rn(dt * maximum_courant_rate, 0.7f)) + 1);
     } else {
         substeps = 1 + (int)(dt * maximum_courant_rate + 0.301f);
     }
@@ -3089,7 +3089,7 @@ __device__ __forceinline__ void nssl2_snow_sediment_impl(
         substeps = 1;
     } else if (dt > 20.0f) {
         substeps = max(2,
-            (int)(dt * maximum_courant_rate / 0.7f) + 1);
+            (int)(__fdiv_rn(dt * maximum_courant_rate, 0.7f)) + 1);
     } else {
         substeps = 1 + (int)(dt * maximum_courant_rate + 0.301f);
     }
@@ -3204,12 +3204,12 @@ __device__ __forceinline__ void nssl2_ice_sediment_impl(
         if (positive_ice > 1.0e-13f) {
             float local_number = fmaxf(number[k], 0.0f);
             local_number = fmaxf(
-                local_number, rho[k] * positive_ice / maximum_mass);
+                local_number, __fdiv_rn(rho[k] * positive_ice, maximum_mass));
             local_number = fminf(
-                local_number, rho[k] * positive_ice / minimum_mass);
+                local_number, __fdiv_rn(rho[k] * positive_ice, minimum_mass));
             const float particle_mass = fmaxf(
                 rho[k] * positive_ice / local_number, minimum_mass);
-            const float mean_volume = particle_mass / 900.0f;
+            const float mean_volume = __fdiv_rn(particle_mass, 900.0f);
             const float density_factor = sqrtf(
                 1.225f * fminf(20.0f, 1.0f / rho[k]));
             const float tmp = 47.6273f * density_factor
@@ -3234,7 +3234,7 @@ __device__ __forceinline__ void nssl2_ice_sediment_impl(
         substeps = 1;
     } else if (dt > 20.0f) {
         substeps = max(2,
-            (int)(dt * maximum_courant_rate / 0.7f) + 1);
+            (int)(__fdiv_rn(dt * maximum_courant_rate, 0.7f)) + 1);
     } else {
         substeps = 1 + (int)(dt * maximum_courant_rate + 0.301f);
     }
@@ -3363,7 +3363,7 @@ __device__ __forceinline__ void nssl2_graupel_mm_coefficients(
         0.67819f, 0.63789f, 0.62197f, 0.61240f, 0.60572f,
         0.60066f, 0.59663f, 0.59330f, 0.59048f};
 
-    int index = (int)((particle_density - 50.0f) / 100.0f);
+    int index = (int)(__fdiv_rn((particle_density - 50.0f), 100.0f));
     index = max(0, min(8, index));
     if (index < 8) {
         const float fraction = fmaxf(
@@ -3447,7 +3447,7 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_impl(
                 / (particle_density * fmaxf(1.0e-9f, number[k]));
             mean_volume = fminf(
                 maximum_volume, fmaxf(minimum_volume, mean_volume));
-            const float mass_diameter = powf(6.0f * mean_volume / pi,
+            const float mass_diameter = powf(__fdiv_rn(6.0f * mean_volume, pi),
                                              1.0f / 3.0f);
             const float characteristic_diameter =
                 characteristic_factor * mass_diameter;
@@ -3499,7 +3499,7 @@ __device__ __forceinline__ void nssl2_dense_frozen_sediment_impl(
         substeps = 1;
     } else if (dt > 20.0f) {
         substeps = max(
-            2, (int)(dt * maximum_courant_rate / 0.7f) + 1);
+            2, (int)(__fdiv_rn(dt * maximum_courant_rate, 0.7f)) + 1);
     } else {
         substeps = 1 + (int)(dt * maximum_courant_rate + 0.301f);
     }
@@ -3671,8 +3671,8 @@ extern "C" __global__ void nssl2_ice_cloud_riming(
 
     const float ice_min_mass = 6.88e-13f;
     const float ice_max_mass = 1.0e-8f;
-    ice_number = fmaxf(ice_number, rho * ice / ice_max_mass);
-    ice_number = fminf(ice_number, rho * ice / ice_min_mass);
+    ice_number = fmaxf(ice_number, __fdiv_rn(rho * ice, ice_max_mass));
+    ice_number = fminf(ice_number, __fdiv_rn(rho * ice, ice_min_mass));
     const float ice_mass = fmaxf(rho * ice / ice_number, ice_min_mass);
 
     const float cloud_diameter = powf(
@@ -3685,12 +3685,12 @@ extern "C" __global__ void nssl2_ice_cloud_riming(
     const float density_factor = sqrtf(
         1.225f / fmaxf(0.05f, rho));
     const float gamma_2p18 = 1.091937899589539f;
-    const float ice_volume = ice_mass / 900.0f;
+    const float ice_volume = __fdiv_rn(ice_mass, 900.0f);
     const float ice_velocity = 47.6273f * density_factor
         / powf(1.0f / ice_volume, 0.18333f) * gamma_2p18;
     const float viscosity = 1.832e-5f
         * (416.16f / (temperature + 120.0f))
-        * powf(temperature / 296.0f, 1.5f);
+        * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
     const float cloud_radius = 0.5f * cloud_diameter;
     const float cloud_velocity = 2.0f * 9.8f * 1000.0f
         * cloud_radius * cloud_radius / (9.0f * viscosity);
@@ -3772,7 +3772,7 @@ extern "C" __global__ void nssl2_snow_cloud_riming(
     float cloud_mass = rho * cloud / cloud_number;
     cloud_mass = fminf(
         cloud_max_mass, fmaxf(cloud_min_mass, cloud_mass));
-    const float cloud_volume = cloud_mass / 1000.0f;
+    const float cloud_volume = __fdiv_rn(cloud_mass, 1000.0f);
 
     const float snow_min_volume =
         0.523599f * (0.01e-3f * 0.01e-3f * 0.01e-3f);
@@ -3952,7 +3952,7 @@ extern "C" __global__ void nssl2_graupel_cloud_riming(
 
     const float viscosity = 1.832e-5f
         * (416.16f / (temperature + 120.0f))
-        * powf(temperature / 296.0f, 1.5f);
+        * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
     const float cloud_velocity = 2.0f * 9.8f * 1000.0f
         * cloud_radius * cloud_radius / (9.0f * viscosity);
     const float relative_velocity = fabsf(
@@ -4148,7 +4148,7 @@ extern "C" __global__ void nssl2_hail_cloud_riming(
 
     const float viscosity = 1.832e-5f
         * (416.16f / (temperature + 120.0f))
-        * powf(temperature / 296.0f, 1.5f);
+        * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
     const float cloud_velocity = 2.0f * 9.8f * 1000.0f
         * cloud_radius * cloud_radius / (9.0f * viscosity);
     const float relative_velocity = fabsf(hail_velocity - cloud_velocity);
@@ -4312,7 +4312,7 @@ extern "C" __global__ void nssl2_rain_ice_collection_freezing(
         rain_mean_diameter = powf(
             rain_mean_volume * (6.0f / pi), 1.0f / 3.0f);
         rain_characteristic_diameter = powf(
-            rain_mean_volume / pi, 1.0f / 3.0f);
+            __fdiv_rn(rain_mean_volume, pi), 1.0f / 3.0f);
     } else {
         rain_number = 0.0f;
     }
@@ -4321,10 +4321,10 @@ extern "C" __global__ void nssl2_rain_ice_collection_freezing(
     float ice_volume = ice_min_mass / 900.0f;
     float ice_diameter = 1.0e-7f;
     if (ice > ice_qxmin) {
-        ice_number = fmaxf(ice_number, rho * ice / ice_max_mass);
-        ice_number = fminf(ice_number, rho * ice / ice_min_mass);
+        ice_number = fmaxf(ice_number, __fdiv_rn(rho * ice, ice_max_mass));
+        ice_number = fminf(ice_number, __fdiv_rn(rho * ice, ice_min_mass));
         ice_mass = fmaxf(rho * ice / ice_number, ice_min_mass);
-        ice_volume = ice_mass / 900.0f;
+        ice_volume = __fdiv_rn(ice_mass, 900.0f);
         ice_diameter = 0.1871f * powf(ice_mass, 0.3429f);
     } else {
         ice_number = 0.0f;
@@ -4455,11 +4455,11 @@ extern "C" __global__ void nssl2_rain_ice_collection_freezing(
             float maximum_freezing_rate = rain_freezing_rate;
             if (!(temperature_c < -30.0f)) {
                 const float vapor_diffusivity = 2.11e-5f
-                    * powf(temperature / 273.15f, 1.94f)
+                    * powf(__fdiv_rn(temperature, 273.15f), 1.94f)
                     * (101325.0f / pressure);
                 const float dynamic_viscosity = 1.832e-5f
                     * (416.16f / (temperature + 120.0f))
-                    * powf(temperature / 296.0f, 1.5f);
+                    * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
                 const float kinematic_viscosity = dynamic_viscosity / rho;
                 const float schmidt =
                     kinematic_viscosity / vapor_diffusivity;
@@ -4492,8 +4492,8 @@ extern "C" __global__ void nssl2_rain_ice_collection_freezing(
                     + 1.30572e-2f * liquid_offset * liquid_offset
                     + 1.60056e-5f * liquid_offset * liquid_offset
                         * liquid_offset * liquid_offset;
-                const float thermal_conductivity = 2.43e-2f
-                    * dynamic_viscosity / 1.718e-5f;
+                const float thermal_conductivity = __fdiv_rn(2.43e-2f
+                    * dynamic_viscosity, 1.718e-5f);
                 const float wet_growth = (2.0f * pi)
                     * (latent_vapor * vapor_diffusivity * rho
                         * (380.0f / pressure - vapor)
@@ -4543,11 +4543,11 @@ extern "C" __global__ void nssl2_rain_ice_collection_freezing(
             float maximum_freezing_rate = rain_freezing_rate;
             if (!(temperature_c < -30.0f)) {
                 const float vapor_diffusivity = 2.11e-5f
-                    * powf(temperature / 273.15f, 1.94f)
+                    * powf(__fdiv_rn(temperature, 273.15f), 1.94f)
                     * (101325.0f / pressure);
                 const float dynamic_viscosity = 1.832e-5f
                     * (416.16f / (temperature + 120.0f))
-                    * powf(temperature / 296.0f, 1.5f);
+                    * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
                 const float kinematic_viscosity = dynamic_viscosity / rho;
                 const float schmidt =
                     kinematic_viscosity / vapor_diffusivity;
@@ -4580,8 +4580,8 @@ extern "C" __global__ void nssl2_rain_ice_collection_freezing(
                     + 1.30572e-2f * liquid_offset * liquid_offset
                     + 1.60056e-5f * liquid_offset * liquid_offset
                         * liquid_offset * liquid_offset;
-                const float thermal_conductivity = 2.43e-2f
-                    * dynamic_viscosity / 1.718e-5f;
+                const float thermal_conductivity = __fdiv_rn(2.43e-2f
+                    * dynamic_viscosity, 1.718e-5f);
                 const float wet_growth = (2.0f * pi)
                     * (latent_vapor * vapor_diffusivity * rho
                         * (380.0f / pressure - vapor)
@@ -4616,7 +4616,7 @@ extern "C" __global__ void nssl2_rain_ice_collection_freezing(
     ice_number -= ice_number_increment;
     graupel += rain_increment + ice_increment;
     graupel_number += rain_number_increment;
-    graupel_volume += rho * (rain_increment + ice_increment) / 900.0f;
+    graupel_volume += __fdiv_rn(rho * (rain_increment + ice_increment), 900.0f);
 
     if (rain_freezing_rate > 0.0f) {
         const float bounded_ice_temperature =
@@ -4760,7 +4760,7 @@ extern "C" __global__ void nssl2_frozen_cross_collection(
         rain_diameter = powf(
             rain_mean_volume * (6.0f / pi), 1.0f / 3.0f);
         rain_characteristic_diameter = powf(
-            rain_mean_volume / pi, 1.0f / 3.0f);
+            __fdiv_rn(rain_mean_volume, pi), 1.0f / 3.0f);
     } else {
         rain_number = 0.0f;
     }
@@ -4775,10 +4775,10 @@ extern "C" __global__ void nssl2_frozen_cross_collection(
     float ice_volume = ice_min_mass / 900.0f;
     float ice_diameter = 1.0e-9f;
     if (ice > ice_qxmin) {
-        ice_number = fmaxf(ice_number, rho * ice / ice_max_mass);
-        ice_number = fminf(ice_number, rho * ice / ice_min_mass);
+        ice_number = fmaxf(ice_number, __fdiv_rn(rho * ice, ice_max_mass));
+        ice_number = fminf(ice_number, __fdiv_rn(rho * ice, ice_min_mass));
         ice_mass = fmaxf(rho * ice / ice_number, ice_min_mass);
-        ice_volume = ice_mass / 900.0f;
+        ice_volume = __fdiv_rn(ice_mass, 900.0f);
         ice_diameter = 0.1871f * powf(ice_mass, 0.3429f);
     } else {
         ice_number = 0.0f;
@@ -4810,7 +4810,7 @@ extern "C" __global__ void nssl2_frozen_cross_collection(
             snow_number = rho * snow / snow_mass;
             snow_density = 0.0346159f
                 * sqrtf(snow_number / (snow * rho));
-            snow_diameter = sqrtf(snow_mass / 0.069f);
+            snow_diameter = sqrtf(__fdiv_rn(snow_mass, 0.069f));
         }
     } else {
         snow_number = 0.0f;
@@ -5008,8 +5008,8 @@ extern "C" __global__ void nssl2_frozen_cross_collection(
         if (snow_diameter < 40.0e-6f) {
             collision_efficiency = 0.0f;
         } else if (snow_diameter < 150.0e-6f) {
-            collision_efficiency = 0.5f
-                * (snow_diameter - 40.0e-6f) / 110.0e-6f;
+            collision_efficiency = __fdiv_rn(0.5f
+                * (snow_diameter - 40.0e-6f), 110.0e-6f);
         }
         const float conversion_efficiency = 0.1f
             * expf(0.1f * fminf(temperature_c, 0.0f));
@@ -5018,7 +5018,7 @@ extern "C" __global__ void nssl2_frozen_cross_collection(
             conversion_efficiency
                 * fminf(
                     1.0f,
-                    fmaxf(0.0f, graupel_density - 300.0f) / 300.0f));
+                    __fdiv_rn(fmaxf(0.0f, graupel_density - 300.0f), 300.0f)));
         if (collision_efficiency > 0.0f && efficiency > 0.0f) {
             const float relative_velocity = sqrtf(
                 (graupel_velocity - snow_velocity)
@@ -5178,12 +5178,12 @@ extern "C" __global__ void nssl2_frozen_cross_collection(
 
     // WRF's cold graupel-rain volume line accidentally clamps the initialized
     // 500-kg/m3 riming density; hail-rain retains its initialized 900 kg/m3.
-    graupel_volume += rho
-        * (graupel_ice_increment + graupel_snow_increment) / 170.0f
-        + rho * graupel_rain_increment / 500.0f;
-    hail_volume += rho
-        * (hail_ice_increment + hail_snow_increment) / 500.0f
-        + rho * hail_rain_increment / 900.0f;
+    graupel_volume += __fdiv_rn(rho
+        * (graupel_ice_increment + graupel_snow_increment), 170.0f)
+        + __fdiv_rn(rho * graupel_rain_increment, 500.0f);
+    hail_volume += __fdiv_rn(rho
+        * (hail_ice_increment + hail_snow_increment), 500.0f)
+        + __fdiv_rn(rho * hail_rain_increment, 900.0f);
 
     const float rain_freezing_increment =
         graupel_rain_increment + hail_rain_increment;
@@ -5379,7 +5379,7 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
         rain_diameter = powf(
             rain_mean_volume * (6.0f / pi), 1.0f / 3.0f);
         rain_characteristic_diameter = powf(
-            rain_mean_volume / pi, 1.0f / 3.0f);
+            __fdiv_rn(rain_mean_volume, pi), 1.0f / 3.0f);
     } else {
         rain_number = 0.0f;
     }
@@ -5411,7 +5411,7 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
             snow_number = rho * snow / snow_mass;
             snow_density = 0.0346159f
                 * sqrtf(snow_number / (snow * rho));
-            snow_diameter = sqrtf(snow_mass / 0.069f);
+            snow_diameter = sqrtf(__fdiv_rn(snow_mass, 0.069f));
         }
     } else {
         snow_number = 0.0f;
@@ -5527,16 +5527,16 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
 
     const float dynamic_viscosity = 1.832e-5f
         * (416.16f / (temperature + 120.0f))
-        * powf(temperature / 296.0f, 1.5f);
+        * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
     const float kinematic_viscosity = dynamic_viscosity / rho;
     const float vapor_diffusivity = 2.11e-5f
-        * powf(temperature / 273.15f, 1.94f)
+        * powf(__fdiv_rn(temperature, 273.15f), 1.94f)
         * (101325.0f / pressure);
     const float schmidt = kinematic_viscosity / vapor_diffusivity;
     const float ventilation_factor = powf(schmidt, 1.0f / 3.0f)
         * powf(kinematic_viscosity, -0.5f);
     const float thermal_conductivity =
-        2.43e-2f * dynamic_viscosity / 1.718e-5f;
+        __fdiv_rn(2.43e-2f * dynamic_viscosity, 1.718e-5f);
     const float bounded_vapor_temperature =
         fminf(313.15f, fmaxf(233.15f, temperature));
     const float latent_vapor = 2500837.367f * powf(
@@ -5570,10 +5570,10 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
         1.2f,
         fmaxf(
             0.45f,
-            0.45f + 0.55f
+            0.45f + __fdiv_rn(0.55f
                 * (800.0f - fminf(
-                    800.0f, fmaxf(170.0f, graupel_density)))
-                / 630.0f));
+                    800.0f, fmaxf(170.0f, graupel_density))),
+                630.0f)));
     const float graupel_ventilation = graupel > dense_qxmin
         ? 0.78f * nssl2_gamma_lookup(2.0f)
             + 0.308f * nssl2_gamma_lookup(2.75f)
@@ -5772,8 +5772,8 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
     const float hail_rain_rate = temperature > 273.15f
         ? 0.0f : hail_rain_raw_rate;
     const float graupel_rain_volume_rate =
-        rho * graupel_rain_rate / 900.0f;
-    const float hail_rain_volume_rate = rho * hail_rain_rate / 900.0f;
+        __fdiv_rn(rho * graupel_rain_rate, 900.0f);
+    const float hail_rain_volume_rate = __fdiv_rn(rho * hail_rain_rate, 900.0f);
 
     const float saturation_proxy = 380.0f / pressure;
     const float melting_thermal = 2.0f * pi
@@ -5802,8 +5802,8 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
     float hail_melt_soak_rate = 0.0f;
     if (temperature > 273.15f) {
         if (snow > snow_qxmin && snow_number > cxmin) {
-            const float c1sw = tgammaf(0.5333333333333333f)
-                * powf(0.2f, -1.0f / 3.0f) / tgammaf(0.2f);
+            const float c1sw = __fdiv_rn(tgammaf(0.5333333333333333f)
+                * powf(0.2f, -1.0f / 3.0f), tgammaf(0.2f));
             snow_melt_rate = fminf(
                 c1sw * melting_thermal * snow_number
                     * snow_ventilation * snow_diameter,
@@ -5813,7 +5813,7 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
             snow_melt_number_rate =
                 (snow_number / snow) * snow_melt_rate;
             snow_melt_rain_number_rate =
-                snow_melt_number_rate / 0.3f;
+                __fdiv_rn(snow_melt_number_rate, 0.3f);
         }
 
         if (graupel > dense_qxmin && graupel_number > cxmin) {
@@ -5826,12 +5826,12 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
                 0.0f);
             if (raw_melt_rate < 0.0f && graupel_density < 900.0f) {
                 const float available_volume =
-                    (1.0f - graupel_density / 900.0f)
+                    (1.0f - __fdiv_rn(graupel_density, 900.0f))
                     * (graupel_volume
                         + rho * raw_melt_rate / graupel_density)
                     * dt_inverse;
                 const float refrozen_volume =
-                    -rho * raw_melt_rate / 900.0f;
+                    __fdiv_rn(-rho * raw_melt_rate, 900.0f);
                 graupel_melt_soak_rate = fminf(
                     available_volume, refrozen_volume);
             }
@@ -5851,18 +5851,18 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
             const float large_drop_count =
                 -rho * graupel_melt_rate / minimum_drop_mass;
             const float three_mm_count =
-                -rho * graupel_melt_rate
-                / (1000.0f * three_mm_volume);
-            float rain_count = large_drop_count
-                * (20.0e-3f - graupel_diameter) / 12.0e-3f
-                + three_mm_count
-                    * (graupel_diameter - 8.0e-3f) / 12.0e-3f;
+                __fdiv_rn(-rho * graupel_melt_rate,
+                (1000.0f * three_mm_volume));
+            float rain_count = __fdiv_rn(large_drop_count
+                * (20.0e-3f - graupel_diameter), 12.0e-3f)
+                + __fdiv_rn(three_mm_count
+                    * (graupel_diameter - 8.0e-3f), 12.0e-3f);
             rain_count = fmaxf(
                 large_drop_count, fminf(three_mm_count, rain_count));
             graupel_melt_rain_number_rate = -rain_count;
             graupel_melt_rain_number_rate = fminf(
                 graupel_melt_rain_number_rate,
-                rho * graupel_melt_rate / maximum_rain_mass);
+                __fdiv_rn(rho * graupel_melt_rate, maximum_rain_mass));
         }
 
         if (hail > dense_qxmin && hail_number > cxmin) {
@@ -5874,11 +5874,11 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
                 0.0f);
             if (raw_melt_rate < 0.0f && hail_density < 900.0f) {
                 const float available_volume =
-                    (1.0f - hail_density / 900.0f)
+                    (1.0f - __fdiv_rn(hail_density, 900.0f))
                     * (hail_volume + rho * raw_melt_rate / hail_density)
                     * dt_inverse;
                 const float refrozen_volume =
-                    -rho * raw_melt_rate / 900.0f;
+                    __fdiv_rn(-rho * raw_melt_rate, 900.0f);
                 hail_melt_soak_rate = fminf(
                     available_volume, refrozen_volume);
             }
@@ -5896,17 +5896,17 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
             const float large_drop_count =
                 -rho * hail_melt_rate / minimum_drop_mass;
             const float three_mm_count =
-                -rho * hail_melt_rate / (1000.0f * three_mm_volume);
-            float rain_count = large_drop_count
-                * (20.0e-3f - hail_diameter) / 12.0e-3f
-                + three_mm_count
-                    * (hail_diameter - 8.0e-3f) / 12.0e-3f;
+                __fdiv_rn(-rho * hail_melt_rate, (1000.0f * three_mm_volume));
+            float rain_count = __fdiv_rn(large_drop_count
+                * (20.0e-3f - hail_diameter), 12.0e-3f)
+                + __fdiv_rn(three_mm_count
+                    * (hail_diameter - 8.0e-3f), 12.0e-3f);
             rain_count = fmaxf(
                 large_drop_count, fminf(three_mm_count, rain_count));
             hail_melt_rain_number_rate = -rain_count;
             hail_melt_rain_number_rate = fminf(
                 hail_melt_rain_number_rate,
-                rho * hail_melt_rate / maximum_rain_mass);
+                __fdiv_rn(rho * hail_melt_rate, maximum_rain_mass));
         }
     }
 
@@ -5926,11 +5926,11 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
                 0.523599f * (3.0e-3f * 3.0e-3f * 3.0e-3f)
                 / massfac_shedding;
         } else {
-            graupel_shedding_volume = fminf(
+            graupel_shedding_volume = __fdiv_rn(fminf(
                 rain_configured_max_volume,
                 (6.0f / pi) * graupel_density * 0.001f
                     * weighted_diameter * weighted_diameter
-                    * weighted_diameter) / massfac_shedding;
+                    * weighted_diameter), massfac_shedding);
         }
     }
     float hail_shedding_volume =
@@ -5948,11 +5948,11 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
                 0.523599f * (3.0e-3f * 3.0e-3f * 3.0e-3f)
                 / massfac_shedding;
         } else {
-            hail_shedding_volume = fminf(
+            hail_shedding_volume = __fdiv_rn(fminf(
                 rain_configured_max_volume,
                 (6.0f / pi) * hail_density * 0.001f
                     * weighted_diameter * weighted_diameter
-                    * weighted_diameter) / massfac_shedding;
+                    * weighted_diameter), massfac_shedding);
         }
     }
 
@@ -6004,13 +6004,13 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
         graupel_shedding_rate < 0.0f && temperature < 273.15f;
     if (graupel_wet) {
         graupel_cloud_volume_rate =
-            rho * graupel_cloud_rate / 900.0f;
+            __fdiv_rn(rho * graupel_cloud_rate, 900.0f);
         const float available_volume = graupel_density < 900.0f
-            ? (1.0f - graupel_density / 900.0f)
+            ? (1.0f - __fdiv_rn(graupel_density, 900.0f))
                 * graupel_volume * dt_inverse
             : 0.0f;
         const float refrozen_volume =
-            rho * graupel_wet_growth / 900.0f;
+            __fdiv_rn(rho * graupel_wet_growth, 900.0f);
         graupel_melt_soak_rate = fminf(
             available_volume, refrozen_volume);
         graupel_shedding_volume_rate = fminf(
@@ -6021,12 +6021,12 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
     const bool hail_wet =
         hail_shedding_rate < 0.0f && temperature < 273.15f;
     if (hail_wet) {
-        hail_cloud_volume_rate = rho * hail_cloud_rate / 900.0f;
+        hail_cloud_volume_rate = __fdiv_rn(rho * hail_cloud_rate, 900.0f);
         const float available_volume = hail_density < 900.0f
-            ? (1.0f - hail_density / 900.0f)
+            ? (1.0f - __fdiv_rn(hail_density, 900.0f))
                 * hail_volume * dt_inverse
             : 0.0f;
-        const float refrozen_volume = rho * hail_wet_growth / 900.0f;
+        const float refrozen_volume = __fdiv_rn(rho * hail_wet_growth, 900.0f);
         hail_melt_soak_rate = fminf(available_volume, refrozen_volume);
         hail_shedding_volume_rate = fminf(
             0.0f,
@@ -6048,9 +6048,9 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
     rain_number += dt * (
         -snow_melt_rain_number_rate
         -graupel_melt_rain_number_rate
-        -hail_melt_rain_number_rate / 0.4375f
+        -__fdiv_rn(hail_melt_rain_number_rate, 0.4375f)
         -graupel_shedding_rain_number_rate
-        -hail_shedding_rain_number_rate / 0.4375f);
+        -__fdiv_rn(hail_shedding_rain_number_rate, 0.4375f));
 
     snow += dt * snow_melt_rate;
     snow_number += dt * snow_melt_number_rate;
@@ -6077,7 +6077,7 @@ extern "C" __global__ void nssl2_melting_liquid_shedding(
             + graupel_shedding_rate
             + hail_cloud_rate + hail_rain_rate + hail_shedding_rate
         : snow_melt_rate + graupel_melt_rate + hail_melt_rate;
-    theta += dt * (latent_fusion / 1004.0f)
+    theta += dt * (__fdiv_rn(latent_fusion, 1004.0f))
         * phase_change_rate / exner_local;
 
     cloud = fmaxf(cloud, 0.0f);
@@ -6388,7 +6388,7 @@ extern "C" __global__ void nssl2_secondary_ice_conversions(
             cloud_max_mass,
             fmaxf(cloud_min_mass, cloud_mass_unbounded));
         cloud_volume = (float)((double)cloud_mass / 1000.0);
-        cloud_diameter = powf(6.0f * cloud_volume / pi, 1.0f / 3.0f);
+        cloud_diameter = powf(__fdiv_rn(6.0f * cloud_volume, pi), 1.0f / 3.0f);
     }
 
     const float ice_min_mass = 6.88e-13f;
@@ -6397,8 +6397,8 @@ extern "C" __global__ void nssl2_secondary_ice_conversions(
     float ice_diameter = 1.0e-9f;
     float ice_velocity = 0.0f;
     if (ice > 1.0e-13f) {
-        ice_number = fmaxf(ice_number, rho * ice / ice_max_mass);
-        ice_number = fminf(ice_number, rho * ice / ice_min_mass);
+        ice_number = fmaxf(ice_number, __fdiv_rn(rho * ice, ice_max_mass));
+        ice_number = fminf(ice_number, __fdiv_rn(rho * ice, ice_min_mass));
         ice_mass = fmaxf(rho * ice / fmaxf(ice_number, cxmin), ice_min_mass);
         ice_diameter = 0.1871f * powf(ice_mass, 0.3429f);
         ice_velocity = 47.6273f * density_factor
@@ -6429,9 +6429,9 @@ extern "C" __global__ void nssl2_secondary_ice_conversions(
             snow_number = rho * snow / diagnosed_mass;
             snow_density = 0.0346159f
                 * sqrtf(snow_number / (snow * rho));
-            snow_diameter = sqrtf(diagnosed_mass / 0.069f);
+            snow_diameter = sqrtf(__fdiv_rn(diagnosed_mass, 0.069f));
         } else {
-            snow_diameter = powf(6.0f * snow_volume / pi, 1.0f / 3.0f);
+            snow_diameter = powf(__fdiv_rn(6.0f * snow_volume, pi), 1.0f / 3.0f);
         }
         snow_velocity = 11.9495f * density_factor * powf(snow_volume, 0.14f);
     }
@@ -6463,7 +6463,7 @@ extern "C" __global__ void nssl2_secondary_ice_conversions(
                 (graupel_density * graupel_mean_volume);
         }
         graupel_diameter = powf(
-            6.0f * graupel_mean_volume / pi, 1.0f / 3.0f);
+            __fdiv_rn(6.0f * graupel_mean_volume, pi), 1.0f / 3.0f);
         graupel_characteristic = powf(6.0f, -1.0f / 3.0f)
             * graupel_diameter;
     }
@@ -6486,7 +6486,7 @@ extern "C" __global__ void nssl2_secondary_ice_conversions(
                 fmaxf(dense_min_volume, hail_mean_volume));
             hail_number = rho * hail / (hail_density * hail_mean_volume);
         }
-        hail_diameter = powf(6.0f * hail_mean_volume / pi, 1.0f / 3.0f);
+        hail_diameter = powf(__fdiv_rn(6.0f * hail_mean_volume, pi), 1.0f / 3.0f);
         hail_characteristic = powf(24.0f, -1.0f / 3.0f) * hail_diameter;
     }
 
@@ -6517,7 +6517,7 @@ extern "C" __global__ void nssl2_secondary_ice_conversions(
 
     const float dynamic_viscosity = 1.832e-5f
         * (416.16f / (temperature + 120.0f))
-        * powf(temperature / 296.0f, 1.5f);
+        * powf(__fdiv_rn(temperature, 296.0f), 1.5f);
     const float cloud_radius = 0.5f * cloud_diameter;
     const float cloud_velocity = 2.0f * 9.8f * 1000.0f
         * cloud_radius * cloud_radius / (9.0f * dynamic_viscosity);
@@ -6685,9 +6685,9 @@ extern "C" __global__ void nssl2_secondary_ice_conversions(
 
     const float kinematic_viscosity = dynamic_viscosity / rho;
     const float vapor_diffusivity = 2.11e-5f
-        * powf(temperature / 273.15f, 1.94f) * (101325.0f / pressure);
+        * powf(__fdiv_rn(temperature, 273.15f), 1.94f) * (101325.0f / pressure);
     const float thermal_conductivity =
-        2.43e-2f * dynamic_viscosity / 1.718e-5f;
+        __fdiv_rn(2.43e-2f * dynamic_viscosity, 1.718e-5f);
     const float bounded_vapor_temperature =
         fminf(313.15f, fmaxf(233.15f, temperature));
     const float latent_vapor = 2500837.367f * powf(
@@ -6713,8 +6713,8 @@ extern "C" __global__ void nssl2_secondary_ice_conversions(
         1.2f,
         fmaxf(
             0.45f,
-            0.45f + 0.55f * (800.0f - fminf(
-                800.0f, fmaxf(170.0f, graupel_density))) / 630.0f));
+            0.45f + __fdiv_rn(0.55f * (800.0f - fminf(
+                800.0f, fmaxf(170.0f, graupel_density))), 630.0f)));
     const float graupel_ventilation = graupel > 1.0e-12f
         ? 0.78f + 0.308f * nssl2_gamma_lookup(2.75f)
             * powf(4.0f * 9.8f / (3.0f * graupel_drag), 0.25f)
@@ -6825,7 +6825,7 @@ extern "C" __global__ void nssl2_secondary_ice_conversions(
     float hm_h_number_rate = 0.0f;
     if (cloud > 1.0e-13f && cloud_volume > 0.0f
             && temperature >= 265.15f && temperature <= 271.15f) {
-        const float tail = expf(-7.23e-15f / cloud_volume) / 250.0f;
+        const float tail = __fdiv_rn(expf(-7.23e-15f / cloud_volume), 250.0f);
         const float ft = fmaxf(
             0.0f,
             fminf(
@@ -7015,7 +7015,7 @@ extern "C" __global__ void nssl2_secondary_ice_conversions(
     float hail_n_b = hail_number;
     float hail_v_b = hail_volume
         + dt * baseline_mass_factor * hail_cloud_volume_rate;
-    float theta_b = theta_original + dt * latent_fusion / 1004.0f
+    float theta_b = theta_original + __fdiv_rn(dt * latent_fusion, 1004.0f)
         * baseline_mass_factor * base_cloud_mass_rate / exner_local;
 
     float cloud_f = full_mass_total * dt > cloud
@@ -7059,7 +7059,7 @@ extern "C" __global__ void nssl2_secondary_ice_conversions(
     float hail_v_f = hail_volume + dt * (
         full_mass_factor * hail_cloud_volume_rate
         + g_to_h_gain_volume_rate - rho * hm_h_mass_rate / hail_density);
-    float theta_f = theta_original + dt * latent_fusion / 1004.0f
+    float theta_f = theta_original + __fdiv_rn(dt * latent_fusion, 1004.0f)
         * full_mass_factor * full_mass_total / exner_local;
 
     cloud_b = fmaxf(cloud_b, 0.0f);

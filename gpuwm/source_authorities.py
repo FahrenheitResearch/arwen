@@ -149,16 +149,20 @@ _PACKAGED_PROFILES = MappingProxyType({
     # Native global ICON carries its coordinates in separate GDT-101
     # CLAT/CLON records. Normalize before the existing mapped authority is
     # authored, never disguise its unstructured array as an embedded grid.
+    # A173 moved the mapping and normalization digests: DWD posts every
+    # field hourly to f078 (listed 2026-10-01 00Z), so both now declare the
+    # publisher's 1 h spacing and take its whole multiples; 3 h stays the
+    # default (the registry row and the route's default_cadence).
     "icon-global-grib2-v1": _profile(
         "rw-wps-icon-global-grib2",
         source_format="grib2",
-        mapping="7b89f58445a959b2e3af6eb63429d0f7dbf02624f9b0e77bebba08a5ef394ead",
+        mapping="7bf357241b1be4682df42371a2c722db1437b8df9d004d1e7851e00a61e7853f",
         composition="a75dc9deabf72d750eb5d3f333274ed85d2d190e69a09f5aaf08f5c44891604b",
         provenance="1770e4b1c4092d53db0ee5b18aa371465215c04325f4de2610f0d4f740eb0b09",
         data_role="icon_global_invariant_surface",
         provenance_role="icon_global_invariant_surface_provenance",
         input_normalizer="icon-gdt101-pressure-v1",
-        normalization="631506352f390d13bfd952ceecc76a716581a70b7d7ec515f882bde95fedfdb6",
+        normalization="d1fc9b43d7c4815cbb1f09e0a456a68097310718643a66b9b887001cc0106e07",
     ),
     # DWD's 2.2 km ICON-D2 on its native R19B07 mesh (542,040 cells), the
     # same GDT-101 normalization with its own mesh, ladder and cadence rows.
@@ -170,7 +174,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "icon-d2-grib2-v1": _profile(
         "rw-wps-icon-d2-grib2",
         source_format="grib2",
-        mapping="f18c5f15f769f4340441b9c5b599a9145cab4770b7070c5a24909122846611ac",
+        mapping="26900d41048587a750f71a104d2a9d36c05c556f5871e8025a745bb0b1ff6f47",
         composition="a4b05c684fee8db595ea2b16f4cb2ba8af807415af4e494b57f948061268e8a6",
         provenance="0241a993bd971863aed47e34fba254448f3c301f1f362a7ef7228701a4d58559",
         data_role="icon_d2_invariant_surface",
@@ -181,7 +185,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "20crv3-member-grib2-v1": _profile(
         "rw-wps-20crv3-member-grib2",
         source_format="grib2",
-        mapping="2e9877d51d9c993e83311c87236467b99ce9022638a343985da10ccd195efe09",
+        mapping="75089fd4973e5e9f246f2dc63f9862d7d625e28a02e6b7e56133c1753101e648",
         composition="aa4f3fac03c09e8461c5e6c5e04a6bed48b5ad477babc4c75e8dd10fd92fe7b2",
         provenance="d1248e1b091f59841757a98a024cbe2868cebc25308f4eb4f9608e2c1755f3b1",
         data_role="twentycrv3_in_band_surface",
@@ -190,7 +194,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "20crv3-netcdf-v1": _profile(
         "rw-wps-20crv3-netcdf",
         source_format="netcdf",
-        mapping="2bb8b34843466dffbad9b37ac2de4dc10101c4310ce694e9d427ef808fc1a048",
+        mapping="76520d6a6181c71135c350233c4266ce5ae756c258feb98883f5aa129caaa6e1",
         composition="2c243fe4c4dba1c8f47178f2be583f3a20148d54d77101ee3421d1824d10b1c5",
         provenance="8daeb53502d28483a049936262910004cfda17aa5030cc3066d3bd01413d3066",
         data_role="twentycrv3_netcdf_recovered_invariant",
@@ -208,7 +212,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "hrrr-prs-grib2-v1": _profile(
         "rw-wps-hrrr-prs-grib2",
         source_format="grib2",
-        mapping="a639c5bb7a540bb50bf658672ff2f9e02a4a96786283e034fe81d2634b2ce117",
+        mapping="1bb2dd3f91bb0c645d4256cc23d7827bd7f6ba17eaf8da4d4fa4caa590ac8d61",
         composition="2a2bb75714428cdb9b051303e53d91c88f3c1b48a798339bb9244a6b412e392e",
         provenance="f2aade12671166959e42cacd357bc54359af4d3034eedff81630b26646eb4b8c",
         data_role="hrrr_prs_in_band_surface",
@@ -227,7 +231,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "rap-awip32-grib2-v1": _profile(
         "rw-wps-rap-awip32-grib2",
         source_format="grib2",
-        mapping="61a1041ee68dff3202eb6d37a7492b57f634899bbde7e0c7644f78679634f55e",
+        mapping="5bc58e43b2cb997c2946aa28b2211ffca0a778c5543642c45dda919a94158de0",
         composition="bae76db6052e933906713d877b9029079357a45426ab52387acee0d9a11f385f",
         provenance="9d861f738b9ba72661130b9b174d969c8e134fbf11e191183fccc092a43a6abb",
         data_role="rap_awip32_in_band_surface",
@@ -251,22 +255,37 @@ _PACKAGED_PROFILES = MappingProxyType({
     ),
     # ECMWF's AIFS single deterministic forecast (open data, 0.25-degree
     # GDT-0 GRIB2): the reduced AI-model field set as TABLE DATA.  The
-    # north-to-south row order, the analysis-step-only invariants (land
-    # mask and surface geopotential ride the 0-hour file alone, declared
-    # cycle-invariant), the geopotential-to-metres terrain scale and the
-    # two-layer ordinal (type 151) soil column are all rows in these three
-    # documents.  Selectors were authored from real 2026-08-17 00Z bytes
+    # north-to-south row order, the geopotential-to-metres terrain scale
+    # and the two-layer ordinal (type 151) soil column are rows in these
+    # documents.  The land mask and surface geopotential ride the step-0
+    # object alone (the f012 object carries neither), so the mapping
+    # declares both composition_bound and the composition binds them from
+    # the SAME cycle's step-0 object through a fourth pinned authority,
+    # the step-0 donor mapping (this table under its own name, the land
+    # mask without a time binding), on the source_cycle_analysis_broadcast
+    # clock: every lead of every window reads the cycle's own statics,
+    # and the route table fetches that object beside a window starting
+    # later.  Selectors were authored from real 2026-08-17 00Z bytes
     # through the converged grib-core inventory.  Earlier AIFS cycles
     # publish pressure-level geopotential and no geopotential height, so
     # the height field lists those records second, scaled to metres.
     "aifs-single-grib2-v1": _profile(
         "rw-wps-aifs-single-grib2",
         source_format="grib2",
-        mapping="421178fe8a81e304db6904428d57bd1852d2c55d9f3fda1f95a1becaeafba5dc",
-        composition="bf0687369b7888f85ea5c2aa61f7f6800c8b99bec3331f9f4d021c565a775ba8",
-        provenance="8aeb0d51ef5e43c504d7d5cf9d4b98992bd5becee2b75dccbb7d8b7808579aff",
+        mapping="1dec5755c55c2a527e7545bc6add7ce11beddc9fdd51c7f6ea95a8c7083d1a85",
+        composition="eccaa63a5b025c91378f005d88d93b411e9fc07724c75328a2460065590abbf7",
+        provenance="26e16197183f4d2b6dffc9c732b9d18933ae26118b40d61617663a1355557f2c",
         data_role="aifs_single_in_band_surface",
         provenance_role="aifs_single_in_band_surface_provenance",
+        contributing_mappings={
+            "aifs_single_step0_donor_mapping": {
+                "file": "rw-wps-aifs-single-step0-donor.mapping.json",
+                "sha256": (
+                    "99adc3a8894c2d19ba37d6da6d53418a95dcf32c2b1094b86"
+                    "e8ccd1feecb7b02"
+                ),
+            },
+        },
     ),
     # ECMWF's open-data IFS oper product at 0.25 degrees: a plain global
     # GDT-0 latitude/longitude GRIB2 feed with 14 pressure levels,
@@ -344,7 +363,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "aigfs-gdas-hybrid-grib2-v1": _profile(
         "rw-wps-aigfs-gdas-hybrid-grib2",
         source_format="grib2",
-        mapping="b672a224abdf5d41b2675034530440577e4d2976420d90a4d89dfad0b3f50ff6",
+        mapping="64cab09660beffc3b4cd35a8fc7a711e35c3034bfe930362c72a3ef68581a320",
         composition="e11db42390a6b1f08b2edcd7d25e4574dc5be74021748e65c3c7b1115c34d07c",
         provenance="72299bca17576bce3a0bedfe846806dbde31d126781d4d3ebaafb9dbf78318ed",
         data_role="physical_analysis_surface_data",
@@ -422,7 +441,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "aigefs-member-hybrid-grib2-v1": _profile(
         "rw-wps-aigefs-member-hybrid-grib2",
         source_format="grib2",
-        mapping="c7ede9fa23ca9c9903ffb46be27a36f8a613db8eb3f9d32611fbda0e047d44d7",
+        mapping="d34ff39693af3a6cef6d4f3d83a72c7bff1d710470518d986724eae368bde623",
         composition="9965904c92f08cd71323e2565d7a663863c8ca061f3e991b813b52ad2a6a5d10",
         provenance="4050afea573ffa3b590deb6ef0f0e2a86f2d6feca25423b38cd31f4e025b6bb2",
         data_role="physical_analysis_surface_data",
@@ -454,7 +473,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "rrfs-prslev-2dfld-grib2-v1": _profile(
         "rw-wps-rrfs-prslev-2dfld-grib2",
         source_format="grib2",
-        mapping="3139a3b93f7fea54f600e36e42115fd1e986e67e1df6462b5ef866b11f8d6c1a",
+        mapping="6b89a9d1eed5ad8868505e5560301599736837340ca2fb8d87dd4fdf872d68cb",
         composition="a632eae5203e92eeb4f6af5ee1fcfe2f24c1e03c7a5124f73a669fbb4e1ca6b1",
         provenance="e364f22ec917bfd991ec3bb756aa49b697d03c7cd425d40a35501dd769f279de",
         data_role="rrfs_prslev_2dfld_in_band_surface",
@@ -486,7 +505,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "era5-model-level-l137-grib2-v1": _profile(
         "rw-wps-era5-model-level-l137-grib2",
         source_format="grib2",
-        mapping="e66420c7163beb25f4431df8a026a58e141276c85434260b4107255994b730af",
+        mapping="65cfca7fc9fc6be102c796bd481126fe9e22491df8342fbaa1ff54b087fb09c6",
         composition="eab1fcd5c10a746ebdaf269e910e08ea77a40d0db9789539423cbda477201e62",
         provenance="3c6477f94c1ab3428c5f3f1d6fb29c57ca9620dfecf41d600ca165df8609da7c",
         data_role="physical_analysis_surface_data",
@@ -838,6 +857,19 @@ def boundary_interval_refusal(target: Mapping[str, object], seconds: int,
     return f"{subject} {seconds} seconds differs from target contract {declared!r}"
 
 
+def boundary_interval_takes(target: Mapping[str, object]) -> str:
+    """The spacings a mapping target takes, as a refusal sentence says them.
+
+    Read by every door that refuses a cadence on a preparation's behalf,
+    so each says what :func:`boundary_interval_refusal` decides.
+    """
+
+    spacing_h = int(target["boundary_interval_seconds"]) / 3600
+    if target.get(BOUNDARY_MULTIPLES_KEY) is True:
+        return f"any whole multiple of {spacing_h:g} h"
+    return f"{spacing_h:g} h and no other spacing"
+
+
 #: Parsed mapping targets, keyed by profile and the verified bytes' digest.
 _TARGETS: dict[str, tuple[str, Mapping[str, object]]] = {}
 
@@ -858,9 +890,108 @@ def packaged_mapping_target(profile_id: str) -> Mapping[str, object]:
     return _TARGETS[profile_id][1]
 
 
+#: Mapping ``target`` keys that decide which requests a mapping admits and
+#: nothing it decodes, each with its reason.  A preparation copies the
+#: mapping it ran into its evidence and binds that document's digest
+#: everywhere (manifest, composition receipt, cache identity), so when a
+#: release adds or changes one of these keys every earlier preparation's
+#: digest stops matching the packaged pin although its frames are the
+#: same bytes (A166: A159 added the first key below to ten mappings).
+#:
+#: - :data:`BOUNDARY_MULTIPLES_KEY`: which uniform boundary spacings a
+#:   series may have.  Frames are decoded one valid time at a time by the
+#:   same ``fields`` table, and the mapping grammar has no time-window
+#:   statistic, so a frame does not depend on it; the spacing a
+#:   preparation was made at is still held to the packaged target by
+#:   :func:`bound_mapping_refusal`.
+#: - ``boundary_interval_seconds``: the spacing those multiples count
+#:   from (A173 moved icon-global's from 3 h to the 1 h DWD posts).  For
+#:   the same reason it decides which series are admitted and no frame:
+#:   a frame is one valid time, and a preparation's own spacing is held to
+#:   the packaged target, so a 3 h icon-global preparation made before
+#:   A173 is still icon-global's.
+#:
+#: A key joins this set only with the reason it cannot change a frame.
+ADMISSION_ONLY_TARGET_KEYS = frozenset({BOUNDARY_MULTIPLES_KEY,
+                                        "boundary_interval_seconds"})
+
+
+def mapping_decode_identity(document: Mapping[str, object]) -> str:
+    """SHA-256 of a mapping document without its admission-only keys.
+
+    Canonical JSON of the parsed document (sorted keys, no whitespace), so
+    two documents with this digest equal parse to the same fields,
+    derivations, grid and target, which is everything the engine decodes
+    from; only :data:`ADMISSION_ONLY_TARGET_KEYS` are left out.
+    """
+
+    stripped = dict(document)
+    target = stripped.get("target")
+    if isinstance(target, Mapping):
+        stripped["target"] = {key: value for key, value in target.items()
+                              if key not in ADMISSION_ONLY_TARGET_KEYS}
+    canonical = json.dumps(stripped, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+#: Packaged mappings' decode identities, keyed by profile and pinned digest.
+_DECODE_IDENTITIES: dict[str, tuple[str, str]] = {}
+
+
+def _packaged_mapping_decode_identity(profile_id: str) -> str:
+    pinned = packaged_authority_sha256(profile_id)["mapping"]
+    cached = _DECODE_IDENTITIES.get(profile_id)
+    if cached is None or cached[0] != pinned:
+        path = packaged_authorities(profile_id)["mapping"]
+        _DECODE_IDENTITIES[profile_id] = (
+            pinned, mapping_decode_identity(json.loads(path.read_bytes())))
+    return _DECODE_IDENTITIES[profile_id][1]
+
+
+def bound_mapping_refusal(profile_id: str, bound: bytes, *,
+                          spacings_seconds=()) -> str | None:
+    """Why a preparation's bound mapping is not this profile's, or None.
+
+    ``bound`` is the mapping document a preparation copied into its
+    evidence.  The packaged bytes resolve.  A document that differs from
+    the packaged one only in :data:`ADMISSION_ONLY_TARGET_KEYS` resolves
+    too, when every boundary spacing the preparation was made at
+    (``spacings_seconds``) is one the packaged target takes: its frames
+    are the packaged mapping's frames.  Anything else is refused, because
+    a frame the packaged mapping would not decode is not this profile's
+    preparation.
+    """
+
+    pinned = packaged_authority_sha256(profile_id)["mapping"]
+    digest = hashlib.sha256(bound).hexdigest()
+    if digest == pinned:
+        # The packaged bytes: the decode held the series to this very
+        # target when it ran.
+        return None
+    try:
+        document = json.loads(bound)
+    except (UnicodeError, ValueError):
+        return f"its mapping ({digest}) is not a JSON document"
+    if (not isinstance(document, dict)
+            or mapping_decode_identity(document)
+            != _packaged_mapping_decode_identity(profile_id)):
+        return (f"its mapping ({digest}) decodes differently from the "
+                f"packaged one ({pinned})")
+    target = packaged_mapping_target(profile_id)
+    for seconds in sorted(set(spacings_seconds)):
+        reason = boundary_interval_refusal(
+            target, int(seconds), subject="its boundary spacing")
+        if reason is not None:
+            return reason
+    return None
+
+
 __all__ = [
+    "ADMISSION_ONLY_TARGET_KEYS", "bound_mapping_refusal",
+    "mapping_decode_identity",
     "BOUNDARY_MULTIPLES_KEY", "boundary_interval_refusal",
-    "packaged_mapping_target",
+    "boundary_interval_takes", "packaged_mapping_target",
     "PROFILE_ROLES", "packaged_authorities", "packaged_authority_sha256",
     "packaged_normalization", "packaged_normalizer_ids",
     "packaged_composition",

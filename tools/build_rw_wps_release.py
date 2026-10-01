@@ -283,9 +283,27 @@ _CORE_MODULES = {
     "__init__.py",
     "constants.py",
     "diagnostics.py",
+    # The C-library transcriptions the CPU paths hash through (A126):
+    # diagnostics.py imports noahmp_libm.powf_array, and
+    # gpuwm/static/lambert.py and projection.py import host_libm.  Both
+    # need only math, struct and numpy.
+    "noahmp_libm.py",
+    "host_libm.py",
+    # The portable transcendentals the host preparation takes (A130):
+    # real.py, nest_init.py, grid.py, nest_interp.py and the other
+    # preparation paths import it.  numpy, ctypes and the stdlib at
+    # module scope; the CPU preprocessing library it calls is staged.
+    "portable_math.py",
     "track_boundary.py",  # NumPy-only boundary diagnostic used by storm_tracking.
+    # Prepared/wrfinput initialization imports the lazy tile door, and the
+    # CPU fit estimator reads the import-free mosaic array inventory.
+    "noah_mosaic.py", "noah_mosaic_door.py",
     "grid.py",
     "landuse.py",
+    # landuse.py reads the LCZ categories through urban_tables under the
+    # urban land-use legend; urban_tables imports only noahmp_libm and noah,
+    # both staged here.
+    "urban_tables.py",
     "microphysics_transition.py",
     # The Milbrandt-Yau constant table, reached by microphysics_transition
     # above when a mixed nest edge enters mp=9 and the kernel needs the
@@ -319,6 +337,14 @@ _CORE_MODULES = {
     # function-local, and preflight re-exports every name.  No CuPy, no
     # forecast executor.
     "device_inventory.py",
+    # The resident admission the prepared-cache restore, the wrfinput
+    # restore and init_at_rest (all staged) take before their DomainState
+    # constructor: the exact state inventory and the boundary tables
+    # against the card's free memory, refused by name.  Module scope is
+    # stdlib plus gpuwm.ingest.memory_refusal (staged); CuPy and
+    # device_inventory are function-local, and the one forecast import
+    # (the loader slab's estimate) is recorded in _OPTIONAL_STAGED_IMPORTS.
+    "resident_admission.py",
     # The sea-level pressure reduction and its nine-point smoother,
     # reached by storm_tracking.py below when a follow block tracks
     # `field = 'pressure'`.  Same shape as sase_limits.py further down:
@@ -399,9 +425,10 @@ _CORE_MODULES = {
     # `tiles: StreamingOptions = OFF` as a field default, so the class
     # cannot be defined without it, and a wheel that stages experiment.py
     # and not this one fails on `import gpuwm.era5_direct`.  That is how
-    # the tilestream port broke this wheel: the scan below reads
-    # `from gpuwm.core import streaming` as an import of `gpuwm.core`,
-    # which IS staged, so nothing refused the staging.
+    # the tilestream port broke this wheel: the scan below read
+    # `from gpuwm.core import streaming` as an import of `gpuwm.core`
+    # alone, which IS staged, so nothing refused the staging.  It now
+    # checks gpuwm.core.streaming too (A129).
     "streaming.py",
     "nssl2_contract.py",
     "noah.py",
@@ -422,6 +449,7 @@ _CORE_MODULES = {
     # number over the analyzed mass through the scheme's own entry block
     # (gpuwm/ingest/real.py, staged above), and that block is the host
     # mirror gpuwm/core/thompson_entry.py: numpy at module scope, its
+    # powers from noahmp_libm.py and host_libm.py (staged above), its
     # gamma moments from thompson_aerosol_contract.py, whose only other
     # internal reaches are thompson_contract.py (staged) and, function-
     # locally, gpuwm.physics_compat (staged); the contract's exp/log are
@@ -530,8 +558,17 @@ _OBS_EXCLUDES = {"sources.py", "goes_window.py"}
 #: does not import the forecast output writer (and gpuwm.supervisor and
 #: netCDF4 behind it).  tests/test_history_selection.py pins that
 #: boundary against the artifact.
-_IO_MODULES = {"__init__.py", "classic_tape.py", "history_selection.py",
-               "nc_writer_bridge.py", "wrf_output_schema.py"}
+#:
+#: ``classic_product`` is the whole-file classic NetCDF writer the staged
+#: gpuwm.obs product writers open by default
+#: (``gpuwm.obs.grid_product.open_obs_grid_product``), so
+#: ``gpuwm.obs.write_radar_grid``, which the staged ``gpuwm.obs`` exports,
+#: needs it.  Missing, that call raised ImportError in this package.
+#: Module scope is pathlib, typing and numpy, and its one internal lookup
+#: (``gpuwm.io.nc_writer_bridge``) is function-local and staged.
+_IO_MODULES = {"__init__.py", "classic_product.py", "classic_tape.py",
+               "history_selection.py", "nc_writer_bridge.py",
+               "wrf_output_schema.py"}
 _ROOT_DATA = {
     "native_wrf_support_v1.json",
     "physics_registry_v2.json",
@@ -571,8 +608,26 @@ _OPTIONAL_STAGED_IMPORTS = {
         "forecast tree admission and execution estimates; standalone preparation "
         "only reads StreamingOptions and does not call these planners",
     ("gpuwm/stage_cli.py", "gpuwm.prepared_single_domain_forecast"):
-        "register_cli builds the full ArWen sim parser; standalone source_cli "
-        "uses only the staged bundle contracts and never registers sim",
+        "the forecast runner, imported inside _schema_index (behind "
+        "resolve_bundle and resolve_head_bundle), streaming_flags, sim_main "
+        "and register_cli.  This package's one route into stage_cli is "
+        "gpuwm.prep_output's handoff after a finished preparation, which asks "
+        "missing_forecast_runners() first and, with both runners absent "
+        "here, prints the preparation-only line and resolves no bundle",
+    ("gpuwm/stage_cli.py", "gpuwm.prepared_domain_tree_forecast"):
+        "the tree forecast runner, imported inside _schema_index and "
+        "sim_main.  Same route and same reason as "
+        "gpuwm.prepared_single_domain_forecast directly above: the "
+        "preparation handoff asks missing_forecast_runners() before it "
+        "resolves a bundle, so a finished preparation here imports neither",
+    ("gpuwm/core/streaming.py", "gpuwm.core.pace"):
+        "the step-cost sentence of an auto [tiles] refusal "
+        "(_refused_tiling_clause), reached only from decide() after "
+        "tilestream.autoplan refused a tiling.  decide imports tilestream "
+        "first, which this package does not carry, and its one staged "
+        "caller prices a downscaled forecast child "
+        "(downscale_pricing.price_child).  The clause also catches a failed "
+        "import and states the refusal without the cost",
     ("gpuwm/core/streaming.py", "gpuwm.core.adaptive_clock"):
         "adaptive forecast tile planning/step execution; StreamingOptions "
         "and config validation reach none of these function-local imports",
@@ -594,6 +649,13 @@ _OPTIONAL_STAGED_IMPORTS = {
         "whose callers (gpuwm/go_cli.py and gpuwm/runplan.py) run a "
         "forecast and are not staged; standalone preparation never "
         "chains, so it never calls run_chained",
+    ("gpuwm/hrrr_route_inputs.py", "gpuwm.companion_domains"):
+        "the doors' WPS namelist renderer (candidate_wps_text) inside "
+        "run_route_inputs, reached only when a native hrrr configuration "
+        "has no namelist.wps beside it.  run_route_inputs writes the set "
+        "a run of `gpuwm go` or `gpuwm run-plan` hands the HRRR chain, "
+        "and its only callers are gpuwm/runplan.py's plan resolution and "
+        "HRRR chain, excluded above; this wheel plans and chains no run",
     ("gpuwm/ingest/boundary_stream.py", "gpuwm.core.preflight"):
         "the forecast's memory admission (chained_admission) and the host "
         "RAM reader (host_admission), both reached only by a "
@@ -664,6 +726,18 @@ _OPTIONAL_STAGED_IMPORTS = {
         "certification kernel-manifest recording, reached only after the "
         "CuPy import inside the loader; RW-WPS stages no forecast executor "
         "and compiles no CUDA module",
+    ("gpuwm/core/noah_mosaic.py", "gpuwm.certify.kernel_manifest"):
+        "certification kernel-manifest recording inside the Noah mosaic "
+        "tile loop's own compile (_mosaic_module, _mosaic_ucm_module), "
+        "reached only after the CuPy import when a forecast launches the "
+        "loop; RW-WPS stages no forecast executor and compiles no CUDA "
+        "module.  The module is staged for the doors' tile initialization "
+        "and the fit estimator's import-free array inventory",
+    ("gpuwm/core/noah_mosaic.py", "gpuwm.core.urban_ucm"):
+        "the urban canopy's packed tables and state pointers, imported "
+        "function-locally in launch_noah_mosaic's urban arm, which only a "
+        "forecast's surface step calls; a preparation-only install never "
+        "launches the tile loop",
     ("gpuwm/physics_compat.py", "gpuwm.core.ruc_contract"):
         "RUC'S SOIL GEOMETRY COUNTS, and only those.  The import is "
         "function-local inside pending_wrf_physics_components' "
@@ -678,6 +752,11 @@ _OPTIONAL_STAGED_IMPORTS = {
         "behind it for two integer tuples.",
     ("gpuwm/core/state.py", "gpuwm.core.preflight"):
         "CUDA forecast scratch-preflight path; RW-WPS constructs host state",
+    ("gpuwm/core/resident_admission.py", "gpuwm.core.preflight"):
+        "the loader slab's device estimate (estimate_domain), reached only "
+        "by store_from_prepared_cache building a forecast's pinned host "
+        "store; standalone preparation builds no store, and the constructor "
+        "floor it does reach reads only the staged device_inventory",
     ("gpuwm/core/uh_diag.py", "gpuwm.core.streaming"):
         "the streamed view of the tracking accumulators, reached only from "
         "_zero_domain_slot -- i.e. only when a run RESETS a running max "
@@ -793,7 +872,22 @@ _OPTIONAL_STAGED_IMPORTS = {
         "preparation never builds one. The module ships with the rest of "
         "gpuwm/ingest, and gpuwm/ingest/nest_init.py imports it on that same "
         "forecast-only branch",
+    ("gpuwm/fetch.py", "tools.download_gfs_native_subset"):
+        "the GFS subset transport (the NOMADS crop and whole-object "
+        "downloads, their level ladder and record counts), imported inside "
+        "the locked bodies of fetch_gfs and fetch_gfs_fullfile and five level "
+        "and record helpers.  Their callers are the `gpuwm fetch` door "
+        "(fetch_main and the route fetch under it, registered only by "
+        "gpuwm/cli.py, excluded above), gpuwm/core/preflight.py (not staged) "
+        "and gpuwm/download_budget.py (excluded above).  This package "
+        "has no fetch door: rw-wps --source gfs prepares a series already "
+        "fetched and authors its front-door manifest from the fetch receipt "
+        "on disk, which reads no transport",
 }
+
+
+def _names_verify(module: str) -> bool:
+    return module == "gpuwm.verify" or module.startswith("gpuwm.verify.")
 
 
 def _staged_verification_imports(destination: Path) -> list[dict[str, object]]:
@@ -813,6 +907,11 @@ def _staged_verification_imports(destination: Path) -> list[dict[str, object]]:
                 candidates.extend((alias.name, "import") for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module is not None:
                 candidates.append((node.module, "from"))
+                # `from gpuwm import verify` imports gpuwm.verify.
+                if not _names_verify(node.module):
+                    candidates.extend(
+                        (f"{node.module}.{alias.name}", "from")
+                        for alias in node.names if alias.name != "*")
             elif isinstance(node, ast.Call) and node.args:
                 argument = node.args[0]
                 if isinstance(argument, ast.Constant) and isinstance(
@@ -829,7 +928,7 @@ def _staged_verification_imports(destination: Path) -> list[dict[str, object]]:
                     if dynamic:
                         candidates.append((argument.value, "dynamic"))
             for module, kind in candidates:
-                if module == "gpuwm.verify" or module.startswith("gpuwm.verify."):
+                if _names_verify(module):
                     violations.append({
                         "path": source.relative_to(destination).as_posix(),
                         "line": int(getattr(node, "lineno", 0)),
@@ -839,10 +938,29 @@ def _staged_verification_imports(destination: Path) -> list[dict[str, object]]:
     return violations
 
 
+def _is_source_module(source_root: Path, module: str) -> bool:
+    """Is ``module`` a module or a regular package in the source tree?"""
+
+    path = source_root.joinpath(*module.split("."))
+    return (path.with_suffix(".py").is_file()
+            or (path / "__init__.py").is_file())
+
+
 def _staged_internal_imports(
-    destination: Path, *, optional: bool = False,
+    destination: Path, *, source_root: Path, optional: bool = False,
 ) -> list[dict[str, object]]:
-    """Return imports whose internal module is absent from wheel staging."""
+    """Return imports whose internal module is absent from wheel staging.
+
+    ``from package import name`` imports ``package.name`` as a module
+    whenever the source tree has one by that name, so each such alias is
+    checked as well as ``package``: ``from gpuwm.core import host_libm``
+    needs ``gpuwm/core/host_libm.py`` staged, not only
+    ``gpuwm/core/__init__.py``.  Read as an import of ``gpuwm.core`` alone
+    it passed this scan while host_libm was not staged, and the staged
+    map projections could not be imported.  Only the source
+    tree (``source_root``) can say whether a name is a submodule or an
+    attribute of its package, which is why the scan is given one.
+    """
     modules: set[str] = set()
     sources: list[tuple[Path, str, bool]] = []
     for source in sorted(destination.rglob("*.py")):
@@ -897,6 +1015,14 @@ def _staged_internal_imports(
                     resolved = node.module or ""
                 if resolved:
                     candidates.append((resolved, "from"))
+                    # A missing package is reported as itself; its
+                    # submodules cannot be staged without it.
+                    if resolved in modules:
+                        candidates.extend(
+                            (f"{resolved}.{alias.name}", "from")
+                            for alias in node.names
+                            if alias.name != "*" and _is_source_module(
+                                source_root, f"{resolved}.{alias.name}"))
             elif isinstance(node, ast.Call) and node.args:
                 argument = node.args[0]
                 if isinstance(argument, ast.Constant) and isinstance(
@@ -1149,14 +1275,15 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
             "RW-WPS wheel staging imports omitted developer verification "
             f"modules: {verification_imports}"
         )
-    internal_imports = _staged_internal_imports(destination)
+    internal_imports = _staged_internal_imports(
+        destination, source_root=REPO)
     if internal_imports:
         raise RuntimeError(
             "RW-WPS wheel staging has unresolved internal imports: "
             f"{internal_imports}"
         )
     optional_internal_imports = _staged_internal_imports(
-        destination, optional=True)
+        destination, source_root=REPO, optional=True)
     return {
         "distribution": PYTHON_DISTRIBUTION,
         "file_count": len(files),

@@ -31,24 +31,7 @@ CHANGELOG = REPO / "CHANGELOG.md"
 #: Well above any release note this project has shipped (largest before 1.4.0
 #: was 1,252 words) and far below a pasted development log (5,910). A release
 #: that genuinely needs more prose should link to a document, not inline it.
-MAX_WORDS = 3500  # project ruling, 2026-09-21: raised from 3000 for 2.7.6's thirty-nine changes
-
-#: A release given more room than MAX_WORDS, by version, with the ruling that
-#: gave it.  Every release not named here keeps MAX_WORDS.
-#:
-#: 2.8.0: owner ruling, 2026-09-28, verbatim: "word count can be 7k for this
-#: one since its a huge release".  Condensed to 3,500 words, the 2.8.0 section
-#: had to drop script endpoints, warning codes and settings a user acts on.
-RELEASE_WORD_ALLOWANCE: dict[str, int] = {"2.8.0": 7000}
-
-
-def word_limit(heading: str) -> int:
-    """The word limit for the release a ``## <version> ...`` heading names."""
-
-    found = re.match(r"^##\s+(\S+)", heading)
-    version = found.group(1) if found else ""
-    return RELEASE_WORD_ALLOWANCE.get(version, MAX_WORDS)
-
+MAX_WORDS = 4000  # Drew, 2026-09-30: raised from 3500 for 2.8.1 (streaming, the speed lanes and the fix queue); 2026-09-21: 3000 to 3500 for 2.7.6
 
 #: Substrings that mean internal development state reached a public document.
 #: Each is paired with what it leaks, so a failure explains itself.
@@ -103,19 +86,10 @@ def test_this_test_reads_a_real_changelog_section() -> None:
 def test_the_newest_release_note_is_not_a_development_log() -> None:
     heading, body = _newest_section()
     words = len(body.split())
-    limit = word_limit(heading)
-    assert words <= limit, (
-        f"{heading}: {words} words of release notes (limit {limit}). "
+    assert words <= MAX_WORDS, (
+        f"{heading}: {words} words of release notes (limit {MAX_WORDS}). "
         "A release note says what shipped; put the reasoning in the repository "
         "and link to it.")
-
-
-def test_only_a_named_release_gets_more_room() -> None:
-    assert word_limit("## 2.8.0 (2026-09-29)") == 7000
-    assert word_limit("## 2.8.1 (2026-10-01)") == MAX_WORDS
-    assert word_limit("## 2.7.6 (2026-09-22)") == MAX_WORDS
-    assert word_limit("## 12.8.0 (2030-01-01)") == MAX_WORDS
-    assert word_limit("## 2.8.0-rc1") == MAX_WORDS
 
 
 @pytest.mark.parametrize("needle,what", LEAKS)

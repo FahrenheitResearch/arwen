@@ -55,12 +55,14 @@ def _digest_without_the_adaptive_config_keys(path) -> str:
             header.pop(name, None)
         # The v6 stamp is the declared 2.7.0 break, not a config key.
         header["format_version"] = _HISTORICAL_FORMAT_VERSION
-        # eta_levels was appended later (80a3009c2/06c29b747), and the
-        # relax_timescale_s / relax_w pair after it.  Unwind those separate
+        # eta_levels was appended later (80a3009c2/06c29b747), the
+        # relax_timescale_s / relax_w pair after it, and the three urban
+        # canopy keys (lane/urban-infra) after those.  Unwind those separate
         # config additions to reach the historical pre-adaptive tree;
         # leave every array and non-config header bound.
         for key in ADAPTIVE_TIMESTEP_RUN_FIELDS + (
-                "eta_levels", "relax_timescale_s", "relax_w"):
+                "eta_levels", "relax_timescale_s", "relax_w",
+                "sf_urban_physics", "use_wudapt_lcz", "num_urban_hi"):
             header["config"].pop(key, None)
         values = restart._configuration_digest_values(header["config"])
         setup = copy.deepcopy(header["physics_setup"])

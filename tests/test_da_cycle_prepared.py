@@ -683,8 +683,11 @@ def test_the_driver_plans_the_analysis_before_it_integrates_a_leg():
     import ast
 
     main = _main_body()
+    # The probe's result is kept since the memory admission prices the
+    # leg analyses with the reviewed plan, so it is a bare call or an
+    # assignment; either way it is one statement of main()'s own body.
     probes = [stmt.lineno for stmt in main.body
-              if isinstance(stmt, ast.Expr)
+              if isinstance(stmt, (ast.Expr, ast.Assign))
               and isinstance(stmt.value, ast.Call)
               and getattr(stmt.value.func, "id", None)
               == "plan_radar_assimilation"]

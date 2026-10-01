@@ -124,7 +124,46 @@ _REPLACE_BACKOFF_SECONDS = (0.01, 0.02, 0.04, 0.08, 0.16, 0.19)
 #: declares (:func:`finalization_stale_threshold_seconds`) rather than from
 #: the model step alone.
 WORK_SIZED_PREFIXES = ("finalizing:", "writing:")
-_PHASE_PREFIXES = ("preparing:",) + WORK_SIZED_PREFIXES
+#: A forecast at a seam (or at its start) waiting for a boundary interval
+#: that is not there yet, and why: a source lead not posted yet
+#: (``waiting:source``) or the preparation still building it
+#: (``waiting:preparation``).  A waiting record is refreshed while the wait
+#: lasts, so it says the worker is alive; it is not progress, so it never
+#: enters the step-wall history and it is bounded by the wait's own limit
+#: (:func:`waiting_stop_reason`), not by the step bound.  The breakage this
+#: prevents: a seam wait refreshed only ``progress.json``, so the watchdog
+#: reading this heartbeat stopped a forecast waiting on a lead that was on
+#: schedule once the wait outlasted max(3 x p99 step, 120 s).
+WAITING_PREFIX = "waiting:"
+WAITING_STATUSES = ("waiting:source", "waiting:preparation")
+_PHASE_PREFIXES = ("preparing:",) + WORK_SIZED_PREFIXES + (WAITING_PREFIX,)
+#: The ``wait`` record a waiting heartbeat carries, and only it.
+WAIT_RECORD_FIELDS = ("on", "lead", "expected_at", "late_at", "since_utc")
+#: How long past a source lead's ``late_at`` a ``waiting:source`` record
+#: may stand.  The producer's own late check ends the run first, with the
+#: lead named (exit 75); this is the backstop for a producer that did not.
+SOURCE_WAIT_GRACE_SECONDS = 120.0
+#: The shortest silence that stops a waiting record: the producer silence
+#: floor (``gpuwm.ingest.boundary_stream.SILENT_FLOOR_SECONDS``), since a
+#: waiting worker refreshes its record every few seconds.
+WAIT_SILENCE_FLOOR_SECONDS = 120.0
+#: A worker ending one attempt and starting the forecast again in the same
+#: process (a head-bound run whose terrain clock moved runs again on its
+#: sealed preparation).  From this record on, every record carries
+#: ``restart`` (the attempt's number and why the last one ended), and step
+#: and model time start again from zero; :func:`_heartbeat_regression`
+#: takes a higher attempt as a new start and holds the records of one
+#: attempt to the usual rules.  Every record carries it, not this one
+#: alone, because a watchdog polling the file can miss one record.  The
+#: breakage it prevents: the second attempt's first beats (a restore phase,
+#: step 1) read as a worker going backward, and ``gpuwm go``'s watchdog
+#: stopped a forecast that was recovering exactly as designed.  It is a
+#: ``preparing:`` record, so every reader that knows preparation reads it,
+#: and preparation has no deadline.  ``RuntimeHeartbeat.restarting``
+#: publishes it and :func:`restart_attempt` calls that hook.
+RESTART_STATUS = "preparing:restart"
+#: The ``restart`` record every record of a restarted attempt carries.
+RESTART_RECORD_FIELDS = ("attempt", "reason")
 _TEMP_COUNTER = itertools.count()
 
 _HEARTBEAT_FIELDS = frozenset({
@@ -133,8 +172,10 @@ _HEARTBEAT_FIELDS = frozenset({
     "last_durable_wrfout", "last_checkpoint",
 })
 # Present only on a ``finalizing:`` or ``writing:`` record that declares its
-# work, so every other record keeps exactly the field set above.
-_HEARTBEAT_OPTIONAL_FIELDS = frozenset({"work_bytes"})
+# work (``work_bytes``), on a ``waiting:`` record (``wait``), or on the records
+# of a restarted attempt (``restart``), so every other record keeps exactly
+# the field set above.
+_HEARTBEAT_OPTIONAL_FIELDS = frozenset({"work_bytes", "wait", "restart"})
 _CUDA_FATAL_PATTERNS = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
     r"device(?: |-)lost", r"cudaErrorDeviceLost", r"illegal(?: memory)? address",
     r"cudaErrorIllegalAddress", r"cuda.error.illegal.address",
@@ -311,6 +352,17 @@ class Heartbeat:
     #: watchdog bound; see :func:`finalization_stale_threshold_seconds`.
     #: ``None`` everywhere else, and then absent from the published record.
     work_bytes: int | None = None
+    #: What a ``waiting:`` record waits on: ``{on, lead, expected_at,
+    #: late_at, since_utc}`` (:data:`WAIT_RECORD_FIELDS`).  ``on`` is
+    #: ``source`` or ``preparation``; a preparation wait names no lead.
+    #: ``None`` on every other record, and then absent.
+    wait: dict | None = None
+    #: The attempt a restarted worker is on (:data:`RESTART_STATUS`):
+    #: ``{attempt, reason}`` (:data:`RESTART_RECORD_FIELDS`), its number
+    #: (2 after the first restart) and why the last attempt ended.  On every
+    #: record from the restart record on; ``None`` on a first attempt's
+    #: records, and then absent, so those keep their shape.
+    restart: dict | None = None
 
     def __post_init__(self) -> None:
         if self.schema != HEARTBEAT_SCHEMA:
@@ -330,6 +382,41 @@ class Heartbeat:
         if (self.status not in {"integrating", "complete", "failed"}
                 and not self.status.startswith(_PHASE_PREFIXES)):
             raise ValueError(f"invalid heartbeat status {self.status!r}")
+        if (self.status.startswith(WAITING_PREFIX)
+                and self.status not in WAITING_STATUSES):
+            raise ValueError(f"invalid heartbeat status {self.status!r}; a "
+                             f"wait is one of {list(WAITING_STATUSES)}")
+        if self.wait is not None:
+            if not self.status.startswith(WAITING_PREFIX):
+                raise ValueError(
+                    "heartbeat wait belongs to a waiting record, not to "
+                    f"status {self.status!r}")
+            if (not isinstance(self.wait, dict)
+                    or set(self.wait) != set(WAIT_RECORD_FIELDS)):
+                raise ValueError(
+                    f"heartbeat wait must carry exactly {list(WAIT_RECORD_FIELDS)}, "
+                    f"not {self.wait!r}")
+            if f"{WAITING_PREFIX}{self.wait['on']}" != self.status:
+                raise ValueError(
+                    f"heartbeat wait on {self.wait['on']!r} does not match "
+                    f"status {self.status!r}")
+        if self.status == RESTART_STATUS and self.restart is None:
+            raise ValueError(
+                f"a {RESTART_STATUS!r} record declares the attempt it "
+                "starts (restart)")
+        if self.restart is not None:
+            if (not isinstance(self.restart, dict)
+                    or set(self.restart) != set(RESTART_RECORD_FIELDS)):
+                raise ValueError(
+                    "heartbeat restart must carry exactly "
+                    f"{list(RESTART_RECORD_FIELDS)}, not {self.restart!r}")
+            attempt = self.restart["attempt"]
+            if (isinstance(attempt, bool) or not isinstance(attempt, int)
+                    or attempt < 2):
+                raise ValueError(
+                    "heartbeat restart attempt must be an integer of at "
+                    f"least 2 (the first restart starts attempt 2), not "
+                    f"{attempt!r}")
         if self.pid <= 0 or self.outer_step < 0:
             raise ValueError("heartbeat pid must be positive and step nonnegative")
         if (not math.isfinite(self.model_elapsed_seconds)
@@ -349,8 +436,9 @@ class Heartbeat:
 
     def as_dict(self) -> dict[str, Any]:
         payload = dataclasses.asdict(self)
-        if payload["work_bytes"] is None:
-            del payload["work_bytes"]
+        for optional in ("work_bytes", "wait", "restart"):
+            if payload[optional] is None:
+                del payload[optional]
         return payload
 
     @classmethod
@@ -445,6 +533,64 @@ def finalization_stale_threshold_seconds(step_threshold_seconds: float,
     work = 0 if work_bytes is None else max(0, int(work_bytes))
     return (float(step_threshold_seconds)
             + work / FINALIZATION_FLOOR_BYTES_PER_SECOND)
+
+
+def _utc_instant(text) -> datetime | None:
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        instant = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (instant.replace(tzinfo=timezone.utc) if instant.tzinfo is None
+            else instant)
+
+
+def wait_silence_limit_seconds(slowest_build_seconds: float | None = None
+                               ) -> float:
+    """How long a waiting record may go unrefreshed: the producer silence
+    limit, max(120 s, 3 x the slowest forcing-time build seen so far)."""
+
+    try:
+        slowest = float(slowest_build_seconds or 0.0)
+    except (TypeError, ValueError):
+        slowest = 0.0
+    if not math.isfinite(slowest) or slowest < 0.0:
+        slowest = 0.0
+    return max(WAIT_SILENCE_FLOOR_SECONDS, 3.0 * slowest)
+
+
+def waiting_stop_reason(heartbeat: Heartbeat, *, silent_seconds: float,
+                        slowest_build_seconds: float | None = None,
+                        now: datetime | None = None) -> str | None:
+    """Why a ``waiting:`` record must stop the worker now, or ``None``.
+
+    A waiting worker refreshes its record every few seconds, so silence
+    past :func:`wait_silence_limit_seconds` is a hung worker, on either
+    cause.  A ``waiting:source`` record is also bounded by its lead's
+    ``late_at`` plus :data:`SOURCE_WAIT_GRACE_SECONDS`, refreshed or not:
+    the producer ends a late lead's run by name (exit 75), and a record
+    still standing past that has lost its producer's late check.
+    """
+
+    status = heartbeat.status
+    wait = heartbeat.wait or {}
+    limit = wait_silence_limit_seconds(slowest_build_seconds)
+    if silent_seconds > limit:
+        return (f"forecast stalled in {status}: its wait record was not "
+                f"refreshed for {silent_seconds:.1f} s (bound {limit:.1f} s, "
+                "the producer silence limit)")
+    if status == "waiting:source":
+        late = _utc_instant(wait.get("late_at"))
+        if late is not None:
+            current = datetime.now(timezone.utc) if now is None else now
+            over = (current - late).total_seconds()
+            if over > SOURCE_WAIT_GRACE_SECONDS:
+                return (f"forecast waited on source lead {wait.get('lead')} "
+                        f"{over:.1f} s past its late time {wait.get('late_at')} "
+                        f"(bound {SOURCE_WAIT_GRACE_SECONDS:.0f} s past it); "
+                        "the producer's own late check did not end the run")
+    return None
 
 
 def _byte_words(count: int | None) -> str:
@@ -1557,18 +1703,37 @@ class RuntimeHeartbeat:
         #: :meth:`writing` record hands back to in :meth:`written`.
         self.last_status: str | None = None
         self._before_write: str | None = None
+        #: The status a :meth:`waiting` record interrupted, which
+        #: :meth:`waited` publishes again.
+        self._before_wait: str | None = None
+        #: The ``restart`` record every record carries once this process
+        #: has restarted its forecast (:meth:`restarting`); ``None`` on the
+        #: first attempt.
+        self.restart_record: dict | None = None
 
-    def _write(self, status: str, *, work_bytes: int | None = None) -> None:
+    @property
+    def attempt(self) -> int:
+        """The attempt this process is on: 1 until :meth:`restarting`."""
+
+        return 1 if self.restart_record is None else int(
+            self.restart_record["attempt"])
+
+    def _write(self, status: str, *, work_bytes: int | None = None,
+               wait: dict | None = None) -> None:
         self.last_status = status
         if not status.startswith("writing:"):
             # Any other record ends a write: there is nothing left for
             # :meth:`written` to hand back.
             self._before_write = None
+        if not status.startswith(WAITING_PREFIX):
+            self._before_wait = None
         write_heartbeat(self.path, Heartbeat(
             HEARTBEAT_SCHEMA, self.run_id, self.config_sha256, os.getpid(),
             self.started_at_utc, utc_now(), status,
             self.model_elapsed_seconds, self.last_step, self.last_wrfout,
-            self.last_checkpoint, work_bytes))
+            self.last_checkpoint, work_bytes, wait,
+            None if self.restart_record is None
+            else dict(self.restart_record)))
 
     def __call__(self, *, model_elapsed_seconds: float, outer_step: int,
                  last_durable_wrfout: str | Path | None,
@@ -1658,6 +1823,54 @@ class RuntimeHeartbeat:
         if before is not None:
             self._write(before)
 
+    def waiting(self, on: str, *, since_utc: str, lead: int | None = None,
+                expected_at: str | None = None,
+                late_at: str | None = None) -> None:
+        """Publish (or refresh) one wait for a boundary interval.
+
+        ``on`` is ``source`` (a source lead not posted yet) or
+        ``preparation`` (the interval not built yet).  Called again every
+        few seconds while the wait lasts, so the record says the worker
+        is alive; model time and step stay where the last step left them,
+        so the wait is never taken for progress.  :meth:`waited` ends it.
+        """
+
+        if self._before_wait is None:
+            self._before_wait = self.last_status
+        self._write(f"{WAITING_PREFIX}{on}", wait={
+            "on": str(on), "lead": None if lead is None else int(lead),
+            "expected_at": expected_at, "late_at": late_at,
+            "since_utc": str(since_utc)})
+
+    def waited(self) -> None:
+        """End a :meth:`waiting` record: publish the status it interrupted."""
+
+        before, self._before_wait = self._before_wait, None
+        if before is not None:
+            self._write(before)
+
+    def restarting(self, reason: str) -> None:
+        """Publish the start of a new attempt in this same process.
+
+        The last attempt's step, model time, frame and checkpoint are
+        dropped (its outputs were set aside), so the record and every beat
+        after it describe the new attempt from its start.  The record is
+        :data:`RESTART_STATUS`, and it and every record after it carry
+        ``restart`` = ``{attempt, reason}``, which is what lets a
+        supervisor take the step and model time going back to zero as a
+        new attempt rather than a regression (:func:`_heartbeat_regression`).
+        A write or a wait the last attempt left open ends here.
+        """
+
+        self.restart_record = {"attempt": self.attempt + 1,
+                               "reason": str(reason)}
+        self.last_wrfout = None
+        self.last_checkpoint = None
+        self.last_step = 0
+        self.model_elapsed_seconds = 0.0
+        self.last_phase = RESTART_STATUS
+        self._write(RESTART_STATUS)
+
     def complete(self, model_elapsed_seconds: float) -> None:
         self.model_elapsed_seconds = float(model_elapsed_seconds)
         self.last_phase = "complete"
@@ -1693,6 +1906,54 @@ def writing_progress(progress_callback, phase: str, *,
     done = getattr(progress_callback, "written", None)
     if done is not None:
         done()
+
+
+def restart_attempt(progress_callback, reason: str) -> None:
+    """Declare that a runner starts its forecast again in this process.
+
+    For a runner that ends one attempt and runs again in the same worker:
+    the tree runner after a streamed interval moved its terrain clock
+    (:mod:`gpuwm.prepared_domain_tree_forecast`), and any single-domain
+    head-bound runner that does the same.  Call it as soon as the last
+    attempt has ended, before its outputs move aside (a hosting observer
+    ends the renders reading them here) and before anything of the new
+    one is published.  ``progress_callback.restarting`` publishes the
+    restart record (:meth:`RuntimeHeartbeat.restarting`); a callback
+    without the hook is left alone, the same convention as
+    :func:`writing_progress`.
+
+    What a runner owes after it: the heartbeat file stays in the run
+    folder (a watchdog reads it throughout), and every wait before the
+    new attempt's first step is published through the callback's
+    ``waiting``/``waited`` hooks, as a seam wait is
+    (:class:`gpuwm.ingest.boundary_stream.SeamWaits`), so a supervisor
+    times the wait by its own bound and a reader sees what it waits on.
+
+    What each supervisor does with it: both take the higher attempt as a
+    new start (:func:`_heartbeat_regression`) and time the new attempt's
+    preparation as preparation, not by the step bound.
+    :class:`gpuwm.forecast_supervisor.ForecastWatchdog` (``gpuwm go``'s
+    forecast stage) gives ``preparing:`` no deadline, and its heartbeat
+    makes the new attempt's first step beat entry again;
+    :func:`supervise_experiment` (``gpuwm run``) times it by its
+    ``prep_timeout_seconds``, as it times a launch's preparation.
+    """
+
+    hook = getattr(progress_callback, "restarting", None)
+    if hook is not None:
+        hook(str(reason))
+
+
+def heartbeat_attempt(heartbeat: Heartbeat) -> int:
+    """The attempt a record belongs to: 1 until a restart record says more.
+
+    Read from the ``restart`` field every record of a restarted attempt
+    carries (:data:`RESTART_STATUS`), so a supervisor that missed the
+    restart record itself still sees the attempt change.
+    """
+
+    return 1 if heartbeat.restart is None else int(
+        heartbeat.restart["attempt"])
 
 
 @dataclass(frozen=True)
@@ -1817,7 +2078,8 @@ def _capsule_headline(payload: dict | None) -> str:
 
 def _worker_command(
         config_path: Path, config_payload: Path, outdir: Path, *,
-        restart: Path | None, health_debug: bool) -> list[str]:
+        restart: Path | None, health_debug: bool,
+        preprocess_backend: str | None = None) -> list[str]:
     command = [sys.executable, "-m", "gpuwm.supervisor", "worker",
                "--config", str(config_path),
                "--config-payload", str(config_payload),
@@ -1826,6 +2088,8 @@ def _worker_command(
         command.extend(("--restart", str(restart)))
     if health_debug:
         command.append("--health-debug")
+    if preprocess_backend is not None:
+        command.extend(("--preprocess-backend", preprocess_backend))
     return command
 
 
@@ -1882,6 +2146,16 @@ def _heartbeat_regression(previous: Heartbeat, current: Heartbeat) -> str | None
         current.updated_at_utc.replace("Z", "+00:00"))
     if current_time < previous_time:
         return "updated_at_utc moved backward"
+    previous_attempt = heartbeat_attempt(previous)
+    current_attempt = heartbeat_attempt(current)
+    if current_attempt < previous_attempt:
+        return (f"attempt moved backward from {previous_attempt} to "
+                f"{current_attempt}")
+    if current_attempt > previous_attempt:
+        # A declared new attempt (RESTART_STATUS): its step and model time
+        # start again, from any record that is not terminal.  The records
+        # of one attempt are held to each other by the rules below.
+        return None
     if current.outer_step < previous.outer_step:
         return (f"outer_step moved backward from {previous.outer_step} to "
                 f"{current.outer_step}")
@@ -1893,12 +2167,26 @@ def _heartbeat_regression(previous: Heartbeat, current: Heartbeat) -> str | None
             and current.status.startswith("preparing:")):
         return f"status moved backward from integrating to {current.status}"
     # Finalization is one-way.  Integration is over by the time it is
-    # published, so a worker that goes back to integrating or to
-    # preparation has either restarted inside its own process or is not
-    # the worker this attempt launched.
+    # published, so a worker that goes back to integrating, to preparation
+    # or to a source wait (which only a seam or the start has) has either
+    # restarted inside its own process without saying so (RESTART_STATUS)
+    # or is not the worker this attempt launched.  A preparation wait is
+    # the one wait finalization has: a head-bound run that has stepped
+    # through its last interval waits for the preparation to seal before
+    # it binds the seal, and before this was accepted that wait got the
+    # worker stopped as a regression under ``gpuwm go``.  It is accepted
+    # after any ``finalizing:`` record, not only after the one that
+    # announces the seal (``finalizing:bind-prepared-seal``), because a
+    # supervisor reads the file on its own poll: the seal wait publishes
+    # its first record as soon as it finds no seal, so that announcement
+    # stands for well under a poll and the record a poll last read is
+    # usually the one before it (a final health or digest phase).  Held to
+    # the announcing record alone, the same wait was stopped again.
     if (previous.status.startswith("finalizing:")
             and (current.status == "integrating"
-                 or current.status.startswith("preparing:"))):
+                 or current.status.startswith("preparing:")
+                 or (current.status.startswith(WAITING_PREFIX)
+                     and current.status != "waiting:preparation"))):
         return (f"status moved backward from {previous.status} to "
                 f"{current.status}")
     return None
@@ -1940,7 +2228,7 @@ def _bind_attempt_heartbeat(
     return effective_worker_pid, None
 
 
-def priced_reservation_bytes(configuration) -> int | None:
+def priced_reservation_bytes(configuration, *, source=None) -> int | None:
     """This run's priced peak envelope, or None when it cannot be priced.
 
     The same number plan review prices a configuration from
@@ -1960,6 +2248,11 @@ def priced_reservation_bytes(configuration) -> int | None:
     against the device's measured free memory and says so, because
     refusing something for being unmeasured is exactly what this admission
     stopped doing.
+
+    ``source`` is the forcing source a door that knows it runs from, so
+    the analysed hydrometeor tables that source puts on the boundary are
+    in the reservation (``gpuwm stream`` runs HRRR); a configuration read
+    from its file alone names none and prices water vapour only.
     """
 
     try:
@@ -1970,7 +2263,7 @@ def priced_reservation_bytes(configuration) -> int | None:
             from gpuwm.experiment import load_experiment
 
             experiment = load_experiment(configuration)
-        estimate = admission_estimate(experiment)
+        estimate = admission_estimate(experiment, source=source)
         value = int(estimate.peak_envelope_bytes)
     except Exception:  # noqa: BLE001 - pricing is advisory, never a gate
         return None
@@ -1989,8 +2282,15 @@ def supervise_experiment(
         health_debug: bool = False, allow_shared_gpu: bool = False,
         lock_path: str | Path | None = None,
         directory_hash: str | None = None,
-        on_progress: Callable[[Heartbeat], None] | None = None) -> SupervisorResult:
-    """Run an experiment under exclusive-GPU fresh-process supervision."""
+        on_progress: Callable[[Heartbeat], None] | None = None,
+        preprocess_backend: str | None = None) -> SupervisorResult:
+    """Run an experiment under exclusive-GPU fresh-process supervision.
+
+    ``preprocess_backend`` (``gpuwm run --preprocess-backend``) reaches
+    every worker this run launches, recoveries included, and overrides the
+    config's ``[case_data] preprocess_backend``; ``None`` leaves the
+    config's own.
+    """
     if max_restarts < 0:
         raise ValueError("max_restarts must be nonnegative")
     if not 0.05 <= poll_seconds <= 60.0:
@@ -2081,7 +2381,8 @@ def supervise_experiment(
             launched_checkpoint = checkpoint
             command = _worker_command(
                 config_path, config_payload, outdir, restart=checkpoint,
-                health_debug=health_debug)
+                health_debug=health_debug,
+                preprocess_backend=preprocess_backend)
             with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
                 process = subprocess.Popen(
                     command, cwd=Path(__file__).resolve().parents[1], env=env,
@@ -2140,6 +2441,16 @@ def supervise_experiment(
                             monitor_failure = f"worker heartbeat regression: {regression}"
                             _terminate_fresh_worker(process)
                             break
+                    if (last_heartbeat is not None
+                            and heartbeat_attempt(current)
+                            > heartbeat_attempt(last_heartbeat)):
+                        # A new attempt in the same worker (restart_attempt)
+                        # prepares again, so until it steps it is timed as
+                        # a preparation is.  THE BREAKAGE: left set from
+                        # the last attempt, the new attempt's restore was
+                        # timed by the step bound and the worker stopped as
+                        # a stale integration while it recovered.
+                        integrating_seen = False
                     if current != last_heartbeat:
                         if (last_heartbeat is not None
                                 and last_heartbeat.status == "integrating"
@@ -2177,7 +2488,10 @@ def supervise_experiment(
                 # same way, by the bytes it declares.
                 finalizing = (status is not None
                               and status.startswith(WORK_SIZED_PREFIXES))
+                waiting = (status is not None
+                           and status.startswith(WAITING_PREFIX))
                 if (not integrating_seen and not finalizing and not finished
+                        and not waiting
                         and prep_timeout_seconds is not None
                         and silent_seconds > prep_timeout_seconds):
                     monitor_failure_kind = "prep-timeout"
@@ -2203,6 +2517,14 @@ def supervise_experiment(
                             f"became stale after {silent_seconds:.1f} s; "
                             f"its bound was {bound:.1f} s for "
                             f"{_byte_words(last_heartbeat.work_bytes)}")
+                        _terminate_fresh_worker(process)
+                        break
+                elif status is not None and status.startswith(WAITING_PREFIX):
+                    reason = waiting_stop_reason(
+                        last_heartbeat, silent_seconds=silent_seconds)
+                    if reason is not None:
+                        monitor_failure_kind = "stale-wait"
+                        monitor_failure = f"worker {reason}"
                         _terminate_fresh_worker(process)
                         break
                 elif (integrating_seen and not finished
@@ -2420,6 +2742,10 @@ def _worker_main(args: argparse.Namespace) -> int:
             replacements = _validated_worker_input_authorities(
                 encoded_authorities, input_hashes)
             data = remap_case_data_files(data, replacements)
+        pinned_backend = getattr(args, "preprocess_backend", None)
+        if pinned_backend is not None:
+            from dataclasses import replace
+            data = replace(data, preprocess_backend=pinned_backend)
         progress.preparing("prepare-case")
         summary = runtime.run_experiment(
             exp, data, outdir, restart=args.restart,
@@ -2504,6 +2830,13 @@ def register_cli(subparsers: argparse._SubParsersAction,
     run.add_argument("--health-debug", action="store_true",
                      help="enable debug phase health attribution hooks")
     run.add_argument(
+        "--no-memory-gate", action="store_true", dest="no_memory_gate",
+        help="run a case whose priced peak envelope exceeds this card's "
+             "free memory anyway, as `gpuwm go --no-memory-gate` does: the "
+             "envelope is an upper bound and the card's own allocation then "
+             "decides; a model state too big to build at all is still "
+             "refused")
+    run.add_argument(
         "--directory-input-hash", dest="directory_input_hash",
         default=None, choices=DIRECTORY_HASH_MODES,
         help="how declared directory inputs (the static geography tree) are "
@@ -2544,7 +2877,8 @@ def supervise_from_cli(args: argparse.Namespace) -> int:
             allow_shared_gpu=args.allow_shared_gpu,
             health_debug=args.health_debug,
             directory_hash=getattr(args, "directory_input_hash", None),
-            on_progress=progress)
+            on_progress=progress,
+            preprocess_backend=getattr(args, "preprocess_backend", None))
     transition_receipt, _ = _current_transition_receipt(
         args.outdir, result.run_id, result.heartbeat.config_digest)
     heartbeat = result.heartbeat
@@ -2598,6 +2932,8 @@ def _parser() -> argparse.ArgumentParser:
     worker.add_argument("--outdir", type=Path, required=True)
     worker.add_argument("--restart", type=Path, default=None)
     worker.add_argument("--health-debug", action="store_true")
+    worker.add_argument("--preprocess-backend", choices=("cuda", "cpu", "auto"),
+                        default=None)
     return parser
 
 

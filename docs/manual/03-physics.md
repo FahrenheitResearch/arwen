@@ -235,14 +235,14 @@ observation band, pinned RED by a named test) [docs/public/PHYSICS.md:1331-1397]
 ## 3.9 Radiation cadence on nests (`radt`), and the 2.5.0 fix
 
 `radt` is per-domain, in minutes, 0 = every step; shortwave is held constant
-between calls (`swint_opt = 0`) [docs/public/CONFIGURATION.md:244, 418].
+between calls (`swint_opt = 0`) [docs/public/CONFIGURATION.md:424, 741].
 
 **The 2.5.0 rule: a nest inherits its parent's radiation cadence.** Radiative
 transfer varies on cloud timescales, not grid scales, so nothing about halving dx
 makes a shorter radiation interval more correct; WRF's own namelist guidance says to
 set `radt` once for the coarsest domain and use the same value for every nest. The
 wizard's `radt_ladder_minutes` returns the root's `radt` for every domain
-[gpuwm/domain_wizard.py:2139-2171]. The rule it replaced, `radt = max(1.0, dx_km)`
+[gpuwm/domain_wizard.py:2177-2209]. The rule it replaced, `radt = max(1.0, dx_km)`
 per nest (shipped in v2.4.1), was wrong in both directions: under the 12-minute
 suites a 12-3-1-0.5 ladder emitted 12/3/1/1, radiation once a simulated minute on
 both sub-km rungs, and the floor flattened the bottom of the ladder (1 km and 500 m

@@ -34,7 +34,7 @@ use crate::geog::GeogDataset;
 use crate::interp::InterpOp;
 use crate::projection::ProjectedGrid;
 use crate::sampler::DomainSampler;
-use crate::smooth::smth_desmth_special;
+use crate::smooth::{apply_terrain_smoothing, TerrainSmoothing, WPS_DEFAULT};
 use crate::types::{Field, FieldSet, Grid2, Stack3};
 
 /// The nine resolved GEOG dataset directories for one build
@@ -60,27 +60,51 @@ pub fn build_static(
     paths: &GeogPaths,
     halo: usize,
 ) -> Result<FieldSet> {
+    build_static_smoothed(grid, paths, halo, WPS_DEFAULT)
+}
+
+/// [`build_static`] with one domain's terrain smoothing.
+pub fn build_static_smoothed(
+    grid: &ProjectedGrid,
+    paths: &GeogPaths,
+    halo: usize,
+    smoothing: TerrainSmoothing,
+) -> Result<FieldSet> {
     let sampler = DomainSampler::new(grid, halo)?;
-    build_static_with_sampler(&sampler, paths)
+    build_static_with_sampler_smoothed(&sampler, paths, smoothing)
 }
 
 /// Build just terrain with the identical sampler and smoother as the full set.
 pub fn build_terrain(grid: &ProjectedGrid, terrain: &std::path::Path, halo: usize) -> Result<FieldSet> {
+    build_terrain_smoothed(grid, terrain, halo, WPS_DEFAULT)
+}
+
+/// [`build_terrain`] with one domain's terrain smoothing.
+pub fn build_terrain_smoothed(
+    grid: &ProjectedGrid,
+    terrain: &std::path::Path,
+    halo: usize,
+    smoothing: TerrainSmoothing,
+) -> Result<FieldSet> {
     let dom = DomainSampler::new(grid, halo)?;
-    let (hgt, coverage) = sampled_terrain(&dom, terrain)?;
+    let (hgt, coverage) = sampled_terrain(&dom, terrain, smoothing)?;
     let mut set = FieldSet::default();
     set.fields.insert("HGT_M".to_string(), Field::Plane(hgt));
     set.coverage_reports.insert("terrain".to_string(), coverage);
     Ok(set)
 }
 
-fn sampled_terrain(dom: &DomainSampler<'_>, terrain: &std::path::Path) -> Result<(Grid2, String)> {
+fn sampled_terrain(
+    dom: &DomainSampler<'_>,
+    terrain: &std::path::Path,
+    smoothing: TerrainSmoothing,
+) -> Result<(Grid2, String)> {
     let topo = GeogDataset::open(terrain, None)?;
     let win = dom.window(&topo, 3)?;
     let coverage = dom.require_source_coverage(&topo, &win, "terrain")?;
     let hgt = dom.continuous(&topo, &win, 0,
         &[InterpOp::FourPt, InterpOp::Average4Pt], 0.0, true, None)?;
-    let hgt = smth_desmth_special(&hgt, 1)?;
+    let hgt = apply_terrain_smoothing(&hgt, smoothing)?;
     Ok((crop_grid(dom, &hgt), coverage))
 }
 
@@ -122,6 +146,15 @@ pub fn build_static_with_sampler(
     dom: &DomainSampler<'_>,
     paths: &GeogPaths,
 ) -> Result<FieldSet> {
+    build_static_with_sampler_smoothed(dom, paths, WPS_DEFAULT)
+}
+
+/// [`build_static_with_sampler`] with one domain's terrain smoothing.
+pub fn build_static_with_sampler_smoothed(
+    dom: &DomainSampler<'_>,
+    paths: &GeogPaths,
+    smoothing: TerrainSmoothing,
+) -> Result<FieldSet> {
     let mut set = FieldSet::default();
 
     let require = |set: &mut FieldSet,
@@ -141,7 +174,7 @@ pub fn build_static_with_sampler(
 
     // --- terrain: average_gcell(4.0)+four_pt+average_4pt, fill 0, one
     //     smoother-desmoother pass (choice arbitrated by geo_em HGT_M).
-    let (hgt, coverage) = sampled_terrain(dom, &paths.terrain)?;
+    let (hgt, coverage) = sampled_terrain(dom, &paths.terrain, smoothing)?;
     set.coverage_reports.insert("terrain".to_string(), coverage);
 
     // --- landuse -> LANDUSEF / LANDMASK / LU_INDEX ---------------------

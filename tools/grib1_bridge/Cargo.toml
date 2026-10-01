@@ -20,6 +20,9 @@ chrono = { version = "0.4", default-features = false }
 # openjp2 the renderer workspace already builds; png_codec stays off
 # because no consumed product uses Template 5.41.
 grib-core = { path = "vendor/grib-core", default-features = false, features = ["jpeg2000"] }
+# A pure Rust port of musl's libm, for the portable transcendentals in
+# src/portable_math.rs: the same bits on every CPU and C library.
+libm = "0.2.16"
 
 # See tools/rustwx/Cargo.toml for the reasoning: these artifacts are
 # package data in a platform wheel measured against PyPI's 100 MB cap,

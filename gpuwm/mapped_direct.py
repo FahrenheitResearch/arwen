@@ -17,6 +17,7 @@ import uuid
 
 import numpy as np
 
+from gpuwm.boundary_fields import mapping_boundary_species
 from gpuwm.config import soil_layer_count
 from gpuwm.core.grid import make_vertical_coord
 from gpuwm.explain import warn
@@ -25,6 +26,7 @@ from gpuwm.vertical_adaptation import (
     vertical_coordinate_receipt as _vertical_coordinate_receipt,
 )
 from gpuwm.experiment import load_experiment, validate_boundary_timing
+from gpuwm.fortran_namelist import parse_namelist
 from gpuwm.ingest.horiz import interpolate_era5_to_lambert
 from gpuwm.ingest.soil_downscale import (
     declared_soil_texture_downscale, soil_mesh_plan_from_case)
@@ -33,8 +35,13 @@ from gpuwm.ingest.lateral_bc import (
     attach_lateral_boundaries,
     start_last_forcing_order,
 )
+from gpuwm.ingest.cg_topo import RootTerrainBlend
 from gpuwm.ingest.boundary_stream import (
+    HIERARCHY_HEAD_DIRNAME,
     PreparedTreeWriter,
+    TreeStartStates,
+    chained_enabled,
+    domain_tree_head_fields,
     producer_device_bytes,
     remove_unfinished_tree,
 )
@@ -46,6 +53,7 @@ from gpuwm.ingest.preparation_price import (
     price_forcing_preparation, price_preparation_floor)
 from gpuwm.ingest.preprocess_backend import (
     admit_preparation,
+    preprocess_identity,
     release_backend_memory,
     resolve_preprocess_backend,
 )
@@ -65,6 +73,7 @@ from gpuwm.mapped_composition import (
     MappedSourceBundle,
     _decoder_inventory,
     _path_inventory,
+    composition_receipt_identity_sha256,
     decode_composed_source,
     decoded_vertical_ladder,
     mapped_composition_receipt,
@@ -97,9 +106,12 @@ from gpuwm.native_wrf_contract import (
     write_native_geometry_receipt,
     write_native_static_cache,
 )
-from gpuwm.source_authorities import boundary_interval_refusal
+from gpuwm.source_authorities import (
+    BOUNDARY_MULTIPLES_KEY, boundary_interval_refusal)
 from gpuwm.source_hierarchy import (
     initialize_and_export_regular_source_hierarchy,
+    prepare_regular_source_hierarchy_head,
+    seal_regular_source_hierarchy,
 )
 from gpuwm.static.build import GeogSelection, build_static
 from gpuwm.vertical_contract import validate_explicit_eta_grid
@@ -108,8 +120,16 @@ from gpuwm.wrf_direct import (
     stock_wrf_export_not_requested, stock_wrf_export_refused,
     validate_stock_wrf_export_config, validate_stock_wrf_export_hierarchy,
 )
-from gpuwm.native_domain_artifacts import published_path_refusal
-from gpuwm.native_hierarchy import STOCK_WRF_EXPORT_MODES
+from gpuwm.native_domain_artifacts import (
+    published_path_refusal,
+    root_domain_artifact_binding,
+    write_child_domain_artifacts,
+    write_domain_static_files,
+)
+from gpuwm.native_hierarchy import (
+    STOCK_WRF_EXPORT_MODES,
+    hierarchy_moisture_floor_receipts,
+)
 from gpuwm.progress import prep_stage
 
 
@@ -157,23 +177,25 @@ def _forcing_valid_times(snapshots) -> tuple:
     return tuple(snapshot.valid_time for snapshot in snapshots)
 
 
-def _source_top_pressure_pa(snapshots) -> float:
+def _source_top_pressure_pa(snapshots, count: int | None = None) -> float:
     """The highest source level the whole forcing series reaches, in Pa.
 
     Read from the pressure field alone where the series can do that:
     packing a whole valid time to answer one number would read every
     array a frame carries, for every forcing time, before the first one
-    is interpolated.
+    is interpolated.  ``count`` limits it to the first times (an
+    as-posted head reads the leads decoded so far).
     """
 
+    count = len(snapshots) if count is None else int(count)
     levels = getattr(snapshots, "source_pressure_hpa", None)
     if levels is None:
         return max(
-            float(np.min(snapshot.levels_hpa) * 100.0)
-            for snapshot in snapshots)
+            float(np.min(snapshots[index].levels_hpa) * 100.0)
+            for index in range(count))
     return max(
         float(np.min(levels(index)) * 100.0)
-        for index in range(len(snapshots)))
+        for index in range(count))
 
 
 def _file_receipt(path: Path) -> dict[str, object]:
@@ -273,6 +295,39 @@ def _bound_decoder_receipts(
     return receipts
 
 
+def _plan_review_spacing(
+    target: Mapping[str, object], wps_namelist: Path,
+) -> tuple[int | None, str | None]:
+    """The boundary spacing plan review holds the experiment to, and where
+    it was read, before any source is decoded.
+
+    A target that takes only its declared spacing: that spacing, the one a
+    series it decodes can carry.  A target that takes whole multiples of it
+    (A173): the namelist's ``&share/interval_seconds`` where the target
+    takes it, because that is the spacing this run is prepared at -- the
+    GDT-101 normalization holds it equal to the gap between the fetched
+    leads, and ``gpuwm domain`` and the catalog write the cadence they
+    fetch.  Holding such a run to the target's base spacing instead
+    refused a root step that divides the run's spacing and not the base:
+    icon-global at its default 3 h with dt = 54 s was refused naming the
+    3600 s the publisher posts and the run never uses.  Without a usable
+    namelist interval the spacing is ``None``: it is not known until the
+    decode, and the decoded series' own spacing is checked whole there.
+    """
+
+    declared = target.get("boundary_interval_seconds")
+    if target.get(BOUNDARY_MULTIPLES_KEY) is not True:
+        return declared, None
+    values = parse_namelist(wps_namelist).get("share", {}).get(
+        "interval_seconds") or ()
+    interval = values[0] if values else None
+    if (isinstance(interval, int) and not isinstance(interval, bool)
+            and interval > 0
+            and boundary_interval_refusal(target, interval) is None):
+        return interval, f"&share/interval_seconds of {wps_namelist}"
+    return None, None
+
+
 def _validate_target_contract(
     mapping: Mapping[str, object],
     exp,
@@ -280,8 +335,16 @@ def _validate_target_contract(
     *,
     hierarchy: bool,
     experiment_config: Path | None = None,
+    spacing_origin: str | None = None,
+    before_decode: bool = False,
 ) -> dict[str, object]:
     """Bind mapped target limits to one resolved experiment and cadence.
+
+    ``spacing_origin`` names where a spacing read before the decode came
+    from, so a refusal says which number to change.  ``before_decode``
+    with no spacing is plan review of a series whose spacing only the
+    decode knows (:func:`_plan_review_spacing`): every other limit is
+    checked, and the cadence and the timing law wait for the series.
 
     The vertical dimension is the EXPERIMENT'S, not the mapping's: the
     whole route interpolates onto the experiment's explicit eta ladder
@@ -358,19 +421,22 @@ def _validate_target_contract(
             "mapped direct export requires a target contract with lateral "
             "boundaries"
         )
-    if (isinstance(boundary_interval_seconds, bool)
-            or not isinstance(boundary_interval_seconds, int)
-            or boundary_interval_seconds <= 0):
-        raise ValueError("mapped boundary interval must be a positive integer")
-    refusal = boundary_interval_refusal(
-        target, boundary_interval_seconds, subject="mapped boundary interval")
-    if refusal is not None:
-        raise ValueError(refusal)
-    validate_boundary_timing(
-        exp, boundary_interval_seconds,
-        source=(
-            "mapped hierarchy target"
-            if hierarchy else "mapped target"))
+    if boundary_interval_seconds is not None or not before_decode:
+        if (isinstance(boundary_interval_seconds, bool)
+                or not isinstance(boundary_interval_seconds, int)
+                or boundary_interval_seconds <= 0):
+            raise ValueError(
+                "mapped boundary interval must be a positive integer")
+        refusal = boundary_interval_refusal(
+            target, boundary_interval_seconds,
+            subject="mapped boundary interval")
+        if refusal is not None:
+            raise ValueError(refusal)
+        label = "mapped hierarchy target" if hierarchy else "mapped target"
+        validate_boundary_timing(
+            exp, boundary_interval_seconds,
+            source=(label if spacing_origin is None
+                    else f"{label} at {spacing_origin}"))
     # Plan review is where a declared field the target join has no consumer
     # for is named: the mapping document and the experiment are both in hand
     # here, ahead of every decode and fetch.  It is a notice, not a refusal.
@@ -526,17 +592,503 @@ def _announce_adaptation(sentence: str) -> None:
          "all carry the same coordinate.  p_top is untouched.")
 
 
-def _survey_static_catalog(exp, wps_namelist, geog_root):
+def _survey_static_catalog(exp, wps_namelist, geog_root, static_highres=None):
     """The WPS_GEOG catalog the terrain survey needs, or None."""
 
     if geog_root is None or len(exp.domains) < 2:
         return None
     from gpuwm.hrrr_native_static import verified_static_catalog
+    from gpuwm.static.terrain_smoothing import selection_carrier_kwargs
 
     catalog, _ = verified_static_catalog(
         Path(wps_namelist), Path(geog_root),
-        [domain.grid_id for domain in exp.domains])
+        [domain.grid_id for domain in exp.domains],
+        **selection_carrier_kwargs(static_highres))
     return catalog
+
+
+#: The proof keys that read every lead of a composed window, so an
+#: as-posted head leaves them out and its seal writes them: the whole
+#: window's composition receipt (its manifest, alignment and every frame)
+#: and the vertical ladder its frames carry.
+_AS_POSTED_SEAL_KEYS = ("source_composition", "source_vertical_ladder")
+#: Where an as-posted mapped proof names the input manifest it sealed.
+_AS_POSTED_PROOF_MANIFEST_KEY = "source_composition.input_manifest.sha256"
+#: The identity keys that carry the input manifest's own digest.
+_AS_POSTED_MANIFEST_BOUND = ("bridge_manifest_sha256", "source_manifest_sha256",
+                             "input_manifest_sha256")
+#: The as-posted fetch's published manifest, whose ``prep`` block names
+#: every file the route plans for the window (the lead objects).
+_FETCH_MANIFEST_NAME = "fetch-manifest.json"
+
+
+def _naive_time(value):
+    from datetime import datetime, timezone
+
+    moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(timezone.utc).replace(tzinfo=None)
+    return moment
+
+
+class _PostedMappedSource:
+    """A composed source decoded lead batch by lead batch as its leads post.
+
+    DESIGN A136 2.4 item 3 for the mapped engine.  Indexing a forcing time
+    waits for its lead's marker (``PostedLeads``), then decodes every lead
+    whose marker is there and is not decoded yet in one
+    ``decode_composed_source`` run, on all cores, under a sub-manifest
+    authored for that batch.  The batches run one at a time in the
+    preparation's thread, so the compose never holds more than one batch,
+    and a batch is never more than the whole window.
+
+    What a batch reads: the leads' own objects (each held to the digest
+    its marker names), every object the route fetched with the first lead
+    group but that belongs to no lead (a cycle-invariant field, step-0
+    statics), and every input the route does not plan (a donor analysis
+    fetched before the first lead).  A supplement role that is the primary
+    inventory itself (a source whose own files carry its surface) follows
+    the batch; any other supplement is read whole by every batch and must
+    be there when the first batch is decoded.
+
+    At the seal :meth:`finish` authors the window's input manifest through
+    the one-shot author (``author_input_manifest``) and returns the bundle
+    one decode of the window would have: every batch's frames as one
+    frameset, the batches' alignment receipts merged
+    (:func:`gpuwm.mapped_composition.posted_composition_bundle`).
+    """
+
+    def __init__(self, *, posting, input_manifest, composition, mapping,
+                 primary, supplements, provenance, contributing, decoders,
+                 grids, workers, output_root, source_format):
+        from gpuwm.ingest.boundary_stream import (
+            POSTING_SCHEDULE_NAME, PostedLeads)
+        from gpuwm.mapped_composition import PostedFrames
+
+        self.posting = Path(posting).resolve()
+        self.fetch_root = self.posting.parent
+        self.input_manifest = Path(input_manifest).resolve()
+        if self.input_manifest.parent != self.fetch_root:
+            raise ValueError(
+                f"an as-posted mapped preparation seals its input manifest "
+                f"beside the fetched files ({self.fetch_root}), not at "
+                f"{self.input_manifest}: the manifest names each file by its "
+                "path from its own folder, and the lead markers name them "
+                "from the fetch folder, so the seal holds a row to its marker "
+                "only when the two folders are one")
+        schedule_path = self.posting / POSTING_SCHEDULE_NAME
+        try:
+            schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise ValueError(
+                f"an as-posted preparation reads the fetch's posting "
+                f"schedule, and {schedule_path} is not readable: "
+                f"{error}") from None
+        rows = list(schedule.get("leads") or ())
+        if not rows:
+            raise ValueError(f"{schedule_path} schedules no lead")
+        self.leads = tuple(int(row["lead"]) for row in rows)
+        self.valid_times = tuple(_naive_time(row["valid_time"]) for row in rows)
+        self.posted = PostedLeads(self.posting, source=str(schedule["source"]),
+                                  cycle=str(schedule["cycle"]))
+        self.composition = Path(composition)
+        self.mapping = Path(mapping)
+        self.primary = tuple(Path(path) for path in primary)
+        self.supplements = {role: tuple(Path(path) for path in paths)
+                            for role, paths in supplements.items()}
+        self.provenance = dict(provenance)
+        self.contributing = dict(contributing)
+        self.decoders = dict(decoders)
+        self.grids = grids
+        self.workers = workers
+        self.output_root = Path(output_root)
+        self.source_format = str(source_format)
+        #: Every marker read, by lead (what segments bind).
+        self.markers: dict[int, dict] = {}
+        #: A posted object's lead, or ``None`` for one every batch reads.
+        self.lead_of: dict[Path, int | None] = {}
+        #: A posted object's ``(bytes, sha256)`` as its marker names it.
+        self.expected: dict[Path, tuple] = {}
+        self.planned: set[Path] = set()
+        self.batches: list = []
+        self.batch_leads: list[tuple[int, ...]] = []
+        self.decode_seconds = 0.0
+        self._where: dict[int, tuple] = {}
+        self._next = 0
+        self._scratch = self.output_root.parent / (
+            f".posted-{uuid.uuid4().hex[:8]}")
+        self.frames = PostedFrames(self.valid_times, self._locate)
+
+    # -- reading ---------------------------------------------------------
+
+    def _read_marker(self, lead: int, marker: Mapping[str, object]) -> None:
+        from gpuwm.fetch_as_posted import marker_files
+
+        self.markers[int(lead)] = dict(marker)
+        for item in marker_files(marker):
+            path = (self.fetch_root / str(item["name"])).resolve()
+            own = item.get("lead", lead)
+            self.lead_of[path] = int(lead) if own == lead else None
+            self.expected[path] = (item.get("bytes"), item.get("sha256"))
+
+    def _read_plan(self) -> None:
+        path = self.fetch_root / _FETCH_MANIFEST_NAME
+        try:
+            fetched = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise ValueError(
+                f"an as-posted mapped preparation reads which files the "
+                f"route plans from {path}, which the fetch publishes with "
+                f"its first lead, and it is not readable: {error}") from None
+        prep = fetched.get("prep") or {}
+        self.planned = {
+            (self.fetch_root / str(name)).resolve()
+            for name in (*(prep.get("primary_files") or ()),
+                         *(prep.get("supplement_files") or ()))}
+        if not self.planned:
+            raise ValueError(
+                f"{path} names no planned file (prep.primary_files); an "
+                "as-posted mapped preparation needs the route's plan to tell "
+                "a lead's objects from the inputs its head reads whole")
+
+    @property
+    def fixed(self) -> tuple[Path, ...]:
+        """The data inputs the route does not plan: read whole at the head."""
+
+        data = (*self.primary,
+                *(path for paths in self.supplements.values() for path in paths))
+        return tuple(dict.fromkeys(
+            path for path in data if path.resolve() not in self.planned))
+
+    def _available(self, path: Path) -> bool:
+        path = path.resolve()
+        return path not in self.planned or path in self.lead_of
+
+    def _in_batch(self, path: Path, leads) -> bool:
+        path = path.resolve()
+        if path not in self.planned:
+            return True
+        if path not in self.lead_of:
+            return False
+        owner = self.lead_of[path]
+        return owner is None or owner in leads
+
+    # -- decoding --------------------------------------------------------
+
+    def start(self):
+        """Wait for the first lead, read the route's plan, decode the first batch."""
+
+        self._read_marker(self.leads[0], self.posted.wait(self.leads[0]))
+        self._read_plan()
+        missing = [str(path) for path in self.primary
+                   if path.resolve() not in self.planned
+                   and not path.is_file()]
+        if missing:
+            raise ValueError(
+                f"the as-posted preparation's inputs {missing} are neither "
+                "planned by the route nor present")
+        self.through(0)
+        return self.batches[0]
+
+    def through(self, position: int) -> None:
+        """Decode every lead through ``leads[position]``, waiting as they post."""
+
+        while self._next <= position:
+            lead = self.leads[self._next]
+            if lead not in self.markers:
+                self._read_marker(lead, self.posted.wait(lead))
+            end = self._next
+            while end + 1 < len(self.leads):
+                later = self.leads[end + 1]
+                record = self.posted.marker(later)
+                if record is None:
+                    break
+                self._read_marker(later, record)
+                end += 1
+            self._decode_batch(self._next, end)
+            self._next = end + 1
+
+    def _batch_inventory(self, leads):
+        primary = tuple(path for path in self.primary
+                        if self._in_batch(path, leads))
+        chosen = set(primary)
+        whole_primary = {path.resolve() for path in self.primary}
+        supplements = {}
+        for role, paths in self.supplements.items():
+            if {path.resolve() for path in paths} == whole_primary:
+                supplements[role] = tuple(
+                    path for path in paths if path in chosen)
+                continue
+            late = [str(path) for path in paths if not self._available(path)]
+            if late:
+                raise ValueError(
+                    f"supplement role {role!r} is read whole by every lead "
+                    f"batch, and {late} belong to leads not posted yet; the "
+                    "route fetches such a supplement with its first lead "
+                    "group, so this window cannot be decoded as it posts")
+            supplements[role] = paths
+        return primary, supplements
+
+    def _decode_batch(self, start: int, end: int) -> None:
+        from gpuwm.mapped_authoring import author_input_manifest
+
+        leads = self.leads[start:end + 1]
+        primary, supplements = self._batch_inventory(set(leads))
+        started = time.perf_counter()
+        self._scratch.mkdir(parents=True, exist_ok=True)
+        authored = author_input_manifest(
+            self._scratch / f"batch-{len(self.batches):03d}.json",
+            mapping_path=self.mapping, composition_path=self.composition,
+            primary_files=primary, supplement_files=supplements,
+            provenance_files=self.provenance,
+            grib1_bridge=self.decoders.get("grib1_bridge"),
+            grib2_inventory=self.decoders.get("grib2_inventory"),
+            grib2_dump=self.decoders.get("grib2_dump"),
+            contributing_mappings=self.contributing,
+            expected_format=self.source_format)
+        manifest_path = Path(authored["manifest"]["path"])
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        from gpuwm.ingest.boundary_stream import composition_data_rows
+        for row in composition_data_rows(manifest):
+            path = (manifest_path.parent / str(row["path"])).resolve()
+            if path in self.expected and (
+                    row.get("bytes"), row.get("sha256")) != self.expected[path]:
+                raise ValueError(
+                    f"{path} is not the object its lead's posted marker named "
+                    f"({self.expected[path]}); it read {row.get('bytes')} "
+                    f"bytes, {row.get('sha256')}")
+        bundle = decode_composed_source(
+            self.composition, self.mapping, primary, supplements,
+            self.provenance, input_manifest=manifest_path,
+            input_manifest_sha256=str(authored["manifest"]["sha256"]),
+            contributing_mappings=self.contributing,
+            grib1_bridge=self.decoders.get("grib1_bridge"),
+            grib2_inventory=self.decoders.get("grib2_inventory"),
+            grib2_dump=self.decoders.get("grib2_dump"),
+            scratch_destination=self.output_root,
+            atmospheric_grids=self.grids,
+            workers=self.workers,
+            # A batch may be one lead; the window's series rules are held
+            # over the planned times (prepare_mapped_wrf) and each batch's
+            # times are held to them below.
+            lead_batch=True,
+        )
+        frames = bundle.frames
+        decoded = tuple(getattr(frames, "valid_times", None)
+                        or (frame.valid_time for frame in frames))
+        if decoded != self.valid_times[start:end + 1]:
+            bundle.close()
+            raise ValueError(
+                f"the lead batch {', '.join(f'f{lead:03d}' for lead in leads)} "
+                f"decoded valid times {[str(value) for value in decoded]}, not "
+                "the ones the posting schedule names for those leads")
+        for local, index in enumerate(range(start, end + 1)):
+            self._where[index] = (frames, local)
+        self.frames.add_part(frames)
+        self.batches.append(bundle)
+        self.batch_leads.append(tuple(leads))
+        self.decode_seconds += time.perf_counter() - started
+
+    def _locate(self, index: int):
+        self.through(int(index))
+        return self._where[int(index)]
+
+    @property
+    def decoded_count(self) -> int:
+        return self._next
+
+    def regular_snapshots(self):
+        from gpuwm.mapped_composition import _RegularSnapshots
+
+        return _RegularSnapshots(SimpleNamespace(
+            frames=self.frames,
+            soil_layer_contract=self.batches[0].soil_layer_contract))
+
+    # -- the seal --------------------------------------------------------
+
+    def finish(self):
+        """Author the window's manifest and return ``(path, digest, bundle)``."""
+
+        from gpuwm.mapped_authoring import author_input_manifest
+        from gpuwm.mapped_composition import posted_composition_bundle
+
+        self.through(len(self.leads) - 1)
+        authored = author_input_manifest(
+            self.input_manifest, mapping_path=self.mapping,
+            composition_path=self.composition, primary_files=self.primary,
+            supplement_files=self.supplements,
+            provenance_files=self.provenance,
+            grib1_bridge=self.decoders.get("grib1_bridge"),
+            grib2_inventory=self.decoders.get("grib2_inventory"),
+            grib2_dump=self.decoders.get("grib2_dump"),
+            # Every batch and the one-shot author name the contributing
+            # mappings, which add a donor's format to the decoder rows; the
+            # window's manifest must seal the same rows.
+            contributing_mappings=self.contributing,
+            expected_format=self.source_format)
+        path = Path(authored["manifest"]["path"])
+        digest = str(authored["manifest"]["sha256"])
+        if path != self.input_manifest:
+            raise ValueError(
+                f"the as-posted seal's input manifest landed at {path}, not "
+                f"at {self.input_manifest}, because a manifest sealed with "
+                "other mapping, composition or decoder bytes is there")
+        shared = any(owner is None for owner in self.lead_of.values())
+        bundle = posted_composition_bundle(
+            self.batches, self.frames, input_manifest_path=path,
+            input_manifest_sha256=digest,
+            supplement_files=self.supplements, shared_primary=shared)
+        return path, digest, bundle
+
+    def close(self) -> None:
+        try:
+            self.frames.close()
+        finally:
+            shutil.rmtree(self._scratch, ignore_errors=True)
+
+
+def _posted_input_plan(posted_source, *, mapping, composition, primary,
+                       supplements, provenance, decoders) -> dict:
+    """The input plan an as-posted mapped head binds (DESIGN A136 2.4 item 5).
+
+    The manifest the seal will write with the one-shot author, every
+    planned lead object's size and digest left out
+    (:func:`gpuwm.mapped_authoring.planned_input_manifest`); the rows of
+    the inputs the route does not plan (a donor analysis) are read whole
+    now and bound as they are (``fixed_rows``).  Also binds the route
+    table the fetch planned its leads under.
+    """
+
+    from gpuwm.ingest.boundary_stream import (
+        as_posted_placeholder, input_plan, input_plan_sha256)
+    from gpuwm.mapped_authoring import (
+        manifest_row_path, planned_input_manifest)
+
+    data = (*primary, *(path for paths in supplements.values()
+                        for path in paths))
+    manifest = planned_input_manifest(
+        posted_source.input_manifest, mapping_path=mapping,
+        composition_path=composition, primary_files=primary,
+        supplement_files=supplements, provenance_files=provenance,
+        planned=[path for path in data
+                 if path.resolve() in posted_source.planned],
+        grib1_bridge=decoders.get("grib1_bridge"),
+        grib2_inventory=decoders.get("grib2_inventory"),
+        grib2_dump=decoders.get("grib2_dump"),
+        contributing_mappings=posted_source.contributing)
+    fixed_rows = sorted({manifest_row_path(path, posted_source.input_manifest)
+                         for path in posted_source.fixed})
+    route_table_sha256 = posted_source.posted.route_table_sha256()
+    plan = input_plan(manifest, lead_role_prefix="",
+                      route_table_sha256=route_table_sha256,
+                      fixed_rows=fixed_rows)
+    return {"plan": plan, "fixed_rows": fixed_rows,
+            "route_table_sha256": route_table_sha256,
+            "placeholder": as_posted_placeholder(input_plan_sha256(plan))}
+
+
+def _require_source_top(exp, cfg, source_top_pressure_pa: float,
+                        experiment_config) -> None:
+    try:
+        validate_explicit_eta_grid(
+            exp.vertical.eta_levels,
+            nz=cfg.nz,
+            p_top=exp.vertical.p_top,
+            source_top_pressure_pa=source_top_pressure_pa,
+            context="mapped direct adapter",
+        )
+    except ValueError as error:
+        # The ladder's shape and values were validated at the door;
+        # what this re-check adds is the SOURCE TOP, so the only
+        # user-reachable raise left here is a model top the staged
+        # atmosphere does not reach.
+        raise VerticalLadderRefusal(
+            str(error),
+            remedy=(
+                "remedy: lower the model top -- raise p_top in the "
+                f"experiment config {experiment_config} to a "
+                "pressure the staged source atmosphere reaches -- "
+                "or prepare from a source whose levels reach this "
+                "top (`gpuwm prep --show-source NAME` prints each "
+                "source's vertical coverage)."),
+        ) from error
+
+
+def _seal_posted_mapped(posted_source, *, writer, plan, mapping_contract,
+                        snapshots, exp, cfg, source_identity,
+                        static_cache_sha256, namelist_sha256,
+                        forcing_identity, experiment_config=None) -> dict:
+    """What an as-posted mapped seal writes (DESIGN A136 2.4 item 6).
+
+    The window's input manifest through the one-shot author, refused
+    unless it is the plan the head bound and every lead row is the object
+    its lead's marker named; the composition receipt and vertical ladder
+    of every lead batch read as one decode; the whole window's source top
+    checked as the head checked its first leads; the one-shot identity,
+    which the writer holds to the head's (only the manifest and receipt
+    digests move); and the record of the leads consumed.
+    """
+
+    from gpuwm.ingest.boundary_stream import (
+        hold_composition_rows, input_plan)
+
+    path, digest, whole = posted_source.finish()
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    # Re-read at the seal: leads fetched under another route table than
+    # the one the head planned with are another plan.
+    route_table_sha256 = posted_source.posted.route_table_sha256()
+    if input_plan(manifest, lead_role_prefix="",
+                  route_table_sha256=route_table_sha256,
+                  fixed_rows=plan["fixed_rows"]) != plan["plan"]:
+        raise ValueError(
+            f"the input manifest the seal wrote at {path} is not the input "
+            "plan the head bound: a file, a non-lead input or the fetch's "
+            "route table differs")
+    hold_composition_rows(
+        manifest, {str(lead): marker
+                   for lead, marker in posted_source.markers.items()},
+        fixed_rows=plan["fixed_rows"])
+    receipt = mapped_composition_receipt(whole)
+    ladder = decoded_vertical_ladder(whole, mapping_contract)
+    if ladder is not None:
+        _announce_vertical_ladder(ladder)
+    _require_source_top(exp, cfg, _source_top_pressure_pa(snapshots),
+                        experiment_config)
+    sealed_source_identity = {
+        **source_identity,
+        "input_manifest_sha256": digest,
+        "composition_receipt_sha256": composition_receipt_identity_sha256(
+            receipt),
+    }
+    identity = prepared_cache_identity(
+        bridge_manifest_sha256=digest,
+        source_manifest_sha256=digest,
+        static_cache_sha256=static_cache_sha256,
+        namelist_sha256=namelist_sha256,
+        domain_config=exp.root,
+        **forcing_identity,
+        source_identity=sealed_source_identity,
+    )
+    _copy_bound_authority(
+        path, writer.root / "source-evidence" / "input-manifest.json", digest)
+    writer.write_posted_leads(posted_source.markers,
+                              route_table_sha256=route_table_sha256)
+    cache_receipt = dict(writer.seal_cache(identity=identity,
+                                           manifest_sha256=digest))
+    return {
+        "cache_receipt": cache_receipt,
+        "bundle": whole,
+        "proof": {
+            "source_composition": receipt,
+            **({"source_vertical_ladder": ladder}
+               if ladder is not None else {}),
+            "posting": {
+                "as_posted": True,
+                "waits": list(posted_source.posted.waits),
+                "leads_late": [],
+            },
+        },
+    }
 
 
 def prepare_mapped_wrf(
@@ -566,6 +1118,7 @@ def prepare_mapped_wrf(
     hierarchy_workers: int | None = None,
     stock_wrf_export: str = "optional",
     statics_corridor=None,
+    as_posted: str | Path | None = None,
     _source_manifest: str | Path | None = None,
     _source_manifest_sha256: str | None = None,
     _source_adapter: str = "rw-wps-mapped-composition-v2",
@@ -618,6 +1171,16 @@ def prepare_mapped_wrf(
     identity chain and proof stay bound to the route's own document, the
     one its forecast leg re-verifies with the route's own reader.  Absent,
     the two manifests are the same document and nothing changes.
+
+    ``as_posted`` is an as-posted fetch's ``posting/`` folder (DESIGN A136
+    2.4): the preparation starts on the window's first lead and decodes the
+    later leads batch by batch as their markers appear
+    (:class:`_PostedMappedSource`), and ``input_manifest`` is where its
+    seal writes the window's manifest (beside the fetched files) with the
+    one-shot author, so ``input_manifest_sha256`` is ``None``.  The head
+    binds the input plan and the first leads' markers; the seal writes the
+    composition receipt, the vertical ladder and the one-shot identity, and
+    the prepared arrays are the one-shot preparation's byte for byte.
     """
 
     if stock_wrf_export not in STOCK_WRF_EXPORT_MODES:
@@ -638,6 +1201,16 @@ def prepare_mapped_wrf(
         for role, path in (contributing_mappings or {}).items()
     }
     input_manifest = Path(input_manifest).resolve()
+    if as_posted is not None:
+        if input_manifest_sha256 is not None:
+            raise ValueError(
+                "an as-posted preparation writes its input manifest at the "
+                "seal, so it takes no manifest digest")
+        if _source_manifest is not None:
+            raise ValueError(
+                "an as-posted preparation seals the composition inputs "
+                "manifest itself; a named-source route's own manifest is "
+                "verified whole and cannot be written lead by lead")
     if (_source_manifest is None) != (_source_manifest_sha256 is None):
         raise ValueError(
             "source manifest and source manifest SHA are an atomic pair"
@@ -747,16 +1320,21 @@ def prepare_mapped_wrf(
     # first miss as a bare ``FileNotFoundError`` holding only a path,
     # which is how a pasted prep command with one wrong working
     # directory answered a user with a traceback (UX finding N6).
-    labeled = [
-        ("--composition", composition),
-        ("--mapping", mapping),
+    # As posted, the manifest is the seal's to write and the later leads'
+    # files arrive as they post; each lead batch checks its own inputs.
+    data_labels = () if as_posted is not None else (
         ("--input-manifest", input_manifest),
-        ("--wps-namelist", wps_namelist),
-        ("--experiment-config", experiment_config),
-        *((f"decoder tool {role}", path) for role, path in decoders.items()),
         *(("--input/--input-list", path) for path in primary),
         *((f"--supplement {role}", path)
           for role, paths in supplements.items() for path in paths),
+    )
+    labeled = [
+        ("--composition", composition),
+        ("--mapping", mapping),
+        ("--wps-namelist", wps_namelist),
+        ("--experiment-config", experiment_config),
+        *((f"decoder tool {role}", path) for role, path in decoders.items()),
+        *data_labels,
         *((f"--provenance {role}", path)
           for role, path in provenance.items()),
         *((f"--contributing-mapping {role}", path)
@@ -826,11 +1404,20 @@ def prepare_mapped_wrf(
     water_overlay, water_overlay_binding = load_bound_water_overlay(
         None if case_data is None else case_data.water_temperature_overlay)
     from gpuwm.experiment import (
-        refuse_unrouted_perturbation, refuse_unrouted_spawn,
+        deferred_initial_perturbation, refuse_unrouted_spawn,
     )
-    refuse_unrouted_perturbation(exp, "mapped-adapter prepared-cache")
     refuse_unrouted_spawn(exp, "mapped-adapter prepared-cache")
+    initial_perturbation = deferred_initial_perturbation(
+        exp, "mapped-adapter prepared-cache")
     hierarchy = len(exp.domains) > 1
+    if as_posted is not None and hierarchy:
+        # Refused by name: every child's identity binds the input manifest
+        # and the composition receipt, which an as-posted head does not
+        # have yet, so a tree cannot seal byte-equal to its one-shot.
+        raise ValueError(
+            "an as-posted mapped preparation prepares a single domain; a "
+            "domain tree binds the window's input manifest into every "
+            "child, which does not exist until the last lead posts")
     # A domain tree is published through staging deeper than its
     # output root; refused here, the first point this door knows it
     # prepares a tree, before any source is decoded.  A single-domain
@@ -852,12 +1439,18 @@ def prepare_mapped_wrf(
             "ground a child domain can reach, and this experiment has no "
             "child domain; "
             "remove the flag or prepare a domain tree")
+    # Plan review: the run's own spacing where it is known before the
+    # decode, never a finer one the run does not use (A173).
+    review_spacing, review_origin = _plan_review_spacing(
+        mapping_contract["target"], wps_namelist)
     target_contract = _validate_target_contract(
         mapping_contract,
         exp,
-        mapping_contract["target"].get("boundary_interval_seconds"),
+        review_spacing,
         hierarchy=hierarchy,
         experiment_config=experiment_config,
+        spacing_origin=review_origin,
+        before_decode=True,
     )
     cfg = exp.root.run
     physics_selection = None
@@ -894,27 +1487,48 @@ def prepare_mapped_wrf(
         )
         grids = (grid,)
     selection = GeogSelection.from_case_data(
-        SimpleNamespace(wps_namelist=wps_namelist, geog_root=geog_root), 1,
+        SimpleNamespace(wps_namelist=wps_namelist, geog_root=geog_root,
+                        static_highres=static_highres), 1,
     )
 
+    posted_source = None
     with prep_stage("source_decode", label="Decode and compose source",
                     backend="rust" if engine_binary is not None else "python"):
         decode_started = time.perf_counter()
-        bundle = decode_composed_source(
-            composition, mapping, primary, supplements, provenance,
-            input_manifest=input_manifest,
-            input_manifest_sha256=input_manifest_sha256,
-            contributing_mappings=contributing,
-            grib1_bridge=decoders.get("grib1_bridge"),
-            grib2_inventory=decoders.get("grib2_inventory"),
-            grib2_dump=decoders.get("grib2_dump"),
-            # The engine's compose scratch holds the whole composed frame
-            # stream; naming this run's destination keeps that stream on the
-            # output's disk-backed filesystem instead of a tmpfs system temp
-            # with a quota smaller than the biggest registered sources.
-            scratch_destination=output_root,
-            atmospheric_grids=grids,
-        )
+        if as_posted is not None:
+            posted_source = _PostedMappedSource(
+                posting=as_posted, input_manifest=input_manifest,
+                composition=composition, mapping=mapping, primary=primary,
+                supplements=supplements, provenance=provenance,
+                contributing=contributing, decoders=decoders, grids=grids,
+                workers=preprocess_workers, output_root=output_root,
+                source_format=str(mapping_contract["format"]))
+            try:
+                bundle = posted_source.start()
+            except BaseException:
+                posted_source.close()
+                raise
+        else:
+            bundle = decode_composed_source(
+                composition, mapping, primary, supplements, provenance,
+                input_manifest=input_manifest,
+                input_manifest_sha256=input_manifest_sha256,
+                contributing_mappings=contributing,
+                grib1_bridge=decoders.get("grib1_bridge"),
+                grib2_inventory=decoders.get("grib2_inventory"),
+                grib2_dump=decoders.get("grib2_dump"),
+                # The engine's compose scratch holds the whole composed frame
+                # stream; naming this run's destination keeps that stream on the
+                # output's disk-backed filesystem instead of a tmpfs system temp
+                # with a quota smaller than the biggest registered sources.
+                scratch_destination=output_root,
+                atmospheric_grids=grids,
+                # An explicit --preprocess-workers is the count every host
+                # step takes, the source decode included; without one the
+                # engine uses every core it may run on.  Either way the
+                # engine narrows to what free memory holds.
+                workers=preprocess_workers,
+            )
     decode_seconds = time.perf_counter() - decode_started
     if bundle.mapping_sha256 != mapping_snapshot.sha256:
         raise ValueError(
@@ -923,14 +1537,30 @@ def prepare_mapped_wrf(
     _require_authority_snapshot(mapping_snapshot)
     if dict(bundle.decoder_paths) != decoders:
         raise ValueError("decoded decoder paths differ from requested decoders")
-    composition_receipt = mapped_composition_receipt(bundle)
-    vertical_ladder = decoded_vertical_ladder(bundle, mapping_contract)
-    if vertical_ladder is not None:
-        _announce_vertical_ladder(vertical_ladder)
-    derived_terrain = dict(composition_receipt.get("alignment") or {}).get("derived")
-    if derived_terrain is not None:
-        _announce_derived_terrain(derived_terrain)
-    snapshots = _forcing_series(bundle)
+    if posted_source is None:
+        composition_receipt = mapped_composition_receipt(bundle)
+        receipt_identity_sha256 = composition_receipt_identity_sha256(
+            composition_receipt)
+        vertical_ladder = decoded_vertical_ladder(bundle, mapping_contract)
+        if vertical_ladder is not None:
+            _announce_vertical_ladder(vertical_ladder)
+        derived_terrain = dict(
+            composition_receipt.get("alignment") or {}).get("derived")
+        if derived_terrain is not None:
+            _announce_derived_terrain(derived_terrain)
+        snapshots = _forcing_series(bundle)
+    else:
+        # The receipt, its alignment and the vertical ladder read every
+        # lead: the seal writes them from every batch (_AS_POSTED_SEAL_KEYS).
+        composition_receipt = receipt_identity_sha256 = vertical_ladder = None
+        if dict(bundle.alignment_receipt).get("derived") is not None:
+            posted_source.close()
+            raise ValueError(
+                "this source's terrain is derived from the window's first "
+                "valid time (the mapping's when_absent), so a later lead "
+                "batch would derive its own; it is prepared whole, not as "
+                "posted")
+        snapshots = posted_source.regular_snapshots().sorted_by_valid_time()
     for_grids = getattr(snapshots, "for_grids", None)
     if for_grids is not None:
         snapshots = for_grids(grids)
@@ -965,7 +1595,11 @@ def prepare_mapped_wrf(
         hierarchy=hierarchy,
         experiment_config=experiment_config,
     )
-    source_top_pressure_pa = _source_top_pressure_pa(snapshots)
+    # As posted, the head reads the leads decoded so far and the seal
+    # checks the whole window again (_check_posted_top).
+    source_top_pressure_pa = _source_top_pressure_pa(
+        snapshots, count=None if posted_source is None
+        else posted_source.decoded_count)
     if hierarchy:
         grids = validate_native_lambert_contracts(
             exp,
@@ -975,36 +1609,19 @@ def prepare_mapped_wrf(
         )
         grid = grids[0]
     else:
-        try:
-            validate_explicit_eta_grid(
-                exp.vertical.eta_levels,
-                nz=cfg.nz,
-                p_top=exp.vertical.p_top,
-                source_top_pressure_pa=source_top_pressure_pa,
-                context="mapped direct adapter",
-            )
-        except ValueError as error:
-            # The ladder's shape and values were validated at the door;
-            # what this re-check adds is the SOURCE TOP, so the only
-            # user-reachable raise left here is a model top the staged
-            # atmosphere does not reach.
-            raise VerticalLadderRefusal(
-                str(error),
-                remedy=(
-                    "remedy: lower the model top -- raise p_top in the "
-                    f"experiment config {experiment_config} to a "
-                    "pressure the staged source atmosphere reaches -- "
-                    "or prepare from a source whose levels reach this "
-                    "top (`gpuwm prep --show-source NAME` prints each "
-                    "source's vertical coverage)."),
-            ) from error
+        _require_source_top(exp, cfg, source_top_pressure_pa,
+                            experiment_config)
 
     with prep_stage("root_static", label="Prepare root static fields"):
         static_started = time.perf_counter()
         if prebuilt_static is None:
             static = build_static(grid, geog_root, selection=selection)
             root_static_provider = "native-wps-geog"
-            root_static_receipt = None
+            # The terrain-smoothing root seam reads this attestation.
+            from gpuwm.static.terrain_smoothing import smoothing_receipt
+            smoothing = smoothing_receipt(static_highres)
+            root_static_receipt = ({"terrain_smoothing": smoothing}
+                                   if smoothing else None)
         else:
             # The receipt binds native_geometry_contract(grid, cfg) AND the NPZ
             # SHA-256; the loader then re-derives the geometry fields from the
@@ -1028,7 +1645,8 @@ def prepare_mapped_wrf(
     # nothing yet built on a vertical coordinate.
     exp, vertical_adaptation = adapt_experiment_for_statics(
         exp, grids, root_terrain=static["HGT_M"],
-        static_catalog=_survey_static_catalog(exp, wps_namelist, geog_root),
+        static_catalog=_survey_static_catalog(
+            exp, wps_namelist, geog_root, static_highres),
         static_highres=static_highres, announce=_announce_adaptation)
     cfg = exp.root.run
 
@@ -1039,9 +1657,20 @@ def prepare_mapped_wrf(
     # here: the decode took minutes and the card may be shared.
     preprocess = admit_preparation(
         preprocess,
-        lambda: price_forcing_preparation("mapped", exp, snapshots),
+        lambda: price_forcing_preparation(
+            "mapped", exp, snapshots,
+            boundary_species=mapping_boundary_species(mapping_contract)),
         workers=preprocess_workers)
     preprocess_receipt = preprocess.receipt()
+    # CHAINED TREES.  A tree's children need only the start time and the
+    # root's initial state, so a tree is chained exactly like a single
+    # domain, on either backend: the start time first, the children into
+    # the head, one root interval per segment, the one-shot tree at the
+    # seal.  No start state stays resident between head and seal (the seal
+    # re-reads each from the head, boundary_stream.TreeStartStates), so a
+    # later forcing time is built on the card with nothing under it, as in
+    # the start-last order the unchained tree keeps.
+    chain_tree = hierarchy and chained_enabled()
     # The same declared policy reaches the root and every child catalog.
     water_statics = WaterTemperatureStatics.for_route(
         route=_WATER_ROUTE, policy=case_policy["water_temperature_policy"],
@@ -1049,19 +1678,22 @@ def prepare_mapped_wrf(
         landuse_attrs=selection.landuse_global_attrs())
     with prep_stage("root_initialize", label="Initialize root forcing states",
                     backend=str(preprocess_receipt["backend"]),
-                    count=len(snapshots) if hierarchy else 1):
+                    count=(len(snapshots) if hierarchy and not chain_tree
+                           else 1)):
         initialize_started = time.perf_counter()
         # ONE forcing time is ever resident.  A single domain builds the
         # start time FIRST, writes it into the published head and releases
         # it, then builds each later time and writes each interval as soon
-        # as its two times exist (gpuwm.ingest.boundary_stream).  A hierarchy
-        # still needs every root interval before its children, so it builds
-        # the start time LAST (start_last_forcing_order) and keeps only that
-        # met/state; every other time contributes its perimeter frames against
-        # its own position and is released before the next one is
-        # interpolated.  Walking the times in order instead meant holding the
-        # start time -- which nothing reads until the boundaries are complete
-        # -- while each later time was built underneath it.  At 800x800x49
+        # as its two times exist (gpuwm.ingest.boundary_stream).  A chained
+        # hierarchy does the same (chain_tree, above) and its seal re-reads
+        # the start states from the head.  An unchained hierarchy builds
+        # the start time LAST (start_last_forcing_order) and
+        # keeps only that met/state; every other time contributes its
+        # perimeter frames against its own position and is released before
+        # the next one is interpolated.  Walking the times in order instead
+        # meant holding the start time -- which nothing reads until the
+        # boundaries are complete -- while each later time was built
+        # underneath it.  At 800x800x49
         # with mp=10 and three GFS times that second resident time is 14.67
         # GiB of device residency against 7.66, a priced peak envelope of
         # 23.92 GiB against 15.86: the difference between preparing the
@@ -1081,11 +1713,21 @@ def prepare_mapped_wrf(
         )
         coriolis_f, coriolis_e = grid.coriolis_m()
         rotation_sin, rotation_cos = grid.rotation_m()
+        # The hydrometeor masses this mapping declares are decoded from
+        # every frame, so the root's specified boundary carries them
+        # (gpuwm.boundary_fields); a mapping that declares none keeps
+        # water vapour only.
+        boundary_species = mapping_boundary_species(mapping_contract)
+        # WRF's smooth_cg_topo (gpuwm.ingest.cg_topo): the root terrain is
+        # blended toward the source's once, before the first
+        # initialization reads it.  Off, this does nothing.
+        terrain_blend = RootTerrainBlend(exp, static, route="mapped")
+
         def build_forcing_time(index):
             # One forcing time's build, unchanged: interpolate, initialize,
             # attach the map factors.  The single-domain route calls it start
-            # first (gpuwm.ingest.boundary_stream); the hierarchy keeps the
-            # start time last until its children are chained too.
+            # first (gpuwm.ingest.boundary_stream), as does a chained
+            # hierarchy; an unchained hierarchy keeps the start time last.
             source = snapshots[index]
             # Metgrid classifies masked-field TARGET cells by the model
             # (geogrid) landmask; the mapped lane declares it like the ERA5
@@ -1094,6 +1736,8 @@ def prepare_mapped_wrf(
                 source, grid, backend=preprocess,
                 target_landmask=np.asarray(static["LANDMASK"]) >= 0.5,
                 water_temperature_statics=water_statics)
+            terrain_blend.before_initialize(
+                met.fields.get("SOURCE_OROGRAPHY"))
             initialized = initialize_real(
                 met, cfg, coord, static["HGT_M"], grid=grid,
                 landmask=static["LANDMASK"],
@@ -1103,6 +1747,7 @@ def prepare_mapped_wrf(
                 # Only the start time's result is kept below; every later
                 # time contributes its state to the boundaries.
                 boundary_only=index != 0,
+                boundary_species=boundary_species,
                 # THE FRONT DOOR for the mp=28 aerosol default is the "grid="
                 # above (lane/static-dataset-door), and it is the SAME door the
                 # other ten real routes now use.
@@ -1137,7 +1782,7 @@ def prepare_mapped_wrf(
             )
             return met, initialized
 
-        if hierarchy:
+        if hierarchy and not chain_tree:
             for index in start_last_forcing_order(len(snapshots)):
                 met, initialized = build_forcing_time(index)
                 forcing.add_state(initialized.state, index=index)
@@ -1226,6 +1871,18 @@ def prepare_mapped_wrf(
         published_manifest_sha256 = (
             bundle.input_manifest_sha256 if source_manifest_sha256 is None
             else source_manifest_sha256)
+        posted_plan = None
+        if posted_source is not None:
+            # The manifest the seal will write, with every planned lead
+            # object's size and digest not known yet; the head binds its
+            # plan, and each digest the manifest carries is this plan's
+            # placeholder until the seal (boundary_stream.input_plan).
+            posted_plan = _posted_input_plan(
+                posted_source, mapping=mapping, composition=composition,
+                primary=primary, supplements=supplements,
+                provenance=provenance, decoders=decoders)
+            published_manifest_sha256 = receipt_identity_sha256 = (
+                posted_plan["placeholder"])
         for source, name, digest in (
             (mapping, "mapping.json", bundle.mapping_sha256),
             (
@@ -1233,11 +1890,12 @@ def prepare_mapped_wrf(
                 "composition.json",
                 bundle.composition_sha256,
             ),
-            (
+            # As posted, the seal writes the manifest and copies it here.
+            *(() if posted_source is not None else ((
                 published_manifest,
                 "input-manifest.json",
                 published_manifest_sha256,
-            ),
+            ),)),
             # The bridged composition-inputs manifest travels TOO on a
             # named-source route: the composition receipt seals its
             # digest, and the forecast leg re-hashes this copy against
@@ -1293,10 +1951,13 @@ def prepare_mapped_wrf(
             "mapping_sha256": bundle.mapping_sha256,
             "composition_sha256": bundle.composition_sha256,
             "input_manifest_sha256": published_manifest_sha256,
-            "composition_receipt_sha256": composition_receipt[
-                "receipt_content_sha256"
-            ],
-            "preprocessing": preprocess_receipt,
+            # The receipt less where this run's files sat (A151), as the
+            # preprocessing receipt is bound less what was measured (A138):
+            # the proof keeps the whole receipt.
+            "composition_receipt_sha256": receipt_identity_sha256,
+            # What ran, without what was measured (A138): the proof keeps
+            # the whole receipt.
+            "preprocessing": preprocess_identity(preprocess_receipt),
             "preparation_case_policy": case_policy,
             "water_temperature_overlay": water_overlay_binding,
         }
@@ -1306,6 +1967,45 @@ def prepare_mapped_wrf(
             if all(value % 3600 == 0 for value in forcing_seconds)
             else {"forcing_offsets_seconds": forcing_seconds})
         forcing_key, forcing_axis = next(iter(forcing_identity.items()))
+        if hierarchy and chain_tree:
+            chained_tree = SimpleNamespace(
+                exp=exp, grids=grids, cfg=cfg, snapshots=snapshots,
+                times=times, forcing_seconds=forcing_seconds,
+                forcing_identity=forcing_identity, forcing_key=forcing_key,
+                forcing_axis=forcing_axis,
+                boundary_interval_seconds=boundary_interval_seconds,
+                target_contract=target_contract,
+                vertical_adaptation=vertical_adaptation, soil=soil,
+                soil_temperature_repair=soil_temperature_repair,
+                initial_result=initial_result, initial_met=initial_met,
+                forcing=forcing, build_forcing_time=build_forcing_time,
+                preprocess=preprocess, preprocess_receipt=preprocess_receipt,
+                static=static, static_output_receipt=static_output_receipt,
+                geometry_receipt=geometry_receipt,
+                root_static_provider=root_static_provider,
+                root_static_receipt=root_static_receipt,
+                bundle=bundle, composition_receipt=composition_receipt,
+                vertical_ladder=vertical_ladder,
+                source_identity=source_identity,
+                published_manifest_sha256=published_manifest_sha256,
+                staging=staging, output_root=output_root,
+                experiment_config=experiment_config,
+                wps_namelist=wps_namelist, geog_root=geog_root,
+                cpu_bridge=cpu_bridge, hierarchy_workers=hierarchy_workers,
+                statics_corridor=statics_corridor,
+                static_highres=static_highres, case_policy=case_policy,
+                stock_wrf_export=stock_wrf_export,
+                run_control_before=run_control_before,
+                static_seconds=static_seconds, decode_seconds=decode_seconds,
+                initialize_seconds=initialize_seconds, started=started,
+                verify_overlay_sequence=verify_overlay_sequence,
+                initial_perturbation=initial_perturbation,
+                mapping_contract=mapping_contract,
+            )
+            # The chained tree owns the start state from here and releases
+            # it at its head; these names would keep it resident.
+            del initial_result, initial_met
+            return _prepare_chained_mapped_tree(chained_tree)
         if hierarchy:
             selected_workers = hierarchy_workers
             if selected_workers is None:
@@ -1344,9 +2044,7 @@ def prepare_mapped_wrf(
                 cpu_bridge=cpu_bridge,
                 soil_layer_contract=bundle.soil_layer_contract,
                 root_metadata={
-                    "composition_receipt_sha256": composition_receipt[
-                        "receipt_content_sha256"
-                    ],
+                    "composition_receipt_sha256": receipt_identity_sha256,
                     "mapped_target_contract": target_contract,
                 },
                 input_provenance={
@@ -1392,8 +2090,9 @@ def prepare_mapped_wrf(
                 # sub-source-cell reconstitution ran on it.
                 "soil_texture_downscale": dict(
                     getattr(soil, "soil_texture_downscale", {}) or {}),
-                # Present only when real.exe's TSLB reasonableness rebuild
-                # touched a land column of the root.
+                # Present only when a soil temperature rebuild (real.exe's
+                # band, or the snow-covered rule beside it) touched a land
+                # column of the root.
                 **({"soil_temperature_repair": soil_temperature_repair}
                    if soil_temperature_repair is not None else {}),
                 forcing_key: list(forcing_axis),
@@ -1444,6 +2143,13 @@ def prepare_mapped_wrf(
                 "wrf_manifest": dict(
                     hierarchy_result.hierarchy.wrf_manifest
                 ),
+                # Present only when the experiment carries a
+                # [perturbation] block: the bubbles this tree's forecast
+                # applies at start, recorded as deferred because the
+                # prepared arrays stay unperturbed.  Absent, the proof is
+                # byte-for-byte what it always was.
+                **({"initial_perturbation": initial_perturbation}
+                   if initial_perturbation is not None else {}),
                 # Present only when the preparation opted in: the sealed
                 # statics-corridor set, digest-bound here the way every
                 # other sealed artifact is.  Absent, the proof is
@@ -1504,8 +2210,9 @@ def prepare_mapped_wrf(
             # sub-source-cell reconstitution ran on it.
             "soil_texture_downscale": dict(
                 getattr(soil, "soil_texture_downscale", {}) or {}),
-            # Present only when real.exe's TSLB reasonableness rebuild
-            # touched a land column, so a healthy proof is unchanged.
+            # Present only when a soil temperature rebuild (real.exe's
+            # band, or the snow-covered rule beside it) touched a land
+            # column, so a healthy proof is unchanged.
             **({"soil_temperature_repair": soil_temperature_repair}
                if soil_temperature_repair is not None else {}),
             forcing_key: list(forcing_axis),
@@ -1552,11 +2259,32 @@ def prepare_mapped_wrf(
             "static": static_output_receipt,
             "geometry": geometry_receipt,
         }
+        if posted_source is not None:
+            # They read every lead: the seal writes them from every lead
+            # batch (_AS_POSTED_SEAL_KEYS), and the head leaves them out.
+            for key in _AS_POSTED_SEAL_KEYS:
+                proof_head.pop(key, None)
         # One machine, one card: the forecast may start beside this
         # producer only when both fit (boundary_stream.chained_admission).
         writer.admit(
             experiment=exp, backend=str(preprocess_receipt["backend"]),
-            device_bytes=producer_device_bytes(str(preprocess_receipt["backend"])))
+            device_bytes=producer_device_bytes(str(preprocess_receipt["backend"])),
+            source=mapping_contract)
+        as_posted_head = None
+        if posted_source is not None:
+            as_posted_head = {
+                "input_plan": posted_plan["plan"],
+                # The markers of every lead the head's own decode read.
+                "start_markers": dict(posted_source.markers),
+                "forcing_leads": posted_source.leads,
+                "seal_authored_proof_keys": _AS_POSTED_SEAL_KEYS,
+                "manifest_path": "source-evidence/input-manifest.json",
+                "lead_role_prefix": "",
+                "manifest_bound_identity_keys": _AS_POSTED_MANIFEST_BOUND,
+                "fixed_rows": posted_plan["fixed_rows"],
+                "proof_manifest_key": _AS_POSTED_PROOF_MANIFEST_KEY,
+                "posted_user_metadata": ("composition_receipt_sha256",),
+            }
         with prep_stage("prepared_head", label="Publish prepared head"):
             head_started = time.perf_counter()
             writer.write_head(
@@ -1568,9 +2296,7 @@ def prepare_mapped_wrf(
                     "last_valid_time": times[-1].isoformat(),
                     forcing_key: list(forcing_axis),
                     "boundary_interval_seconds": boundary_interval_seconds,
-                    "composition_receipt_sha256": composition_receipt[
-                        "receipt_content_sha256"
-                    ],
+                    "composition_receipt_sha256": receipt_identity_sha256,
                 },
                 lbc={
                     "spec_bdy_width": cfg.spec_bdy_width,
@@ -1582,9 +2308,17 @@ def prepare_mapped_wrf(
                     "fields": forcing.inventory,
                 },
                 proof_head=proof_head,
-                input_manifest_sha256=published_manifest_sha256,
+                input_manifest_sha256=(None if posted_source is not None
+                                       else published_manifest_sha256),
                 forcing=forcing,
+                as_posted=as_posted_head,
             )
+            if posted_source is not None:
+                # From here on the build of forcing time k waits for lead
+                # k (the heartbeat says waiting_for_source), and each
+                # segment binds the markers of the leads it spans.
+                posted_source.posted.writer = writer
+                writer.bind_posted_leads(posted_source.markers)
         head_seconds = time.perf_counter() - head_started
         # The start state has done its work: it is in the head.
         del initial_result, initial_met
@@ -1599,9 +2333,24 @@ def prepare_mapped_wrf(
                 forcing=forcing, times=times,
                 release=lambda: release_backend_memory(preprocess))
         initialize_seconds += time.perf_counter() - boundaries_started
+        posted_proof = {}
         with prep_stage("prepared_cache", label="Seal prepared cache"):
             cache_started = time.perf_counter()
-            cache_receipt = dict(writer.seal_cache())
+            if posted_source is None:
+                cache_receipt = dict(writer.seal_cache())
+            else:
+                sealed = _seal_posted_mapped(
+                    posted_source, writer=writer, plan=posted_plan,
+                    mapping_contract=mapping_contract, snapshots=snapshots,
+                    exp=exp, cfg=cfg, source_identity=source_identity,
+                    static_cache_sha256=static_output_receipt["sha256"],
+                    namelist_sha256=_sha256(experiment_config),
+                    forcing_identity=forcing_identity,
+                    experiment_config=experiment_config)
+                cache_receipt = sealed["cache_receipt"]
+                posted_proof = sealed["proof"]
+                bundle = sealed["bundle"]
+                decode_seconds = posted_source.decode_seconds
             cache_receipt["path"] = "prepared-cache"
         cache_seconds = head_seconds + time.perf_counter() - cache_started
         prepared_path = writer.cache_path
@@ -1648,6 +2397,10 @@ def prepare_mapped_wrf(
             raise ValueError("mapped run-control bytes changed during preparation")
         proof = {
             **proof_head,
+            # As posted, the leads the preparation waited for (DESIGN A136
+            # 2.4 item 6); a preparation of a complete window has none.
+            **({"posting": posted_proof.get("posting")}
+               if posted_source is not None else {}),
             "prepared_cache": cache_receipt,
             "export": export_receipt,
             "boundary_stream": writer.boundary_stream_proof(),
@@ -1660,6 +2413,10 @@ def prepare_mapped_wrf(
                 "total": time.perf_counter() - started,
             },
         }
+        # The seal-authored receipt keys, from every lead batch as one
+        # decode (the head left them out).
+        proof.update({key: posted_proof[key] for key in _AS_POSTED_SEAL_KEYS
+                      if key in posted_proof})
         proof["proof_content_sha256"] = hashlib.sha256(
             _canonical(proof).encode("utf-8")
         ).hexdigest()
@@ -1668,6 +2425,8 @@ def prepare_mapped_wrf(
         # interpolated and the tree is published, so the engine scratch
         # it streamed from goes now rather than at collection.
         bundle.close()
+        if posted_source is not None:
+            posted_source.close()
         return proof
     except BaseException as error:
         try:
@@ -1680,9 +2439,340 @@ def prepare_mapped_wrf(
         finally:
             try:
                 bundle.close()
+                if posted_source is not None:
+                    posted_source.close()
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
         raise
+
+
+def _prepare_chained_mapped_tree(c) -> dict[str, object]:
+    """A mapped domain tree, chained: head, one root interval per segment, seal.
+
+    The head holds the root's static files and start state (streamed cache
+    under ``hierarchy-head/domains/d01/prepared-cache``, its header written
+    at the seal) and every child's complete artifact set under
+    ``hierarchy-head/domains/dNN`` (a child needs only the start time),
+    and a moving nest's statics corridor under
+    ``hierarchy-head/statics-corridor``, bound by the head's proof.
+    Segment k is the root's boundary interval k.  No start state stays
+    resident between head and seal, on either backend: the seal re-reads
+    the root (with its whole boundary set) and every child from the head
+    (:class:`gpuwm.ingest.boundary_stream.TreeStartStates`) and writes the
+    one-shot ``hierarchy-artifacts/`` tree from them, through the same
+    writer and the same arguments as the unchained tree, then the
+    companion WRF files and the corridor (copied from the head), then
+    ``proof.json``.
+    """
+
+    exp = c.exp
+    cfg = c.cfg
+    bundle = c.bundle
+    staging = c.staging
+    backend = str(c.preprocess_receipt["backend"])
+    selected_workers = c.hierarchy_workers
+    if selected_workers is None:
+        selected_workers = 8 if backend == "cpu" else 1
+    namelist_sha256 = _sha256(c.experiment_config)
+    manifest_sha256 = c.published_manifest_sha256
+    receipt_sha256 = composition_receipt_identity_sha256(c.composition_receipt)
+    initialize_seconds = c.initialize_seconds
+    # The forcing axis under its own name, as the unchained proof spells
+    # it (the proof inventory gate reads the key by that name).
+    forcing_key, forcing_axis = c.forcing_key, c.forcing_axis
+    # Exactly the three the unchained tree hands its hierarchy call.
+    tree_identity = {**c.source_identity, "target_contract": c.target_contract}
+    root_metadata = {"composition_receipt_sha256": receipt_sha256,
+                     "mapped_target_contract": c.target_contract}
+    input_provenance = {
+        "mapping_sha256": bundle.mapping_sha256,
+        "composition_sha256": bundle.composition_sha256,
+        "input_manifest_sha256": manifest_sha256,
+        "decoder_sha256": dict(bundle.decoder_sha256),
+        "preprocessing": c.preprocess_receipt,
+        "mapped_target_contract": c.target_contract,
+    }
+    writer = None
+    try:
+        hierarchy_started = time.perf_counter()
+        tree_head = prepare_regular_source_hierarchy_head(
+            exp=exp,
+            grids=c.grids,
+            snapshots=c.snapshots,
+            # A child sees the catalog, not the config.
+            soil_texture_downscale=declared_soil_texture_downscale(
+                c.experiment_config),
+            **c.forcing_identity,
+            wps_namelist=c.wps_namelist,
+            geog_root=c.geog_root,
+            source_name="RW-WPS-MAPPED",
+            root_initial_result=c.initial_result,
+            source_inventory=tuple(c.snapshots[0].fields),
+            workers=selected_workers,
+            preprocess_backend=backend,
+            cpu_bridge=c.cpu_bridge,
+            soil_layer_contract=bundle.soil_layer_contract,
+            preprocess_selection=c.preprocess_receipt.get("selection"),
+            source_manifest_sha256=manifest_sha256,
+            statics_corridor=c.statics_corridor,
+            static_highres=c.static_highres,
+            sfcp_to_sfcp=c.case_policy["sfcp_to_sfcp"],
+            water_temperature_policy=c.case_policy[
+                "water_temperature_policy"],
+            # The statics corridor goes into the head, so a nest that
+            # moves from the first step has its ground there.
+            head_artifacts=staging / HIERARCHY_HEAD_DIRNAME,
+        )
+        bound_identity = tree_head.bound_source_identity(tree_identity)
+        head_domains = staging / HIERARCHY_HEAD_DIRNAME / "domains"
+        root_directory = head_domains / "d01"
+        root_directory.mkdir(parents=True)
+        root_static_receipt, _root_geometry = write_domain_static_files(
+            root_directory, domain=exp.domains[0], grid=c.grids[0],
+            static_fields=c.static)
+        child_builds = write_child_domain_artifacts(
+            head_domains, exp=exp, child_results=tree_head.child_results,
+            bridge_manifest_sha256=manifest_sha256,
+            source_manifest_sha256=manifest_sha256,
+            namelist_sha256=namelist_sha256, **tree_head.forcing_identity,
+            source_identity=bound_identity, valid_time=exp.start_time)
+        binding = root_domain_artifact_binding(
+            exp=exp, static_cache_sha256=root_static_receipt["sha256"],
+            bridge_manifest_sha256=manifest_sha256,
+            source_manifest_sha256=manifest_sha256,
+            namelist_sha256=namelist_sha256, **tree_head.forcing_identity,
+            source_identity=bound_identity, valid_time=exp.start_time,
+            root_metadata=root_metadata)
+        head_hierarchy_seconds = time.perf_counter() - hierarchy_started
+        cache_name = f"{HIERARCHY_HEAD_DIRNAME}/domains/d01/prepared-cache"
+        writer = PreparedTreeWriter(
+            staging=staging, output_root=c.output_root,
+            identity=binding.identity, cache_name=cache_name)
+        head_moisture_floor_receipts = hierarchy_moisture_floor_receipts(
+            exp, c.initial_result, tree_head.child_results)
+        # Everything the tree's proof says that the start time already
+        # knows, the statics corridor included (built into the head, so a
+        # moving nest's forecast starts there); the seal adds the artifact
+        # records, the export, the stream and the wall times
+        # (boundary_stream.SEAL_ONLY_PROOF_KEYS).
+        proof_head = {
+            "schema": HIERARCHY_PROOF_SCHEMA,
+            "status": "READY_NOT_YET_STOCK_WRF_GATED",
+            "stock_wrf_export": c.stock_wrf_export,
+            "domain_count": len(exp.domains),
+            "vertical_coordinate": _vertical_coordinate_receipt(
+                exp, c.vertical_adaptation),
+            "forcing_times": [value.isoformat() for value in c.times],
+            # The soil-state SOURCE resolution and whether the
+            # sub-source-cell reconstitution ran on it.
+            "soil_texture_downscale": dict(
+                getattr(c.soil, "soil_texture_downscale", {}) or {}),
+            # Present only when a soil temperature rebuild (real.exe's
+            # band, or the snow-covered rule beside it) touched a land
+            # column of the root.
+            **({"soil_temperature_repair": c.soil_temperature_repair}
+               if c.soil_temperature_repair is not None else {}),
+            forcing_key: list(forcing_axis),
+            "boundary_interval_seconds": c.boundary_interval_seconds,
+            "target_contract": c.target_contract,
+            "execution_inputs": {
+                "decoders": _bound_decoder_receipts(
+                    bundle.decoder_paths,
+                    bundle.decoder_sha256,
+                ),
+                **c.run_control_before,
+                "geog_root": str(c.geog_root),
+                "geog_source_binding": (
+                    "per_domain_resolved_dataset_paths_plus_native_"
+                    "static_output_sha256"
+                ),
+                "root_static_provider": c.root_static_provider,
+                "root_static_receipt": c.root_static_receipt,
+            },
+            "source_composition": c.composition_receipt,
+            # Present only when the source files carried fewer vertical
+            # levels than the mapping declares (an era ladder), as in the
+            # unchained tree.
+            **({"source_vertical_ladder": c.vertical_ladder}
+               if c.vertical_ladder is not None else {}),
+            "preprocessing": c.preprocess_receipt,
+            "hierarchy_workers": selected_workers,
+            "root_static": c.static_output_receipt,
+            "root_geometry": c.geometry_receipt,
+            "static_catalog": dict(tree_head.static_receipt),
+            "source_coverage": dict(tree_head.source_coverage_receipt),
+            **head_moisture_floor_receipts,
+            # Present only when the experiment carries a [perturbation]
+            # block: the bubbles this tree's forecast applies at start,
+            # recorded as deferred as in the unchained tree.
+            **({"initial_perturbation": c.initial_perturbation}
+               if c.initial_perturbation is not None else {}),
+            # Present only when the preparation opted in, as in the
+            # unchained tree.
+            **({"statics_corridor": dict(tree_head.statics_corridor_receipt)}
+               if tree_head.statics_corridor_receipt is not None else {}),
+        }
+        # One machine, one card: a forecast started on this head beside
+        # its producer is admitted only when both fit, priced with the
+        # hydrometeor boundary tables this mapping publishes, as the
+        # single domain is.
+        writer.admit(
+            experiment=exp, backend=backend,
+            device_bytes=producer_device_bytes(backend),
+            source=c.mapping_contract)
+        with prep_stage("prepared_head", label="Publish prepared head"):
+            head_started = time.perf_counter()
+            writer.write_head(
+                initial_result=c.initial_result, met=c.initial_met,
+                surface=canonical_noah_surface(c.soil),
+                metadata=dict(binding.metadata),
+                lbc={
+                    "spec_bdy_width": cfg.spec_bdy_width,
+                    "spec_zone": cfg.spec_zone,
+                    "relax_zone": cfg.relax_zone,
+                    "schedule": [
+                        [float(earlier), float(later)] for earlier, later
+                        in zip(c.forcing_seconds, c.forcing_seconds[1:])],
+                    "fields": c.forcing.inventory,
+                },
+                proof_head=proof_head,
+                input_manifest_sha256=manifest_sha256,
+                forcing=c.forcing,
+                tree=domain_tree_head_fields(
+                    [f"d{int(domain.grid_id):02d}" for domain in exp.domains],
+                    root_cache=cache_name,
+                    children_receipts={
+                        f"d{int(build.receipt['grid_id']):02d}": _sha256(
+                            head_domains
+                            / f"d{int(build.receipt['grid_id']):02d}"
+                            / "receipt.json")
+                        for build in child_builds}),
+                extra_head_payload_bytes=sum(
+                    int(build.receipt["artifacts"]["prepared_cache"][
+                        "payload_bytes"]) for build in child_builds),
+            )
+        head_seconds = time.perf_counter() - head_started
+        # Every start state is in the head now: the root's in its streamed
+        # cache, each child's in hierarchy-head/domains/dNN.  None stays
+        # resident while the later times are built (on the card that is the
+        # residency start_last_forcing_order avoids); the seal re-reads them.
+        start_states = TreeStartStates.release(
+            root_result=c.initial_result, root_met=c.initial_met,
+            child_results=tree_head.child_results,
+            child_content_sha256={
+                f"d{int(build.receipt['grid_id']):02d}": build.receipt[
+                    "artifacts"]["prepared_cache"]["content_sha256"]
+                for build in child_builds})
+        c.initial_result = c.initial_met = None
+        tree_head.child_results = ()
+        release_backend_memory(c.preprocess)
+        with prep_stage("root_boundaries",
+                        label="Initialize remaining forcing states",
+                        backend=backend, count=len(c.snapshots) - 1):
+            boundaries_started = time.perf_counter()
+            writer.stream_forcing_times(
+                count=len(c.snapshots),
+                build_forcing_time=c.build_forcing_time,
+                forcing=c.forcing, times=c.times,
+                release=lambda: release_backend_memory(c.preprocess))
+        initialize_seconds += time.perf_counter() - boundaries_started
+        with prep_stage("prepared_cache", label="Seal prepared cache"):
+            root_content_sha256 = str(writer.seal_cache()["content_sha256"])
+        hierarchy_seal_started = time.perf_counter()
+        with prep_stage("tree_start_states",
+                        label="Re-read start states from the head"):
+            (root_result, root_met, boundaries,
+             tree_head.child_results) = start_states.reread(
+                writer.root, exp=exp, grids=c.grids,
+                root_identity=binding.identity,
+                root_content_sha256=root_content_sha256)
+        hierarchy_result = seal_regular_source_hierarchy(
+            tree_head,
+            artifact_output=writer.root / "hierarchy-artifacts",
+            wrf_output=writer.root / "wrf-native-input",
+            root_initial_result=root_result,
+            root_met=root_met,
+            root_soil=c.soil,
+            root_static_fields=c.static,
+            root_boundaries=boundaries,
+            bridge_manifest_sha256=manifest_sha256,
+            source_manifest_sha256=manifest_sha256,
+            namelist_sha256=namelist_sha256,
+            source_identity=tree_identity,
+            root_metadata=root_metadata,
+            input_provenance=input_provenance,
+            artifact_manifest_reference=(
+                "../hierarchy-artifacts/domain-artifacts.json"
+            ),
+            stock_wrf_export=c.stock_wrf_export,
+            head_artifacts=writer.root / HIERARCHY_HEAD_DIRNAME,
+        )
+        hierarchy_seconds = (head_hierarchy_seconds
+                             + time.perf_counter() - hierarchy_seal_started)
+        if dict(hierarchy_result.hierarchy.moisture_floor_receipts) \
+                != head_moisture_floor_receipts:
+            raise RuntimeError(
+                "the sealed tree's moisture-floor receipts differ from the "
+                "head's, which were computed from the same initial states")
+        start_states.require_sealed_is_head(
+            hierarchy_result.hierarchy.artifacts.receipt,
+            root_content_sha256=root_content_sha256)
+        c.verify_overlay_sequence(c.snapshots)
+        run_control_after = {
+            "wps_namelist": _file_receipt(c.wps_namelist),
+            "experiment_config": _file_receipt(c.experiment_config),
+        }
+        if c.cpu_bridge is not None:
+            run_control_after["cpu_preprocess_bridge"] = _file_receipt(
+                c.cpu_bridge)
+        if run_control_after != c.run_control_before:
+            raise ValueError(
+                "mapped run-control bytes changed during preparation"
+            )
+        proof = {
+            **proof_head,
+            "artifact_receipt": dict(
+                hierarchy_result.hierarchy.artifacts.receipt
+            ),
+            "wrf_manifest": dict(
+                hierarchy_result.hierarchy.wrf_manifest
+            ),
+            # Present only when the preparation opted in, as in the
+            # unchained tree.
+            **(
+                {"statics_corridor": dict(
+                    hierarchy_result.statics_corridor_receipt)}
+                if hierarchy_result.statics_corridor_receipt is not None
+                else {}),
+            "boundary_stream": writer.boundary_stream_proof(),
+            "timing_seconds": {
+                "static_root": c.static_seconds,
+                "decode_and_compose": c.decode_seconds,
+                "initialize_all_root_times": initialize_seconds,
+                **dict(hierarchy_result.hierarchy.timings_seconds),
+                "hierarchy_call_wall": hierarchy_seconds,
+                "prepared_head": head_seconds,
+                "head_published_after": writer.head_seconds,
+                "total": time.perf_counter() - c.started,
+            },
+        }
+        proof["proof_content_sha256"] = hashlib.sha256(
+            _canonical(proof).encode("utf-8")
+        ).hexdigest()
+        writer.publish(proof)
+    except BaseException as error:
+        if writer is not None:
+            # A head already published stays, marked failed, so a waiting
+            # forecast ends with this reason and the next preparation of
+            # this output root rebuilds it.  The caller closes the frame
+            # stream and removes a staging tree that was never published.
+            writer.fail(error)
+        raise
+    # The composed frame stream is spent: every valid time has been
+    # interpolated and the tree is sealed, so the engine scratch it
+    # streamed from goes now rather than at collection.
+    bundle.close()
+    return proof
 
 
 _ROLE_PATTERN = re.compile(r"[A-Za-z0-9_.-]+")
@@ -1760,7 +2850,14 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--input-manifest", type=Path, required=True)
-    parser.add_argument("--input-manifest-sha256", required=True)
+    parser.add_argument("--input-manifest-sha256")
+    parser.add_argument(
+        "--as-posted", type=Path, default=None, metavar="POSTING_DIR",
+        help=("an as-posted fetch's posting/ folder: prepare as the leads "
+              "post, decoding each lead batch as its marker appears, and "
+              "write the window's input manifest at --input-manifest (beside "
+              "the fetched files) at the seal, in place of "
+              "--input-manifest-sha256"))
     parser.add_argument("--grib1-bridge", type=Path)
     parser.add_argument("--grib2-inventory", type=Path)
     parser.add_argument("--grib2-dump", type=Path)
@@ -1895,6 +2992,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # uses, so the flag and the documented workaround cannot drift
         # into meaning different things.
         os.environ[_ENGINE_ENV] = args.mapped_engine
+    if (args.as_posted is None) == (args.input_manifest_sha256 is None):
+        parser.error(
+            "give --input-manifest-sha256 for a complete window, or "
+            "--as-posted POSTING_DIR to prepare as the leads post and write "
+            "the manifest at the seal, and not both")
     if args.input_list is not None:
         # Resolved before any other input is opened, so a bad list file
         # is refused at the door rather than after the mapping loads.
@@ -2017,6 +3119,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             contributing_mappings=contributing,
             input_manifest=args.input_manifest,
             input_manifest_sha256=args.input_manifest_sha256,
+            # Named only as posted, so every other call is what it was.
+            **({"as_posted": args.as_posted}
+               if args.as_posted is not None else {}),
             grib1_bridge=args.grib1_bridge,
             grib2_inventory=args.grib2_inventory,
             grib2_dump=args.grib2_dump,

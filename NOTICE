@@ -25,14 +25,15 @@ Notices also sit beside the code they belong to, which is what several of
 these licences ask for and what a reader looking at one file rather than
 at the whole distribution will find first. Each shipped Python module
 that carries transcribed work opens with the notice for what it carries;
-so do gpuwm/core/kernels/glibc_flt32.cuh and
+so do gpuwm/core/kernels/glibc_flt32.cuh,
+gpuwm/core/kernels/glibc_trig_flt32.cuh and
 gpuwm/core/kernels/thompson_aerosol_common.cuh. Other CUDA translation
 units and prepended headers are covered by the source-freeze manifests
 checked by tests/test_mp8_frozen.py and
 tests/test_kernel_source_freeze_per_module.py; adding a notice comment
 would change their pinned source bytes. Their adjacent notice is
 gpuwm/core/kernels/LICENSE-third-party.txt, which sits in the same
-directory, covers all five grants present there, and is named explicitly
+directory, covers all six grants present there, and is named explicitly
 in pyproject.toml's package-data so that it ships with the code it
 belongs to. Packaged data assets carry theirs the same way, in
 LICENSE*.txt files beside them.
@@ -84,6 +85,20 @@ trademark symbol as UCAR writes it, is at
 licenses/LICENSE-WRF-public-domain.txt and beside each packaged
 WRF-derived asset directory.
 
+The UW moist-turbulence boundary layer (bl_pbl_physics = 9) is transcribed
+from WRF v4.7.1 instead (tag commit f52c197ed39d12e087d02c50f412d90d418f6186):
+phys/module_bl_camuwpbl_driver.F and the CAM modules it calls
+(module_cam_*.F). Those files carry no copyright line and no licence
+clause, so they fall under the same declaration, and v4.7.1's LICENSE.txt
+is byte-identical to the text above (sha256
+b30611d35ad1922bc741e86d21e1a897234c1a9c9e2af28076e021f565dfbec6, the
+digest of licenses/LICENSE-WRF-public-domain.txt).
+
+The renderer's WRF-file reader (tools/rustwx/crates/rw-wrfbatch) cites
+share/output_wrf.F, the WRF source that writes a history file's
+START_DATE and SIMULATION_START_DATE, for how it reads those two stamps.
+That file is WRF's, so the citation sits inside the declaration above.
+
 UCAR's declaration disclaims UCAR's own claims. It cannot and does not
 dispose of anyone else's, and WRF says so itself by preserving foreign
 notices inside phys/. ArWen transcribes two of those bodies of code and
@@ -103,13 +118,17 @@ author attribution. UCAR distributes it as part of the WRF modelling
 system, and the declaration above is the only statement either half of that
 system carries.
 
-Nine WPS sources with no WRF counterpart -- rrpr.F, gribcode.F, output.F,
+Ten WPS sources with no WRF counterpart -- rrpr.F, gribcode.F, output.F,
 rd_grib1.F, rd_grib2.F, new_storage.F, process_tile_module.F,
-interp_module.F and read_met_module.F90 -- are cited 48 times across four
-first-party Rust crates, 42 of those in tools/grib1_bridge. Its
-met_intermediate reimplements ungrib: it decodes GRIB by the user's own
-Vtable, applies ungrib's repairs, derives the fields ungrib derives, and
-writes the version-5 intermediate format. The projection math in
+interp_module.F, smooth_module.F and read_met_module.F90 -- are cited 57
+times across four first-party Rust crates, 49 of those in
+tools/grib1_bridge, whose met_intermediate reimplements ungrib: it decodes
+GRIB by the user's own Vtable, applies ungrib's repairs, derives the fields
+ungrib derives, and writes the version-5 intermediate format. The terrain
+smoothing in tools/rustwx/crates/static-fields transcribes geogrid's
+smooth_module.F for the GEOGRID.TBL terrain smoothers (smooth_option 1-2-1,
+smth-desmth and smth-desmth_special), graded bit for bit against WPS
+v4.6.0's own geogrid.exe. The projection math in
 tools/rustwx/crates/static-fields and tools/rw_wps/crates/mapped-engine is a
 separate case: it comes from module_llxy.F, which is a WRF file --
 share/module_llxy.F -- so it sits inside the declaration above, and its own
@@ -244,6 +263,31 @@ once more, in Python, in gpuwm/core/noahmp_libm.py. Fifteen files, and the
 count is machine-derived: those are exactly the files that reproduce Arm's
 coefficient tables.
 
+The sinf / cosf cores and their tables in
+gpuwm/core/kernels/glibc_trig_flt32.cuh are also Arm's work. Their sources
+are math/sinf.c, math/cosf.c, math/sincosf.h and math/sincosf_data.c.
+The 2018 Arm revision 5e8389113b47a48622d1de8beb9a4adc2b332694
+predates glibc's imports ea5c662c623125ad39fc43d5b9224150256407a9
+(shared data and helpers, 2018-08-10) and
+599cf3976679e1b345307d9c02057f02aa95528f (sinf/cosf, 2018-08-14).
+Arm's MIT relicensing at 11253b0b9d6b covers the same algorithms and
+constants; current Arm fe09d4e7ed62aa24c81b5791c810bc9de70006e9
+still offers MIT. Its source notices read:
+
+    Copyright (c) 2018-2024, Arm Limited.
+    Copyright (c) 2018-2019, Arm Limited.
+
+The transcription follows glibc 2.43 sysdeps/ieee754/flt-32/s_sinf.c,
+s_cosf.c, s_sincosf.h, sincosf_poly.h and s_sincosf_data.c, selected
+as the x86 FMA IFUNC variant. The generic sine/cosine bodies, both range
+reductions, polynomials and tables reproduce Arm's code apart from
+renamings, qualifiers, macro spellings and splitting polynomial helpers
+into sincosf_poly.h. Integration aliases and IFUNC wrappers are not copied.
+The MIT branch is elected for these parts too; the full Arm permission
+notice below and licenses/LICENSE-Arm-optimized-routines-MIT.txt apply.
+This adds one trig header to the fourteen log/exp/pow kernel files above;
+the Python log/exp/pow copy remains separate.
+
 The grant ArWen elects is Arm's MIT, and the sequence matters enough to
 state exactly rather than compress. At the vintage glibc imported -- Arm
 86067a740541, 2017-08-11, taken into glibc at 4ea49f4c08ee on 2017-09-04
@@ -291,9 +335,73 @@ gpuwm/core/kernels/LICENSE-third-party.txt:
 
 --------------------------------------------------------------------------
 
+FP32 libm transcriptions -- CORE-MATH
+
+The glibc_tanf, glibc_asinf, glibc_acosf and glibc_atanf functions in
+gpuwm/core/kernels/glibc_trig_flt32.cuh transcribe the CORE-MATH
+correctly-rounded binary32 implementations distributed in glibc 2.43.
+Their sources under glibc's sysdeps/ieee754/flt-32/ record these upstream
+CORE-MATH paths and revisions:
+
+    s_tanf.c: src/binary32/tan/tanf.c, 59d21d7
+    e_asinf.c: src/binary32/asin/asinf.c, bc385c2
+    e_acosf.c: src/binary32/acos/acosf.c, 56dd347
+    s_atanf.c: src/binary32/atan/atanf.c, a8066a5
+    s_asincosf_data.c: src/binary32/asin/asinf.c, bc385c2
+
+The common asinf/acosf coefficient tables are included in that scope.
+These files carry MIT permission directly, including in glibc's copies.
+The atanf here is CORE-MATH; the older FDLIBM atanf transcriptions in
+other files remain covered by the separate Sun notice. No FDLIBM code
+is transcribed in glibc_trig_flt32.cuh.
+
+The ubm_log10f and ubm_log10f_special functions in
+gpuwm/core/kernels/urban_bem.cuh transcribe CORE-MATH's correctly-rounded
+binary32 log10f as glibc 2.43 carries it (sysdeps/ieee754/flt-32/
+e_log10f.c: src/binary32/log10/log10f.c, bc385c2), Copyright (c)
+2022-2023 Alexei Sibidanov, under the same MIT permission. That file
+carries the copyright line and the permission notice beside the code.
+ubm_atanf there is a call to glibc_atanf above, not a transcription.
+
+The noah_log10 and noah_log10_special functions in
+gpuwm/core/kernels/noah_mosaic.cu transcribe the same CORE-MATH log10f
+(bc385c2, Copyright (c) 2022-2023 Alexei Sibidanov, the same MIT
+permission) for the Noah mosaic column, whose TDFCND takes LOG10 of the
+soil saturation ratio; that file too carries the copyright line and the
+permission notice beside the code.
+
+Both upstream copyright-year lines and the exact common permission text
+are reproduced in licenses/LICENSE-CORE-MATH-MIT.txt, in the header and
+beside the code in gpuwm/core/kernels/LICENSE-third-party.txt. MIT
+requires the copyright and permission notice in copies or substantial
+portions of this work:
+
+    Copyright (c) 2022-2024 Alexei Sibidanov.
+    Copyright (c) 2023-2024 Alexei Sibidanov.
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+--------------------------------------------------------------------------
+
 FP32 libm transcriptions -- FDLIBM (Sun Microsystems, Inc.)
 
-The expm1f, tanhf, atanf and log10f reductions descend from FDLIBM,
+The expm1f, tanhf, atanf, log10f and log1pf reductions descend from FDLIBM,
 developed at SunPro, a Sun Microsystems, Inc. business, and converted to
 single precision at Cygnus Support by Ian Lance Taylor; glibc carries them
 substantially unmodified and presents them, in its own LICENSES file, as
@@ -350,6 +458,42 @@ The two grants above are scoped by function name on purpose. They
 cover the routines named in them and nothing else; no other code in
 those files takes anything from Arm or from Sun, and none of it is
 offered to a reader on the strength of these two notices.
+
+--------------------------------------------------------------------------
+
+FP64 libm transcriptions -- Arm optimized-routines and CORE-MATH
+
+The UW moist-turbulence boundary layer computes in binary64 and is graded
+bit for bit against a gfortran/glibc build of WRF, so it carries its own
+binary64 libm rather than calling CUDA's: gpuwm/core/kernels/glibc_flt64.cuh,
+prepended to uwpbl.cu by the kernel loader. The header opens with its
+notice. It transcribes two bodies of third-party work, each by routine.
+
+The binary64 exp, log and pow cores and their data tables are Arm's
+optimized-routines (math/exp.c, math/exp_data.c, math/log.c,
+math/log_data.c, math/pow.c, math/pow_log_data.c and the parts of
+math/math_config.h they use), the same algorithms glibc 2.43 carries in
+sysdeps/ieee754/dbl-64/. Their source notices read "Copyright (c)
+2018-2026, Arm Limited." under "SPDX-License-Identifier: MIT"; the MIT
+permission text is the one reproduced in the Arm section above and at
+licenses/LICENSE-Arm-optimized-routines-MIT.txt.
+
+The binary64 cos and acos are CORE-MATH's correctly rounded functions
+(https://core-math.gitlabpages.inria.fr/): cos is "Copyright (c) 2022-2025
+Paul Zimmermann and Tom Hubrecht" and acos "Copyright (c) 2024-2025 Alexei
+Sibidanov.", both under MIT. glibc's own binary64 cos and acos, which are
+the IBM Accurate Mathematical Library under the LGPL, are NOT transcribed
+anywhere in this repository; that is why the kernel's cos and acos are
+different functions from WRF's, a residual measured and stated in the
+header and in the UW registry option. The copyright lines and the
+permission text are at licenses/LICENSE-CORE-MATH-binary64-MIT.txt and
+beside the code in gpuwm/core/kernels/LICENSE-third-party.txt.
+
+The upstream files are kept verbatim, sha256-pinned, beside the proof
+harness at tools/uwpbl_wrf471_oracle/libm64/upstream/. The two grants are
+scoped by routine: they cover exp, log, pow, cos and acos in
+glibc_flt64.cuh and nothing else in the UW kernel, whose remaining code is
+a transcription of WRF.
 
 --------------------------------------------------------------------------
 
@@ -675,7 +819,7 @@ lakes, admin 0 boundary lines and admin 1 states and provinces lines
 (public domain, https://www.naturalearthdata.com/), simplified and
 delta-coded. The file carries the same notice in its "notice" field.
 
-The Weather Library's seed pages (gpuwm/gui/seed/wiki-seed.json) are built by
+The storm wiki's seed pages (gpuwm/gui/seed/wiki-seed.json) are built by
 tools/wiki_seed/build_seed.py from rows and statistics of public records:
 IBTrACS v04r01 (NOAA NCEI, a work of the United States Government; NCEI
 asks users to cite Knapp et al. 2010, doi:10.1175/2009BAMS2755.1, and
@@ -684,7 +828,7 @@ National Weather Service glossary (NOAA, works of the United States
 Government), the Census Bureau's 2020 county codes (a work of the United
 States Government) and Natural Earth 1:110m countries and states (public
 domain). Every record carries its source, licence and retrieval date in
-the file, and each Weather Library page shows them in its references.
+the file, and each wiki page shows them in its references.
 
 The map of the gpuwm gui page (gpuwm/gui/static/map/basemap.bin) is
 built from the same Natural Earth and Census layers by

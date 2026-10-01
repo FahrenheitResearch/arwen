@@ -28,20 +28,33 @@ identical across two processes and across the test's second in-process
 call, is rel 1.845e-07 (c_nu) and 1.039e-08 (f) from the FP64 authority,
 inside the 5e-4 real-lift gate like the 5090's.  Receipt:
 tests/data/receipts/pin-gates/extra-pin-readings-221f66f14-run1.json.
+
+RE-RECORDED for A146, 2026-10-01: the 5090 pair was the sm_120 build of
+sase.cu, whose five constant divisions NVRTC compiled as reciprocal
+multiplies.  With them spelled ``__fdiv_rn`` node-2's RTX 5090 (driver
+13.3, cupy 14.2.0, NVRTC 13.4.92) reads exactly the 4090's pair, rel
+1.845e-07 (c_nu) and 1.039e-08 (f) from the FP64 authority, in two
+processes and in each process's repeat call; node-4's RTX 5070 Ti (driver
+13.2, same NVRTC), which had no pair, reads the same pair the same way.
+So the pair is no longer per card on any card recorded here; it stays
+keyed by card because a card nobody has read can still differ.
 """
 
 GOLDEN_C_NU_FP64 = 0.001735249587725131
 GOLDEN_F_FP64 = 0.9325844743877104
 
-GOLDEN_C_NU_DEVICE = 0.0017352499069869236     # RTX 5090; rel 1.84e-7 vs FP64
-GOLDEN_F_DEVICE = 0.9325844702650841           # RTX 5090; rel 4.42e-9 vs FP64
+#: Was 0.0017352499069869236 / 0.9325844702650841 (rel 1.84e-7 / 4.42e-9),
+#: the 5090's pair before A146.
+GOLDEN_C_NU_DEVICE = 0.0017352499078274765     # rel 1.845e-7 vs FP64
+GOLDEN_F_DEVICE = 0.932584484076787            # rel 1.039e-8 vs FP64
 
 #: (c_nu, f) as the device solve produces them on each card the pair has
-#: been recorded on.  The 5090 pair is the original (2026-07); the 4090
-#: pair is the 2026-09-18 reading above.
+#: been recorded on: the 4090's (2026-09-18) and, after A146, the 5090's
+#: and the 5070 Ti's (2026-10-01), all three the same pair.
 GOLDEN_DEVICE_BY_CARD = {
     "NVIDIA GeForce RTX 5090": (GOLDEN_C_NU_DEVICE, GOLDEN_F_DEVICE),
-    "NVIDIA GeForce RTX 4090": (0.0017352499078274765, 0.932584484076787),
+    "NVIDIA GeForce RTX 5070 Ti": (GOLDEN_C_NU_DEVICE, GOLDEN_F_DEVICE),
+    "NVIDIA GeForce RTX 4090": (GOLDEN_C_NU_DEVICE, GOLDEN_F_DEVICE),
 }
 
 # ---------------------------------------------------------------------------

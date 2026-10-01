@@ -36,6 +36,10 @@ pub mod water_owner;
 // The bounded surface-nearest search of the CPU backend in float32,
 // byte-identical to the NumPy code it replaced.
 pub mod surface_nearest;
+// Elementwise exp, log, pow and the trigonometric functions through the
+// vendored libm crate, so a host preparation's transcendentals are the same
+// on every CPU and C library (gpuwm/core/portable_math.py).
+pub mod portable_math;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicI32, Ordering};

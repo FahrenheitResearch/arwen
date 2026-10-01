@@ -26,7 +26,7 @@ from gpuwm.aerosol_source_receipt import (
     aerosol_source_report_entry,
 )
 from gpuwm.config import radiation_scheme_ids
-from gpuwm.experiment import build_experiment
+from gpuwm.experiment import build_experiment, deferred_perturbation_config
 from gpuwm.hrrr_forecast import hrrr_forcing_end_hour
 from gpuwm.hrrr_native_static import (
     sha256_file,
@@ -37,10 +37,12 @@ from gpuwm.ingest.cpu_backend import resolve_cpu_bridge
 from gpuwm.ingest.hrrr import load_hrrr_native_series
 from gpuwm.ingest.hrrr_target import load_hrrr_target_domain
 from gpuwm.ingest.source_coverage import owns_source_coverage_refusal
+from gpuwm.static.terrain_smoothing import selection_carrier_kwargs
 from gpuwm.ingest.nest_init import NestedInputCatalog, ParentInitView
 from gpuwm.ingest.prepared_cache import (
     PREPARATION_INERT_RUN_FIELDS,
     PreparedCacheReader,
+    PreparedHeadReader,
     compare_prepared_domain_config,
     effective_prepared_domain_config,
     prepared_domain_config_identity,
@@ -208,9 +210,15 @@ def _native_experiment(wps_namelist: Path, namelist_input: Path,
     resolved, report = import_namelists(
         wps_namelist, namelist_input, name="native_hrrr_hierarchy",
         acknowledgements=tuple(acknowledgements), **keywords)
-    exp = build_experiment(
+    # The import is a one-file case: a WUDAPT geog_data_res writes a
+    # [static] companion, validated and split off here like every file
+    # door does.  This route's statics come from its sealed root, and its
+    # static catalog refuses the token by name unless that root builds it.
+    from gpuwm.experiment import build_experiment_from_config_tables
+    exp = build_experiment_from_config_tables(
         tomllib.loads(resolved),
         source=f"native HRRR hierarchy {wps_namelist} + {namelist_input}",
+        base_dir=Path(wps_namelist).parent,
     )
     validate_native_lambert_contracts(
         exp, wps_namelist, source_name="native HRRR hierarchy")
@@ -273,6 +281,34 @@ def _require_raw_stock_delta(
             "native and stock namelists must explicitly declare the same "
             f"integer max_dom in [1, {_MAX_PUBLIC_DOMAINS}]")
     max_dom = native_max_dom[0]
+    # The soil column count follows the land surface the tree runs, one
+    # scheme on every domain as WRF requires: Noah's four layers, RUC's
+    # nine.  A literal 4 here refused a RUC tree after the download and
+    # the root preparation, so the sub-km default could not reach a
+    # nested --source hrrr domain at all.
+    surface = native.get("physics", {}).get("sf_surface_physics")
+    if (not isinstance(surface, list) or len(surface) != max_dom
+            or any(type(value) is not int for value in surface)
+            or len(set(surface)) != 1):
+        raise ValueError(
+            "native hierarchy namelist must declare one integer "
+            "&physics/sf_surface_physics entry per domain, the same on "
+            f"every domain; got {surface}.  num_soil_layers is pinned "
+            "from that one land surface (4 for Noah and Noah-MP, 9 for "
+            "RUC), and a tree that mixes or omits it has no single soil "
+            "column to pin, so its prepared soil would not match the "
+            "scheme some domain runs")
+    from gpuwm.config import validated_soil_layer_count
+
+    try:
+        soil_layers = validated_soil_layer_count(surface[0])
+    except KeyError:
+        raise ValueError(
+            f"&physics/sf_surface_physics = {surface[0]} has no soil "
+            "geometry gpuwm prepares, so num_soil_layers has no count to "
+            "pin and the prepared soil column could not match the land "
+            "surface the tree runs") from None
+
     certified_pins = {
         ("time_control", "interval_seconds"): [3600],
         ("time_control", "frames_per_outfile"): [1] * max_dom,
@@ -287,7 +323,7 @@ def _require_raw_stock_delta(
         ("physics", "ifsnow"): [1],
         ("physics", "icloud"): [1],
         ("physics", "surface_input_source"): [1],
-        ("physics", "num_soil_layers"): [4],
+        ("physics", "num_soil_layers"): [soil_layers],
         ("physics", "sf_urban_physics"): [0] * max_dom,
         ("physics", "sst_update"): [0],
     }
@@ -705,6 +741,10 @@ def _compare_stock_experiment(native_exp, stock_exp) -> None:
     stock = experiment_config_document(stock_exp)
     for document in (native, stock):
         document["name"] = "normalized"
+        # Who chose epssm is a label; the value each domain runs is on
+        # run.epssm and is compared there, so a namelist that lists it
+        # once and one that lists it per domain still agree on 0.1.
+        document.pop("auto_epssm", None)
         for domain in document["domains"]:
             domain["run"]["ra_lw_physics"] = 0
     if native != stock:
@@ -940,6 +980,359 @@ def _local_highres_cache(config, *, recorded_cache_root, output_root):
     }
 
 
+#: The seal document of a native HRRR domain tree, one-shot or chained.
+RECEIPT_NAME = "receipt.json"
+
+
+def chained_root_head(root_preparation: Path):
+    """The live chained head of ``root_preparation``, or ``None``.
+
+    ``None`` for a root preparation that is sealed (its ``proof.json``
+    exists), published at its seal, or will never finish; the hierarchy is
+    then built one-shot from the sealed root, as before.  A head whose root
+    preparation is still building its boundary hours makes this tree chain
+    too (:func:`_chained_hierarchy_tail`).
+    """
+
+    from gpuwm.ingest.boundary_stream import live_chained_head
+
+    return live_chained_head(Path(root_preparation))
+
+
+def _head_cache_header(root_head) -> dict[str, object]:
+    """A chained root's cache as far as its head knows it.
+
+    The identity and the metadata the start time wrote (every key but the
+    user metadata the seal completes is the sealed header's own, which
+    ``verify_seal`` holds it to); there is no content digest yet.
+    """
+
+    cache = root_head["basis"]["cache"]
+    return {"schema": "gpuwm-prepared-real-cache-v1", "status": "HEAD",
+            "identity": cache["identity"], "metadata": cache["metadata"]}
+
+
+def _require_root_preparation_report(path: Path, *, identity,
+                                     content_sha256) -> None:
+    """The root preparation's report passed and binds its sealed cache."""
+
+    preparation_report = _json(path)
+    if preparation_report.get("status") != "PASS":
+        raise ValueError("root preparation report is not PASS")
+    if preparation_report.get("source_identity") != identity.get("source_identity"):
+        raise ValueError("root preparation source identity differs from cache")
+    prepared_report = preparation_report.get("prepared_cache", {})
+    if prepared_report.get("content_sha256") != content_sha256:
+        raise ValueError("root preparation report does not bind its cache")
+
+
+def _root_preparation_record(content_sha256: str) -> dict[str, object]:
+    """The receipt's record of the root preparation's sealed cache.
+
+    A seal-only proof key (``root_preparation`` in
+    :data:`gpuwm.ingest.boundary_stream.SEAL_ONLY_PROOF_KEYS`): a chained
+    tree's head is written before its root preparation seals.
+    """
+
+    return {"prepared_content_sha256": str(content_sha256)}
+
+
+def _root_preparation_metadata(content_sha256: str | None
+                               ) -> dict[str, object]:
+    """d01's user metadata naming the root preparation it was joined to.
+
+    ``None`` is a chained tree's head, which holds the mapping empty and
+    names it ``seal_completes``; its seal adds the digest, so the sealed
+    header is the one-shot writer's.
+    """
+
+    return {"root_preparation": ({} if content_sha256 is None
+                                 else _root_preparation_record(
+                                     content_sha256))}
+
+
+def _export_provenance(provenance, content_sha256: str) -> dict[str, object]:
+    """The companion WRF export's input provenance: the receipt's, plus the root's seal."""
+
+    return {**dict(provenance),
+            "root_prepared_content_sha256": str(content_sha256)}
+
+
+def _aerosol_entry(cache_header, native_exp, paths) -> dict[str, object]:
+    return aerosol_source_report_entry(
+        cache_header.get("metadata", {}).get(AEROSOL_SOURCE_KEY, {}),
+        mp_physics=native_exp.root.run.mp_physics,
+        when_unrecorded=(
+            "the root prepared cache at "
+            f"{paths['prepared_cache']} carries no "
+            "aerosol-initialization receipt, so it was written by "
+            "a preparation predating the receipt being stored; "
+            "re-prepare the root to record which source filled "
+            "its nwfa/nifa"))
+
+
+def _interval_host_bytes(interval) -> int:
+    """What one written boundary interval holds in host RAM.
+
+    Its value and its tendency, each a float64 copy of the four sides
+    (tools/hrrr_single_domain_benchmark.py ``_interval_host_pricing``).
+    """
+
+    return int(sum(
+        (np.asarray(side.value).size + np.asarray(side.tendency).size)
+        * np.dtype(np.float64).itemsize
+        for boundary in interval.fields.values()
+        for side in (boundary.west, boundary.east, boundary.south,
+                     boundary.north)))
+
+
+def _chained_hierarchy_tail(c) -> dict[str, object]:
+    """A native HRRR domain tree, chained on its root preparation's head.
+
+    The head is published as soon as the children exist: the root's static
+    files and its start state (a streamed cache under
+    ``hierarchy-head/domains/d01/prepared-cache``, header at the seal),
+    every child's complete artifact set under ``hierarchy-head/domains/dNN``
+    (a child needs only its start-time snapshot and the root's start state,
+    :func:`gpuwm.native_hierarchy.initialize_native_hierarchy_children`) and
+    a moving nest's statics corridor under ``hierarchy-head/``.  Segment k
+    of d01 is the root preparation's boundary interval k, relayed as the
+    root preparation writes it.  Once the root preparation seals (held to
+    the head it published, :func:`gpuwm.ingest.boundary_stream.verify_seal`)
+    the seal re-reads the children from the head and writes the one-shot
+    ``hierarchy-artifacts/`` tree from the root preparation's sealed cache,
+    through the same writer and the same arguments as the one-shot tree,
+    then ``receipt.json`` last.  The root's sealed content digest is the
+    one fact the head cannot hold: ``root_preparation`` in the receipt (a
+    seal-only key) and d01's ``root_preparation`` user metadata (completed
+    at the seal).
+    """
+
+    from gpuwm.ingest.boundary_stream import (
+        HIERARCHY_HEAD_DIRNAME, PreparedTreeWriter, StreamedIntervals,
+        TreeStartStates, domain_tree_head_fields, verify_seal)
+    from gpuwm.ingest.water_overlay import verify_overlay_sequence
+    from gpuwm.native_domain_artifacts import (
+        root_domain_artifact_binding, write_child_domain_artifacts,
+        write_domain_static_files)
+    from gpuwm.native_hierarchy import (
+        export_native_hierarchy, initialize_native_hierarchy_children)
+    from gpuwm.native_wrf_contract import canonical_noah_surface
+    from gpuwm.progress import prep_progress
+    from gpuwm.static.corridor import copy_statics_corridor_set
+
+    exp = c.export_exp
+    staging = c.staging
+    writer = None
+    try:
+        head_started = time.perf_counter()
+        child_results, child_seconds = initialize_native_hierarchy_children(
+            exp=exp, root_node=c.root, catalog=c.catalog,
+            root_initial_result=c.restored.initial_result,
+            workers=c.workers, preprocess_backend="cpu",
+            cpu_bridge=c.cpu_bridge,
+            sfcp_to_sfcp=c.case_policy["sfcp_to_sfcp"])
+        head_domains = staging / HIERARCHY_HEAD_DIRNAME / "domains"
+        root_directory = head_domains / "d01"
+        root_directory.mkdir(parents=True)
+        root_static_receipt, _geometry = write_domain_static_files(
+            root_directory, domain=exp.domains[0], grid=c.grids[0],
+            static_fields=c.static_fields)
+        child_builds = write_child_domain_artifacts(
+            head_domains, exp=exp, child_results=child_results,
+            bridge_manifest_sha256=c.bridge_sha,
+            source_manifest_sha256=c.observed_source_sha,
+            namelist_sha256=c.namelist_sha, forcing_hours=c.forcing_hours,
+            source_identity=c.hierarchy_source_identity,
+            valid_time=exp.start_time)
+        binding = root_domain_artifact_binding(
+            exp=exp, static_cache_sha256=root_static_receipt["sha256"],
+            bridge_manifest_sha256=c.bridge_sha,
+            source_manifest_sha256=c.observed_source_sha,
+            namelist_sha256=c.namelist_sha, forcing_hours=c.forcing_hours,
+            source_identity=c.hierarchy_source_identity,
+            valid_time=exp.start_time,
+            root_metadata=_root_preparation_metadata(None))
+        # The corridor needs no boundary time, so a moving nest's forecast
+        # re-grounds over the head's copy from its first move; the seal
+        # copies it into hierarchy-artifacts/ (A136 L7d).
+        corridor_receipt = emit_statics_corridor_set(
+            exp=c.native_exp, grids=c.grids, static_catalog=c.static_catalog,
+            directory=(staging / HIERARCHY_HEAD_DIRNAME
+                       / STATICS_CORRIDOR_DIRNAME),
+            statics_corridor=c.statics_corridor,
+            static_highres=c.static_highres)
+        stock_copy = staging / "namelist.input"
+        shutil.copyfile(c.stock_wrf_namelist_input, stock_copy)
+        proof_head = {
+            "schema": SCHEMA,
+            "status": "PASS",
+            "valid_time": c.valid_time.isoformat(),
+            "workers": c.workers,
+            "preprocess_backend": "cpu",
+            "domain_count": len(c.native_exp.domains),
+            "forcing_hours": list(c.forcing_hours),
+            "provenance": c.provenance,
+            "stock_wrf_namelist": {
+                "path": stock_copy.name,
+                "sha256": sha256_file(stock_copy),
+            },
+            **({"initial_perturbation": dict(c.root_deferral)}
+               if c.root_deferral is not None else {}),
+            **({"statics_corridor": dict(corridor_receipt)}
+               if corridor_receipt is not None else {}),
+            **_aerosol_entry(c.cache_header, c.native_exp, c.paths),
+        }
+        cache_name = f"{HIERARCHY_HEAD_DIRNAME}/domains/d01/prepared-cache"
+        writer = PreparedTreeWriter(
+            staging=staging, output_root=c.output_root,
+            identity=binding.identity, cache_name=cache_name,
+            proof_name=RECEIPT_NAME)
+        writer.admit(experiment=c.native_exp, backend="cpu", source="hrrr")
+        root_lbc = dict(c.root_head["basis"]["cache"]["lbc"])
+        writer.write_head(
+            initial_result=c.restored.initial_result, met=c.restored.met,
+            surface=canonical_noah_surface(c.root_soil),
+            metadata=dict(binding.metadata), lbc=root_lbc,
+            proof_head=proof_head,
+            input_manifest_sha256=c.observed_source_sha,
+            forcing=SimpleNamespace(interval_host_bytes=_interval_host_bytes(
+                c.restored.boundaries.intervals[0])),
+            tree=domain_tree_head_fields(
+                [f"d{int(domain.grid_id):02d}" for domain in exp.domains],
+                root_cache=cache_name,
+                children_receipts={
+                    f"d{int(build.receipt['grid_id']):02d}": sha256_file(
+                        head_domains
+                        / f"d{int(build.receipt['grid_id']):02d}"
+                        / "receipt.json")
+                    for build in child_builds}),
+            extra_head_payload_bytes=sum(
+                int(build.receipt["artifacts"]["prepared_cache"][
+                    "payload_bytes"]) for build in child_builds),
+            seal_completes=("root_preparation",))
+        head_seconds = time.perf_counter() - head_started
+        # Every start state is in the head now; none stays resident while
+        # the root preparation builds its later hours.
+        start_states = TreeStartStates.release(
+            root_result=c.restored.initial_result, root_met=c.restored.met,
+            child_results=child_results,
+            child_content_sha256={
+                f"d{int(build.receipt['grid_id']):02d}": build.receipt[
+                    "artifacts"]["prepared_cache"]["content_sha256"]
+                for build in child_builds})
+        del child_results
+        c.restored = c.root = c.root_soil = None
+
+        # d01's boundary intervals: the root preparation's, as it writes
+        # them, each checked against its segment marker on the way.
+        relay_started = time.perf_counter()
+        root_stream = StreamedIntervals(c.root_preparation, head=c.root_head)
+        count = len(root_stream)
+        for k in range(count):
+            built = time.perf_counter()
+            interval = root_stream[k]
+            writer.write_segment(k, interval)
+            root_stream.release(k)
+            del interval
+            writer.note_build_seconds(time.perf_counter() - built)
+            prep_progress("hierarchy_boundaries",
+                          label="Root boundary intervals", done=k + 1,
+                          count=count)
+        root_stream.wait_sealed()
+        relay_seconds = time.perf_counter() - relay_started
+
+        # The root preparation's seal, held to the head this tree was
+        # built on, then the checks the one-shot tree makes up front.
+        seal_started = time.perf_counter()
+        sealed_root = verify_seal(c.root_preparation, head=c.root_head)
+        root_content = str(sealed_root["content_sha256"])
+        root_header = _json(c.paths["prepared_cache"] / "header.json")
+        if (root_header.get("schema") != "gpuwm-prepared-real-cache-v1"
+                or root_header.get("status") != "READY"
+                or root_header.get("content_sha256") != root_content):
+            raise ValueError("root preparation cache is not READY")
+        _require_root_preparation_report(
+            c.paths["preparation_report"], identity=c.identity,
+            content_sha256=root_content)
+        tree_root_content = str(writer.seal_cache(completed_metadata={
+            "root_preparation": _root_preparation_record(root_content),
+        })["content_sha256"])
+        root_reader = PreparedCacheReader(
+            c.paths["prepared_cache"], expected_identity=c.expected_identity)
+        if root_reader.verify_all().get("content_sha256") != root_content:
+            raise ValueError(
+                "the root preparation's sealed cache is not the one its "
+                "seal check read")
+        restored = restore_prepared_cache(
+            c.paths["prepared_cache"], expected_identity=c.expected_identity,
+            cfg=c.native_exp.root.run, static=c.static_fields,
+            array_module=np)
+        root_soil = _surface_state(
+            restored, c.static_fields,
+            sf_surface_physics=c.native_exp.root.run.sf_surface_physics,
+            num_soil_layers=c.native_exp.root.run.num_soil_layers)
+        children = start_states.reread_children(writer.root, exp=exp)
+        result = export_native_hierarchy(
+            exp=exp,
+            root_node=ParentInitView(cfg=c.native_exp.root, grid=c.grids[0],
+                                     state=restored.initial_result.state),
+            artifact_output=writer.root / "hierarchy-artifacts",
+            wrf_output=writer.root / "wrf-native-input",
+            root_initial_result=restored.initial_result,
+            root_met=restored.met, root_soil=root_soil,
+            root_static_fields=c.static_fields,
+            root_boundaries=restored.boundaries, child_results=children,
+            child_initialization_seconds=child_seconds,
+            bridge_manifest_sha256=c.bridge_sha,
+            source_manifest_sha256=c.observed_source_sha,
+            namelist_sha256=c.namelist_sha, forcing_hours=c.forcing_hours,
+            source_identity=c.hierarchy_source_identity,
+            boundary_interval_seconds=3600,
+            root_metadata=_root_preparation_metadata(root_content),
+            input_provenance=_export_provenance(c.provenance, root_content),
+            artifact_manifest_reference=(
+                "../hierarchy-artifacts/domain-artifacts.json"),
+            stock_wrf_export="optional")
+        start_states.require_sealed_is_head(
+            result.artifacts.receipt, root_content_sha256=tree_root_content)
+        verify_overlay_sequence(c.snapshots)
+        if corridor_receipt is not None:
+            copy_statics_corridor_set(
+                writer.root / HIERARCHY_HEAD_DIRNAME
+                / STATICS_CORRIDOR_DIRNAME,
+                writer.root / "hierarchy-artifacts" / STATICS_CORRIDOR_DIRNAME,
+                receipt=corridor_receipt)
+        payload = {
+            **proof_head,
+            "root_preparation": _root_preparation_record(root_content),
+            "timing_seconds": {
+                "verified_preflight": c.preflight_seconds,
+                "restore_root_prepared_head": c.restore_seconds,
+                "load_initial_snapshot_and_static_catalog": (
+                    c.snapshot_seconds),
+                **dict(result.timings_seconds),
+                "prepared_head": head_seconds,
+                "head_published_after": writer.head_seconds,
+                "relay_root_boundary_intervals": relay_seconds,
+                "hierarchy_seal": time.perf_counter() - seal_started,
+                "total": time.perf_counter() - c.started,
+            },
+            "artifact_receipt": dict(result.artifacts.receipt),
+            "wrf_manifest": dict(result.wrf_manifest),
+            "boundary_stream": writer.boundary_stream_proof(),
+        }
+        writer.publish(payload)
+    except BaseException as error:
+        if writer is not None:
+            # A head already published stays, marked failed, so a waiting
+            # forecast ends with this reason; the caller removes a staging
+            # tree that was never published.
+            writer.fail(error)
+        raise
+    return payload
+
+
 def prepare_hrrr_hierarchy(
         *, root_preparation: Path, root_domain_spec: Path,
         wps_namelist: Path, namelist_input: Path,
@@ -979,10 +1372,16 @@ def prepare_hrrr_hierarchy(
         raise ValueError(refusal)
     cpu_bridge = resolve_cpu_bridge(cpu_bridge)
     paths = _root_paths(Path(root_preparation))
+    # A root preparation still building its boundary hours beside a
+    # published head: this tree then chains too (_chained_hierarchy_tail).
+    # Its preparation report is written at the root's seal, so it is
+    # checked there.
+    root_head = chained_root_head(Path(root_preparation))
     required = (
         root_domain_spec, wps_namelist, namelist_input,
         stock_wrf_namelist_input, geog_root, source_manifest, cpu_bridge,
-        *paths.values(),
+        *(path for key, path in paths.items()
+          if root_head is None or key != "preparation_report"),
     )
     for path in required:
         if not Path(path).exists():
@@ -999,10 +1398,16 @@ def prepare_hrrr_hierarchy(
     # d01 binding below to compare like with like.  The forcing inventory
     # is read here for the same reason -- the duration ceiling is a
     # property of this bundle rather than a constant.
-    cache_header = _json(paths["prepared_cache"] / "header.json")
-    if (cache_header.get("schema") != "gpuwm-prepared-real-cache-v1"
-            or cache_header.get("status") != "READY"):
-        raise ValueError("root preparation cache is not READY")
+    if root_head is None:
+        cache_header = _json(paths["prepared_cache"] / "header.json")
+        if (cache_header.get("schema") != "gpuwm-prepared-real-cache-v1"
+                or cache_header.get("status") != "READY"):
+            raise ValueError("root preparation cache is not READY")
+    else:
+        # The head's cache record carries the identity and the metadata
+        # the start time made; the header written at the root's seal must
+        # equal them (verify_seal), and is checked there.
+        cache_header = _head_cache_header(root_head)
     identity = cache_header.get("identity")
     if not isinstance(identity, dict):
         raise ValueError("root preparation cache lacks an identity")
@@ -1021,11 +1426,15 @@ def prepare_hrrr_hierarchy(
         rrtmg_variant=_sealed_root_rrtmg_variant(identity),
         rrtmg_compatibility=_sealed_root_rrtmg_compatibility(identity),
         acknowledgements=tuple(acknowledgements))
-    from gpuwm.static.highres_production import parse_static_table
+    from gpuwm.static.highres_production import parse_sealed_static_highres
     declared_highres = identity.get("source_identity", {}).get("static_highres")
-    static_highres = parse_static_table(
-        None if declared_highres is None else {"highres": declared_highres},
-        source="sealed root preparation", base_dir=Path(root_preparation))
+    # The echo carries the nests' own terrain smoothing and the urban
+    # land-cover legend beside the [static.highres] keys; all are read, or
+    # the children are rebuilt with terrain or land cover the sealed
+    # configuration did not ask for.  The legend is held to the tree's.
+    static_highres = parse_sealed_static_highres(
+        declared_highres, source="sealed root preparation",
+        base_dir=Path(root_preparation), run_config=native_exp.root.run)
     target = load_hrrr_target_domain(root_domain_spec)
     _supported_hierarchy_slice(
         native_exp, target, forcing_hours=forcing_hours)
@@ -1067,15 +1476,10 @@ def prepare_hrrr_hierarchy(
     verified_root_forcing_inventory(
         forcing_hours, run_seconds=native_exp.run_seconds)
 
-    preparation_report = _json(paths["preparation_report"])
-    if preparation_report.get("status") != "PASS":
-        raise ValueError("root preparation report is not PASS")
-    if preparation_report.get("source_identity") != identity.get("source_identity"):
-        raise ValueError("root preparation source identity differs from cache")
-    prepared_report = preparation_report.get("prepared_cache", {})
-    if prepared_report.get("content_sha256") != cache_header.get(
-            "content_sha256"):
-        raise ValueError("root preparation report does not bind its cache")
+    if root_head is None:
+        _require_root_preparation_report(
+            paths["preparation_report"], identity=identity,
+            content_sha256=cache_header.get("content_sha256"))
     user_metadata = cache_header.get("metadata", {}).get("user", {})
     sealed_start = datetime.fromisoformat(
         user_metadata.get("initial_valid_time", ""))
@@ -1093,8 +1497,15 @@ def prepare_hrrr_hierarchy(
     )
     root_namelist_sha = expected_identity["namelist_sha256"]
     namelist_sha = sha256_file(Path(namelist_input))
-    reader = PreparedCacheReader(
-        paths["prepared_cache"], expected_identity=expected_identity)
+    if root_head is None:
+        reader = PreparedCacheReader(
+            paths["prepared_cache"], expected_identity=expected_identity)
+    else:
+        # The start-time arrays, each held to the head's row; the cache
+        # content digest exists at the root's seal and is checked there.
+        reader = PreparedHeadReader(
+            Path(root_preparation), root_head,
+            expected_identity=expected_identity)
     reader.verify_all()
     # Before the staging folder exists: a fetch folder beside the output
     # root too deep for its receipts is refused here with nothing written.
@@ -1116,10 +1527,23 @@ def prepare_hrrr_hierarchy(
         # A host state: this stage prepares on the CPU (see
         # preprocess_backend="cpu" below) and never integrates the root,
         # so it must not need CUDA to read the root it builds from.
-        restored = restore_prepared_cache(
-            paths["prepared_cache"], expected_identity=expected_identity,
-            cfg=native_exp.root.run, static=static_fields,
-            array_module=np)
+        if root_head is None:
+            restored = restore_prepared_cache(
+                paths["prepared_cache"], expected_identity=expected_identity,
+                cfg=native_exp.root.run, static=static_fields,
+                array_module=np)
+        else:
+            # The root's start state from its head; its boundary intervals
+            # stream from the root preparation as it writes them, and the
+            # children read none of them.
+            from gpuwm.ingest.boundary_stream import streamed_boundaries
+
+            restored = restore_prepared_cache(
+                paths["prepared_cache"], expected_identity=expected_identity,
+                cfg=native_exp.root.run, static=static_fields, reader=reader,
+                boundary_source=streamed_boundaries(
+                    Path(root_preparation), head=root_head),
+                array_module=np)
         root_soil = _surface_state(
             restored, static_fields,
             sf_surface_physics=native_exp.root.run.sf_surface_physics,
@@ -1141,7 +1565,8 @@ def prepare_hrrr_hierarchy(
             snapshots, water_overlay, binding=water_binding, workers=workers)
         static_catalog, catalog_receipt = verified_static_catalog(
             Path(wps_namelist), Path(geog_root),
-            [domain.grid_id for domain in native_exp.domains])
+            [domain.grid_id for domain in native_exp.domains],
+            **selection_carrier_kwargs(static_highres))
         if catalog_receipt["selections"]["d01"] != static_receipt.get(
                 "geog_selection"):
             raise ValueError(
@@ -1169,7 +1594,11 @@ def prepare_hrrr_hierarchy(
             "source_manifest_sha256": observed_source_sha,
             "bridge_manifest_sha256": bridge_sha,
             "root_static_receipt_sha256": sha256_file(paths["static_receipt"]),
-            "root_prepared_content_sha256": restored.receipt["content_sha256"],
+            # The root's sealed cache content digest is not here: a chained
+            # tree's head is written before the root seals, so the receipt
+            # carries it in ``root_preparation``, which only the seal writes
+            # (_root_preparation_record), and the companion WRF export,
+            # written at the seal too, keeps it in its input provenance.
             "root_preparation_namelist_sha256": root_namelist_sha,
             "wps_namelist_sha256": sha256_file(Path(wps_namelist)),
             "native_namelist_input_sha256": namelist_sha,
@@ -1197,9 +1626,44 @@ def prepare_hrrr_hierarchy(
                 "stock_wrf_namelist_input_sha256"],
         }
 
+        # The root preparation is the stage of this route that reads the
+        # configuration, and it sealed the tree's [perturbation] deferral
+        # into its identity.  The namelists this stage builds from spell
+        # no such block, so the experiment the export sees takes it back
+        # from there: the companion stock-WRF export then refuses a state
+        # it cannot hold, as it does on every other source's tree, rather
+        # than writing the unperturbed state beside a receipt that says
+        # the bubbles are deferred.  The children are prepared exactly as
+        # before; no preparation applies a bubble.
+        root_deferral = identity["source_identity"].get(
+            "initial_perturbation")
+        export_exp = native_exp if root_deferral is None else replace(
+            native_exp,
+            perturbation=deferred_perturbation_config(root_deferral))
+        if root_head is not None:
+            return _chained_hierarchy_tail(SimpleNamespace(
+                started=started, preflight_seconds=preflight_seconds,
+                restore_seconds=restore_seconds,
+                snapshot_seconds=snapshot_seconds,
+                root_preparation=Path(root_preparation), root_head=root_head,
+                paths=paths, staging=staging, output_root=output_root,
+                native_exp=native_exp, export_exp=export_exp, grids=grids,
+                root=root, restored=restored, root_soil=root_soil,
+                static_fields=static_fields, catalog=catalog,
+                static_catalog=static_catalog, static_highres=static_highres,
+                snapshots=snapshots, case_policy=case_policy,
+                bridge_sha=bridge_sha, observed_source_sha=observed_source_sha,
+                namelist_sha=namelist_sha, forcing_hours=forcing_hours,
+                identity=identity, expected_identity=expected_identity,
+                hierarchy_source_identity=hierarchy_source_identity,
+                provenance=provenance, root_deferral=root_deferral,
+                statics_corridor=statics_corridor, workers=workers,
+                cpu_bridge=cpu_bridge,
+                stock_wrf_namelist_input=Path(stock_wrf_namelist_input),
+                cache_header=cache_header, valid_time=valid_time))
         hierarchy_started = time.perf_counter()
         result = initialize_and_export_native_hierarchy(
-            exp=native_exp, root_node=root, catalog=catalog,
+            exp=export_exp, root_node=root, catalog=catalog,
             artifact_output=staging / "hierarchy-artifacts",
             wrf_output=staging / "wrf-native-input",
             root_initial_result=restored.initial_result,
@@ -1214,11 +1678,10 @@ def prepare_hrrr_hierarchy(
             source_identity=hierarchy_source_identity,
             workers=workers, preprocess_backend="cpu", cpu_bridge=cpu_bridge,
             boundary_interval_seconds=3600,
-            root_metadata={
-                "source_prepared_content_sha256": restored.receipt[
-                    "content_sha256"],
-            },
-            input_provenance=provenance,
+            root_metadata=_root_preparation_metadata(
+                restored.receipt["content_sha256"]),
+            input_provenance=_export_provenance(
+                provenance, restored.receipt["content_sha256"]),
             artifact_manifest_reference=(
                 "../hierarchy-artifacts/domain-artifacts.json"),
             # The GPU runner consumes hierarchy-artifacts/;
@@ -1254,6 +1717,8 @@ def prepare_hrrr_hierarchy(
             "domain_count": len(native_exp.domains),
             "forcing_hours": list(forcing_hours),
             "provenance": provenance,
+            "root_preparation": _root_preparation_record(
+                restored.receipt["content_sha256"]),
             "stock_wrf_namelist": {
                 "path": stock_copy.name,
                 "sha256": sha256_file(stock_copy),
@@ -1268,6 +1733,16 @@ def prepare_hrrr_hierarchy(
             },
             "artifact_receipt": dict(result.artifacts.receipt),
             "wrf_manifest": dict(result.wrf_manifest),
+            # Present only when the configuration carries [perturbation]:
+            # the bubbles the tree runner applies at start, deferred by
+            # the root preparation, which is the stage of this route that
+            # reads the configuration (gpuwm.hrrr_configuration
+            # root_perturbation_deferral).  Relayed from the sealed root
+            # identity, which every domain's cache also carries under
+            # root_preparation.  Absent, the receipt is byte-for-byte
+            # what it always was.
+            **({"initial_perturbation": dict(root_deferral)}
+               if root_deferral is not None else {}),
             # Present only when this preparation opted in: the sealed
             # statics-corridor set, digest-bound here the way every
             # other sealed artifact of this bundle is, and read from
@@ -1284,19 +1759,9 @@ def prepare_hrrr_hierarchy(
             # same config field, which is how a run reads one dataset and
             # reports another.  Empty -- and the receipt byte-for-byte
             # unchanged -- for every scheme with no aerosol fields.
-            **aerosol_source_report_entry(
-                cache_header.get("metadata", {}).get(
-                    AEROSOL_SOURCE_KEY, {}),
-                mp_physics=native_exp.root.run.mp_physics,
-                when_unrecorded=(
-                    "the root prepared cache at "
-                    f"{paths['prepared_cache']} carries no "
-                    "aerosol-initialization receipt, so it was written by "
-                    "a preparation predating the receipt being stored; "
-                    "re-prepare the root to record which source filled "
-                    "its nwfa/nifa")),
+            **_aerosol_entry(cache_header, native_exp, paths),
         }
-        receipt = staging / "receipt.json"
+        receipt = staging / RECEIPT_NAME
         temporary = receipt.with_suffix(".json.tmp")
         temporary.write_text(
             json.dumps(payload, indent=2, sort_keys=True, allow_nan=False)

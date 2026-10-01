@@ -391,25 +391,33 @@ leads:
   frame inside the window.  The history writer resets `UP_HELI_MAX` at
   each write, so on a 15-minute history the frame on the hour holds only
   its last quarter hour, and the window's maximum is the maximum of all
-  four.  The 10 m wind maximum of a wrfout is read from `U10` and
-  `V10`, instants, so it is the largest of the stored instants,
-  labelled a lower bound.  Either way the frames must be evenly spaced
-  from the window's start, and the frame at the start must be stored
-  unless the window starts with the run, or the window is refused by
-  name: a frame that was never stored cannot be folded, and the fold
-  without it reads low.  The wind also needs a frame on each whole hour
-  of the window, as on the whole-hour axis.  The fold cannot tell a
-  thinned series from a whole one, so rendering every other file of a
-  15-minute history draws each maximum over half of its frames, and the
-  UH note says the maximum is exact only when every history frame was
-  rendered;
+  four.  A WRF history written with `nwp_diagnostics = 1` stores
+  `WSPD10MAX`, the 10 m wind maximum reset at each write in the same
+  way, and the wind windows fold it as they fold `UP_HELI_MAX`.  A
+  history without it, which is every ArWen run, gives the 10 m wind
+  from `U10` and `V10`, instants, so the fold is the largest of the
+  stored instants, labelled a lower bound.  Either way the frames must
+  be evenly spaced from the window's start, and the frame at the start
+  must be stored unless the window starts with the run, or the window
+  is refused by name: a frame that was never stored cannot be folded,
+  and the fold without it reads low.  A wind read from instants also
+  needs a frame on each whole hour of the window, as on the whole-hour
+  axis.  The fold cannot tell a thinned series from a whole one, so
+  rendering every other file of a 15-minute history draws each maximum
+  over half of its frames, and the `UP_HELI_MAX` and `WSPD10MAX` notes
+  say the maximum is exact only when every history frame was rendered;
 - the 2 m snapshot windows read the frames on the whole hours.
 
 So a ten-minute child draws every instantaneous product for every frame
 and its windows on each whole hour.  Rendering only the whole-hour files
 of a sub-hourly run puts the store back on the whole-hour axis, where
 each maximum holds only the last interval before the hour; the strategy
-note on those windows says so.
+note on those windows says so.  On an hourly history with no stored
+10 m wind maximum (no `WSPD10MAX`, which no ArWen history writes) the
+10 m wind maxima fold one top-of-hour speed per hour, so those pictures
+are titled as the largest hourly snapshot, not as a maximum, and their
+catalog detail says why.  A window that has the stored maximum at only
+some of its hours is titled as partly hourly snapshots.
 
 `gpuwm go` draws a grid with sub-hourly history, which is every nest
 the domain wizard sets up (900 s), the same way.  Each whole-hour frame

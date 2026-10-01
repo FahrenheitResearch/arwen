@@ -317,7 +317,9 @@ def test_fp32_split_opt2_preserves_opt2_diagnostic():
     # Re-diagnose alt with the kernel's opt-2 FP32 arithmetic -- the
     # spelling calc_p_alpha actually runs: an exact float32 base
     # difference plus the float64 residual, and log1p on the
-    # float64-differenced coefficient drops.
+    # float64-differenced coefficient drops (the CPU realization's
+    # log1pf_array, which the split now searches against too).
+    from gpuwm.core.noahmp_libm import log1pf_array
     phb64 = np.asarray(base.phb, dtype=np.float64)
     phb32 = np.asarray(base.phb, dtype=np.float32)
     resid = np.asarray(np.diff(phb64, axis=0)
@@ -346,7 +348,7 @@ def test_fp32_split_opt2_preserves_opt2_diagnostic():
             dtype=np.float32)
         diagnosed = np.asarray(
             np.asarray(dphi / phm, dtype=np.float32)
-            / np.log1p(np.asarray(dpf / pfu, dtype=np.float32)),
+            / log1pf_array(np.asarray(dpf / pfu, dtype=np.float32)),
             dtype=np.float32).astype(np.float64)
         err = np.abs(diagnosed - alpha[k]) / alpha[k]
         worst = max(worst, float(err.max()))
@@ -361,6 +363,85 @@ def test_fp32_split_opt2_preserves_opt2_diagnostic():
     # test alone would not have caught the mismatched search.  What
     # catches it is the ratio, 1.46 against 15.17 on one probe.
     assert worst < 16.0 * np.finfo(np.float32).eps
+
+
+def test_cpu_opt2_operators_take_the_portable_log1pf(monkeypatch):
+    """The CPU opt-2 operators never call NumPy's log1p.
+
+    Breakage prevented: NumPy's float32 log1p is the host's (NumPy 2.5's
+    AVX-512 loop rounds about a fifth of these ratios differently from
+    glibc, and glibc 2.41 replaced its log1pf), so a state prepared with
+    hypsometric_opt = 2 -- what wizard-emitted configs carry -- held other
+    al, alt and p bits on an AVX-512 Linux host.  The CPU equation of
+    state, the real-init geopotential split and the offline child's parent
+    density all take ``noahmp_libm.log1pf_array``; this refuses NumPy's
+    log1p outright while each runs, and holds the EOS's al to the operator
+    spelled through log1pf_array.
+    """
+    import types
+
+    from gpuwm.core.diagnostics import update_diagnostics
+    from gpuwm.core.noahmp_libm import log1pf_array
+    from gpuwm.ingest.real import _fp32_geopotential_split, _make_real_base
+    from gpuwm.offline_child import _parent_alt
+
+    coord, terrain = _real_base_inputs()
+    p_top = 10000.0
+    base = _make_real_base(coord, terrain, p_top, 290.0, hypsometric_opt=2)
+    rng = np.random.default_rng(4)
+    dry_mass = np.asarray(base.mub) + 100.0 * rng.standard_normal(
+        terrain.shape)
+    alpha = np.asarray(base.alb) * (1.0 + 0.02 * rng.standard_normal(
+        base.alb.shape))
+    f32 = np.float32
+    nz, ny, nx = np.asarray(base.alb).shape
+    phb64 = np.asarray(base.phb, dtype=np.float64)
+    phb32 = phb64.astype(f32)
+    c3f64 = np.asarray(coord.c3f, dtype=np.float64)
+    c4f64 = np.asarray(coord.c4f, dtype=np.float64)
+    state = types.SimpleNamespace(
+        p=np.zeros((nz, ny, nx), f32), al=np.zeros((nz, ny, nx), f32),
+        alt=np.zeros((nz, ny, nx), f32), qv=None,
+        thp=np.zeros((nz, ny, nx), f32),
+        thb=np.asarray(base.thb, dtype=f32),
+        mub2d=np.asarray(base.mub, dtype=f32),
+        mup=np.asarray(dry_mass - np.asarray(base.mub), dtype=f32),
+        phb=phb32,
+        dphb_resid=np.asarray(np.diff(phb64, axis=0)
+                              - np.diff(phb32, axis=0).astype(np.float64),
+                              dtype=f32),
+        php=np.zeros((nz + 1, ny, nx), f32),
+        alb=np.asarray(base.alb, dtype=f32),
+        c3h=np.asarray(coord.c3h, f32), c4h=np.asarray(coord.c4h, f32),
+        c3f=np.asarray(coord.c3f, f32), c4f=np.asarray(coord.c4f, f32),
+        dc3f=np.asarray(c3f64[:-1] - c3f64[1:], f32),
+        dc4f=np.asarray(c4f64[:-1] - c4f64[1:], f32),
+        p_top=p_top)
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("an opt-2 CPU operator called numpy.log1p")
+
+    monkeypatch.setattr(np, "log1p", refuse)
+    update_diagnostics(state, hypsometric_opt=2)
+    _fp32_geopotential_split(base, coord, dry_mass, alpha,
+                             hypsometric_opt=2)
+    _parent_alt(phb64, dry_mass, {"c3f": coord.c3f, "c4f": coord.c4f,
+                                  "c3h": coord.c3h, "c4h": coord.c4h},
+                coord.znw, p_top=p_top, hypsometric_opt=2)
+    monkeypatch.undo()
+
+    mu = state.mub2d + state.mup
+    pfu = np.asarray(state.c3f[1:, None, None] * mu
+                     + state.c4f[1:, None, None] + f32(p_top), dtype=f32)
+    dpf = np.asarray(state.dc3f[:, None, None] * mu
+                     + state.dc4f[:, None, None], dtype=f32)
+    phm = np.asarray(state.c3h[:, None, None] * mu
+                     + state.c4h[:, None, None] + f32(p_top), dtype=f32)
+    dphi = np.asarray(np.asarray(phb32[1:] - phb32[:-1], dtype=f32)
+                      + state.dphb_resid, dtype=f32)
+    want = np.asarray(dphi / phm / log1pf_array(
+        np.asarray(dpf / pfu, dtype=f32)) - state.alb, dtype=f32)
+    assert np.array_equal(state.al.view(np.uint32), want.view(np.uint32))
 
 
 # ---------------------------------------------------------------------------

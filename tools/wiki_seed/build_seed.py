@@ -717,15 +717,15 @@ def phenomena(store: Store) -> list[dict]:
                            url=f"https://forecast.weather.gov/glossary.php?word={word.replace(' ', '+')}",
                            licence=DATASETS["nws-glossary"]["licence"], row={"word": word, "definition": text})
         if ident == "tornado":
-            rule = store.source("rule-select-tornado", kind="rule", title="How tornadoes are chosen for the Weather Library",
-                                method="Rows of the SPC tornado table picked one by one when the Weather Library was built. Rarity counts "
+            rule = store.source("rule-select-tornado", kind="rule", title="How tornadoes are chosen for the wiki",
+                                method="Rows of the SPC tornado table picked one by one when the wiki was built. Rarity counts "
                                        "tornadoes that start in the same state, in the same three-month season, "
                                        "rated at least as high.",
                                 code=f"{BUILDER}: tornadoes", inputs=["dataset-spc"])
             detect = "These pages come from rows of the SPC tornado table, the United States' record of every tornado since 1950. More will come from storm setups found in ERA5."
         else:
-            rule = store.source("rule-select-tc", kind="rule", title="How tropical cyclones are chosen for the Weather Library",
-                                method="Storms of IBTrACS since 1980 picked one by one when the Weather Library was built, one or more "
+            rule = store.source("rule-select-tc", kind="rule", title="How tropical cyclones are chosen for the wiki",
+                                method="Storms of IBTrACS since 1980 picked one by one when the wiki was built, one or more "
                                        "from each basin. Rarity counts storms of the same basin whose highest wind "
                                        "is at least as high, peaking within a month of the same time of year.",
                                 code=f"{BUILDER}: tropical_cyclones", inputs=["dataset-ibtracs"])

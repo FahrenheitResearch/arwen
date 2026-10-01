@@ -143,3 +143,138 @@ def test_the_driver_refuses_grell_freitas_with_the_pbl_slot_off():
     driver = initialize_physics(
         _state_for(ntiedtke_cfg), ntiedtke_cfg, landmask=1.0, tsk=290.0)
     assert driver.cumulus_callable is not None
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_native_gf_validation_keeps_order_ownership_and_deferral(monkeypatch):
+    from gpuwm.config import RunConfig
+    from gpuwm.core import health_ledger
+    from gpuwm.core.gf import GrellFreitas, _NativeGFCumulusResult
+    from gpuwm.core.physics import initialize_physics
+
+    cfg = RunConfig(
+        nx=4, ny=2, nz=16, dx=12000.0, dy=12000.0, ztop=9000.0,
+        dt=60.0, run_seconds=0.0, moist=True, mp_physics=10, bl_pbl_physics=1,
+        sf_sfclay_physics=91, cu_physics=3, cudt_minutes=0.0)
+    state = _state_for(cfg)
+    driver = initialize_physics(state, cfg, landmask=1.0, tsk=290.0)
+    names = ("rthcuten", "rqvcuten", "rqccuten", "rqicuten", "rainc")
+    labels = tuple(f"cumulus {name}" for name in names[:4]) + (
+        "cumulus RAINC increment",)
+    values = {name: cp.zeros(state.p.shape if name != "rainc"
+                             else state.p.shape[1:], cp.float32)
+              for name in names}
+    values["rainc"][...] = cp.float32(0.125)
+    result = _NativeGFCumulusResult(owner=driver.cumulus_callable, **values)
+    monkeypatch.setattr(GrellFreitas, "__call__", lambda self, **kwargs: result)
+    status = state.scratch((1,), "physics_validation_status").view(cp.uint32)
+    status[...] = cp.uint32(0xFFFFFFFF)
+    before = {name: value.copy() for name, value in values.items()}
+    driver._run_cumulus({}, state, cfg)
+    assert int(status[0].item()) == 0
+    for name in names:
+        cp.testing.assert_array_equal(values[name].view(cp.uint32),
+                                      before[name].view(cp.uint32))
+        values[name][...] = cp.float32(9.0)
+    for name in names[:4]:
+        cp.testing.assert_array_equal(driver.cu_rates[name].view(cp.uint32),
+                                      before[name].view(cp.uint32))
+    cp.testing.assert_array_equal(driver.rainc, before["rainc"])
+    for value in values.values():
+        value[...] = cp.float32(0.0)
+    for name, label in zip(names, labels):
+        values[name].flat[-1] = cp.inf
+        with pytest.raises(FloatingPointError) as caught:
+            driver._run_cumulus({}, state, cfg)
+        assert str(caught.value) == label + " contains a non-finite value"
+        values[name].flat[-1] = cp.float32(0.0)
+    values["rainc"].flat[0] = cp.inf
+    values["rthcuten"].flat[0] = cp.nan
+    with pytest.raises(FloatingPointError, match="cumulus rthcuten contains"):
+        driver._run_cumulus({}, state, cfg)
+    ledger = health_ledger.HealthLedger()
+    with health_ledger.deferring(ledger):
+        driver._run_cumulus({}, state, cfg)
+    assert ledger.records == 1
+    with pytest.raises(FloatingPointError, match="cumulus rthcuten contains"):
+        ledger.drain()
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_native_gf_admission_refuses_custom_receipts_and_layouts():
+    from types import SimpleNamespace
+
+    from gpuwm.core.gf import (
+        GrellFreitas, _NativeGFCumulusResult, is_native_gf_result,
+    )
+    from gpuwm.core.physics import CumulusResult
+
+    owner = GrellFreitas()
+    state = SimpleNamespace(p=cp.zeros((3, 2, 4), cp.float32), qi=None)
+    cfg = SimpleNamespace(cu_physics=3)
+    values = {name: cp.zeros(state.p.shape, cp.float32)
+              for name in ("rthcuten", "rqvcuten", "rqccuten")}
+    values["rainc"] = cp.zeros((2, 4), cp.float32)
+    result = _NativeGFCumulusResult(owner=owner, **values)
+    assert is_native_gf_result(result, owner, state, cfg)
+    assert not is_native_gf_result(CumulusResult(**values), owner, state, cfg)
+    assert not is_native_gf_result(result, GrellFreitas(), state, cfg)
+    for name, bad in (
+            ("rqicuten", cp.zeros(state.p.shape, cp.float32)),
+            ("rthcuten", cp.zeros(state.p.shape, cp.float64)),
+            ("rqvcuten", cp.zeros((3, 2, 8), cp.float32)[:, :, ::2]),
+            ("rainc", cp.zeros((1, 8), cp.float32)),
+            ("rqrcuten", cp.zeros(state.p.shape, cp.float32))):
+        original = getattr(result, name)
+        setattr(result, name, bad)
+        assert not is_native_gf_result(result, owner, state, cfg)
+        setattr(result, name, original)
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_gf_overwrites_poisoned_output_slabs(monkeypatch):
+    from gpuwm.config import RunConfig
+    from gpuwm.core import gf
+    from gpuwm.core.physics import initialize_physics
+
+    load = gf._gf_module
+    calls = []
+
+    class PoisonedFunction:
+        def __init__(self, fn):
+            self.fn = fn
+
+        def __getattr__(self, name):
+            return getattr(self.fn, name)
+
+        def __call__(self, grid, block, args):
+            # A reused allocation must not hide a missing output store.
+            for array in args[3:5]:
+                array.fill(cp.nan)
+            args[5].fill(cp.int32(-77))
+            self.fn(grid, block, args)
+            for array in args[3:5]:
+                assert bool(cp.isfinite(array).all())
+            assert not bool((args[5] == cp.int32(-77)).any())
+            calls.append(1)
+
+    class PoisonedModule:
+        def __init__(self, module):
+            self.module = module
+
+        def get_function(self, name):
+            return PoisonedFunction(self.module.get_function(name))
+
+    monkeypatch.setattr(gf, "_gf_module", lambda nz: PoisonedModule(load(nz)))
+    cfg = RunConfig(
+        nx=4, ny=2, nz=16, dx=12000.0, dy=12000.0, ztop=9000.0,
+        dt=60.0, run_seconds=0.0, moist=True, mp_physics=10,
+        bl_pbl_physics=1, sf_sfclay_physics=91,
+        cu_physics=3, cudt_minutes=0.0, ishallow=1)
+    state = _state_for(cfg)
+    driver = initialize_physics(state, cfg, landmask=1.0, tsk=290.0)
+    driver.compute(state, cfg)
+    assert calls == [1]

@@ -27,7 +27,9 @@ and bookkeeping:
   *additionally* paced by the node-wide 2.5 s governor
   (:mod:`gpuwm.nomads_governor`), which this pool never bypasses --
   concurrency there only overlaps in-flight service time, it never
-  raises the request rate.
+  raises the request rate.  A host's files take its slots in
+  submission order (:class:`_HostTurns`), so a capped host moves a
+  window's leads first to last.
 * **In-order admission.**  ``on_admitted`` fires on the caller's
   thread, in submission order, as the verified prefix grows -- so a
   route's per-file manifest publication keeps its exact serial
@@ -265,6 +267,57 @@ def _terminate(process) -> None:
         process.terminate()
     except OSError:              # already gone
         pass
+
+
+#: How often (seconds) a file waiting for its host's turn looks whether
+#: the request was stopped meanwhile.
+_TURN_WAKE_SECONDS = 0.25
+
+
+class _HostTurns:
+    """One host's transfer slots, handed out in submission order.
+
+    The breakage this prevents, measured live on 2026-10-01 (a GEFS window
+    fetched as it posted: two objects per lead on NOMADS, cap 2, six
+    workers): with a plain semaphore, the worker that had just freed a
+    slot took the next queued file and got the slot back before a waiting
+    worker woke, so files 2 to 5 (f003 and f006) moved only after f024.
+    The forecast needs f000 and f003 to start, so it started once the
+    whole window was in, and under the as-posted gate each barging file
+    also held its slot while its lead had not posted yet.  Here a file
+    takes a slot only when every earlier file of its host has taken one.
+
+    Every earlier file has already been taken by a worker (the executor's
+    queue is first in, first out), so its turn always comes, unless the
+    request was stopped and it was cancelled unstarted; a waiter therefore
+    gives up once the stop fires, and the pool cancels it.
+    """
+
+    def __init__(self, cap: int, indices) -> None:
+        self._cond = threading.Condition()
+        self._free = int(cap)
+        self._turns = list(indices)
+        self._next = 0
+
+    def acquire(self, index: int, stop: _Stop) -> bool:
+        """Wait for ``index``'s turn and a free slot; False once stopped."""
+
+        with self._cond:
+            while not (self._free > 0 and self._next < len(self._turns)
+                       and self._turns[self._next] == index):
+                if stop.fired:
+                    return False
+                self._cond.wait(_TURN_WAKE_SECONDS)
+            self._next += 1
+            self._free -= 1
+            # The next file's turn may already have a free slot.
+            self._cond.notify_all()
+            return True
+
+    def release(self) -> None:
+        with self._cond:
+            self._free += 1
+            self._cond.notify_all()
 
 
 class TransferContext:
@@ -574,8 +627,10 @@ def run_transfers(jobs, *, workers: int,
             wall_seconds=time.perf_counter() - started,
             serial_seconds=serial_seconds)
 
-    semaphores = {
-        host: threading.BoundedSemaphore(host_worker_cap(host, workers))
+    turns = {
+        host: _HostTurns(host_worker_cap(host, workers),
+                         [index for index, job in enumerate(jobs)
+                          if host_key(job.url) == host])
         for host in seen_hosts if host}
     timing_lock = threading.Lock()
 
@@ -583,9 +638,14 @@ def run_transfers(jobs, *, workers: int,
 
     def timed(index: int, job: TransferJob) -> dict:
         nonlocal serial_seconds
-        gate = semaphores.get(host_key(job.url))
-        if gate is not None:
-            gate.acquire()
+        gate = turns.get(host_key(job.url))
+        if gate is not None and not gate.acquire(index, stop):
+            # Stopped while it waited for its turn: it never started, so
+            # it is cancelled unannounced, as a file the stop reaches
+            # after it got a slot is (TransferContext.raise_if_stopped).
+            raise TransferCancelled(
+                f"{job.name}: stopped because another file failed the "
+                "request")
         try:
             job_started = time.perf_counter()
             entry = _watch(monitor, job, stop, index,

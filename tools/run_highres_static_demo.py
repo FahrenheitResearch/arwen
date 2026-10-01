@@ -20,7 +20,7 @@ import numpy as np
 from gpuwm.case_data import expand_path_variables
 from gpuwm.static.build import GeogSelection, build_static
 from gpuwm.static.highres_production import (apply_highres_statics,
-                                             parse_static_table)
+                                             resolve_static_highres)
 from gpuwm.static.lambert import grids_from_wps_namelist
 
 
@@ -125,7 +125,7 @@ def main() -> None:
     source = str(config_path)
     base = config_path.parent
     demo = raw["demo"]
-    highres = parse_static_table(raw.get("static"), source=source,
+    highres = resolve_static_highres(raw, source=source,
                                  base_dir=base)
     if highres is None or not highres.enabled:
         raise SystemExit("demo config must enable [static.highres]")
@@ -151,7 +151,9 @@ def main() -> None:
         (domain_dir / "landuse").mkdir(parents=True, exist_ok=True)
 
         started = time.perf_counter()
-        baseline = build_static(grid, geog_root, selection=selection)
+        from dataclasses import replace
+        domain_selection = replace(selection, terrain_smoothing=highres.smoothing_for(domain_id))
+        baseline = build_static(grid, geog_root, selection=domain_selection)
         baseline_seconds = time.perf_counter() - started
         started = time.perf_counter()
         candidate, receipt = apply_highres_statics(

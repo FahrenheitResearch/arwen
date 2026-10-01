@@ -467,6 +467,16 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
         help="tab-separated HOUR and GFS GRIB2 path inventory",
     )
     gfs.add_argument("--cycle", help="GFS cycle in YYYY-MM-DD_HH:MM:SS form")
+    gfs.add_argument(
+        "--as-posted",
+        type=Path,
+        default=None,
+        metavar="POSTING_DIR",
+        help="prepare as an as-posted fetch publishes the window's leads: "
+             "POSTING_DIR is that fetch's posting/ folder; the preparation "
+             "starts on the first leads and its seal writes the input "
+             "manifest, so no --source-manifest pair is given",
+    )
     # store_true with a falsy default, not store_false/default=True:
     # `_active_action_arguments` reads every non-None, non-False namespace
     # entry as a supplied argument, so a flag whose DEFAULT is True makes
@@ -1123,6 +1133,13 @@ def _required_gfs_args(args: argparse.Namespace) -> list[str]:
         errors.append(
             "--source-manifest and --source-manifest-sha256 are an "
             "atomic pair")
+    if getattr(args, "as_posted", None) is not None             and args.source_sha256s is not None:
+        # Breakage it prevents: an as-posted seal writes the input manifest
+        # from the lead markers, so a pinned one would be a second manifest
+        # the preparation neither reads nor seals.
+        errors.append(
+            "--as-posted prepares a window whose seal writes the input "
+            "manifest; it takes no --source-manifest pair")
     if (args.static_input is None) != (args.static_receipt is None):
         errors.append(
             "--static-input and --static-receipt must be supplied together")
@@ -1920,6 +1937,18 @@ def _era5_command(args: argparse.Namespace) -> list[str]:
 
 
 def _gfs_command(args: argparse.Namespace) -> list[str]:
+    posting = getattr(args, "as_posted", None)
+    if posting is not None:
+        # As posted, the seal writes the manifest where the one-shot door
+        # authors it (beside --output-root), so it takes no digest.
+        from gpuwm.fetch import preparation_manifest_path
+
+        binding = ["--input-manifest",
+                   str(preparation_manifest_path(Path(args.output_root))),
+                   "--as-posted", str(posting)]
+    else:
+        binding = ["--input-manifest", str(args.source_sha256s),
+                   "--input-manifest-sha256", str(args.source_sha256s_sha256)]
     command = [
         sys.executable,
         "-m",
@@ -1934,10 +1963,7 @@ def _gfs_command(args: argparse.Namespace) -> list[str]:
         str(args.wps_namelist),
         "--experiment-config",
         str(args.experiment_config),
-        "--input-manifest",
-        str(args.source_sha256s),
-        "--input-manifest-sha256",
-        str(args.source_sha256s_sha256),
+        *binding,
         "--output-root",
         str(args.output_root),
     ]
@@ -2391,6 +2417,24 @@ class PreparationRunner:
         return {"delivery": None, "stage": None, "option": None,
                 "reason": missing + "; supply a prepared hierarchy with verified "
                           "corridors or use preparation that builds them"}
+
+
+#: The preparation runners that take ``--as-posted``: they wait for each
+#: lead's posted marker, decode lead batches as they arrive and write the
+#: input manifest at their seal (DESIGN A136 2.4).  Every other runner reads
+#: a whole fetched window.
+AS_POSTED_RUNNERS = frozenset({"gfs_pgrb2_0p25_v1"})
+
+
+def prepares_as_posted(source: str) -> bool:
+    """Whether ``source``'s preparation can run beside an as-posted fetch."""
+
+    from gpuwm.source_adapters import get_source_adapter
+
+    try:
+        return get_source_adapter(source).runner in AS_POSTED_RUNNERS
+    except (KeyError, ValueError):
+        return False
 
 
 def preparation_runners() -> dict[str, PreparationRunner]:
@@ -2865,6 +2909,16 @@ def dispatch(args: argparse.Namespace, *,
         return EXIT_CONFIG
 
     runner = runners[adapter.runner]
+    if (getattr(args, "as_posted", None) is not None
+            and adapter.runner not in AS_POSTED_RUNNERS):
+        # Breakage it prevents: this preparation reads its window whole, so
+        # the flag would be read by nothing and a window still posting
+        # would be prepared from whatever leads had arrived.
+        print(f"invalid or missing run arguments: --as-posted: --source "
+              f"{args.source} prepares a whole fetched window; fetch it "
+              "first (gpuwm fetch waits for every lead), then prepare",
+              file=sys.stderr)
+        return EXIT_USAGE
     required_args, build_command = runner.required, runner.command
     configuration_errors = required_args(args)
     if configuration_errors:
@@ -2954,6 +3008,7 @@ def dispatch(args: argparse.Namespace, *,
     # each bind their own namelist and experiment, and one shared file
     # let a later one replace an earlier one's binding mid-preparation.
     if (adapter.runner == "gfs_pgrb2_0p25_v1"
+            and getattr(args, "as_posted", None) is None
             and args.source_sha256s is None
             and args.source_sha256s_sha256 is None):
         from gpuwm import fetch as fetch_module

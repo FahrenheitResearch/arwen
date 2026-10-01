@@ -97,7 +97,7 @@
   }
  },
  "compose_scratch": {
-  "note": "The decoded frame stream a preparation that composes through the mapped engine stages in its scratch folder while it runs (gpuwm_mapped_engine frames.f64): per source, every field its mapping publishes on the source's own grid, each vertical field once per level of the mapping's ladder and each soil field once per layer the source publishes, as 8-byte values, for every valid time the preparation composes. `grid_points` is the source grid (a source remapped from an unstructured mesh names its `normalization` document instead, whose window around the target is the grid), `layers_per_valid_time` the fields times their levels, `soil_layers` how many of those are soil layers (the source's own soil column, which a mapping does not state), `windowed_layers` how many of those layers the atmospheric window crops to the target's footprint (none for a global source, whose representation stays whole), and `bytes_per_value` the stream's value size. It scales with the SOURCE grid, not the target, so it is priced here and not per target cell. `chains` names the chains whose preparation composes this way.",
+  "note": "The decoded frame stream a preparation that composes through the mapped engine stages in its scratch folder while it runs (gpuwm_mapped_engine frames.f64): per source, every field its mapping publishes on the source's own grid, each vertical field once per level of the mapping's ladder and each soil field once per layer the source publishes, as 8-byte values, for every valid time the preparation composes. `grid_points` is the source grid (a source remapped from an unstructured mesh names its `normalization` document instead, whose window around the target is the grid), `layers_per_valid_time` the fields times their levels, `soil_layers` how many of those are soil layers (the source's own soil column, which a mapping does not state), `windowed_layers` how many of those layers the atmospheric window crops to the target's footprint (a global source's too, wherever the target's stencils are clear of the ring's stored longitude cut; a target on the cut keeps the ring whole), `global_axes` the canonical axes a global source is published on (ascending latitude and the longitude ring from -180, one step apart), where its window is placed, and `bytes_per_value` the stream's value size. It scales with the SOURCE grid, not the target, so it is priced here and not per target cell. `chains` names the chains whose preparation composes this way.",
   "chains": ["prepared:staged"],
   "sources": {
    "gem-gdps": {
@@ -106,7 +106,8 @@
     "grid_points": 2882400,
     "layers_per_valid_time": 210,
     "soil_layers": 2,
-    "windowed_layers": 0,
+    "windowed_layers": 198,
+    "global_axes": {"longitude_first": -180.0, "latitude_first": -90.0, "step_degrees": 0.15, "nx": 2400, "ny": 1201},
     "bytes_per_value": 8,
     "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28: 4,842,432,000 bytes per valid time, the figure the scratch-disk refusal measured on a 48 hour window"
    },
@@ -116,7 +117,8 @@
     "grid_points": 1038240,
     "layers_per_valid_time": 101,
     "soil_layers": 8,
-    "windowed_layers": 0,
+    "windowed_layers": 84,
+    "global_axes": {"longitude_first": -180.0, "latitude_first": -90.0, "step_degrees": 0.25, "nx": 1440, "ny": 721},
     "bytes_per_value": 8,
     "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28: 838,897,920 bytes per valid time"
    },
@@ -126,7 +128,8 @@
     "grid_points": 1038240,
     "layers_per_valid_time": 91,
     "soil_layers": 4,
-    "windowed_layers": 0,
+    "windowed_layers": 78,
+    "global_axes": {"longitude_first": -180.0, "latitude_first": -90.0, "step_degrees": 0.25, "nx": 1440, "ny": 721},
     "bytes_per_value": 8,
     "measured": "the engine's frame stream for a real two-time fetch of 2026-09-26 18Z (leads 0 and 6 h), composed whole by gpuwm_mapped_engine on 2026-09-28: 755,838,720 bytes per valid time"
    },
@@ -136,7 +139,8 @@
     "grid_points": 1038240,
     "layers_per_valid_time": 95,
     "soil_layers": 8,
-    "windowed_layers": 0,
+    "windowed_layers": 78,
+    "global_axes": {"longitude_first": -180.0, "latitude_first": -90.0, "step_degrees": 0.25, "nx": 1440, "ny": 721},
     "bytes_per_value": 8,
     "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28: 789,062,400 bytes per valid time, 17 fields with the mean sea level pressure the surface pressure derivation reads"
    },
@@ -146,7 +150,8 @@
     "grid_points": 1038240,
     "layers_per_valid_time": 95,
     "soil_layers": 8,
-    "windowed_layers": 0,
+    "windowed_layers": 78,
+    "global_axes": {"longitude_first": -180.0, "latitude_first": -90.0, "step_degrees": 0.25, "nx": 1440, "ny": 721},
     "bytes_per_value": 8,
     "measured": "the engine's frame stream for a real two-time fetch of member mem001 of 2026-09-27 00Z, verified by gpuwm-member-prep and composed whole by gpuwm_mapped_engine on 2026-09-28: 789,062,400 bytes per valid time, 17 fields with the mean sea level pressure the surface pressure derivation reads"
    },
@@ -156,7 +161,8 @@
     "grid_points": 259920,
     "layers_per_valid_time": 203,
     "soil_layers": 8,
-    "windowed_layers": 0,
+    "windowed_layers": 186,
+    "global_axes": {"longitude_first": -180.0, "latitude_first": -90.0, "step_degrees": 0.5, "nx": 720, "ny": 361},
     "bytes_per_value": 8,
     "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28: 422,110,080 bytes per valid time"
    },
@@ -166,7 +172,8 @@
     "grid_points": 1038240,
     "layers_per_valid_time": 214,
     "soil_layers": 8,
-    "windowed_layers": 0,
+    "windowed_layers": 198,
+    "global_axes": {"longitude_first": -180.0, "latitude_first": -90.0, "step_degrees": 0.25, "nx": 1440, "ny": 721},
     "bytes_per_value": 8,
     "measured": "the 0.25 degree product grid; the layers are its mapping's fields and ladder and the soil column its product publishes, counted as the engine counts them (the count matched the engine on the ten routes measured)"
    },

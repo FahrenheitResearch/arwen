@@ -371,6 +371,7 @@ def initialize_landuse(
         islake: int, isice: int, isoilwater: int = 14,
         isoilice: int = 16,
         fractional_seaice: bool = False,
+        urban_legend: bool = False,
         soil_temperature=None, sst=None,
         tbl_dir: Path | None = None) -> LanduseInitialization:
     """Transcribe the WRF real-data/``landuse_init`` cold-start contract.
@@ -421,6 +422,13 @@ def initialize_landuse(
     # kernel can index an unsupported active land category; raw lake 21 has
     # already been source-faithfully normalized to supported water 17.
     unsupported_noah = land & (ivgtyp > veg.lucats)
+    if urban_legend:
+        # The urban legend keeps WRF's LCZ categories (VEGPARM LCZ_1..11);
+        # Noah and Noah-MP run those columns as NATURAL under an urban
+        # model, so VEGPARM's own rows for them are never indexed.
+        from .urban_tables import lcz_categories
+        unsupported_noah &= ~np.isin(
+            ivgtyp, lcz_categories(mminlu, tbl_dir=tbl_dir))
     if np.any(unsupported_noah):
         bad = int(ivgtyp[unsupported_noah][0])
         raise ValueError(

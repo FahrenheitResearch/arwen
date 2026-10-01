@@ -471,7 +471,7 @@ extern "C" __global__ void refl10cm_thompson_column(
         if (qs[idx] > 1.0e-6f) {
             rs[k] = qs[idx] * rho;
             const float tc0 = fminf(-0.1f, t[idx] - 273.15f);
-            smob[k] = rs[k] / am_s;
+            smob[k] = __fdiv_rn(rs[k], am_s);
             const float smo2 = smob[k];
             smoc[k] = thompson_snow_field_a(tc0, 3.0f)
                 * powf(smo2, thompson_snow_field_b(tc0, 3.0f));

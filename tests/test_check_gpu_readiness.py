@@ -139,6 +139,33 @@ def test_gpu_compilation_gap_blocks_setup_doctor_verdict(monkeypatch):
     assert doctor.blocking_gaps([check])
 
 
+def test_a_launch_that_may_not_touch_the_card_says_which_switch_forbids_it(
+        monkeypatch):
+    # "GPU readiness is info: device not touched" was read as a card the
+    # probe misjudged; the probe never ran, the environment forbade it.
+    from gpuwm import go_cli
+
+    monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", "1")
+    with pytest.raises(go_cli.GoRefusal) as refused:
+        go_cli._require_forecast_device()
+    first = str(refused.value).splitlines()[0]
+    assert "GPUWM_NO_LOCAL_GPU is set" in first
+    assert "unset GPUWM_NO_LOCAL_GPU" in first
+    # A measured verdict keeps its own remedy whether or not the switch
+    # is set: only the not-judged verdict is the switch's.
+    monkeypatch.setattr(doctor, "_cuda_headers_check", lambda: doctor.Check(
+        "CUDA kernel headers", "missing", "no header", brief="no header",
+        action="install the matching CUDA runtime headers"))
+    for switch in ("1", "0"):
+        monkeypatch.setenv("GPUWM_NO_LOCAL_GPU", switch)
+        with pytest.raises(go_cli.GoRefusal) as refused:
+            go_cli._require_forecast_device()
+        first = str(refused.value).splitlines()[0]
+        assert "GPU readiness is missing" in first
+        assert "install the matching CUDA runtime headers" in first
+        assert "GPUWM_NO_LOCAL_GPU" not in first
+
+
 def test_windows_available_ram_uses_physical_not_pagefile(monkeypatch):
     from tilestream import autoplan
     monkeypatch.setattr(autoplan.sys, "platform", "win32")

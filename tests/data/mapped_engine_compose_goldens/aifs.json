@@ -1,50 +1,126 @@
 {
   "alignment_receipt": {
+    "binding": "step0_statics",
     "broadcast_primary_valid_times": [
       "2026-08-17T06:00:00"
     ],
     "coordinate_match": "exact_equivalent_contiguous_subset",
-    "field": "terrain_height",
-    "invariant_across_all_supplement_times": true,
-    "latitude_index_direction": 1,
+    "donor_member": null,
+    "donor_shape": [
+      721,
+      1440
+    ],
+    "donor_source_cycles": [
+      "2026-08-17T00:00:00"
+    ],
+    "donor_valid_times": [
+      "2026-08-17T00:00:00"
+    ],
+    "field_subset_sha256": {
+      "land_fraction": "cec1b08bb05717bed5906c98a91ec524bfc74858d143841def57e28ded8c1b8f",
+      "terrain_height": "c405ccbb581be0b2b2c7aafa6b0f3c0cde019290ea9c4821ee43c56b31db9acd"
+    },
+    "fields": [
+      "land_fraction",
+      "terrain_height"
+    ],
+    "grid_alignment": "exact_coordinate_subset",
     "latitude_index_range": [
       0,
       720
     ],
-    "latitude_sha256": "ad01633f3901f6162bcdcdc815ac9165553aa5e0a70d659d5f9fe84207fb21e2",
     "longitude_equivalence": "modulo_360_exact",
-    "longitude_index_direction": 1,
     "longitude_index_range": [
       0,
       1439
     ],
-    "longitude_sha256": "71b86113b1a966c6fc5962ec9be7ee8c26cf759621bf1f424f5b0c79a7f8d5ea",
     "matched_primary_valid_times": [
-      "2026-08-17T00:00:00",
-      "2026-08-17T06:00:00"
+      "2026-08-17T00:00:00"
     ],
     "primary_shape": [
       721,
       1440
     ],
-    "schema": "gpuwm-mapped-exact-subset-binding-v1",
+    "schema": "gpuwm-cross-source-binding-v1",
+    "source_id": "ecmwf-aifs-single-oper-step0-donor-grib2-native",
     "status": "PASS",
-    "supplement_shape": [
-      721,
-      1440
-    ],
-    "supplement_valid_times": [
-      "2026-08-17T00:00:00"
-    ],
-    "terrain_full_sha256": "c405ccbb581be0b2b2c7aafa6b0f3c0cde019290ea9c4821ee43c56b31db9acd",
-    "terrain_subset_sha256": "c405ccbb581be0b2b2c7aafa6b0f3c0cde019290ea9c4821ee43c56b31db9acd",
-    "time_alignment": "cycle_invariant_broadcast"
+    "time_alignment": "source_cycle_analysis_broadcast"
   },
   "composition": {
     "name": "rw-wps-aifs-single-grib2.composition.json",
-    "sha256": "bf0687369b7888f85ea5c2aa61f7f6800c8b99bec3331f9f4d021c565a775ba8"
+    "sha256": "eccaa63a5b025c91378f005d88d93b411e9fc07724c75328a2460065590abbf7"
   },
-  "contributing_sources": [],
+  "contributing_sources": [
+    {
+      "alignment": {
+        "binding": "step0_statics",
+        "broadcast_primary_valid_times": [
+          "2026-08-17T06:00:00"
+        ],
+        "coordinate_match": "exact_equivalent_contiguous_subset",
+        "donor_member": null,
+        "donor_shape": [
+          721,
+          1440
+        ],
+        "donor_source_cycles": [
+          "2026-08-17T00:00:00"
+        ],
+        "donor_valid_times": [
+          "2026-08-17T00:00:00"
+        ],
+        "field_subset_sha256": {
+          "land_fraction": "cec1b08bb05717bed5906c98a91ec524bfc74858d143841def57e28ded8c1b8f",
+          "terrain_height": "c405ccbb581be0b2b2c7aafa6b0f3c0cde019290ea9c4821ee43c56b31db9acd"
+        },
+        "fields": [
+          "land_fraction",
+          "terrain_height"
+        ],
+        "grid_alignment": "exact_coordinate_subset",
+        "latitude_index_range": [
+          0,
+          720
+        ],
+        "longitude_equivalence": "modulo_360_exact",
+        "longitude_index_range": [
+          0,
+          1439
+        ],
+        "matched_primary_valid_times": [
+          "2026-08-17T00:00:00"
+        ],
+        "primary_shape": [
+          721,
+          1440
+        ],
+        "schema": "gpuwm-cross-source-binding-v1",
+        "source_id": "ecmwf-aifs-single-oper-step0-donor-grib2-native",
+        "status": "PASS",
+        "time_alignment": "source_cycle_analysis_broadcast"
+      },
+      "binding": "step0_statics",
+      "data": [
+        {
+          "path": "20260817000000-0h-oper-fc.grib2",
+          "sha256": "fad78858de3a24b69997ff42fe95feddd917c46758d03c573477663f9a25e01e"
+        }
+      ],
+      "fields": [
+        "land_fraction",
+        "terrain_height"
+      ],
+      "mapping": {
+        "path": "rw-wps-aifs-single-step0-donor.mapping.json",
+        "sha256": "99adc3a8894c2d19ba37d6da6d53418a95dcf32c2b1094b86e8ccd1feecb7b02"
+      },
+      "provenance": {
+        "path": "rw-wps-aifs-single-grib2.provenance.json",
+        "sha256": "26e16197183f4d2b6dffc9c732b9d18933ae26118b40d61617663a1355557f2c"
+      },
+      "source_id": "ecmwf-aifs-single-oper-step0-donor-grib2-native"
+    }
+  ],
   "frame_count": 2,
   "frames": [
     {
@@ -265,7 +341,7 @@
           ],
           "location": "surface",
           "missing_count": 0,
-          "sha256": "cd115d203bedd03c9966d1346ce5279e6183e386ff2d0f80f90ed39240634bb6",
+          "sha256": "4604de30ec363bb418ec06f9d26cc4b897357460dea401d2b4056c30a42a5db6",
           "shape": [
             721,
             1440
@@ -569,7 +645,7 @@
           ],
           "location": "surface",
           "missing_count": 0,
-          "sha256": "d17247768127e2dcdfaa3644f2d9ddf1f0c8acbab7ddcc0e7a90e3acfc0b1e56",
+          "sha256": "5d9ad789e8261229b6aaff174c860b9fb01c2e4907bfd7cf37cb8a9fe6aef087",
           "shape": [
             721,
             1440
@@ -659,11 +735,11 @@
   "header_rule": "gpuwm-portable-frame-header-v1",
   "mapping": {
     "name": "rw-wps-aifs-single-grib2.mapping.json",
-    "sha256": "421178fe8a81e304db6904428d57bd1852d2c55d9f3fda1f95a1becaeafba5dc"
+    "sha256": "1dec5755c55c2a527e7545bc6add7ce11beddc9fdd51c7f6ea95a8c7083d1a85"
   },
   "measured_on": {
-    "machine": "AMD64",
-    "system": "Windows"
+    "machine": "x86_64",
+    "system": "Linux"
   },
   "schema": "gpuwm-mapped-compose-parity-digest-v2",
   "soil_layers": {
@@ -783,7 +859,7 @@
   ],
   "terrain_provenance": {
     "name": "rw-wps-aifs-single-grib2.provenance.json",
-    "sha256": "8aeb0d51ef5e43c504d7d5cf9d4b98992bd5becee2b75dccbb7d8b7808579aff"
+    "sha256": "26e16197183f4d2b6dffc9c732b9d18933ae26118b40d61617663a1355557f2c"
   },
   "verdict": "COMPOSED"
 }

@@ -5,12 +5,11 @@ import argparse
 import sys
 
 
-_START = """ArWen: GPU weather forecasts
+_START = """ArWen — GPU weather forecasts
 usage: gpuwm COMMAND [OPTIONS]
 
 Create and launch
   gpuwm tui                       Open Research (W) or Scenario (I)
-  gpuwm gui                       Open the Weather Library in your browser
   gpuwm research --help           Browse recipes, select hardware, create a study
   gpuwm domain                    Create a configuration with guided questions
   gpuwm domain-fit --help          Fit an editable starter to your GPU
@@ -23,7 +22,8 @@ Use existing WRF files
   gpuwm run --met-em DIR           Start from WPS met_em and namelist.input
 
 Continue a forecast
-  gpuwm resume CONFIG --outdir RUN_DIR  Find a checkpoint in an existing run
+  gpuwm resume CONFIG --outdir RUN_DIR
+                                  Find a checkpoint in an existing run
   gpuwm go --help                  Prepared-bundle and explicit restart options
 
 Set up or troubleshoot

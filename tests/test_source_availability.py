@@ -145,12 +145,33 @@ def test_latest_uses_the_real_resolver_and_checks_the_required_forecast_hour():
         # The actual resolver must walk its registered candidates and URLs.
         return "gfs.t06z" in url and ".f006" in url
 
-    result = resolve_latest("gfs", 6, now=NOW, probe=provider)
+    # The whole-cycle rule asks the final forecast hour; as-posted is the
+    # default (A136 L2) and is pinned below.
+    result = resolve_latest("gfs", 6, now=NOW, probe=provider, as_posted=False)
     assert result["selected_cycle"] == "2026-09-06T06"
     assert result["resolution"]["basis"] == "provider_object_probe"
     assert len(checked) >= 2
     assert all("f006" in url for url in checked)
     assert result["resolution"]["objects"][-1]["available"]
+
+
+def test_latest_as_posted_asks_the_start_needs_and_takes_the_newer_start():
+    checked = []
+
+    def provider(url):
+        checked.append(url)
+        # The 12Z cycle has its first leads out, not its last: as posted,
+        # it is the start (the fetch takes f006 when it posts).
+        return (("gfs.t06z" in url)
+                or ("gfs.t12z" in url and (url.endswith(".f000")
+                                           or url.endswith(".f003")
+                                           or url.endswith(".f001"))))
+
+    # Half an hour on, when the table says 12Z f003 is due.
+    result = resolve_latest("gfs", 6, now=NOW + timedelta(minutes=30),
+                            probe=provider)
+    assert result["selected_cycle"] == "2026-09-06T12"
+    assert not any("t12z" in url and "f006" in url for url in checked)
 
 
 @pytest.mark.parametrize("hours", [1, 6, 24, 120, 240])

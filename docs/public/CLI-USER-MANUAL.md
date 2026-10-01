@@ -317,7 +317,7 @@ Replace the recipe ID and date. Creation writes a new configuration, every file 
 
 For a declared 8 GiB target, use `--hardware-class 8 --vram-gib 8`. Without `--vram-gib`, hardware selection measures current capacity and free memory. The class chooses a resource profile; it does not create memory or validate the requested study. If a larger class loses the minimum study area, retry the same question with `auto` or the suggested smaller class and keep the true capacity.
 
-Recipes requiring archived parents or existing scenario state cannot create those inputs from an ordinary analysis. Use the archive/downscale or existing-state workflow. Fresh controlled-scenario creation follows its admitted GFS preparation path and validates warm-bubble coverage.
+Recipes requiring archived parents or existing scenario state cannot create those inputs from an ordinary analysis. Use the archive/downscale or existing-state workflow. Fresh controlled-scenario creation works from every source: each source's domain-tree preparation records the bubble as deferred, and the tree forecast applies it at the start and validates warm-bubble coverage.
 
 Research creation uses packaged diagnostic metadata and does not need to execute a built renderer. The current selector subset has 40 members; actual files and complete time windows still decide availability. Read **Additional analysis required** in the command output and `further_analysis` in the catalog. Gusts, visibility, precipitation-type categories, DCAPE, and several near-surface derived quantities are not supplied by this history-rendering route. Related state fields provide context, not an equivalent diagnostic.
 

@@ -948,3 +948,93 @@ def test_a_platform_wheel_beside_the_pair_is_measured_not_ignored(
     assert measured["bytes"] == platform_wheel.stat().st_size
     assert measured["headroom_bytes_vs_100e6"] < 0
     assert receipt["pypi_file_cap_bytes"] == 100_000
+
+
+# ---------------------------------------------------------------------
+# Private machine names in a wheel's data members (A154)
+# ---------------------------------------------------------------------
+# 2.8.1's fetch route table named the lab host that watched the posting
+# times in 20 measured rows, and nothing read a wheel's data files for
+# one.  The names are assembled so this file carries none.
+_HOST = "weather-" + "node-" + "2"
+_LAN = "192." + "168.68.1"
+
+
+def test_a_wheel_data_member_naming_a_private_machine_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundles, pins, manifest = _pack_and_pin(tmp_path, monkeypatch)
+    wheel, sdist = _build_dists(tmp_path, pins)
+    receipt = json.loads(
+        _dry_run(tmp_path, bundles, pins, manifest, wheel, sdist).read_text(
+            encoding="utf-8"))
+    assert receipt["wheel"]["private_machine_names_in_data_members"] == 0
+
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("gpuwm/authorities/routes.json",
+                         '{"measured": "posting watch, ' + _HOST + '"}\n')
+
+    with pytest.raises(SystemExit) as refusal:
+        _dry_run(tmp_path, bundles, pins, manifest, wheel, sdist)
+    message = str(refusal.value)
+    assert "publishes a private machine's name" in message, message
+    assert "gpuwm/authorities/routes.json" in message, message
+
+
+def test_the_wheel_scan_reads_data_members_and_netcdf_not_code(
+    tmp_path: Path,
+) -> None:
+    wheel = tmp_path / f"gpuwm-{VERSION}-py3-none-any.whl"
+    hdf5_like = (b"\x89HDF\r\n\x1a\n" + b"\x00" * 32 + b"history\x00"
+                 + ("met_em on " + _HOST + " (" + _LAN + ")").encode("ascii")
+                 + b"\x00" * 32)
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("configs/demo.toml", "# Linux (" + _HOST + ")\n")
+        archive.writestr("configs/real/terrain.nc", hdf5_like)
+        archive.writestr("gpuwm/data/governor.json",
+                         '{"note": "the node-wide governor"}\n')
+        archive.writestr("gpuwm/core/timing.py", "# measured on " + _HOST + "\n")
+        archive.writestr("gpuwm/libexec/bridges/rw_tool",
+                         b"\x7fELF\x00\x00" + _HOST.encode("ascii"))
+        archive.writestr(f"gpuwm-{VERSION}.dist-info/METADATA",
+                         "Summary: built on " + _HOST + "\n")
+
+    rows = verify_release_artifacts.private_host_members(wheel)
+    assert sorted((row["member"], row["kind"]) for row in rows) == [
+        ("configs/demo.toml", "private machine name"),
+        ("configs/real/terrain.nc", "private machine name")]
+
+
+def test_a_pinned_reference_config_is_allowed_by_its_exact_bytes_only(
+    tmp_path: Path,
+) -> None:
+    """The rule's one allowance: the config a committed WRF reference
+    manifest pins by sha256.  An edited copy of it is refused."""
+
+    from tools.release_exclusions import pinned_record_digests
+
+    repo = Path(verify_release_artifacts.__file__).resolve().parents[1]
+    digests = pinned_record_digests(repo)
+    records = [path for path in sorted((repo / "configs").rglob("*.toml"))
+               if hashlib.sha256(path.read_bytes()).hexdigest() in digests]
+    if not records:
+        pytest.skip("no committed WRF reference pins a config in this tree")
+    payload = records[0].read_bytes()
+    if b"node-" not in payload:
+        pytest.skip("the pinned config names no machine; nothing to allow")
+
+    exact = tmp_path / "exact.whl"
+    with zipfile.ZipFile(exact, "w") as archive:
+        archive.writestr("configs/reference.toml", payload)
+    assert verify_release_artifacts._refuse_private_hosts(exact, repo) == [
+        "configs/reference.toml"]
+
+    edited = tmp_path / "edited.whl"
+    with zipfile.ZipFile(edited, "w") as archive:
+        archive.writestr("configs/reference.toml", payload)
+        archive.writestr("configs/edited.toml", payload + b"# edited\n")
+    with pytest.raises(SystemExit) as refusal:
+        verify_release_artifacts._refuse_private_hosts(edited, repo)
+    message = str(refusal.value)
+    assert "configs/edited.toml" in message, message
+    assert "'configs/reference.toml'" not in message, message

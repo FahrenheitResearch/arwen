@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from types import MappingProxyType
@@ -11,6 +11,7 @@ from typing import Mapping, Sequence
 import numpy as np
 
 from gpuwm.boundary_fields import SCALAR_ARRAY_BOUNDARY_FIELDS
+from gpuwm.core import portable_math as pm
 from gpuwm.core.kernels import get_kernel
 from gpuwm.grid_requirements import boundary_axis
 
@@ -214,6 +215,17 @@ class BoundaryInterval:
     start_seconds: float
     end_seconds: float
     fields: Mapping[str, FieldBoundary]
+    #: The digest of the frame this interval's tendency was built toward
+    #: (:func:`gpuwm.state_serialization_contract.boundary_frame_sha256`),
+    #: recorded by the builder that differenced the two frames
+    #: (:func:`record_built_end_frame`), and ``None`` where none was
+    #: recorded: a wrfbdy file's intervals, a prepared cache written before
+    #: 2.8.1, a tile's window.  It is what a forcing row's
+    #: ``end_frame_sha256`` records (A140b).  Not an ``__init__`` field, so
+    #: an interval rebuilt with other tables (``dataclasses.replace``)
+    #: drops it rather than carry a frame its tables were not built toward.
+    end_frame_sha256: str | None = field(
+        default=None, init=False, compare=False, repr=False)
 
     def __post_init__(self):
         fields = MappingProxyType(dict(self.fields))
@@ -274,6 +286,40 @@ class LateralBoundaries:
 
     def interval_at(self, elapsed_seconds: float) -> BoundaryInterval:
         return self.intervals[interval_index(self.intervals, elapsed_seconds)]
+
+
+def record_built_end_frame(interval: BoundaryInterval,
+                           digest: str | None) -> BoundaryInterval:
+    """Record the end frame ``interval``'s tendency was built toward.
+
+    ``digest`` is :func:`gpuwm.state_serialization_contract.
+    boundary_frame_sha256` of that frame, from the builder or from a
+    record it wrote (a prepared cache's interval row, a boundary segment
+    marker).  ``None`` records nothing.  Returns ``interval``.
+    """
+
+    if digest is None:
+        return interval
+    if (not isinstance(digest, str) or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)):
+        raise ValueError(
+            f"a built end frame digest is 64 lowercase hex characters, "
+            f"not {digest!r}")
+    recorded = interval.end_frame_sha256
+    if recorded is not None and recorded != digest:
+        # One interval has one end frame: a second, different record would
+        # make its forcing row depend on which reader attached last.
+        raise ValueError(
+            f"boundary interval {interval.start_seconds!r} s to "
+            f"{interval.end_seconds!r} s already records the built end "
+            f"frame {recorded}, not {digest}")
+    object.__setattr__(interval, "end_frame_sha256", digest)
+    return interval
+
+
+def _built_end_frame(ends) -> str:
+    from gpuwm.state_serialization_contract import boundary_frame_sha256
+    return boundary_frame_sha256(ends)
 
 
 def interval_index(intervals, elapsed_seconds: float) -> int:
@@ -404,13 +450,19 @@ def _seconds(times: Sequence[datetime | float]) -> np.ndarray:
     return values
 
 
-def _field_boundary(first, second, duration, width):
+def _field_boundary(first, second, duration, width, *, ends=None):
+    """One field's four sides; ``ends`` collects the sides of ``second``."""
     if first.ndim == 2:
         first, second = first[None], second[None]
     if first.ndim != 3 or second.shape != first.shape:
         raise ValueError("boundary fields must be matching 2-D or 3-D arrays")
     if min(first.shape[-2:]) < boundary_axis(width):
         raise ValueError("domain is too small for the requested boundary width")
+    if ends is not None:
+        ends.update(west=second[..., :width],
+                    east=second[..., -width:][..., ::-1],
+                    south=second[..., :width, :],
+                    north=second[..., -width:, :][..., ::-1, :])
 
     def side(a, b):
         return SideBoundary(np.ascontiguousarray(a),
@@ -443,14 +495,17 @@ def build_lateral_boundaries(snapshots: Sequence[Mapping[str, object]],
     intervals = []
     for n in range(len(snapshots) - 1):
         duration = float(seconds[n + 1] - seconds[n])
+        ends = {name: {} for name in names}
         fields = {
             name: _field_boundary(_host(snapshots[n][name]),
                                   _host(snapshots[n + 1][name]),
-                                  duration, spec_bdy_width)
+                                  duration, spec_bdy_width, ends=ends[name])
             for name in sorted(names)
         }
-        intervals.append(BoundaryInterval(float(seconds[n]),
-                                          float(seconds[n + 1]), fields))
+        intervals.append(record_built_end_frame(
+            BoundaryInterval(float(seconds[n]), float(seconds[n + 1]),
+                             fields),
+            _built_end_frame(ends)))
     return LateralBoundaries(tuple(intervals), int(spec_bdy_width),
                              int(spec_zone), int(relax_zone))
 
@@ -527,7 +582,7 @@ def _weights(width, spec_zone, relax_zone, dt, spec_exp, *, wrf_real=False,
             gcx[index] = np.float32(g / denominator)
             continue
         ramp = (spec_zone + relax_zone - loop) / (relax_zone - 1)
-        sponge = np.exp(-(loop - (spec_zone + 1)) * spec_exp)
+        sponge = float(pm.exp(-(loop - (spec_zone + 1)) * spec_exp))
         if timescale_s > 0.0:
             # The same law as below with its time scale set in seconds
             # instead of in steps: 0.1 / dt is 1 / (10 dt) and 1 / (50 dt)
@@ -1078,8 +1133,13 @@ def _coupled_device_fields(state):
     return result
 
 
-def couple_nest_field(state, field_name: str, *, out):
-    """Write one full field in WRF coupled units into preallocated ``out``.
+def couple_nest_field(state, field_name: str, *, out, window=None, frame_width=None):
+    """Write coupled units into a full-shaped arena, optionally in a window.
+
+    ``window`` uses parent mass-cell bounds. Cells outside it are untouched;
+    callers must bound every subsequent read to the same padded footprint.
+    ``frame_width`` instead visits the four boundary strips, counting corner
+    cells once so no output cell has competing writers.
 
     This is the force-time counterpart of ``_coupled_device_fields`` with
     the ratified extensions: w uses full-level c1f/c2f mass weight and
@@ -1107,14 +1167,36 @@ def couple_nest_field(state, field_name: str, *, out):
     nz, ny, nx = expected
     mny, mnx = state.mup.shape
     count = int(out.size)
-    kernel = get_kernel("lbc_state", "couple_nest_field")
+    bounds = ()
+    kernel_name = "couple_nest_field"
+    if window is not None and frame_width is not None:
+        raise ValueError("coupling cannot enumerate a window and frame together")
+    if window is not None:
+        from gpuwm.core.streaming import window_slices
+
+        _, y, x = window_slices(expected, window)
+        if y.stop <= y.start or x.stop <= x.start:
+            return out
+        count = nz * (y.stop - y.start) * (x.stop - x.start)
+        bounds = tuple(np.int32(v) for v in (
+            y.start, x.start, y.stop - y.start, x.stop - x.start))
+        kernel_name = "couple_nest_field_window"
+    elif frame_width is not None:
+        width = _frame_rings(ny, nx, int(frame_width))
+        if width == 0:
+            return out
+        points = _perimeter_count(ny, nx, width)
+        count = nz * points
+        bounds = (np.int32(width), np.int32(points))
+        kernel_name = "couple_nest_field_frame"
+    kernel = get_kernel("lbc_state", kernel_name)
     kernel(((count + _THREADS - 1) // _THREADS,), (_THREADS,), (
         target, state.mub2d, state.mup, state.thb,
         state.c1h, state.c2h, state.c1f, state.c2f,
         state.msft, state.msfu, state.msfv, out,
         np.int32(state.has_msf), np.int32(state.thb.ndim == 3),
         np.int32(kind), np.int32(nz), np.int32(ny), np.int32(nx),
-        np.int32(mny), np.int32(mnx)))
+        np.int32(mny), np.int32(mnx)) + bounds)
     return out
 
 
@@ -1247,8 +1329,10 @@ def build_lateral_interval_from_sides(
             if set(collection[side]) != inventory:
                 raise ValueError("side snapshot field inventories differ")
     fields = {}
+    ends = {}
     for name in sorted(inventory):
         packed = {}
+        ends[name] = {}
         for side in side_names:
             before = _host(first[side][name])
             after = _host(second[side][name])
@@ -1258,8 +1342,13 @@ def build_lateral_interval_from_sides(
             packed[side] = SideBoundary(
                 np.ascontiguousarray(before),
                 np.ascontiguousarray((after - before) / duration))
+            ends[name][side] = after
         fields[name] = FieldBoundary(**packed)
-    return BoundaryInterval(start, end, fields)
+    # The frame the tendency was built toward is ``second`` itself, which
+    # is the next interval's start frame, so the forcing row records it
+    # rather than rebuilding it from value + tendency * duration.
+    return record_built_end_frame(BoundaryInterval(start, end, fields),
+                                  _built_end_frame(ends))
 
 
 def build_state_lateral_boundaries(states, times, *, spec_bdy_width=5,
@@ -1987,7 +2076,14 @@ def apply_state_qv_lateral_boundary(state, cfg, tendency, *,
 def apply_state_scalar_lateral_boundary(state, cfg, field_name, tendency, *,
                                         apply_relax=True,
                                         source_field=None) -> None:
-    """Apply one resident moist/scalar boundary tendency."""
+    """Apply one resident moist/scalar boundary tendency.
+
+    ``source_field`` is the RK time-t copy; with it the coupled scalar is
+    formed at the time-t mass ``mup0``, so a tendency evaluated on a later
+    stage is WRF's rk_step-1 capture (solve_em.F:2265-2292) without a held
+    array.  Without it, the live field and live mass, which ARE the
+    time-t values on the capture stage.
+    """
     if state.lateral_boundaries is None:
         raise RuntimeError("boundary-forced state has no lateral forcing")
     device_interval, dtbc, dt, spec_exp = _active_device_interval(state, cfg)
@@ -2005,7 +2101,8 @@ def apply_state_scalar_lateral_boundary(state, cfg, field_name, tendency, *,
         spec_exp=spec_exp, apply_relax=apply_relax,
         state=state, field_name=field_name, weights=weights,
         source_field=source_field,
-        source_mup=(state.mup0 if cfg.nested else None),
+        source_mup=(state.mup0 if (cfg.nested or source_field is not None)
+                    else None),
         timescale_s=timescale_s)
 
 
@@ -2096,7 +2193,9 @@ def apply_state_boundary_values(state, cfg, elapsed_seconds=None) -> None:
         state, device_interval.fields["mu"], dtbc, cfg.spec_zone)
     # WHICH FIELDS spec_bdy_final forces back.  On a NESTED domain every
     # field the parent supplies.  On a SPECIFIED domain the four dry
-    # prognostics and the supplied moist-array scalars (water vapour): WRF
+    # prognostics and the supplied moist-array scalars (water vapour, and
+    # the analysed hydrometeor masses where the source publishes them,
+    # WRF have_bcs_moist, solve_em.F:4701-4703): WRF
     # runs spec_bdy_final on a scalar-array species only when nested
     # (solve_em.F scalar_species_bdy_loop_3), so a specified domain's
     # supplied aerosol ring moves by its boundary tendency alone
@@ -2291,5 +2390,6 @@ __all__ = ["BoundaryInterval", "FieldBoundary", "LateralBoundaries",
            "build_lateral_interval_from_sides", "extract_lateral_side",
            "couple_nest_field", "domain_boundary_snapshot",
            "lateral_boundary_clock_dt", "lateral_boundary_reload_count",
-           "lateral_boundary_resident_bytes", "relax_timescale_seconds",
+           "lateral_boundary_resident_bytes", "record_built_end_frame",
+           "relax_timescale_seconds",
            "specified_relaxes_w", "start_last_forcing_order"]

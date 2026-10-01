@@ -447,6 +447,27 @@ def event_facts(path: Path) -> dict[str, Any]:
             said = {"message": plain_message(record.get("message")), "detail": plain_message(record.get("detail"))}
             if said["message"] and said not in facts.setdefault("library_warnings", []):
                 facts["library_warnings"].append(said)
+        elif tag == "posting_schedule":
+            # A window fetched as its source posts: when the run can start, when the cycle's last hour is expected,
+            # and how late an hour may be.
+            facts["posting"] = {key: record.get(key) for key in POSTING_SCHEDULE_KEYS}
+            facts["posting"]["leads"] = len(_rows(record.get("leads")))
+            facts["posting"]["leads_ready"] = 0
+        elif tag == "lead_ready" and isinstance(facts.get("posting"), dict):
+            facts["posting"]["leads_ready"] += 1
+            facts["posting"]["last_ready_lead"] = record.get("lead")
+        elif tag in ("source_wait_started", "source_wait_progress", "boundary_wait_started"):
+            # The wait the forecast is in, as the run said it: the heartbeat's wait record names its cause and
+            # lead, and this adds where the model stands (see wait()).
+            facts["wait"] = {"on": "preparation" if tag == "boundary_wait_started" else "source",
+                             **{key: record.get(key) for key in WAIT_EVENT_KEYS if key in record}}
+        elif tag in ("source_wait_finished", "boundary_wait_finished"):
+            facts["wait"] = None
+        elif tag == "source_behind":
+            # The lead a run stopped on because its source fell behind its budget (exit 75), and where it stopped.
+            facts["source_behind"] = {key: record.get(key) for key in (
+                "source", "cycle", "lead", "valid_time", "expected_at", "late_at", "late_after_minutes",
+                "last_answer", "model_elapsed_seconds", "model_valid_time", "frames_kept")}
         elif tag in ("completed", "failed"):
             facts["end"] = {key: record.get(key) for key in (
                 "event", "stage", "message", "remedy", "interrupted", "exit_code", "dry_run")}
@@ -460,6 +481,50 @@ def event_facts(path: Path) -> dict[str, Any]:
     with _CACHE_LOCK:
         _CACHE[str(path)] = (key, facts)
     return facts
+
+
+#: The fields of a ``posting_schedule`` event the run page keeps (``gpuwm.runplan.POSTING_EVENT_FIELDS``).
+POSTING_SCHEDULE_KEYS = ("source", "member", "cycle", "as_posted", "shape", "streams", "why", "late_after_minutes",
+                         "expected_ready_at", "expected_final_at")
+#: The fields of a wait event (``source_wait_*`` or ``boundary_wait_started``) the run page keeps.
+WAIT_EVENT_KEYS = ("phase", "source", "cycle", "lead", "valid_time", "expected_at", "late_at", "interval", "reason",
+                   "model_elapsed_seconds", "model_valid_time")
+
+
+def wait(heartbeat: dict[str, Any], facts: dict[str, Any], start: datetime | None,
+         now: datetime | None = None) -> dict[str, Any]:
+    """A running forecast's wait at a seam: what it waits on, since when, and where the model stands.
+
+    The heartbeat's own wait record (``on``, ``lead``, ``expected_at``,
+    ``late_at``, ``since_utc``) is the wait now.  The run's wait event of
+    the same cause (and, on a source, the same lead) adds the model time
+    reached, the boundary interval, the source's valid time and the
+    reason; without one, the model time is the heartbeat's own, and its
+    valid time is counted from the run's start, written as the engine
+    writes it (``2026-09-24T01:30:00Z``).
+    """
+
+    block = dict(heartbeat["wait"])
+    said = facts.get("wait") if isinstance(facts.get("wait"), dict) else {}
+    if said.get("on") == block.get("on") and (block.get("on") != "source" or said.get("lead") == block.get("lead")):
+        for key in WAIT_EVENT_KEYS:
+            if block.get(key) is None and said.get(key) is not None:
+                block[key] = said[key]
+    if block.get("model_elapsed_seconds") is None:
+        block["model_elapsed_seconds"] = _nonnegative(heartbeat.get("model_elapsed_seconds"))
+    elapsed = _nonnegative(block.get("model_elapsed_seconds"))
+    if block.get("model_valid_time") is None and start is not None and elapsed is not None:
+        try:
+            block["model_valid_time"] = (start + timedelta(seconds=elapsed)).astimezone(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ")
+        except OverflowError:
+            pass
+    since = _parse_time(block.get("since_utc"))
+    moment = now or datetime.now(timezone.utc)
+    if since is not None:
+        since = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+        block["waited_seconds"] = max(0.0, round((moment - since).total_seconds(), 1))
+    return block
 
 
 # ------------------------------------------------------------------ preparation
@@ -1142,6 +1207,16 @@ def status(rundir: Path) -> dict[str, Any]:
         "follow_lost": follow_lost,
         "grids": pace(facts),
         "preparation": preparation(facts, heartbeat) if state == "running" else None,
+        # A running forecast waiting at a seam: on the source (a lead not posted yet, with the lead, when it was
+        # expected and when it counts as late) or on the preparation, from the heartbeat's own wait record, with
+        # the model time it waits at (wait()).
+        "wait": (wait(heartbeat, facts, start) if state == "running" and isinstance(heartbeat, dict)
+                 and str(heartbeat.get("status") or "").startswith("waiting:")
+                 and isinstance(heartbeat.get("wait"), dict) else None),
+        # A window fetched as its source posts: its schedule and how many of its hours are in.
+        "posting": facts.get("posting"),
+        # The lead a run stopped on when its source fell behind (exit 75).
+        "source_behind": facts.get("source_behind"),
         "metadata_warnings": sorted(warnings),
     }
 

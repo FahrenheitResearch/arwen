@@ -126,7 +126,14 @@ _NX, _NY, _NZ = 3, 2, 8
 #: over exactly one (module_physics_init.F:3770-3772).  The 4 new
 #: sfclay=2 cells under the other PBLs are all refused by
 #: validate_myj_pairing, which is the reverse half of the same law.
-_ROUTED_COMBINATIONS = 45
+#:
+#: UW RE-MEASURE, 2026-09-30 (lane/europe-uw-pbl).  bl_pbl_physics=9 is
+#: routed, so the product goes 5 x 4 x 6 = 120 to 5 x 4 x 7 = 140, and
+#: the admitted count is re-measured: 57 = 45 + 12 (pbl 9), one per
+#: land-surface value at each of the three surface layers it admits (1,
+#: 5, 91).  Its sfclay=0 cells are refused by name (no UST/HFX/QFX) and
+#: its sfclay=2 cells by validate_myj_pairing (the TKE_MYJ scan).
+_ROUTED_COMBINATIONS = 57
 
 #: Every int32 descriptor the routed cross-product actually produces.
 _INT32_DESCRIPTORS = frozenset({

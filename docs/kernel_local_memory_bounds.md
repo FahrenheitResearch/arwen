@@ -328,7 +328,7 @@ exactly zero. The frame also stopped moving with `nz`, which retires the
 level-specialization gap this module used to carry -- the row is the same
 72 B at every tier above.
 
-### What the workspace costs, and why the tile is 4 blocks/SM
+### What the workspace costs, and why the tile was 4 blocks/SM
 
 The workspace is real device memory, so the cut is a trade and the tile is
 where the trade is set. 100,000 columns at `nz = 40`, same process, same
@@ -346,6 +346,14 @@ inputs (the 216-column WRF v4.6.1 oracle fixture tiled up), median of 7:
 4 blocks/SM is the plateau and the cheapest point on it. The kernel's
 hardware occupancy at block 64 is 12 blocks/SM, so this is a throughput
 choice; `gpuwm/core/gf.py` takes the smaller of the two.
+
+Since 2026-09-30 the driver carries `__launch_bounds__(64, 8)` (168 to 128
+registers, the same 88 B frame) and the tile is 8 blocks/SM: with six
+blocks resident the sweep above had no seventh or eighth to fill. On an
+82-SM RTX PRO 4500 at 50,000 columns and `nz = 50` a GF call took 10.85 ms
+against 11.53 ms at the old bound and tile, and the same at 16,384 columns
+(3.92 ms both); every output word was unchanged. The workspace doubles
+with the tile, and preflight prices it through the same constant.
 
 The residual 1.25x on the kernel is the price of global addressing over
 local. `__restrict__` on the column views does not close it (24.12 ms

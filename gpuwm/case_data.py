@@ -147,7 +147,7 @@ _REQUIRED_KEYS = (
 _OPTIONAL_KEYS = (
     "forcing_interval_s", "output_domain", "source_orography",
     "source_orography_variable", "co2_vmr", "water_temperature_overlay",
-    "water_temperature_policy",
+    "water_temperature_policy", "preprocess_backend",
 )
 _KNOWN_KEYS = frozenset(_REQUIRED_KEYS) | frozenset(_OPTIONAL_KEYS)
 
@@ -162,7 +162,14 @@ CASE_DATA_KEY_ROWS = key_rows(
     KeyRow("source_orography_variable", "string", None,
            "the variable holding terrain height inside source_orography; "
            "declared together with it"),
+    KeyRow("preprocess_backend", "string", None,
+           "where this route prepares the root domain: cuda, cpu or auto; "
+           "absent is auto, which moves to the CPU on a busy or full card"),
 )
+
+#: The backends ``[case_data] preprocess_backend`` names
+#: (:func:`gpuwm.ingest.preprocess_backend.resolve_preprocess_backend`).
+PREPROCESS_BACKENDS = ("cuda", "cpu", "auto")
 
 _DOMAIN_SOURCE_KEY = re.compile(r"d([0-9]{2})")
 
@@ -503,6 +510,13 @@ class CaseDataConfig:
     #: Absence (None) is the identity path: the 30-arc-second baseline
     #: static build runs byte-unchanged and nothing is fetched.
     static_highres: object | None = None
+    #: Where the root domain's preparation runs (``cuda``, ``cpu`` or
+    #: ``auto``), from ``[case_data] preprocess_backend`` or ``gpuwm run
+    #: --preprocess-backend``.  ``None`` is ``auto``: the preparation moves
+    #: to the CPU when the card reads busy or cannot hold it, so two runs
+    #: of one comparison could start from different preparations; naming
+    #: it pins both.
+    preprocess_backend: str | None = None
     authority_backed: bool = field(default=False, repr=False, compare=False)
     authority_identity_forcing: tuple[Path, ...] = field(
         default=(), repr=False, compare=False)
@@ -851,6 +865,15 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
                 f"{source} must be a policy name")
         water_policy = validate_water_temperature_policy(raw_policy)
 
+    preprocess_backend = CASE_DATA_KEY_ROWS["preprocess_backend"].get(
+        raw, where=f"[case_data] of {source}")
+    if (preprocess_backend is not None
+            and preprocess_backend not in PREPROCESS_BACKENDS):
+        raise ValueError(
+            f"preprocess_backend in [case_data] of {source} must be one of "
+            f"{list(PREPROCESS_BACKENDS)}, got {preprocess_backend!r}; "
+            "refusing to prepare on a backend nobody named.")
+
     overlay_path = CASE_DATA_KEY_ROWS["water_temperature_overlay"].get(
         raw, where=f"[case_data] of {source}")
     if overlay_path is not None:
@@ -963,7 +986,8 @@ def build_case_data(raw: dict, *, source: str, base_dir: Path,
         sfcp_to_sfcp=sfcp, co2_vmr=co2, output_title=title,
         output_domain=domain, forcing_interval_s=interval,
         water_temperature_overlay=overlay_path,
-        water_temperature_policy=water_policy)
+        water_temperature_policy=water_policy,
+        preprocess_backend=preprocess_backend)
 
 
 
@@ -1096,9 +1120,17 @@ def load_experiment_case_bytes(
                            require_inputs=require_inputs,
                            require_met_inputs=require_met_inputs)
     from gpuwm.static.highres_production import resolve_static_highres
+    urban_selectors = {(int(dc.run.sf_urban_physics > 0),
+                        int(dc.run.use_wudapt_lcz) if dc.run.sf_urban_physics > 0 else 0)
+                       for dc in experiment.domains}
+    if len(urban_selectors) > 1:
+        raise ValueError("domain urban legends differ: a shared prepared-static "
+                         "identity would alias collapsed and urban categories")
     highres = resolve_static_highres(
-        {"static": static_table}, source=source, base_dir=base,
-        spacings_m=[float(dc.run.dx) for dc in experiment.domains])
+        {"static": static_table, "domain": raw.get("domain", ())}, source=source, base_dir=base,
+        spacings_m=[float(dc.run.dx) for dc in experiment.domains],
+        run_config=(experiment.domains[0].run if experiment.domains
+                    else None))
     if highres is not None:
         data = replace(data, static_highres=highres)
     if ingest_policy is not None and (

@@ -136,6 +136,14 @@ def forecast_command(args):
     return shell_command(words)
 
 
+def preparation_only_handoff(root, missing):
+    """What a finished preparation says where no forecast is installed."""
+
+    return (f"prep: this installation prepares inputs only ({', '.join(missing)} "
+            f"not installed), so it prints no forecast line.  The prepared tree "
+            f"is {root}; `gpuwm sim` in a full gpuwm installation runs it.")
+
+
 def run_preparation(args, launch):
     """Keep log failures distinct from preparer execution and argv retries."""
     try:
@@ -250,6 +258,13 @@ def _run_preparation(args, launch):
             print(f"prep: failed (exit {code}). Details: {log_path}", file=errors)
             return code
         print(f"prep: complete ({time.monotonic() - started:.1f} s).", file=terminal)
+        # The standalone RW-WPS package carries no forecast runner, and
+        # resolving the bundle imports both: every finished preparation
+        # there ended in an ImportError after "prep: complete".
+        missing = stage_cli.missing_forecast_runners()
+        if missing:
+            print(preparation_only_handoff(root, missing), file=terminal)
+            return code
         try:
             command = forecast_command(args)
         except (stage_cli.StageRefusal, OSError, ValueError) as error:

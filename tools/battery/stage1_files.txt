@@ -106,6 +106,13 @@ tests/test_physics_registry.py
 # here.
 tests/test_physics_registry_composition.py
 
+# A153: a physics selection binds the registry's physics parts, not the
+# registry document.  A citation-only registry commit refused every earlier
+# preparation as a different physics selection, and nothing ran at a
+# registry edit to catch it; a registry edit reaches this suite on every
+# cut, so the gate belongs here beside the two above.
+tests/test_registry_physics_identity.py
+
 # ArWen 1.8.7: the render-on-first-committed-frame surface.  The run now
 # renders the analysis frame as it lands rather than at finalize, which
 # puts a new default-adjacent output on every run: the
@@ -1283,6 +1290,7 @@ tests/test_cycle_ledger.py
 tests/test_cycle_mpas_bridge.py
 tests/test_cycle_mpas_leg.py
 tests/test_cycle_placement.py
+tests/test_cycle_port_package.py
 tests/test_cycle_receipt_ingestion.py
 tests/test_cycle_supervisor.py
 tests/test_da_external_baseline_score.py
@@ -1571,6 +1579,7 @@ tests/test_attribute_tracking.py
 tests/test_gfs_initial_perturbation.py
 tests/test_downscale_archive_guards.py
 tests/test_downscale_auto_vram.py
+tests/test_downscale_adaptive_parent.py
 tests/test_case_catalog.py
 tests/test_source_availability.py
 tests/test_cli_memory_admission.py
@@ -1622,5 +1631,170 @@ tests/test_domain_target_hardware.py
 tests/test_lifecycle_reflectivity_restart.py
 tests/test_remote_processed_v2.py
 tests/test_capability_gates.py
+tests/test_noah_mosaic_config.py
+tests/test_noah_mosaic_doors.py
+tests/test_noah_mosaic_init_wrf471.py
+tests/test_noah_mosaic_oracle_controls.py
+tests/test_noah_mosaic_urban_canopy_rule.py
 tests/test_noahmp_no_consumer_knobs.py
 tests/test_banned_words.py
+
+# The 2026-09-30 speed lanes' suites that have a CPU half.  Fifteen more
+# files the lanes appended here are device-only: under this leg's marker
+# expression each collected 0 tests (in the 74a4374af Stage 1 run 952 of
+# their rows skipped and test_physics_fused_block skipped whole at
+# collection), so they moved to tools/battery/gpu_shard_files.txt SHARD 1m,
+# the leg that runs them, the way test_anisotropic_mixing_w_stability did on
+# 2026-08-28.  Six of the seven kept here also have device rows, and those
+# run on SHARD 1m.
+#
+# Legacy RRTMG speed gates: the batched longwave engine's workspace, address
+# twin and constant-cache rows, and the non-MYNN radiation paths' identity.
+tests/test_rrtmg_lw_speed_identity.py
+tests/test_mynn_radiation_coupling.py
+
+# RTE-RRTMGP speed gates: the reserved col_dry slot and the retained gas
+# reference source.
+tests/test_rrtmgp_optics.py
+
+# Bounded nest FORCE coupling (window, frame, four-side launch) must keep
+# every coupled and boundary-table word and leave the exterior untouched.
+tests/test_nest_coupler.py
+tests/test_nest_interp.py
+
+# Fused held heating must match the eager FP32 operation chain word for word;
+# the custom-mass-provider row, which keeps the eager path, runs here.
+tests/test_held_heating_fused.py
+
+# The opt-in adaptive nest lattice: default off leaves the clock untouched,
+# the root step never exceeds the controller's proposal, landings and restart
+# identity hold, and a checkpoint refuses a flipped mode.
+tests/test_adaptive_nest_lattice.py
+
+# Thompson speed lane: the CPU half of the single-read table load test (the
+# in-memory record parser against the streamed one, its refusals, the staged
+# set parsed both ways).  Its device rows run on gpu_shard_files.txt.
+tests/test_thompson_speed_tables.py
+# Default-pieces speed lane (Noah-MP caches, New Tiedtke chunks and fused
+# group, GF early exit): the three suites with CPU rows.  GF's module imports
+# with no CUDA runtime, and New Tiedtke's tile budget and fused-group
+# threshold are priced on the host.  The lane's other thirteen suites are
+# device-only and run on tools/battery/gpu_shard_files.txt (SHARD 1p, or the
+# SHARD-2 rows test_gf_engine_smoke and test_ntiedtke_prep_parity already
+# held).
+tests/test_gf_import_runtime_free.py
+tests/test_ntiedtke_tile_budget.py
+tests/test_ntiedtke_fused.py
+
+# A146's source scan: no float division by a compile-time constant outside
+# __fdiv_rn in any -ftz=true kernel source or inline Python kernel string.
+# NVRTC compiles such a division as a multiply by the rounded reciprocal on
+# every Blackwell card, one ULP off for up to 65 percent of inputs.  A .cu
+# edit has no import edge for fastfix to follow, and this file imports no
+# CuPy; its first version sat in a module that imported CuPy's NVRTC, so it
+# collected 0 of 5 under GPUWM_NO_LOCAL_GPU on every CPU leg (review of
+# 4810400f1).
+# The compiler census half is on the GPU shard (SHARD 1r).
+tests/test_literal_division_source_gate.py
+# A160: every direct NVRTC compile carries its options in its source,
+# because NVRTC's cache key ignores -ftz for a fixed program name.  The
+# stamp and the source scan; the card rows are on the GPU shard (1r).
+tests/test_nvrtc_cache_key.py
+
+# The UW moist-turbulence PBL (bl_pbl_physics=9, WRF v4.7.1 CAMUWPBL).  Its
+# doors (RunConfig, namelist import, registry option), WRF's BEP/BEM fatal
+# and the named ArWen refusals, the dispatch row, the checkpoint identity
+# and default-off; the packaged oracle fixtures' pins and the saturation
+# table; and the binary64 CPU reference against every output word of the
+# fixtures of record (on a glibc x86-64 host with FMA, whose libm is the
+# oracle's; it skips elsewhere and says why).  CPU-only by construction:
+# the card rows are tests/test_uwpbl_launcher_wrf471_parity.py and
+# tests/test_uwpbl_driver_seam.py, in gpu_shard_files.txt.
+tests/test_uwpbl_integration.py
+tests/test_uwpbl_wrf471_parity.py
+# Its float32 flush-to-zero lanes: the 63 boundary sites counted in source,
+# the subnormal fixture's pins and the unflushed CPU reference against it.
+tests/test_uwpbl_ftz_wrf471_parity.py
+
+# Terrain-smoothing options: prevent ignored per-domain policies and altered default terrain.
+tests/test_terrain_smoothing.py
+# The urban canopy models (sf_urban_physics 1-3), CPU legs: the selector's
+# door and refusals, URBPARM parsing and the urban cold start against WRF
+# v4.7.1's urban_param_init/urban_var_init (0 ULP), the urban land-use
+# legend, the registry rows and namelist import, the UCM's reference, and the
+# fixture halves of the oracles whose device halves are on SHARD 1q of
+# tools/battery/gpu_shard_files.txt.
+tests/test_urban_config.py
+tests/test_urban_tables.py
+tests/test_urban_init_wrf471_parity.py
+tests/test_urban_geog.py
+tests/test_urban_registry.py
+tests/test_urban_ucm_ref.py
+# These two open their device inside a helper, which conftest's detector
+# reads as CPU-covered; their fixture checks run here.
+tests/test_urban_ucm_wrf471_parity.py
+tests/test_urban_ucm_noahmp_wrf471_parity.py
+# Lane 281-lcz-import (the Central Europe proof's WUDAPT namelist imported
+# use_wudapt_lcz = 1 and then built MODIS land cover): num_land_cat = 61 is
+# admitted where the LCZ legend is built, geog_data_res's cglc_modis_lcz
+# becomes the [static.highres] land cover, a token nothing builds is
+# refused by name, and the contract table carries both rules.
+tests/test_namelist_lcz_import.py
+# Lane 281-namelist-gaps (a free WOOF run refused four times, one setting
+# per booted box): the importer answers every refusal at once, maps WRF's
+# history window, gwd_opt, slope_rad/topo_shading/shadlen and smooth_cg_topo,
+# and exports the namelist contract a site checks uploads against; the
+# smooth_cg_topo blend is held bit for bit to WRF's blend_terrain; the
+# slope/shadow port's CPU rows (fixture, libm seam, health and restart class).
+tests/test_namelist_gaps.py
+tests/test_smooth_cg_topo.py
+tests/test_topo_radiation.py
+# A158 (lane 281-zadvect-implicit): WRF's implicit-explicit vertical
+# advection, zadvect_implicit.  Its CPU rows: the namelist import, the named
+# refusals and the memory pricing; the WRF 4.7.1 kernel check and the
+# uniform-theta guard (4.17 K before the fix) run on gpu_shard_files.txt.
+tests/test_zadvect_implicit.py
+
+# gpuwm run's preparation backend pin (A157): prevents a config run on a busy card
+# silently preparing on the CPU while the arm it is compared with prepared on the card.
+tests/test_run_preprocess_backend.py
+# A165 (lane 281-w-crit-cfl): WRF's w_crit_cfl.  Its CPU rows: the option
+# and its named refusals, the namelist import, the restart and tree
+# identity, and the WRF 4.7.1 fixture checked in WRF's own float32 order;
+# the device kernel against WRF runs on gpu_shard_files.txt SHARD 1s.
+tests/test_w_crit_cfl.py
+# A167: the per-toolchain row rule of tests/_toolchain_rows.py on every
+# Blackwell part (compute-capability major 10 and above), CPU only.  It was
+# keyed on 10.0 and 12.0 alone, so a 10.3, 11.0 or 12.1 card read the sm_86/89
+# default row of the MYNN tables instead of failing or skipping by name.
+tests/test_toolchain_rows.py
+
+# A163 (lane 281-memory-gate): the forecast memory gate counts each headroom
+# once.  Prevents a CUDA out-of-memory mid-run (every measured battery row
+# stays under its envelope, the margin is the measured worst row) and the
+# refusal of runs that fit (the urban arrays at their allocated size, the
+# 750 m city trees inside a 24 GiB card's budget).
+tests/test_memory_gate_a163.py
+
+# A174: the Noah WRF 4.6.1 parity file's CPU rows (fixture receipts, branch
+# coverage, the baseline table, the mirror) and A167's compiler-row guard,
+# test_a_compiler_row_moves_only_what_the_compiler_reaches, which holds an
+# (architecture, NVRTC build) row to moving only the fields a compiler
+# reaches.  The file was on no battery list, so no leg ran the guard: the
+# GPU pin set names only the file's device row.
+tests/test_noah_wrf461_parity.py
+# A180: every door that answers "which suite does this draft run" (the physics
+# check, New forecast's draft, the assistant's planner, gpuwm domain, the run)
+# and the local DA rungs read one default row.  Prevents a plan the run refuses
+# after the download and the preparation (cu_physics selected 0 expected 1 on
+# d02), and an auto ladder that stops naming the source's own suite: the
+# planner case went red at A163's gate (fc8aee7b9e) and no list ran this file.
+tests/test_physics_default_agreement.py
+
+# A136 L9 (lane a136-l9-sources): the transfer pool hands a capped host's
+# slots out in submission order.  Prevents a window fetched as it posts
+# moving its first boundary lead last on NOMADS (GEFS 2026-10-01 06Z: f003
+# and f006 after f024), which held every as-posted start to the whole window.
+tests/test_fetch_pool.py
+# A dataclass default Python 3.11 refuses breaks import gpuwm on 3.11 (requires-python >=3.11); found by the 2.8.1 pre-cut gate (fetch_routes LegacyPosting.providers).
+tests/test_dataclass_defaults_hashable.py

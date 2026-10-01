@@ -140,14 +140,25 @@ def test_icon_d2_runs_every_three_hours_each_to_f48_hourly(cycle_hour):
             "icon-d2", cycle=datetime(2026, 9, 27, cycle_hour), hours=49)
 
 
-def test_icon_d2_refuses_an_hour_it_does_not_run_and_a_coarser_cadence():
+def test_icon_d2_refuses_an_hour_it_does_not_run_and_takes_any_whole_hour():
+    """A159: a 3 h cadence subsamples the hourly ladder and plans.  A173:
+    so does 2 h, which only the retired cadences list refused; a spacing
+    that would omit the window's final time is still refused, naming
+    that."""
+
     with pytest.raises(ValueError) as error:
         fetch_routes.resolve_request(
             "icon-d2", cycle=datetime(2026, 9, 27, 1), hours=3)
     assert "01Z" in str(error.value)
-    with pytest.raises(ValueError):
+    plan = fetch_routes.resolve_request(
+        "icon-d2", cycle=datetime(2026, 9, 27, 0), hours=6, cadence=3)
+    assert plan.leads == (0, 3, 6)
+    plan = fetch_routes.resolve_request(
+        "icon-d2", cycle=datetime(2026, 9, 27, 0), hours=6, cadence=2)
+    assert plan.leads == (0, 2, 4, 6)
+    with pytest.raises(ValueError, match="final time must not be silently"):
         fetch_routes.resolve_request(
-            "icon-d2", cycle=datetime(2026, 9, 27, 0), hours=6, cadence=3)
+            "icon-d2", cycle=datetime(2026, 9, 27, 0), hours=6, cadence=4)
 
 
 # --------------------------------------------------------------------------
@@ -331,15 +342,102 @@ def test_ecmwf_open_data_stamps_the_full_cycle_and_an_unpadded_lead():
     ]
 
 
-def test_aifs_is_six_hourly_and_supplements_from_the_first_file_only():
+def test_aifs_is_six_hourly_and_supplements_from_its_step0_object():
     plan = fetch_routes.resolve_request(
         "aifs", cycle=datetime(2026, 8, 17, 0), hours=6)
     assert plan.leads == (0, 6)
     assert plan.objects[0].url.endswith(
         "20260817/00z/aifs-single/0p25/oper/"
         "20260817000000-0h-oper-fc.grib2")
-    assert len(plan.supplement_files) == 1
+    # A window starting at f000: the step-0 object is also the first
+    # input, and nothing extra is fetched.
+    assert [obj.relpath for obj in plan.objects] == [
+        "20260817000000-0h-oper-fc.grib2", "20260817000000-6h-oper-fc.grib2"]
+    assert [path.name for path in plan.primary_files] == [
+        "20260817000000-0h-oper-fc.grib2", "20260817000000-6h-oper-fc.grib2"]
+    assert [path.name for path in plan.supplement_files] == [
+        "20260817000000-0h-oper-fc.grib2"]
     assert plan.supplement_role == "aifs_single_in_band_surface"
+
+
+def test_an_aifs_window_past_f000_fetches_the_cycle_step0_object_as_its_supplement():
+    """AIFS publishes its land mask and surface geopotential at step 0 only.
+
+    Named breakage (A133, WOOF 1.0.0): a start at f012 bound the f012
+    object as the in-band surface, and preparation found 0 of its 122
+    messages matching.  The step-0 object is planned beside the window,
+    in the first lead's group, bound only as the supplement and never
+    an input of the forcing series.
+    """
+
+    plan = fetch_routes.resolve_request(
+        "aifs", cycle=datetime(2026, 9, 29, 12), hours=6, start_hour=12,
+        now=datetime(2026, 9, 30, 0))
+    assert plan.leads == (12, 18)
+    assert [(obj.relpath, obj.lead, obj.role) for obj in plan.objects] == [
+        ("20260929120000-12h-oper-fc.grib2", 12, "oper-fc"),
+        ("20260929120000-0h-oper-fc.grib2", 0, "oper-fc"),
+        ("20260929120000-18h-oper-fc.grib2", 18, "oper-fc"),
+    ]
+    assert plan.objects[1].url == (
+        "https://data.ecmwf.int/forecasts/20260929/12z/aifs-single/0p25/"
+        "oper/20260929120000-0h-oper-fc.grib2")
+    assert [path.name for path in plan.primary_files] == [
+        "20260929120000-12h-oper-fc.grib2", "20260929120000-18h-oper-fc.grib2"]
+    assert [path.name for path in plan.supplement_files] == [
+        "20260929120000-0h-oper-fc.grib2"]
+
+
+def test_the_aifs_handoff_binds_the_step0_object_and_lists_only_the_window(tmp_path):
+    plan = fetch_routes.resolve_request(
+        "aifs", cycle=datetime(2026, 9, 29, 12), hours=6, start_hour=12,
+        now=datetime(2026, 9, 30, 0))
+    inputs, _command = fetch_routes.write_handoff(plan, tmp_path)
+    assert [Path(line).name for line in
+            inputs.read_text(encoding="utf-8").splitlines()] == [
+        "20260929120000-12h-oper-fc.grib2", "20260929120000-18h-oper-fc.grib2"]
+    argv = json.loads(
+        (tmp_path / fetch_routes.PREP_ARGUMENTS_NAME).read_text(
+            encoding="utf-8"))["argv"]
+    bindings = [argv[index + 1] for index, token in enumerate(argv)
+                if token == "--supplement"]
+    step0 = (tmp_path / "20260929120000-0h-oper-fc.grib2").resolve()
+    assert bindings == [f"aifs_single_in_band_surface={step0}"]
+
+
+def test_the_step0_object_is_priced_as_one_more_object_of_its_kind():
+    """The extra object is an AIFS object like the others, so the download
+    estimate a later start earns is three objects, not two."""
+
+    from gpuwm import download_budget
+
+    request = {"source": "aifs", "cycle": "2026-09-29T12", "hours": 6}
+    first = download_budget.download_estimate(request)
+    later = download_budget.download_estimate(
+        dict(request, forecast_start_hour=12))
+    assert (first["objects"], later["objects"]) == (2, 3)
+    assert first["bytes"] and later["bytes"] == first["bytes"] * 3 // 2
+
+
+def test_only_producers_with_step0_statics_declare_them():
+    """The step-0 shapes are table rows, and exactly these routes have them.
+
+    IFS open data carries its land mask and surface geopotential in every
+    step (its f024 and f150 starts prepared, 2026-09-30); ICON's statics
+    are cycle objects with no lead; AIGFS borrows a same-cycle analysis.
+    AIFS and GDPS publish theirs at the analysis step only.
+    """
+
+    step0_supplement = sorted(
+        source for source in fetch_routes.route_ids()
+        if (fetch_routes.route_for(source).prep.get("supplement") or {}
+            ).get("from") == "step0")
+    step0_rows = sorted(
+        source for source in fetch_routes.route_ids()
+        if any(row.leads == "step0"
+               for row in fetch_routes.route_for(source).files))
+    assert step0_supplement == ["aifs"]
+    assert step0_rows == ["gem-gdps"]
 
 
 def test_icon_eu_expands_125_field_objects_a_lead_plus_two_invariants():
@@ -427,6 +525,73 @@ def test_gem_gdps_expands_174_a_lead_with_analysis_only_invariants():
         "20260816T00Z_MSC_GDPS_GeopotentialHeight_Sfc_"
         "LatLon0.15_PT000H.grib2"]
     assert plan.supplement_role == "gdps_analysis_invariant_surface"
+
+
+def test_a_gdps_window_past_f000_takes_its_analysis_invariants_from_pt000h():
+    """GDPS publishes land mask, sea ice and orography at PT000H only.
+
+    Named breakage: the invariant rows rendered the WINDOW's first lead,
+    so a start at f012 planned PT012H objects that Datamart answers 404
+    (measured 2026-09-30 for all three).  They are the cycle's step-0
+    objects, composed into the window's first valid time.
+    """
+
+    plan = fetch_routes.resolve_request(
+        "gem-gdps", cycle=datetime(2026, 8, 16, 0), hours=3, start_hour=12)
+    assert plan.leads == (12, 15)
+    assert len(plan.objects) == 351
+    stem = "https://dd.weather.gc.ca/20260816/WXO-DD/model_gdps/15km/00"
+    urls = {obj.url for obj in plan.objects}
+    for name in ("LandWaterProportion_Sfc", "SeaIceFraction_Sfc",
+                 "GeopotentialHeight_Sfc"):
+        assert (f"{stem}/000/20260816T00Z_MSC_GDPS_{name}_"
+                "LatLon0.15_PT000H.grib2") in urls
+        assert not any(f"_{name}_LatLon0.15_PT012H" in url for url in urls)
+    first, second = plan.compose
+    assert first.name == "composed/gdps_2026081600_PT012H.grib2"
+    invariant_parts = [part.relpath for part in first.parts
+                       if part.role == "analysis-invariant"]
+    assert invariant_parts == [
+        "20260816T00Z_MSC_GDPS_LandWaterProportion_Sfc_LatLon0.15_PT000H.grib2",
+        "20260816T00Z_MSC_GDPS_SeaIceFraction_Sfc_LatLon0.15_PT000H.grib2"]
+    assert not any(part.role == "analysis-invariant" for part in second.parts)
+    assert all("PT015H" in part.relpath for part in second.parts)
+    assert [path.name for path in plan.supplement_files] == [
+        "20260816T00Z_MSC_GDPS_GeopotentialHeight_Sfc_"
+        "LatLon0.15_PT000H.grib2"]
+
+
+def test_a_gdps_window_from_f000_plans_what_it_always_planned():
+    plan = fetch_routes.resolve_request(
+        "gem-gdps", cycle=datetime(2026, 8, 16, 0), hours=3)
+    first = plan.compose[0]
+    assert [part.relpath for part in first.parts
+            if part.role == "analysis-invariant"] == [
+        "20260816T00Z_MSC_GDPS_LandWaterProportion_Sfc_LatLon0.15_PT000H.grib2",
+        "20260816T00Z_MSC_GDPS_SeaIceFraction_Sfc_LatLon0.15_PT000H.grib2"]
+    # The state parts precede the invariants, in the order they did.
+    roles = [part.role for part in first.parts]
+    assert roles == sorted(roles, key=("state", "analysis-invariant").index)
+
+
+def test_a_retired_or_unknown_lead_rule_refuses_at_load():
+    for rule in ("first", "firstt", "every"):
+        with pytest.raises(ValueError, match="lead rule"):
+            fetch_routes._file_row({"role": "x", "path": "{F}.grib2",
+                                    "leads": rule})
+    assert fetch_routes._file_row(
+        {"role": "x", "path": "{F}.grib2", "leads": "step0"}).leads == "step0"
+
+
+def test_an_unresolvable_supplement_origin_refuses_at_load(monkeypatch):
+    document = json.loads(json.dumps(fetch_routes._load_table()))
+    document["routes"]["aifs"]["prep"]["supplement"]["from"] = "first_input"
+    monkeypatch.setattr(fetch_routes, "_load_table", lambda: document)
+    with pytest.raises(ValueError, match="first_input"):
+        fetch_routes._build_routes()
+    document["routes"]["aifs"]["prep"]["supplement"]["from"] = "role:nope"
+    with pytest.raises(ValueError, match="role:nope"):
+        fetch_routes._build_routes()
 
 
 # --------------------------------------------------------------------------

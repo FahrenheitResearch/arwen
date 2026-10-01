@@ -110,9 +110,16 @@ REPORT_SCHEMA = "gpuwm-da.prepared-cycle-report.v1"
 #: maturity tier and registry digest in that tree's vocabulary; every
 #: selector, component and profile id can still match exactly.
 #: ``--tolerate-physics-vocabulary-drift`` allows a mismatch confined to
-#: these two fields, records it in the report, and refuses any other
+#: these fields, records it in the report, and refuses any other
 #: difference.  Without the flag the preflight is strict.
-PHYSICS_VOCABULARY_FIELDS = ("maturity", "registry_sha256")
+#:
+#: Since A153 the preflight itself resolves a maturity or document-digest
+#: difference from 2.8.0 on (it compares the registry's physics parts), so
+#: this flag only still matters for an authority written before 2.8.0,
+#: whose registry the history does not hold; ``registry_physics`` is here
+#: so the flag keeps doing exactly that and nothing more.
+PHYSICS_VOCABULARY_FIELDS = ("maturity", "registry_sha256",
+                             "registry_physics")
 
 
 def to_host(value) -> np.ndarray:
@@ -1514,7 +1521,8 @@ def cycle(stages: list) -> int:
     # this driver goes through plan_radar_assimilation, which is what
     # holds the plan-time review and the leg's configuration to one
     # object (audit R-051).
-    from gpuwm.da.radar_assimilation import (assimilate_radar_grid,
+    from gpuwm.da.radar_assimilation import (analysis_device_price,
+                                             assimilate_radar_grid,
                                              grid_rotation,
                                              member_earth_winds)
     from gpuwm.da import treatment
@@ -1653,10 +1661,12 @@ def cycle(stages: list) -> int:
     # R-051 moved those refusals out of the first analysis and into the
     # configuration; this call is what makes the configuration exist at
     # plan time rather than at the first analysis seam, where a whole
-    # ensemble integration has already been spent.  The object is
-    # deliberately discarded -- the leg builds its own through the same
-    # function, with the fields ensemble spread leaves it.
-    plan_radar_assimilation(
+    # ensemble integration has already been spent.  The leg builds its
+    # own through the same function, with the fields ensemble spread
+    # leaves it (never more than these); the memory admission prices
+    # every observed leg's analysis with this one, the widest any leg
+    # can run.
+    planned_analysis = plan_radar_assimilation(
         args, cfg.mp_physics,
         analysis_fields=planned_analysis_fields(args, cfg.mp_physics),
         cwp=bool(args.goes_cwp))
@@ -2113,6 +2123,25 @@ def cycle(stages: list) -> int:
     # same forecast, a nesting one is the largest, and each is released
     # before the next is wired, so the largest trajectory is what the
     # card has to hold (gpuwm.da.cycle_admission says what it counts).
+    # Each observed leg's analysis is priced from its own observation
+    # file, with the plan-time configuration reviewed above.
+    analysis_prices = []
+    for obs_leg, obs_name in enumerate(args.obs):
+        obs_file = Path(obs_name)
+        if not obs_file.is_file():
+            raise FileNotFoundError(
+                f"leg {obs_leg}: no observation file at {obs_file}")
+        obs_grid = TargetGrid.from_wrfout(Path(args.grid_wrfout[obs_leg]))
+        analysis_prices.append(analysis_device_price(
+            planned_analysis, members=int(args.members), grid=obs_grid,
+            document=read_document(obs_file, expected_grid=obs_grid),
+            extra_localizations=(() if surface_cfg is None
+                                 else surface_cfg.batch_localizations())))
+    analysis_price = cycle_admission.worst_analysis(analysis_prices)
+    unsolvable = cycle_admission.unsolvable_analysis_message(analysis_price)
+    if unsolvable is not None:
+        raise SystemExit(unsolvable)
+    mass_shape = (int(cfg.nz), int(cfg.ny), int(cfg.nx))
     admission = cycle_admission.price_cycle(
         (nested_forecast.nested_experiment(exp, nest_child_dc)
          if nest_trajectories else exp),
@@ -2121,9 +2150,12 @@ def cycle(stages: list) -> int:
                             if args.obs and not args.no_hotstart else 0),
         perturbation_bytes=(
             perturb.device_working_bytes(
-                cfg_perturb, (int(cfg.nz), int(cfg.ny), int(cfg.nx)))
+                cfg_perturb, mass_shape,
+                plan_work_bytes=perturb.fft_plan_work_bytes(
+                    cfg_perturb, mass_shape, cp))
             if resumed_from is None and int(args.members) > 0 else 0),
-        profile=local_memory_profile_from_device(cp))
+        profile=local_memory_profile_from_device(cp),
+        analysis=analysis_price)
     free_bytes, _total_bytes = device_free_and_total_bytes()
     try:
         admission = cycle_admission.admit_cycle(admission,
@@ -2135,8 +2167,10 @@ def cycle(stages: list) -> int:
         raise SystemExit(str(error)) from None
     report["memory_admission"] = admission.receipt()
     print(f"memory admission: {admission.required_bytes:,} bytes for the "
-          f"largest trajectory within {admission.budget_bytes:,} of "
-          f"{admission.free_bytes:,} free", flush=True)
+          f"largest trajectory and the analysis "
+          f"({admission.analysis_route or 'none on the card'}) within "
+          f"{admission.budget_bytes:,} of {admission.free_bytes:,} free",
+          flush=True)
 
     for leg in range(legs):
         t_start = leg_starts[leg]

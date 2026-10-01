@@ -1,0 +1,45 @@
+# gfortran: GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+# glibc:    ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43
+# -O0 libm symbols per object (THE REFERENCE):
+## module_bep_bem_helper.txt
+## module_bl_myjurb.txt
+U expf
+U powf
+## module_model_constants.txt
+## module_sf_bem.txt
+U atanf
+U logf
+U powf
+## module_sf_bep_bem.txt
+U atanf
+U expf
+U log10f
+U logf
+U powf
+## module_sf_bep.txt
+U atanf
+U logf
+U powf
+## module_sf_noahdrv.txt
+U expf
+U logf
+U powf
+## module_sf_noahlsm_glacial_only.txt
+U expf
+U powf
+## module_sf_noahlsm.txt
+U atanf
+U expf
+U log10f
+U logf
+U powf
+## module_sf_urban.txt
+U atanf
+U expf
+U log10f
+U logf
+U powf
+## module_wrf_error.txt
+# positive control (plain expf loop at -Ofast):
+U expf
+U _ZGVbN4v_expf

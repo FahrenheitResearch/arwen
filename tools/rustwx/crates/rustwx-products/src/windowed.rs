@@ -234,6 +234,12 @@ impl HrrrWindowedProduct {
         }
     }
 
+    /// This product's row in [`SNAPSHOT_FOLD_ROWS`], or `None` when it
+    /// has none.
+    pub fn snapshot_fold(self) -> Option<&'static SnapshotFoldRow> {
+        SNAPSHOT_FOLD_ROWS.iter().find(|row| row.product == self)
+    }
+
     pub(crate) fn is_qpf(self) -> bool {
         matches!(
             self,
@@ -409,6 +415,80 @@ pub fn windowed_product_available_at_forecast_hour(
 ) -> bool {
     forecast_hour >= minimum_forecast_hour_for_windowed_product(product)
 }
+
+/// How a maximum window is drawn when the history it is folded from stores
+/// no sub-hourly maximum and holds one frame per hour: the fold is the
+/// largest of the top-of-hour snapshots, which is not the window's maximum.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): an ArWen hourly history writes no
+/// WSPD10MAX, so `10m_wind_1h_max`, `10m_wind_run_max` and the 24 and 48 h
+/// maxima folded top-of-hour U10/V10 speeds and were drawn under "(1 h
+/// max)" titles; only the catalog detail said "lower bound", and a
+/// meteorologist reading the picture read a maximum.  A product with a row
+/// here is drawn under the row's title, and its catalog detail is the row's
+/// fold and reason.  A window read from a stored maximum field (the GRIB
+/// lane's `wind_speed_10m_max_1h`, or WRF WSPD10MAX, which the wrfout import
+/// stores as `wrf_wspd10max`), or from the frames between the hours of a
+/// sub-hourly history, keeps its product title and its bytes.  A window
+/// whose hours read a stored maximum at some hours and a snapshot at the
+/// others is drawn under the row's `partial_title`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotFoldRow {
+    pub product: HrrrWindowedProduct,
+    /// The picture's title: what the fold is, and why it is not a maximum.
+    pub title: &'static str,
+    /// The title when some of the window's hours read a stored maximum and
+    /// the others a snapshot.  `None` for a window that folds one hour,
+    /// which cannot be partly either.
+    pub partial_title: Option<&'static str>,
+    /// What was folded, for the catalog detail; the frames follow it.
+    pub fold: &'static str,
+    /// Why no maximum could be drawn at those frames, for the catalog
+    /// detail.
+    pub why: &'static str,
+}
+
+const WIND10M_SNAPSHOT_WHY: &str = "the history stores no sub-hourly 10 m wind maximum there \
+    (neither wind_speed_10m_max_1h nor WRF WSPD10MAX), so the wind between its hourly writes \
+    is not seen: a lower bound on the window's maximum, not the maximum";
+
+pub static SNAPSHOT_FOLD_ROWS: &[SnapshotFoldRow] = &[
+    SnapshotFoldRow {
+        product: HrrrWindowedProduct::Wind10m1hMax,
+        title: "10 m Wind Speed (hourly snapshot, no stored 1 h max)",
+        partial_title: None,
+        fold: "the top-of-hour 10 m wind speed, hypot(u_10m, v_10m),",
+        why: WIND10M_SNAPSHOT_WHY,
+    },
+    SnapshotFoldRow {
+        product: HrrrWindowedProduct::Wind10mRunMax,
+        title: "10 m Wind Speed (largest hourly snapshot, no stored max)",
+        partial_title: Some("10 m Wind Speed (run max, partly hourly snapshots)"),
+        fold: "the largest top-of-hour 10 m wind speed, hypot(u_10m, v_10m), over the run",
+        why: WIND10M_SNAPSHOT_WHY,
+    },
+    SnapshotFoldRow {
+        product: HrrrWindowedProduct::Wind10m0to24hMax,
+        title: "10 m Wind Speed (largest hourly snapshot 0-24 h, no stored max)",
+        partial_title: Some("10 m Wind Speed (0-24 h max, partly hourly snapshots)"),
+        fold: "the largest top-of-hour 10 m wind speed, hypot(u_10m, v_10m), over 0-24 h",
+        why: WIND10M_SNAPSHOT_WHY,
+    },
+    SnapshotFoldRow {
+        product: HrrrWindowedProduct::Wind10m24to48hMax,
+        title: "10 m Wind Speed (largest hourly snapshot 24-48 h, no stored max)",
+        partial_title: Some("10 m Wind Speed (24-48 h max, partly hourly snapshots)"),
+        fold: "the largest top-of-hour 10 m wind speed, hypot(u_10m, v_10m), over 24-48 h",
+        why: WIND10M_SNAPSHOT_WHY,
+    },
+    SnapshotFoldRow {
+        product: HrrrWindowedProduct::Wind10m0to48hMax,
+        title: "10 m Wind Speed (largest hourly snapshot 0-48 h, no stored max)",
+        partial_title: Some("10 m Wind Speed (0-48 h max, partly hourly snapshots)"),
+        fold: "the largest top-of-hour 10 m wind speed, hypot(u_10m, v_10m), over 0-48 h",
+        why: WIND10M_SNAPSHOT_WHY,
+    },
+];
 
 pub static SUPPORTED_HRRR_WINDOWED_PRODUCTS: &[HrrrWindowedProduct] = &[
     HrrrWindowedProduct::Qpf1h,
@@ -1458,10 +1538,13 @@ pub(crate) fn run_hrrr_windowed_batch_from_prepared(
 /// path. `values` are full-grid row-major display values already in the
 /// product's display units (`units`); `hours_used`/`window_hours`/`strategy`
 /// feed the same metadata the GRIB kernels emit (the subtitle hour label and
-/// the report strategy line).
+/// the report strategy line).  `title` is what the picture is titled: the
+/// product's own title, or a [`SnapshotFoldRow`]'s when the window was
+/// folded from hourly snapshots.
 #[derive(Debug, Clone)]
 pub struct StoreWindowedGrid {
     pub slug: String,
+    pub title: String,
     pub units: String,
     pub values: Vec<f64>,
     pub hours_used: Vec<u16>,
@@ -1510,7 +1593,7 @@ pub fn render_windowed_products_from_store_grids(
             product,
             computed: crate::windowed_decoder::ComputedWindowedField {
                 field,
-                title: product.title().to_string(),
+                title: grid.title.clone(),
                 metadata: HrrrWindowedProductMetadata {
                     strategy: grid.strategy.clone(),
                     contributing_forecast_hours: grid.hours_used.clone(),

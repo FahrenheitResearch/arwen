@@ -783,10 +783,13 @@ class WrfSelectorGlobal:
 #: cumulus scheme ran and produced no rain, or that none ran at all.
 #: ``SHCU_PHYSICS=0`` is the difference, and WRF has always written it.
 #:
-#: Four rows are constant zero because gpuwm implements no such scheme, and
+#: Two rows are constant zero because gpuwm implements no such scheme, and
 #: that is a resolved fact about the run rather than a placeholder: gpuwm
-#: has no shallow-cumulus, urban-canopy, surface-mosaic or ocean-mixed-layer
-#: option to select, so WRF's "off" value is the true one.  A selector whose
+#: has no shallow-cumulus or ocean-mixed-layer option to select, so WRF's
+#: "off" value is the true one.  SF_URBAN_PHYSICS and SF_SURFACE_MOSAIC were
+#: the third and fourth until the urban canopy models (sf_urban_physics 1-3)
+#: and Noah mosaic land use (sf_surface_mosaic = 1) landed; a constant 0
+#: would then stamp every such run's history as off.  A selector whose
 #: value gpuwm's configuration does NOT determine is not written at all --
 #: see ``docs``/the release report for the two deliberate omissions.
 PHYSICS_SELECTOR_GLOBALS: tuple[WrfSelectorGlobal, ...] = (
@@ -799,11 +802,11 @@ PHYSICS_SELECTOR_GLOBALS: tuple[WrfSelectorGlobal, ...] = (
     WrfSelectorGlobal("SF_SFCLAY_PHYSICS", "Registry.EM_COMMON:2455",
                       "config", "sf_sfclay_physics"),
     WrfSelectorGlobal("SF_URBAN_PHYSICS", "Registry.EM_COMMON:2486",
-                      "unimplemented"),
+                      "config", "sf_urban_physics"),
     WrfSelectorGlobal("SF_SURFACE_PHYSICS", "Registry.EM_COMMON:2468",
                       "config", "sf_surface_physics"),
     WrfSelectorGlobal("SF_SURFACE_MOSAIC", "Registry.EM_COMMON:2532",
-                      "unimplemented"),
+                      "config", "sf_surface_mosaic"),
     WrfSelectorGlobal("SF_OCEAN_PHYSICS", "Registry.EM_COMMON:2614",
                       "unimplemented"),
     WrfSelectorGlobal("BL_PBL_PHYSICS", "Registry.EM_COMMON:2469",
@@ -975,6 +978,9 @@ REGISTRY_VAR_META: dict[str, tuple[str, str]] = {
     # the dimension table and the FieldType default already describe it
     # correctly and it needs no row of its own.
     "OLR": ("TOA OUTGOING LONG WAVE", "W m-2"),
+    # Registry.EM_COMMON:1715, written where slope_rad = 1 runs.
+    "SWNORM": ("NORMAL SHORT WAVE FLUX AT GROUND SURFACE (SLOPE-DEPENDENT)",
+               "W m-2"),
     "TSK": ("SURFACE SKIN TEMPERATURE", "K"),
     "T2": ("TEMP at 2 M", "K"),
     "TH2": ("POT TEMP at 2 M", "K"),

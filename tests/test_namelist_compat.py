@@ -910,7 +910,9 @@ def test_mosaic_monalb_rdlai2d_gate_on_nondefault_values(tmp_path):
     assert report["verdict"] == "FAIL"
     message = next(item["message"] for item in report["issues"]
                    if item["code"] == "UNSUPPORTED_PHYSICS_STATE")
-    assert "sf_surface_mosaic=1" in message
+    assert "sf_surface_mosaic=1" in message  # Stock-WRF export lacks tile state.
+    assert not any("mosaic" in reason for reason in
+                   report["required_state"]["gpuwm_runtime"]["reasons"])
     assert "usemonalb=.true." in message
     assert "rdlai2d=.true." in message
     assert not [item for item in report["issues"]

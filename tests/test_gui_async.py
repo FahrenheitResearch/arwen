@@ -913,11 +913,15 @@ class Hosts:
         self.lock = threading.Lock()
         self.sent: list[str] = []
         self.answered = 0
+        self.reply_gate: threading.Event | None = None
 
     def _one(self, url: str) -> None:
         with self.lock:
             self.sent.append(url)
-        time.sleep(self.seconds)
+        if self.reply_gate is None:
+            time.sleep(self.seconds)
+        else:
+            self.reply_gate.wait()
         with self.lock:
             self.answered += 1
 
@@ -1012,29 +1016,40 @@ def test_a_1996_start_is_answered_at_once_and_no_host_is_asked(counted_hosts):
     assert hosts.heads() == []
 
 
-def test_a_recent_start_is_answered_before_any_host_and_each_object_is_asked_once(counted_hosts):
+def test_a_recent_start_is_answered_before_any_host_and_each_object_is_asked_once(counted_hosts, monkeypatch):
     # Measured: 127 s and 348 HEADs for GEM alone, its newest cycle's final lead asked twice, and the same again
     # on every fit and on Start.
     from gpuwm.source_availability import availability
 
     hosts, serve = counted_hosts
+    # A pending start is taken from the schedule only after its settled publication time.
+    # The live clock can fall between the earliest and settled posting times.
+    monkeypatch.setattr("gpuwm.gui.api._utcnow", lambda: LIVE)
+    hosts.reply_gate = threading.Event()
     server = serve("gem-gdps", "era5")
-    start = availability("gem-gdps", 6)["latest_candidate"]      # the page server's own clock
+    start = availability("gem-gdps", 6, now=LIVE)["latest_candidate"]
     path = f"/api/sources/availability?time={start}&hours=6"
-    took, response, body = answered_in(server, hosts, "GET", path)
-    assert response.status == 200 and hosts.answered == 0, (took, hosts.answered)
-    row = {row["id"]: row for row in body["sources"]}["gem-gdps"]
-    assert row["state"] == "yes" and row["checking"]
-    draft = {"source": "gem-gdps", "cycle": start, "lat": 50.0, "lon": -100.0, "width_km": 600,
-             "height_km": 600, "hours": 6, "card": "8gb", "dx_km": 12}
-    # The fit never waits for a check.  Start waits, at most SETTLE_S, for the one check of the start it writes, the
-    # check the list already started (Board.settle): it sends nothing of its own, as the count below shows.
-    from gpuwm.gui.availability import SETTLE_S
+    try:
+        took, response, body = answered_in(server, hosts, "GET", path)
+        assert response.status == 200 and hosts.answered == 0, (took, hosts.answered)
+        row = {row["id"]: row for row in body["sources"]}["gem-gdps"]
+        assert row["state"] == "yes" and row["checking"]
+        draft = {"source": "gem-gdps", "cycle": start, "lat": 50.0, "lon": -100.0, "width_km": 600,
+                 "height_km": 600, "hours": 6, "card": "8gb", "dx_km": 12}
+        # The fit never waits for a check.  Start waits, at most SETTLE_S, for the one check of the start it writes, the
+        # check the list already started (Board.settle): it sends nothing of its own, as the count below shows.
+        from gpuwm.gui.availability import SETTLE_S
 
-    for step, bound in (("/api/create/fit", 1.0), ("/api/create/start", SETTLE_S + 2.0)):
-        took, response, answer = answered_in(server, hosts, "POST", step,
-                                             {**draft, "name": "gem-now", "dry_run": True})
-        assert response.status == 200 and took < bound, (step, took, answer)
+        for step, bound in (("/api/create/fit", 1.0), ("/api/create/start", SETTLE_S + 2.0)):
+            if step == "/api/create/start":
+                hosts.reply_gate.set()
+            took, response, answer = answered_in(server, hosts, "POST", step,
+                                                {**draft, "name": "gem-now", "dry_run": True})
+            assert response.status == 200 and took < bound, (step, took, answer)
+            if step == "/api/create/fit":
+                assert hosts.answered == 0
+    finally:
+        hosts.reply_gate.set()
     settle(server)
     asked = hosts.heads()
     assert asked, "the start was never put to the probe"

@@ -91,6 +91,7 @@ import math
 import os
 from pathlib import Path
 import shlex
+import sys
 import threading
 import time
 from urllib.error import HTTPError, URLError
@@ -829,7 +830,7 @@ def preparation_cadence_refusal(source: str, cadence: int) -> str | None:
 
     from gpuwm.source_authorities import (
         BOUNDARY_MULTIPLES_KEY, boundary_interval_refusal,
-        packaged_mapping_target)
+        boundary_interval_takes, packaged_mapping_target)
 
     row = source_adapters.get_source_adapter(fetch_routes.canonical_source(source))
     if row.runner != "mapped_composition_v1" or not row.packaged_profile:
@@ -838,9 +839,7 @@ def preparation_cadence_refusal(source: str, cadence: int) -> str | None:
     if boundary_interval_refusal(target, cadence * 3600) is None:
         return None
     spacing_h = int(target["boundary_interval_seconds"]) / 3600
-    takes = (f"any whole multiple of {spacing_h:g} h"
-             if target.get(BOUNDARY_MULTIPLES_KEY) is True
-             else f"{spacing_h:g} h and no other spacing")
+    takes = boundary_interval_takes(target)
     return layered(
         f"cadence {cadence} gives {row.source_id} boundaries {cadence} h "
         f"apart, and its preparation takes {takes}.\n"
@@ -1901,16 +1900,77 @@ def analysis_window_reference(source: str, grid, last_hour: int,
 
     if _source_reaches_forecast_leads(source):
         return now
-    return (grid.newest(now) - timedelta(hours=last_hour)
-            + timedelta(hours=grid.delay_hours))
+    start = grid.newest(now) - timedelta(hours=last_hour)
+    return start + timedelta(hours=grid.delay(start))
+
+
+def provider_cycle_grid(source: str, provider: str | None, *,
+                        now: datetime | None = None,
+                        published=None) -> tuple[object, str]:
+    """``(grid, basis)``: the cycle grid ``latest`` resolves on for one provider.
+
+    A source whose registry row declares archive windows per transport
+    (ERA5: the keyed CDS and Google's keyless ARCO copy) can be served
+    later by one of them than by another, and ``latest`` must resolve
+    against the one the fetch will ask.  The ARCO copy trails the CDS by
+    a day or two, so resolving an ARCO request on the CDS delay asked
+    for hours the store does not hold and the fetch refused in 4 s
+    ("outside the coverage this store declares").
+
+    The window's own row decides, in this order: the provider's own
+    bounds document when it publishes one and it can be read (its last
+    published hour IS the answer, as the Rust reader checks the same
+    attribute), then the window's declared ``publication_lag_hours``,
+    then the source's cycle grid unchanged.  ``published`` reads a
+    bounds document (:func:`gpuwm.source_availability.published_stop`
+    by default).
+    """
+
+    from dataclasses import replace
+
+    grid = require_cycle_grid(source)
+    if provider is None:
+        return grid, "the declared publication delay"
+    try:
+        adapter = source_adapters.get_source_adapter(source)
+    except ValueError:
+        return grid, "the declared publication delay"
+    window = next((row for row in adapter.archive_windows
+                   if row.transport == provider), None)
+    if window is None:
+        return grid, "the declared publication delay"
+    if window.bounds_url and window.bounds_stop_keys:
+        if published is None:
+            from gpuwm.source_availability import published_stop as published
+        stop = published(window)
+        if stop is not None:
+            return (replace(grid, delay_hours=0.0, delays=(), record_end=stop),
+                    f"the {provider} store's own declared end, {stop:%Y-%m-%dT%H}Z")
+    lag = getattr(window, "publication_lag_hours", None)
+    if lag is not None:
+        return (replace(grid, delay_hours=float(lag), delays=()),
+                f"the {provider} provider's declared publication delay of "
+                f"about {float(lag):g} h")
+    return grid, "the declared publication delay"
 
 
 def resolve_latest_cycle(source: str, last_hour: int, *,
                          now: datetime | None = None,
                          probe=_head_ok, transport: str | None = None,
                          cadence: int | None = None, start_hour: int = 0,
-                         member: str | None = None) -> datetime:
+                         member: str | None = None,
+                         provider: str | None = None,
+                         as_posted: bool = False) -> datetime:
     """Newest cycle whose final requested objects are actually published.
+
+    With ``as_posted`` (the default of every front door, DESIGN A136
+    2.2) ``latest`` is instead the newest cycle whose START needs are
+    posted -- the analysis, the first boundary lead and whatever the
+    route fetches with them -- and whose ladder covers the window
+    (:func:`gpuwm.source_readiness.resolve_startable_cycle`): the run
+    starts on those and fetches the rest as they post.  A source whose
+    cycle cannot be waited on (a keyed job, an archive) resolves as
+    before.
 
     A cycle qualifies only when every probed object for forecast hour
     ``last_hour`` is already published, so a partially uploaded cycle
@@ -1937,17 +1997,36 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
     if (isinstance(start_hour, bool) or not isinstance(start_hour, int)
             or not 0 <= start_hour <= last_hour):
         raise ValueError("the start hour must be an integer between zero and the final hour")
+    if as_posted and provider is None and _startable_rule_applies(source):
+        from gpuwm.source_readiness import resolve_startable_cycle
+
+        return resolve_startable_cycle(
+            source, start_hour=start_hour, hours=last_hour - start_hour,
+            cadence=cadence, member=member, transport=transport, now=now,
+            probe=probe)
     route = None
     if source in fetch_routes.route_ids():
         route = fetch_routes.route_for(source)
         fetch_routes.resolve_member(route, member)
         if transport is not None:
             route.host(transport)
+        if cadence is None:
+            # ONE spacing for the whole walk: the finest any cycle hour
+            # publishes over this window, the rule `gpuwm domain` writes
+            # into [fetch].  Chosen per candidate instead, ICON-EU's short
+            # 03/09/15/21Z runs (hourly to f030, then 6-hourly) won a 36 h
+            # window at 6 h spacing over the hourly main cycle, and a
+            # caller that then fetched at its own hourly cadence (a saved
+            # setup's start) was refused the cycle `latest` had handed it.
+            cadence = fetch_routes.window_cadence(
+                route, start_hour, last_hour - start_hour)
     if now is None:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
     elif now.tzinfo is not None:
         now = now.astimezone(timezone.utc).replace(tzinfo=None)
-    grid = require_cycle_grid(source)
+    # ``provider`` is a transport the source's archive windows name (the
+    # keyless ARCO copy of ERA5): it can trail the source's usual delay.
+    grid, _basis = provider_cycle_grid(source, provider, now=now)
     # ONE owner of the analysis back-off, for every door that resolves a
     # latest cycle.  When the calendar applied it too, a 240-hour era5
     # window resolved ten days before the same document's own
@@ -1960,8 +2039,11 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
     # candidate at all -- it is a cycle that cannot serve the request.
     # The rule is the row's or the route's; nothing here knows which
     # producer runs a short off-synoptic cycle.
+    # The walk starts at the newest cycle whose declared delay for the
+    # window's LAST lead has passed: a cycle posts its leads over hours,
+    # and the probe below asks about the last one.
     candidates = tuple(
-        cycle for cycle in grid.candidates(now)
+        cycle for cycle in grid.candidates(now, last_hour)
         if grid.horizon(cycle) is None or last_hour <= grid.horizon(cycle))
     if not candidates:
         raise RuntimeError(layered(
@@ -2025,6 +2107,133 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
         f"no complete {source.upper()} cycle covering f{last_hour:03d}"
         f"{needs} was found on {tried} within the last "
         f"{grid.search_hours} h; pass an explicit --cycle")
+
+
+def _startable_rule_applies(source: str) -> bool:
+    """Whether ``latest`` under ``as_posted`` asks start needs for ``source``.
+
+    Only a source whose cycle is waited on (its posting row's shape) and
+    that a probe can ask; an analysis source's window is analyses, not
+    leads of one cycle.
+    """
+
+    from gpuwm.source_posting import posting
+
+    try:
+        return (cycle_is_probeable(source)
+                and _source_reaches_forecast_leads(source)
+                and posting(source).waited)
+    except ValueError:
+        return False
+
+
+#: ``[fetch] as_posted`` when nothing says otherwise (DESIGN A136 3.2):
+#: fetch, prepare and run as the leads post.
+DEFAULT_AS_POSTED = True
+
+
+def requested_as_posted(args) -> bool:
+    """Whether this fetch runs as posted: ``--as-posted``/``--wait-for``
+    (True), ``--whole-cycle`` (False), or the default."""
+
+    value = getattr(args, "as_posted", None)
+    return DEFAULT_AS_POSTED if value is None else bool(value)
+
+
+def _posting_flag_refusal(args, as_posted: bool) -> None:
+    for flag, key in (("--late-after-minutes", "late_after_minutes"),
+                      ("--wait-timeout-minutes", "wait_timeout_minutes")):
+        value = getattr(args, key, None)
+        if value is None:
+            continue
+        if not as_posted:
+            # Breakage it prevents: a budget typed beside --whole-cycle
+            # would be accepted and then read by nothing, since a whole
+            # cycle is asked once and never waited on lead by lead.
+            raise ValueError(
+                f"{flag} is the wait budget of an as-posted fetch, and "
+                "--whole-cycle waits for nothing; drop one of the two")
+        if (isinstance(value, bool) or not math.isfinite(float(value))
+                or float(value) <= 0):
+            # A zero or negative budget fails every lead a second late,
+            # and NaN or infinity is a wait that never ends.
+            raise ValueError(f"{flag} must be positive and finite")
+    if getattr(args, "no_probe", False) and not getattr(args, "readiness", False):
+        # Breakage it prevents: a probe switch on a fetch would be
+        # accepted and ignored, while the fetch asked hosts anyway.
+        raise ValueError("--no-probe belongs to --readiness")
+
+
+def _posting_loop(source: str, cycle: datetime, args, *, leads,
+                  plan=None, transport: str | None = None):
+    """The as-posted loop for this window, or None where there is nothing to wait on.
+
+    A source whose posting row is not waited on (a keyed job, an
+    archive, private bytes), or that has no object to ask, moves as a
+    one-shot fetch does.  A cycle aged off every host is refused here:
+    it can never start, so it is not waited for.
+    """
+
+    from gpuwm import fetch_as_posted
+    from gpuwm import source_readiness as readiness
+    from gpuwm.source_posting import posting
+
+    if not cycle_is_probeable(source) or not posting(source).waited:
+        return None
+    window = readiness.Window(
+        source=source, cycle=cycle, leads=tuple(leads),
+        cadence=getattr(args, "cadence", None),
+        member=(plan.member if plan is not None
+                else getattr(args, "member", None)),
+        transport=transport, plan=plan, hours=int(args.hours))
+    return fetch_as_posted.PostingLoop(
+        window, args.out,
+        late_after_minutes=getattr(args, "late_after_minutes", None),
+        wait_timeout_minutes=getattr(args, "wait_timeout_minutes", None))
+
+
+def readiness_for_fetch(args, *, no_probe: bool | None = None,
+                        nest_start_leads=None) -> tuple[dict, int]:
+    """``gpuwm.readiness.v1`` and its exit code for one parsed fetch request.
+
+    The one reader of a request for ``gpuwm fetch --readiness``, ``gpuwm
+    go --readiness`` and ``gpuwm run-plan --readiness``, so the three
+    doors answer one window the same way.
+    """
+
+    from gpuwm import source_readiness as readiness
+
+    source = args.source
+    if args.cycle is None or args.hours is None:
+        raise ValueError("--readiness needs --cycle and --hours: it answers "
+                         "for one window")
+    provider = getattr(args, "era5_provider", None) if source == "era5" else None
+    transport = (args.transport if source in fetch_routes.route_ids()
+                 else pinned_host(getattr(args, "transport", None)))
+    return readiness.readiness(
+        source, args.cycle, args.hours, cadence=args.cadence,
+        start_hour=args.forecast_start_hour,
+        member=getattr(args, "member", None), transport=transport,
+        provider=provider, as_posted=requested_as_posted(args),
+        late_after_minutes=getattr(args, "late_after_minutes", None),
+        nest_start_leads=nest_start_leads,
+        no_probe=bool(getattr(args, "no_probe", False)
+                      if no_probe is None else no_probe))
+
+
+def _readiness_main(args, source: str) -> int:
+    """``gpuwm fetch --readiness``: print ``gpuwm.readiness.v1``, run nothing."""
+
+    from gpuwm import source_readiness as readiness
+
+    document, code = readiness_for_fetch(args)
+    readiness.print_document(document)
+    print(f"fetch {source}: readiness {document['state']}"
+          + (f" ({document['refusal']})" if document.get("refusal") else "")
+          + (f"; expected ready at {document['expected_ready_at']}"
+             if document.get("expected_ready_at") else ""),
+          file=sys.stderr)
+    return code
 
 
 def _donor_published(source: str, cycle: datetime, last_hour: int, *,
@@ -2112,7 +2321,8 @@ def resolve_hrrr_transport(cycle: datetime, requested: str, *,
             f"about the newest {HRRR_NOMADS_RETENTION_HOURS} h"
             if age_hours > HRRR_NOMADS_RETENTION_HOURS else
             " (still publishing, or the window's final hour is not up yet;"
-            " --wait-for downloads hours as they appear)")
+            " an as-posted fetch, the default, downloads hours as they"
+            " appear)")
         raise ValueError(
             f"--transport nomads: NOMADS is not serving cycle "
             f"{cycle:%Y-%m-%dT%H}Z through f{last_hour:02d}{detail}; use "
@@ -2414,7 +2624,11 @@ def check_prior_request(out: Path, *, source: str, cycle: datetime,
 
     prior = _load_fetch_manifest(out)
     if prior is None:
-        if out.is_dir() and any(out.iterdir()):
+        # The as-posted loop's own posting/ folder is written before the
+        # first byte moves (its schedule comes first), so it is not a
+        # stranger's file.
+        if out.is_dir() and any(entry.name != "posting"
+                                for entry in out.iterdir()):
             raise ValueError(layered(
                 f"--out {out} is not empty but carries no readable "
                 f"{FETCH_MANIFEST_NAME}, so its files are UNVERIFIED for "
@@ -2671,6 +2885,9 @@ def latest_cycle_request(args) -> tuple[str, int, dict]:
             "--cycle latest needs --hours: the newest cycle is the newest "
             "one published through the end of the window, and the window "
             "has no end without it")
+    # As posted, latest is the newest cycle whose START needs are out
+    # (DESIGN A136 2.2); the whole-cycle rule is --whole-cycle's.
+    as_posted = requested_as_posted(args) or None
     if source in fetch_routes.route_ids():
         # A table route names its own hosts, and the fetch refuses any
         # other word in the route's own terms; the resolver asks the
@@ -2679,19 +2896,25 @@ def latest_cycle_request(args) -> tuple[str, int, dict]:
         return source, begin + args.hours, stated(
             cadence=args.cadence, start_hour=begin,
             member=getattr(args, "member", None),
-            transport=getattr(args, "transport", None))
+            transport=getattr(args, "transport", None), as_posted=as_posted)
     transport = pinned_host(getattr(args, "transport", None))
     if source in GFS_CONTAINER_SOURCES:
         hours = container_forecast_hours(source, args.hours, args.cadence,
                                          start)
-        return source, hours[-1], stated(transport=transport)
+        return source, hours[-1], stated(
+            transport=transport, as_posted=as_posted,
+            start_hour=hours[0] if as_posted else None,
+            cadence=(hours[1] - hours[0] if as_posted and len(hours) > 1
+                     else None))
     if source == "hrrr":
-        if getattr(args, "wait_for", False):
-            # Wait mode wants the cycle currently PUBLISHING: f00.
-            return source, 0, stated(transport=transport)
-        return (source, _forecast_start_hour(start) + args.hours,
-                stated(transport=transport))
-    return source, args.hours, {}
+        begin = _forecast_start_hour(start)
+        return (source, begin + args.hours,
+                stated(transport=transport, as_posted=as_posted,
+                       start_hour=begin if as_posted else None))
+    # A provider the source's archive windows name (ERA5's keyless ARCO
+    # copy) can trail the source's own delay; the resolver asks about it.
+    return source, args.hours, stated(
+        provider=getattr(args, "era5_provider", None))
 
 
 def pinned_host(transport: str | None) -> str | None:
@@ -6136,8 +6359,6 @@ def _resolve_area(args) -> Area | None:
 #: nothing on a table route, each with the sentence that says why.
 _LEGACY_ONLY_FLAGS = {
     "--validate": "the ERA5 manual-retrieval checker",
-    "--wait-for": "HRRR live-cycle publication polling",
-    "--wait-timeout-minutes": "HRRR live-cycle publication polling",
     "--p-top-pa": "the GFS/GDAS isobaric ladder",
     "--all-levels": "the GFS/GDAS isobaric ladder",
     "--engine": "the Rust range-GET backbone, which the GFS and HRRR "
@@ -6182,11 +6403,17 @@ def _route_fetch_main(args, source: str) -> int:
     start = 0 if args.forecast_start_hour is None else args.forecast_start_hour
     options = dict(cadence=args.cadence, start_hour=start, member=args.member, transport=args.transport)
     last = start + args.hours
+    as_posted = requested_as_posted(args)
     if args.cycle == "latest":
-        cycle = resolve_latest_cycle(source, last, **options)
+        cycle = resolve_latest_cycle(source, last, as_posted=as_posted, **options)
         evidence = ("publication probe confirmed" if cycle_is_probeable(source)
                     else "declared publication delay; not probed")
-        print(f"fetch {source}: latest complete cycle is {cycle:%Y-%m-%dT%H}Z ({evidence})")
+        if as_posted and _startable_rule_applies(source):
+            print(f"fetch {source}: latest startable cycle is "
+                  f"{cycle:%Y-%m-%dT%H}Z (its start needs are posted; later "
+                  "leads are fetched as they post)")
+        else:
+            print(f"fetch {source}: latest complete cycle is {cycle:%Y-%m-%dT%H}Z ({evidence})")
     else:
         cycle = parse_cycle(args.cycle, source)
     plan = fetch_routes.resolve_request(source, cycle=cycle, hours=args.hours,
@@ -6194,6 +6421,14 @@ def _route_fetch_main(args, source: str) -> int:
     with fetch_guard.hold("fetch-out", args.out):
         if not args.force_refetch:
             fetch_routes.check_prior_request(args.out, plan)
+        loop = None
+        if as_posted and (args.force_refetch
+                          or not fetch_routes.request_cached(plan, args.out)):
+            loop = _posting_loop(source, cycle, args, leads=plan.leads,
+                                 plan=plan, transport=args.transport)
+        if loop is not None:
+            return _route_fetch_as_posted(plan, args, loop, last=last,
+                                          options=options)
         # A folder that already holds every object of this exact request,
         # byte-verified, needs nothing from the provider: it stays usable
         # offline and after the cycle has left the provider's retention.
@@ -6228,6 +6463,83 @@ def _route_fetch_main(args, source: str) -> int:
     for line in fetch_routes.handoff_lines(plan, args.out):
         print(line)
     return 0
+
+
+def _route_fetch_as_posted(plan, args, loop, *, last: int, options: dict) -> int:
+    """A table route's window as its source posts it (DESIGN A136 2.3).
+
+    The schedule goes out first, then the start needs (the first leads,
+    their invariants and step-0 objects, a same-cycle donor) are waited
+    for, the donor is fetched with them, and each lead moves the moment
+    one host holds all of it, its marker published in lead order.  A
+    window whose final lead is already posted (a late launch, a past
+    cycle) moves as one request under the host caps, with no per-lead
+    asking, and still publishes every marker in lead order.
+    """
+
+    from gpuwm import fetch_as_posted
+
+    source = plan.source_id
+    if args.force_refetch:
+        fetch_routes._quarantine(args.out, print)
+    loop.start()
+    # The question a whole-cycle fetch asks first, through the same
+    # function: a window whose final lead is out needs no waiting.
+    whole = _window_posted(loop.window, lambda said: require_published_cycle(
+        source, plan.cycle, last, progress=said, **options))
+    if whole:
+        for donor in plan.donors:
+            try:
+                require_published_cycle(donor.source, donor.cycle,
+                                        max(donor.leads))
+            except RuntimeError as error:
+                if _donor_still_due(loop, donor.source):
+                    # The donor is a start need (DESIGN A136 1b, 3.3): a
+                    # donor-gated window whose own leads are all out
+                    # starts when its donor posts, as its readiness
+                    # answer (75, waiting) tells the site to launch it.
+                    # Refusing here skipped the cycle the site launched.
+                    loop.wait_start()
+                    break
+                raise RuntimeError(
+                    f"--source {source} takes part of its start from the "
+                    f"{donor.source.upper()} analysis of its own cycle, "
+                    f"and {error}") from None
+    else:
+        loop.wait_start()
+    try:
+        donor_files = _fetch_route_donors(plan, args)
+
+        def published(lead, entries, composed):
+            loop.publish(lead, fetch_as_posted.route_objects(entries),
+                         composed=fetch_as_posted.composed_objects(composed))
+
+        fetch_routes.run_plan(plan, out=args.out, force=False,
+                              file_workers=args.fetch_workers,
+                              lead_gate=None if whole else loop,
+                              on_lead=published)
+    finally:
+        loop.close()
+    fetch_routes.write_handoff(plan, args.out, donor_files=donor_files)
+    print(f"fetch {source}: manifest {args.out / fetch_routes.MANIFEST_NAME}")
+    for line in fetch_routes.handoff_lines(plan, args.out):
+        print(line)
+    return 0
+
+
+def _donor_still_due(loop, donor_source: str) -> bool:
+    """Whether a donor start need not posted yet is still within its budget.
+
+    Before its late time a donor that is not posted is waited for (the
+    readiness answer says ``waiting``); past it the donor will not appear
+    by waiting, and the whole-cycle refusal, which names the newest donor
+    cycle that is posted, stands.
+    """
+
+    now = loop.now()
+    return any(need.role == f"donor:{donor_source}"
+               and need.late_at is not None and now < need.late_at
+               for need in loop.needs)
 
 
 def _route_donor_out(out: Path, donor) -> Path:
@@ -6279,7 +6591,22 @@ def _retrieve_inapplicable_refusal(source: str) -> str:
 
 
 def fetch_main(args) -> int:
+    """``gpuwm fetch``; exit 75 when an as-posted source fell behind its budget."""
+
+    from gpuwm.fetch_as_posted import SourceBehind
+
+    try:
+        return _fetch_main(args)
+    except SourceBehind as error:
+        print(f"fetch {args.source}: {error}", file=sys.stderr)
+        return error.exit_code
+
+
+def _fetch_main(args) -> int:
     source = args.source
+    _posting_flag_refusal(args, requested_as_posted(args))
+    if getattr(args, "readiness", False):
+        return _readiness_main(args, source)
     if (getattr(args, "retrieve", False)
             and not source_adapters.get_source_adapter(source).fetch_requires_retrieve):
         raise ValueError(_retrieve_inapplicable_refusal(source))
@@ -6306,18 +6633,6 @@ def fetch_main(args) -> int:
         # words (a zero-or-negative count names no schedulable pool).
         fetch_pool.resolve_file_workers(args.fetch_workers)
 
-    if source != "hrrr":
-        hrrr_only = sorted(
-            flag for flag, value in (
-                ("--wait-for", args.wait_for or None),
-                ("--wait-timeout-minutes", args.wait_timeout_minutes),
-            ) if value is not None)
-        if hrrr_only:
-            raise ValueError(
-                f"{', '.join(hrrr_only)}: --source hrrr only (live-cycle "
-                "publication polling; the GFS container sources resolve a "
-                "complete cycle up front, and ERA5 is a manual CDS "
-                "retrieval)")
     if args.transport is not None and not fetch_endpoints.has_ladder(source):
         raise ValueError(
             f"--transport: --source {source} has no host to choose "
@@ -6529,15 +6844,16 @@ def fetch_main(args) -> int:
         cadence = args.cadence if args.cadence is not None else 6
         # Validate the duration before selecting a date or creating a template.
         _era5_times(datetime(2000, 1, 1), args.hours, cadence)
-        cycle = (resolve_latest_cycle(source, args.hours) if args.cycle == "latest"
-                 else parse_cycle(args.cycle, source))
+        cycle = (resolve_latest_cycle(source, args.hours, provider=era5_provider)
+                 if args.cycle == "latest" else parse_cycle(args.cycle, source))
         from gpuwm.era5_member import validate_selection
         member = validate_selection(product_type=era5_product, member=getattr(args, "member", None),
             provider=era5_provider, cadence=cadence, cycle=cycle)
         if args.cycle == "latest":
             end = cycle + timedelta(hours=args.hours)
+            _grid, basis = provider_cycle_grid(source, era5_provider)
             print(f"fetch era5: latest analysis window {cycle:%Y-%m-%dT%H}Z..{end:%Y-%m-%dT%H}Z "
-                  "from the declared publication delay, not a live completeness probe")
+                  f"from {basis}, not a live completeness probe")
         if member is not None and not getattr(args, "retrieve", False):
             raise ValueError("ERA5 EDA requires --retrieve so native member verification runs before publication")
         if getattr(args, "retrieve", False) or era5_provider == "arco":
@@ -6582,8 +6898,9 @@ def fetch_main(args) -> int:
             # one.
             query, last, options = latest_cycle_request(args)
             cycle = resolve_latest_cycle(query, last, **options)
-            print(f"fetch {source}: latest complete cycle is "
-                  f"{cycle:%Y-%m-%dT%H}Z")
+            print(f"fetch {source}: latest "
+                  f"{'startable' if options.get('as_posted') else 'complete'} "
+                  f"cycle is {cycle:%Y-%m-%dT%H}Z")
         else:
             cycle = parse_cycle(args.cycle, source)
         # A folder that already holds this whole request as grib-filter
@@ -6635,7 +6952,15 @@ def fetch_main(args) -> int:
                 require_matching_request(args.out, source=source,
                                          cycle=cycle, area=area,
                                          mode=requested_gfs_mode)
-            if args.cycle != "latest":
+            loop = None
+            if requested_as_posted(args) and (
+                    args.force_refetch or not cached_request_complete(
+                        args.out, source=source, cycle=cycle, area=area,
+                        hours=hours, mode=requested_gfs_mode,
+                        progress=say_once, refuse_changed=True)):
+                loop = _posting_loop(source, cycle, args, leads=hours,
+                                     transport=pinned_host(args.transport))
+            if args.cycle != "latest" and loop is None:
                 # A folder that already holds every file of this exact
                 # request needs nothing from the provider, so it is
                 # checked before the provider is asked: a finished
@@ -6664,34 +6989,29 @@ def fetch_main(args) -> int:
                               source, cycle=cycle,
                               pinned=pinned_host(args.transport)))
                       + ")")
-                manifest = fetch_gfs_fullfile(
-                    cycle=cycle, hours=hours, area=area, out=args.out,
-                    force=args.force_refetch, source=source,
-                    engine=engine, engine_bin=engine_bin,
-                    engine_selection=choice.selection,
-                    cache_dir=args.cache_dir,
-                    top_pressure_pa=args.p_top_pa,
-                    all_levels=args.all_levels,
-                    transport=pinned_host(args.transport),
-                    file_workers=args.fetch_workers)
+                def transfer(window, force):
+                    return fetch_gfs_fullfile(
+                        cycle=cycle, hours=window, area=area, out=args.out,
+                        force=force, source=source,
+                        engine=engine, engine_bin=engine_bin,
+                        engine_selection=choice.selection,
+                        cache_dir=args.cache_dir,
+                        top_pressure_pa=args.p_top_pa,
+                        all_levels=args.all_levels,
+                        transport=pinned_host(args.transport),
+                        file_workers=args.fetch_workers)
             else:
-                manifest = fetch_gfs(
-                    cycle=cycle, hours=hours, area=area, out=args.out,
-                    force=args.force_refetch, source=source,
-                    accept_inventory_change=args.accept_inventory_change,
-                    top_pressure_pa=args.p_top_pa,
-                    all_levels=args.all_levels,
-                    file_workers=args.fetch_workers)
+                def transfer(window, force):
+                    return fetch_gfs(
+                        cycle=cycle, hours=window, area=area, out=args.out,
+                        force=force, source=source,
+                        accept_inventory_change=args.accept_inventory_change,
+                        top_pressure_pa=args.p_top_pa,
+                        all_levels=args.all_levels,
+                        file_workers=args.fetch_workers)
+            manifest = _legacy_transfer(loop, transfer, hours,
+                                        force=args.force_refetch)
     elif source == "hrrr":
-        if args.wait_timeout_minutes is not None and not args.wait_for:
-            raise ValueError(
-                "--wait-timeout-minutes belongs to --wait-for")
-        # `<= 0` alone let NaN (a wait that never times out) and infinity
-        # through.
-        if args.wait_timeout_minutes is not None and not (
-                math.isfinite(args.wait_timeout_minutes)
-                and args.wait_timeout_minutes > 0):
-            raise ValueError("--wait-timeout-minutes must be positive and finite")
         transport = args.transport if args.transport is not None else "auto"
         # Only an unpinned request may wander between hosts; an operator
         # who named --transport gets that host or an error.
@@ -6736,31 +7056,20 @@ def fetch_main(args) -> int:
         # be refused.  --hours stays the window LENGTH on every source,
         # so the window's final lead is lead + length.
         start_hour = _forecast_start_hour(args.forecast_start_hour)
-        last_hour = start_hour + args.hours
         if start_hour:
             print(f"fetch hrrr: window begins at forecast lead "
                   f"f{start_hour:02d}; a model initialized there starts "
                   f"from a {start_hour} h forecast, not an analysis")
         if args.cycle == "latest":
-            if args.wait_for:
-                # Wait mode wants the cycle currently PUBLISHING, so the
-                # completeness probe is f00 (has publication begun?), not
-                # the final requested hour.  A lead does not change that
-                # question, and the window's own horizon check below is
-                # what refuses a lead this cycle cannot reach -- in words
-                # that name the horizon, which a failed probe would not.
-                query, last, options = latest_cycle_request(args)
-                cycle = resolve_latest_cycle(query, last, **options)
-                print(f"fetch hrrr: latest publishing cycle is "
-                      f"{cycle:%Y-%m-%dT%H}Z (f00 probe; --wait-for "
-                      "downloads later hours as they appear)")
-            else:
-                # Asked of the pinned host when there is one: the
-                # transfer below downloads from that host only.
-                query, last, options = latest_cycle_request(args)
-                cycle = resolve_latest_cycle(query, last, **options)
-                print(f"fetch hrrr: latest complete cycle is "
-                      f"{cycle:%Y-%m-%dT%H}Z")
+            # Asked of the pinned host when there is one: the transfer
+            # below downloads from that host only.  As posted, the newest
+            # cycle whose start needs are out; its later hours are
+            # fetched as they post.
+            query, last, options = latest_cycle_request(args)
+            cycle = resolve_latest_cycle(query, last, **options)
+            print(f"fetch hrrr: latest "
+                  f"{'startable' if options.get('as_posted') else 'complete'} "
+                  f"cycle is {cycle:%Y-%m-%dT%H}Z")
         else:
             cycle = parse_cycle(args.cycle, source)
         hours = hrrr_forecast_hours(args.hours, cycle, start_hour)
@@ -6777,27 +7086,33 @@ def fetch_main(args) -> int:
             cached = not args.force_refetch and cached_request_complete(
                 args.out, source="hrrr", cycle=cycle, area=area,
                 hours=hours, progress=print)
-            if not cached and args.cycle != "latest" and not args.wait_for:
-                # --wait-for is the request to wait for hours that are
-                # not published yet, so it goes on to its own bounded
-                # per-file polling instead of being refused here.
+            loop = None
+            whole = None
+            if not cached and requested_as_posted(args):
+                # As posted, each hour is waited for by the loop and then
+                # fetched; a window already whole moves in one call.
+                loop = _posting_loop(source, cycle, args, leads=hours,
+                                     transport=pinned_host(args.transport))
+                if loop is not None:
+                    whole = _window_posted(
+                        loop.window, lambda said: require_published_cycle(
+                            source, cycle, hours[-1], progress=said,
+                            transport=pinned_host(args.transport)))
+            if not cached and args.cycle != "latest" and loop is None:
                 require_published_cycle(
                     source, cycle, hours[-1],
                     transport=pinned_host(args.transport))
-            if not args.wait_for and cached:
+            if cached:
                 # Every file matched its recorded digest above, so
                 # nothing will be downloaded; the files keep the host
                 # they were fetched from.
                 transport = (pinned_host(args.transport)
                              or _recorded_hrrr_transport(args.out))
-            elif not args.wait_for:
+            elif loop is None or whole:
                 # One transport decision per invocation; 'auto' probes
                 # NOMADS for the window's final hour pair, falls back S3.
                 transport = resolve_hrrr_transport(
                     cycle, transport, last_hour=hours[-1])
-            timeout_minutes = (args.wait_timeout_minutes
-                               if args.wait_timeout_minutes is not None
-                               else HRRR_WAIT_TIMEOUT_DEFAULT_MINUTES)
             # Name who chose the byte mode.  The backbone cannot: it
             # sees `--mode full-file` on its command line and cannot
             # tell a typed flag from this front door's own default,
@@ -6827,16 +7142,28 @@ def fetch_main(args) -> int:
                       "this fetch because it is the only host that has "
                       "this window yet; once the archive catches up, a "
                       "re-run takes it from there without being asked.")
-            manifest = fetch_hrrr(
-                cycle=cycle, hours=hours, area=area, out=args.out,
-                force=args.force_refetch, transport=transport,
-                wait=args.wait_for, wait_timeout_s=timeout_minutes * 60.0,
-                engine=engine, engine_bin=engine_bin,
-                engine_selection=choice.selection, mode=mode,
-                cache_dir=args.cache_dir,
-                accept_inventory_change=args.accept_inventory_change,
-                file_workers=args.fetch_workers,
-                transport_fallback=transport_fallback)
+            requested_transport = transport
+
+            def transfer(window, force):
+                # The host is decided per call: under the loop the
+                # window's final hour is the newest posted one.
+                host = requested_transport
+                if loop is not None and not whole:
+                    host = (pinned_host(args.transport)
+                            or resolve_hrrr_transport(
+                                cycle, "auto", last_hour=window[-1]))
+                return fetch_hrrr(
+                    cycle=cycle, hours=window, area=area, out=args.out,
+                    force=force, transport=host,
+                    engine=engine, engine_bin=engine_bin,
+                    engine_selection=choice.selection, mode=mode,
+                    cache_dir=args.cache_dir,
+                    accept_inventory_change=args.accept_inventory_change,
+                    file_workers=args.fetch_workers,
+                    transport_fallback=transport_fallback)
+
+            manifest = _legacy_transfer(loop, transfer, hours,
+                                        force=args.force_refetch, whole=whole)
     else:
         raise ValueError(f"unknown fetch source {source!r}")
     print(f"fetch {source}: manifest {manifest}")
@@ -6917,6 +7244,82 @@ def fetch_main(args) -> int:
     return 0
 
 
+def _window_posted(window, check) -> bool:
+    """Whether a whole window is already posted, asked as a whole-cycle fetch asks.
+
+    ``check(progress)`` is :func:`require_published_cycle` for the
+    window's final lead.  Not posted is not a refusal under as-posted:
+    the loop waits.  A host that could not be heard is not counted as
+    holding the window either (the check says so on ``progress``), so the
+    loop asks lead by lead, and lets the transfer try a lead whose host
+    it still cannot hear (GS-05).  A cycle every host has let go (and no
+    archive keeps), or that a pinned host no longer keeps, will never
+    post there, so the whole-cycle refusal stands, in its own words.
+    """
+
+    from gpuwm import source_readiness as readiness
+
+    unheard: list[str] = []
+    try:
+        check(unheard.append)
+    except RuntimeError:
+        if readiness.retention_refusal(window, now=None) is not None:
+            raise
+        return False
+    if unheard:
+        print(unheard[0])
+        return False
+    return True
+
+
+def _legacy_transfer(loop, transfer, hours, *, force: bool,
+                     whole: bool | None = None):
+    """One legacy transport's window, whole or as it posts.
+
+    Without a loop, ``transfer(hours, force)`` once, as before.  With one
+    (:func:`gpuwm.fetch_as_posted.fetch_legacy_as_posted`) the transport
+    is called for each verified prefix; a forced refetch sets the old
+    files aside once, before the first call, and never again.
+    """
+
+    if loop is None:
+        return transfer(hours, force)
+    from gpuwm.fetch_as_posted import fetch_legacy_as_posted, legacy_objects
+
+    window = loop.window
+    # A window whose final lead is out needs no waiting, and moves as one
+    # request with its markers written in lead order.
+    if whole is None:
+        whole = _window_posted(window, lambda said: require_published_cycle(
+            window.source, window.cycle, hours[-1], progress=said,
+            transport=window.transport))
+    if whole:
+        # Started (and, forced, stripped of its lead markers) before the
+        # transfer sets the old payloads aside, so no marker describes a
+        # file that is gone while the new one downloads.
+        loop.start(fresh=force)
+        manifest = transfer(hours, force)
+        document = json.loads(Path(manifest).read_text(encoding="utf-8"))
+        for lead in hours:
+            loop.publish(lead, legacy_objects(document, lead))
+        return manifest
+    forced = [force]
+
+    def prefix(window):
+        manifest = transfer(window, forced[0])
+        forced[0] = False
+        return manifest
+
+    if force:
+        # The receipts and payloads go aside before the schedule is
+        # written, and the loop starts with no lead marker (fresh), so the
+        # posting folder is this run's: a marker kept from before would
+        # say a lead is ready whose file was just moved aside.
+        _force_quarantine_output(loop.out, print, loop.window.source)
+        forced[0] = False
+    return fetch_legacy_as_posted(loop, prefix, fresh=force)
+
+
 def _resolve_manifest_bridge(source: str) -> Path:
     """The built decoder ``--author-front-door-manifest`` should bind.
 
@@ -6986,6 +7389,14 @@ FETCH_HINT_ROWS = key_rows(
            "the one host of the source's endpoint ladder to download "
            "from, the value `gpuwm fetch --transport` takes; absent walks "
            "the ladder"),
+    KeyRow("as_posted", "boolean", True,
+           "fetch, prepare and run as the leads post, and take 'latest' "
+           "as the newest cycle whose first leads are posted; false is "
+           "the whole-cycle rule (`gpuwm fetch --whole-cycle`)"),
+    KeyRow("late_after_minutes", "number", None,
+           "how far past its scheduled time a lead may be before the run "
+           "stops with exit 75; absent takes the source table's posting "
+           "late_after_minutes"),
 )
 FETCH_HINT_KEYS = frozenset(FETCH_HINT_ROWS)
 
@@ -7113,6 +7524,16 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
     # the rows are what a front end is told these keys take.
     for key, value in table.items():
         FETCH_HINT_ROWS[key].check(value, where=prefix)
+    late = table.get("late_after_minutes")
+    if late is not None and not (math.isfinite(float(late)) and float(late) > 0):
+        # A zero budget fails every lead a second late (DESIGN A136 2.1).
+        raise ValueError(
+            f"late_after_minutes = {late!r} in {prefix} must be a positive "
+            "number of minutes")
+    if late is not None and table.get("as_posted") is False:
+        raise ValueError(
+            f"late_after_minutes in {prefix} is the wait budget of an "
+            "as-posted fetch, and as_posted = false waits for nothing")
     known = _fetch_hint_sources()
     local_source = False
     if isinstance(table.get("source"), str):
@@ -7335,9 +7756,11 @@ def register_cli(subparsers) -> None:
              "cadence has nothing to space); era5 any positive whole number of "
              "hours that divides --hours (default 6; the EDA product "
              "publishes 3-hourly, so it takes multiples of 3); hrrr is "
-             "hourly.  On a table route the accepted cadences and the "
-             "default are the row's own -- a cadence off the publisher's "
-             "ladder refuses and names the ladder")
+             "hourly.  On a table route any whole number of hours at "
+             "which the cycle's ladder publishes every lead of the window "
+             "and the preparation takes the series, default the row's own "
+             "-- a cadence off the publisher's ladder refuses and names "
+             "the ladder")
     parser.add_argument(
         "--validate", type=Path, nargs="+", default=None, metavar="GRIB",
         help="era5 only: validate user-supplied GRIB1 file(s) against "
@@ -7373,19 +7796,44 @@ def register_cli(subparsers) -> None:
              "products the second "
              "copy is a DIFFERENT product (see `gpuwm fetch --source "
              "aigfs`)")
+    posting = parser.add_mutually_exclusive_group()
+    posting.add_argument(
+        "--as-posted", dest="as_posted", action="store_const", const=True,
+        default=None,
+        help="fetch each lead the moment one host holds all of it, in lead "
+             "order, writing <out>/posting/ (schedule.json and one "
+             "fNNN.json per verified lead) as the manifest grows; the "
+             "default.  --cycle latest is then the newest cycle whose "
+             "first leads are posted.  A lead later than its budget stops "
+             "the fetch with exit 75 and posting/failed.json; a re-run "
+             "resumes from the fetched prefix")
+    posting.add_argument(
+        "--wait-for", dest="as_posted", action="store_const", const=True,
+        help="the same as --as-posted, for every source")
+    posting.add_argument(
+        "--whole-cycle", dest="as_posted", action="store_const", const=False,
+        help="the old rule: --cycle latest is the newest cycle whose final "
+             "lead is posted, and a named cycle needs its final lead "
+             "before anything moves")
     parser.add_argument(
-        "--wait-for", action="store_true",
-        help="hrrr only: live-cycle mode -- download each forecast hour "
-             "as it publishes (polling at most every "
-             f"{HRRR_WAIT_POLL_SECONDS} s), so preparation can start "
-             "before the cycle finishes publishing; on timeout the "
-             "manifest still records the complete fetched prefix and a "
-             "re-run resumes")
+        "--late-after-minutes", type=float, default=None, metavar="MIN",
+        help="how far past its scheduled time a lead may be before the "
+             "fetch stops with exit 75 (default: the source table's "
+             "posting late_after_minutes)")
     parser.add_argument(
         "--wait-timeout-minutes", type=float, default=None, metavar="MIN",
-        help="hrrr --wait-for only: give up after this long (default "
-             f"{HRRR_WAIT_TIMEOUT_DEFAULT_MINUTES:g} min), reporting "
-             "exactly which hours were fetched")
+        help="a cap on the whole window, for every source: exit 75 if the "
+             "window is not all in by then, keeping the fetched prefix")
+    parser.add_argument(
+        "--readiness", action="store_true",
+        help="print gpuwm.readiness.v1 for this window on stdout and fetch "
+             "nothing: exit 0 ready (or nothing to probe), 75 not yet "
+             "(with expected_ready_at and retry_after_seconds), 2 refused "
+             "(the window can never start)")
+    parser.add_argument(
+        "--no-probe", action="store_true",
+        help="with --readiness: compute the schedule from the table only "
+             "and ask no host")
     parser.add_argument(
         "--force-refetch", action="store_true",
         help="move every existing file in --out aside (nothing is "

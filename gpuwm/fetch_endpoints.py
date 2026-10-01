@@ -61,6 +61,7 @@ import functools
 from http.client import IncompleteRead
 import json
 from pathlib import Path
+import re
 import socket
 from types import MappingProxyType
 from typing import Mapping, Sequence
@@ -372,8 +373,44 @@ def object_available(url: str, *, opener=None, timeout: float = 60.0) -> bool:
         return False
 
 
+#: A probe's answer for a status the host's ``missing_path`` row names
+#: (:func:`missing_path_statuses`): the object is not there, or this
+#: client was refused, and only another host can say which.  Returned
+#: only to a caller that asks for it (``missing_path=True``): every other
+#: reader of :func:`object_answer` takes a truthy answer as "present".
+ABSENT_OR_REFUSED = "absent_or_refused"
+
+
+@functools.lru_cache(maxsize=None)
+def missing_path_statuses(host: str) -> frozenset[int]:
+    """The statuses ``host`` answers for a path it has not created yet.
+
+    Its ``host_policy`` ``missing_path`` row, or none.  404 and 410 are
+    always "not there" and are never listed.  The breakage the row
+    prevents: NOMADS answers 403 for every lead of a cycle whose
+    directory does not exist yet, which read as a host not heard, so an
+    as-posted fetch tried a transfer of each such lead every round and
+    a lead that never posted was reported as a host not heard.
+    """
+
+    raw = _policy().get(str(host).lower(), {}).get("missing_path")
+    if not raw:
+        return frozenset()
+    statuses = frozenset(int(code) for code in raw["statuses"])
+    # Named breakage: a 2xx or 5xx here would count a served object or a
+    # failing host as absent, and a row without its evidence could not be
+    # re-checked when the host changes its answer.
+    if (not statuses or any(not 400 <= code < 500 or code in (404, 410)
+                            for code in statuses)
+            or not str(raw.get("why", "")).strip()):
+        raise ValueError(
+            f"{TABLE_NAME}: host_policy {host} missing_path names 4xx "
+            "statuses other than 404 and 410, and says why")
+    return statuses
+
+
 def object_answer(url: str, *, timeout: float, max_wait_s: float | None = None,
-                  opener=None) -> bool | None:
+                  opener=None, missing_path: bool = False) -> bool | str | None:
     """:func:`object_available`'s question with a third answer: no answer.
 
     True for a 2xx and False for a 404 or 410 -- the host said the
@@ -383,6 +420,8 @@ def object_answer(url: str, *, timeout: float, max_wait_s: float | None = None,
     is sent then; see :func:`gpuwm.nomads_governor.pace`).  A caller
     that must not wait long, such as a page listing which sources hold
     a start, can then say "not checked" instead of "not published".
+    With ``missing_path``, a status the host's ``missing_path`` row
+    names answers :data:`ABSENT_OR_REFUSED` instead of None.
     """
 
     from urllib.error import HTTPError
@@ -402,7 +441,12 @@ def object_answer(url: str, *, timeout: float, max_wait_s: float | None = None,
     except PaceBudgetExceeded:
         return None
     except HTTPError as error:
-        return False if int(error.code) in (404, 410) else None
+        if int(error.code) in (404, 410):
+            return False
+        if missing_path and int(error.code) in missing_path_statuses(
+                urlsplit(url).netloc):
+            return ABSENT_OR_REFUSED
+        return None
     except BaseException:                     # noqa: BLE001 - see docstring
         return None
 
@@ -420,10 +464,12 @@ SETTLE_PACE_BUDGET_S = 30.0
 
 def settled_object_answer(url: str, *, timeout: float = 60.0,
                           backoff_s: Sequence[float] | None = None,
-                          opener=None, sleep=None) -> bool | None:
+                          opener=None, sleep=None,
+                          missing_path: bool = False) -> bool | str | None:
     """:func:`object_answer`, asked again after each pause in ``backoff_s`` while it has no answer.
 
-    True or False as soon as the host answers either way; None only when
+    True or False as soon as the host answers either way (or
+    :data:`ABSENT_OR_REFUSED` with ``missing_path``); None only when
     every ask went unanswered.  The first ask waits for its NOMADS turn
     as long as the governor says, as every fetch probe does; the ones
     after it wait at most :data:`SETTLE_PACE_BUDGET_S`.  ``backoff_s``
@@ -433,12 +479,14 @@ def settled_object_answer(url: str, *, timeout: float = 60.0,
     import time
 
     pause = time.sleep if sleep is None else sleep
-    answer = object_answer(url, timeout=timeout, opener=opener)
+    answer = object_answer(url, timeout=timeout, opener=opener,
+                           missing_path=missing_path)
     for seconds in (SETTLE_BACKOFF_S if backoff_s is None else backoff_s):
         if answer is not None:
             break
         pause(seconds)
-        answer = object_answer(url, timeout=timeout, max_wait_s=SETTLE_PACE_BUDGET_S, opener=opener)
+        answer = object_answer(url, timeout=timeout, max_wait_s=SETTLE_PACE_BUDGET_S, opener=opener,
+                               missing_path=missing_path)
     return answer
 
 
@@ -471,6 +519,101 @@ def host_cap_why(host: str) -> str:
     """Why ``host`` is capped where it is -- the table's own sentence."""
 
     return str(_policy().get(host.lower(), {}).get("why", ""))
+
+
+@dataclass(frozen=True)
+class Throttle:
+    """How long one host is waited out when it answers "slow down": a table row.
+
+    ``statuses`` are the HTTP answers that can mean it, and ``codes`` the
+    error codes the answer body must name for it to count (S3 names
+    ``SlowDown`` in an XML ``<Code>``); empty ``codes`` counts every
+    answer with one of those statuses.  Each further ask of a file waits
+    a doubling interval from ``first_wait_s`` up to ``max_wait_s``, the
+    upper half of it drawn at random so parallel files do not come back
+    in step, until ``budget_s`` seconds have been waited for that file.
+    """
+
+    host: str
+    statuses: tuple[int, ...]
+    codes: tuple[str, ...]
+    first_wait_s: float
+    max_wait_s: float
+    budget_s: float
+    why: str
+
+    def wait(self, answers: int, jitter: float) -> float:
+        """Seconds before the next ask, after ``answers`` throttle answers in a row."""
+
+        ceiling = min(self.max_wait_s,
+                      self.first_wait_s * 2.0 ** max(0, int(answers) - 1))
+        return ceiling / 2.0 + (ceiling / 2.0) * min(1.0, max(0.0, float(jitter)))
+
+
+@functools.lru_cache(maxsize=None)
+def throttle_policy(host: str) -> Throttle | None:
+    """The throttle row ``host`` declares in ``host_policy``, or None."""
+
+    raw = _policy().get(str(host).lower(), {}).get("throttle")
+    if not raw:
+        return None
+    policy = Throttle(
+        host=str(host).lower(),
+        statuses=tuple(int(code) for code in raw["statuses"]),
+        codes=tuple(str(code) for code in raw.get("codes", ())),
+        first_wait_s=float(raw["first_wait_s"]),
+        max_wait_s=float(raw["max_wait_s"]),
+        budget_s=float(raw["budget_s"]),
+        why=str(raw.get("why", "")))
+    # Named breakage: a zero or inverted row would either never wait or
+    # wait longer per ask than the whole budget, so the file would be
+    # refused on its first throttle answer exactly as before the row.
+    if not (0 < policy.first_wait_s <= policy.max_wait_s <= policy.budget_s):
+        raise ValueError(
+            f"{TABLE_NAME}: host_policy {host} throttle needs 0 < first_wait_s "
+            "<= max_wait_s <= budget_s")
+    return policy
+
+
+_ERROR_CODE = re.compile(rb"<Code>\s*([A-Za-z0-9_.-]+)\s*</Code>")
+
+
+def answer_code(error: BaseException) -> str | None:
+    """The error code an HTTP answer's body names (S3's ``<Code>``), or None.
+
+    Read once and kept on the error, because a body can only be read
+    once and both the wait and the log line ask for it.
+    """
+
+    if not isinstance(error, HTTPError):
+        return None
+    if hasattr(error, "_gpuwm_answer_code"):
+        return error._gpuwm_answer_code
+    code = None
+    try:
+        body = error.read(4096) if error.fp is not None else b""
+        match = _ERROR_CODE.search(body or b"")
+        code = match.group(1).decode("ascii") if match else None
+    except Exception:                          # noqa: BLE001 - a body is optional
+        code = None
+    try:
+        error._gpuwm_answer_code = code
+    except AttributeError:                     # pragma: no cover
+        pass
+    return code
+
+
+def throttled(endpoint: Endpoint, error: BaseException) -> Throttle | None:
+    """The throttle row this answer from ``endpoint`` falls under, or None."""
+
+    if not isinstance(error, HTTPError):
+        return None
+    policy = throttle_policy(endpoint.host)
+    if policy is None or int(error.code) not in policy.statuses:
+        return None
+    if policy.codes and answer_code(error) not in policy.codes:
+        return None
+    return policy
 
 
 def host_worker_cap(host: str, workers: int) -> int:
@@ -661,7 +804,7 @@ def transfer_reason(error: BaseException) -> str | None:
 def ask_along_ladder(ladder: Sequence[Endpoint], transfer, *, label: str,
                      name: str, progress, delay=None, discard=None,
                      attempts: int = TRANSIENT_ATTEMPTS, pause=None,
-                     tail: str = "") -> tuple[Endpoint, object]:
+                     tail: str = "", jitter=None) -> tuple[Endpoint, object]:
     """Move one file, asking each endpoint in turn and in rounds.
 
     ``transfer(endpoint)`` moves the file from one endpoint and returns
@@ -686,6 +829,15 @@ def ask_along_ladder(ladder: Sequence[Endpoint], transfer, *, label: str,
     failed attempt staged.  ``pause(seconds)`` waits between rounds and
     by default stops early once another file has failed the request.
 
+    A host that declares a :class:`Throttle` row and answers with it
+    ("slow down", S3's ``503 SlowDown``) is not held to the round count:
+    it is asked again after the row's doubling, jittered wait until the
+    row's time budget is spent, and the log says which host is throttling
+    and how much of the budget is gone.  ECMWF's AWS mirror answers about
+    half of all requests that way, and 5 rounds in 30 s refused files a
+    plain GET then served.  ``jitter()`` draws the random part of each
+    wait (default :func:`random.random`).
+
     When every round is spent, :class:`TransferRefusal` names the file,
     each endpoint and why, the rounds and the seconds waited, followed
     by ``tail``.
@@ -703,19 +855,30 @@ def ask_along_ladder(ladder: Sequence[Endpoint], transfer, *, label: str,
     active = tuple(ladder)
     if not active:
         raise ValueError(f"{label}: {name} has no endpoint to ask")
+    if jitter is None:
+        import random
+        jitter = random.random
+    attempts = max(1, int(attempts))
     tried: list[tuple[Endpoint, str]] = []
     last_error: BaseException | None = None
     waited = 0.0
     rounds = 0
-    for attempt in range(1, max(1, int(attempts)) + 1):
+    throttle_answers: dict[Endpoint, int] = {}
+    spent: dict[Endpoint, Throttle] = {}
+    attempt = 0
+    while True:
+        attempt += 1
         rounds = attempt
-        again: list[Endpoint] = []
-        wait = 0.0
+        again: list[tuple[Endpoint, float, Throttle | None]] = []
         for position, endpoint in enumerate(active):
             try:
                 return endpoint, transfer(endpoint)
             except BaseException as error:        # noqa: BLE001 - classified
                 seconds = delay(error, attempt)
+                policy = throttled(endpoint, error)
+                if policy is not None:
+                    throttle_answers[endpoint] = throttle_answers.get(endpoint, 0) + 1
+                    seconds = policy.wait(throttle_answers[endpoint], jitter())
                 # A failure on this computer (a full disk, an unwritable
                 # folder) cannot be repaired by another endpoint.
                 if (isinstance(error, OSError)
@@ -726,11 +889,14 @@ def ask_along_ladder(ladder: Sequence[Endpoint], transfer, *, label: str,
                 reason = transfer_reason(error)
                 if reason is None:
                     raise
+                if policy is not None:
+                    code = answer_code(error)
+                    reason = (f"HTTP {error.code}{f' {code}' if code else ''} -- "
+                              "the host is throttling this client")
                 last_error = error
                 tried.append((endpoint, reason))
                 if seconds is not None:
-                    again.append(endpoint)
-                    wait = max(wait, seconds)
+                    again.append((endpoint, seconds, policy))
                 if discard is not None:
                     discard(endpoint)
                 remaining = active[position + 1:]
@@ -738,28 +904,59 @@ def ask_along_ladder(ladder: Sequence[Endpoint], transfer, *, label: str,
                     f"{label}: {endpoint.name} did not serve {name} "
                     f"({reason})"
                     + (f"; asking {remaining[0].name}" if remaining else ""))
-        if not again or attempt >= attempts:
+        # A throttling host is held to its row's time budget, every other
+        # transient fault to the round count.
+        kept: list[tuple[Endpoint, float, Throttle | None]] = []
+        for endpoint, seconds, policy in again:
+            if policy is None:
+                if attempt < attempts:
+                    kept.append((endpoint, seconds, None))
+                continue
+            left = policy.budget_s - waited
+            if left >= 1.0:
+                kept.append((endpoint, min(seconds, left), policy))
+            else:
+                spent[endpoint] = policy
+        if not kept:
             break
-        progress(f"{label}: retrying {name} in {wait:g} s (attempt "
-                 f"{attempt + 1}/{attempts}); completed files are kept")
+        wait = max(seconds for _endpoint, seconds, _policy in kept)
+        throttling = [(endpoint, policy) for endpoint, _seconds, policy in kept
+                      if policy is not None]
+        if throttling:
+            endpoint, policy = throttling[0]
+            progress(
+                f"{label}: {endpoint.name} ({endpoint.host}) is throttling "
+                f"this client; waiting {wait:.1f} s before asking for {name} "
+                f"again (ask {attempt + 1}; {waited:.0f} s of the "
+                f"{policy.budget_s:g} s the route table allows this host "
+                "spent); completed files are kept")
+        else:
+            progress(f"{label}: retrying {name} in {wait:g} s (attempt "
+                     f"{attempt + 1}/{attempts}); completed files are kept")
         pause(wait)
         waited += wait
-        active = tuple(again)
+        active = tuple(endpoint for endpoint, _seconds, _policy in kept)
+    budget = "".join(
+        f"\n  {endpoint.name} ({endpoint.host}) was still throttling when "
+        f"the {policy.budget_s:g} s the route table allows it were spent."
+        for endpoint, policy in spent.items())
     raise TransferRefusal(
         ladder_refusal(f"{label}: {name}", tried, rounds=rounds,
-                       waited_s=waited) + tail,
+                       waited_s=waited) + budget + tail,
         name=name, attempts=tried, rounds=rounds,
         waited_s=waited) from last_error
 
 
 __all__ = [
+    "ABSENT_OR_REFUSED", "missing_path_statuses",
     "Endpoint", "FALLTHROUGH_STATUSES", "PROBE_USER_AGENT", "TABLE_NAME",
     "cycle_age_hours", "document", "endpoint_named", "fault_reason",
     "has_ladder", "host_cap_why", "host_caps", "host_worker_cap", "ladder", "object_answer",
     "ladder_refusal", "object_available", "promote", "retry_delay",
     "serving_ladder",
     "SETTLE_BACKOFF_S", "SETTLE_PACE_BUDGET_S", "settled_object_answer",
-    "TRANSIENT_ATTEMPTS", "TRANSIENT_WAIT_LIMIT_S", "TransferRefusal",
+    "TRANSIENT_ATTEMPTS", "TRANSIENT_WAIT_LIMIT_S", "Throttle", "TransferRefusal",
+    "answer_code", "throttle_policy", "throttled",
     "ask_along_ladder", "transfer_ladder", "transfer_order",
     "transfer_probes", "transfer_reason",
 ]

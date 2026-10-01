@@ -75,7 +75,8 @@ import logging
 import numpy as np
 
 from gpuwm.ingest.nest_init import (ChildInitResult, _adjust_and_rederive,
-                                    _as_like, _child_grid_from_parent,
+                                    _as_like, _blend_terrain_triple,
+                                    _child_grid_from_parent,
                                     _static_catalog, parent_only_init,
                                     seed_rk_time_t_copies)
 
@@ -296,7 +297,6 @@ def _adopt_own_terrain(initialized: ChildInitResult, child_dc,
     product (module docstring: the role mapping).  Mutates
     ``initialized.state`` in place and returns the adoption receipt.
     """
-    from gpuwm.core.nest_interp import blend_terrain
     from gpuwm.ingest.real import _make_real_base
 
     state = initialized.state
@@ -356,18 +356,19 @@ def _adopt_own_terrain(initialized: ChildInitResult, child_dc,
 
     # WRF blends all three fields (mediation_integrate.F:733-741); never
     # blend ht alone and derive, because base construction is nonlinear.
+    # In float64 on the fine base, as the t=0 child does
+    # (_blend_terrain_triple), so the re-derived base keeps its EOS
+    # correction over the rim too.
     spec_width = int(cfg.spec_bdy_width)
-    blend_terrain(ht_capture, state.ht, spec_bdy_width=spec_width,
-                  blend_width=int(blend_width))
-    blend_terrain(mub_capture, state.mub2d, spec_bdy_width=spec_width,
-                  blend_width=int(blend_width))
-    blend_terrain(phb_capture, state.phb, spec_bdy_width=spec_width,
-                  blend_width=int(blend_width))
+    blended = _blend_terrain_triple(
+        state, (ht_capture, mub_capture, phb_capture), fine_base,
+        spec_bdy_width=spec_width, blend_width=int(blend_width))
 
     # theta/qv adjustment for the column-mass change, start_domain
     # base/EOS re-derivation, then the real-nest press_adj MU correction
     # -- the exact finalize_prepared_child tail.
-    _adjust_and_rederive(state, cfg, coord, save_mub, fine_terrain)
+    _adjust_and_rederive(state, cfg, coord, save_mub, fine_terrain,
+                         blended=blended)
     mub_shift = _host(state.mub2d).astype(np.float64) - _host(
         save_mub).astype(np.float64)
     ht_shift = _host(state.ht).astype(np.float64) - _host(
@@ -383,12 +384,132 @@ def _adopt_own_terrain(initialized: ChildInitResult, child_dc,
     }
 
 
+def spawned_child_device_bytes(child_dc, parent_dc, *, scratch_arena=None,
+                               dycore_state_workspace=None
+                               ) -> dict[str, int]:
+    """What a spawned child newly allocates on the card, by part.
+
+    Priced from the same per-domain inventory the forecast admission sums
+    (:func:`gpuwm.core.preflight.estimate_domain`): the child's state, the
+    physics driver its preparer attaches, and the nest interpolation
+    tables its coupler fills.  A slot the tree's shared scratch arena
+    already backs, and a state symbol the shared dycore workspace already
+    backs, cost nothing new: both were sized over every declared domain,
+    dormant ones included, at startup.
+    """
+    from gpuwm.config import radiation_scheme_ids
+    from gpuwm.core.preflight import (estimate_domain,
+                                      shared_dycore_state_symbols)
+    from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
+
+    run = child_dc.run
+    cam_ozone = bool(4 in radiation_scheme_ids(run)
+                     and rrtmg_variant(run) == RRTMG_VARIANT_LEGACY
+                     and int(run.o3input) == 2)
+    estimate = estimate_domain(
+        child_dc, spec_bdy_width=int(run.spec_bdy_width),
+        cam_ozone=cam_ozone, parent=parent_dc)
+    shared_state = (shared_dycore_state_symbols()
+                    if dycore_state_workspace is not None else frozenset())
+
+    def arena_backed(slot: str) -> bool:
+        return scratch_arena is not None and bool(scratch_arena.has_slot(slot))
+
+    return {
+        "state": sum(item.nbytes for item in estimate.items
+                     if item.category == "state"
+                     and item.name not in shared_state),
+        "physics": estimate.category_bytes("physics"),
+        "interpolation": sum(item.nbytes for item in estimate.items
+                             if item.category == "nest"
+                             and not arena_backed(item.name)),
+    }
+
+
+def card_free_bytes() -> int:
+    """Bytes a new allocation can take on this process's card right now.
+
+    Free on the device (``cudaMemGetInfo`` capped by the device-wide NVML
+    figure, :func:`gpuwm.core.preflight.device_free_and_total_bytes`) plus
+    the blocks this process's CuPy pool holds unused, which the pool hands
+    out again before it asks the driver.
+    """
+    import cupy as cp
+
+    from gpuwm.core.preflight import device_free_and_total_bytes
+
+    free, _total = device_free_and_total_bytes()
+    return int(free) + int(cp.get_default_memory_pool().free_bytes())
+
+
+def size_text(nbytes: int) -> str:
+    """A byte count in GiB from 1 GiB up, in MiB below it."""
+    nbytes = int(nbytes)
+    if nbytes >= 1024 ** 3:
+        return f"{nbytes / 1024 ** 3:.2f} GiB"
+    return f"{nbytes / 1024 ** 2:.1f} MiB"
+
+
+def admit_spawned_child(child_dc, parent_node, *, free_bytes: int,
+                        scratch_arena=None, dycore_state_workspace=None
+                        ) -> dict[str, object]:
+    """Refuse a spawn the card cannot hold, before any of it is allocated.
+
+    THE BREAKAGE THIS PREVENTS.  A trigger fires mid-run, beside a tree
+    that is already on the card.  With no fit check the child's state went
+    straight to the allocator, so a card that could not hold it ended the
+    run in a raw CUDA out-of-memory error part-way through building a
+    child, hours in.  The startup fit check reserves a declared spawn's
+    bytes, but nothing held the card to that reservation afterwards:
+    another program on the card, or growth since the start, spends it.
+    """
+    from gpuwm.core.preflight import (forecast_pool_estimate_bytes,
+                                      forecast_pool_headroom,
+                                      urban_held_bytes)
+
+    headroom = forecast_pool_headroom((child_dc.run, parent_node.cfg))
+    parts = spawned_child_device_bytes(
+        child_dc, parent_node.cfg, scratch_arena=scratch_arena,
+        dycore_state_workspace=dycore_state_workspace)
+    itemized = int(sum(parts.values()))
+    held = urban_held_bytes(child_dc.run)
+    # The child's arrays go through the same pool as the tree's, so they
+    # carry the forecast's one measured pool margin (A163): the startup
+    # envelope priced this nest at that margin, and the check at the
+    # spawn reads the same number instead of the bare itemized sum.  The
+    # arrays held at their allocated size (urban) are priced there, as
+    # the startup envelope prices them.
+    need = forecast_pool_estimate_bytes(
+        itemized, held_exact_bytes=held, headroom=headroom)
+    receipt: dict[str, object] = {
+        "need_bytes": need, "itemized_bytes": itemized,
+        "held_exact_bytes": held,
+        "pool_headroom": headroom, "parts_bytes": dict(parts),
+        "card_free_bytes": int(free_bytes), "fits": need <= int(free_bytes),
+    }
+    if not receipt["fits"]:
+        raise SpawnInitRefusal(
+            f"spawning d{int(child_dc.grid_id):02d} needs {size_text(need)} "
+            f"on the card (state {size_text(parts['state'])}, physics "
+            f"{size_text(parts['physics'])}, nest interpolation tables "
+            f"{size_text(parts['interpolation'])}, x "
+            f"{headroom:.2f} measured pool margin) and the card can hand "
+            f"out {size_text(free_bytes)} now; building it beside the "
+            "live tree would end the run in a CUDA out-of-memory error "
+            "part-way through the child.  The startup fit check reserved "
+            "this nest, so something has taken that memory since: another "
+            "program on the card, or allocations the run made after its "
+            "start.  Free the card, or declare a smaller spawn nest.")
+    return receipt
+
+
 def spawn_child_from_parent(child_dc, parent_node, *,
                             static_fields=None, blend_width: int = 5,
                             scratch_arena=None, dycore_state_workspace=None,
                             array_module=None, on_child_built=None,
                             state_digest=None,
-                            trigger_receipt=None) -> dict[str, object]:
+                            trigger_receipt=None,
+                            device_free_bytes=None) -> dict[str, object]:
     """Materialize one fired nest from the LIVE parent, and account for it.
 
     ``child_dc`` carries the FIRED placement
@@ -407,6 +528,13 @@ def spawn_child_from_parent(child_dc, parent_node, *,
     physics/land driver) and fires before the receipts are cut, so a
     driver initialises from the parent-interpolated fields.
 
+    Before anything is allocated, a child built on the card is admitted
+    against what the card can hand out (:func:`admit_spawned_child`).
+    ``device_free_bytes`` is the probe for that figure, a callable
+    returning bytes; it defaults to :func:`card_free_bytes` for a card
+    build and is not asked for a NumPy build, which allocates nothing on
+    a card.
+
     Returns the receipt dict; the live product rides under
     ``"child_result"`` (a :class:`ChildInitResult`), the ``segment_state``
     precedent for carrying a live object beside its JSON.
@@ -414,6 +542,15 @@ def spawn_child_from_parent(child_dc, parent_node, *,
     if state_digest is None:
         from gpuwm.ensemble.state_sha import live_state_sha256
         state_digest = live_state_sha256
+
+    device_admission = None
+    if device_free_bytes is None and array_module is None:
+        device_free_bytes = card_free_bytes
+    if device_free_bytes is not None:
+        device_admission = admit_spawned_child(
+            child_dc, parent_node, free_bytes=int(device_free_bytes()),
+            scratch_arena=scratch_arena,
+            dycore_state_workspace=dycore_state_workspace)
 
     parent_sha_before = state_digest(parent_node.state)
 
@@ -483,6 +620,7 @@ def spawn_child_from_parent(child_dc, parent_node, *,
         "placement": [int(child_dc.i_parent_start),
                       int(child_dc.j_parent_start)],
         "trigger": trigger_receipt,
+        "device_admission": device_admission,
         "statics": statics_receipt,
         "terrain": adoption,
         "land_surface": land_receipt,
@@ -516,6 +654,7 @@ def spawn_child_from_parent(child_dc, parent_node, *,
 
 __all__ = [
     "SEA_ICE_MASKED_FIELDS", "SPAWN_INIT_CONTRACT", "SPAWN_LAND_SOURCE",
-    "SpawnInitRefusal", "prepare_spawn_statics", "spawn_child_from_parent",
-    "spawn_land_state_from_parent",
+    "SpawnInitRefusal", "admit_spawned_child", "card_free_bytes",
+    "prepare_spawn_statics", "spawn_child_from_parent",
+    "spawn_land_state_from_parent", "spawned_child_device_bytes",
 ]

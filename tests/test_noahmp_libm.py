@@ -281,3 +281,411 @@ def test_powf_invalid_domain_nan_pins_the_named_divergence():
         f"is 0x7fc00000 (live glibc 2.39 gives 0xffc00000 -- if this moved, "
         f"move the six CUDA copies in the same commit and repin)"
     )
+
+
+def test_powf_array_is_powf_element_for_element():
+    """The array powf gives the scalar transcription's bits everywhere.
+
+    ``powf_array`` exists so an array can take glibc's answer on every host
+    (NumPy's float32 ``power`` is the host's, and NumPy 2.5's AVX-512 loop on
+    Linux rounds a fifth of ordinary powers differently).  It evaluates the
+    common case as array arithmetic and hands every other element to
+    ``powf``, so it is held here to ``powf`` itself: the pinned live-glibc
+    vectors, both path tables, every class of special operand, and 200,000
+    random bit patterns plus ordinary physical bases.
+    """
+    import numpy as np
+
+    from gpuwm.core.noahmp_libm import powf_array
+
+    pinned = _POWF_VECTORS + _POWF_PATH_VECTORS
+    x = np.array([ix for ix, _, _ in pinned], dtype=np.uint32).view(np.float32)
+    y = np.array([iy for _, iy, _ in pinned], dtype=np.uint32).view(np.float32)
+    want = np.array([w for _, _, w in pinned], dtype=np.uint32)
+    assert np.array_equal(powf_array(x, y).view(np.uint32), want)
+
+    rng = np.random.default_rng(20260929)
+    specials = np.array([0.0, -0.0, np.inf, -np.inf, np.nan, 1.0, -1.0, 2.0,
+                         -2.0, 0.5, 3.0, 1e-45, 1e-40, -1e-40, 3.4e38],
+                        dtype=np.float32)
+    grid_x, grid_y = np.meshgrid(specials, specials)
+    cases = (
+        (rng.integers(0, 2**32, 100_000, dtype=np.uint64)
+         .astype(np.uint32).view(np.float32),
+         rng.integers(0, 2**32, 100_000, dtype=np.uint64)
+         .astype(np.uint32).view(np.float32)),
+        (rng.uniform(0.05, 1.3, 100_000).astype(np.float32),
+         np.float32(1.4)),
+        (grid_x.ravel(), grid_y.ravel()),
+    )
+    for base, exponent in cases:
+        with np.errstate(all="ignore"):
+            got = powf_array(base, exponent)
+            b, e = np.broadcast_arrays(base, exponent)
+            ref = np.array([powf(u, v) for u, v in zip(b, e)],
+                           dtype=np.float32)
+        assert got.shape == ref.shape
+        differ = (got.view(np.uint32) != ref.view(np.uint32)) & ~(
+            np.isnan(got) & np.isnan(ref))
+        assert not differ.any(), (
+            f"powf_array disagrees with powf at {int(differ.sum())} elements, "
+            f"first base {b[differ][0]!r} exponent {e[differ][0]!r}")
+    assert powf_array(np.float32(2.0), np.float32(3.0)).shape == ()
+
+
+def _powf_elementwise(base, exponent):
+    """Scalar :func:`powf` over the broadcast operands, for reference."""
+    import numpy as np
+
+    b, e = np.broadcast_arrays(np.asarray(base, dtype=np.float32),
+                               np.asarray(exponent, dtype=np.float32))
+    with np.errstate(all="ignore"):
+        flat = np.array([powf(u, v) for u, v in zip(b.reshape(-1),
+                                                     e.reshape(-1))],
+                        dtype=np.float32)
+    return flat.reshape(b.shape)
+
+
+def _assert_same_bits(got, want, label):
+    import numpy as np
+
+    assert got.shape == want.shape, label
+    differ = (got.view(np.uint32) != want.view(np.uint32)) & ~(
+        np.isnan(got) & np.isnan(want))
+    assert not differ.any(), (
+        f"{label}: powf_array disagrees with powf at {int(differ.sum())} "
+        f"elements, first at flat index {int(np.flatnonzero(differ)[0])}")
+
+
+def test_powf_array_blocks_and_broadcasts_keep_powf_bits(monkeypatch):
+    """Evaluated block by block, every element still gets its own bits.
+
+    ``powf_array`` walks the flattened operands one block of scratch at a
+    time, gathers a broadcast operand block by block, repeats a one-element
+    operand, and sends zero, negative, subnormal, infinite and NaN operands,
+    overflow and underflow to the scalar ``powf`` from inside whichever
+    block they fall in.  Each is held here to scalar ``powf`` with blocks of
+    1, 7 and 257 elements and with the shipped block size, on fields whose
+    special elements sit on block seams: a misplaced seam, a stale scratch
+    value or a fallback written at the wrong offset shows as a bit
+    difference.
+    """
+    import numpy as np
+
+    from gpuwm.core import noahmp_libm
+    from gpuwm.core.noahmp_libm import powf_array
+
+    shipped = noahmp_libm._POWF_ARRAY_BLOCK
+    rng = np.random.default_rng(20260930)
+    specials = np.array([0.0, -0.0, np.inf, -np.inf, np.nan, -2.0, 1e-40,
+                         -1e-40, 3.4e38, 1e-38], dtype=np.float32)
+
+    bits = (rng.integers(0, 2**32, 3_000, dtype=np.uint64)
+            .astype(np.uint32).view(np.float32))
+    bits_y = (rng.integers(0, 2**32, 3_000, dtype=np.uint64)
+              .astype(np.uint32).view(np.float32))
+    # A (nz, ny, nx) field read through a transposed view (not contiguous)
+    # against a per-level exponent profile (a true broadcast), with a
+    # special element every 7 and every 257 cells and one overflow.
+    field = rng.uniform(0.05, 1.3, (19, 11, 5)).astype(np.float32)
+    field.reshape(-1)[::7] = np.resize(specials, field.reshape(-1)[::7].size)
+    field.reshape(-1)[::257] = specials[: field.reshape(-1)[::257].size]
+    field.reshape(-1)[500] = np.float32(3.0e38)
+    profile = rng.uniform(0.2, 3.0, (5, 1, 1)).astype(np.float32)
+    transposed = field.transpose(2, 1, 0)
+    cases = (
+        ("random bit patterns", bits, bits_y),
+        ("transposed field, level profile", transposed, profile),
+        ("field, scalar exponent", field, np.float32(1.4)),
+        ("scalar base, field exponent", np.float32(0.7), field),
+    )
+    for block in (1, 7, 257, shipped):
+        monkeypatch.setattr(noahmp_libm, "_POWF_ARRAY_BLOCK", block)
+        for label, base, exponent in cases:
+            with np.errstate(all="ignore"):
+                got = powf_array(base, exponent)
+            _assert_same_bits(got, _powf_elementwise(base, exponent),
+                              f"{label}, block {block}")
+
+    # The shipped block size across two seams, with specials, an overflow
+    # and an underflow on the first and last element of each block.
+    monkeypatch.setattr(noahmp_libm, "_POWF_ARRAY_BLOCK", shipped)
+    size = 2 * shipped + 11
+    long_field = rng.uniform(0.05, 1.3, size).astype(np.float32)
+    for seam in (shipped, 2 * shipped):
+        long_field[seam - 2: seam + 2] = (np.float32(-2.0), np.float32(1e-40),
+                                          np.float32(0.0), np.float32(3.0e38))
+    long_field[0] = np.float32(np.nan)
+    long_field[-1] = np.float32(1e-37)
+    long_exponent = np.full(size, 1.4, dtype=np.float32)
+    long_exponent[-1] = np.float32(40.0)                 # underflows to 0
+    with np.errstate(all="ignore"):
+        got = powf_array(long_field, long_exponent)
+    _assert_same_bits(got, _powf_elementwise(long_field, long_exponent),
+                      f"two seams at block {shipped}")
+
+    assert powf_array(np.empty((0, 3), np.float32), 2.0).shape == (0, 3)
+
+
+def test_powf_array_holds_its_result_and_one_block_not_the_field():
+    """The array powf's memory is its result plus one block of scratch.
+
+    Breakage prevented: the CPU equation of state
+    (``gpuwm.core.diagnostics._update_diagnostics_numpy``) calls
+    ``powf_array`` on a whole nested child during every CPU preparation,
+    and the host-RAM model the domain is sized against
+    (``gpuwm.core.preflight`` CPU_PREPARATION_*) prices no per-cell
+    transient there.  Evaluated in one piece, the call held about 160 bytes
+    per cell at once, 3.2 GiB more than NumPy's own power on a
+    76 x 480 x 600 child, which put deep nested preparations up to 3 GiB
+    past the estimate they were admitted on.  NumPy reports its data
+    allocations to tracemalloc, so the call's own peak is measured here.
+    """
+    import tracemalloc
+
+    import numpy as np
+
+    from gpuwm.core import noahmp_libm
+
+    block = noahmp_libm._POWF_ARRAY_BLOCK
+    size = 32 * block + 123
+    base = np.random.default_rng(3).uniform(0.05, 1.3, size).astype(np.float32)
+    tracemalloc.start()
+    try:
+        before, _ = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
+        result = noahmp_libm.powf_array(base, np.float32(0.2857))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    held = peak - before
+    # 54 bytes per element of scratch; 64 leaves room for small arrays.
+    allowed = result.nbytes + 64 * block
+    assert held <= allowed, (
+        f"powf_array over {size} elements held {held} bytes at its peak, "
+        f"more than its result ({result.nbytes}) plus one block of scratch "
+        f"({64 * block}): {held / size:.1f} bytes per element")
+
+
+#: glibc 2.39 ``log1pf`` words, captured 2026-09-29 through ctypes from the
+#: live libm.so.6 on WSL Ubuntu 24.04 (glibc 2.39-0ubuntu8.9, x86-64).  The
+#: first block walks every branch edge of s_log1pf.c and every special
+#: argument; the second holds ratios of the size the hypsometric_opt = 2
+#: equation of state takes on which NumPy 2.5's AVX-512 float32 log1p AND
+#: the float64-then-round shortcut both miss glibc; the third is an
+#: ordinary spread over both reductions.
+_LOG1PF_VECTORS = (
+    (0x00000000, 0x00000000),   # log1pf(+0)
+    (0x80000000, 0x80000000),   # log1pf(-0)
+    (0x00000001, 0x00000001),   # log1pf(smallest subnormal)
+    (0x80000001, 0x80000001),   # log1pf(-smallest subnormal)
+    (0x00800000, 0x00800000),   # log1pf(smallest normal)
+    (0x30ffffff, 0x30ffffff),   # log1pf(just under 2**-29)
+    (0x31000000, 0x31000000),   # log1pf(2**-29)
+    (0xb1000000, 0xb1000000),   # log1pf(-2**-29)
+    (0x3a83126f, 0x3a8301ab),   # log1pf(0.001)
+    (0x3ed413d6, 0x3eb1721e),   # log1pf(just under the k = 0 edge)
+    (0x3ed413d7, 0x3eb17220),   # log1pf(the k = 0 edge, reduced k = 0)
+    (0x3ed413d8, 0x3eb17220),   # log1pf(above the edge)
+    (0xbe95f61f, 0xbeb17220),   # log1pf(-0.2929, last k = 0 argument)
+    (0xbe95f620, 0xbeb17221),   # log1pf(just below -0.2929)
+    (0xbf000000, 0xbf317218),   # log1pf(-0.5)
+    (0xbf7fffff, 0xc1851592),   # log1pf(just above -1)
+    (0xbf800000, 0xff800000),   # log1pf(-1) = -inf
+    (0xbf800001, 0xffc00000),   # log1pf(just below -1) = x86-64 default NaN
+    (0xc0000000, 0xffc00000),   # log1pf(-2)
+    (0x3f800000, 0x3f317218),   # log1pf(1): u = 2, hu == 0, f == 0
+    (0x40400000, 0x3fb17218),   # log1pf(3): u = 4, hu == 0
+    (0x3f7fffff, 0x3f317218),   # log1pf(just under 1)
+    (0x40e00000, 0x40051592),   # log1pf(7)
+    (0x447a0000, 0x40dd1485),   # log1pf(1000)
+    (0x59ffffff, 0x4212f27c),   # log1pf(just under 2**53)
+    (0x5a000000, 0x4212f27c),   # log1pf(2**53): u = x
+    (0x5a000001, 0x4212f27c),   # log1pf(above 2**53)
+    (0x7f7fffff, 0x42b17218),   # log1pf(largest finite)
+    (0x7f800000, 0x7f800000),   # log1pf(+inf)
+    (0xff800000, 0xffc00000),   # log1pf(-inf)
+    # AVX-512 NumPy and float64-then-round both differ from glibc here.
+    (0x3e001ebb, 0x3df16edd),   # log1pf(0.125117227435112)
+    (0x3df0b0a9, 0x3de390c0),   # log1pf(0.11752445250749588)
+    (0x3e4ba034, 0x3e39b7e2),   # log1pf(0.19885331392288208)
+    (0x3d62e6c4, 0x3d5cd6f0),   # log1pf(0.055395856499671936)
+    (0x3e413d2b, 0x3e310478),   # log1pf(0.18870989978313446)
+    (0x3cc53591, 0x3cc2df78),   # log1pf(0.024073394015431404)
+    (0x3e3d102a, 0x3e2d7fa0),   # log1pf(0.18463197350502014)
+    (0x3e11ae55, 0x3e0834f6),   # log1pf(0.14226658642292023)
+    # Ordinary spread.
+    (0x3e162522, 0x3e0c1b86),   # log1pf(0.14662602543830872)
+    (0x3d8e833b, 0x3d89c5d7),   # log1pf(0.06958623975515366)
+    (0x3d614dc1, 0x3d5b5352),   # log1pf(0.055005792528390884)
+    (0x3df21ed0, 0x3de4d84b),   # log1pf(0.11822283267974854)
+    (0x3dbcbd2d, 0x3db48ac1),   # log1pf(0.09215769916772842)
+    (0x3c522458, 0x3c50ce45),   # log1pf(0.012826047837734222)
+    (0xbe8944ba, 0xbe9fcd81),   # log1pf(-0.2681024670600891)
+    (0xbd5c38aa, 0xbd625cd2),   # log1pf(-0.05376497656106949)
+    (0xbbd41580, 0xbbd4c5f7),   # log1pf(-0.006472289562225342)
+    (0x40d35a2c, 0x4001d76f),   # log1pf(6.604757308959961)
+    (0x41b1bdf4, 0x40494652),   # log1pf(22.217750549316406)
+    (0x4216161a, 0x4069ad91),   # log1pf(37.521583557128906)
+    (0xbf09fc09, 0xbf463c90),   # log1pf(-0.539002001285553)
+    (0xbf5d0d2d, 0xbffee2f3),   # log1pf(-0.8634822964668274)
+    (0xbec3b16f, 0xbef695ce),   # log1pf(-0.3822130858898163)
+)
+
+
+@pytest.mark.parametrize("ix,want", _LOG1PF_VECTORS)
+def test_log1pf_matches_glibc(ix, want):
+    import numpy as np
+
+    from gpuwm.core.noahmp_libm import log1pf
+
+    with np.errstate(invalid="ignore"):
+        got = _u32(log1pf(_f32(ix)))
+    assert got == want, (
+        f"log1pf(0x{ix:08x} = {_f32(ix)!r}): got 0x{got:08x}, "
+        f"glibc 0x{want:08x}")
+
+
+def test_log1pf_array_matches_glibc_and_log1pf_word_for_word():
+    """The array log1pf is glibc's on the pinned words and the scalar
+    transcription's on everything else, NaN words included.
+
+    Breakage prevented: the hypsometric_opt = 2 equation of state takes
+    ``log1pf_array`` so a CPU-prepared state carries the same al, alt and p
+    on every host (NumPy's float32 log1p rounds about a fifth of those
+    ratios differently on AVX-512 Linux, and follows the host's glibc
+    elsewhere).  It was proven against glibc 2.39 on all 2**32 words once;
+    this holds it there.
+    """
+    import numpy as np
+
+    from gpuwm.core.noahmp_libm import log1pf, log1pf_array
+
+    x = np.array([ix for ix, _ in _LOG1PF_VECTORS],
+                 dtype=np.uint32).view(np.float32)
+    want = np.array([w for _, w in _LOG1PF_VECTORS], dtype=np.uint32)
+    with np.errstate(invalid="ignore"):
+        got = log1pf_array(x).view(np.uint32)
+    assert np.array_equal(got, want), [
+        (f"0x{a:08x}", f"0x{g:08x}", f"0x{w:08x}")
+        for a, g, w in zip(x.view(np.uint32), got, want) if g != w]
+
+    rng = np.random.default_rng(20260929)
+    cases = (
+        rng.integers(0, 2**32, 100_000, dtype=np.uint64).astype(np.uint32)
+        .view(np.float32),
+        rng.uniform(0.0005, 0.2, 50_000).astype(np.float32),
+        rng.uniform(-1.0, 4.0, 50_000).astype(np.float32),
+        np.array([np.nan, -np.nan, np.inf, -np.inf, 0.0, -0.0, -1.0, 1.0,
+                  3.0, 1e-45, -1e-45, 3.4e38, -3.4e38], dtype=np.float32),
+    )
+    for values in cases:
+        with np.errstate(invalid="ignore"):
+            got = log1pf_array(values).view(np.uint32)
+            ref = np.array([log1pf(v) for v in values],
+                           dtype=np.float32).view(np.uint32)
+        differ = got != ref
+        assert not differ.any(), (
+            f"log1pf_array disagrees with log1pf at {int(differ.sum())} "
+            f"elements, first argument "
+            f"0x{int(values.view(np.uint32)[differ][0]):08x}")
+    assert log1pf_array(np.float32(0.25)).shape == ()
+
+
+def test_double_then_round_log1p_is_a_different_function():
+    """Negative control: glibc 2.39's log1pf is not correctly rounded, so
+    the float64-then-round shortcut (and glibc 2.41's CORE-MATH log1pf,
+    which is correctly rounded) is a different function on the pinned
+    ratios.  If it matched every vector, the vectors would no longer tell
+    the transcription from that substitute."""
+    import math
+
+    disagreements = 0
+    for ix, want in _LOG1PF_VECTORS:
+        x = _f32(ix)
+        if not math.isfinite(x) or x <= -1.0:
+            continue
+        if _u32(f32(math.log1p(x))) != want:
+            disagreements += 1
+    assert disagreements > 0, (
+        "float64-then-round log1p matched glibc 2.39 on every pinned vector; "
+        "the vectors no longer discriminate and the gate is not doing its job")
+
+
+def test_log1pf_array_blocks_and_views_keep_log1pf_bits(monkeypatch):
+    """Block by block, through a transposed view and with special
+    arguments on the block seams, every element keeps log1pf's word."""
+    import numpy as np
+
+    from gpuwm.core import noahmp_libm
+    from gpuwm.core.noahmp_libm import log1pf, log1pf_array
+
+    shipped = noahmp_libm._LOG1PF_ARRAY_BLOCK
+    rng = np.random.default_rng(20260931)
+    specials = np.array([np.nan, np.inf, -np.inf, -1.0, -2.0, 0.0, -0.0,
+                         1.0, 3.0, 1e-40, 0.5, 1e30], dtype=np.float32)
+    field = rng.uniform(0.0005, 0.2, (17, 13, 7)).astype(np.float32)
+    field.reshape(-1)[::11] = np.resize(specials,
+                                        field.reshape(-1)[::11].size)
+    transposed = field.transpose(2, 0, 1)
+
+    def reference(values):
+        values = np.asarray(values, dtype=np.float32)
+        with np.errstate(invalid="ignore"):
+            flat = np.array([log1pf(v) for v in values.reshape(-1)],
+                            dtype=np.float32)
+        return flat.reshape(values.shape).view(np.uint32)
+
+    for block in (1, 7, 257, shipped):
+        monkeypatch.setattr(noahmp_libm, "_LOG1PF_ARRAY_BLOCK", block)
+        for label, values in (("field", field), ("transposed", transposed)):
+            with np.errstate(invalid="ignore"):
+                got = log1pf_array(values)
+            assert got.shape == values.shape
+            assert np.array_equal(got.view(np.uint32), reference(values)), (
+                f"{label}, block {block}")
+
+    monkeypatch.setattr(noahmp_libm, "_LOG1PF_ARRAY_BLOCK", shipped)
+    size = 2 * shipped + 5
+    long_field = rng.uniform(0.0005, 0.2, size).astype(np.float32)
+    for seam in (shipped, 2 * shipped):
+        long_field[seam - 2: seam + 2] = specials[:4]
+    with np.errstate(invalid="ignore"):
+        got = log1pf_array(long_field)
+    assert np.array_equal(got.view(np.uint32), reference(long_field))
+    assert log1pf_array(np.empty((0, 4), np.float32)).shape == (0, 4)
+
+
+def test_log1pf_array_holds_its_result_and_one_block_not_the_field():
+    """The array log1pf's memory is its result plus one block of scratch.
+
+    Breakage prevented: the CPU equation of state calls ``log1pf_array``
+    on a whole nested child with hypsometric_opt = 2, and the host-RAM
+    model the CPU preparation is sized against prices no per-cell
+    transient there (the same reason as powf_array's test above).
+    """
+    import tracemalloc
+
+    import numpy as np
+
+    from gpuwm.core import noahmp_libm
+
+    block = noahmp_libm._LOG1PF_ARRAY_BLOCK
+    size = 32 * block + 123
+    ratios = np.random.default_rng(5).uniform(
+        0.0005, 0.2, size).astype(np.float32)
+    tracemalloc.start()
+    try:
+        before, _ = tracemalloc.get_traced_memory()
+        tracemalloc.reset_peak()
+        result = noahmp_libm.log1pf_array(ratios)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    held = peak - before
+    # About 30 bytes per element of scratch; 40 leaves room for small arrays.
+    allowed = result.nbytes + 40 * block
+    assert held <= allowed, (
+        f"log1pf_array over {size} elements held {held} bytes at its peak, "
+        f"more than its result ({result.nbytes}) plus one block of scratch "
+        f"({40 * block}): {held / size:.1f} bytes per element")

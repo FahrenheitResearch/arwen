@@ -1,0 +1,26 @@
+[
+  {
+    "function": "exp",
+    "installed_offset": "0xe6130",
+    "bytes": 2048,
+    "mismatching_bytes": 0,
+    "arm_sha256": "a4014caf214c2bab90ea0fdf3f57941e0235ae04dc2282a6c2f72e7a480c87e4",
+    "installed_sha256": "a4014caf214c2bab90ea0fdf3f57941e0235ae04dc2282a6c2f72e7a480c87e4"
+  },
+  {
+    "function": "log",
+    "installed_offset": "0xe7270",
+    "bytes": 2048,
+    "mismatching_bytes": 0,
+    "arm_sha256": "0aa99d057e06495926d19ff3e165900a52b5a9f39043f5cea0ad35a9e5080b21",
+    "installed_sha256": "0aa99d057e06495926d19ff3e165900a52b5a9f39043f5cea0ad35a9e5080b21"
+  },
+  {
+    "function": "pow",
+    "installed_offset": "0xe82c8",
+    "bytes": 4096,
+    "mismatching_bytes": 0,
+    "arm_sha256": "f9eb2b375d91849942bcc4d51f2e567688c2652d5991059a2a7be3cf0022dae2",
+    "installed_sha256": "f9eb2b375d91849942bcc4d51f2e567688c2652d5991059a2a7be3cf0022dae2"
+  }
+]

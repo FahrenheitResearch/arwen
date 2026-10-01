@@ -1,0 +1,18 @@
+........................F                                                [100%]
+=================================== FAILURES ===================================
+__________________________ test_every_family_bitwise ___________________________
+tests/test_noah_mosaic_wrf471_parity.py:230: in test_every_family_bitwise
+    assert set(map(tuple, result["difference_pairs"])) == set(FTZ_PINNED_SHA256)
+E   AssertionError: assert {('base', 'v1...mosaic'), ...} == {('ftz', 'v11...mosaic'), ...}
+E
+E     Extra items in the left set:
+E     ('base', 'v3_s2', 36, 'lh')
+E     ('base', 'v2_s1', 12, 'tslb')
+E     ('base', 'v3_s2', 11, 'smois')
+E     ('base', 'v3_s2', 9, 'canwat')
+E     ('lcz', 'v7_s4', 36, 'tslb_mosaic')...
+E
+E     ...Full output truncated (7763 lines hidden), use '-vv' to show
+=========================== short test summary info ============================
+FAILED tests/test_noah_mosaic_wrf471_parity.py::test_every_family_bitwise - A...
+1 failed, 24 passed in 13.52s

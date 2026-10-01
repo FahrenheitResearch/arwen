@@ -203,27 +203,8 @@ def energy_seg2(s, g):
     nroot = s["nroot"]
     sh2o = s["sh2o"]
     smcwlt, smcref = s["smcwlt"], s["smcref"]
-    columns = cp.arange(nroot.shape[0])
-    # -ZSOIL(NROOT) is a per-column gather, not a fixed slot.
-    zsoil_nroot = s["zsoil"][columns, nroot - 1]
-
-    btran = cp.zeros(nroot.shape, dtype=cp.float32)
-    btrani = cp.zeros(sh2o.shape, dtype=cp.float32)
-    for iz in range(1, NSOIL + 1):
-        in_root = nroot >= iz
-        gx = ((sh2o[:, iz - 1] - smcwlt[:, iz - 1])
-              / (smcref[:, iz - 1] - smcwlt[:, iz - 1]))
-        gx = fmn(_ONE, fmx(_ZERO, gx))
-        value = fmx(_f32(MPE),
-                    (_layer(s["dzsnso"], iz) / -zsoil_nroot) * gx)
-        value = cp.where(in_root, value, _ZERO)
-        btrani[:, iz - 1] = value
-        btran = btran + value
-    btran = fmx(_f32(MPE), btran)
-    for iz in range(1, NSOIL + 1):
-        btrani[:, iz - 1] = cp.where(nroot >= iz,
-                                     btrani[:, iz - 1] / btran,
-                                     btrani[:, iz - 1])
+    from gpuwm.core.noahmp_slab_libm import root_fraction_slabs
+    btran, btrani = root_fraction_slabs(s, NSNOW, NSOIL, MPE)
 
     # -- :2177-2206  ground surface resistance (IST == 1, OPT_RSF == 1) ------
     smcmax0 = s["smcmax"][:, 0]
@@ -282,83 +263,18 @@ def energy_seg3(s, g, e, v, b):
     """
     import cupy as cp
 
-    tile_veg = e["tile_veg"]
-    fveg = s["fveg"]
-    one_m = _ONE - fveg
+    from gpuwm.core.noahmp_slab_libm import energy_average_slabs
 
-    def blend(veg_term, bare_term, extra=None):
-        mixed = (fveg * veg_term) + (one_m * bare_term)
-        if extra is not None:
-            mixed = mixed + extra
-        return cp.where(tile_veg, mixed, bare_term)
-
-    taux = blend(v["tauxv"], b["tauxb"])
-    tauy = blend(v["tauyv"], b["tauyb"])
-    fira = cp.where(tile_veg,
-                    ((fveg * v["irg"]) + (one_m * b["irb"])) + v["irc"],
-                    b["irb"])
-    fsh = cp.where(tile_veg,
-                   ((fveg * v["shg"]) + (one_m * b["shb"])) + v["shc"],
-                   b["shb"])
-    fgev = blend(v["evg"], b["evb"])
-    ssoil = blend(v["ghv"], b["ghb"])
-    fcev = cp.where(tile_veg, v["evc"], _ZERO)
-    fctr = cp.where(tile_veg, v["tr"], _ZERO)
-    pah = cp.where(tile_veg,
-                   ((fveg * s["pahg"]) + (one_m * s["pahb"])) + s["pahv"],
-                   s["pahb"])
-    tg = blend(v["tgv"], b["tgb"])
-    t2m = blend(v["t2mv"], b["t2mb"])
-    ts = cp.where(tile_veg, (fveg * v["tv"]) + (one_m * b["tgb"]), tg)
-    cm = blend(v["cmv"], b["cmb"])
-    ch = blend(v["chv"], b["chb"])
-    q1 = cp.where(
-        tile_veg,
-        (fveg * ((v["eah"] * _f32(0.622))
-                 / (s["sfcprs"] - (_f32(0.378) * v["eah"]))))
-        + (one_m * b["qsfc"]),
-        b["qsfc"])
-    q2e = blend(v["q2v"], b["q2b"])
-    z0wrf = cp.where(tile_veg, g["z0m"], g["z0mg"])
-    # :2306-2307 and the bare arm's resets
-    rssun = cp.where(tile_veg, v["rssun"], _ZERO)
-    rssha = cp.where(tile_veg, v["rssha"], _ZERO)
-    tgv = cp.where(tile_veg, v["tgv"], b["tgb"])
-    chv = cp.where(tile_veg, v["chv"], b["chb"])
-
-    # -- :2321-2329  the emitted-longwave sanity check -----------------------
-    fire = s["lwdn"] + fira
+    result = energy_average_slabs(s, g, e, v, b, SB)
+    fire = result.pop("_fire")
     bad = cp.asnumpy(fire <= _ZERO)
     if bad.any():
         raise ValueError(
             f"land column {int(np.argmax(bad))}: emitted longwave <= 0: "
             "SHDFAC is inconsistent with LAI "
             "(module_sf_noahmplsm.F:2323-2329 calls wrf_error_fatal here)")
-
-    # -- :2332-2340 ----------------------------------------------------------
-    emv, emg = e["emv"], e["emg"]
-    emissi = (fveg * (((emg * (_ONE - emv)) + emv)
-                      + ((emv * (_ONE - emv)) * (_ONE - emg)))) \
-        + ((_ONE - fveg) * emg)
-    trad = slab_powf((fire - ((_ONE - emissi) * s["lwdn"]))
-                     / (emissi * _f32(SB)), _f32(0.25))
-
-    apar = (s["parsun"] * s["laisun"]) + (s["parsha"] * s["laisha"])   # :2344
-    psn = (v["psnsun"] * s["laisun"]) + (v["psnsha"] * s["laisha"])    # :2345
-
-    # -- :2349-2353  the soil column ----------------------------------------
-    acc_ssoil = s["acc_ssoil"] + ssoil
-    ssoil_avg = acc_ssoil / _f32(s["soil_update_steps"])
-    dt_soil = s["dt"] * _f32(s["soil_update_steps"])
-
-    return {
-        "taux": taux, "tauy": tauy, "fira": fira, "fsh": fsh, "fgev": fgev,
-        "ssoil": ssoil, "fcev": fcev, "fctr": fctr, "pah": pah, "tg": tg,
-        "t2m": t2m, "ts": ts, "cm": cm, "ch": ch, "q1": q1, "q2e": q2e,
-        "z0wrf": z0wrf, "rssun": rssun, "rssha": rssha, "tgv": tgv,
-        "chv": chv, "emissi": emissi, "trad": trad, "apar": apar, "psn": psn,
-        "acc_ssoil": acc_ssoil, "ssoil_avg": ssoil_avg, "dt_soil": dt_soil,
-    }
+    result["trad"] = slab_powf(result.pop("_trad_base"), _f32(0.25))
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -43,9 +43,9 @@ Sizing conventions (all documented, none silent):
   the estimator's own machine-peak envelope, which is AFFINE (the
   itemized estimate, plus the non-pool residency that scales with the
   device rather than the grid, plus a measured constant and a per-nest
-  fraction).  A Windows card adds the measured WDDM pool-slack term
-  (:data:`~gpuwm.core.preflight.WDDM_POOL_SLACK_FRACTION`, the 3080
-  calibration) -- the same model `gpuwm check` and `gpuwm go` price, so
+  fraction), on every driver model and radiation lane alike since A163
+  retired the pool-slack term -- the same model `gpuwm check` and
+  `gpuwm go` price, so
   a wizard PASS cannot become a check refusal on the same machine
   state.  The loop stops SHORT of the budget on purpose: a config that
   exactly touches its budget has nothing left for the machine to be
@@ -97,7 +97,7 @@ from gpuwm.core.preflight import (CUDA_CONTEXT_BYTES,
                                   unknown_platform_note)
 from gpuwm.cli_numbers import positive_float, positive_int
 from gpuwm.experiment import ExperimentConfig, build_experiment
-from gpuwm.explain import explain_enabled, warn
+from gpuwm.explain import explain_enabled, muted_warnings, warn
 from gpuwm.fetch import parse_cycle
 from gpuwm.physics_compat import (ASYMMETRIC_RADIATION_NOCTURNAL_ACK,
                                   CONSTANT_DOWNWARD_LONGWAVE_ACK,
@@ -342,6 +342,26 @@ def _diff6_factor(depth: int) -> float:
     """``diff_6th_factor`` for the domain at ``depth`` (0 = root)."""
 
     return float(_at_depth(_DIFF6_FACTORS, depth))
+
+
+def nest_diff6_factors(root_factor: float, domains: int) -> list[float]:
+    """``diff_6th_factor`` for each domain of a ladder, root first.
+
+    The root carries its suite's own value; each nest takes the certified
+    depth ladder's value (:func:`_diff6_factor`) or its parent's,
+    whichever is smaller, so sixth-order damping never grows inward.  The
+    breakage this prevents: a suite that pins a weaker root damping than
+    the ladder's second rung (the registry's MYNN, PBL-off and
+    no-radiation suites pin 0.08, the sub-km default among them) was
+    written with 0.08 on the parent and 0.10 on its child, a child damped
+    harder than the parent that drives it.  A suite on the certified 0.12 root keeps exactly the
+    certified ladder, because that ladder already falls with depth.
+    """
+
+    factors = [float(root_factor)]
+    for depth in range(1, int(domains)):
+        factors.append(min(factors[-1], _diff6_factor(depth)))
+    return factors
 
 
 #: What a card of nominal capacity NEVER hands to a process: the driver's
@@ -792,7 +812,9 @@ def source_reaches_forecast_leads(source: str) -> bool:
     return get_source_adapter(source).max_forecast_hour > 0
 
 
-def _fetch_cadence_h(source: str, start_hour: int) -> int | None:
+def _fetch_cadence_h(source: str, start_hour: int,
+                     hours: float | None = None, *,
+                     cycle: datetime | None = None) -> int | None:
     """The fetch cadence this window can actually be taken on.
 
     The default is the source's usual spacing, and for a window starting
@@ -809,14 +831,36 @@ def _fetch_cadence_h(source: str, start_hour: int) -> int | None:
     hourly through f120, so 1 h is available wherever it is needed; a
     window that would cross f120 hourly is refused by the fetch planner
     below with the structural reason, before the file is written.
+
+    A window LENGTH changes it again (``hours``, when the caller knows
+    it): a source whose ladder coarsens past some lead -- IFS every 6 h
+    past f144, GEFS past f240, ICON-EU every 3 h past f078 -- cannot be
+    fetched at its usual spacing across that lead, and the boundary
+    series is one spacing, so the window takes the coarsest spacing it
+    runs into (:func:`gpuwm.fetch_routes.window_cadence`, which reads the
+    route table's ladder rows).  A 240 h IFS run used to need ``--cadence
+    6`` typed by hand and was refused at the default.  ``cycle`` asks that
+    one cycle's ladder, for a door whose cycle is already named; without
+    it any cycle hour whose ladder serves the window answers.
     """
 
     cadence = _SOURCE_CADENCE_H.get(source)
-    if cadence is None or not start_hour or start_hour % cadence == 0:
+    if cadence is None:
         return cadence
-    # Hourly divides every integer lead, and is the only other cadence
-    # these sources publish.
-    return 1
+    if start_hour and start_hour % cadence:
+        # Hourly divides every integer lead, and is the only other cadence
+        # these sources publish.
+        return 1
+    if hours is not None:
+        from gpuwm import fetch_routes
+        route = fetch_routes.table_route(source)
+        if route is not None:
+            by_lead = fetch_routes.window_cadence(
+                route, int(start_hour), math.ceil(hours), cycle=cycle,
+                floor=cadence, round_up=True)
+            if by_lead is not None:
+                return by_lead
+    return cadence
 
 
 def fetch_window(source: str, hours: float, start_hour: int = 0,
@@ -834,7 +878,7 @@ def fetch_window(source: str, hours: float, start_hour: int = 0,
     """
 
     if cadence is None:
-        cadence = _fetch_cadence_h(source, start_hour)
+        cadence = _fetch_cadence_h(source, start_hour, hours)
     if cadence is None:
         return None, math.ceil(hours)
     return cadence, max(cadence, math.ceil(hours / cadence) * cadence)
@@ -1517,9 +1561,17 @@ def final_step_command(out: "Path", *, source: str, profile: str | None,
 HRRR_DEFAULT_PROFILE = ROUTE_DEFAULT_PHYSICS_PROFILE
 
 
-def resolved_physics_profile(source: str, requested: str | None
-                             ) -> str | None:
+def resolved_physics_profile(source: str, requested: str | None, *,
+                             finest_dx_m: float | None = None,
+                             domains: int = 1) -> str | None:
     """The profile this emission actually binds.
+
+    ``finest_dx_m`` is the finest grid spacing of the emission, when the
+    caller knows it: the default by grid spacing
+    (:data:`gpuwm.physics_menu.SPACING_DEFAULTS`) binds ahead of the
+    source's own default, so a sub-km domain with no --physics-profile
+    gets the suite that row names wherever the source's route admits it
+    for ``domains`` domains.
 
     An explicit ``--physics-profile`` always wins -- including one the
     HRRR routes will refuse, which is refused at emission with the
@@ -1546,7 +1598,13 @@ def resolved_physics_profile(source: str, requested: str | None
         return requested
     from gpuwm.physics_menu import default_profile_for
 
-    return default_profile_for(source)
+    return default_profile_for(source, finest_dx_m, domains)
+
+
+def finest_spacing_m(root_dx_m: float, ratios) -> float:
+    """The finest grid spacing a ladder reaches, in metres."""
+
+    return float(root_dx_m) / math.prod(int(ratio) for ratio in ratios)
 
 
 def profile_switches(profile: str | None) -> dict:
@@ -2087,10 +2145,16 @@ def _resolve_cycle(raw: str, *, source: str, hours: int,
     # initialization grid, and the refusal for a source that declares
     # none is that resolver's own -- which names the missing declaration
     # rather than a list this door would have to keep in step.
-    from gpuwm.fetch import resolve_latest_cycle
+    from gpuwm.fetch import (DEFAULT_AS_POSTED, _startable_rule_applies,
+                             resolve_latest_cycle)
+    # As posted (the default [fetch] as_posted the config carries), latest
+    # is the newest cycle whose first leads are out, as `gpuwm fetch`
+    # resolves it (DESIGN A136 2.2).
+    as_posted = DEFAULT_AS_POSTED and _startable_rule_applies(source)
     try:
         cycle = resolve_latest_cycle(source, start_hour + hours,
-            **(dict(selection, start_hour=start_hour) if start_hour else selection))
+            **(dict(selection, start_hour=start_hour) if start_hour else selection),
+            **({"as_posted": True} if as_posted else {}))
     except (RuntimeError, OSError) as error:
         raise ValueError(
             f"--cycle latest could not be resolved for {source}: {error}"
@@ -2102,7 +2166,8 @@ def _resolve_cycle(raw: str, *, source: str, hours: int,
     # "complete" there would attest to a check nothing ran.
     from gpuwm.fetch import cycle_is_probeable
 
-    standing = ("newest complete" if cycle_is_probeable(source)
+    standing = ("newest startable" if as_posted
+                else "newest complete" if cycle_is_probeable(source)
                 else "newest published")
     print(f"gpuwm domain: --cycle latest resolved to "
           f"{cycle:%Y-%m-%dT%H}Z ({standing} {source} cycle "
@@ -2562,7 +2627,8 @@ def _domain_tables(dims: list[tuple[int, int]],
     The ROOT's radiation/cumulus/diffusion cadences come from the shipped
     physics profile, so the emitted d01 satisfies the prepared-forecast
     runner's exact-equality guard at any --root-dx.  Nests keep the
-    certified ladder's depth-varying ``diff_6th_factor`` and their pinned
+    certified ladder's depth-varying ``diff_6th_factor``, never above
+    their parent's (:func:`nest_diff6_factors`), and their pinned
     ``cu_physics = 0``: those two really are grid-scale decisions, and
     the multi-domain runner has no profile whitelist to stop them.
 
@@ -2631,6 +2697,7 @@ def _domain_tables(dims: list[tuple[int, int]],
         Fraction(time_step), root_physics)
     epssm = profile_switches(profile)["epssm"]
     radt = radt_ladder_minutes(root_physics["radt"], len(dims))
+    diff6 = nest_diff6_factors(root_physics["diff_6th_factor"], len(dims))
     tables = []
     for index, (nx, ny) in enumerate(dims):
         if index == 0:
@@ -2663,7 +2730,7 @@ def _domain_tables(dims: list[tuple[int, int]],
                     else float(nest_history_interval_s)),
                 "epssm": epssm,
                 "radt": radt[index], "cu_physics": 0,
-                "diff_6th_factor": _diff6_factor(index),
+                "diff_6th_factor": diff6[index],
             }
         tables.append(table)
     return tables
@@ -3691,7 +3758,8 @@ def render_config(*, name: str, start_time: datetime, hours: int,
                   nest_history_interval_s: float | None = None,
                   acknowledgements: tuple[str, ...] = (),
                   physics_mix: dict | None = None,
-                  clock: str = "fixed") -> str:
+                  clock: str = "fixed",
+                  noah_mosaic_options=None) -> str:
     """The emitted TOML text (the exact bytes the wizard validates).
 
     ``clock`` is ``gpuwm domain --clock`` (:func:`clock_decision`).  An
@@ -4052,7 +4120,9 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             comment="Declared inputs for the config-driven "
                     "check/static/ingest/run front door (ERA5 native-GRIB1 "
                     "route; era5_z_invariant source orography)."))
-    return with_physics_mix("\n".join(parts), physics_mix)
+    text = with_physics_mix("\n".join(parts), physics_mix)
+    return (text if noah_mosaic_options is None else
+            with_noah_mosaic_options(text, *noah_mosaic_options))
 
 
 def physics_mix_words(choices) -> str:
@@ -4072,8 +4142,10 @@ def physics_mix_request(text: str | None, *, source: str,
 
     ``text`` is the JSON object the flag carries (family to scheme, or
     for radiation a ``{"longwave": n, "shortwave": n}`` pair).  The
-    suite it changes is the named one, else the source's default, which
-    is what the check takes when it names no suite.
+    suite it changes is the named one, else the default at the written
+    file's finest grid, which is what the check takes when it names no
+    suite (:func:`gpuwm.physics_catalog.apply_to_experiment` reads that
+    grid from the file).
     """
 
     if text is None:
@@ -4123,11 +4195,14 @@ def with_physics_mix(text: str, physics_mix: dict | None) -> str:
 def mix_physics_summary(text: str, physics_mix: dict) -> str:
     """:func:`physics_summary` of a mixed file's root, as the file runs it."""
 
-    from gpuwm.physics_catalog import default_suite
+    from gpuwm.physics_catalog import experiment_grid, request_default_suite
 
     document = tomllib.loads(text)
     root = {**(document.get("shared") or {}), **((document.get("domain") or [{}])[0])}
-    base = physics_mix.get("suite") or default_suite(physics_mix.get("source"))
+    # With no suite named, the default at this file's finest grid: the
+    # base the check changed when it wrote the mix.
+    base = physics_mix.get("suite") or request_default_suite(
+        {**experiment_grid(text), **physics_mix})
     return physics_summary(None, switches=root, label=f"schemes picked over {base}")
 
 
@@ -4170,6 +4245,30 @@ def with_surface_flux_option(text: str, isftcflx: int | None) -> str:
     return "".join(lines)
 
 
+def with_noah_mosaic_options(text: str, option=None, count=None,
+                             canopy=None) -> str:
+    """Write explicit run-wide options; omission preserves the emitted bytes.
+
+    ``canopy`` is ``mosaic_urban_canopy``, written to [shared] so every
+    domain takes it."""
+    if option is None and count is None and canopy is None:
+        return text
+    lines = text.splitlines(keepends=True)
+    start = next(i for i, line in enumerate(lines) if line.strip() == "[shared]")
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i].lstrip().startswith("[")), len(lines))
+    supplied = {key: value for key, value in (
+        ("sf_surface_mosaic", option), ("mosaic_cat", count),
+        ("mosaic_urban_canopy", None if canopy is None else f'"{canopy}"'))
+        if value is not None}
+    lines[start + 1:end] = [line for line in lines[start + 1:end]
+                             if line.split("=", 1)[0].strip() not in supplied]
+    lines[start + 1:start + 1] = [f"{key} = {value}\n" for key, value in supplied.items()]
+    result = "".join(lines)
+    experiment_from_text(result, source="domain mosaic options")
+    return result
+
+
 def experiment_from_text(text: str, *, source: str) -> ExperimentConfig:
     """Round-trip emitted TEXT through the real loaders (advisory [fetch],
     [case_data] and [static] are split off exactly as the CLI loaders do).
@@ -4205,7 +4304,7 @@ def sizing_budget_bytes(exp: ExperimentConfig, *, free_bytes: int,
     machine_peak_envelope_bytes` is a model of the WHOLE device residency
     a run of this configuration reaches -- the itemized pool, the CUDA
     context, the local-memory backing store of its kernel set, the
-    measured pool slack and the measured residue -- so the only thing
+    measured pool margin and the measured residue -- so the only thing
     left outside it is OTHER processes, which is exactly
     :data:`~gpuwm.core.preflight.EXTERNAL_MARGIN_BYTES`.
 
@@ -4244,16 +4343,23 @@ class LighterProfiles:
     ``compared`` says the shipped suites were priced against the refused
     one at all; when they were and none is lighter, the refusal says
     that too, rather than falling silent on the suite.
+    ``preferred`` is the source's own default when the refused suite is
+    the door's default by grid spacing and that source default fits: it
+    is named as its own way out, ahead of the rest, because it is the
+    suite a reader got at every spacing before the spacing row bound.
     """
 
     fitting: tuple[str, ...] = ()
     lightest: tuple[str, int] | None = None
     compared: bool = False
+    preferred: str | None = None
 
 
 def _lighter_profiles_than(profile: str | None, source: str,
                            price_bytes, *,
-                           budget_bytes: int) -> LighterProfiles:
+                           budget_bytes: int, domains: int = 1,
+                           preferred: str | None = None
+                           ) -> LighterProfiles:
     """Shipped suites this source can run that PRICE less than ``profile``
     and fit ``budget_bytes``.
 
@@ -4283,11 +4389,17 @@ def _lighter_profiles_than(profile: str | None, source: str,
     sacrifice.
 
     Every candidate passes :func:`profile_route_blocker` -- the SAME
-    pairing predicate the emission refuses by -- before it is priced.
-    Admissibility used to be checked for one hard-coded source only,
+    pairing predicate the emission refuses by -- before it is priced,
+    asked for the refused layout's own domain count, as the emission
+    asks it.  Admissibility used to be checked for one hard-coded source only,
     so the 2.5.0 walk's gfs refusal ranked a RUC-LSM suite FIRST while
     the very same wizard refuses that pairing outright: following the
     printed advice was refused by the door that printed it.
+
+    ``preferred`` is a suite to name first when it passes the same
+    tests (the source's own default, when the refused suite is the
+    door's default by grid spacing).  It rides in ``fitting`` like any
+    other and is also returned alone, so the sentence can say what it is.
 
     Named in a refusal, never applied: a suite is the operator's choice
     and a wizard that silently downgraded physics to make a number fit
@@ -4307,7 +4419,8 @@ def _lighter_profiles_than(profile: str | None, source: str,
             single_domain_runtime_switches(candidate)
         except ValueError:
             continue
-        if profile_route_blocker(candidate, source) is not None:
+        if profile_route_blocker(candidate, source,
+                                 domains=domains) is not None:
             continue
         candidate_cost = price_bytes(candidate)
         if candidate_cost is None or candidate_cost >= cost:
@@ -4319,9 +4432,15 @@ def _lighter_profiles_than(profile: str | None, source: str,
     fitting = [(candidate_cost, candidate)
                for candidate_cost, candidate in lighter
                if candidate_cost <= budget_bytes]
+    names = [name for _cost, name in sorted(fitting, reverse=True)]
+    if preferred not in names:
+        preferred = None
+    if preferred is not None:
+        names = [preferred] + [name for name in names if name != preferred]
     return LighterProfiles(
-        fitting=tuple(name for _cost, name in sorted(fitting, reverse=True))[:3],
-        lightest=(lightest_name, lightest_cost), compared=True)
+        fitting=tuple(names[:3]),
+        lightest=(lightest_name, lightest_cost), compared=True,
+        preferred=preferred)
 
 
 def _minimum_layout_memory_remedy(*, lighter: LighterProfiles,
@@ -4351,9 +4470,14 @@ def _minimum_layout_memory_remedy(*, lighter: LighterProfiles,
     if shallower is not None:
         levers.append(f"a shallower ladder ({shallower} fits at its "
                       f"minimum layout)")
-    if lighter.fitting:
+    others = tuple(name for name in lighter.fitting
+                   if name != lighter.preferred)
+    if lighter.preferred is not None:
+        levers.append(f"--source {source}'s own default suite "
+                      f"(--physics-profile {lighter.preferred}, which fits)")
+    if others:
         levers.append(f"a lighter --physics-profile "
-                      f"({', '.join(lighter.fitting)})")
+                      f"({', '.join(others)})")
     levers.append(f"a larger card (this suite needs about "
                   f"{need_free / GIB:.2f} GiB free at this layout, and this "
                   f"card presents about {free_bytes / GIB:.2f} GiB)")
@@ -4396,6 +4520,21 @@ def _ladder_request_flags(ratios: tuple[int, ...], root_dx_m: float) -> str:
 
 def _sizing_phases(exp, *, free_bytes: int, machine=None, **kwargs):
     """Price the emitted route against the declared card, including refusals."""
+    from gpuwm.core.mynn_pbl_scratch import (
+        mynn_pricing_memory, mynn_pricing_total_bytes)
+
+    capacity = kwargs.get("vram_gib")
+    if capacity is None:
+        return _sizing_phases_for_card(
+            exp, free_bytes=free_bytes, machine=machine, **kwargs)
+    with mynn_pricing_memory(total_bytes=mynn_pricing_total_bytes(
+            capacity, measured=kwargs.get("profile") is not None),
+                             free_bytes=free_bytes):
+        return _sizing_phases_for_card(
+            exp, free_bytes=free_bytes, machine=machine, **kwargs)
+
+
+def _sizing_phases_for_card(exp, *, free_bytes: int, machine=None, **kwargs):
     if kwargs.get("forcing_interval_seconds") is not None:
         kwargs["ingest_forcing_interval_seconds"] = kwargs["forcing_interval_seconds"]
     from gpuwm.core import streaming
@@ -4458,7 +4597,7 @@ def _sizing_phases(exp, *, free_bytes: int, machine=None, **kwargs):
             # then refused is the defect
             # gpuwm.core.streaming.cold_single_domain_decision documents.
             decision = streaming.cold_single_domain_decision(
-                exp, machine=machine)
+                exp, machine=machine, source=kwargs.get("source"))
         except (streaming.StreamingRefused, CannotPlan) as error:
             raise DomainFitError(f"--tiles {options.mode}: {error}",
                                  resource=getattr(error, "resource", None),
@@ -4602,9 +4741,17 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                physics_mix: dict | None = None,
                clock: str = "fixed",
                point_extent_km: float = POINT_FIT_MAX_EXTENT_KM,
+               profile_at=None,
+               noah_mosaic_options=None,
                ) -> tuple[list[tuple[int, int]], ExperimentConfig]:
     """Largest centered layout whose peak envelope fits the budget, with
     headroom left over.
+
+    ``profile_at``, when given, maps a ladder's ratios to the suite that
+    ladder binds.  The door passes it when the suite is its default, which
+    is keyed on grid spacing (:data:`gpuwm.physics_menu.SPACING_DEFAULTS`),
+    so a shallower ladder offered as a way out of a memory refusal is
+    priced with the suite it would run rather than this ladder's.
 
     ``point_extent_km`` is the largest root extent per axis the point
     request is sized to (``--point-extent-km``); see
@@ -4699,6 +4846,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             exp = candidate_builder(dims)
         else:
             text = render_config(
+                noah_mosaic_options=noah_mosaic_options,
                 name=name, start_time=start_time, hours=hours,
                 projection=projection, dims=dims, ratios=ratios,
                 fetch_hints=_candidate_fetch_hints(source), case_data=None,
@@ -4900,10 +5048,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
     #: carries, and charging both is the double count task 206 removed),
     #: so the floor is asked directly instead of inferred from a
     #: subtraction that has stopped containing it.
-    floor_estimate = estimate_experiment(
-        exp, forcing_intervals=forcing_intervals,
-        forcing_interval_seconds=interval, vram_gib=vram_gib,
-        profile=device_profile)
+    floor_estimate = _phases.forecast
     grid_independent = (floor_estimate.envelope_intercept_bytes
                         + ENVELOPE_UNMODELLED_BYTES)
     min_dims = dims
@@ -4917,10 +5062,17 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
     # the named suite as the base they change (:func:`physics_mix_request`
     # names the suite the request names).
     def _price(candidate_profile: str) -> int | None:
+        # Muted: this loads a file the reader will not get, and its
+        # loader warnings are about that file, not the one written.
+        with muted_warnings():
+            return _price_loud(candidate_profile)
+
+    def _price_loud(candidate_profile: str) -> int | None:
         candidate_mix = (None if not physics_mix
                          else {**physics_mix, "suite": candidate_profile})
         try:
             candidate_text = render_config(
+                noah_mosaic_options=noah_mosaic_options,
                 name=name, start_time=start_time, hours=hours,
                 projection=projection, dims=min_dims, ratios=ratios,
                 fetch_hints=_candidate_fetch_hints(source),
@@ -4951,8 +5103,18 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         # replace; and with no budget at all nothing can fit it.
         if candidate_builder is not None or budget <= 0:
             return LighterProfiles()
+        # The suite is the door's default by grid spacing exactly when
+        # ``profile_at`` is given, and then the source's own default is
+        # the first way out to name when it fits.
+        preferred = None
+        if profile_at is not None:
+            from gpuwm.physics_menu import default_profile_for
+
+            preferred = default_profile_for(source)
         return _lighter_profiles_than(profile, source, _price,
-                                      budget_bytes=budget)
+                                      budget_bytes=budget,
+                                      domains=len(ratios) + 1,
+                                      preferred=preferred)
 
     def _shallower_that_fits() -> str | None:
         # Dropping nests is a way out only when the shallower ladder's
@@ -4964,8 +5126,16 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         if (candidate_builder is not None or dimensions_builder is not None
                 or budget <= 0):
             return None
+        # Muted for the reason _price is: each shallower ladder is loaded
+        # only to price it.
+        with muted_warnings():
+            return _shallower_that_fits_loud()
+
+    def _shallower_that_fits_loud() -> str | None:
         for depth in range(len(ratios) - 1, -1, -1):
             shallower = tuple(ratios[:depth])
+            shallower_profile = (profile if profile_at is None
+                                 else profile_at(shallower))
             try:
                 shallower_dims = _dims_for_scale(
                     _min_hosting_scale(shallower,
@@ -4975,11 +5145,13 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
                 shallower_label = "-".join(
                     f"{v:g}" for v in _ladder_dx_km(shallower, root_dx_m))
                 shallower_text = render_config(
+                    noah_mosaic_options=noah_mosaic_options,
                     name=name, start_time=start_time, hours=hours,
                     projection=projection, dims=shallower_dims,
                     ratios=shallower,
                     fetch_hints=_candidate_fetch_hints(source),
-                    case_data=None, root_dx_m=root_dx_m, profile=profile,
+                    case_data=None, root_dx_m=root_dx_m,
+                    profile=shallower_profile,
                     cumulus_requested=cumulus_requested,
                     acknowledgements=acknowledgements, nz=nz, tiles=tiles,
                     history_interval_s=history_interval_s,
@@ -5005,12 +5177,16 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         return None
 
     if budget <= 0 or grid_independent >= budget:
-        # No smaller layout on any ladder helps here, so a shallower
-        # ladder is not a way out; the suite and the card are.
+        # No smaller layout on this ladder helps here.  Nor on any ladder
+        # running this suite -- but a shallower ladder that binds a
+        # lighter default suite (``profile_at``) is a way out, and it is
+        # named only when its own minimum layout fits.
+        shallower = (_shallower_that_fits() if profile_at is not None
+                     else None)
         remedy = _minimum_layout_memory_remedy(
             lighter=_lighter_that_fit(), envelope_bytes=envelope,
             free_bytes=free_bytes, budget_bytes=budget, source=source,
-            shallower=None)
+            shallower=shallower)
         raise DomainFitError(
             f"this card has no budget for ladder {label} at all: the "
             f"suite's grid-independent envelope (CUDA context + the "
@@ -5020,8 +5196,9 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
             f"{EXTERNAL_MARGIN_BYTES / GIB:.2f} GiB external margin that "
             f"is already the whole of about "
             f"{free_bytes / GIB:.2f} GiB free -- before the grid asks for "
-            f"a single byte, so no smaller layout on any ladder can "
-            f"help; {remedy}")
+            f"a single byte, so no smaller layout "
+            + ("on any ladder running this suite" if shallower is not None
+               else "on any ladder") + f" can help; {remedy}")
     smallest_uncovered = uncovered(exp, dims)
     if smallest_uncovered is not None:
         raise DomainFitError(
@@ -5035,10 +5212,7 @@ def fit_ladder(*, ladder: str | None = None, free_bytes: int, hours: int,
         # but ONLY when they actually do.  The old wording asserted
         # "so a smaller grid cannot help" beside a printed 0%, which is
         # a sentence contradicting the number in front of it.
-        floor = estimate_experiment(
-            exp, forcing_intervals=forcing_intervals,
-            forcing_interval_seconds=interval, vram_gib=vram_gib,
-            profile=device_profile)
+        floor = _phases.forecast
         constants = (floor.envelope_intercept_bytes
                      + ENVELOPE_UNMODELLED_BYTES)
         share = (100.0 * constants / envelope if envelope else 0.0)
@@ -5394,6 +5568,7 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
                        dimensions_builder=None,
                        physics_mix: dict | None = None,
                        clock: str = "fixed",
+                       noah_mosaic_options=None,
                        ) -> tuple[list[tuple[int, int]], ExperimentConfig]:
     """Fit one polygon-bound ladder, refusing rather than clipping it.
 
@@ -5434,6 +5609,7 @@ def fit_polygon_ladder(*, footprint: PolygonFootprint,
         exp = candidate_builder(dims)
     else:
         text = render_config(
+            noah_mosaic_options=noah_mosaic_options,
             name=name, start_time=start_time, hours=hours,
             projection=projection, dims=dims, ratios=ratios,
             fetch_hints=_candidate_fetch_hints(source), case_data=None,
@@ -5878,14 +6054,24 @@ def _profile_help_default_note() -> str:
     for the rest rather than pretending to enumerate them.
     """
 
+    from gpuwm.physics_menu import SPACING_DEFAULTS
+
     default = resolved_physics_profile(DEFAULT_WIZARD_SOURCE, None)
+    # The default by grid spacing, from its own table, so a row added
+    # there is a clause here with no edit.
+    by_spacing = "".join(
+        f"; a run whose finest grid is under "
+        f"{float(row['finest_dx_below_m']) / 1000.0:g} km binds "
+        f"{row['profile_id']} instead, on every source whose route admits it"
+        for row in SPACING_DEFAULTS)
     return (f"(--source {DEFAULT_WIZARD_SOURCE}, the default source, "
-            f"binds {default}; every source has its own computed default "
-            "and its own admissible set -- `gpuwm run-plan "
+            f"binds {default}{by_spacing}; every source has its own "
+            "computed default and its own admissible set -- `gpuwm run-plan "
             "--physics-profiles` prints the whole table)")
 
 
-def _refuse_profile_its_source_cannot_prepare(profile, source) -> None:
+def _refuse_profile_its_source_cannot_prepare(profile, source, *,
+                                              domains: int = 1) -> None:
     """Do not emit a config the named source's front door will refuse.
 
     The wizard prints, of a profile-bound config, that it "passes the
@@ -5901,7 +6087,7 @@ def _refuse_profile_its_source_cannot_prepare(profile, source) -> None:
     declaration still offers.
     """
 
-    blocker = profile_route_blocker(profile, source)
+    blocker = profile_route_blocker(profile, source, domains=domains)
     if blocker is not None:
         # One sentence at the boundary; the registry pointer and the
         # failure mechanism ride the --explain layer.
@@ -6150,6 +6336,20 @@ def _supplied_forcing_schedule(args, start_time):
 def _check_emitted_config(out: Path, sizing: SizingBudget, *,
                           target_machine=None, remote_hardware=False) -> int:
     """Check with the same sizing sample, retaining its measured device profile."""
+    from gpuwm.core.mynn_pbl_scratch import (
+        mynn_pricing_memory, mynn_pricing_total_bytes)
+
+    with mynn_pricing_memory(total_bytes=mynn_pricing_total_bytes(
+            sizing.vram_gib, measured=sizing.measured or remote_hardware),
+                             free_bytes=sizing.free_bytes):
+        return _check_emitted_config_for_card(
+            out, sizing, target_machine=target_machine,
+            remote_hardware=remote_hardware)
+
+
+def _check_emitted_config_for_card(out: Path, sizing: SizingBudget, *,
+                                  target_machine=None,
+                                  remote_hardware=False) -> int:
     from gpuwm.cli import build_parser, main as cli_main
 
     argv = ["check", str(out), "--free-gib", f"{sizing.free_bytes / GIB:.17g}",
@@ -6312,6 +6512,30 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
         value = getattr(args, key, None)
         if value is not None:
             acquisition[key] = value
+    # The spacing this window's own ladder publishes, when it is coarser
+    # than the source's usual one (a 240 h IFS window runs past f144, where
+    # the files come every 6 h).  Taken as if it had been asked for, so the
+    # fetch, the boundary interval and the staging check all read the one
+    # spacing; a named --cadence is honoured as named.
+    requested_cadence = getattr(args, "cadence", None)
+    chosen_by_ladder = False
+    if requested_cadence is None:
+        # A named cycle is asked about its own ladder, as `gpuwm fetch`
+        # asks it; `latest` takes the finest spacing any cycle hour
+        # publishes over the window, which is the one its walk admits.
+        named_cycle = (None if str(args.cycle).strip().lower() == "latest"
+                       else parse_cycle(args.cycle, args.source))
+        usual = _fetch_cadence_h(args.source, start_hour)
+        by_lead = _fetch_cadence_h(args.source, start_hour, args.hours,
+                                   cycle=named_cycle)
+        if usual is not None and by_lead is not None and by_lead != usual:
+            requested_cadence = by_lead
+            chosen_by_ladder = True
+            acquisition["cadence"] = by_lead
+            print(f"cadence: {args.source} publishes every {by_lead} h over "
+                  f"f{start_hour:03d}..f{start_hour + math.ceil(args.hours):03d} "
+                  f"and not every {usual} h, so the fetch and the boundary "
+                  f"interval take {by_lead} h (--cadence names another)")
     cadence, fetch_hours = fetch_window(args.source, args.hours, start_hour, acquisition.get("cadence"))
     if cadence is not None:
         acquisition["cadence"] = cadence
@@ -6331,9 +6555,14 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
     selection = {key: acquisition[key] for key in ("cadence", "member") if key in acquisition}
     if start_hour:
         selection["start_hour"] = start_hour
+    # The provider a keyless or mirrored copy is fetched from can trail the
+    # source's own publication delay, so `latest` resolves against it.
+    provider = ({"provider": acquisition["era5_provider"]}
+                if "era5_provider" in acquisition else {})
     cycle = _resolve_cycle(
         args.cycle, source=args.source, hours=acquisition["hours"],
-        start_hour=start_hour, **{key: value for key, value in selection.items() if key != "start_hour"})
+        start_hour=start_hour, **{key: value for key, value in selection.items() if key != "start_hour"},
+        **provider)
     if args.source == "hrrr":
         # The cycle horizon is a property of the cycle hour (48 h at
         # 00/06/12/18Z, 18 h otherwise), so a lead can walk a window off
@@ -6345,8 +6574,10 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
     start_time = cycle + timedelta(hours=start_hour)
     supplied_forcing, forcing_interval_seconds, forcing_intervals = (
         _supplied_forcing_schedule(args, start_time))
-    if getattr(args, "cadence", None) is not None:
-        requested_interval = args.cadence * 3600
+    if requested_cadence is not None and not (chosen_by_ladder and forcing_interval_seconds is not None):
+        # Inputs already on disk state their own spacing; the ladder's
+        # choice is for a download, so it does not overrule them.
+        requested_interval = requested_cadence * 3600
         if forcing_interval_seconds is not None and forcing_interval_seconds != requested_interval:
             raise ValueError("--cadence differs from the supplied input spacing. Use that spacing or omit --cadence.")
         forcing_interval_seconds = requested_interval
@@ -6357,6 +6588,13 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
     projection = _projection_entries(
         lat, lon, getattr(args, 'projection', 'auto'))
     out: Path = args.out
+
+    mosaic_option = getattr(args, "sf_surface_mosaic", None)
+    mosaic_count = getattr(args, "mosaic_cat", None)
+    mosaic_canopy = getattr(args, "mosaic_urban_canopy", None)
+    noah_mosaic_options = (None if mosaic_option is None and mosaic_count is None
+                           and mosaic_canopy is None
+                           else (mosaic_option, mosaic_count, mosaic_canopy))
 
     profile = resolved_physics_profile(
         args.source, getattr(args, "physics_profile", None))
@@ -6488,10 +6726,36 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
     # request bound is in force), and a memory-bound point fit leaves it
     # empty.
     fit_stop: dict = {}
+
+    def profile_at(ratios_here, root_dx_here) -> str | None:
+        # The default by grid spacing binds once the ladder's finest grid
+        # is known, and the fit prices the suite the file will carry.  An
+        # explicit --physics-profile is returned as named.  The nocturnal
+        # refusal above read the spacing-free default, which is the same
+        # answer for it: a spacing row binds only a suite with both
+        # radiation streams, so it cannot make a window refusable.
+        # Schemes picked with --physics-choices and no suite are written
+        # over this same suite: the physics check reads the default at
+        # the file's finest grid (gpuwm.physics_catalog.experiment_grid),
+        # so the base a mix changes is the suite written here.
+        return resolved_physics_profile(
+            args.source, getattr(args, "physics_profile", None),
+            finest_dx_m=finest_spacing_m(root_dx_here, ratios_here),
+            domains=len(ratios_here) + 1)
+
+    def derived_profile_at(root_dx_here):
+        # For the fit's ladder lever: the suite a shallower ladder binds,
+        # when the suite is the door's default rather than one named.
+        if getattr(args, "physics_profile", None) is not None:
+            return None
+        return lambda ratios_here: profile_at(ratios_here, root_dx_here)
+
     if custom is not None:
         root_dx_m, ratios = custom
+        profile = profile_at(ratios, root_dx_m)
         if polygon is None:
             dims, _ = fit_ladder(
+                noah_mosaic_options=noah_mosaic_options,
                 ratios=ratios, root_dx_m=root_dx_m, free_bytes=free_bytes,
                 hours=args.hours, start_time=start_time,
                 projection=projection, source=args.source, name=name,
@@ -6506,11 +6770,13 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
                 nest_history_interval_s=args.nest_history_interval,
                 stop_out=fit_stop,
                 physics_mix=physics_mix, clock=clock,
-                point_extent_km=point_extent_km)
+                point_extent_km=point_extent_km,
+                profile_at=derived_profile_at(root_dx_m))
         else:
             level_buffers = _buffers_for_levels(
                 level_buffer_values, len(ratios) + 1)
             dims, _ = fit_polygon_ladder(
+                noah_mosaic_options=noah_mosaic_options,
                 footprint=polygon, buffers_km=level_buffers,
                 ratios=ratios, root_dx_m=root_dx_m, free_bytes=free_bytes,
                 hours=args.hours, start_time=start_time,
@@ -6548,12 +6814,14 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
         for candidate_ladder in ladders:
             try:
                 candidate_ratios = LADDER_RATIOS[candidate_ladder]
+                candidate_profile = profile_at(candidate_ratios, root_dx_m)
                 if polygon is None:
                     dims, _ = fit_ladder(
+                        noah_mosaic_options=noah_mosaic_options,
                         ladder=candidate_ladder, free_bytes=free_bytes,
                         hours=args.hours, start_time=start_time,
                         projection=projection, source=args.source, name=name,
-                        profile=profile,
+                        profile=candidate_profile,
                         cumulus_requested=cumulus_requested,
                         vram_gib=vram_gib,
                         device_profile=device_profile,
@@ -6565,17 +6833,20 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
                         nest_history_interval_s=args.nest_history_interval,
                         stop_out=fit_stop,
                         physics_mix=physics_mix, clock=clock,
-                        point_extent_km=point_extent_km)
+                        point_extent_km=point_extent_km,
+                        profile_at=derived_profile_at(root_dx_m))
                     candidate_buffers = None
                 else:
                     candidate_buffers = _buffers_for_levels(
                         level_buffer_values, len(candidate_ratios) + 1)
                     dims, _ = fit_polygon_ladder(
+                        noah_mosaic_options=noah_mosaic_options,
                         footprint=polygon, buffers_km=candidate_buffers,
                         ratios=candidate_ratios, root_dx_m=root_dx_m,
                         free_bytes=free_bytes, hours=args.hours,
                         start_time=start_time, projection=projection,
-                        source=args.source, name=name, profile=profile,
+                        source=args.source, name=name,
+                        profile=candidate_profile,
                         cumulus_requested=cumulus_requested,
                         vram_gib=vram_gib, device_profile=device_profile,
                         target_machine=target_machine,
@@ -6596,7 +6867,8 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
                       f"({first_sentence}); trying the next shallower one")
                 shallowest_refusal = error
                 continue
-            chosen = (candidate_ladder, dims, candidate_buffers)
+            chosen = (candidate_ladder, dims, candidate_buffers,
+                      candidate_profile)
             break
         if chosen is None:
             raise DomainFitError(
@@ -6609,8 +6881,16 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
                 phases=getattr(shallowest_refusal, "phases", None),
                 budget_bytes=getattr(shallowest_refusal, "budget_bytes",
                                      None)) from shallowest_refusal
-        ladder, dims, level_buffers = chosen
+        ladder, dims, level_buffers, profile = chosen
         ratios = LADDER_RATIOS[ladder]
+    # A named suite asked again now the domain count is known, before a
+    # byte is written: a route whose nests are built by a stage a single
+    # domain never meets refuses there (the nested HRRR route's certified
+    # soil layer count), and that refusal belongs here, not after the
+    # download.
+    _refuse_profile_its_source_cannot_prepare(
+        getattr(args, "physics_profile", None), args.source,
+        domains=len(ratios) + 1)
     # Which bound stopped the POINT fit, if one did -- read off the
     # search itself rather than reconstructed from the emitted root.  It
     # decides two things below: the plain fact the plan summary states,
@@ -6774,6 +7054,7 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
         }
 
     text = render_config(
+        noah_mosaic_options=noah_mosaic_options,
         name=name, start_time=start_time, hours=args.hours,
         projection=projection, dims=dims, ratios=ratios,
         fetch_hints=emitted_fetch_hints, case_data=case_data,
@@ -6786,6 +7067,21 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
         acknowledgements=acknowledgements, nz=nz, tiles=tiles,
         physics_mix=physics_mix, clock=clock)
     text = with_surface_flux_option(text, getattr(args, "isftcflx", None))
+    smoothing_spec = getattr(args, "terrain_smoothing", None)
+    smoothing_precision = getattr(args, "terrain_smoothing_precision", None)
+    if smoothing_spec or smoothing_precision:
+        # --terrain-smoothing / --terrain-smoothing-precision: a static line
+        # under each [[domain]] whose setting is not WPS's default smoother
+        # in ArWen's float64 arithmetic (gpuwm.static.terrain_smoothing).
+        from gpuwm.static.terrain_smoothing import (WPS_DEFAULT,
+                                                    emit_smoothing,
+                                                    parse_smoothing_spec,
+                                                    with_precision)
+        settings = (parse_smoothing_spec(smoothing_spec) if smoothing_spec
+                    else (WPS_DEFAULT,))
+        text = emit_smoothing(text, tuple(
+            with_precision(setting, smoothing_precision)
+            for setting in settings))
     # Round-trip the exact bytes through the real loader before writing.
     exp = experiment_from_text(text, source=str(out))
     # The clock rides on the header line, as the extent does: a line of
@@ -6794,15 +7090,17 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
                    if exp.root.run.use_adaptive_time_step else "")
     interval = (source_forcing_interval_seconds(args.source)
                 if forcing_interval_seconds is None else forcing_interval_seconds)
-    estimate = estimate_experiment(
-        exp, forcing_intervals=forcing_intervals,
-        forcing_interval_seconds=interval, vram_gib=vram_gib,
-        profile=device_profile)
+    # On the tables the run holds, as the phases below and `gpuwm check`
+    # price them: the root's boundary carries the analysed hydrometeors
+    # the source publishes.  The fit record's allocation estimate and the
+    # sizing table used to leave them out beside a phase envelope that
+    # carried them.
     phases = _sizing_phases(
         exp, machine=target_machine, forcing_intervals=forcing_intervals,
         free_bytes=free_bytes, source=args.source,
         forcing_interval_seconds=interval,
         vram_gib=vram_gib, profile=device_profile)
+    estimate = phases.forecast
     envelope = phases.peak_envelope_bytes
     # The same free VRAM is passed to check below; both gates subtract
     # the external margin from it to price this emitted configuration.
@@ -7096,6 +7394,11 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
     if physics_mix:
         print(f"physics: {physics_mix_words(physics_mix['choices'])} replace the suite's own "
               "schemes in the file; no suite is asserted")
+    elif explain and getattr(args, "physics_profile", None) is None:
+        from gpuwm.physics_menu import default_basis
+
+        print(f"physics: {profile} is the default for this grid, "
+              f"{default_basis(args.source, finest_spacing_m(root_dx_m, ratios), len(ratios) + 1)}")
     # A changed switch is reported on the DEFAULT screen, not behind
     # --explain: the user asked for a suite by not naming one, and the
     # emission moved one of its switches.
@@ -7394,7 +7697,7 @@ def register_cli(subparsers) -> None:
              "and written into the config the way `--into` writes them, "
              "on every size the fit tries, so the card is priced for the "
              "schemes that run.  The suite (--physics-profile, or the "
-             "source's default) is the base the choices change; no suite "
+             "default at the finest grid) is the base the choices change; no suite "
              "is asserted, so a mix no named suite matches runs as "
              "written")
     parser.add_argument(
@@ -7437,6 +7740,18 @@ def register_cli(subparsers) -> None:
              "often than the root by default because resolving what the "
              "root cannot, over a shorter window, is the point of "
              "running one.  Ignored for a single-domain ladder")
+    parser.add_argument("--sf-surface-mosaic", type=int, choices=(0, 1), default=None,
+                        help="Noah land-use tiles on every grid (WRF sf_surface_mosaic)")
+    parser.add_argument("--mosaic-cat", type=int, default=None,
+                        help="Noah mosaic tile count on every grid (WRF mosaic_cat)")
+    from gpuwm.config import MOSAIC_URBAN_CANOPY_RULES
+    parser.add_argument(
+        "--mosaic-urban-canopy", choices=tuple(MOSAIC_URBAN_CANOPY_RULES),
+        default=None,
+        help="where Noah mosaic runs the urban canopy with sf_urban_physics "
+             "= 1: dominant (WRF's rule, the default: only cells that are "
+             "mostly urban) or every_tile (also the town tiles of mostly "
+             "rural cells)")
     parser.add_argument(
         "--isftcflx", type=int, choices=(0, 1, 2), default=None,
         help="surface flux over water on every grid (WRF isftcflx): "
@@ -7524,6 +7839,21 @@ def register_cli(subparsers) -> None:
                         help="era5: Vtable override (default: the "
                              "packaged Vtable.ERA5_CDO, copied beside "
                              "the TOML)")
+    parser.add_argument("--terrain-smoothing", default=None, metavar="SPEC",
+                        help="WPS terrain smoothing per domain, in domain "
+                             "order, the last repeating: none, 1-2-1, "
+                             "smth-desmth or smth-desmth_special, each "
+                             "with an optional :PASSES (e.g. none or "
+                             "smth-desmth_special,none); default: WPS's "
+                             "one smth-desmth_special pass")
+    parser.add_argument("--terrain-smoothing-precision", default=None,
+                        choices=("float64", "wps-float32"),
+                        help="arithmetic of every domain whose terrain "
+                             "smoother is WPS's default smth-desmth_special "
+                             "x1: wps-float32 reproduces geogrid.exe's "
+                             "HGT_M exactly; default float64, ArWen's own "
+                             "smoother. Every other smoother always runs "
+                             "WPS's float32")
     parser.add_argument("--geog-root", type=Path, default=None,
                         metavar="DIR",
                         help="staged WPS_GEOG tree (default "

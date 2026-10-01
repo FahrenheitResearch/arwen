@@ -112,7 +112,8 @@ _PHYSICS_STATE_KEYS = {
     "physics": {
         "mp_physics", "ra_lw_physics", "ra_sw_physics", "sf_sfclay_physics",
         "sf_surface_physics", "bl_pbl_physics", "cu_physics",
-        "num_soil_layers", "sf_urban_physics", "sf_lake_physics", "mosaic_lu",
+        "num_soil_layers", "sf_urban_physics", "use_wudapt_lcz", "num_urban_hi",
+        "slucm_distributed_drag", "distributed_ahe_opt", "sf_lake_physics", "mosaic_lu",
         "mosaic_soil", "mosaic_cat", "icloud", "morr_rimed_ice", "hail_opt",
         "ghg_input", "o3input", "aer_opt", "sst_update", "surface_input_source",
         "num_land_cat", "fractional_seaice",
@@ -165,7 +166,8 @@ _RUNTIME_OUTPUT_KEYS = {
         "diff_6th_opt", "diff_6th_factor", "diff_6th_slopeopt", "damp_opt",
         "zdamp", "dampcoef", "khdif", "kvdif", "non_hydrostatic",
         "use_theta_m", "moist_adv_opt", "scalar_adv_opt", "time_step_sound",
-        "smdiv", "emdiv", "h_sca_adv_order", "top_lid",
+        "smdiv", "emdiv", "h_sca_adv_order", "top_lid", "zadvect_implicit",
+        "w_crit_cfl",
     },
     "fdda": set(),
     "grib2": set(),
@@ -1274,6 +1276,27 @@ def analyze_namelists(
                 _column(physics, "sf_urban_physics", max_dom, default=0),
                 "&physics/sf_urban_physics",
             )
+            urban_lcz = _integers(
+                _column(physics, "use_wudapt_lcz", max_dom, default=0),
+                "&physics/use_wudapt_lcz")
+            urban_bins = _integers(
+                _column(physics, "num_urban_hi", max_dom, default=15),
+                "&physics/num_urban_hi")
+            from types import SimpleNamespace
+            from gpuwm.config import validate_urban_config
+            try:
+                validate_urban_config(SimpleNamespace(
+                    sf_urban_physics=urban[-1], use_wudapt_lcz=urban_lcz[-1],
+                    num_urban_hi=urban_bins[-1], sf_surface_physics=surface[-1],
+                    bl_pbl_physics=pbl[-1]))
+            except ValueError as error:
+                gpuwm_reasons.append(str(error))
+            for key, default in (("slucm_distributed_drag", False),
+                                 ("distributed_ahe_opt", 0)):
+                if any(value != default for value in
+                       _column(physics, key, max_dom, default=default)):
+                    gpuwm_reasons.append(
+                        f"{key}: the arm is not transcribed, the setting would be ignored")
             mosaic = _integers(
                 _column(physics, "sf_surface_mosaic", max_dom, default=0),
                 "&physics/sf_surface_mosaic",
@@ -1303,6 +1326,16 @@ def analyze_namelists(
             # questions are independent: one asks what an UNCHANGED WRF
             # needs in its wrfinput, the other asks what this engine runs.
             gpuwm_reasons.extend(_runtime_microphysics_reasons(mp))
+            from types import SimpleNamespace
+            from gpuwm.config import validate_noah_mosaic_config
+            tile_values = _column(physics, "mosaic_cat", max_dom, default=3)
+            for index in range(max_dom):
+                try:
+                    validate_noah_mosaic_config(SimpleNamespace(
+                        sf_surface_mosaic=mosaic[0], mosaic_cat=tile_values[0],
+                        sf_surface_physics=surface[index], sf_urban_physics=urban[index]))
+                except ValueError as exc:
+                    gpuwm_reasons.append(str(exc))
             for index in range(max_dom):
                 configuration_errors = []
                 if pbl[index] != 1:
@@ -1329,9 +1362,11 @@ def analyze_namelists(
                         f"sf_surface_physics=2 at "
                         f"{_noah_soil_layer_count()} soil layers)"
                     )
-                if urban[index] != 0:
+                if urban[-1] != 0:
                     configuration_errors.append(
-                        f"sf_urban_physics={urban[index]} (urban state not inventoried)"
+                        f"sf_urban_physics={urban[-1]} (the importer passes the "
+                        "innermost selector to runtime validation; stock-WRF "
+                        "urban restart state is not inventoried)"
                     )
                 if mosaic[index] != 0:
                     configuration_errors.append(

@@ -59,10 +59,33 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     # the lift leaves all seven gf entry points at byte-identical
     # local_size_bytes/num_regs/const_size_bytes, and the gf parity suites
     # still grade at max_ulp 0.  See glibc_flt32.cuh's header.
+    # Noah mosaic uses scalar glibc float32 words for the WRF column oracle.
+    "noah_mosaic": ("glibc_flt32.cuh",),
     "gf": ("glibc_flt32.cuh",),
     # New Tiedtke: scale_fac reads log(dxref/dx), and glibc's logf is not
     # CUDA's.  Prep stage only so far; cumastrn will add exp and pow.
     "ntiedtke": ("glibc_flt32.cuh",),
+    # The single-layer urban canopy model (sf_urban_physics=1): EXP, ALOG
+    # and every REAL**REAL in module_sf_urban.F are glibc calls in its WRF
+    # v4.7.1 column oracle, graded bitwise.
+    "urban_ucm": ("glibc_flt32.cuh",),
+    # Urban BEP (sf_urban_physics 2/3), graded bitwise against gfortran/glibc
+    # WRF v4.7.1 column oracles: the column uses logf/powf and six trig
+    # functions (glibc_trig_flt32.cuh), the surface coupling uses powf.
+    "urban_bep": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
+    "urban_bep_couple": ("glibc_flt32.cuh",),
+    # MYJ under BEP (module_bl_myjurb.F), graded against gfortran/glibc:
+    # EXP and REAL powers are glibc's expf/powf.
+    "myjurb": ("glibc_flt32.cuh",),
+    # The UW moist-turbulence PBL (bl_pbl_physics=9) computes in binary64
+    # like the CAM code it transcribes: glibc's own binary64 exp/log/pow,
+    # the rounding-pinned R8 vocabulary, then the CAM modules in call order
+    # (saturation lookups, the implicit diffusion solver, exacol/zisocl/
+    # compute_cubic, caleddy, compute_eddy_diff with trbintd/sfdiag and the
+    # camuwpbl column driver).  A new module, so no existing unit moves.
+    "uwpbl": ("glibc_flt64.cuh", "uwpbl_common.cuh", "uwpbl_wvsat.cuh",
+              "uwpbl_vdiff.cuh", "uwpbl_zisocl.cuh", "uwpbl_caleddy.cuh",
+              "uwpbl_eddy.cuh", "uwpbl_driver.cuh"),
 }
 
 #: Read-only view for tests and freeze receipts.

@@ -367,6 +367,17 @@ class SurfaceObsConfig:
                 for quantity in SURFACE_QUANTITY_TABLE
                 if quantity in self._stated_sigmas]
 
+    def batch_localizations(self) -> list:
+        """One localisation per batch the adapter builds, in its order.
+
+        The adapter builds one whole-grid batch per enabled row with the
+        localisation that row names, so a caller pricing the analysis
+        before the reports are read counts the same batches.
+        """
+
+        return [getattr(self, row.localization_field)
+                for row, _sigma in self.enabled_quantities()]
+
 
 # ---------------------------------------------------------------------------
 # reading and binding the record

@@ -346,9 +346,11 @@ The §6 follow-up, built complete:
   (`parent_only_init`, now grid-overridable), then the exact t=0 child
   sequence reused verbatim: analytic fine base (`_make_real_base`),
   three-operand `blend_terrain` against `_capture_parent_blend_fields`,
-  and `_adjust_and_rederive` (adjust_tempqv + start_domain re-derivation
-  + press_adj).  On the doubly-interior overlap this reproduces the t=0
-  base bitwise, so `donor_alignment_check` stays armed there -- scoped
+  carried in float64 on the fine base (`_blend_terrain_triple`, so the
+  re-derived base keeps the FP32 EOS correction `dphb_resid` its FP32
+  store drops), and `_adjust_and_rederive` (adjust_tempqv + start_domain
+  re-derivation + press_adj).  On the doubly-interior overlap this
+  reproduces the t=0 base bitwise, so `donor_alignment_check` stays armed there -- scoped
   by the initializer's declared `donor_alignment_frame_width`
   (spec_bdy_width + blend_width), where the invariant is genuinely
   undefined.  Inside the frames the transplanted perturbations are

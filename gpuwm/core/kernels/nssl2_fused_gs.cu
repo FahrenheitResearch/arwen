@@ -167,7 +167,7 @@ __device__ __forceinline__ float latent_fusion(float temperature) {
 __device__ __forceinline__ float ice_saturation_mixing_ratio(
     float temperature, float pressure)
 {
-    int table_index = (int)((temperature - 163.15f) / 0.002f + 1.5f);
+    int table_index = (int)(__fdiv_rn((temperature - 163.15f), 0.002f) + 1.5f);
     table_index = min(1000001, max(1, table_index));
     // WRF fills TABQVS with separate single-precision multiply and add
     // operations.  NVRTC otherwise contracts this expression to an FMA,
@@ -183,7 +183,7 @@ __device__ __forceinline__ float ice_saturation_mixing_ratio(
 __device__ __forceinline__ float liquid_saturation_mixing_ratio(
     float temperature, float pressure)
 {
-    int table_index = (int)((temperature - 163.15f) / 0.002f + 1.5f);
+    int table_index = (int)(__fdiv_rn((temperature - 163.15f), 0.002f) + 1.5f);
     table_index = min(1000001, max(1, table_index));
     const float table_temperature = __fadd_rn(
         163.15f, __fmul_rn((float)(table_index - 1), 0.002f));
@@ -204,7 +204,7 @@ __device__ __forceinline__ float primary_ice_target(
     const float ice_relative = fminf(water_saturation, fmaxf(vapor, 0.0f))
         / ice_saturation;
     if (!(ice_relative > 1.0f) || !(temperature <= 268.15f)) return 0.0f;
-    return (rho / 1.225f) * 1.0e3f * expf(fminf(
+    return (__fdiv_rn(rho, 1.225f)) * 1.0e3f * expf(fminf(
         57.0f, 12.96f * (ice_relative - 1.0f) - 0.639f));
 }
 
@@ -220,7 +220,7 @@ __device__ __forceinline__ void dense_fall_coefficients(
     const float exponent_table[9] = {
         0.67819f, 0.63789f, 0.62197f, 0.61240f, 0.60572f,
         0.60066f, 0.59663f, 0.59330f, 0.59048f};
-    int table = (int)((density - 50.0f) / 100.0f) + 1;
+    int table = (int)(__fdiv_rn((density - 50.0f), 100.0f)) + 1;
     table = min(9, max(1, table)) - 1;
     const float fraction = fmaxf(
         0.0f, 0.01f * (density - density_table[table]));
@@ -403,7 +403,7 @@ __device__ __forceinline__ ParticleProperties normalize_state(
     if (s->qc > QC_MIN) {
         if (!(s->nc > CXMIN)) {
             s->nc = fmaxf(
-                CXMIN, rho * s->qc / (1000.0f * CLOUD_VMAX));
+                CXMIN, __fdiv_rn(rho * s->qc, (1000.0f * CLOUD_VMAX)));
         }
         // WRF setvtz (ipconc>=2) clamps the diagnostic cloud mass/volume
         // for an existing number moment but deliberately retains cx itself.
@@ -422,8 +422,8 @@ __device__ __forceinline__ ParticleProperties normalize_state(
         // Inactive rain retains the nonnegative number loaded by GS gather.
     }
     if (s->qi > QI_MIN) {
-        s->ni = fmaxf(s->ni, rho * s->qi / ICE_MMAX);
-        s->ni = fminf(s->ni, rho * s->qi / ICE_MMIN);
+        s->ni = fmaxf(s->ni, __fdiv_rn(rho * s->qi, ICE_MMAX));
+        s->ni = fminf(s->ni, __fdiv_rn(rho * s->qi, ICE_MMIN));
     } else {
         // GS gather clears crystal number whenever qi is not active.
         s->ni = 0.0f;
@@ -433,7 +433,7 @@ __device__ __forceinline__ ParticleProperties normalize_state(
             / (100.0f * fmaxf(1.0e-9f, s->ns));
         if (volume < SNOW_VMIN) {
             volume = SNOW_VMIN;
-            s->ns = rho * s->qs / (100.0f * volume);
+            s->ns = __fdiv_rn(rho * s->qs, (100.0f * volume));
         }
         if (volume > SNOW_VMAX) {
             volume = fminf(SNOW_VMAX, fmaxf(SNOW_VMIN, volume));
@@ -540,10 +540,10 @@ __device__ __forceinline__ void diagnose_warm(
         if (cloud_number > CXMIN) {
             mass = fminf(fmaxf(s.qc * rho / cloud_number, mass_min), mass_max);
         } else {
-            cloud_number = fmaxf(CXMIN, rho * s.qc / mass_max);
+            cloud_number = fmaxf(CXMIN, __fdiv_rn(rho * s.qc, mass_max));
             mass = fminf(fmaxf(s.qc * rho / cloud_number, mass_min), mass_max);
         }
-        cloud_volume = mass / 1000.0f;
+        cloud_volume = __fdiv_rn(mass, 1000.0f);
         cloud_diameter = powf(mass * (6.0f / (PI * 1000.0f)), 1.0f / 3.0f);
     }
 
@@ -558,7 +558,7 @@ __device__ __forceinline__ void diagnose_warm(
             rain_number = rho * s.qr / (1000.0f * rain_volume);
         }
         rain_diameter = powf(rain_volume * (6.0f / PI), 1.0f / 3.0f);
-        rain_characteristic = powf(rain_volume / PI, 1.0f / 3.0f);
+        rain_characteristic = powf(__fdiv_rn(rain_volume, PI), 1.0f / 3.0f);
     }
 
     const double rb = (double)(0.5f * cloud_diameter);
@@ -643,7 +643,7 @@ __device__ __forceinline__ void diagnose_warm(
 
     // Rain evaporation. Default rcond=0 makes this a non-positive rate.
     if (s.qr > QR_MIN) {
-        int table_index = (int)((s.temperature - 163.15f) / 0.002f + 1.5f);
+        int table_index = (int)(__fdiv_rn((s.temperature - 163.15f), 0.002f) + 1.5f);
         table_index = min(1000001, max(1, table_index));
         const float table_temperature = __fadd_rn(
             163.15f, __fmul_rn((float)(table_index - 1), 0.002f));
@@ -652,13 +652,13 @@ __device__ __forceinline__ void diagnose_warm(
             / (table_temperature - 35.86f));
         const float lv = latent_vapor(s.temperature);
         const float diffusivity = 2.11e-5f
-            * powf(s.temperature / 273.15f, 1.94f)
+            * powf(__fdiv_rn(s.temperature, 273.15f), 1.94f)
             * (101325.0f / pressure);
         const float viscosity = 1.832e-5f
             * (416.16f / (s.temperature + 120.0f))
-            * powf(s.temperature / 296.0f, 1.5f);
+            * powf(__fdiv_rn(s.temperature, 296.0f), 1.5f);
         const float kinematic = viscosity / rho;
-        const float conductivity = 2.43e-2f * viscosity / 1.718e-5f;
+        const float conductivity = __fdiv_rn(2.43e-2f * viscosity, 1.718e-5f);
         const float ventilation_factor = powf(
             kinematic / diffusivity, 1.0f / 3.0f) * powf(kinematic, -0.5f);
         const float fall_factor = sqrtf(1.225f / fmaxf(0.05f, rho));
@@ -705,13 +705,13 @@ __device__ __forceinline__ void diagnose_cloud_riming(
     const float cloud_mass = fminf(
         1000.0f * CLOUD_VMAX,
         fmaxf(1000.0f * CLOUD_VMIN, rho * s.qc / s.nc));
-    const float cloud_volume = cloud_mass / 1000.0f;
+    const float cloud_volume = __fdiv_rn(cloud_mass, 1000.0f);
     const float cloud_diameter =
         powf(cloud_volume * (6.0f / PI), 1.0f / 3.0f);
     const float cloud_radius = 0.5f * cloud_diameter;
     const float viscosity = 1.832e-5f
         * (416.16f / (s.temperature + 120.0f))
-        * powf(s.temperature / 296.0f, 1.5f);
+        * powf(__fdiv_rn(s.temperature, 296.0f), 1.5f);
     const float cloud_velocity = 2.0f * 9.8f * 1000.0f
         * cloud_radius * cloud_radius / (9.0f * viscosity);
     const float density_factor = sqrtf(1.225f / fmaxf(0.05f, rho));
@@ -721,7 +721,7 @@ __device__ __forceinline__ void diagnose_cloud_riming(
         const float ice_mass = fmaxf(rho * s.qi / s.ni, ICE_MMIN);
         const float ice_diameter = 0.1871f * powf(ice_mass, 0.3429f);
         if (cloud_diameter > 15.0e-6f && ice_diameter > 30.0e-6f) {
-            const float ice_volume = ice_mass / 900.0f;
+            const float ice_volume = __fdiv_rn(ice_mass, 900.0f);
             const float ice_velocity = 47.6273f * density_factor
                 * powf(ice_volume, 0.18333f) * 1.091937899589539f;
             const float relative_velocity = sqrtf(
@@ -875,7 +875,7 @@ __device__ __forceinline__ void diagnose_rain_freezing(
         rain_number = rho * s.qr / (1000.0f * rain_mean_volume);
         rain_mean_diameter =
             powf(rain_mean_volume * (6.0f / PI), 1.0f / 3.0f);
-        rain_characteristic = powf(rain_mean_volume / PI, 1.0f / 3.0f);
+        rain_characteristic = powf(__fdiv_rn(rain_mean_volume, PI), 1.0f / 3.0f);
     }
 
     // Default Bigg option 2, including the active <0.30-mm snow split.
@@ -919,7 +919,7 @@ __device__ __forceinline__ void diagnose_rain_freezing(
                 r->crfrzs *= factor;
                 r->crfrzf *= factor;
             }
-            r->vrfrzf = rho * r->qrfrzf / 900.0f;
+            r->vrfrzf = __fdiv_rn(rho * r->qrfrzf, 900.0f);
         }
     }
 
@@ -930,7 +930,7 @@ __device__ __forceinline__ void diagnose_rain_freezing(
     float ice_diameter = 1.0e-7f;
     if (collision_active) {
         ice_mass = fmaxf(rho * s.qi / s.ni, ICE_MMIN);
-        ice_volume = ice_mass / 900.0f;
+        ice_volume = __fdiv_rn(ice_mass, 900.0f);
         ice_diameter = 0.1871f * powf(ice_mass, 0.3429f);
     }
     const float density_factor = sqrtf(1.225f / fmaxf(0.05f, rho));
@@ -1016,7 +1016,7 @@ __device__ __forceinline__ void diagnose_rain_freezing(
         }
         r->qiacrf = dense_fraction * r->qiacr;
         r->ciacrf = dense_fraction * r->ciacrf;
-        r->viacrf = rho * r->qiacrf / 900.0f;
+        r->viacrf = __fdiv_rn(rho * r->qiacrf, 900.0f);
     } else {
         // Source-exact dangling-ELSE behavior at WRF 16754-16886: this
         // nominal "single-moment rain" branch pairs with the outer
@@ -1036,18 +1036,18 @@ __device__ __forceinline__ void diagnose_rain_freezing(
             (0.25f / 6.0f) * PI * efficiency * s.ni * s.qr
                 * fabsf(rain_velocity - ice_velocity) * geometry);
         r->qiacrf = r->qiacr;
-        r->viacrf = rho * r->qiacrf / 900.0f;
+        r->viacrf = __fdiv_rn(rho * r->qiacrf, 900.0f);
     }
 
     const float freezing_total = r->qrfrz + r->qiacr + r->qsacr;
     float maximum_freezing = fmaxf(0.0f, freezing_total);
     if (!(temperature_c < -30.0f)) {
         const float diffusivity = 2.11e-5f
-            * powf(s.temperature / 273.15f, 1.94f)
+            * powf(__fdiv_rn(s.temperature, 273.15f), 1.94f)
             * (101325.0f / pressure);
         const float viscosity = 1.832e-5f
             * (416.16f / (s.temperature + 120.0f))
-            * powf(s.temperature / 296.0f, 1.5f);
+            * powf(__fdiv_rn(s.temperature, 296.0f), 1.5f);
         const float kinematic = viscosity / rho;
         const float ventilation_factor = powf(
             kinematic / diffusivity, 1.0f / 3.0f)
@@ -1063,7 +1063,7 @@ __device__ __forceinline__ void diagnose_rain_freezing(
             + 1.30572e-2f * liquid_offset * liquid_offset
             + 1.60056e-5f * liquid_offset * liquid_offset
                 * liquid_offset * liquid_offset;
-        const float conductivity = 2.43e-2f * viscosity / 1.718e-5f;
+        const float conductivity = __fdiv_rn(2.43e-2f * viscosity, 1.718e-5f);
         const float wet_growth = (2.0f * PI)
             * (latent_vapor(s.temperature) * diffusivity * rho
                     * (380.0f / pressure - s.qv)
@@ -1152,11 +1152,11 @@ __device__ __forceinline__ void diagnose_cloud_freezing(
         1.257f + 0.4f * expf(-1.1f / knudsen);
     const float viscosity = 1.832e-5f
         * (416.16f / (s.temperature + 120.0f))
-        * powf(s.temperature / 296.0f, 1.5f);
+        * powf(__fdiv_rn(s.temperature, 296.0f), 1.5f);
     const float diffusivity = 2.11e-5f
-        * powf(s.temperature / 273.15f, 1.94f)
+        * powf(__fdiv_rn(s.temperature, 273.15f), 1.94f)
         * (101325.0f / pressure);
-    const float conductivity = 2.43e-2f * viscosity / 1.718e-5f;
+    const float conductivity = __fdiv_rn(2.43e-2f * viscosity, 1.718e-5f);
     const float lv = latent_vapor(s.temperature);
     const float ls = lv + latent_fusion(s.temperature);
     const float ice_saturation =
@@ -1219,7 +1219,7 @@ __device__ __forceinline__ void diagnose_frozen_collection(
             RAIN_VMAX,
             fmaxf(RAIN_VMIN, rho * s.qr / (1000.0f * s.nr)));
         rain_diameter = powf(rain_volume * (6.0f / PI), 1.0f / 3.0f);
-        rain_characteristic = powf(rain_volume / PI, 1.0f / 3.0f);
+        rain_characteristic = powf(__fdiv_rn(rain_volume, PI), 1.0f / 3.0f);
         rain_velocity = density_factor * 10.0f * (1.0f - powf(
             1.0f + 516.575f * rain_characteristic, -4.0f));
     }
@@ -1230,7 +1230,7 @@ __device__ __forceinline__ void diagnose_frozen_collection(
     float ice_velocity = 0.0f;
     if (s.qi > QI_MIN && s.ni > 0.0f) {
         ice_mass = fmaxf(rho * s.qi / s.ni, ICE_MMIN);
-        ice_volume = ice_mass / 900.0f;
+        ice_volume = __fdiv_rn(ice_mass, 900.0f);
         ice_diameter = 0.1871f * powf(ice_mass, 0.3429f);
         ice_velocity = 47.6273f * density_factor * powf(ice_volume, 0.18333f)
             * 1.091937899589539f;
@@ -1261,9 +1261,9 @@ __device__ __forceinline__ void diagnose_frozen_collection(
         float coefficient, exponent;
         dense_fall_coefficients(
             particles.graupel_density, &coefficient, &exponent);
-        graupel_velocity = density_factor * coefficient
+        graupel_velocity = __fdiv_rn(density_factor * coefficient
             * powf(characteristic, exponent)
-            * tgammaf(4.0f + exponent) / tgammaf(4.0f);
+            * tgammaf(4.0f + exponent), tgammaf(4.0f));
     }
 
     float hail_volume = HAIL_VMIN;
@@ -1279,9 +1279,9 @@ __device__ __forceinline__ void diagnose_frozen_collection(
         float coefficient, exponent;
         dense_fall_coefficients(
             particles.hail_density, &coefficient, &exponent);
-        hail_velocity = density_factor * coefficient
+        hail_velocity = __fdiv_rn(density_factor * coefficient
             * powf(characteristic, exponent)
-            * tgammaf(5.0f + exponent) / tgammaf(5.0f);
+            * tgammaf(5.0f + exponent), tgammaf(5.0f));
         hail_velocity = fminf(layer_depth * dt_inverse, hail_velocity);
     }
 
@@ -1351,14 +1351,14 @@ __device__ __forceinline__ void diagnose_frozen_collection(
         if (snow_diameter < 40.0e-6f) {
             collision_efficiency = 0.0f;
         } else if (snow_diameter < 150.0e-6f) {
-            collision_efficiency = 0.5f
-                * (snow_diameter - 40.0e-6f) / 110.0e-6f;
+            collision_efficiency = __fdiv_rn(0.5f
+                * (snow_diameter - 40.0e-6f), 110.0e-6f);
         }
         const float conversion_efficiency = fminf(
             0.5f,
             0.1f * expf(0.1f * fminf(temperature_c, 0.0f))
-                * fminf(1.0f, fmaxf(
-                    0.0f, particles.graupel_density - 300.0f) / 300.0f));
+                * fminf(1.0f, __fdiv_rn(fmaxf(
+                    0.0f, particles.graupel_density - 300.0f), 300.0f)));
         if (collision_efficiency > 0.0f && conversion_efficiency > 0.0f) {
             const float relative_velocity = sqrtf(
                 (graupel_velocity - snow_velocity)
@@ -1413,7 +1413,7 @@ __device__ __forceinline__ void diagnose_frozen_collection(
         } else if (s.temperature == 273.15f) {
             // At exactly freezing WRF leaves collection active but follows
             // the non-cold rain-density branch, whose divisor is liquid water.
-            r->vhacr = rho * r->qhacr / 1000.0f;
+            r->vhacr = __fdiv_rn(rho * r->qhacr, 1000.0f);
         } else {
             // WRF 16518-16523 computes a rain-rime density and then
             // overwrites it with clamp(rimdn_g), so the earlier cloud-rime
@@ -1490,7 +1490,7 @@ __device__ __forceinline__ void diagnose_frozen_collection(
             r->qhlacr = 0.0f;
             r->chlacr = 0.0f;
         } else {
-            r->vhlacr = rho * r->qhlacr / 900.0f;
+            r->vhlacr = __fdiv_rn(rho * r->qhlacr, 900.0f);
         }
     }
 }
@@ -1509,8 +1509,8 @@ __device__ __forceinline__ void diagnose_snow_aggregation(
     float efficiency = 0.0f;
     if (temperature_c < 0.0f && temperature_c >= -15.0f) {
         if (temperature_c > -15.0f && temperature_c < -10.0f) {
-            efficiency = 0.5f * expf(-0.5f)
-                * (temperature_c + 15.0f) / 5.0f;
+            efficiency = __fdiv_rn(0.5f * expf(-0.5f)
+                * (temperature_c + 15.0f), 5.0f);
         } else if (temperature_c >= -10.0f) {
             efficiency = 0.5f
                 * expf(0.05f * fminf(temperature_c, 0.0f));
@@ -1575,9 +1575,9 @@ __device__ __forceinline__ void diagnose_melting(
             * powf(snow_volume, 0.14f);
         const float dynamic_viscosity = 1.832e-5f
             * (416.16f / (s.temperature + 120.0f))
-            * powf(s.temperature / 296.0f, 1.5f);
+            * powf(__fdiv_rn(s.temperature, 296.0f), 1.5f);
         const float diffusivity = 2.11e-5f
-            * powf(s.temperature / 273.15f, 1.94f)
+            * powf(__fdiv_rn(s.temperature, 273.15f), 1.94f)
             * (101325.0f / pressure);
         const float kinematic = dynamic_viscosity / rho;
         const float ventilation_factor = powf(
@@ -1613,16 +1613,16 @@ __device__ __forceinline__ void diagnose_melting(
 
     const float dynamic_viscosity = 1.832e-5f
         * (416.16f / (s.temperature + 120.0f))
-        * powf(s.temperature / 296.0f, 1.5f);
+        * powf(__fdiv_rn(s.temperature, 296.0f), 1.5f);
     const float kinematic = dynamic_viscosity / rho;
     const float diffusivity = 2.11e-5f
-        * powf(s.temperature / 273.15f, 1.94f)
+        * powf(__fdiv_rn(s.temperature, 273.15f), 1.94f)
         * (101325.0f / pressure);
     const float ventilation_factor = powf(
         kinematic / diffusivity, 1.0f / 3.0f)
         * powf(kinematic, -0.5f);
     const float conductivity =
-        2.43e-2f * dynamic_viscosity / 1.718e-5f;
+        __fdiv_rn(2.43e-2f * dynamic_viscosity, 1.718e-5f);
     const float lv = latent_vapor(s.temperature);
     const float lf = latent_fusion(s.temperature);
     const float cw = liquid_heat_capacity(s.temperature);
@@ -1636,10 +1636,10 @@ __device__ __forceinline__ void diagnose_melting(
     if (s.qg > QD_MIN) {
         const float drag = fminf(
             1.2f,
-            fmaxf(0.45f, 0.45f + 0.55f
+            fmaxf(0.45f, 0.45f + __fdiv_rn(0.55f
                 * (800.0f - fminf(
-                    800.0f, fmaxf(170.0f, particles.graupel_density)))
-                / 630.0f));
+                    800.0f, fmaxf(170.0f, particles.graupel_density))),
+                630.0f)));
         graupel_ventilation = 0.78f * tgammaf(2.0f)
             + 0.308f * tgammaf(2.75f)
                 * powf(4.0f * 9.8f / (3.0f * drag), 0.25f)
@@ -1665,15 +1665,15 @@ __device__ __forceinline__ void diagnose_melting(
     }
 
     if (s.qs > QS_MIN) {
-        const float c1sw = tgammaf(0.5333333333333333f)
-            * powf(0.2f, -1.0f / 3.0f) / tgammaf(0.2f);
+        const float c1sw = __fdiv_rn(tgammaf(0.5333333333333333f)
+            * powf(0.2f, -1.0f / 3.0f), tgammaf(0.2f));
         r->qsmlr = fminf(
             c1sw * fmlt1 * s.ns * snow_ventilation * snow_diameter,
             0.0f);
         r->qsmlr = fmaxf(r->qsmlr, -0.7f * s.qs * dt_inverse);
         r->csmlr = (s.ns / s.qs) * r->qsmlr;
         // Default gamma-shape conversion from snow donor number to rain.
-        r->csmlrr = r->csmlr / 0.30f;
+        r->csmlrr = __fdiv_rn(r->csmlr, 0.30f);
     }
     if (s.qg > QD_MIN) {
         const float raw = fminf(
@@ -1683,10 +1683,10 @@ __device__ __forceinline__ void diagnose_melting(
             0.0f);
         if (raw < 0.0f && particles.graupel_density < 900.0f) {
             const float available =
-                (1.0f - particles.graupel_density / 900.0f)
+                (1.0f - __fdiv_rn(particles.graupel_density, 900.0f))
                 * (s.vg + rho * raw / particles.graupel_density)
                 * dt_inverse;
-            const float refrozen = -rho * raw / 900.0f;
+            const float refrozen = __fdiv_rn(-rho * raw, 900.0f);
             r->vhsoak = fminf(available, refrozen);
         }
         r->qhmlr = fmaxf(raw, -0.95f * s.qg * dt_inverse);
@@ -1698,10 +1698,10 @@ __device__ __forceinline__ void diagnose_melting(
             particles.graupel_density * graupel_volume);
         const float three_mm_volume =
             0.523599f * (3.0e-3f * 3.0e-3f * 3.0e-3f);
-        const float b = -rho * r->qhmlr / (1000.0f * three_mm_volume);
-        const float interpolation = a
-                * (20.0e-3f - graupel_diameter) / 12.0e-3f
-            + b * (graupel_diameter - 8.0e-3f) / 12.0e-3f;
+        const float b = __fdiv_rn(-rho * r->qhmlr, (1000.0f * three_mm_volume));
+        const float interpolation = __fdiv_rn(a
+                * (20.0e-3f - graupel_diameter), 12.0e-3f)
+            + __fdiv_rn(b * (graupel_diameter - 8.0e-3f), 12.0e-3f);
         r->chmlrr = -fmaxf(a, fminf(b, interpolation));
         r->vhmlr = r->qhmlr;
     }
@@ -1713,10 +1713,10 @@ __device__ __forceinline__ void diagnose_melting(
             0.0f);
         if (raw < 0.0f && particles.hail_density < 900.0f) {
             const float available =
-                (1.0f - particles.hail_density / 900.0f)
+                (1.0f - __fdiv_rn(particles.hail_density, 900.0f))
                 * (s.vh + rho * raw / particles.hail_density)
                 * dt_inverse;
-            const float refrozen = -rho * raw / 900.0f;
+            const float refrozen = __fdiv_rn(-rho * raw, 900.0f);
             r->vhlsoak = fminf(available, refrozen);
         }
         r->qhlmlr = fmaxf(raw, -0.95f * s.qh * dt_inverse);
@@ -1728,10 +1728,10 @@ __device__ __forceinline__ void diagnose_melting(
             particles.hail_density * hail_volume);
         const float three_mm_volume =
             0.523599f * (3.0e-3f * 3.0e-3f * 3.0e-3f);
-        const float b = -rho * r->qhlmlr / (1000.0f * three_mm_volume);
-        const float interpolation = a
-                * (20.0e-3f - hail_diameter) / 12.0e-3f
-            + b * (hail_diameter - 8.0e-3f) / 12.0e-3f;
+        const float b = __fdiv_rn(-rho * r->qhlmlr, (1000.0f * three_mm_volume));
+        const float interpolation = __fdiv_rn(a
+                * (20.0e-3f - hail_diameter), 12.0e-3f)
+            + __fdiv_rn(b * (hail_diameter - 8.0e-3f), 12.0e-3f);
         r->chlmlrr = -fmaxf(a, fminf(b, interpolation));
         r->vhlmlr = r->qhlmlr;
     }
@@ -1755,16 +1755,16 @@ __device__ __forceinline__ void diagnose_wet_growth_shedding(
     const float density_factor = sqrtf(1.225f / fmaxf(0.05f, rho));
     const float dynamic_viscosity = 1.832e-5f
         * (416.16f / (s.temperature + 120.0f))
-        * powf(s.temperature / 296.0f, 1.5f);
+        * powf(__fdiv_rn(s.temperature, 296.0f), 1.5f);
     const float kinematic = dynamic_viscosity / rho;
     const float diffusivity = 2.11e-5f
-        * powf(s.temperature / 273.15f, 1.94f)
+        * powf(__fdiv_rn(s.temperature, 273.15f), 1.94f)
         * (101325.0f / pressure);
     const float ventilation_factor = powf(
         kinematic / diffusivity, 1.0f / 3.0f)
         * powf(kinematic, -0.5f);
     const float conductivity =
-        2.43e-2f * dynamic_viscosity / 1.718e-5f;
+        __fdiv_rn(2.43e-2f * dynamic_viscosity, 1.718e-5f);
     const float lv = latent_vapor(s.temperature);
     const float lf = latent_fusion(s.temperature);
     const float cw = liquid_heat_capacity(s.temperature);
@@ -1791,10 +1791,10 @@ __device__ __forceinline__ void diagnose_wet_growth_shedding(
             powf(6.0f, -1.0f / 3.0f) * graupel_diameter;
         const float drag = fminf(
             1.2f,
-            fmaxf(0.45f, 0.45f + 0.55f
+            fmaxf(0.45f, 0.45f + __fdiv_rn(0.55f
                 * (800.0f - fminf(
-                    800.0f, fmaxf(170.0f, particles.graupel_density)))
-                / 630.0f));
+                    800.0f, fmaxf(170.0f, particles.graupel_density))),
+                630.0f)));
         graupel_ventilation = 0.78f * tgammaf(2.0f)
             + 0.308f * tgammaf(2.75f)
                 * powf(4.0f * 9.8f / (3.0f * drag), 0.25f)
@@ -1890,11 +1890,11 @@ __device__ __forceinline__ void diagnose_wet_growth_shedding(
                 0.523599f * (3.0e-3f * 3.0e-3f * 3.0e-3f)
                 / MASS_FACTOR_SHED;
         } else {
-            graupel_shed_volume = fminf(
+            graupel_shed_volume = __fdiv_rn(fminf(
                 0.523599f * (6.0e-3f * 6.0e-3f * 6.0e-3f),
                 (6.0f / PI) * particles.graupel_density * 0.001f
-                    * weighted * weighted * weighted)
-                / MASS_FACTOR_SHED;
+                    * weighted * weighted * weighted),
+                MASS_FACTOR_SHED);
         }
     }
     float hail_shed_volume =
@@ -1910,11 +1910,11 @@ __device__ __forceinline__ void diagnose_wet_growth_shedding(
                 0.523599f * (3.0e-3f * 3.0e-3f * 3.0e-3f)
                 / MASS_FACTOR_SHED;
         } else {
-            hail_shed_volume = fminf(
+            hail_shed_volume = __fdiv_rn(fminf(
                 0.523599f * (6.0e-3f * 6.0e-3f * 6.0e-3f),
                 (6.0f / PI) * particles.hail_density * 0.001f
-                    * weighted * weighted * weighted)
-                / MASS_FACTOR_SHED;
+                    * weighted * weighted * weighted),
+                MASS_FACTOR_SHED);
         }
     }
     r->chshrr = rho * r->qhshr / (1000.0f * graupel_shed_volume);
@@ -1922,7 +1922,7 @@ __device__ __forceinline__ void diagnose_wet_growth_shedding(
     r->qrshr = r->qsshr + r->qhshr + r->qhlshr;
     // ipconc=5 has rzxh=1 and rzxhl=0.4375 (alphar=alphah=0,
     // alphahl=1, imurain=1, and no predicted reflectivity moments).
-    r->crshr = r->chshrr + r->chlshrr / 0.4375f;
+    r->crshr = r->chshrr + __fdiv_rn(r->chlshrr, 0.4375f);
 
     if (r->wetgrowth_g > 0.0f) {
         r->qhdpv = 0.0f;
@@ -1931,13 +1931,13 @@ __device__ __forceinline__ void diagnose_wet_growth_shedding(
         r->chaci = fminf(r->chaci0, 0.1f * s.ni * dt_inverse);
         r->qhacs = fminf(r->qhacs0, 0.1f * s.qs * dt_inverse);
         r->chacs = fminf(r->chacs0, 0.1f * s.ns * dt_inverse);
-        r->vhacw = rho * r->qhacw / 900.0f;
-        r->vhacr = rho * r->qhacr / 900.0f;
+        r->vhacw = __fdiv_rn(rho * r->qhacw, 900.0f);
+        r->vhacr = __fdiv_rn(rho * r->qhacr, 900.0f);
         const float available = particles.graupel_density < 900.0f
-            ? (1.0f - particles.graupel_density / 900.0f)
+            ? (1.0f - __fdiv_rn(particles.graupel_density, 900.0f))
                 * s.vg * dt_inverse
             : 0.0f;
-        const float refrozen = rho * graupel_wet / 900.0f;
+        const float refrozen = __fdiv_rn(rho * graupel_wet, 900.0f);
         r->vhsoak = fminf(available, refrozen);
         r->vhshdr = fminf(
             0.0f, refrozen - r->vhacw - r->vhacr);
@@ -1950,13 +1950,13 @@ __device__ __forceinline__ void diagnose_wet_growth_shedding(
         r->chlaci = fminf(r->chlaci0, 0.1f * s.ni * dt_inverse);
         r->qhlacs = fminf(r->qhlacs0, 0.1f * s.qs * dt_inverse);
         r->chlacs = fminf(r->chlacs0, 0.1f * s.ns * dt_inverse);
-        r->vhlacw = rho * r->qhlacw / 900.0f;
-        r->vhlacr = rho * r->qhlacr / 900.0f;
+        r->vhlacw = __fdiv_rn(rho * r->qhlacw, 900.0f);
+        r->vhlacr = __fdiv_rn(rho * r->qhlacr, 900.0f);
         const float available = particles.hail_density < 900.0f
-            ? (1.0f - particles.hail_density / 900.0f)
+            ? (1.0f - __fdiv_rn(particles.hail_density, 900.0f))
                 * s.vh * dt_inverse
             : 0.0f;
-        const float refrozen = rho * hail_wet / 900.0f;
+        const float refrozen = __fdiv_rn(rho * hail_wet, 900.0f);
         r->vhlsoak = fminf(available, refrozen);
         r->vhlshdr = fminf(
             0.0f, refrozen - r->vhlacw - r->vhlacr);
@@ -1978,7 +1978,7 @@ __device__ __forceinline__ void diagnose_crystal_to_snow(
     const float ice_mass = fmaxf(rho * s.qi / s.ni, ICE_MMIN);
     const float ice_diameter = 0.1871f * powf(ice_mass, 0.3429f);
     if (!(ice_diameter >= 100.0e-6f)) return;
-    const float fraction = fminf(0.5f, ice_diameter / 200.0e-6f);
+    const float fraction = fminf(0.5f, __fdiv_rn(ice_diameter, 200.0e-6f));
     r->qscni = fraction * r->qidpv;
     // WRF's fscni multiplier is one here.  The diameter fraction already
     // entered qscni and must not be applied a second time to its number rate.
@@ -2008,7 +2008,7 @@ __device__ __forceinline__ void diagnose_ice_snow_to_graupel(
     if (s.temperature < 273.0f && s.qi > QI_MIN && s.ni > CXMIN
             && r->qiacw - r->qidpv > 0.0f) {
         const float ice_mass = fmaxf(rho * s.qi / s.ni, ICE_MMIN);
-        const float ice_volume = ice_mass / 900.0f;
+        const float ice_volume = __fdiv_rn(ice_mass, 900.0f);
         const float ice_velocity = 47.6273f * density_factor
             * powf(ice_volume, 0.18333f) * 1.091937899589539f;
         float rime_density = 300.0f * powf(
@@ -2084,7 +2084,7 @@ __device__ __forceinline__ void diagnose_graupel_to_hail(
         float cloud_velocity = 0.0f;
         const float dynamic_viscosity = 1.832e-5f
             * (416.16f / (s.temperature + 120.0f))
-            * powf(s.temperature / 296.0f, 1.5f);
+            * powf(__fdiv_rn(s.temperature, 296.0f), 1.5f);
         if (s.qc > QC_MIN && s.nc > CXMIN) {
             const float cloud_volume = fminf(
                 CLOUD_VMAX,
@@ -2135,7 +2135,7 @@ __device__ __forceinline__ void diagnose_graupel_to_hail(
         float ice_velocity = 0.0f;
         if (s.qi > QI_MIN && s.ni > CXMIN) {
             const float ice_mass = fmaxf(rho * s.qi / s.ni, ICE_MMIN);
-            const float ice_volume = ice_mass / 900.0f;
+            const float ice_volume = __fdiv_rn(ice_mass, 900.0f);
             ice_efficiency = fminf(
                 1.0f,
                 fmaxf(0.0f, 0.1f * expf(0.1f * fminf(temperature_c, 0.0f))));
@@ -2161,10 +2161,10 @@ __device__ __forceinline__ void diagnose_graupel_to_hail(
                 && rho * (s.qc + s.qr) > 1.0e-4f) {
             const float kinematic_viscosity = dynamic_viscosity / rho;
             const float vapor_diffusivity = 2.11e-5f
-                * powf(s.temperature / 273.15f, 1.94f)
+                * powf(__fdiv_rn(s.temperature, 273.15f), 1.94f)
                 * (101325.0f / pressure);
             const float conductivity =
-                2.43e-2f * dynamic_viscosity / 1.718e-5f;
+                __fdiv_rn(2.43e-2f * dynamic_viscosity, 1.718e-5f);
             const float thermal_diffusivity =
                 conductivity / (1004.0f * rho);
             const float prandtl =
@@ -2274,7 +2274,7 @@ __device__ __forceinline__ void diagnose_hallett_mossop(
     const float cloud_volume = fminf(
         CLOUD_VMAX,
         fmaxf(CLOUD_VMIN, rho * s.qc / (1000.0f * s.nc)));
-    const float tail = expf(-7.23e-15f / cloud_volume) / 250.0f;
+    const float tail = __fdiv_rn(expf(-7.23e-15f / cloud_volume), 250.0f);
     const float temperature_c = s.temperature - 273.15f;
     const float temperature_factor = fminf(
         1.0f,
@@ -2310,7 +2310,7 @@ __device__ __forceinline__ void diagnose_primary_ice(
             || !(vertical_span > 0.0f)) {
         return;
     }
-    int table_index = (int)((s.temperature - 163.15f) / 0.002f + 1.5f);
+    int table_index = (int)(__fdiv_rn((s.temperature - 163.15f), 0.002f) + 1.5f);
     table_index = min(1000001, max(1, table_index));
     const float table_temperature = __fadd_rn(
         163.15f, __fmul_rn((float)(table_index - 1), 0.002f));
@@ -2322,7 +2322,7 @@ __device__ __forceinline__ void diagnose_primary_ice(
     if (!(target_gradient > 0.0f)) return;
 
     const float lv = latent_vapor(s.temperature);
-    const float feedback = lv * lv / (1004.0f * 461.5f);
+    const float feedback = __fdiv_rn(lv * lv, (1004.0f * 461.5f));
     const float vapor_limit = 0.25f * fmaxf(
         (s.qv - ice_saturation)
             / (1.0f + feedback * ice_saturation
@@ -2332,7 +2332,7 @@ __device__ __forceinline__ void diagnose_primary_ice(
     r->qiint = (initial_mass / rho) * velocity * target_gradient
         / (layer_depth * vertical_span);
     r->qiint = fminf(r->qiint, vapor_limit);
-    r->ciint = r->qiint * rho / initial_mass;
+    r->ciint = __fdiv_rn(r->qiint * rho, initial_mass);
     r->ciint = fminf(
         r->ciint, fmaxf(0.0f, 1.0e6f - s.ni) / dt);
     r->qiint = r->ciint * initial_mass / rho;
@@ -2361,13 +2361,13 @@ __device__ __forceinline__ void diagnose_frozen_vapor(
     const float lf = latent_fusion(s.temperature);
     const float ls = lv + lf;
     const float diffusivity = 2.11e-5f
-        * powf(s.temperature / 273.15f, 1.94f)
+        * powf(__fdiv_rn(s.temperature, 273.15f), 1.94f)
         * (101325.0f / pressure);
     const float viscosity = 1.832e-5f
         * (416.16f / (s.temperature + 120.0f))
-        * powf(s.temperature / 296.0f, 1.5f);
+        * powf(__fdiv_rn(s.temperature, 296.0f), 1.5f);
     const float kinematic = viscosity / rho;
-    const float conductivity = 2.43e-2f * viscosity / 1.718e-5f;
+    const float conductivity = __fdiv_rn(2.43e-2f * viscosity, 1.718e-5f);
     const float schmidt = kinematic / diffusivity;
     const float ventilation_factor = powf(schmidt, 1.0f / 3.0f)
         * powf(kinematic, -0.5f);
@@ -2423,10 +2423,10 @@ __device__ __forceinline__ void diagnose_frozen_vapor(
             * mean_volume_diameter;
         const float drag = fmaxf(0.45f, fminf(
             1.2f,
-            0.45f + 0.55f
+            0.45f + __fdiv_rn(0.55f
                 * (800.0f - fmaxf(
-                    170.0f, fminf(800.0f, particles.graupel_density)))
-                / 630.0f));
+                    170.0f, fminf(800.0f, particles.graupel_density))),
+                630.0f)));
         const float drag_factor = powf(4.0f * 9.8f / (3.0f * drag), 0.25f);
         const float ventilation = 0.78f
             + 0.308f * 1.6083594560623169f * drag_factor
@@ -2454,7 +2454,7 @@ __device__ __forceinline__ void diagnose_frozen_vapor(
         const float fall_b_table[9] = {
             0.67819f, 0.63789f, 0.62197f, 0.61240f, 0.60572f,
             0.60066f, 0.59663f, 0.59330f, 0.59048f};
-        int table = (int)((particles.hail_density - 50.0f) / 100.0f) + 1;
+        int table = (int)(__fdiv_rn((particles.hail_density - 50.0f), 100.0f)) + 1;
         table = min(9, max(1, table)) - 1;
         const float fraction = fmaxf(
             0.0f, 0.01f * (particles.hail_density - density_table[table]));
@@ -2481,11 +2481,11 @@ __device__ __forceinline__ void diagnose_frozen_vapor(
         float trial_vapor = s.qv;
         float trial_theta = s.theta;
         float trial_saturation = ice_saturation;
-        float saturation_feedback = 5807.6953f * (ls / 1004.0f);
+        float saturation_feedback = 5807.6953f * (__fdiv_rn(ls, 1004.0f));
         float denominator_temperature =
             (s.temperature - 7.66f) * (s.temperature - 7.66f);
         if (s.temperature >= 273.15f) {
-            saturation_feedback = 4098.0258f * (lv / 1004.0f);
+            saturation_feedback = 4098.0258f * (__fdiv_rn(lv, 1004.0f));
             denominator_temperature =
                 (s.temperature - 35.86f) * (s.temperature - 35.86f);
         }
@@ -2583,16 +2583,16 @@ __device__ __forceinline__ void diagnose_melting_vapor_exchange(
     const float dt_inverse = (float)(1.0 / (double)dt);
     const float dynamic_viscosity = 1.832e-5f
         * (416.16f / (s.temperature + 120.0f))
-        * powf(s.temperature / 296.0f, 1.5f);
+        * powf(__fdiv_rn(s.temperature, 296.0f), 1.5f);
     const float diffusivity = 2.11e-5f
-        * powf(s.temperature / 273.15f, 1.94f)
+        * powf(__fdiv_rn(s.temperature, 273.15f), 1.94f)
         * (101325.0f / pressure);
     const float kinematic = dynamic_viscosity / rho;
     const float ventilation_factor = powf(
         kinematic / diffusivity, 1.0f / 3.0f)
         * powf(kinematic, -0.5f);
     const float conductivity =
-        2.43e-2f * dynamic_viscosity / 1.718e-5f;
+        __fdiv_rn(2.43e-2f * dynamic_viscosity, 1.718e-5f);
     const float lv = latent_vapor(s.temperature);
     const float liquid_saturation = liquid_saturation_mixing_ratio(
         s.temperature, pressure);
@@ -2634,10 +2634,10 @@ __device__ __forceinline__ void diagnose_melting_vapor_exchange(
             * mean_volume_diameter;
         const float drag = fmaxf(0.45f, fminf(
             1.2f,
-            0.45f + 0.55f
+            0.45f + __fdiv_rn(0.55f
                 * (800.0f - fmaxf(
-                    170.0f, fminf(800.0f, particles.graupel_density)))
-                / 630.0f));
+                    170.0f, fminf(800.0f, particles.graupel_density))),
+                630.0f)));
         const float ventilation = 0.78f
             + 0.308f * 1.6083594560623169f
                 * powf(4.0f * 9.8f / (3.0f * drag), 0.25f)
@@ -2723,7 +2723,7 @@ __device__ __forceinline__ void assemble_and_limit(
 
     // WRF 21089-21166: shared rain-number donor limiter.
     a->pnr_i = r->crcnw - r->crshr
-        + warm * (-r->chmlrr - r->chlmlrr / 0.4375f
+        + warm * (-r->chmlrr - __fdiv_rn(r->chlmlrr, 0.4375f)
             - r->csmlrr - r->cimlr);
     a->pnr_d = cold * (-r->ciacr - r->crfrz) - r->chacr - r->chlacr
         + r->crcev - r->cracr;
@@ -2924,18 +2924,18 @@ __device__ __forceinline__ void assemble_and_limit(
     // gated; only dense deposition and frozen-rain routes carry il5.  Liquid
     // coating condensation is credited at liquid-water density.
     a->pvg_i = rho * cold * (
-            r->qhdpv / 170.0f + r->qracif / 900.0f)
-        + rho * (r->qhaci + r->qhacs) / 170.0f
-        + rho * fmaxf(0.0f, r->qhcev) / 1000.0f
+            __fdiv_rn(r->qhdpv, 170.0f) + __fdiv_rn(r->qracif, 900.0f))
+        + __fdiv_rn(rho * (r->qhaci + r->qhacs), 170.0f)
+        + __fdiv_rn(rho * fmaxf(0.0f, r->qhcev), 1000.0f)
         + r->vhacw + r->vhacr + r->vhcni + r->vhcns
         + r->viacrf + r->vrfrzf;
     a->pvg_d = rho * (
             warm * r->vhmlr + r->qhsbv + fminf(0.0f, r->qhcev)
             - r->qhmul1) / particles.graupel_density
         - r->vhlcnh + r->vhshdr - r->vhsoak - r->vscnh;
-    a->pvh_i = rho * cold * r->qhldpv / 500.0f
-        + rho * (r->qhlaci + r->qhlacs) / 500.0f
-        + rho * fmaxf(0.0f, r->qhlcev) / 1000.0f
+    a->pvh_i = __fdiv_rn(rho * cold * r->qhldpv, 500.0f)
+        + __fdiv_rn(rho * (r->qhlaci + r->qhlacs), 500.0f)
+        + __fdiv_rn(rho * fmaxf(0.0f, r->qhlcev), 1000.0f)
         + r->vhlacw + r->vhlacr + r->vhlcnhl;
     a->pvh_d = rho * (
             warm * r->vhlmlr + r->qhlsbv + fminf(0.0f, r->qhlcev)
@@ -2979,10 +2979,10 @@ __device__ __forceinline__ void aggregate_once(
         + r.qssbv + r.qhsbv + r.qhlsbv;
     const float liquid_vapor = r.qrcev + r.qhcev + r.qscev + r.qhlcev;
     s->theta += dt / exner * (
-        latent_fusion(s->temperature) / 1004.0f * freezing
-        + (latent_vapor(s->temperature) + latent_fusion(s->temperature))
-            / 1004.0f * sublimation
-        + latent_vapor(s->temperature) / 1004.0f * liquid_vapor);
+        __fdiv_rn(latent_fusion(s->temperature), 1004.0f) * freezing
+        + __fdiv_rn((latent_vapor(s->temperature) + latent_fusion(s->temperature)),
+            1004.0f) * sublimation
+        + __fdiv_rn(latent_vapor(s->temperature), 1004.0f) * liquid_vapor);
 
     // Dense volume and remaining number routes are populated alongside their
     // named cold rates; no intermediate state is committed here.

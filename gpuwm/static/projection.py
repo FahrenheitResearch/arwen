@@ -37,12 +37,14 @@ from __future__ import annotations
 
 from fractions import Fraction
 import math
-import re
 import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+
+from gpuwm.core import host_libm
+from gpuwm.fortran_namelist import parse_namelist
 
 if TYPE_CHECKING:
     from gpuwm.experiment import ExperimentConfig
@@ -649,7 +651,8 @@ class MercatorGrid(ProjectedGrid):
         self.rsw = 0.0
         if self.ref_lat != 0.0:
             self.rsw = float(
-                np.log(np.tan(0.5 * ((self.ref_lat + 90.0) * _RAD_PER_DEG)))
+                host_libm.log(host_libm.tan(
+                    0.5 * ((self.ref_lat + 90.0) * _RAD_PER_DEG)))
                 / self.dlon)
         self.dlon = float(self.dlon)
 
@@ -657,8 +660,8 @@ class MercatorGrid(ProjectedGrid):
         """Transcription of ijll_merc (module_llxy.F:1358), vectorized."""
         x = np.asarray(x, dtype=np.float64)
         y = np.asarray(y, dtype=np.float64)
-        lat = (2.0 * np.arctan(np.exp(self.dlon
-                                      * (self.rsw + y - self.known_y)))
+        lat = (2.0 * host_libm.arctan(host_libm.exp(
+                   self.dlon * (self.rsw + y - self.known_y)))
                * _DEG_PER_RAD - 90.0)
         lon = (x - self.known_x) * self.dlon * _DEG_PER_RAD + self.ref_lon
         lon = np.where(lon > 180.0, lon - 360.0, lon)
@@ -672,7 +675,8 @@ class MercatorGrid(ProjectedGrid):
         deltalon = _wrap180(lon - self.ref_lon)
         i = self.known_x + (deltalon / (self.dlon * _DEG_PER_RAD))
         j = (self.known_y
-             + (np.log(np.tan(0.5 * ((lat + 90.0) * _RAD_PER_DEG))))
+             + (host_libm.log(host_libm.tan(
+                 0.5 * ((lat + 90.0) * _RAD_PER_DEG))))
              / self.dlon - self.rsw)
         return i, j
 
@@ -728,8 +732,8 @@ class PolarStereoGrid(ProjectedGrid):
         gi2 = (self.rebydx * scale_top) ** 2.0
         with np.errstate(invalid="ignore", divide="ignore"):
             lat = (_DEG_PER_RAD * self.hemi
-                   * np.arcsin((gi2 - r2) / (gi2 + r2)))
-            arccos = np.arccos(xx / np.sqrt(r2))
+                   * host_libm.arcsin((gi2 - r2) / (gi2 + r2)))
+            arccos = host_libm.arccos(xx / np.sqrt(r2))
         lon = np.where(yy > 0, reflon + _DEG_PER_RAD * arccos,
                        reflon - _DEG_PER_RAD * arccos)
         # pole point (r2 == 0): mirror the Fortran branch explicitly.
@@ -888,32 +892,18 @@ def footprint_longitude_span(projection, nx: int, ny: int,
 
 
 def _parse_wps_namelist(path) -> dict:
-    """Minimal Fortran-namelist reader: ``key = v1, v2, ...`` lines only
-    (matches WPS namelist style; no multi-line continuations)."""
+    """A namelist.wps as one ``{key: [values]}`` table across its groups.
+
+    Read by :func:`gpuwm.fortran_namelist.parse_namelist`, the reader every
+    namelist door shares; this view only flattens the groups (a later group
+    wins a key both declare, as before).  The line-at-a-time reader that
+    stood here split ``e_we = 100, e_sn = 80,`` into e_we = [100,
+    'e_sn = 80'], never expanded ``2*'...'``, and returned an unquoted
+    path's value while WPS itself stops the group at its first '/'.
+    """
     values: dict[str, list] = {}
-    for raw in Path(path).read_text().splitlines():
-        line = raw.split("!", 1)[0].strip()
-        if not line or line.startswith("&") or line == "/":
-            continue
-        if "=" not in line:
-            continue
-        key, rhs = line.split("=", 1)
-        tokens = [t.strip() for t in rhs.strip().rstrip(",").split(",")]
-        parsed = []
-        for tok in tokens:
-            if not tok:
-                continue
-            if re.fullmatch(r"'[^']*'|\"[^\"]*\"", tok):
-                parsed.append(tok[1:-1])
-            else:
-                try:
-                    parsed.append(int(tok))
-                except ValueError:
-                    try:
-                        parsed.append(float(tok))
-                    except ValueError:
-                        parsed.append(tok)
-        values[key.strip().lower()] = parsed
+    for table in parse_namelist(path).values():
+        values.update(table)
     return values
 
 

@@ -134,8 +134,15 @@ def test_join_highres_cache_survives_publication_and_reuses_tiles(
     monkeypatch.setattr(join, "_surface_state", lambda *a, **k: None)
     monkeypatch.setattr(join, "sealed_source_leads", lambda *a: (0, 1))
     monkeypatch.setattr(join, "load_hrrr_native_series", lambda *a, **k: (object(),))
-    monkeypatch.setattr(join, "verified_static_catalog", lambda *a:
-                        (SimpleNamespace(files=()), {"selections": {"d01": None}}))
+    handed = []
+
+    def static_catalog(*args, **kwargs):
+        # A170: the carrier builds land cover (fields "auto"), so each
+        # domain's GEOG selection reads it and the catalog is handed it.
+        handed.append(kwargs.get("static_highres"))
+        return SimpleNamespace(files=()), {"selections": {"d01": None}}
+
+    monkeypatch.setattr(join, "verified_static_catalog", static_catalog)
     monkeypatch.setattr(join, "grids_from_projection_config", lambda exp: (target.grid(),))
     monkeypatch.setattr(join, "ParentInitView", lambda **k: SimpleNamespace(**k))
     monkeypatch.setattr(join, "NestedInputCatalog", lambda **k: SimpleNamespace(**k))
@@ -212,6 +219,7 @@ def test_join_highres_cache_survives_publication_and_reuses_tiles(
         assert not transient and not missing, {"staging_references": transient,
                                               "missing_receipt_paths": missing}
         assert observed[-1] == resolved
+        assert handed[-1] is not None and handed[-1].cache_root == resolved
         assert not resolved.is_relative_to(output)
         for name in ("child-tile", "corridor-tile", "landcover"):
             assert (resolved / name).read_bytes() == b"stand-in source tile"
@@ -781,7 +789,7 @@ def _target(**changes) -> HrrrTargetDomain:
 
 def _raw_runtime_namelist(
         max_dom, *, longwave, theta_m, ghg_input=None, run_hours=12,
-        do_radar_ref=None):
+        do_radar_ref=None, land_surface=2, soil_layers=4):
     """The certified raw runtime shape.  ``ghg_input`` and
     ``do_radar_ref`` are the two STOCK-ONLY keys: passing either marks
     this text as the stock half of the pair, and the native half must
@@ -809,7 +817,8 @@ def _raw_runtime_namelist(
         f" ra_lw_physics = {repeated(longwave)},\n"
         f" ra_sw_physics = {repeated(1)},\n"
         " isfflx = 1,\n ifsnow = 1,\n icloud = 1,\n"
-        " surface_input_source = 1,\n num_soil_layers = 4,\n"
+        f" sf_surface_physics = {repeated(land_surface)},\n"
+        f" surface_input_source = 1,\n num_soil_layers = {soil_layers},\n"
         f" sf_urban_physics = {repeated(0)},\n"
         " sst_update = 0,\n"
         f"{ghg}{radar}/\n"
@@ -1596,6 +1605,47 @@ def test_raw_namelist_gate_rejects_dropped_runtime_drift(
         _require_raw_stock_delta(native, stock)
 
 
+@pytest.mark.parametrize("land_surface,soil_layers,refused", [
+    (2, 4, False), (2, 9, True), (3, 9, False), (3, 4, True), (4, 4, False), (4, 9, True)])
+def test_the_soil_pin_follows_the_land_surface(tmp_path, land_surface, soil_layers, refused):
+    """Four layers for Noah and Noah-MP, nine for RUC, one column count for the tree.
+
+    The contract pinned four whatever the land surface, so a RUC tree (the sub-km default on a nested
+    --source hrrr domain) was refused after the download and the root preparation.
+    """
+
+    native = tmp_path / "native.input"
+    stock = tmp_path / "stock.input"
+    native.write_text(_raw_runtime_namelist(
+        3, longwave=0, theta_m=0, land_surface=land_surface, soil_layers=soil_layers), encoding="ascii")
+    stock.write_text(_raw_runtime_namelist(
+        3, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=1, land_surface=land_surface,
+        soil_layers=soil_layers), encoding="ascii")
+    if refused:
+        with pytest.raises(ValueError, match="num_soil_layers"):
+            _require_raw_stock_delta(native, stock)
+        return
+    receipt = _require_raw_stock_delta(native, stock)
+    assert receipt["certified_native_runtime"]["physics.num_soil_layers"] == [soil_layers]
+
+
+def test_the_soil_pin_refuses_a_tree_without_one_land_surface(tmp_path):
+    """The pinned column count is the land surface's, so a tree must name one scheme on every domain."""
+
+    native = tmp_path / "native.input"
+    stock = tmp_path / "stock.input"
+    good_native = _raw_runtime_namelist(2, longwave=0, theta_m=0)
+    good_stock = _raw_runtime_namelist(2, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=1)
+    for old, new in ((" sf_surface_physics = 2, 2,\n", " sf_surface_physics = 2, 3,\n"),
+                     (" sf_surface_physics = 2, 2,\n", "")):
+        assert old in good_native and old in good_stock
+        native.write_text(good_native.replace(old, new), encoding="ascii")
+        stock.write_text(good_stock.replace(old, new), encoding="ascii")
+        # The refusal names what breaks without one land surface, not only what it needs.
+        with pytest.raises(ValueError, match="sf_surface_physics.*no single soil column to pin"):
+            _require_raw_stock_delta(native, stock)
+
+
 def test_the_route_asks_for_an_optional_stock_wrf_export():
     """A missing ORACLE file must not destroy a prepared hierarchy.
 
@@ -1689,3 +1739,124 @@ def test_the_hierarchy_prints_the_digest_its_own_chain_promises(
     expected = hashlib.sha256(
         (output_root / "receipt.json").read_bytes()).hexdigest()
     assert printed["preparation_receipt_sha256"] == expected
+
+
+@pytest.mark.parametrize("perturbed", [False, True],
+                         ids=["no-block", "deferred-block"])
+def test_the_hierarchy_receipt_relays_the_root_s_perturbation_deferral(
+        tmp_path, monkeypatch, perturbed):
+    """The receipt the tree runner binds records a deferred bubble.
+
+    This stage builds the children from namelists and never reads the
+    configuration, so the root preparation, which does, seals the
+    [perturbation] deferral into its identity and this stage relays it
+    into receipt.json, beside the identity every domain's cache carries
+    under ``root_preparation``.  Without a block the receipt is the one
+    it always was.
+    """
+    from types import SimpleNamespace
+    from gpuwm.experiment import (
+        BubbleConfig, DEFERRED_PERTURBATION_SCHEMA, PerturbationConfig)
+    from test_hrrr_native_static import _fixture
+
+    @dataclass(frozen=True)
+    class _Tree:
+        root: object
+        domains: list
+        start_time: datetime
+        run_seconds: float
+        perturbation: object = None
+
+    join = hrrr_hierarchy_direct
+    preparation = tmp_path / "sealed"
+    preparation.mkdir()
+    target, cache, static_receipt = _fixture(preparation)
+    authority = tmp_path / "authority"
+    authority.write_text("fixture", encoding="utf-8")
+    digest = join.sha256_file(authority)
+    day = datetime(2026, 8, 25, 18)
+    bubbles = PerturbationConfig(bubbles=(BubbleConfig(
+        center_lat=39.5, center_lon=-98.5, center_height_m=1500.0,
+        radius_km=10.0, depth_m=1500.0, amplitude_k=0.01),))
+    deferral = {"schema": DEFERRED_PERTURBATION_SCHEMA,
+                "status": "DEFERRED_TO_FORECAST_INITIALIZATION",
+                "config": bubbles.receipt()}
+    source_identity = {"initial_perturbation": deferral} if perturbed else {}
+    identity = {"source_identity": source_identity,
+                "source_manifest_sha256": digest, "bridge_manifest_sha256": digest,
+                "static_cache_sha256": join.sha256_file(cache), "namelist_sha256": digest,
+                "forcing_hours": [0, 1]}
+    header = {"schema": "gpuwm-prepared-real-cache-v1", "status": "READY",
+              "identity": identity, "content_sha256": digest,
+              "metadata": {"user": {"initial_valid_time": day.isoformat()}}}
+    report = {"status": "PASS", "source_identity": source_identity,
+              "prepared_cache": {"content_sha256": digest}}
+    monkeypatch.setattr(join, "_root_paths", lambda root: {
+        "static_cache": cache, "static_receipt": static_receipt,
+        "prepared_cache": preparation, "bridge": preparation,
+        "bridge_manifest": authority, "preparation_report": authority})
+    monkeypatch.setattr(join, "_json", lambda path:
+                        header if path.name == "header.json" else report)
+    monkeypatch.setattr(join, "resolve_cpu_bridge", lambda path: authority)
+    monkeypatch.setattr(join, "_require_raw_stock_delta", lambda *a:
+                        {"certified_native_runtime": {"domains.sfcp_to_sfcp": [True]}})
+    run = SimpleNamespace(sf_surface_physics=2, num_soil_layers=4, mp_physics=6)
+    root = SimpleNamespace(run=run, grid_id=1)
+    exp = _Tree(root=root, domains=[root, root], start_time=day,
+                run_seconds=60.)
+    monkeypatch.setattr(join, "_native_experiment",
+                        lambda *a, **k: (exp, "fixture", _Run()))
+    monkeypatch.setattr(join, "load_hrrr_target_domain", lambda path: target)
+    monkeypatch.setattr(join, "_supported_hierarchy_slice", lambda *a, **k: None)
+    monkeypatch.setattr(join, "validated_corridor_selection", lambda *a: None)
+    monkeypatch.setattr(join, "_require_raw_wps_contract", lambda *a: {})
+    monkeypatch.setattr(join, "_expected_root_cache_identity",
+                        lambda *a, **k: identity)
+    monkeypatch.setattr(join, "PreparedCacheReader", lambda *a, **k:
+                        SimpleNamespace(verify_all=lambda: None))
+    monkeypatch.setattr(join, "restore_prepared_cache", lambda *a, **k: SimpleNamespace(
+        initial_result=SimpleNamespace(state=None), met=None, boundaries=None,
+        receipt={"content_sha256": digest}))
+    monkeypatch.setattr(join, "_surface_state", lambda *a, **k: None)
+    monkeypatch.setattr(join, "sealed_source_leads", lambda *a: (0, 1))
+    monkeypatch.setattr(join, "load_hrrr_native_series",
+                        lambda *a, **k: (object(),))
+    monkeypatch.setattr(join, "verified_static_catalog", lambda *a:
+                        (SimpleNamespace(files=()), {"selections": {"d01": None}}))
+    monkeypatch.setattr(join, "grids_from_projection_config",
+                        lambda exp: (target.grid(),))
+    monkeypatch.setattr(join, "ParentInitView", lambda **k: SimpleNamespace(**k))
+    monkeypatch.setattr(join, "NestedInputCatalog",
+                        lambda **k: SimpleNamespace(**k))
+    monkeypatch.setattr(join, "_source_identity", lambda *a: {})
+    built = []
+
+    def initialize(**kwargs):
+        built.append((kwargs["source_identity"], kwargs["exp"]))
+        return SimpleNamespace(timings_seconds={},
+                               artifacts=SimpleNamespace(receipt={}),
+                               wrf_manifest={})
+
+    monkeypatch.setattr(join, "initialize_and_export_native_hierarchy", initialize)
+    monkeypatch.setattr(join, "emit_statics_corridor_set", lambda **k: None)
+    output = tmp_path / "joined"
+    result = join.prepare_hrrr_hierarchy(
+        root_preparation=preparation, root_domain_spec=authority,
+        wps_namelist=authority, namelist_input=authority,
+        stock_wrf_namelist_input=authority, geog_root=preparation,
+        source_manifest=authority, source_manifest_sha256=digest,
+        valid_time=day, output_root=output, workers=1)
+
+    published = json.loads((output / "receipt.json").read_text(encoding="utf-8"))
+    ((hierarchy_identity, exported),) = built
+    assert hierarchy_identity["root_preparation"] == source_identity
+    if perturbed:
+        assert published["initial_perturbation"] == deferral
+        assert result["initial_perturbation"] == deferral
+        # The export sees the tree's bubbles, so the companion WRF set
+        # refuses the state it cannot hold, as on every other source.
+        assert exported.perturbation == bubbles
+    else:
+        assert "initial_perturbation" not in published
+        assert "initial_perturbation" not in result
+        assert exported is exp

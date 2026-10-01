@@ -228,7 +228,7 @@ OPTIONAL_WRFINPUT = (
 # These are the only non-science variable records allowed through the reader.
 # ``Times`` is character metadata and is not copied into ``RestoredDomain.raw``.
 EXPLICIT_AUXILIARY_WRFINPUT = (
-    "Times", "XTIME", "ITIMESTEP",
+    "Times", "XTIME", "ITIMESTEP", "FRC_URB2D",
     "XLAT", "XLONG", "XLAT_U", "XLONG_U", "XLAT_V", "XLONG_V",
 )
 
@@ -265,7 +265,7 @@ WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
         "SNOW", "SNOWH", "VEGFRA", "SNOALB", "SHDMIN", "SHDMAX",
         "PSFC", "T2", "Q2", "TH2", "U10", "V10", "XLAND", "IVGTYP",
         "XICE", "SEAICE", "ALBBCK", "ALBEDO", "LAI", "LAI12M",
-        "SWDOWN", "GLW", "QNWFA2D", "QNIFA2D",
+        "SWDOWN", "GLW", "QNWFA2D", "QNIFA2D", "FRC_URB2D",
         "PBLH", "UST", "ZNT", "HFX", "QFX", "LH", "GRDFLX", "RAINNC",
         "RAINC", "XLAT", "XLONG", "SST", "CANWAT", "LAKEMASK",
         "ACRUNOFF", "RHOSNF", "SNOWFALLAC", "SOILT1",
@@ -321,7 +321,7 @@ ALLOWED_WRFINPUT = (MAPPED_WRFINPUT | frozenset(EXPLICIT_AUXILIARY_WRFINPUT)
 IGNORED_WRFINPUT = frozenset({
     "BATHYMETRY_FLAG", "CFN", "CFN1", "CLAT", "CLDFRA", "CPLMASK",
     "DTS", "DTSEPS", "DZS", "EROD", "FCX", "FNDALBSI", "FNDICEDEPTH",
-    "FNDSNOWH", "FNDSNOWSI", "FNDSOILW", "FRC_URB2D", "GCX", "GOT_VAR_SSO",
+    "FNDSNOWH", "FNDSNOWSI", "FNDSOILW", "GCX", "GOT_VAR_SSO",
     "LAKEFLAG", "LAKE_DEPTH", "LAKE_DEPTH_FLAG", "LANDUSEF",
     "LAT_LL_D", "LAT_LL_T", "LAT_LL_U", "LAT_LL_V", "LAT_LR_D", "LAT_LR_T",
     "LAT_LR_U", "LAT_LR_V", "LAT_UL_D", "LAT_UL_T", "LAT_UL_U", "LAT_UL_V",
@@ -1013,6 +1013,15 @@ def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
         state_kwargs["scratch_arena"] = scratch_arena
     if dycore_state_workspace is not None:
         state_kwargs["dycore_state_workspace"] = dycore_state_workspace
+    # Admitted before the constructor: a wrfinput too big for the card
+    # stopped in a CUDA out-of-memory inside DomainState instead of being
+    # refused by name.  A shared dycore workspace hands the constructor its
+    # rebuilt arrays as views, so those are not charged twice.
+    from gpuwm.core.resident_admission import admit_construction
+
+    admit_construction(
+        "restoring this wrfinput onto the card", cfg,
+        shared_symbols=getattr(dycore_state_workspace, "_symbol_shapes", ()))
     state = DomainState(cfg, **state_kwargs)
     coord, base = wrf_coordinate_and_base(restored)
     state.load_base(coord, base)
@@ -1051,8 +1060,13 @@ def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
 def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
                                radiation_start_time=None, radiation_latitude=None,
                                radiation_longitude=None, landuse=None,
-                               constant_glw_wm2=None, cam_ozone=None):
-    """Initialize physics from the file's actual surface and land categories."""
+                               constant_glw_wm2=None, cam_ozone=None,
+                               fractional_seaice=False):
+    """Initialize physics from the file's actual surface and land categories.
+
+    ``fractional_seaice`` is the run namelist's (&physics, WRF default 0,
+    not a wrfinput header); only the Noah mosaic tile door reads it.
+    """
     _validate_supplied_physics_fields(restored.raw, cfg, restored.global_attributes)
     import cupy as cp
     from gpuwm.core.physics import initialize_physics
@@ -1095,6 +1109,12 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
         radiation_start_time=radiation_start_time,
         radiation_latitude=radiation_latitude,
         radiation_longitude=radiation_longitude,
+        # The file's own urban fraction reaches urban_var_init, which keeps
+        # a value in (0, 1] and takes the table's otherwise
+        # (module_sf_urban.F:2767-2777).  Passed only to an urban run.
+        **({"frc_urb2d": raw["FRC_URB2D"]}
+           if int(getattr(cfg, "sf_urban_physics", 0)) > 0
+           and raw.get("FRC_URB2D") is not None else {}),
         **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
     from gpuwm.ingest.wrfinput_noahmp import NOAHMP_INITIALIZED_SURFACE_FIELDS
     for field in driver.fields:
@@ -1119,6 +1139,10 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
         driver.microphysics.rainnc[...] = cp.asarray(raw["RAINNC"], dtype=cp.float32)
     if driver.rainc is not None and "RAINC" in raw:
         driver.rainc[...] = cp.asarray(raw["RAINC"], dtype=cp.float32)
+    if getattr(cfg, "sf_surface_mosaic", 0) == 1:
+        from gpuwm.core.noah_mosaic_door import attach_wrfinput_noah_mosaic
+        attach_wrfinput_noah_mosaic(driver, cfg, restored,
+                                    fractional_seaice=fractional_seaice)
     return driver
 
 def _decode_times(variable) -> tuple[datetime, ...]:
@@ -1370,7 +1394,12 @@ def _check_initial_boundary_pair(restored, tables, width, *, layouts=None):
     moist_theta = int(restored.global_attributes["USE_THETA_M"]) == 1
     for key, (name, *_dimensions) in layouts.items():
         field = np.asarray(raw[name], dtype=np.float32)
-        other = None
+        # How far two builds' reconstructions of a field can differ before
+        # coupling, per element of one side's strip (a function of the
+        # side, so it is computed on the width-``width`` strips the check
+        # compares, never on the whole domain): none for a field copied
+        # from the file.
+        field_bound = other = other_bound = None
         if key == "theta":
             # WRF 4.0 through 4.7.1 real.exe writes wrfinput T dry under
             # both settings (Registry.EM_COMMON:209 maps th_phy_m_t0 to
@@ -1382,7 +1411,14 @@ def _check_initial_boundary_pair(restored, tables, width, *, layouts=None):
             # and QVAPOR, and keep the other one to say what the boundary
             # holds instead when the two files disagree.
             dry, moist = field, _moist_theta_from_dry(field, raw["QVAPOR"])
-            field, other = (moist, dry) if moist_theta else (dry, moist)
+            def moist_bound(side, dry=dry, qv=raw["QVAPOR"]):
+                return _moist_theta_build_bound(
+                    _boundary_strip(dry, side, width),
+                    _boundary_strip(np.asarray(qv, np.float32), side, width))
+            if moist_theta:
+                field, field_bound, other = moist, moist_bound, dry
+            else:
+                field, other, other_bound = dry, moist, moist_bound
         if key == "mu":
             field = field[None]
         else:
@@ -1390,19 +1426,59 @@ def _check_initial_boundary_pair(restored, tables, width, *, layouts=None):
             field = np.asarray(field * weight, dtype=np.float32)
             if other is not None:
                 other = np.asarray(other * weight, dtype=np.float32)
+            # couple() multiplies the reconstruction by the dry column mass,
+            # and with it the reconstruction's build-to-build difference.
+            if field_bound is not None:
+                field_bound = _coupled_bound(field_bound, weight, width)
+            if other_bound is not None:
+                other_bound = _coupled_bound(other_bound, weight, width)
             if key in ("u", "v"):
                 field = np.asarray(field / np.asarray(raw["MAPFAC_" + name], dtype=np.float32)[None], dtype=np.float32)
         for side, (actual, _tendency) in tables[key].items():
             expected = _boundary_strip(field, side, width)
             actual = np.asarray(actual, dtype=np.float32)
-            # Permit independent WRF builds' final FP32 rounding, without
-            # treating a changed boundary field as a new initial state.
-            tolerance = 4.0 * np.abs(np.spacing(expected)) + 1e-6
+            tolerance = _coupled_build_tolerance(expected, field_bound, side, width)
             if actual.shape != expected.shape or np.any(np.abs(actual - expected) > tolerance):
+                other_strip = None if other is None else _boundary_strip(other, side, width)
                 raise ValueError(_initial_boundary_refusal(
                     restored, name, side, actual, expected, tolerance,
-                    None if other is None else _boundary_strip(other, side, width),
-                    moist_theta))
+                    other_strip, moist_theta,
+                    None if other is None else _coupled_build_tolerance(
+                        other_strip, other_bound, side, width)))
+
+
+def _coupled_build_tolerance(expected, reconstruction_bound, side, width):
+    """How far an independent WRF build's value of one coupled boundary
+    element may sit from ours, without treating a changed boundary field
+    as a new initial state.
+
+    Four FP32 spacings of the coupled value cover couple()'s own rounding
+    (its mass weight and the multiply, and the map-factor divide of U/V).
+    That rounding scales with the coupled value itself: the weight sums
+    terms of one size and sign (MU is a few percent of MUB), so no operand
+    outweighs the result; a GCC real.exe that fuses those multiply-adds
+    sat at most 3 spacings from ours in every field copied from the file
+    (U, V, PH, MU, QVAPOR and the aerosol numbers).  A field real.exe
+    derived before coupling also carries its reconstruction's
+    build-to-build difference, which scales with the reconstruction's
+    operands and was carried through the coupling by the caller.
+    """
+    tolerance = 4.0 * np.abs(np.spacing(expected)) + 1e-6
+    if reconstruction_bound is None:
+        return tolerance
+    return tolerance + reconstruction_bound(side)
+
+
+def _coupled_bound(bound, weight, width):
+    """``bound`` carried through couple()'s multiply by the mass weight,
+    side by side on the strips alone."""
+
+    def coupled(side):
+        strip = np.abs(_boundary_strip(np.asarray(weight), side, width)
+                       .astype(np.float64))
+        return bound(side) * strip
+
+    return coupled
 
 
 def _moist_theta_from_dry(theta, qv):
@@ -1416,8 +1492,40 @@ def _moist_theta_from_dry(theta, qv):
                       - np.float32(300.0), dtype=np.float32)
 
 
+def _moist_theta_build_bound(theta, qv):
+    """Largest |difference|, in K, between two FP32 builds of
+    ``t_2 = (t_2 + T0) * (1. + (R_v/R_d) * qv) - T0``, per element.
+
+    Operation count.  s = t_2 + T0 is a lone add of two stored values, so
+    every build rounds it identically.  Five operations remain: the
+    R_v/R_d quotient (folded at compile time, at the compiler's choice of
+    precision), a*qv, f = 1 + a*qv, p = s*f and r = p - T0.  A build rounds
+    each to nearest or fuses a multiply into the add after it (a GCC build
+    for a CPU with FMA forms 1 + a*qv and s*f - T0 with one rounding each),
+    and a rounding moves its result by at most u = 2**-24 of the result's
+    magnitude.  Two builds therefore differ at one operation by at most 2u
+    of it, carried to r by the partial derivative of r (s*qv*a for the
+    quotient and the product, s for f, 1 for p and r).  Summed over the
+    five, to first order in u (the remainder is u times smaller):
+
+        |r_A - r_B| <= 2u * (2*|s*a*qv| + |s*f| + |p| + |r|)
+
+    That is two to six FP32 spacings of the full moist theta p, a few
+    hundred K, while r = p - 300 is often a few K and its own spacing 64
+    or more times finer: the spacing of the result cannot bound it.
+    """
+    theta = np.asarray(theta, np.float32)
+    s = np.asarray(theta + np.float32(300.0), np.float32)
+    aq = np.asarray(_WRF_RVOVRD * np.asarray(qv, np.float32), np.float32)
+    f = np.asarray(np.float32(1.0) + aq, np.float32)
+    p = np.asarray(f * s, np.float32)
+    r = np.asarray(p - np.float32(300.0), np.float32)
+    s, aq, f, p, r = (np.abs(x.astype(np.float64)) for x in (s, aq, f, p, r))
+    return 2.0 * 2.0**-24 * (2.0 * s * aq + s * f + p + r)
+
+
 def _initial_boundary_refusal(restored, name, side, actual, expected, tolerance,
-                              other, moist_theta):
+                              other, moist_theta, other_tolerance):
     """Name what was compared, how far apart the files are, and what the
     boundary holds instead, so a mixed pair and a representation mismatch
     read differently at the terminal."""
@@ -1455,7 +1563,7 @@ def _initial_boundary_refusal(restored, name, side, actual, expected, tolerance,
         other_name = "MOIST"
         writers = "no stock real.exe writes that under use_theta_m=0"
     other_difference = np.abs(actual.astype(np.float64) - other.astype(np.float64))
-    if not np.any(other_difference > 4.0 * np.abs(np.spacing(other)) + 1e-6):
+    if not np.any(other_difference > other_tolerance):
         return (f"{head}: {compared}; {size}. The boundary equals the {other_name} "
                 f"coupling of this wrfinput T at every point instead: {writers}. "
                 f"Re-run real.exe so both files come from one run whose boundary "

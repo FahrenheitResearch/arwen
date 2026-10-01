@@ -66,6 +66,7 @@ COUPLED_GROUPS = (
     ("microphysics", "radiation"),
     ("cumulus", "pbl"),
     ("land_surface", "radiation"),
+    ("urban", "land_surface", "pbl"),
 )
 
 NEIGHBOUR_LIMIT = 5
@@ -140,6 +141,11 @@ def _run_default(key: str) -> Any:
     return next(item.default for item in fields(RunConfig) if item.name == key)
 
 
+#: The urban canopy keys (gpuwm/config.py), which a mix leaves out of a file
+#: that never stated them while urban physics stays at its default, off.
+_URBAN_RUN_KEYS = ("sf_urban_physics", "use_wudapt_lcz", "num_urban_hi")
+
+
 #: The switches a nest running no cumulus keeps when a mix is written
 #: into its file: the mix's cumulus is the root's.
 _NEST_CUMULUS = ("cu_physics", "cudt_minutes")
@@ -168,10 +174,81 @@ def known_source(source: str | None) -> str | None:
     return source
 
 
-def default_suite(source: str | None = None) -> str:
+def default_suite(source: str | None = None, finest_dx_m: float | None = None,
+                  domains: int = 1) -> str:
+    """The suite a run of ``source`` gets with none named, at its finest grid.
+
+    The call `gpuwm domain` binds (:func:`gpuwm.physics_menu.default_profile_for`),
+    so a check that names no suite describes the suite the run carries.  With no
+    spacing it is the source's own default, as the catalog's table shows it.
+    """
+
     from gpuwm.physics_menu import default_profile_for
 
-    return default_profile_for(source or default_source())
+    return default_profile_for(source or default_source(), finest_dx_m, domains)
+
+
+def _request_grid(request: Mapping[str, Any]) -> tuple[float, int]:
+    """The finest grid spacing in metres and the domain count a request asks about.
+
+    ``finest_dx_km`` and ``domains`` describe a run with nests: the finest grid
+    and how many grids there are.  Without them the request is one domain at
+    ``dx_km`` (the probe spacing when that is absent too).  The default suite
+    is read at this grid, which is what `gpuwm domain` binds: on 2.8.1 before
+    this the check named the source's own default on a 750 m grid that runs the
+    sub-km suite, so New forecast's Physics step described physics the run did
+    not have.
+    """
+
+    try:
+        dx_km = float(request.get("dx_km") or PROBE_DX_KM)
+        finest_km = float(request.get("finest_dx_km") or dx_km)
+        domains = request.get("domains") or 1
+        if isinstance(domains, bool) or int(domains) != float(domains):
+            raise ValueError(domains)
+        domains = int(domains)
+    except (TypeError, ValueError) as error:
+        raise CatalogError("dx_km and finest_dx_km must be numbers and domains a whole number.") from error
+    if not 0.01 <= finest_km <= 200.0:
+        raise CatalogError("finest_dx_km must be between 0.01 and 200.")
+    if domains < 1:
+        raise CatalogError("domains must be 1 or more.")
+    return finest_km * 1000.0, domains
+
+
+def request_default_suite(request: Mapping[str, Any]) -> str:
+    """The suite a check request runs when it names none: the default at its grid."""
+
+    finest_m, domains = _request_grid(request)
+    return default_suite(request.get("source") or None, finest_m, domains)
+
+
+def experiment_grid(text: str) -> dict[str, Any]:
+    """An experiment file's grid as check request keys: ``dx_km``, ``finest_dx_km`` and ``domains``.
+
+    The root's spacing is its ``[[domain]]`` table's ``dx``; a nest states its
+    own or divides its parent's by ``parent_grid_ratio``, as `gpuwm domain`
+    writes them.  Empty for a file with no domain tables or no root spacing.
+    """
+
+    import tomllib
+
+    tables = tomllib.loads(text).get("domain") or []
+    if not tables or not tables[0].get("dx"):
+        return {}
+    spacing: dict[int, float] = {}
+    for index, table in enumerate(tables):
+        grid_id = int(table.get("grid_id") or index + 1)
+        if table.get("dx"):
+            spacing[grid_id] = float(table["dx"])
+            continue
+        parent = spacing.get(int(table.get("parent_id") or index))
+        ratio = int(table.get("parent_grid_ratio") or 0)
+        if parent is None or ratio < 1:
+            return {}
+        spacing[grid_id] = parent / ratio
+    return {"dx_km": float(tables[0]["dx"]) / 1000.0,
+            "finest_dx_km": min(spacing.values()) / 1000.0, "domains": len(tables)}
 
 
 def _suite_switches(suite: str) -> dict[str, Any]:
@@ -202,12 +279,14 @@ def _probe(settings: Mapping[str, Any], *, dx_km: float, nz: int,
 
 
 def _first_refusal(cfg, *, source: str | None, dx_km: float,
-                   window: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+                   window: Mapping[str, Any] | None = None,
+                   domains: int = 1) -> dict[str, Any] | None:
     """The first engine door that refuses ``cfg``, in the order a run meets them.
 
     ``window`` (start time, run seconds, reference latitude and longitude)
     adds the load-time nocturnal-radiation door, which only a place and a
-    clock can ask.
+    clock can ask.  ``domains`` is how many grids the run has: the source's
+    route is asked for that many, as `gpuwm domain` asks it.
     """
 
     from gpuwm.config import validate_run_config
@@ -249,7 +328,7 @@ def _first_refusal(cfg, *, source: str | None, dx_km: float,
                     "owner": "gpuwm.physics_compat.nocturnal_radiation_refusal",
                     "message": night}
     if source:
-        blocker = switch_route_blocker(vars(cfg), source)
+        blocker = switch_route_blocker(vars(cfg), source, domains=domains)
         if blocker:
             return {"door": "source-route", "owner": "gpuwm.physics_menu.switch_route_blocker",
                     "message": blocker}
@@ -459,7 +538,8 @@ def _streams(selectors: Mapping[str, Any]) -> dict[str, Any] | None:
 def catalog(*, source: str | None = None) -> dict[str, Any]:
     """Every family, every scheme, every suite, every preset."""
 
-    from gpuwm.physics_menu import profile_facts, shipped_profiles
+    from gpuwm.physics_menu import (profile_facts, shipped_profiles,
+                                    spacing_default_menu_rows)
     from gpuwm.physics_registry import registry_sha256
 
     source = known_source(source)
@@ -544,6 +624,12 @@ def catalog(*, source: str | None = None) -> dict[str, Any]:
         "schema": SCHEMA,
         "physics_registry_sha256": registry_sha256(),
         "default_suite": reference_suite,
+        # The default by grid spacing, ahead of default_suite when the
+        # finest grid is finer than a row's bound: the row `gpuwm domain`
+        # and New forecast bind (gpuwm.physics_menu.SPACING_DEFAULTS),
+        # answered for one domain and for a tree.
+        "spacing_defaults": spacing_default_menu_rows(
+            source or default_source()),
         "source": source or default_source(),
         "cost_reference": {"suite": reference_suite, "words": "Cost is per model step against the default suite, "
                            "from the measured step rates in gpuwm.core.pace. A scheme the rates do not separate "
@@ -705,12 +791,12 @@ def apply_to_experiment(text: str, request: Mapping[str, Any], *, load: bool = T
     import tomllib
 
     request = dict(request)
-    if not request.get("dx_km"):
-        # The root this file runs decides whether its cumulus is retired,
-        # not the probe spacing.
-        tables = tomllib.loads(text).get("domain") or []
-        if tables and tables[0].get("dx"):
-            request["dx_km"] = float(tables[0]["dx"]) / 1000.0
+    # The root this file runs decides whether its cumulus is retired, not
+    # the probe spacing, and its finest grid and domain count decide which
+    # default a mix naming no suite changes, as they decided the suite
+    # `gpuwm domain` wrote into it.  A key the request states wins.
+    request = {**experiment_grid(text),
+               **{key: value for key, value in request.items() if value not in (None, "")}}
     verdict = check(request)
     if not verdict["valid"]:
         raise CatalogError(verdict["words"])
@@ -751,6 +837,13 @@ def apply_to_experiment(text: str, request: Mapping[str, Any], *, load: bool = T
     # instead of the mix (radt 0, radiation on every model step).
     in_shared = {key for key in full if key in shared or not tables
                  or any(reads_shared(index, table, key) for index, table in enumerate(tables))}
+    # A urban key the file never states, at the engine's own urban-off
+    # default, stays out: every grid already runs that value, and writing
+    # sf_urban_physics = 0 into a file that never named urban physics made
+    # every mix touch a component it did not choose.
+    in_shared -= {key for key in _URBAN_RUN_KEYS
+                  if key not in shared and not any(key in table for table in tables)
+                  and full.get(key) == _run_default(key)}
     # A quiet nest that states no cu_physics would run the scheme [shared]
     # now carries, so it is written 0 in its own table.
     pins = {index: {"cu_physics": 0} for index in quiet_nests
@@ -961,8 +1054,8 @@ def write_experiment(into: Path, out: Path, request: Mapping[str, Any]) -> list[
 
 def _settings(request: Mapping[str, Any]) -> tuple[str, dict[str, Any], dict[str, str], list[dict[str, Any]]]:
     suite = request.get("suite")
-    source = request.get("source")
-    base = str(suite) if suite else default_suite(source)
+    # No suite named: the default at the request's grid, the one the run binds.
+    base = str(suite) if suite else request_default_suite(request)
     try:
         settings = _suite_switches(base)
     except (KeyError, ValueError) as error:
@@ -1061,13 +1154,13 @@ def _as_emitted(settings: Mapping[str, Any], base: str, *, dx_km: float,
 
 
 def _verdict(settings: Mapping[str, Any], *, dx_km: float, nz: int,
-             source: str | None, window: Mapping[str, Any] | None = None
-             ) -> tuple[Any, dict[str, Any] | None]:
+             source: str | None, window: Mapping[str, Any] | None = None,
+             domains: int = 1) -> tuple[Any, dict[str, Any] | None]:
     try:
         cfg = _probe(settings, dx_km=dx_km, nz=nz)
     except (TypeError, ValueError) as error:
         return None, {"door": "configuration", "owner": "gpuwm.config.RunConfig", "message": str(error)}
-    return cfg, _first_refusal(cfg, source=source, dx_km=dx_km, window=window)
+    return cfg, _first_refusal(cfg, source=source, dx_km=dx_km, window=window, domains=domains)
 
 
 def _named(cfg) -> str | None:
@@ -1121,19 +1214,21 @@ def _resolved(cfg) -> dict[str, str]:
 
 def _neighbours(settings: Mapping[str, Any], chosen: Mapping[str, str], *, dx_km: float,
                 nz: int, source: str | None, cfg, kept=(),
-                window: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+                window: Mapping[str, Any] | None = None, default: str | None = None,
+                domains: int = 1) -> list[dict[str, Any]]:
     """The nearest combinations the same doors admit.
 
     Ranked: first those that keep every family the caller chose
     explicitly (``kept``), then fewest families changed, then the
     registry's own declared remedy, then a combination that is a named
-    suite.
+    suite, then fewest families away from ``default`` (the suite the run
+    gets with none named, the source's own when not given).
     """
 
     from gpuwm.physics_compat import conditional_refusals_for
 
     menu = _menu()
-    defaults = _template_components(default_suite(source)) or {}
+    defaults = _template_components(default or default_suite(source)) or {}
     candidates: list[tuple[str, dict[str, Any], dict[str, str]]] = []
     if cfg is not None:
         for rule in conditional_refusals_for(cfg):
@@ -1155,7 +1250,8 @@ def _neighbours(settings: Mapping[str, Any], chosen: Mapping[str, str], *, dx_km
     for label, edit, changes in candidates:
         trial = dict(settings)
         trial.update(edit)
-        trial_cfg, refusal = _verdict(trial, dx_km=dx_km, nz=nz, source=source, window=window)
+        trial_cfg, refusal = _verdict(trial, dx_km=dx_km, nz=nz, source=source, window=window,
+                                      domains=domains)
         if refusal is not None:
             continue
         resolved = _resolved(trial_cfg)
@@ -1201,11 +1297,15 @@ def _registry_id(choice: str | None) -> str | None:
 def check(request: Mapping[str, Any]) -> dict[str, Any]:
     """Valid, or the engine's own refusal with the nearest valid combinations.
 
-    ``request``: ``suite`` (a registered suite id; the source's default
-    when absent), ``preset`` (a preset id, standing for its suite and
-    grid spacing), ``choices`` (family -> scheme id, or for radiation a
+    ``request``: ``suite`` (a registered suite id; when absent, the
+    default `gpuwm domain` binds for this source at the request's finest
+    grid), ``preset`` (a preset id, standing for its suite and grid
+    spacing), ``choices`` (family -> scheme id, or for radiation a
     ``{"longwave": n, "shortwave": n}`` pair), ``settings`` (raw switch
-    overrides), ``dx_km``, ``nz``, ``source`` and ``card``.
+    overrides), ``dx_km`` (the root's spacing), ``finest_dx_km`` and
+    ``domains`` (a run with nests: its finest spacing and how many grids
+    it has; one grid at ``dx_km`` when absent), ``nz``, ``source`` and
+    ``card``.
     """
 
     if not isinstance(request, Mapping):
@@ -1224,6 +1324,11 @@ def check(request: Mapping[str, Any]) -> dict[str, Any]:
     card = request.get("card") or None
     if card is not None and card not in cards():
         raise CatalogError(f"card must be one of {', '.join(cards())}.")
+    finest_m, domains = _request_grid(request)
+    # The suite this grid runs with none named, from the row `gpuwm domain`
+    # binds: the base of a request naming no suite and the reference its
+    # cost, its neighbours and its plan are measured from.
+    default = default_suite(source, finest_m, domains)
     base, settings, chosen, blocked = _settings(request)
     as_written = dict(settings)
     settings, retired = _as_emitted(settings, base, dx_km=dx_km, requested=_cumulus_requested(request))
@@ -1234,13 +1339,14 @@ def check(request: Mapping[str, Any]) -> dict[str, Any]:
     if retired:
         chosen["cumulus"] = next(key for key, row in _menu()["cumulus"].items()
                                  if row["settings"].get("cu_physics") == settings["cu_physics"])
-    cfg, refusal = _verdict(settings, dx_km=dx_km, nz=nz, source=source, window=window)
+    cfg, refusal = _verdict(settings, dx_km=dx_km, nz=nz, source=source, window=window, domains=domains)
     if blocked:
         refusal = blocked[0]
     result: dict[str, Any] = {
         "schema": CHECK_SCHEMA, "valid": refusal is None, "base_suite": base,
         "preset": chosen_preset["id"] if chosen_preset else None,
-        "dx_km": dx_km, "nz": nz, "source": source, "card": card, "choices": chosen,
+        "dx_km": dx_km, "finest_dx_km": finest_m / 1000.0, "domains": domains, "default_suite": default,
+        "nz": nz, "source": source, "card": card, "choices": chosen,
         "cumulus_retired": retired[0] if retired else None,
         "window": None if window is None else {"cycle": window["cycle"], "hours": window["hours"],
                                                "lat": window["ref_lat"], "lon": window["ref_lon"]},
@@ -1249,7 +1355,8 @@ def check(request: Mapping[str, Any]) -> dict[str, Any]:
         result["refusal"] = refusal
         result["words"] = _headline(refusal["message"])
         result["neighbours"] = _neighbours(settings, chosen, dx_km=dx_km, nz=nz, source=source, cfg=cfg,
-                                           kept=tuple((request.get("choices") or {}).keys()), window=window)
+                                           kept=tuple((request.get("choices") or {}).keys()), window=window,
+                                           default=default, domains=domains)
         return result
     from gpuwm.physics_menu import switches_day_only_reason
 
@@ -1259,7 +1366,7 @@ def check(request: Mapping[str, Any]) -> dict[str, Any]:
     named = _named(cfg) or (_named(_probe(as_written, dx_km=dx_km, nz=nz)) if retired else None)
     from gpuwm.domain_wizard import root_cumulus
 
-    reference_cfg = _probe(root_cumulus(_suite_switches(default_suite(source)), dx_km,
+    reference_cfg = _probe(root_cumulus(_suite_switches(default), dx_km,
                                         cumulus_requested=False), dx_km=dx_km, nz=nz)
     advisories = _advisories(settings, dx_km)
     result.update(
@@ -1294,7 +1401,7 @@ def check(request: Mapping[str, Any]) -> dict[str, Any]:
         plan_intent = None
     else:
         plan_intent = {"physics_choices": dict(request["choices"]),
-                       **({} if base == default_suite(source) else {"physics_profile": base})}
+                       **({} if base == default else {"physics_profile": base})}
     result["plan_intent"] = plan_intent
     result["on_create_page"] = plan_intent is not None
     if named:
@@ -1444,6 +1551,6 @@ def register_cli(subparsers) -> None:
 
 
 __all__ = ["CHECK_SCHEMA", "SCHEMA", "CatalogError", "catalog", "check", "default_suite",
-           "apply_to_experiment", "cumulus_change", "experiment_physics", "file_cumulus", "experiment_toml", "known_source",
-           "write_experiment",
+           "apply_to_experiment", "cumulus_change", "experiment_grid", "experiment_physics", "file_cumulus",
+           "experiment_toml", "known_source", "request_default_suite", "write_experiment",
            "preset", "presets", "register_cli", "table"]

@@ -1,0 +1,3 @@
+gfortran: GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+glibc: ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43
+cpu: Intel(R) Core(TM) Ultra 7 270K Plus

@@ -458,7 +458,7 @@ MCICA_DEVICE_COLUMN_CHUNK = 16384
 
 #: Every kernel in the McICA device module (local-frame audit surface).
 MCICA_GPU_KERNEL_NAMES = ("rmcw_probe", "rmcw_fill_cdf",
-                          "rmcw_walk_mask", "rmcw_fill_outputs")
+                          "rmcw_walk_mask", "rmcw_fill_outputs", "rmcw_fill_outputs_column")
 
 # Output source kinds -- FROZEN, mirrored by rrtmg_mcica_wrf.cu.
 _MCICA_SRC_CONST1 = 0
@@ -591,7 +591,7 @@ def _mcica_dev_f32(cp, arr, shape, name):
 def _gpu_generate_subcolumns(ncol, nlay, ngpt, icld, permuteseed, irng,
                              play, cldfrac, hgt, percol_srcs, band_srcs,
                              nbnd, band_offsets, out_specs, passthrough,
-                             ncol_chunk, stage_probe=None):
+                             ncol_chunk, stage_probe=None, layout="gpoint"):
     """Shared device driver for both generator sides (see wrappers)."""
     # Fail closed BEFORE any cupy import, upload or launch.
     if int(icld) != MCICA_DEVICE_ICLD:
@@ -604,6 +604,8 @@ def _gpu_generate_subcolumns(ncol, nlay, ngpt, icld, permuteseed, irng,
             "irng != 0 selects the Mersenne-Twister generator, which "
             "WRF's RRTMG option-4 drivers never use; only kissvec "
             "(irng = 0) is ported")
+    if layout not in ("gpoint", "column"):
+        raise ValueError("layout must be gpoint or column")
     ncol = int(ncol)
     nlay = int(nlay)
     if nlay < 4:
@@ -642,7 +644,8 @@ def _gpu_generate_subcolumns(ncol, nlay, ngpt, icld, permuteseed, irng,
     outs = {}
     optrs, sptrs, kinds, clears = [], [], [], []
     for name, kind, src, clear in out_specs:
-        o = cp.empty((ngpt, ncol, nlay), dtype=cp.float32)
+        o = cp.empty((ngpt, ncol, nlay) if layout == "gpoint" else
+                     (ncol, nlay, ngpt), dtype=cp.float32)
         outs[name] = o
         optrs.append(o.data.ptr)
         sptrs.append(0 if src is None else srcs[src].data.ptr)
@@ -658,7 +661,8 @@ def _gpu_generate_subcolumns(ncol, nlay, ngpt, icld, permuteseed, irng,
 
     fill_cdf = _mcica_gpu_kernel("rmcw_fill_cdf")
     walk = _mcica_gpu_kernel("rmcw_walk_mask")
-    fill_out = _mcica_gpu_kernel("rmcw_fill_outputs")
+    fill_out = _mcica_gpu_kernel("rmcw_fill_outputs" if layout == "gpoint"
+                                 else "rmcw_fill_outputs_column")
     tb = _MCICA_GPU_THREADS
     for col0 in range(0, ncol, chunk):
         nc = min(chunk, ncol - col0)
@@ -688,14 +692,14 @@ def _gpu_generate_subcolumns(ncol, nlay, ngpt, icld, permuteseed, irng,
         # Mirror the NumPy entries' .copy() when the device array IS the
         # caller's (a caller mutation must not alias the output).
         outs[name] = d.copy() if d is arr else d
-    cp.cuda.runtime.deviceSynchronize()
     return outs
 
 
 def gpu_generate_lw_subcolumns(iplon, ncol, nlay, icld, permuteseed,
                                irng, play, cldfrac, ciwp, clwp, cswp,
                                rei, rel, res, tauc, hgt, idcor, juldat,
-                               lat, ncol_chunk=None, _stage_probe=None):
+                               lat, ncol_chunk=None, _stage_probe=None, *,
+                               layout="gpoint"):
     """Device twin of :func:`generate_lw_subcolumns` (icld=2 only).
 
     Same logical arguments (numpy or cupy float32; ``iplon`` unused like
@@ -703,7 +707,8 @@ def gpu_generate_lw_subcolumns(iplon, ncol, nlay, icld, permuteseed,
     transient (:func:`mcica_device_vram_bytes`; chunking is bitwise
     invisible).  Returns cupy arrays in the frozen shapes.  ``idcor``,
     ``juldat`` and ``lat`` are accepted for signature parity; they
-    cannot influence icld=2 output."""
+    cannot influence icld=2 output. ``layout="column"`` returns the five
+    g-point slabs as (ncol, nlay, NGPTLW); the default stays unchanged."""
     del iplon, idcor, juldat, lat
     out_specs = (
         ("cldfmcl", _MCICA_SRC_CONST1, None, np.float32(0.0)),
@@ -717,19 +722,20 @@ def gpu_generate_lw_subcolumns(iplon, ncol, nlay, icld, permuteseed,
         {"ciwp": ciwp, "clwp": clwp, "cswp": cswp}, {"tauc": tauc},
         NBNDLW, _LW_NGB - 1, out_specs,
         {"reicmcl": rei, "relqmcl": rel, "resnmcl": res},
-        ncol_chunk, _stage_probe)
+        ncol_chunk, _stage_probe, layout)
 
 
 def gpu_generate_sw_subcolumns(iplon, ncol, nlay, icld, permuteseed,
                                irng, play, cldfrac, ciwp, clwp, cswp,
                                rei, rel, res, tauc, ssac, asmc, fsfc,
                                hgt, idcor, juldat, lat, ncol_chunk=None,
-                               _stage_probe=None):
+                               _stage_probe=None, layout="gpoint"):
     """Device twin of :func:`generate_sw_subcolumns` (icld=2 only).
 
     See :func:`gpu_generate_lw_subcolumns`; the SW roster adds the
     ``ssac``/``asmc``/``fsfc`` band inputs, with ``ssacmcl``'s clear-sky
-    value 1.0 exactly like the NumPy entry."""
+    value 1.0 exactly like the NumPy entry. ``layout="column"`` returns
+    the eight slabs as (ncol, nlay, NGPTSW)."""
     del iplon, idcor, juldat, lat
     out_specs = (
         ("cldfmcl", _MCICA_SRC_CONST1, None, np.float32(0.0)),
@@ -748,4 +754,4 @@ def gpu_generate_sw_subcolumns(iplon, ncol, nlay, icld, permuteseed,
         {"tauc": tauc, "ssac": ssac, "asmc": asmc, "fsfc": fsfc},
         NBNDSW, _SW_NGB - _SW_NGB[0], out_specs,
         {"reicmcl": rei, "relqmcl": rel, "resnmcl": res},
-        ncol_chunk, _stage_probe)
+        ncol_chunk, _stage_probe, layout)

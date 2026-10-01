@@ -1,0 +1,2 @@
+provenance: WARNING -- gpuwm '2.8.1' is a borrowed version: it came from the editable install of gpuwm '2.8.1' declared at <engine> (metadata in <venv>/lib/python3.12/site-packages), which does not provide the code executing at <tree>; the numbers agree, so the run continues
+registry_sha256: 78c6e97955d3cdbee13b234fffe7c12529f2b2e7e552004184d7af8107538d06 | docs/public/receipts/F2-ground-truth.json

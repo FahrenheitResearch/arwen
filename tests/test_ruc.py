@@ -190,6 +190,132 @@ def test_cold_start_does_not_mutate_inputs_and_rejects_bad_contracts():
         ruc_initialize_cold_start(*fields, mminlu="NLCD40")
 
 
+def _another_hosts_numpy(monkeypatch, *names):
+    """Stand in for a host whose NumPy transcendentals round other words
+    (NumPy 2.5's AVX-512 loops): every answer of ``np.<name>`` moves one
+    float32 ULP up.  A path that still reads them moves with it."""
+    for name in names:
+        real = getattr(np, name)
+
+        def moved(*args, _real=real, **kwargs):
+            answer = np.asarray(_real(*args, **kwargs))
+            return np.nextafter(answer, np.asarray(np.inf, dtype=answer.dtype))
+
+        monkeypatch.setattr(np, name, moved)
+
+
+def test_cold_start_freezing_curve_takes_glibc_not_the_hosts_numpy(monkeypatch):
+    # A145.  ruclsminit's LOG and ** on REAL are glibc's logf and powf in
+    # WRF's build.  SH2O and SMFR3D took NumPy's float32 log and power, so
+    # a driver constructed on an AVX-512 Linux host started from other
+    # frozen-soil words.  The frozen column of the fixture reaches both.
+    fields = _fixture()
+    before = ruc_initialize_cold_start(*fields)
+    assert np.any(before.smfr3d[:, 1] > np.float32(0.0))
+    probe = np.float32(0.97)
+    host_log, host_power = np.log(probe), np.power(probe, np.float32(-0.2))
+    _another_hosts_numpy(monkeypatch, "log", "power")
+    assert np.log(probe) != host_log
+    assert np.power(probe, np.float32(-0.2)) != host_power
+    after = ruc_initialize_cold_start(*fields)
+    for name in ("sh2o", "smfr3d", "mavail", "znt"):
+        np.testing.assert_array_equal(
+            getattr(after, name).view(np.uint32),
+            getattr(before, name).view(np.uint32), err_msg=name)
+
+
+#: A145.  Live glibc 2.39 ``powf`` (Ubuntu 24.04, called through ctypes)
+#: for SFCDIAGS_RUCLSM's two exner powers, ``(1.E5/PSFC)**ROVCP`` and
+#: ``(1.E-5*PSFC)**ROVCP``, as (PSFC, first, second) float32 words.  Each
+#: pressure is one where NumPy 2.5.3's AVX-512 float32 power misses glibc
+#: on at least one of the two; over 400,000 sampled pressures from 45 to
+#: 110 kPa it missed on 100,124 of the first and 42,025 of the second.
+_SFCDIAGS_GLIBC_POWF_WORDS = (
+    (0x472FC806, 0x3FA0CD5F, 0x3F4BC73D),
+    (0x472FC9DB, 0x3FA0CCE4, 0x3F4BC7D9),
+    (0x473AEB82, 0x3F9E010D, 0x3F4F6314),
+    (0x4746E896, 0x3F9B38F7, 0x3F531A78),
+    (0x47490B8A, 0x3F9ABFD9, 0x3F53BFB1),
+    (0x4753419A, 0x3F989309, 0x3F56C476),
+    (0x4758D87B, 0x3F9770B2, 0x3F586035),
+    (0x475C3464, 0x3F96C6CD, 0x3F595405),
+    (0x475F848A, 0x3F962276, 0x3F5A41E8),
+    (0x4764980C, 0x3F952CA7, 0x3F5BA98E),
+    (0x4766D9EB, 0x3F94C196, 0x3F5C47A7),
+    (0x476D1600, 0x3F93A0BC, 0x3F5DF6A9),
+    (0x476E005C, 0x3F937724, 0x3F5E3543),
+    (0x477486E1, 0x3F925485, 0x3F5FEE96),
+    (0x4775C6DE, 0x3F921DFD, 0x3F604229),
+    (0x477FFEE5, 0x3F906D24, 0x3F62E243),
+    (0x478EC895, 0x3F8BFC32, 0x3F6A14FC),
+    (0x4790B899, 0x3F8B7275, 0x3F6AFC34),
+    (0x4799368B, 0x3F893194, 0x3F6ED848),
+    (0x479ED70C, 0x3F87C980, 0x3F7151A4),
+    (0x47A2BD26, 0x3F86D97F, 0x3F72FF25),
+    (0x47B108E7, 0x3F83A4EC, 0x3F78E9CF),
+    (0x47D6CB3D, 0x3F7923AB, 0x3F838659),
+    (0x47D6D7FF, 0x3F791F71, 0x3F838895),
+)
+
+
+def test_sfcdiags_exner_powers_are_glibc_powf_on_every_host():
+    from gpuwm.core.ruc_runtime import sfcdiags_exner_powers
+
+    words = np.asarray(_SFCDIAGS_GLIBC_POWF_WORDS, dtype=np.uint32)
+    scale, inverse = sfcdiags_exner_powers(words[:, 0].view(np.float32))
+    assert scale.dtype == inverse.dtype == np.float32
+    assert scale.view(np.uint32).tolist() == words[:, 1].tolist()
+    assert inverse.view(np.uint32).tolist() == words[:, 2].tolist()
+
+
+def _sfcdiags_columns():
+    """Real-shaped SFCDIAGS_RUCLSM inputs, stable and unstable columns."""
+    words = np.asarray(_SFCDIAGS_GLIBC_POWF_WORDS, dtype=np.uint32)
+    psfc = words[:, 0].view(np.float32).reshape(4, 6)
+    grid = np.linspace(0.0, 1.0, psfc.size, dtype=np.float32).reshape(psfc.shape)
+    host = {
+        "psfc": psfc.copy(),
+        "chs2": np.where(grid < 0.25, np.float32(0.0),
+                         np.float32(0.004) + np.float32(0.02) * grid),
+        "cqs2": np.where(grid > 0.8, np.float32(1.0e-6),
+                         np.float32(0.003) + np.float32(0.01) * grid),
+        "tsk": np.float32(268.0) + np.float32(40.0) * grid,
+        "hfx": np.float32(-60.0) + np.float32(420.0) * grid,
+        "qfx": np.float32(2.0e-5) * grid,
+        "qsfc": np.float32(0.002) + np.float32(0.014) * grid,
+    }
+    host = {name: np.ascontiguousarray(value, dtype=np.float32)
+            for name, value in host.items()}
+    t3d = np.float32(288.0) - np.float32(18.0) * grid
+    p3d = psfc - np.float32(400.0)
+    rho = p3d / (np.float32(287.0) * t3d)
+    kwargs = {"t3d": t3d, "qv3d": np.float32(0.001) + np.float32(0.012) * grid,
+              "rho3d": rho, "p3d": p3d, "cqs": np.float32(0.02) + grid}
+    return host, {name: np.ascontiguousarray(value, dtype=np.float32)
+                  for name, value in kwargs.items()}
+
+
+def test_t2_and_th2_do_not_reach_the_hosts_numpy_power(monkeypatch):
+    # A145.  T2 and TH2 are float32 products of the two exner powers, which
+    # were NumPy's float32 power: the host's own function, so an AVX-512
+    # product box wrote other T2 and TH2 words than every other machine.
+    from gpuwm.core.ruc_runtime import _sfcdiags_ruclsm
+
+    host, kwargs = _sfcdiags_columns()
+    before = dict(host)
+    _sfcdiags_ruclsm(before, **kwargs)
+    probe = np.float32(1.5)
+    host_power = np.power(probe, np.float32(0.3))
+    _another_hosts_numpy(monkeypatch, "power")
+    assert np.power(probe, np.float32(0.3)) != host_power
+    after = dict(host)
+    _sfcdiags_ruclsm(after, **kwargs)
+    for name in ("t2", "th2", "q2"):
+        np.testing.assert_array_equal(after[name].view(np.uint32),
+                                      before[name].view(np.uint32),
+                                      err_msg=name)
+
+
 def _surface_oracle():
     path = (
         Path(__file__).parents[1]

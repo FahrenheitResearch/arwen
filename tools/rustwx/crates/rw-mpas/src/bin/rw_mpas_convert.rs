@@ -23,7 +23,7 @@ usage: rw_mpas_convert --history FILE... --mesh FILE --out-dir DIR
                        [--field-set full|surface]
                        [--simulation-start YYYY-MM-DD_HH:MM:SS]
                        [--prefix NAME] [--format cdf2|cdf5] [--clobber]
-                       [--json FILE]
+                       [--json FILE] [--model-label NAME]
        rw_mpas_convert --help | --abi
 
 windows:
@@ -52,6 +52,11 @@ A point takes the finest source whose refined region it falls inside, and
 the base everywhere else. The change of source is a hard switch: nothing is
 blended, and the frame carries COMPOSITE_SOURCE and COMPOSITE_DX_KM so the
 seam can be drawn and audited.
+
+--model-label NAME writes NAME into each frame as GPUWM_MODEL_LABEL, the
+model the renderer names in a plot's metadata row in place of the generic
+WRF identity every wrfout-shaped frame imports under (at most 32 characters,
+no '|').
 
 --compose-base-only frames the same window from the same sources and then
 converts the BASE alone, so the composite has a coarse counterpart over
@@ -94,6 +99,7 @@ struct Args {
     json: Option<PathBuf>,
     compose: Option<PathBuf>,
     compose_base_only: bool,
+    model_label: Option<String>,
 }
 
 /// One run named in a `--compose` source list.
@@ -135,6 +141,7 @@ fn parse() -> Result<Args, String> {
         json: None,
         compose: None,
         compose_base_only: false,
+        model_label: None,
     };
     let mut raw = std::env::args().skip(1).peekable();
     while let Some(flag) = raw.next() {
@@ -174,10 +181,30 @@ fn parse() -> Result<Args, String> {
             "--json" => args.json = Some(PathBuf::from(value()?)),
             "--compose" => args.compose = Some(PathBuf::from(value()?)),
             "--compose-base-only" => args.compose_base_only = true,
+            "--model-label" => args.model_label = Some(checked_model_label(&value()?)?),
             other => return Err(format!("unknown flag {other}")),
         }
     }
     Ok(args)
+}
+
+/// `--model-label`, refused here rather than written into a frame the
+/// renderer would then decline: the row's limits are the renderer's
+/// (`rustwx_products::shared_context::checked_model_label`).
+fn checked_model_label(raw: &str) -> Result<String, String> {
+    let label = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if label.is_empty() {
+        return Err("--model-label needs a name".to_string());
+    }
+    if label.chars().count() > 32 {
+        return Err(format!("--model-label {label:?} is longer than 32 characters"));
+    }
+    if label.chars().any(|ch| ch.is_control() || ch == '|') {
+        return Err(format!(
+            "--model-label {label:?} holds a control character or '|', the plot metadata row's separator"
+        ));
+    }
+    Ok(label)
 }
 
 fn json_escape(s: &str) -> String {
@@ -417,6 +444,7 @@ fn run_compose(args: Args, spec_path: &Path) -> Result<(), String> {
             field_set: args.field_set.clone(),
             format: args.format,
             clobber: args.clobber,
+            model_label: args.model_label.clone(),
             ..ConvertOptions::default()
         };
         let emitted = convert_frame_composite(
@@ -624,6 +652,7 @@ fn run() -> Result<(), String> {
             field_set: args.field_set.clone(),
             format: args.format,
             clobber: args.clobber,
+            model_label: args.model_label.clone(),
             ..ConvertOptions::default()
         };
         let emitted =

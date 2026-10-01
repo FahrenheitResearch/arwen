@@ -1,0 +1,25 @@
+{
+  "platform": {
+    "cupy": "14.2.0",
+    "compute_capability": "89",
+    "nvrtc": [
+      13,
+      4
+    ],
+    "cuda_runtime": 13020
+  },
+  "noah_mosaic_unit": {
+    "function": "noah_mosaic_column",
+    "local_size_bytes": 240,
+    "num_regs": 186,
+    "const_size_bytes": 1184,
+    "source_sha256": "e78cf69d6bbd7ffd021f589f2d8356e19e135bac8888c27cbe3eeae7e75396f1"
+  },
+  "noah_mosaic_ucm_unit": {
+    "function": "noah_mosaic_ucm_column",
+    "local_size_bytes": 400,
+    "num_regs": 255,
+    "const_size_bytes": 1272,
+    "source_sha256": "d70a75c1be9d8a68feaebcea96fdac023bd833bbee034e5ed9dc5c9bc15ffcd6"
+  }
+}

@@ -339,3 +339,141 @@ def test_a_caller_may_not_substitute_their_own_contributing_mapping(
         "--contributing-mapping is decided by the packaged aigefs profile"
         in error
     )
+
+
+# ---------------------------------------------------------------------------
+# A166: a preparation bound to a mapping that differs from the packaged one
+# only in an admission-only declaration is still that profile's preparation.
+# ---------------------------------------------------------------------------
+
+def _toggled_declaration(profile_id: str) -> tuple[bytes, dict]:
+    """The packaged mapping as a release on the other side of A159 bound it.
+
+    The whole-multiples key removed where the profile declares it (what a
+    2.8.0 preparation copied into its evidence) and added where it does
+    not, re-serialized so the bytes, and therefore the digest, differ.
+    """
+
+    import json
+
+    from gpuwm.source_authorities import BOUNDARY_MULTIPLES_KEY
+
+    document = json.loads(
+        packaged_authorities(profile_id)["mapping"].read_bytes())
+    target = document["target"]
+    if BOUNDARY_MULTIPLES_KEY in target:
+        del target[BOUNDARY_MULTIPLES_KEY]
+    else:
+        target[BOUNDARY_MULTIPLES_KEY] = True
+    data = json.dumps(document, indent=2).encode("utf-8")
+    assert hashlib.sha256(data).hexdigest() \
+        != packaged_authority_sha256(profile_id)["mapping"]
+    return data, document
+
+
+@pytest.mark.parametrize("profile_id", packaged_profile_ids())
+def test_a_declaration_only_mapping_change_resolves_an_earlier_preparation(
+        profile_id):
+    """A159 moved ten mapping pins by one admission key; frames did not move.
+
+    Every packaged profile, both directions of the toggle: the bound
+    document resolves at the spacing the packaged target declares, and
+    the packaged bytes themselves resolve as before.
+    """
+
+    from gpuwm.source_authorities import (bound_mapping_refusal,
+                                          mapping_decode_identity,
+                                          packaged_mapping_target)
+
+    import json
+
+    data, document = _toggled_declaration(profile_id)
+    packaged = packaged_authorities(profile_id)["mapping"].read_bytes()
+    assert mapping_decode_identity(document) \
+        == mapping_decode_identity(json.loads(packaged))
+    spacing = int(packaged_mapping_target(profile_id)[
+        "boundary_interval_seconds"])
+    assert bound_mapping_refusal(
+        profile_id, data, spacings_seconds=(spacing,)) is None
+    assert bound_mapping_refusal(profile_id, packaged) is None
+
+
+@pytest.mark.parametrize("profile_id", packaged_profile_ids())
+def test_a_mapping_that_decodes_differently_is_still_refused(profile_id):
+    """Anything outside the admission keys is what the frames are made of."""
+
+    import json
+
+    from gpuwm.source_authorities import bound_mapping_refusal
+
+    _, document = _toggled_declaration(profile_id)
+    renamed = json.loads(json.dumps(document))
+    first = sorted(renamed["fields"])[0]
+    renamed["fields"][f"{first}_renamed"] = renamed["fields"].pop(first)
+    levels = json.loads(json.dumps(document))
+    levels["target"]["target_vertical_levels"] = int(
+        levels["target"].get("target_vertical_levels") or 0) + 1
+    for changed in (renamed, levels):
+        reason = bound_mapping_refusal(
+            profile_id, json.dumps(changed).encode("utf-8"))
+        assert reason is not None and "decodes differently" in reason
+    assert "is not a JSON document" in bound_mapping_refusal(
+        profile_id, b"\xff not json")
+
+
+def test_a_resolved_mapping_is_held_to_the_packaged_target_s_spacing():
+    """A cadence the packaged target does not take is refused, by name.
+
+    hrrr-prs declares 3600 s with whole multiples: a preparation bound to
+    the 2.8.0 document resolves at 1 h and 3 h, and is refused at 90 min,
+    which no hrrr-prs mapping ever took.
+    """
+
+    from gpuwm.source_authorities import bound_mapping_refusal
+
+    data, _ = _toggled_declaration("hrrr-prs-grib2-v1")
+    assert bound_mapping_refusal(
+        "hrrr-prs-grib2-v1", data, spacings_seconds=(3600, 10800)) is None
+    reason = bound_mapping_refusal(
+        "hrrr-prs-grib2-v1", data, spacings_seconds=(5400,))
+    assert reason == ("its boundary spacing 5400 seconds is not a whole "
+                      "multiple of the 3600 seconds the target contract "
+                      "declares")
+    # A profile that keeps a single spacing (no multiples) refuses a
+    # bound document's wider claim at any spacing but its own.  Chosen
+    # from the packaged rows rather than named: A164 gave the profile
+    # this used to name (aigefs) whole multiples, and the case went red.
+    from gpuwm.source_authorities import (BOUNDARY_MULTIPLES_KEY,
+                                          packaged_mapping_target)
+
+    single_id = next(
+        profile for profile in packaged_profile_ids()
+        if BOUNDARY_MULTIPLES_KEY not in packaged_mapping_target(profile)
+        and packaged_mapping_target(profile).get("boundary_interval_seconds"))
+    spacing = int(packaged_mapping_target(single_id)["boundary_interval_seconds"])
+    single, _ = _toggled_declaration(single_id)
+    assert bound_mapping_refusal(
+        single_id, single, spacings_seconds=(spacing,)) is None
+    assert f"differs from target contract {spacing}" in bound_mapping_refusal(
+        single_id, single, spacings_seconds=(2 * spacing,))
+
+
+def test_a_three_hour_icon_global_preparation_made_before_a173_is_still_its():
+    """A173 moved the icon-global mapping's spacing from 3 h to the 1 h DWD
+    posts.  A preparation bound to the earlier document decodes the same
+    frames, so it resolves at the 3 h it was made at and is held to the
+    packaged target at any other spacing."""
+
+    import json
+
+    from gpuwm.source_authorities import bound_mapping_refusal
+
+    profile = "icon-global-grib2-v1"
+    document = json.loads(packaged_authorities(profile)["mapping"].read_bytes())
+    assert document["target"]["boundary_interval_seconds"] == 3600
+    document["target"]["boundary_interval_seconds"] = 10800
+    earlier = json.dumps(document, indent=1).encode("utf-8")
+    assert bound_mapping_refusal(
+        profile, earlier, spacings_seconds=(10800,)) is None
+    assert "not a whole multiple" in bound_mapping_refusal(
+        profile, earlier, spacings_seconds=(5400,))

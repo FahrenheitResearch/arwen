@@ -309,6 +309,77 @@ fn regular_longitude_axis(lon1: f64, dx: f64, nx: usize) -> (Vec<f64>, Vec<usize
     (longitude, order)
 }
 
+/// The canonical axes of a regular GDT-0 record, read from Section 3
+/// alone: ascending latitude, the canonical longitude axis, the stored
+/// column each canonical column reads, and whether stored rows run
+/// north to south (scan 0x00) and are reversed into canonical order.
+pub struct RegularAxes {
+    pub latitude: Vec<f64>,
+    pub longitude: Vec<f64>,
+    pub order: Vec<usize>,
+    pub reversed_rows: bool,
+}
+
+pub fn regular_latlon_axes(message: &Grib2Message) -> Result<RegularAxes> {
+    let grid = &message.grid;
+    let scan = grid.scan_mode;
+    if grid.template != 0 || !matches!(scan, 0x40 | 0x00) || grid.is_reduced {
+        return Err(grid_mismatch(format!(
+            "a canonical window needs a regular latitude/longitude GDT 0 grid \
+             with scan mode 0x40 or 0x00; got GDT {} scan mode 0x{scan:02x}",
+            grid.template
+        )));
+    }
+    let ny = grid.ny as usize;
+    let mut latitude: Vec<f64> = (0..ny)
+        .map(|row| {
+            if scan == 0x40 {
+                grid.lat1 + row as f64 * grid.dy
+            } else {
+                grid.lat1 - row as f64 * grid.dy
+            }
+        })
+        .collect();
+    if scan == 0x00 {
+        latitude.reverse();
+    }
+    let (longitude, order) = regular_longitude_axis(grid.lon1, grid.dx, grid.nx as usize);
+    Ok(RegularAxes { latitude, longitude, order, reversed_rows: scan == 0x00 })
+}
+
+/// One record decoded over canonical rows `rows` and columns `columns`
+/// only, row-major in canonical order: exactly the crop of
+/// [`regular_latlon_frame`]'s values, without decoding the rest of a
+/// JPEG2000 codestream (`grib_core::grib2::unpack_message_stored_rect`).
+pub fn regular_latlon_window(
+    message: &Grib2Message,
+    axes: &RegularAxes,
+    rows: [usize; 2],
+    columns: [usize; 2],
+) -> std::result::Result<Vec<f64>, grib_core::GribError> {
+    let ny = axes.latitude.len();
+    let nx = axes.longitude.len();
+    let stored_rows = if axes.reversed_rows { (ny - rows[1], ny - rows[0]) } else { (rows[0], rows[1]) };
+    let stored = &axes.order[columns[0]..columns[1]];
+    let contiguous = stored.windows(2).all(|pair| pair[1] == pair[0] + 1);
+    let stored_columns = if contiguous { (stored[0], stored[stored.len() - 1] + 1) } else { (0, nx) };
+    let rect = grib_core::grib2::StoredRect { rows: stored_rows, columns: stored_columns };
+    let decoded = decode_rect_shared(message, rect)?;
+    let width = stored_columns.1 - stored_columns.0;
+    let height = stored_rows.1 - stored_rows.0;
+    let mut values = Vec::with_capacity(height * stored.len());
+    for canonical in 0..height {
+        let row = if axes.reversed_rows { height - 1 - canonical } else { canonical };
+        let line = &decoded[row * width..(row + 1) * width];
+        if contiguous {
+            values.extend_from_slice(line);
+        } else {
+            values.extend(stored.iter().map(|column| line[*column]));
+        }
+    }
+    Ok(values)
+}
+
 /// `mapped_source._regular_latlon_frame`: one canonical ascending-latitude
 /// frame from a regular GDT-0 record.
 pub fn regular_latlon_frame(
@@ -729,14 +800,29 @@ fn unpack_shared(message: &Grib2Message) -> std::result::Result<Vec<f64>, grib_c
     if message.data_rep.template != JPEG2000_TEMPLATE {
         return unpack_message(message);
     }
-    static CODEC: std::sync::Mutex<()> = std::sync::Mutex::new(());
     // A panic inside one message's decode must not turn every later
     // JPEG2000 message into a poisoned-lock refusal about threading:
     // the guard protects a `static mut`, and the next decode
     // initializes what it reads.
-    let _guard = CODEC.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = JPEG2000_CODEC.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     unpack_message(message)
 }
+
+/// [`unpack_shared`] for a stored rectangle: a JPEG2000 area decode runs
+/// the same `openjp2` decoder, so it takes the same lock.
+fn decode_rect_shared(
+    message: &Grib2Message,
+    rect: grib_core::grib2::StoredRect,
+) -> std::result::Result<Vec<f64>, grib_core::GribError> {
+    if message.data_rep.template != JPEG2000_TEMPLATE {
+        return grib_core::grib2::unpack_message_stored_rect(message, rect);
+    }
+    let _guard = JPEG2000_CODEC.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    grib_core::grib2::unpack_message_stored_rect(message, rect)
+}
+
+/// The one lock every `openjp2` decode in this process takes.
+static JPEG2000_CODEC: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// `mapped_source._grib2_records`: the selected records of one object,
 /// decoded CONCURRENTLY.
@@ -757,6 +843,27 @@ pub fn grib2_records(
     wanted: &[usize],
     declaration: &GridDeclaration,
 ) -> Result<Vec<GribRecord>> {
+    grib2_records_within(file, source_label, wanted, declaration, None)
+}
+
+/// A canonical rectangle, and the records of one object decoded over it
+/// alone (by their message index in that object).
+pub struct RecordWindow<'a> {
+    pub rows: [usize; 2],
+    pub columns: [usize; 2],
+    pub records: &'a std::collections::BTreeSet<usize>,
+}
+
+/// [`grib2_records`], with the records `window` names decoded over its
+/// rectangle only.  Such a record keeps the source's full canonical
+/// axes and carries the rectangle's values.
+pub fn grib2_records_within(
+    file: &Grib2File,
+    source_label: &str,
+    wanted: &[usize],
+    declaration: &GridDeclaration,
+    window: Option<&RecordWindow<'_>>,
+) -> Result<Vec<GribRecord>> {
     if wanted.is_empty() {
         return Ok(Vec::new());
     }
@@ -764,7 +871,10 @@ pub fn grib2_records(
         use rayon::prelude::*;
         wanted
             .par_iter()
-            .map(|index| grib2_record(file, source_label, *index, declaration))
+            .map(|index| {
+                let window = window.filter(|window| window.records.contains(index));
+                grib2_record(file, source_label, *index, declaration, window)
+            })
             .collect()
     });
     crate::threads::in_order(slots)
@@ -776,12 +886,37 @@ fn grib2_record(
     source_label: &str,
     index: usize,
     declaration: &GridDeclaration,
+    window: Option<&RecordWindow<'_>>,
 ) -> Result<GribRecord> {
     let message = file.messages.get(index).ok_or_else(|| {
         decode_failed(format!(
             "GRIB2 object {source_label} has no field {index}"
         ))
     })?;
+    if let Some(window) = window {
+        if declaration.is_lambert() {
+            return Err(grid_mismatch(format!(
+                "GRIB2 field {index} in {source_label}: a canonical window is \
+                 only decoded from a regular latitude/longitude grid"
+            )));
+        }
+        let axes = regular_latlon_axes(message)?;
+        let values = regular_latlon_window(message, &axes, window.rows, window.columns)
+            .map_err(|error| {
+                decode_failed(format!(
+                    "GRIB2 field {index} in {source_label} failed to decode rows \
+                     {}..{} and columns {}..{} of its canonical grid: {error}",
+                    window.rows[0], window.rows[1], window.columns[0], window.columns[1]
+                ))
+            })?;
+        let shape = [window.rows[1] - window.rows[0], window.columns[1] - window.columns[0]];
+        let array = ArrayD::from_shape_vec(IxDyn(&shape), values).map_err(|error| {
+            decode_failed(format!(
+                "GRIB2 field {index} in {source_label} does not fill its window: {error}"
+            ))
+        })?;
+        return record_from(message, source_label, index, array, axes.latitude, axes.longitude);
+    }
     let nx = message.grid.nx as usize;
     let ny = message.grid.ny as usize;
     let raw = unpack_shared(message).map_err(|error| {
@@ -820,6 +955,18 @@ fn grib2_record(
                 "GRIB2 field {index} in {source_label} does not fill its grid: {error}"
             ))
         })?;
+    record_from(message, source_label, index, array, latitude, longitude)
+}
+
+/// The record a decoded message becomes, its values already laid out.
+fn record_from(
+    message: &Grib2Message,
+    source_label: &str,
+    index: usize,
+    array: ArrayD<f64>,
+    latitude: Vec<f64>,
+    longitude: Vec<f64>,
+) -> Result<GribRecord> {
     let valid_time = embedded_valid_time(
         message.reference_time,
         message.product.time_range_unit,
@@ -1008,6 +1155,58 @@ mod tests {
         assert_eq!(longitude.first(), Some(&175.0));
         assert_eq!(longitude.last(), Some(&195.0));
         assert!(longitude.windows(2).all(|pair| pair[1] - pair[0] == 0.5));
+    }
+
+    #[test]
+    fn a_window_decode_is_the_crop_of_the_canonical_frame() {
+        use grib_core::grib2::{DataRepresentation, GridDefinition};
+        // A whole 8-column ring stored from 90E, so the canonical axis
+        // (-180 first) reads stored columns 2..8 then 0..2: a window over
+        // canonical columns 4..8 reaches across the stored cut.
+        for scan in [0x40u8, 0x00] {
+            let message = Grib2Message {
+                discipline: 0,
+                identification: Default::default(),
+                reference_time: chrono::NaiveDate::from_ymd_opt(2026, 9, 29)
+                    .unwrap()
+                    .and_hms_opt(12, 0, 0)
+                    .unwrap(),
+                grid: GridDefinition {
+                    template: 0,
+                    nx: 8,
+                    ny: 5,
+                    num_data_points: 40,
+                    lat1: if scan == 0x40 { -60.0 } else { 60.0 },
+                    lon1: 90.0,
+                    dx: 45.0,
+                    dy: 30.0,
+                    scan_mode: scan,
+                    ..GridDefinition::default()
+                },
+                product: Default::default(),
+                data_rep: DataRepresentation {
+                    template: 0,
+                    bits_per_value: 8,
+                    section5_num_data_points: 40,
+                    ..DataRepresentation::default()
+                },
+                bitmap: None,
+                raw_data: (0..40).map(|value| value * 3 + 1).collect(),
+            };
+            let raw = unpack_message(&message).unwrap();
+            let (latitude, longitude, values) = regular_latlon_frame(&message, &raw).unwrap();
+            let axes = regular_latlon_axes(&message).unwrap();
+            assert_eq!(axes.latitude, latitude);
+            assert_eq!(axes.longitude, longitude);
+            for (rows, columns) in [([1, 4], [4, 8]), ([0, 2], [1, 3]), ([2, 5], [0, 8])] {
+                let window = regular_latlon_window(&message, &axes, rows, columns).unwrap();
+                let expected: Vec<f64> = (rows[0]..rows[1])
+                    .flat_map(|row| (columns[0]..columns[1]).map(move |column| (row, column)))
+                    .map(|(row, column)| values[row * 8 + column])
+                    .collect();
+                assert_eq!(window, expected, "scan 0x{scan:02x} rows {rows:?} columns {columns:?}");
+            }
+        }
     }
 
     #[test]

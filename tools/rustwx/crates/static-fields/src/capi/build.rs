@@ -257,3 +257,169 @@ pub extern "C" fn gpuwm_static_fieldset_free(handle: u64) {
         drop_fieldset(handle);
     })
 }
+
+// ---------------------------------------------------------------------------
+// Terrain smoothing (additive; the entries above keep their signatures and
+// STATIC_ABI_VERSION is unchanged, so a Python side that never asks for a
+// non-default smoothing never binds these).  `smoothing` is the JSON echo
+// `{"smooth_option": ..., "smooth_passes": ...}`, plus `"smooth_precision"`
+// when a setting names one.
+// ---------------------------------------------------------------------------
+
+/// Present when the smoothing JSON below takes `smooth_precision`
+/// (`"wps-float32"` on the default smoother).  The Python side asks for
+/// this symbol before it sends the key, so a library staged before it is
+/// named stale with its remedy instead of refusing an unknown field.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpuwm_static_terrain_smoothing_precision_v1() -> u32 {
+    1
+}
+
+/// Parse the smoothing JSON handed over by pointer and length.
+///
+/// # Safety
+/// `ptr` must address `len` readable bytes.
+unsafe fn smoothing_arg(
+    ptr: *const u8,
+    len: usize,
+) -> std::result::Result<crate::smooth::TerrainSmoothing, String> {
+    let Some(text) = (unsafe { utf8(ptr, len) }) else {
+        return Err("terrain smoothing pointer/UTF-8 invalid".to_string());
+    };
+    crate::smooth::TerrainSmoothing::parse(text).map_err(|e| e.to_string())
+}
+
+/// `gpuwm_static_build_fields` with a terrain smoothing.
+///
+/// # Safety
+/// `paths_json` and `smoothing_ptr` must address readable UTF-8 of the
+/// given lengths; `out_handle` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_static_build_fields_smoothed(
+    grid: u64,
+    paths_json: *const u8,
+    paths_len: usize,
+    halo: u32,
+    smoothing_ptr: *const u8,
+    smoothing_len: usize,
+    out_handle: *mut u64,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        let smoothing = match unsafe { smoothing_arg(smoothing_ptr, smoothing_len) } {
+            Ok(value) => value,
+            Err(err) => return set_error(err),
+        };
+        let Some(text) = (unsafe { utf8(paths_json, paths_len) }) else {
+            return set_error("GEOG paths pointer/UTF-8 invalid");
+        };
+        let paths: GeogPaths = match serde_json::from_str(text) {
+            Ok(paths) => paths,
+            Err(err) => return set_error(format!("GEOG paths JSON: {err}")),
+        };
+        let halo = if halo == u32::MAX { HALO } else { halo as usize };
+        let built = with_grid(grid, |grid| {
+            crate::fields::build_static_smoothed(grid, &paths, halo, smoothing)
+        });
+        match built {
+            None => set_error(format!("unknown grid handle {grid}")),
+            Some(Err(err)) => set_error(err.to_string()),
+            Some(Ok(fields)) => {
+                if out_handle.is_null() {
+                    return set_error("out_handle is null");
+                }
+                unsafe { *out_handle = register_fieldset(fields) };
+                OK
+            }
+        }
+    })
+}
+
+/// Terrain alone (HGT_M) with a terrain smoothing, for the vertical survey.
+///
+/// # Safety
+/// `path` and `smoothing_ptr` must address readable UTF-8 of the given
+/// lengths; `out_handle` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_static_build_terrain_smoothed(
+    grid: u64,
+    path: *const u8,
+    path_len: usize,
+    halo: u32,
+    smoothing_ptr: *const u8,
+    smoothing_len: usize,
+    out_handle: *mut u64,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        let smoothing = match unsafe { smoothing_arg(smoothing_ptr, smoothing_len) } {
+            Ok(value) => value,
+            Err(err) => return set_error(err),
+        };
+        let Some(path) = (unsafe { utf8(path, path_len) }) else {
+            return set_error("terrain path pointer/UTF-8 invalid");
+        };
+        let halo = if halo == u32::MAX { HALO } else { halo as usize };
+        let built = with_grid(grid, |g| {
+            crate::fields::build_terrain_smoothed(
+                g,
+                std::path::Path::new(path),
+                halo,
+                smoothing,
+            )
+        });
+        match built {
+            None => set_error(format!("unknown grid handle {grid}")),
+            Some(Err(err)) => set_error(err.to_string()),
+            Some(Ok(fields)) => {
+                if out_handle.is_null() {
+                    return set_error("out_handle is null");
+                }
+                unsafe { *out_handle = register_fieldset(fields) };
+                OK
+            }
+        }
+    })
+}
+
+/// Smooth one contiguous halo-extended f64 plane (`ny` rows of `nx`).
+///
+/// # Safety
+/// `data` and `out` must each address `ny * nx` doubles; `smoothing_ptr`
+/// must address `smoothing_len` bytes of UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_static_terrain_smooth(
+    data: *const f64,
+    ny: u64,
+    nx: u64,
+    smoothing_ptr: *const u8,
+    smoothing_len: usize,
+    out: *mut f64,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        if data.is_null() || out.is_null() {
+            return set_error("terrain array pointer is null");
+        }
+        let smoothing = match unsafe { smoothing_arg(smoothing_ptr, smoothing_len) } {
+            Ok(value) => value,
+            Err(err) => return set_error(err),
+        };
+        let (Ok(ny), Ok(nx)) = (usize::try_from(ny), usize::try_from(nx)) else {
+            return set_error("terrain dimensions overflow");
+        };
+        let Some(n) = ny.checked_mul(nx).filter(|n| *n <= isize::MAX as usize / 8)
+        else {
+            return set_error("terrain dimensions overflow");
+        };
+        let plane = unsafe { std::slice::from_raw_parts(data, n) }.to_vec();
+        let a = crate::types::Grid2 { ny, nx, data: plane };
+        match crate::smooth::apply_terrain_smoothing(&a, smoothing) {
+            Err(err) => set_error(err.to_string()),
+            Ok(result) => {
+                unsafe { std::ptr::copy_nonoverlapping(result.data.as_ptr(), out, n) };
+                OK
+            }
+        }
+    })
+}

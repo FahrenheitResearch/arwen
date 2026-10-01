@@ -314,6 +314,19 @@ terrain.
 `landcover_source = "auto"` uses CGLC-MODIS-LCZ everywhere;
 `"annual-nlcd"` pins the United States collection.
 
+From a WRF namelist, `gpuwm import-namelist` writes this block when
+`geog_data_res` names `cglc_modis_lcz` (the token of WPS's
+`GEOGRID.TBL.ARW_LCZ`): `fields = "all"`, `landcover_source =
+"cglc-modis-lcz"`, and `cache_root` from `--static-cache-root`, else the
+per-user cache the default terrain already uses. Named on only the finer
+domains, it adds `max_dx_m`. The block also replaces terrain and soil,
+which the WPS token does not, and the import report says so. With the
+urban canopy on and `use_wudapt_lcz = 1` the Local Climate Zones stay
+categories 51 to 61, so `num_land_cat = 61` imports there and nowhere
+else. The other `geog_data_res` tokens the engine builds (`default`, `5m`,
+`modis_lai`) are read from the `namelist.wps` that `[case_data]
+wps_namelist` names; any other token is refused by name.
+
 `fields = "auto"` selects `"all"` wherever the land-cover source reaches
 part of the footprint (60 S to 78 N for the default) and `"terrain"` where
 it reaches none of it. `fields = "terrain"` is also valid inside the United

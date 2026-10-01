@@ -60,8 +60,9 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass, field
-from importlib import metadata
 from pathlib import Path
+
+from gpuwm import DISTRIBUTION_NAMES
 
 #: The serialised shape's schema name.  Receipts embed :meth:`
 #: Provenance.as_dict`, so the shape is versioned like every other
@@ -78,10 +79,11 @@ UNKNOWN_VERSION = "0+unknown"
 INSTALL_KINDS = ("wheel", "editable", "source-tree")
 
 #: Distribution names that may legitimately publish the ``gpuwm``
-#: package.  Mirrors ``runtime_manifest._CANDIDATE_DISTRIBUTIONS``;
-#: ``rw-wps`` is the preprocessing-only wheel that ships the same
-#: package directory under a second name.
-CANDIDATE_DISTRIBUTIONS = ("gpuwm", "rw-wps")
+#: package: the package's own table (:data:`gpuwm.DISTRIBUTION_NAMES`),
+#: which ``__version__`` and ``runtime_manifest`` read too.  ``rw-wps`` is
+#: the preprocessing-only wheel that ships the same package directory
+#: under a second name.
+CANDIDATE_DISTRIBUTIONS = DISTRIBUTION_NAMES
 
 #: git is asked one short question and is allowed to be missing, hung,
 #: or pointed at something that is not a repository.
@@ -250,25 +252,14 @@ def editable_root(distribution) -> Path | None:
     identity and two modules need it:
     :func:`gpuwm.runtime_manifest.source_tree_identity` binds the same
     answer into the run manifest that :func:`describe_provenance` puts
-    in the run-plan receipt.  One resolution, two consumers.
+    in the run-plan receipt.  One resolution, two consumers -- three with
+    ``gpuwm.__version__``, which is why the reading itself lives in
+    :func:`gpuwm.editable_source_root`.
     """
 
-    info = direct_url(distribution)
-    if not info.get("dir_info", {}).get("editable", False):
-        return None
-    url = info.get("url")
-    if not isinstance(url, str) or not url.startswith("file:"):
-        return None
-    try:
-        from urllib.parse import unquote, urlparse
+    from gpuwm import editable_source_root
 
-        path = unquote(urlparse(url).path)
-        # ``file:///C:/x`` parses to ``/C:/x`` on Windows.
-        if len(path) > 2 and path[0] == "/" and path[2] == ":":
-            path = path[1:]
-        return Path(path).resolve()
-    except Exception:                                   # noqa: BLE001
-        return None
+    return editable_source_root(distribution)
 
 
 def source_inventory(distribution, source_root: Path) -> list[str] | None:
@@ -323,6 +314,12 @@ def providing_distribution(package_path: Path):
     So the editable case is matched the way an editable install is
     actually wired: by asking whether the running package lives inside
     the source directory ``direct_url.json`` names.
+
+    The rest is :func:`gpuwm.owning_distribution`, the resolution
+    ``gpuwm.__version__`` is read from, so the distribution this names
+    and the number the process reports cannot come from two different
+    installs.  It asks every distribution of each candidate name on the
+    path, not the first of each.
     """
 
     package_path = Path(package_path).resolve()
@@ -338,25 +335,12 @@ def providing_distribution(package_path: Path):
                 return found
     except Exception:                                   # noqa: BLE001
         pass
-    for name in CANDIDATE_DISTRIBUTIONS:
-        try:
-            dist = metadata.distribution(name)
-        except Exception:                               # noqa: BLE001
-            continue
-        try:
-            located = Path(dist.locate_file("gpuwm/__init__.py")).resolve()
-            if located == package_path / "__init__.py":
-                return dist
-        except Exception:                               # noqa: BLE001
-            pass
-        root = editable_root(dist)
-        if root is not None:
-            try:
-                if package_path == root or package_path.is_relative_to(root):
-                    return dist
-            except Exception:                           # noqa: BLE001
-                continue
-    return None
+    try:
+        from gpuwm import owning_distribution
+
+        return owning_distribution(package_path)
+    except Exception:                                   # noqa: BLE001
+        return None
 
 
 # ---------------------------------------------------------------------------

@@ -92,12 +92,27 @@ already pins with their WRF line numbers.
 below equals the ``#define`` it names, so there is one spelling of each
 and a drift in either copy is a test failure rather than a quiet
 disagreement between the analysis and the forecast.
+
+POWERS
+------
+Every power here is the libm call gfortran makes for the Fortran ``**``:
+a REAL base to a REAL power is :func:`gpuwm.core.noahmp_libm.powf_array`,
+glibc's ``powf`` on every host, and a DOUBLE base is
+:func:`gpuwm.core.host_libm.power`, the C library's ``pow``.  NumPy's own
+``power`` loop rounds differently on an AVX-512 Linux host (NumPy 2.5,
+the product boxes' CPUs): there ``make_RainNumber``'s ``10**(279.15-T)``
+moved the seeded rain number of 34,076 of 400,000 cells, and the mp=28
+droplet number differed from the line-by-line Fortran in 2,510 of 200,000
+states, while the same host with the AVX-512 loops disabled matched it
+exactly (A143).
 """
 
 from __future__ import annotations
 
 import numpy as np
 
+from gpuwm.core.host_libm import power as _pow
+from gpuwm.core.noahmp_libm import powf_array as _powf
 from gpuwm.core.thompson_aerosol_contract import (
     AM_R, BM_R, CCE2, CCG1, CCG2, NT_C_MAX, OCG1, OCG2,
 )
@@ -247,7 +262,7 @@ def cloud_number_m3(cloud_mass_m3: np.ndarray,
     obmr = np.float32(np.float32(1.0) / np.float32(BM_R))
     # :1833  lamc = (nc*am_r*ccg(2,nu_c)*ocg1(nu_c)/rc)**obmr
     lamc = np.asarray(
-        np.power(_f32(nc * np.float32(AM_R) * ccg2 * ocg1 / rc), obmr),
+        _powf(_f32(nc * np.float32(AM_R) * ccg2 * ocg1 / rc), obmr),
         dtype=np.float64)
     # :1834  xDc = (bm_r + nu_c + 1.)/lamc.  A REAL numerator over the
     # DOUBLE lamc is a DOUBLE quotient ASSIGNED TO A REAL (:1599 declares
@@ -268,7 +283,7 @@ def cloud_number_m3(cloud_mass_m3: np.ndarray,
     #                                 * lamc**bm_r)
     prefactor = np.float64(_f32(ccg1 * ocg2 * rc / np.float32(AM_R)))
     return np.minimum(np.float64(NT_C_MAX),
-                      prefactor * lamc ** np.float64(BM_R))
+                      prefactor * _pow(lamc, np.float64(BM_R)))
 
 
 def rain_number_m3(rain_mass_m3: np.ndarray,
@@ -290,7 +305,7 @@ def rain_number_m3(rain_mass_m3: np.ndarray,
         divides in REAL, which is why the two arms cannot share a helper.
         """
         return (_f32(np.float32(CRG2_ORG3) * rr).astype(np.float64)
-                * lam ** np.float64(BM_R)
+                * _pow(lam, np.float64(BM_R))
                 / np.float64(np.float32(AM_R))).astype(np.float32)
 
     # :1882-1886  mass with no number takes the 1 mm median volume drop.
@@ -300,8 +315,8 @@ def rain_number_m3(rain_mass_m3: np.ndarray,
                   nr).astype(np.float32)
     # :1888  lamr = (am_r*crg(3)*org2*nr/rr)**obmr
     lamr = np.asarray(
-        np.power(_f32(np.float32(AM_R) * np.float32(CRG3_ORG2) * nr / rr),
-                 obmr),
+        _powf(_f32(np.float32(AM_R) * np.float32(CRG3_ORG2) * nr / rr),
+              obmr),
         dtype=np.float64)
     mvd = (np.float64(np.float32(MVD_FACTOR)) / lamr).astype(np.float32)
     for condition, clamped in (
@@ -332,7 +347,7 @@ def ice_number_m3(ice_mass_m3: np.ndarray,
         """
         lami = np.float64(np.float32(CIE2) / np.float32(diameter))
         return (_f32(np.float32(CIG1_OIG2) * ri / np.float32(AM_I))
-                .astype(np.float64) * lami ** np.float64(BM_I))
+                .astype(np.float64) * _pow(lami, np.float64(BM_I)))
 
     # :1854-1857  mass with no number takes the 5 um crystal, capped.
     repaired = np.minimum(
@@ -341,8 +356,8 @@ def ice_number_m3(ice_mass_m3: np.ndarray,
     ni = np.where(ni <= np.float32(R2), repaired, ni).astype(np.float32)
     # :1859-1861  lami from the bounded number, then the size clamps.
     lami = np.asarray(
-        np.power(_f32(np.float32(AM_I) * np.float32(CIG2_OIG1) * ni / ri),
-                 obmi),
+        _powf(_f32(np.float32(AM_I) * np.float32(CIG2_OIG1) * ni / ri),
+              obmi),
         dtype=np.float64)
     # :1861-1862  ilami = 1./lami, then xDi = (bm_i + mu_i + 1.)*ilami.
     # WRF MULTIPLIES by the reciprocal it just formed and assigns the
@@ -553,7 +568,7 @@ def make_rain_number(q_rain_m3, temperature_k) -> np.ndarray:
                                          dtype=np.float32),
                         np.float32(0.0)).astype(np.float32)
     n0_ramp = np.asarray(
-        np.float32(8.0) * np.asarray(np.power(np.float32(10.0), exponent),
+        np.float32(8.0) * np.asarray(_powf(np.float32(10.0), exponent),
                                      dtype=np.float32),
         dtype=np.float32).astype(np.float64)
     n0 = np.where(cold, np.float64(np.float32(8.0e8)),
@@ -633,16 +648,23 @@ def np_thompson_entry_numbers(species: str, mass_per_kg, number_per_kg,
             f"Thompson's entry block has no arm for {species!r}; it "
             f"diagnoses {', '.join(ENTRY_SPECIES)} and nothing else -- "
             "snow and graupel are single-moment in this scheme") from None
-    mass = np.asarray(mass_per_kg, dtype=np.float64)
-    number = np.asarray(number_per_kg, dtype=np.float64)
-    rho = np.asarray(density, dtype=np.float64)
+    mass, number, rho = np.broadcast_arrays(
+        np.asarray(mass_per_kg, dtype=np.float64),
+        np.asarray(number_per_kg, dtype=np.float64),
+        np.asarray(density, dtype=np.float64))
     active = mass > R1
     # The inactive cells are not merely uninteresting: the entry block
     # divides by the species' mass, so they must be kept away from the
-    # arithmetic entirely rather than filtered out of its result.
-    safe_mass = np.where(active, mass, 1.0e-6)
-    per_volume = arm(safe_mass * rho, number * rho)
-    return np.where(active, np.asarray(per_volume) / rho, 0.0)
+    # arithmetic entirely rather than filtered out of its result.  Only
+    # the active cells reach the arm, which also keeps the C library's
+    # element-by-element pow (see POWERS) to the cells that carry mass.
+    per_kg = np.zeros(mass.shape, dtype=np.float64)
+    if bool(active.any()):
+        rho_active = rho[active]
+        per_volume = arm(mass[active] * rho_active,
+                         number[active] * rho_active)
+        per_kg[active] = np.asarray(per_volume) / rho_active
+    return per_kg
 
 
 __all__ = [

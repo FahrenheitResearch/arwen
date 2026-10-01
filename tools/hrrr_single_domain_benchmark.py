@@ -1940,6 +1940,9 @@ _PROFILE_SWITCH_HOMES = MappingProxyType({
     "radt": "domain",
     "sf_sfclay_physics": "shared",
     "sf_surface_physics": "shared",
+    # Every template declares the urban component (none = 0) since the
+    # urban canopy models joined the registry.
+    "sf_urban_physics": "shared",
     "terrain_opt": "shared",
     "top_lid": "shared",
     "wrf_rrtmg_compatibility": "shared",
@@ -2928,8 +2931,9 @@ def _initialize_boundary_sides(
             #  * NOTHING READS WHAT IT WOULD FILL.  These four states are
             #    built to be thrown away: the only thing taken out of them
             #    is ``extract_lateral_side(_coupled_device_fields(...))``,
-            #    and that dict is a RATIFIED five-plus-qv set -- u, v,
-            #    theta, phi, mu, qv.  nc/nwfa/nifa are deliberately absent
+            #    and that dict is u, v, theta, phi, mu, qv and the analysed
+            #    hydrometeors with their seeded numbers
+            #    (gpuwm.boundary_fields).  nwfa/nifa are deliberately absent
             #    from it (gpuwm/ingest/lateral_bc.py:639-646, the
             #    registered mp=28 boundary deviation whose full argument
             #    is in gpuwm/core/moist.py).  Wiring here would resolve,
@@ -2974,7 +2978,8 @@ def _initialize_boundary_sides(
                 preprocess_backend=preprocess,
                 state_backend="preprocess",
                 flag_sh_surface_fallback=(
-                    strip_met.flag_sh_surface_fallback))
+                    strip_met.flag_sh_surface_fallback),
+                boundary_species=_native_boundary_species())
             result.state.set_map_coriolis(
                 strip_static["MAPFAC_M"], strip_static["MAPFAC_U"],
                 strip_static["MAPFAC_V"], strip_static["F"], strip_static["E"],
@@ -3077,6 +3082,19 @@ def _prep_step(args, stage: str, *, label: str):
             else nullcontext())
 
 
+def _native_boundary_species():
+    """The hydrometeor masses the native HRRR decoder publishes per frame.
+
+    Read off the source row (``boundary_species`` on ``hrrr`` in
+    :mod:`gpuwm.source_adapters`), so the start state and every boundary
+    strip carry the same inventory and the root's specified boundary
+    holds the analysed cloud, rain, ice, snow and graupel.
+    """
+    from gpuwm.boundary_fields import source_boundary_species
+
+    return source_boundary_species("hrrr")
+
+
 def _initialize_state(
         snapshot, dc, grid, static, eta, mapping_report, *,
         p_top, column_workers=1, surface_fallback_radius: int = 8,
@@ -3107,7 +3125,8 @@ def _initialize_state(
         sfcp_to_sfcp=sfcp_to_sfcp, column_workers=column_workers,
         preprocess_backend=preprocess_backend,
         state_backend=state_backend,
-        timing_report=state_timing)
+        timing_report=state_timing,
+        boundary_species=_native_boundary_species())
     result.state.set_map_coriolis(
         static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],
         static["F"], static["E"], sina=static["SINALPHA"],
@@ -3116,10 +3135,24 @@ def _initialize_state(
             state_timing)
 
 
-def _lbc_payload_sha256(boundaries):
-    """Hash the exact ordered LBC values/tendencies independent of cache path."""
-    digest = hashlib.sha256()
-    for index, interval in enumerate(boundaries.intervals):
+class _LbcPayloadDigest:
+    """The LBC payload digest, fed one interval at a time in order.
+
+    A chained preparation writes each interval as a segment and lets it go,
+    so it cannot hash the whole set at the end; fed the same intervals in
+    the same order this is :func:`_lbc_payload_sha256` of that set.
+    """
+
+    def __init__(self):
+        self._digest = hashlib.sha256()
+        self.count = 0
+
+    def add(self, index, interval) -> None:
+        if int(index) != self.count:
+            raise ValueError(
+                f"LBC interval {index} hashed out of order (next is "
+                f"{self.count})")
+        digest = self._digest
         digest.update(f"{index}:{interval.start_seconds}:{interval.end_seconds}\n".encode())
         for name in sorted(interval.fields):
             field = interval.fields[name]
@@ -3132,7 +3165,325 @@ def _lbc_payload_sha256(boundaries):
                         f"{name}/{side_name}/{role};{array.dtype.str};"
                         f"{list(array.shape)};".encode())
                     digest.update(array.tobytes(order="C"))
+        self.count += 1
+
+    def hexdigest(self) -> str:
+        return self._digest.hexdigest()
+
+
+def _lbc_payload_sha256(boundaries):
+    """Hash the exact ordered LBC values/tendencies independent of cache path."""
+    digest = _LbcPayloadDigest()
+    for index, interval in enumerate(boundaries.intervals):
+        digest.add(index, interval)
     return digest.hexdigest()
+
+
+#: The document ``tools/prepare_hrrr_wrf.py`` hands this preparation when
+#: it chains (``--chained-bundle``): the bundle root and the authorities
+#: the portable proof binds, so this process can publish the head.
+CHAINED_BUNDLE_SCHEMA = "gpuwm-hrrr-chained-bundle-v1"
+#: Where the native bundle keeps its prepared cache (the forecast runner's
+#: ``HRRR_BUNDLE_PATHS["prepared_cache"]``).
+CHAINED_CACHE_NAME = "native/prepared-cache"
+#: The user metadata a native head holds for its start lead only; the
+#: seal completes it with every boundary lead's report.
+CHAINED_SEAL_COMPLETES = ("mapping_reports",)
+
+
+def _chained_bundle(args):
+    """The bundle a chained native preparation publishes into, or ``None``.
+
+    ``None`` unless ``--chained-bundle`` was given.  A chained head is
+    published only by a new prepare-only pipeline preparation; the prefix
+    sealed cache the stream controller extends one hour at a time is
+    published at its seal.
+    """
+
+    path = getattr(args, "chained_bundle", None)
+    if path is None:
+        return None
+    if (not args.prepare_only or args.pipeline_series is None
+            or args.sealed_prepared_cache):
+        raise ValueError(
+            "--chained-bundle publishes a head for a new prepare-only "
+            "pipeline preparation, and this is not one")
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    if (not isinstance(document, dict)
+            or document.get("schema") != CHAINED_BUNDLE_SCHEMA):
+        raise ValueError(f"{path} is not a {CHAINED_BUNDLE_SCHEMA} document")
+    return document
+
+
+def _interval_host_pricing(sides_by_side):
+    """What one written interval of these side snapshots holds in host RAM.
+
+    Its value and its tendency, each a float64 copy of the four sides
+    (the same count :class:`gpuwm.ingest.lateral_bc.StateBoundaryFrames`
+    gives a route that builds from whole states).
+    """
+
+    return SimpleNamespace(interval_host_bytes=2 * sum(
+        int(np.asarray(array).size) * np.dtype(np.float64).itemsize
+        for side in sides_by_side.values() for array in side.values()))
+
+
+def _bundle_root_in_place(staging, output_root) -> None:
+    """The native bundle root already exists: a head is published in place.
+
+    ``tools/prepare_hrrr_wrf.py`` creates the bundle root (and refuses an
+    existing one) before it builds the static fields this preparation
+    reads, so there is no staging tree to rename; the head is published by
+    ``boundary-stream/head.json`` being written last.
+    """
+
+    if Path(staging).resolve() != Path(output_root).resolve():
+        raise RuntimeError(
+            f"a native bundle is published in place, not from {staging} "
+            f"to {output_root}")
+
+
+class _SealedBridgeLeads:
+    """Leads of a sealed native bridge, each mapped only when it is taken.
+
+    :meth:`open` verifies the bridge's ``SHA256SUMS`` once, and
+    :meth:`take` then maps one lead, which the caller lets go once that
+    lead is mapped onto the domain.  A mapped lead holds one open file
+    descriptor per field (at least 24), so mapping every later lead at
+    once held over 1,100 descriptors on a 48 h window and failed with
+    ``[Errno 24] Too many open files`` under the ordinary 1024 soft
+    ``RLIMIT_NOFILE``.  One lead at a time is what the pipeline route
+    holds.
+    """
+
+    def __init__(self):
+        self._load = None
+        self._pending = {}
+
+    def __bool__(self):
+        return self._load is not None
+
+    def open(self, bridge, source_hours, *, expected_manifest_sha256):
+        """Verify ``bridge`` once; ``source_hours`` maps forcing hour to lead."""
+
+        from gpuwm.ingest.hrrr import verified_hrrr_native_bridge
+
+        self._load = verified_hrrr_native_bridge(
+            bridge, expected_manifest_sha256=expected_manifest_sha256)
+        self._pending = {int(hour): int(source)
+                         for hour, source in source_hours.items()}
+
+    def take(self, hour):
+        """Map forcing hour ``hour``'s lead; each hour is taken once."""
+
+        return self._load(self._pending.pop(int(hour)))
+
+
+def _write_chained_head(
+        args, *, chain, exp, dc, grid, static, soil_mesh, pipeline_producer,
+        source_hash_receipt, source_window, timing, make_identity,
+        sealed_leads, requested_cycle, source_forecast_hours,
+        model_forcing_hours, requested_hours, initial_snapshot, root_result,
+        root_met, mapping_reports, boundary_sides, preprocess_receipt,
+        source_identity):
+    """Publish a chained native preparation's head once its start state exists.
+
+    The bridge is sealed first: the prepared cache identity, the portable
+    source manifest and the proof all bind its ``SHA256SUMS``, and the
+    decoder only seals it once every lead is decoded.  Then the start
+    state's surface, the portable authorities
+    (:func:`gpuwm.hrrr_prepared_bundle.publish_hrrr_bundle_head`) and the
+    head.  Returns ``(writer, lbc_digest, identity, root_surface,
+    soil_temperature_repair, pipeline_report)``; ``writer`` is ``None``
+    when the portable authorities cannot be published, and the
+    preparation then finishes one-shot and says why, as before.
+    """
+
+    from gpuwm.hrrr_prepared_bundle import (
+        HrrrBundleError, publish_hrrr_bundle_head)
+    from gpuwm.ingest.boundary_stream import PreparedTreeWriter
+    from gpuwm.ingest.hrrr_physics import resolve_prepared_noah_surface
+    from gpuwm.ingest.preprocess_backend import preprocess_reports_identity
+    from gpuwm.ingest.soil import soil_temperature_repair_proof
+
+    started = time.perf_counter()
+    with _prep_step(args, "root_bridge_seal",
+                    label="Decode and seal every source hour"):
+        pipeline_report = pipeline_producer.finish()
+        seal_process, seal_receipt, seal_started = _start_seal(
+            args, pipeline_report, source_hash_receipt, source_window)
+        stdout, stderr = seal_process.communicate()
+        timing["pipeline_bridge_seal_wall"] = (
+            time.perf_counter() - seal_started)
+        if seal_process.returncode != 0:
+            raise RuntimeError("pipeline bridge seal failed: " + stderr[-4000:])
+        if seal_receipt is None or not seal_receipt.is_file():
+            raise RuntimeError("pipeline bridge seal omitted receipt")
+        seal = json.loads(seal_receipt.read_text())
+    args.manifest_sha256 = seal["manifest_sha256"]
+    pipeline_report["seal"] = seal
+    pipeline_report["seal_stdout"] = stdout.strip()
+    identity = make_identity(args.manifest_sha256)
+    # Verified here, once; each later lead is mapped when its hour is.
+    sealed_leads.open(
+        args.bridge, {hour: source_forecast_hours[hour]
+                      for hour in requested_hours[1:]},
+        expected_manifest_sha256=args.manifest_sha256)
+    timing["chained_head_bridge_seconds"] = time.perf_counter() - started
+
+    # The same surface call the one-shot writer makes, on the same start
+    # state; it reads no boundary hour.
+    root_surface = resolve_prepared_noah_surface(
+        root_met, dc.run, static, soil_mesh=soil_mesh)
+    soil_temperature_repair = soil_temperature_repair_proof(root_surface, grid)
+    start_key = f"f{source_forecast_hours[0]:02d}"
+    metadata = {
+        "initial_valid_time": initial_snapshot.valid_time.isoformat(),
+        "last_valid_time": (initial_snapshot.valid_time + timedelta(
+            hours=int(requested_hours[-1]))).isoformat(),
+        "source_cycle": requested_cycle.isoformat(),
+        "source_forecast_hours": list(source_forecast_hours),
+        "model_forcing_hours": list(model_forcing_hours),
+        "forcing_hours": list(requested_hours),
+        # The start lead's report; the seal adds every boundary lead's.
+        "mapping_reports": _strict_json(preprocess_reports_identity(
+            {start_key: mapping_reports[start_key]})),
+        "soil_texture_downscale": _strict_json(
+            root_surface.soil_texture_downscale),
+        **({"soil_temperature_repair": _strict_json(
+            soil_temperature_repair)}
+           if soil_temperature_repair is not None else {}),
+    }
+    root = Path(chain["output_root"]).resolve()
+
+    def optional_path(key):
+        value = chain.get(key)
+        return None if value is None else Path(value)
+
+    try:
+        head_bundle = publish_hrrr_bundle_head(
+            output_root=root, prepared_cache=root / CHAINED_CACHE_NAME,
+            static_cache=Path(chain["static_cache"]),
+            static_receipt=Path(chain["static_receipt"]),
+            geometry_receipt=Path(chain["geometry_receipt"]),
+            bridge_manifest=args.bridge / "SHA256SUMS",
+            namelist_input=args.namelist_input,
+            wps_namelist=optional_path("wps_namelist"),
+            source_manifest=Path(chain["source_manifest"]),
+            experiment_config=Path(chain["experiment_config"]),
+            source_cycle=requested_cycle,
+            source_forecast_hours=source_forecast_hours,
+            model_forcing_hours=model_forcing_hours,
+            preprocessing=_strict_json(preprocess_receipt),
+            source_identity=identity["source_identity"],
+            physics_profile=chain.get("physics_profile"),
+            cache_user_metadata=metadata,
+            expert_acknowledgements=tuple(chain.get("acknowledgements") or ()),
+            domain_spec=optional_path("domain_spec"))
+    except HrrrBundleError as error:
+        # The one-shot route publishes no portable bundle in this case and
+        # says so (tools/prepare_hrrr_wrf.py); nothing can bind a head.
+        print("prepare: chained preparation not used: the portable bundle's "
+              f"head could not be published ({error}); the forecast starts "
+              "after preparation", file=sys.stderr, flush=True)
+        return (None, None, identity, root_surface, soil_temperature_repair,
+                pipeline_report)
+
+    writer = PreparedTreeWriter(
+        staging=root, output_root=root, identity=identity,
+        cache_name=CHAINED_CACHE_NAME, publish=_bundle_root_in_place)
+    backend = str(preprocess_receipt["backend"])
+    # A card producer is priced at the preparation's whole device price
+    # (the start-state build and every spawned boundary worker), which
+    # covers what it still holds while the forecast runs beside it.
+    device_bytes = (int(native_preparation_price(
+        dc.run, forcing_times=len(requested_hours),
+        prepare_workers=args.prepare_workers).need_bytes)
+        if backend == "cuda" else None)
+    writer.admit(experiment=exp, backend=backend, device_bytes=device_bytes,
+                 source="hrrr")
+    writer.write_head(
+        initial_result=root_result, met=root_met,
+        surface=root_surface.fields, metadata=metadata,
+        lbc={"spec_bdy_width": int(dc.run.spec_bdy_width),
+             "spec_zone": 1, "relax_zone": 4,
+             "schedule": [[float(k * 3600), float((k + 1) * 3600)]
+                          for k in range(len(requested_hours) - 1)],
+             "fields": sorted(boundary_sides["west"])},
+        proof_head=head_bundle["proof_head"],
+        input_manifest_sha256=head_bundle["handoff"]["source_manifest_sha256"],
+        forcing=_interval_host_pricing(boundary_sides),
+        seal_completes=CHAINED_SEAL_COMPLETES)
+    writer.native_bundle_head = head_bundle
+    return (writer, _LbcPayloadDigest(), identity, root_surface,
+            soil_temperature_repair, pipeline_report)
+
+
+def _seal_chained_cache(writer, *, timing, mapping_reports, last_valid_time):
+    """Seal the streamed cache: every lead's mapping report, then the header."""
+
+    from gpuwm.ingest.preprocess_backend import preprocess_reports_identity
+
+    promised = writer.head["basis"]["cache"]["metadata"]["user"][
+        "last_valid_time"]
+    if promised != last_valid_time.isoformat():
+        # The head named the last forcing time before the lead was decoded;
+        # a source whose last lead is valid at another time is not the
+        # cache that head described.
+        raise RuntimeError(
+            f"the last forcing time is {last_valid_time.isoformat()}, not "
+            f"the {promised} the head was published with")
+    started = time.perf_counter()
+    receipt = writer.seal_cache(completed_metadata={
+        "mapping_reports": _strict_json(
+            preprocess_reports_identity(mapping_reports))})
+    timing["seal_streamed_prepared_cache"] = time.perf_counter() - started
+    return receipt
+
+
+def _publish_chained_proof(writer, args, *, chain, report, configured_run):
+    """Check the preparation's receipts, then write ``proof.json`` last.
+
+    The receipts are the ones ``tools/prepare_hrrr_wrf.py`` checks before
+    it publishes a one-shot bundle, checked here because a chained
+    bundle's proof is written by this process; the wrapper checks them
+    again after.  Returns the handoff the wrapper relays.
+    """
+
+    from gpuwm.hrrr_prepared_bundle import (
+        PROOF_NAME, seal_hrrr_bundle_proof, sealed_handoff)
+    from tools.prepare_hrrr_wrf import (
+        _validated_physics_receipt, _validated_worker_receipts)
+
+    requested = chain["requested"]
+    preprocessing, _, _ = _validated_worker_receipts(
+        report, selected_backend=requested["preprocess_backend"],
+        requested_preprocess_workers=requested["preprocess_workers"],
+        requested_pipeline_workers=requested["pipeline_workers"],
+        final_hour=int(report["model_forcing_hours"][-1]))
+    _validated_physics_receipt(
+        report, requested_profile=chain.get("physics_profile"),
+        expected_selection=configured_run)
+    head = writer.native_bundle_head
+    if (json.dumps(_strict_json(preprocessing), sort_keys=True)
+            != json.dumps(head["proof_head"]["preprocessing"],
+                          sort_keys=True)):
+        # A boundary hour added a vertical route the start lead did not
+        # meet, so the head's proof names a receipt the one-shot proof of
+        # the same preparation would not.
+        raise RuntimeError(
+            "the preprocessing receipt changed after the head was published, "
+            "so the sealed proof would differ from the head's")
+    root = Path(chain["output_root"]).resolve()
+    proof = seal_hrrr_bundle_proof(
+        head, output_root=root, prepared_cache=root / CHAINED_CACHE_NAME,
+        static_cache=Path(chain["static_cache"]),
+        geometry_receipt=Path(chain["geometry_receipt"]))
+    proof["boundary_stream"] = writer.boundary_stream_proof()
+    writer.publish(proof)
+    return sealed_handoff(head, proof_path=root / PROOF_NAME,
+                          content_sha256=report["prepared_cache"][
+                              "content_sha256"])
 
 
 def _start_seal(args, producer_report, source_hash_receipt, source_window):
@@ -3349,8 +3700,7 @@ def run(args):
         "auto" if args.preprocess_workers is None
         else int(args.preprocess_workers))
 
-    from gpuwm.ingest.hrrr import (
-        load_hrrr_native_series, load_hrrr_pipeline_ready_window)
+    from gpuwm.ingest.hrrr import load_hrrr_pipeline_ready_window
     from gpuwm.ingest.lateral_bc import (
         LateralBoundaries, attach_lateral_boundaries,
         build_lateral_interval_from_sides, domain_boundary_snapshot,
@@ -3389,6 +3739,19 @@ def run(args):
         wps_namelist=getattr(args, "wps_namelist", None),
         physics_profile=args.physics_profile, acknowledgements=tuple(args.ack),
         history_interval_seconds=args.history_interval_seconds)
+    # [perturbation]: a tree's bubbles are applied by the domain-tree
+    # forecast runner at start, so a preparation records them as deferred
+    # in the root's identity, where the hierarchy stage reads them.  This
+    # script's own forecast integrates d01 alone and applies no bubble, so
+    # it refuses the block rather than run the unperturbed state under
+    # the bubbles' name.
+    if not args.prepare_only:
+        from gpuwm.experiment import refuse_unrouted_perturbation
+        refuse_unrouted_perturbation(
+            exp, "native HRRR single-domain benchmark forecast")
+    from gpuwm.hrrr_configuration import root_perturbation_deferral
+    initial_perturbation = root_perturbation_deferral(
+        getattr(args, "experiment_config", None))
     from gpuwm.case_data import optional_case_data_from_tables
     companion_source = getattr(args, "experiment_config", None) or args.namelist_input
     declared_case = optional_case_data_from_tables(
@@ -3410,8 +3773,13 @@ def run(args):
     water_overlay, water_overlay_binding = load_bound_water_overlay(
         None if declared_case is None else declared_case.water_temperature_overlay)
     from gpuwm.static.highres_production import (resolve_static_highres, static_highres_identity)
+    # The root's run picks the urban land-cover legend, as it does for the
+    # static builder (load_static_highres); without it an urban run's
+    # receipt and this carrier named different legends and the static was
+    # refused, and the seal recorded no legend for a restore to check.
     static_highres = resolve_static_highres(experiment_tables,
-        source=str(companion_source), base_dir=Path(companion_source).parent)
+        source=str(companion_source), base_dir=Path(companion_source).parent,
+        run_config=exp.root.run)
     physics_profile = _configured_physics_receipt(
         exp.root.run, args.physics_profile, acknowledgements=tuple(args.ack))
     eta = np.asarray(vertical_grid.eta_levels, dtype=np.float64)
@@ -3477,6 +3845,10 @@ def run(args):
         "trace_gas_overrides": trace_gas_overrides,
         "preparation_case_policy": case_policy,
         "water_temperature_overlay": water_overlay_binding,
+        # Present only for a tree configuration carrying [perturbation];
+        # absent, the identity is byte-for-byte what it always was.
+        **({"initial_perturbation": initial_perturbation}
+           if initial_perturbation is not None else {}),
     }
 
     if static_highres is not None:
@@ -3486,6 +3858,10 @@ def run(args):
     prepared_cache_identity = None
     restore_cached = args.prepared_cache is not None \
         and args.prepared_cache.exists()
+    chain = None if restore_cached else _chained_bundle(args)
+    sealed_leads = _SealedBridgeLeads()
+    writer = None
+    lbc_digest = None
     if restore_cached and args.pipeline_series is not None:
         raise ValueError(
             "pipeline mode requires a new prepared-cache output path")
@@ -3665,23 +4041,27 @@ def run(args):
         available_hours = requested_hours
 
         def acquire_snapshot(hour):
+            # A chained preparation seals the bridge before its head, and
+            # the producer's staging goes with it: every later hour is read
+            # from the sealed bridge, the same decoded bytes.
+            if sealed_leads:
+                return sealed_leads.take(hour)
             source_hour = source_forecast_hours[hour]
             root = pipeline_producer.wait_hour(source_hour)
             return load_hrrr_pipeline_ready_window(root, source_hour)
     else:
         started = time.perf_counter()
-        loaded_snapshots = load_hrrr_native_series(
-            args.bridge, source_forecast_hours,
+        sealed_leads.open(
+            args.bridge, dict(zip(requested_hours, source_forecast_hours)),
             expected_manifest_sha256=args.manifest_sha256)
-        snapshots = dict(zip(requested_hours, loaded_snapshots))
-        del loaded_snapshots
-        timing["verify_and_map_native_series"] = time.perf_counter() - started
+        timing["verify_native_bridge"] = time.perf_counter() - started
         available_hours = requested_hours
 
         def acquire_snapshot(hour):
-            # Every hour is consumed exactly once.  Drop its mmap inventory as
-            # soon as mapping finishes instead of pinning all f00..f12 views.
-            return snapshots.pop(hour)
+            # Every hour is consumed exactly once, and mapped only then: a
+            # long window's leads mapped at once exceed the ordinary open
+            # file limit (_SealedBridgeLeads).
+            return sealed_leads.take(hour)
 
     overlay_series = None
     if not restore_cached and water_overlay is not None:
@@ -3706,9 +4086,12 @@ def run(args):
     if not restore_cached:
         from gpuwm.ingest.boundary_stream import say_prepared_sealed
         from gpuwm.ingest.water_temperature import WaterTemperatureStatics
-        # Every boundary hour is built before the forecast starts; say
-        # so, the way a chained route says why it declined.
-        say_prepared_sealed("native_hrrr")
+        if chain is not None and water_overlay is not None:
+            # The overlay's receipt is verified over every forcing time
+            # (verify_overlay_sequence) before the cache it binds may be
+            # published, which a head cannot wait for.
+            say_prepared_sealed("water_overlay")
+            chain = None
         water_statics = WaterTemperatureStatics.for_route(
             route="native preparation", policy=case_policy["water_temperature_policy"],
             landmask=static["LANDMASK"], lu_index=static["LU_INDEX"], landuse_attrs=attrs)
@@ -3804,6 +4187,44 @@ def run(args):
             })
 
             completed_hours = {0}
+            if chain is not None:
+                (writer, lbc_digest, prepared_cache_identity, root_surface,
+                 soil_temperature_repair, pipeline_report) = _write_chained_head(
+                    args, chain=chain, exp=exp, dc=dc, grid=grid,
+                    static=static, soil_mesh=soil_mesh,
+                    pipeline_producer=pipeline_producer,
+                    source_hash_receipt=source_hash_receipt,
+                    source_window=source_window, timing=timing,
+                    make_identity=make_prepared_cache_identity,
+                    sealed_leads=sealed_leads,
+                    requested_cycle=requested_cycle,
+                    source_forecast_hours=source_forecast_hours,
+                    model_forcing_hours=model_forcing_hours,
+                    requested_hours=requested_hours,
+                    initial_snapshot=initial_snapshot,
+                    root_result=root_result, root_met=root_met,
+                    mapping_reports=mapping_reports,
+                    boundary_sides=boundary_sides_by_hour[0],
+                    preprocess_receipt=preprocess_receipt,
+                    source_identity=source_identity)
+                pipeline_producer = None
+            next_segment = [0]
+
+            def flush_segments():
+                # Interval k closes once hours k and k+1 both have their
+                # sides, in time order whatever order the workers finish
+                # in; hour k's sides are let go once interval k is written.
+                while (next_segment[0] + 1) in boundary_sides_by_hour:
+                    k = next_segment[0]
+                    interval = build_lateral_interval_from_sides(
+                        boundary_sides_by_hour[k],
+                        boundary_sides_by_hour[k + 1],
+                        start_seconds=float(k * 3600),
+                        end_seconds=float((k + 1) * 3600))
+                    lbc_digest.add(k, interval)
+                    writer.write_segment(k, interval)
+                    del interval, boundary_sides_by_hour[k]
+                    next_segment[0] = k + 1
 
             def map_boundary_hour(
                     hour, worker_slot, native_workers, hour_preprocess):
@@ -3904,6 +4325,9 @@ def run(args):
                         time.perf_counter() - total_started),
                 })
                 completed_hours.add(hour)
+                if writer is not None:
+                    writer.note_build_seconds(worker["worker_wall_seconds"])
+                    flush_segments()
                 if args.prepare_only:
                     # "Boundary times k of m" on a run page while the
                     # preparation builds them (the start state is f00).
@@ -4035,16 +4459,24 @@ def run(args):
 
             setup_records.extend(
                 setup_record_by_hour[hour] for hour in requested_hours)
-            for hour in requested_hours[1:]:
-                intervals.append(build_lateral_interval_from_sides(
-                    boundary_sides_by_hour[hour - 1],
-                    boundary_sides_by_hour[hour],
-                    start_seconds=float((hour - 1) * 3600),
-                    end_seconds=float(hour * 3600)))
+            if writer is not None:
+                if next_segment[0] != len(requested_hours) - 1:
+                    raise RuntimeError(
+                        f"the chained preparation wrote {next_segment[0]} "
+                        f"of {len(requested_hours) - 1} boundary intervals")
+            else:
+                for hour in requested_hours[1:]:
+                    intervals.append(build_lateral_interval_from_sides(
+                        boundary_sides_by_hour[hour - 1],
+                        boundary_sides_by_hour[hour],
+                        start_seconds=float((hour - 1) * 3600),
+                        end_seconds=float(hour * 3600)))
             last_valid_time = valid_time_by_hour[requested_hours[-1]]
-        except BaseException:
+        except BaseException as error:
             if pipeline_producer is not None:
                 pipeline_producer.cancel()
+            if writer is not None:
+                writer.fail(error)
             raise
 
         if root_result is None or root_met is None or initial_snapshot is None:
@@ -4052,15 +4484,24 @@ def run(args):
         if (last_valid_time - initial_snapshot.valid_time).total_seconds() \
                 < args.run_seconds:
             raise ValueError("native bridge does not cover requested forecast")
-        boundaries = LateralBoundaries(tuple(intervals), width, 1, 4)
-        started = time.perf_counter()
-        attach_lateral_boundaries(root_result.state, boundaries)
-        timing["attach_all_root_lbc"] = time.perf_counter() - started
+        if writer is None:
+            boundaries = LateralBoundaries(tuple(intervals), width, 1, 4)
+            started = time.perf_counter()
+            attach_lateral_boundaries(root_result.state, boundaries)
+            timing["attach_all_root_lbc"] = time.perf_counter() - started
         timing["all_root_lbc_bound_seconds_from_startup"] = (
             time.perf_counter() - total_started)
 
         verify_overlay_sequence(overlay_series)
-        if args.prepared_cache is not None:
+        if writer is not None:
+            try:
+                prepared_cache_receipt = _seal_chained_cache(
+                    writer, timing=timing, mapping_reports=mapping_reports,
+                    last_valid_time=last_valid_time)
+            except BaseException as error:
+                writer.fail(error)
+                raise
+        elif args.prepared_cache is not None:
             # In pipeline mode the canonical bridge manifest does not exist
             # until all f00..f12 payloads have been atomically published and
             # sealed.  Finish that producer here so the launch-ready cache is
@@ -4093,14 +4534,16 @@ def run(args):
 
             from gpuwm.ingest.prepared_cache import write_prepared_cache
             from gpuwm.ingest.hrrr_physics import resolve_prepared_noah_surface
+            from gpuwm.ingest.preprocess_backend import (
+                preprocess_reports_identity)
 
             # The cache and fresh forecast consume the very same solved
             # surface, including the declared sub-source-cell soil treatment.
             root_surface = resolve_prepared_noah_surface(
                 root_met, dc.run, static, soil_mesh=soil_mesh)
             canonical_surface = root_surface.fields
-            # real.exe's TSLB reasonableness rebuild, recorded only when it
-            # touched a land column, so a healthy cycle's cache and proof
+            # real.exe's TSLB reasonableness rebuild and the snow-covered
+            # rebuild beside it, recorded only when one touched a land column, so a healthy cycle's cache and proof
             # are byte for byte what they were; the bundle relays it into
             # the proof (SOIL_PREPARATION_RECEIPTS).
             from gpuwm.ingest.soil import soil_temperature_repair_proof
@@ -4119,7 +4562,11 @@ def run(args):
                     "source_forecast_hours": list(source_forecast_hours),
                     "model_forcing_hours": list(model_forcing_hours),
                     "forcing_hours": list(requested_hours),
-                    "mapping_reports": _strict_json(mapping_reports),
+                    # Each report's backend receipt without what the
+                    # preparation measured (A138); the preparation report
+                    # keeps the whole receipt.
+                    "mapping_reports": _strict_json(
+                        preprocess_reports_identity(mapping_reports)),
                     "soil_texture_downscale": _strict_json(
                         root_surface.soil_texture_downscale),
                     **({"soil_temperature_repair": _strict_json(
@@ -4134,7 +4581,8 @@ def run(args):
     if (last_valid_time - initial_snapshot.valid_time).total_seconds() \
             < args.run_seconds:
         raise ValueError("prepared forcing does not cover requested forecast")
-    lbc_payload_sha256 = _lbc_payload_sha256(boundaries)
+    lbc_payload_sha256 = (lbc_digest.hexdigest() if writer is not None
+                          else _lbc_payload_sha256(boundaries))
     preprocess_worker_budget_receipt = preprocess_worker_budget.receipt()
     physics_profile["hrrr_initialization"] = (
         _initial_hrrr_microphysics_receipt(
@@ -4154,7 +4602,7 @@ def run(args):
             "prepared_cache_content_sha256": prepared_cache_receipt[
                 "content_sha256"],
         })
-        return {
+        report = {
             "schema": PREPARATION_REPORT_SCHEMA,
             "status": "PASS",
             "scope": (
@@ -4231,6 +4679,15 @@ def run(args):
                 key: int(io_after.get(key, 0) - io_before.get(key, 0))
                 for key in sorted(set(io_before) | set(io_after))},
         }
+        if writer is not None:
+            try:
+                report["portable_bundle"] = _publish_chained_proof(
+                    writer, args, chain=chain, report=report,
+                    configured_run=exp.root.run)
+            except BaseException as error:
+                writer.fail(error)
+                raise
+        return report
 
     # Everything below is forecast-only.  Keep these imports after the
     # prepare-only return so an installed CPU fallback has no CuPy dependency.
@@ -4793,6 +5250,13 @@ def _parse_args(argv=None):
     parser.add_argument(
         "--prepare-only", action="store_true",
         help="prepare/restore --prepared-cache without integrating")
+    parser.add_argument(
+        "--chained-bundle", type=Path,
+        help=("a gpuwm-hrrr-chained-bundle-v1 document (written by "
+              "tools/prepare_hrrr_wrf.py): publish the portable bundle's "
+              "head once the start state exists, one boundary interval per "
+              "hour after it, and proof.json at the seal, so a forecast can "
+              "start on the head"))
     parser.add_argument(
         "--sealed-prepared-cache", action="store_true",
         help=("opt in to a prefix-sealed prepared cache that an operational "

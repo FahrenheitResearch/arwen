@@ -319,11 +319,9 @@ def test_the_soilgeo_route_reaches_past_the_all_or_none_soil_guard():
     assert np.allclose(np.asarray(state.soil_temperature), 288.0 - 3.25)
 
 
-def _era5_door(tmp_path, monkeypatch, *, domains):
+def _era5_inputs(tmp_path, monkeypatch, *, domains):
     """The ERA5 door's own inputs, verified, up to its experiment load."""
     from pathlib import Path
-
-    from gpuwm import fetch_guard
 
     roles = {}
     for role, name in (("grib", "era5.grib"), ("vtable", "Vtable.ERA5"),
@@ -347,10 +345,6 @@ def _era5_door(tmp_path, monkeypatch, *, domains):
     exp = SimpleNamespace(domains=tuple(range(1, domains + 1)))
     monkeypatch.setattr(era5_direct, "load_era5_adapter_config",
                         lambda _path: (exp, None))
-    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
-    if len(str(tmp_path)) >= 124:
-        pytest.skip("temporary root already exceeds the 125-character parent")
-    parent = Path(tmp_path) / ("p" * (125 - len(str(tmp_path)) - 1))
     return dict(
         grib=roles["grib"], vtable=roles["vtable"], bridge=roles["bridge"],
         wps_namelist=roles["wps_namelist"], static_input=None,
@@ -359,8 +353,23 @@ def _era5_door(tmp_path, monkeypatch, *, domains):
         experiment_config=roles["experiment_config"],
         input_manifest=manifest,
         input_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
-        output_root=parent / ("era5-tree-domain-z80" + "x" * 72),
+        output_root=Path(tmp_path) / "prepared",
         geog_root=tmp_path)
+
+
+def _era5_door(tmp_path, monkeypatch, *, domains):
+    """``_era5_inputs`` under an output root 277 characters deep."""
+    from pathlib import Path
+
+    from gpuwm import fetch_guard
+
+    arguments = _era5_inputs(tmp_path, monkeypatch, domains=domains)
+    monkeypatch.setattr(fetch_guard, "windows_path_limit", lambda: 259)
+    if len(str(tmp_path)) >= 124:
+        pytest.skip("temporary root already exceeds the 125-character parent")
+    parent = Path(tmp_path) / ("p" * (125 - len(str(tmp_path)) - 1))
+    arguments["output_root"] = parent / ("era5-tree-domain-z80" + "x" * 72)
+    return arguments
 
 
 def test_an_era5_domain_tree_too_deep_for_windows_is_refused_before_decode(
@@ -405,3 +414,87 @@ def test_a_single_era5_domain_is_not_measured_as_a_tree(
 
     with pytest.raises(Reached):
         era5_direct.prepare_era5_wrf(**arguments)
+
+
+@pytest.mark.parametrize("domains", [1, 2])
+def test_an_era5_tree_defers_a_perturbation_block_a_single_domain_refuses(
+        tmp_path, monkeypatch, capsys, domains):
+    """The tree runner applies the bubbles whatever source prepared the
+    tree, so an ERA5 tree takes the block past the gate that used to
+    refuse it; a single domain, whose runner applies no bubble, is still
+    refused by name before any source is read."""
+    import gpuwm.static.highres_production as highres
+    from gpuwm.experiment import BubbleConfig, PerturbationConfig
+
+    class Reached(Exception):
+        pass
+
+    arguments = _era5_inputs(tmp_path, monkeypatch, domains=domains)
+    exp = SimpleNamespace(
+        domains=tuple(range(1, domains + 1)), root=SimpleNamespace(run=None),
+        perturbation=PerturbationConfig(bubbles=(BubbleConfig(
+            center_lat=50.0, center_lon=6.0, center_height_m=1500.0,
+            radius_km=10.0, depth_m=1500.0, amplitude_k=0.01),)))
+    monkeypatch.setattr(era5_direct, "load_era5_adapter_config",
+                        lambda _path: (exp, None))
+    monkeypatch.setattr(highres, "load_static_highres", lambda *_a: None)
+
+    def reached(*_args, **_kwargs):
+        raise Reached()
+
+    monkeypatch.setattr(era5_direct, "validate_native_lambert_contract", reached)
+    monkeypatch.setattr(era5_direct, "validate_native_lambert_contracts", reached)
+
+    if domains == 1:
+        with pytest.raises(
+                ValueError,
+                match=r"single-domain ERA5-direct prepared-cache route does "
+                      r"not apply \[perturbation\]"):
+            era5_direct.prepare_era5_wrf(**arguments)
+    else:
+        with pytest.raises(Reached):
+            era5_direct.prepare_era5_wrf(**arguments)
+        assert "deferred to prepared-tree forecast initialization" in (
+            capsys.readouterr().err)
+    assert not arguments["output_root"].exists()
+
+
+def test_the_era5_tree_asks_for_an_optional_stock_wrf_export():
+    """The companion WRF file set cannot carry a deferred bubble.
+
+    ``initialize_and_export_regular_source_hierarchy`` defaults to a
+    required export, and this route passed nothing, so an ERA5 tree
+    whose experiment carried [perturbation] would be built domain by
+    domain and then thrown away when the unchanged-WRF export refused
+    the bubble.  Asked for as optional, as the GFS, mapped and HRRR tree
+    routes ask, the refusal is recorded in the proof, and the proof
+    states the mode so the reader accepts a REFUSED export manifest.
+    Read from the call site because the orchestration below it needs a
+    decoded ERA5 series to run; each mode's behaviour is pinned in
+    tests/test_native_hierarchy.py.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(era5_direct))
+    modes = [
+        keyword.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "initialize_and_export_regular_source_hierarchy"
+        for keyword in node.keywords
+        if keyword.arg == "stock_wrf_export"
+    ]
+    assert modes == ["optional"]
+    stated = [
+        value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        and any(isinstance(key, ast.Constant)
+                and key.value == "gpuwm-era5-native-hierarchy-proof-v1"
+                for key in node.values)
+        for key, value in zip(node.keys, node.values)
+        if isinstance(key, ast.Constant) and key.value == "stock_wrf_export"
+    ]
+    assert stated == ["optional"]

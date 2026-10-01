@@ -635,12 +635,13 @@ __device__ void rsw_taumol_body(int L, int iw, int nlayers, int laytrop,
                 const int* __restrict__ indself,
                 const real* __restrict__ forfac, const real* __restrict__ forfrac,
                 const int* __restrict__ indfor,
-                real* taug, real* taur)   // (nlayers, 112) F-order
+                real* taug, real* taur, bool interleaved = false)   // output layout
 {
     int jb = ngb[iw];               // 16..29
     int lay = L + 1;
     bool lower = (lay <= laytrop);
-    size_t out = (size_t)L + (size_t)nlayers * iw;
+    size_t out = interleaved ? (size_t)L * RSW_NGPT + iw
+                             : (size_t)L + (size_t)nlayers * iw;
 
     real tg = 0.0f, tr = 0.0f;
 
@@ -1009,15 +1010,15 @@ void rsw_taumol_b(int ncol, int nlayers,
                   const int* __restrict__ indself,
                   const real* __restrict__ forfac, const real* __restrict__ forfrac,
                   const int* __restrict__ indfor,
-                  real* taug, real* taur)   // (ncol, 112, nlayers) C-order
+                  real* taug, real* taur)   // (ncol, nlayers, 112) C-order
 {
     long long W = (long long)nlayers * RSW_NGPT;
     long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= (long long)ncol * W) return;
     int col = (int)(idx / W);
     int r = (int)(idx % W);
-    int L = r % nlayers;
-    int iw = r / nlayers;
+    int L = r / RSW_NGPT;
+    int iw = r % RSW_NGPT;
     size_t o = (size_t)col * nlayers;
     size_t og = (size_t)col * nlayers * RSW_NGPT;
     rsw_taumol_body(L, iw, nlayers, laytrop[col], tab, ngb,
@@ -1027,7 +1028,7 @@ void rsw_taumol_b(int ncol, int nlayers,
                     fac00 + o, fac01 + o, fac10 + o, fac11 + o,
                     selffac + o, selffrac + o, indself + o,
                     forfac + o, forfrac + o, indfor + o,
-                    taug + og, taur + og);
+                    taug + og, taur + og, true);
 }
 
 // sfluxzen: one thread per g-point; laysolfr per band precomputed on host
@@ -1460,126 +1461,146 @@ void rsw_cldprmc_b(int ncol, int nlayers,
 }
 
 // ---------------------------------------------------------------------------
+// Interleaved spcvmc workspace.  Entry j of workspace array a for thread t
+// lives at wk[(a * n1 + j) * nthr + t]: a warp's 32 threads touch 32
+// consecutive words for the same (a, j), so every workspace load and store
+// is one coalesced transaction instead of 32 scattered ones (the previous
+// layout gave each thread its own contiguous RSW_SPCVMC_WK x n1 slab, 8.7
+// KB apart).  RswStrided only changes addresses: every value stored and
+// loaded, and every arithmetic statement, is the same as before.
+// ---------------------------------------------------------------------------
+template <typename T>
+struct RswStrided {
+    T* p;
+    size_t s;
+    __device__ __forceinline__ T& operator[](int j) const
+    { return p[(size_t)j * s]; }
+};
+typedef RswStrided<real> rsw_wk_t;
+typedef RswStrided<unsigned char> rsw_wkc_t;
+
+// ---------------------------------------------------------------------------
 // reftra_sw as a device function over thread-local arrays (kmodts = 2).
 // ---------------------------------------------------------------------------
 
 // Layer storage is the caller-owned workspace sized from nlayers + 1.
 
-__device__ void rsw_reftra(int nlayers, const unsigned char* lrtchk,
-                           const real* pgg, real prmuz, const real* ptau,
-                           const real* pw, const real* __restrict__ exp_tbl,
-                           real* pref, real* prefd, real* ptra, real* ptrad)
+// The former rsw_reftra loop body, one layer at a time. Each array[jk]
+// operand is the corresponding scalar argument/reference; every arithmetic
+// statement, branch, sqrt and table lookup is retained in its original order.
+__device__ __forceinline__ void rsw_reftra_layer(bool lrtchk,
+                           real pgg, real prmuz, real ptau,
+                           real pw, const real* __restrict__ exp_tbl,
+                           real& pref, real& prefd, real& ptra, real& ptrad)
 {
     const real eps = 1.0e-08f;
     const real zwcrit = 0.9999995f;
-    for (int jk = 0; jk < nlayers; ++jk) {
-        if (!lrtchk[jk]) {
-            pref[jk] = 0.0f;
-            ptra[jk] = 1.0f;
-            prefd[jk] = 0.0f;
-            ptrad[jk] = 1.0f;
-            continue;
+    if (!lrtchk) {
+        pref = 0.0f;
+        ptra = 1.0f;
+        prefd = 0.0f;
+        ptrad = 1.0f;
+        return;
+    }
+    real zto1 = ptau;
+    real zw = pw;
+    real zg = pgg;
+
+    real zg3 = MU(3.0f, zg);
+    real zgamma1 = MU(SU(8.0f, MU(zw, AD(5.0f, zg3))), 0.25f);
+    real zgamma2 = MU(MU(3.0f, MU(zw, SU(1.0f, zg))), 0.25f);
+    real zgamma3 = MU(SU(2.0f, MU(zg3, prmuz)), 0.25f);
+    real zgamma4 = SU(1.0f, zgamma3);
+
+    real zwo = 0.0f;
+    real denom = 1.0f;
+    if (zg != 1.0f) {
+        real q = DV(zg, SU(1.0f, zg));
+        denom = SU(1.0f, MU(SU(1.0f, zw), MU(q, q)));
+    }
+    if (zw > 0.0f && denom != 0.0f) zwo = DV(zw, denom);
+
+    if (zwo >= zwcrit) {
+        real za = MU(zgamma1, prmuz);
+        real za1 = SU(za, zgamma3);
+        real zgt = MU(zgamma1, zto1);
+        real ze1 = DV(zto1, prmuz);
+        if (!(ze1 < 500.0f)) ze1 = 500.0f;   // min(x, 500)
+        real ze2 = rsw_etbl(exp_tbl, ze1);
+        pref = DV(SU(zgt, MU(za1, SU(1.0f, ze2))), AD(1.0f, zgt));
+        ptra = SU(1.0f, pref);
+        prefd = DV(zgt, AD(1.0f, zgt));
+        ptrad = SU(1.0f, prefd);
+        if (ze2 == 1.0f) {
+            pref = 0.0f;
+            ptra = 1.0f;
+            prefd = 0.0f;
+            ptrad = 1.0f;
         }
-        real zto1 = ptau[jk];
-        real zw = pw[jk];
-        real zg = pgg[jk];
+    } else {
+        real za1 = AD(MU(zgamma1, zgamma4), MU(zgamma2, zgamma3));
+        real za2 = AD(MU(zgamma1, zgamma3), MU(zgamma2, zgamma4));
+        real zrk = __fsqrt_rn(SU(MU(zgamma1, zgamma1),
+                                 MU(zgamma2, zgamma2)));
+        real zrp = MU(zrk, prmuz);
+        real zrp1 = AD(1.0f, zrp);
+        real zrm1 = SU(1.0f, zrp);
+        real zrk2 = MU(2.0f, zrk);
+        real zrpp = SU(1.0f, MU(zrp, zrp));
+        real zrkg = AD(zrk, zgamma1);
+        real zr1 = MU(zrm1, AD(za2, MU(zrk, zgamma3)));
+        real zr2 = MU(zrp1, SU(za2, MU(zrk, zgamma3)));
+        real zr3 = MU(zrk2, SU(zgamma3, MU(za2, prmuz)));
+        real zr4 = MU(zrpp, zrkg);
+        real zr5 = MU(zrpp, SU(zrk, zgamma1));
+        real zt1 = MU(zrp1, AD(za1, MU(zrk, zgamma4)));
+        real zt2 = MU(zrm1, SU(za1, MU(zrk, zgamma4)));
+        real zt3 = MU(zrk2, AD(zgamma4, MU(za1, prmuz)));
+        real zt4 = zr4;
+        real zt5 = zr5;
+        real zbeta = DV(SU(zgamma1, zrk), zrkg);
 
-        real zg3 = MU(3.0f, zg);
-        real zgamma1 = MU(SU(8.0f, MU(zw, AD(5.0f, zg3))), 0.25f);
-        real zgamma2 = MU(MU(3.0f, MU(zw, SU(1.0f, zg))), 0.25f);
-        real zgamma3 = MU(SU(2.0f, MU(zg3, prmuz)), 0.25f);
-        real zgamma4 = SU(1.0f, zgamma3);
-
-        real zwo = 0.0f;
-        real denom = 1.0f;
-        if (zg != 1.0f) {
-            real q = DV(zg, SU(1.0f, zg));
-            denom = SU(1.0f, MU(SU(1.0f, zw), MU(q, q)));
-        }
-        if (zw > 0.0f && denom != 0.0f) zwo = DV(zw, denom);
-
-        if (zwo >= zwcrit) {
-            real za = MU(zgamma1, prmuz);
-            real za1 = SU(za, zgamma3);
-            real zgt = MU(zgamma1, zto1);
-            real ze1 = DV(zto1, prmuz);
-            if (!(ze1 < 500.0f)) ze1 = 500.0f;   // min(x, 500)
-            real ze2 = rsw_etbl(exp_tbl, ze1);
-            pref[jk] = DV(SU(zgt, MU(za1, SU(1.0f, ze2))), AD(1.0f, zgt));
-            ptra[jk] = SU(1.0f, pref[jk]);
-            prefd[jk] = DV(zgt, AD(1.0f, zgt));
-            ptrad[jk] = SU(1.0f, prefd[jk]);
-            if (ze2 == 1.0f) {
-                pref[jk] = 0.0f;
-                ptra[jk] = 1.0f;
-                prefd[jk] = 0.0f;
-                ptrad[jk] = 1.0f;
-            }
+        real ze1 = MU(zrk, zto1);
+        if (!(ze1 < 500.0f)) ze1 = 500.0f;
+        real ze2 = DV(zto1, prmuz);
+        if (!(ze2 < 500.0f)) ze2 = 500.0f;
+        real zem1, zep1, zem2, zep2;
+        if (ze1 <= RSW_C_OD_LO) {
+            zem1 = AD(SU(1.0f, ze1), MU(MU(0.5f, ze1), ze1));
+            zep1 = DV(1.0f, zem1);
         } else {
-            real za1 = AD(MU(zgamma1, zgamma4), MU(zgamma2, zgamma3));
-            real za2 = AD(MU(zgamma1, zgamma3), MU(zgamma2, zgamma4));
-            real zrk = __fsqrt_rn(SU(MU(zgamma1, zgamma1),
-                                     MU(zgamma2, zgamma2)));
-            real zrp = MU(zrk, prmuz);
-            real zrp1 = AD(1.0f, zrp);
-            real zrm1 = SU(1.0f, zrp);
-            real zrk2 = MU(2.0f, zrk);
-            real zrpp = SU(1.0f, MU(zrp, zrp));
-            real zrkg = AD(zrk, zgamma1);
-            real zr1 = MU(zrm1, AD(za2, MU(zrk, zgamma3)));
-            real zr2 = MU(zrp1, SU(za2, MU(zrk, zgamma3)));
-            real zr3 = MU(zrk2, SU(zgamma3, MU(za2, prmuz)));
-            real zr4 = MU(zrpp, zrkg);
-            real zr5 = MU(zrpp, SU(zrk, zgamma1));
-            real zt1 = MU(zrp1, AD(za1, MU(zrk, zgamma4)));
-            real zt2 = MU(zrm1, SU(za1, MU(zrk, zgamma4)));
-            real zt3 = MU(zrk2, AD(zgamma4, MU(za1, prmuz)));
-            real zt4 = zr4;
-            real zt5 = zr5;
-            real zbeta = DV(SU(zgamma1, zrk), zrkg);
-
-            real ze1 = MU(zrk, zto1);
-            if (!(ze1 < 500.0f)) ze1 = 500.0f;
-            real ze2 = DV(zto1, prmuz);
-            if (!(ze2 < 500.0f)) ze2 = 500.0f;
-            real zem1, zep1, zem2, zep2;
-            if (ze1 <= RSW_C_OD_LO) {
-                zem1 = AD(SU(1.0f, ze1), MU(MU(0.5f, ze1), ze1));
-                zep1 = DV(1.0f, zem1);
-            } else {
-                real tblind = DV(ze1, AD(RSW_C_BPADE, ze1));
-                int itind = (int)AD(MU(RSW_C_TBLINT, tblind), 0.5f);
-                zem1 = exp_tbl[itind];
-                zep1 = DV(1.0f, zem1);
-            }
-            if (ze2 <= RSW_C_OD_LO) {
-                zem2 = AD(SU(1.0f, ze2), MU(MU(0.5f, ze2), ze2));
-                zep2 = DV(1.0f, zem2);
-            } else {
-                real tblind = DV(ze2, AD(RSW_C_BPADE, ze2));
-                int itind = (int)AD(MU(RSW_C_TBLINT, tblind), 0.5f);
-                zem2 = exp_tbl[itind];
-                zep2 = DV(1.0f, zem2);
-            }
-
-            real zdenr = AD(MU(zr4, zep1), MU(zr5, zem1));
-            real zdent = AD(MU(zt4, zep1), MU(zt5, zem1));
-            if (zdenr >= -eps && zdenr <= eps) {
-                pref[jk] = eps;
-                ptra[jk] = zem2;
-            } else {
-                pref[jk] = DV(MU(zw, SU(SU(MU(zr1, zep1), MU(zr2, zem1)),
-                                        MU(zr3, zem2))), zdenr);
-                ptra[jk] = SU(zem2,
-                    DV(MU(MU(zem2, zw), SU(SU(MU(zt1, zep1), MU(zt2, zem1)),
-                                           MU(zt3, zep2))), zdent));
-            }
-
-            real zemm = MU(zem1, zem1);
-            real zdend = DV(1.0f, MU(SU(1.0f, MU(zbeta, zemm)), zrkg));
-            prefd[jk] = MU(MU(zgamma2, SU(1.0f, zemm)), zdend);
-            ptrad[jk] = MU(MU(zrk2, zem1), zdend);
+            real tblind = DV(ze1, AD(RSW_C_BPADE, ze1));
+            int itind = (int)AD(MU(RSW_C_TBLINT, tblind), 0.5f);
+            zem1 = exp_tbl[itind];
+            zep1 = DV(1.0f, zem1);
         }
+        if (ze2 <= RSW_C_OD_LO) {
+            zem2 = AD(SU(1.0f, ze2), MU(MU(0.5f, ze2), ze2));
+            zep2 = DV(1.0f, zem2);
+        } else {
+            real tblind = DV(ze2, AD(RSW_C_BPADE, ze2));
+            int itind = (int)AD(MU(RSW_C_TBLINT, tblind), 0.5f);
+            zem2 = exp_tbl[itind];
+            zep2 = DV(1.0f, zem2);
+        }
+
+        real zdenr = AD(MU(zr4, zep1), MU(zr5, zem1));
+        real zdent = AD(MU(zt4, zep1), MU(zt5, zem1));
+        if (zdenr >= -eps && zdenr <= eps) {
+            pref = eps;
+            ptra = zem2;
+        } else {
+            pref = DV(MU(zw, SU(SU(MU(zr1, zep1), MU(zr2, zem1)),
+                                    MU(zr3, zem2))), zdenr);
+            ptra = SU(zem2,
+                DV(MU(MU(zem2, zw), SU(SU(MU(zt1, zep1), MU(zt2, zem1)),
+                                       MU(zt3, zep2))), zdent));
+        }
+
+        real zemm = MU(zem1, zem1);
+        real zdend = DV(1.0f, MU(SU(1.0f, MU(zbeta, zemm)), zrkg));
+        prefd = MU(MU(zgamma2, SU(1.0f, zemm)), zdend);
+        ptrad = MU(MU(zrk2, zem1), zdend);
     }
 }
 
@@ -1587,11 +1608,12 @@ __device__ void rsw_reftra(int nlayers, const unsigned char* lrtchk,
 // thread-local array until the batched work moved every per-thread array
 // of this pipeline into an explicit workspace (see rsw_spcvmc_body);
 // loads/stores only, no arithmetic difference.
-__device__ void rsw_vrtqdr(int klev, const real* pref, const real* prefd,
-                           const real* ptra, const real* ptrad,
-                           const real* pdbt, real* prdnd, real* prup,
-                           real* prupd, const real* ptdbt,
-                           real* pfd_col, real* pfu_col, real* ztdn)
+template <class PA>
+__device__ void rsw_vrtqdr(int klev, PA pref, PA prefd,
+                           PA ptra, PA ptrad,
+                           PA pdbt, PA prdnd, PA prup,
+                           PA prupd, PA ptdbt,
+                           PA pfd_col, PA pfu_col, PA ztdn)
 {
     real zreflect = DV(1.0f, SU(1.0f, MU(prefd[klev], prefd[klev - 1])));
     prup[klev - 1] = AD(pref[klev - 1],
@@ -1651,13 +1673,16 @@ __device__ void rsw_vrtqdr(int klev, const real* pref, const real* prefd,
 // launch (~2.3 GiB here), so the arrays now live in a caller-provided
 // workspace: wk carries RSW_SPCVMC_WK real arrays and wkc RSW_SPCVMC_WKC
 // flag arrays of (nlayers + 1) entries per thread, carved below in a
-// fixed order.  Every statement that touches them is unchanged -- the
-// arrays merely moved from local to global memory (loads/stores round
-// nothing), which the oracle and batched gates re-prove bitwise.
+// fixed order and interleaved across the launch's threads (RswStrided,
+// stride wks = threads in the launch) so a warp's accesses coalesce.
+// The fused pass keeps former per-layer intermediates in registers and
+// shares vrtqdr scratch between clear and total sweeps. Arithmetic statements
+// retain their operands, order and rounding within each dependency chain.
+// The layer-to-scalar correspondence is recorded beside the fused pass.
 // ---------------------------------------------------------------------------
 
-#define RSW_SPCVMC_WK 35    // real arrays carved from wk, in this order
-#define RSW_SPCVMC_WKC 2    // unsigned char arrays carved from wkc
+#define RSW_SPCVMC_WK 16    // real arrays carved from wk, in this order
+#define RSW_SPCVMC_WKC 0    // retained ABI slot; flags are scalar registers
 
 __device__ void rsw_spcvmc_body(int iw1, int nlayers,
                     const real* __restrict__ tab,
@@ -1683,7 +1708,8 @@ __device__ void rsw_spcvmc_body(int iw1, int nlayers,
                     real* ztdbt_nodel_out,             // (nlayers+1, 112) F
                     real* ztdbtc_nodel_out,
                     real* wk,                          // RSW_SPCVMC_WK x n1
-                    unsigned char* wkc)                // RSW_SPCVMC_WKC x n1
+                    unsigned char* wkc,                // RSW_SPCVMC_WKC x n1
+                    size_t wks, bool interleaved = false) // workspace and slab layouts
 {
     int klev = nlayers;
     int ibm = ngb[iw1] - 15;                            // 1..14
@@ -1691,40 +1717,45 @@ __device__ void rsw_spcvmc_body(int iw1, int nlayers,
     const real repclc = 1.0e-12f;
 
     const int n1 = nlayers + 1;
-    real* ztauc = wk;                 real* zomcc = wk + n1;
-    real* zgcc = wk + 2 * n1;         real* ztauo = wk + 3 * n1;
-    real* zomco = wk + 4 * n1;        real* zgco = wk + 5 * n1;
-    real* zrefc = wk + 6 * n1;        real* zrefdc = wk + 7 * n1;
-    real* ztrac = wk + 8 * n1;        real* ztradc = wk + 9 * n1;
-    real* zrefo = wk + 10 * n1;       real* zrefdo = wk + 11 * n1;
-    real* ztrao = wk + 12 * n1;       real* ztrado = wk + 13 * n1;
-    real* zref = wk + 14 * n1;        real* zrefd = wk + 15 * n1;
-    real* ztra = wk + 16 * n1;        real* ztrad = wk + 17 * n1;
-    real* zdbtc = wk + 18 * n1;       real* ztdbtc = wk + 19 * n1;
-    real* zdbt = wk + 20 * n1;        real* ztdbt = wk + 21 * n1;
-    real* zdbtc_nodel = wk + 22 * n1; real* ztdbtc_nodel = wk + 23 * n1;
-    real* zdbt_nodel = wk + 24 * n1;  real* ztdbt_nodel = wk + 25 * n1;
-    real* zrdnd = wk + 26 * n1;       real* zrdndc = wk + 27 * n1;
-    real* zrup = wk + 28 * n1;        real* zrupd = wk + 29 * n1;
-    real* zrupc = wk + 30 * n1;       real* zrupdc = wk + 31 * n1;
-    real* fd_col = wk + 32 * n1;      real* fu_col = wk + 33 * n1;
-    real* ztdn = wk + 34 * n1;
-    unsigned char* lrtchkclr = wkc;
-    unsigned char* lrtchkcld = wkc + n1;
-
+    // Sixteen profiles survive the fused layer pass. Flags use registers.
+    const rsw_wk_t zrefc{wk + (size_t)0 * n1 * wks, wks};
+    const rsw_wk_t zrefdc{wk + (size_t)1 * n1 * wks, wks};
+    const rsw_wk_t ztrac{wk + (size_t)2 * n1 * wks, wks};
+    const rsw_wk_t ztradc{wk + (size_t)3 * n1 * wks, wks};
+    const rsw_wk_t zref{wk + (size_t)4 * n1 * wks, wks};
+    const rsw_wk_t zrefd{wk + (size_t)5 * n1 * wks, wks};
+    const rsw_wk_t ztra{wk + (size_t)6 * n1 * wks, wks};
+    const rsw_wk_t ztrad{wk + (size_t)7 * n1 * wks, wks};
+    const rsw_wk_t zdbtc{wk + (size_t)8 * n1 * wks, wks};
+    const rsw_wk_t ztdbtc{wk + (size_t)9 * n1 * wks, wks};
+    const rsw_wk_t zdbt{wk + (size_t)10 * n1 * wks, wks};
+    const rsw_wk_t ztdbt{wk + (size_t)11 * n1 * wks, wks};
+    const rsw_wk_t zrdnd{wk + (size_t)12 * n1 * wks, wks};
+    const rsw_wk_t zrup{wk + (size_t)13 * n1 * wks, wks};
+    const rsw_wk_t zrupd{wk + (size_t)14 * n1 * wks, wks};
+    const rsw_wk_t ztdn{wk + (size_t)15 * n1 * wks, wks};
+    // vrtqdr writes fluxes directly to the existing output slabs, using the
+    // same final arithmetic statements. The scalar nodel products likewise
+    // write their output levels as the ascending recurrence completes.
+    const size_t os = interleaved ? RSW_NGPT : 1;
+    const size_t ob = interleaved ? iw1 : (size_t)iw1 * n1;
+    const rsw_wk_t clear_fd{zcd + ob, os}, clear_fu{zcu + ob, os};
+    const rsw_wk_t total_fd{zfd + ob, os}, total_fu{zfu + ob, os};
+    const rsw_wk_t nodel_c{ztdbtc_nodel_out + ob, os};
+    const rsw_wk_t nodel_t{ztdbt_nodel_out + ob, os};
+    real ztdbtc_nodel = 1.0f;
+    real ztdbt_nodel = 1.0f;
+    nodel_c[0] = ztdbtc_nodel;
+    nodel_t[0] = ztdbt_nodel;
     zincflx[iw1] = MU(MU(adjflux[ibm - 1], sfluxzen[iw1]), prmu0);
 
     ztdbtc[0] = 1.0f;
-    ztdbtc_nodel[0] = 1.0f;
     zdbtc[klev] = 0.0f;
     ztrac[klev] = 0.0f;
     ztradc[klev] = 0.0f;
     zrefc[klev] = palbp[ibm - 1];
     zrefdc[klev] = palbd[ibm - 1];
-    zrupc[klev] = palbp[ibm - 1];
-    zrupdc[klev] = palbd[ibm - 1];
     ztdbt[0] = 1.0f;
-    ztdbt_nodel[0] = 1.0f;
     zdbt[klev] = 0.0f;
     ztra[klev] = 0.0f;
     ztrad[klev] = 0.0f;
@@ -1733,96 +1764,96 @@ __device__ void rsw_spcvmc_body(int iw1, int nlayers,
     zrup[klev] = palbp[ibm - 1];
     zrupd[klev] = palbd[ibm - 1];
 
-    for (int jk = 1; jk <= klev; ++jk) {
-        int ikl = klev + 1 - jk;
-        int J = jk - 1, K = ikl - 1;
-        size_t pKw = (size_t)K + (size_t)nlayers * iw1;
-        size_t pKb = (size_t)K + (size_t)nlayers * (ibm - 1);
-        lrtchkclr[J] = 1;
-        lrtchkcld[J] = (pcldfmc[pKw] > repclc) ? 1 : 0;
-
-        ztauc[J] = AD(AD(taur[pKw], taug[pKw]), ptaua[pKb]);
-        zomcc[J] = AD(MU(taur[pKw], 1.0f), MU(ptaua[pKb], pomga[pKb]));
-        zgcc[J] = DV(MU(MU(pasya[pKb], pomga[pKb]), ptaua[pKb]), zomcc[J]);
-        zomcc[J] = DV(zomcc[J], ztauc[J]);
-
-        real zclear = SU(1.0f, pcldfmc[pKw]);
-        real zcloud = pcldfmc[pKw];
-
-        real ze1 = DV(ztauc[J], prmu0);
-        real zdbtmc = rsw_etbl(exp_tbl, ze1);
-        zdbtc_nodel[J] = zdbtmc;
-        ztdbtc_nodel[J + 1] = MU(zdbtc_nodel[J], ztdbtc_nodel[J]);
-
-        real tauorig = AD(ztauc[J], ptaormc[pKw]);
-        ze1 = DV(tauorig, prmu0);
-        real zdbtmo = rsw_etbl(exp_tbl, ze1);
-        zdbt_nodel[J] = AD(MU(zclear, zdbtmc), MU(zcloud, zdbtmo));
-        ztdbt_nodel[J + 1] = MU(zdbt_nodel[J], ztdbt_nodel[J]);
-    }
-
+    // Statement correspondence to the former passes, for the same J/K:
+    // (1) first-loop optics and both nodel products; (2) delta scaling;
+    // (3) cloudy optics; (4) clear and cloudy reftra layer bodies;
+    // (5) combination and both scaled products. Former intermediates[J]
+    // are scalars with the same names. Independent statements move across
+    // layer boundaries; all four cumulative products retain ascending J,
+    // operand order and rounding. Only the profiles consumed by vrtqdr stay
+    // in RswStrided workspace. Output stores round nothing.
     for (int J = 0; J < klev; ++J) {
-        real zf = MU(zgcc[J], zgcc[J]);
-        real zwf = MU(zomcc[J], zf);
-        ztauc[J] = MU(SU(1.0f, zwf), ztauc[J]);
-        zomcc[J] = DV(SU(zomcc[J], zwf), SU(1.0f, zwf));
-        zgcc[J] = DV(SU(zgcc[J], zf), SU(1.0f, zf));
-    }
-
-    for (int jk = 1; jk <= klev; ++jk) {
+        int jk = J + 1;
         int ikl = klev + 1 - jk;
-        int J = jk - 1, K = ikl - 1;
-        size_t pKw = (size_t)K + (size_t)nlayers * iw1;
-        ztauo[J] = AD(ztauc[J], ptaucmc[pKw]);
-        zomco[J] = AD(MU(ztauc[J], zomcc[J]), MU(ptaucmc[pKw], pomgcmc[pKw]));
-        zgco[J] = DV(AD(MU(MU(ptaucmc[pKw], pomgcmc[pKw]), pasycmc[pKw]),
-                        MU(MU(ztauc[J], zomcc[J]), zgcc[J])), zomco[J]);
-        zomco[J] = DV(zomco[J], ztauo[J]);
+        int K = ikl - 1;
+        size_t pKw = interleaved ? (size_t)K * RSW_NGPT + iw1
+                                : (size_t)K + (size_t)nlayers * iw1;
+        size_t pKb = (size_t)K + (size_t)nlayers * (ibm - 1);
+        bool lrtchkclr = 1;
+        bool lrtchkcld = (pcldfmc[pKw] > repclc) ? 1 : 0;
+        real ztauc, zomcc, zgcc, ztauo, zomco, zgco;
+        real zdbtc_nodel, zdbt_nodel;
+        {
+            ztauc = AD(AD(taur[pKw], taug[pKw]), ptaua[pKb]);
+            zomcc = AD(MU(taur[pKw], 1.0f), MU(ptaua[pKb], pomga[pKb]));
+            zgcc = DV(MU(MU(pasya[pKb], pomga[pKb]), ptaua[pKb]), zomcc);
+            zomcc = DV(zomcc, ztauc);
+
+            real zclear = SU(1.0f, pcldfmc[pKw]);
+            real zcloud = pcldfmc[pKw];
+
+            real ze1 = DV(ztauc, prmu0);
+            real zdbtmc = rsw_etbl(exp_tbl, ze1);
+            zdbtc_nodel = zdbtmc;
+            ztdbtc_nodel = MU(zdbtc_nodel, ztdbtc_nodel);
+
+            real tauorig = AD(ztauc, ptaormc[pKw]);
+            ze1 = DV(tauorig, prmu0);
+            real zdbtmo = rsw_etbl(exp_tbl, ze1);
+            zdbt_nodel = AD(MU(zclear, zdbtmc), MU(zcloud, zdbtmo));
+            ztdbt_nodel = MU(zdbt_nodel, ztdbt_nodel);
+        }
+        nodel_c[J + 1] = ztdbtc_nodel;
+        nodel_t[J + 1] = ztdbt_nodel;
+        real zf = MU(zgcc, zgcc);
+        real zwf = MU(zomcc, zf);
+        ztauc = MU(SU(1.0f, zwf), ztauc);
+        zomcc = DV(SU(zomcc, zwf), SU(1.0f, zwf));
+        zgcc = DV(SU(zgcc, zf), SU(1.0f, zf));
+        ztauo = AD(ztauc, ptaucmc[pKw]);
+        zomco = AD(MU(ztauc, zomcc), MU(ptaucmc[pKw], pomgcmc[pKw]));
+        zgco = DV(AD(MU(MU(ptaucmc[pKw], pomgcmc[pKw]), pasycmc[pKw]),
+                        MU(MU(ztauc, zomcc), zgcc)), zomco);
+        zomco = DV(zomco, ztauo);
+        real zrefc_layer, zrefdc_layer, ztrac_layer, ztradc_layer;
+        real zrefo, zrefdo, ztrao, ztrado;
+        rsw_reftra_layer(lrtchkclr, zgcc, prmu0, ztauc, zomcc, exp_tbl,
+                         zrefc_layer, zrefdc_layer, ztrac_layer, ztradc_layer);
+        rsw_reftra_layer(lrtchkcld, zgco, prmu0, ztauo, zomco, exp_tbl,
+                         zrefo, zrefdo, ztrao, ztrado);
+        zrefc[J] = zrefc_layer;
+        zrefdc[J] = zrefdc_layer;
+        ztrac[J] = ztrac_layer;
+        ztradc[J] = ztradc_layer;
+        {
+            real zclear = SU(1.0f, pcldfmc[pKw]);
+            real zcloud = pcldfmc[pKw];
+            zref[J] = AD(MU(zclear, zrefc_layer), MU(zcloud, zrefo));
+            zrefd[J] = AD(MU(zclear, zrefdc_layer), MU(zcloud, zrefdo));
+            ztra[J] = AD(MU(zclear, ztrac_layer), MU(zcloud, ztrao));
+            ztrad[J] = AD(MU(zclear, ztradc_layer), MU(zcloud, ztrado));
+
+            real ze1 = DV(ztauc, prmu0);
+            real zdbtmc = rsw_etbl(exp_tbl, ze1);
+            zdbtc[J] = zdbtmc;
+            ztdbtc[J + 1] = MU(zdbtc[J], ztdbtc[J]);
+
+            ze1 = DV(ztauo, prmu0);
+            real zdbtmo = rsw_etbl(exp_tbl, ze1);
+            zdbt[J] = AD(MU(zclear, zdbtmc), MU(zcloud, zdbtmo));
+            ztdbt[J + 1] = MU(zdbt[J], ztdbt[J]);
+        }
     }
 
-    rsw_reftra(klev, lrtchkclr, zgcc, prmu0, ztauc, zomcc, exp_tbl,
-               zrefc, zrefdc, ztrac, ztradc);
-    rsw_reftra(klev, lrtchkcld, zgco, prmu0, ztauo, zomco, exp_tbl,
-               zrefo, zrefdo, ztrao, ztrado);
 
-    for (int jk = 1; jk <= klev; ++jk) {
-        int ikl = klev + 1 - jk;
-        int J = jk - 1, K = ikl - 1;
-        size_t pKw = (size_t)K + (size_t)nlayers * iw1;
-        real zclear = SU(1.0f, pcldfmc[pKw]);
-        real zcloud = pcldfmc[pKw];
-        zref[J] = AD(MU(zclear, zrefc[J]), MU(zcloud, zrefo[J]));
-        zrefd[J] = AD(MU(zclear, zrefdc[J]), MU(zcloud, zrefdo[J]));
-        ztra[J] = AD(MU(zclear, ztrac[J]), MU(zcloud, ztrao[J]));
-        ztrad[J] = AD(MU(zclear, ztradc[J]), MU(zcloud, ztrado[J]));
-
-        real ze1 = DV(ztauc[J], prmu0);
-        real zdbtmc = rsw_etbl(exp_tbl, ze1);
-        zdbtc[J] = zdbtmc;
-        ztdbtc[J + 1] = MU(zdbtc[J], ztdbtc[J]);
-
-        ze1 = DV(ztauo[J], prmu0);
-        real zdbtmo = rsw_etbl(exp_tbl, ze1);
-        zdbt[J] = AD(MU(zclear, zdbtmc), MU(zcloud, zdbtmo));
-        ztdbt[J + 1] = MU(zdbt[J], ztdbt[J]);
-    }
-
-    rsw_vrtqdr(klev, zrefc, zrefdc, ztrac, ztradc, zdbtc, zrdndc, zrupc,
-               zrupdc, ztdbtc, fd_col, fu_col, ztdn);
-    for (int jk = 0; jk <= klev; ++jk) {
-        size_t q = (size_t)jk + (size_t)(klev + 1) * iw1;
-        zcd[q] = fd_col[jk];
-        zcu[q] = fu_col[jk];
-    }
+    rsw_vrtqdr(klev, zrefc, zrefdc, ztrac, ztradc, zdbtc, zrdnd, zrup,
+               zrupd, ztdbtc, clear_fd, clear_fu, ztdn);
+    // The two vrtqdr calls share scratch, fully written before each read.
+    // Restore the total surface values formerly held in separate clear scratch.
+    zrup[klev] = palbp[ibm - 1];
+    zrupd[klev] = palbd[ibm - 1];
     rsw_vrtqdr(klev, zref, zrefd, ztra, ztrad, zdbt, zrdnd, zrup,
-               zrupd, ztdbt, fd_col, fu_col, ztdn);
-    for (int jk = 0; jk <= klev; ++jk) {
-        size_t q = (size_t)jk + (size_t)(klev + 1) * iw1;
-        zfd[q] = fd_col[jk];
-        zfu[q] = fu_col[jk];
-        ztdbt_nodel_out[q] = ztdbt_nodel[jk];
-        ztdbtc_nodel_out[q] = ztdbtc_nodel[jk];
-    }
+               zrupd, ztdbt, total_fd, total_fu, ztdn);
 }
 
 extern "C" __global__
@@ -1860,8 +1891,8 @@ void rsw_spcvmc_gpt(int nlayers,
                     ptaua, pasya, pomga, prmu0, adjflux, sfluxzen,
                     taug, taur, zincflx, zcd, zcu, zfd, zfu,
                     ztdbt_nodel_out, ztdbtc_nodel_out,
-                    wk + (size_t)iw1 * (RSW_SPCVMC_WK * n1),
-                    wkc + (size_t)iw1 * (RSW_SPCVMC_WKC * n1));
+                    wk + (size_t)iw1, wkc + (size_t)iw1,
+                    (size_t)RSW_NGPT);
 }
 
 // Batched twin: thread -> (col, iw1); prmu0 becomes per-column, the
@@ -1873,7 +1904,7 @@ void rsw_spcvmc_gpt_b(int ncol, int nlayers,
                       const int* __restrict__ ngb,
                       const real* __restrict__ palbd,    // (ncol, 14)
                       const real* __restrict__ palbp,
-                      const real* __restrict__ pcldfmc,  // (ncol, 112, nl)
+                      const real* __restrict__ pcldfmc,  // (ncol, nl, 112)
                       const real* __restrict__ ptaucmc,
                       const real* __restrict__ pasycmc,
                       const real* __restrict__ pomgcmc,
@@ -1884,10 +1915,10 @@ void rsw_spcvmc_gpt_b(int ncol, int nlayers,
                       const real* __restrict__ prmu0,    // (ncol,)
                       const real* __restrict__ adjflux,  // (ncol, 14)
                       const real* __restrict__ sfluxzen, // (ncol, 112)
-                      const real* __restrict__ taug,     // (ncol, 112, nl)
+                      const real* __restrict__ taug,     // (ncol, nl, 112)
                       const real* __restrict__ taur,
                       real* zincflx,                     // (ncol, 112)
-                      real* zcd, real* zcu,              // (ncol, 112, n1)
+                      real* zcd, real* zcu,              // (ncol, n1, 112)
                       real* zfd, real* zfu,
                       real* ztdbt_nodel_out,
                       real* ztdbtc_nodel_out,
@@ -1912,8 +1943,8 @@ void rsw_spcvmc_gpt_b(int ncol, int nlayers,
                     taug + ogl, taur + ogl, zincflx + og,
                     zcd + og1, zcu + og1, zfd + og1, zfu + og1,
                     ztdbt_nodel_out + og1, ztdbtc_nodel_out + og1,
-                    wk + (size_t)idx * (RSW_SPCVMC_WK * n1),
-                    wkc + (size_t)idx * (RSW_SPCVMC_WKC * n1));
+                    wk + (size_t)idx, wkc + (size_t)idx,
+                    (size_t)ncol * RSW_NGPT, true);
 }
 
 // Accumulate the 14 flux arrays over g-points, sequentially in iw exactly
@@ -1928,7 +1959,8 @@ __device__ void rsw_spc_accum_body(int K, int nlayers,
                    real* pbbfd, real* pbbfu, real* pbbcd, real* pbbcu,
                    real* pbbfddir, real* pbbcddir,
                    real* puvfd, real* puvcd, real* puvfddir, real* puvcddir,
-                   real* pnifd, real* pnicd, real* pnifddir, real* pnicddir)
+                   real* pnifd, real* pnicd, real* pnifddir, real* pnicddir,
+                   bool interleaved = false, real* tile = nullptr)
 {
     int klev = nlayers;
     // output level K corresponds to two-stream level J = klev - K
@@ -1939,8 +1971,39 @@ __device__ void rsw_spc_accum_body(int K, int nlayers,
     real uvfd = 0.0f, uvcd = 0.0f, uvfddir = 0.0f, uvcddir = 0.0f;
     real nifd = 0.0f, nicd = 0.0f, nifddir = 0.0f, nicddir = 0.0f;
 
+    const real* cd_in = zcd; const real* cu_in = zcu;
+    const real* fd_in = zfd; const real* fu_in = zfu;
+    const real* tn_in = ztdbt_nodel; const real* tc_in = ztdbtc_nodel;
+    // One warp owns 32 levels. Copies transpose eight g-points into
+    // shared memory; the original ordered arithmetic loop reads the tile.
+    // The driver launches exactly one warp, including padded output lanes,
+    // so warp barriers cover every producer and consumer of the tile.
+    const int tile_levels = 32;
+    const int tile_g = 8;
+    const int slab = tile_g * tile_levels;
     for (int iw = 0; iw < RSW_NGPT; ++iw) {
-        size_t q = (size_t)J + (size_t)(klev + 1) * iw;
+        if (interleaved && iw % tile_g == 0) {
+            __syncwarp();
+            for (int i = threadIdx.x; i < 6 * slab; i += blockDim.x) {
+                int array = i / slab;
+                int r = i % slab;
+                int level = r / tile_g;
+                int g = r % tile_g;
+                const real* input = array == 0 ? cd_in : array == 1 ? cu_in
+                                  : array == 2 ? fd_in : array == 3 ? fu_in
+                                  : array == 4 ? tn_in : tc_in;
+                int input_level = nlayers - (blockIdx.y * tile_levels + level);
+                if (input_level < 0) input_level = 0;
+                tile[array * slab + g * tile_levels + level] =
+                    input[(size_t)input_level * RSW_NGPT + iw + g];
+            }
+            __syncwarp();
+            zcd = tile; zcu = tile + slab;
+            zfd = tile + 2 * slab; zfu = tile + 3 * slab;
+            ztdbt_nodel = tile + 4 * slab; ztdbtc_nodel = tile + 5 * slab;
+        }
+        size_t q = interleaved ? (size_t)(iw % tile_g) * tile_levels + threadIdx.x
+                              : (size_t)J + (size_t)(klev + 1) * iw;
         int ibm = ngb[iw] - 15;
         real w = zincflx[iw];
         bbfu = AD(bbfu, MU(w, zfu[q]));
@@ -1961,13 +2024,15 @@ __device__ void rsw_spc_accum_body(int K, int nlayers,
             nifddir = AD(nifddir, MU(w, ztdbt_nodel[q]));
         }
     }
-    pbbfd[K] = bbfd;  pbbfu[K] = bbfu;
-    pbbcd[K] = bbcd;  pbbcu[K] = bbcu;
-    pbbfddir[K] = bbfddir;  pbbcddir[K] = bbcddir;
-    puvfd[K] = uvfd;  puvcd[K] = uvcd;
-    puvfddir[K] = uvfddir;  puvcddir[K] = uvcddir;
-    pnifd[K] = nifd;  pnicd[K] = nicd;
-    pnifddir[K] = nifddir;  pnicddir[K] = nicddir;
+    if (!interleaved || blockIdx.y * blockDim.x + threadIdx.x <= nlayers) {
+        pbbfd[K] = bbfd;  pbbfu[K] = bbfu;
+        pbbcd[K] = bbcd;  pbbcu[K] = bbcu;
+        pbbfddir[K] = bbfddir;  pbbcddir[K] = bbcddir;
+        puvfd[K] = uvfd;  puvcd[K] = uvcd;
+        puvfddir[K] = uvfddir;  puvcddir[K] = uvcddir;
+        pnifd[K] = nifd;  pnicd[K] = nicd;
+        pnifddir[K] = nifddir;  pnicddir[K] = nicddir;
+    }
 }
 
 extern "C" __global__
@@ -1997,7 +2062,7 @@ extern "C" __global__
 void rsw_spc_accum_b(int ncol, int nlayers,
                      const int* __restrict__ ngb,
                      const real* __restrict__ zincflx,   // (ncol, 112)
-                     const real* __restrict__ zcd,       // (ncol, 112, n1)
+                     const real* __restrict__ zcd,       // (ncol, n1, 112)
                      const real* __restrict__ zcu,
                      const real* __restrict__ zfd, const real* __restrict__ zfu,
                      const real* __restrict__ ztdbt_nodel,
@@ -2007,11 +2072,10 @@ void rsw_spc_accum_b(int ncol, int nlayers,
                      real* puvfd, real* puvcd, real* puvfddir, real* puvcddir,
                      real* pnifd, real* pnicd, real* pnifddir, real* pnicddir)
 {
-    long long W = (long long)nlayers + 1;
-    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= (long long)ncol * W) return;
-    int col = (int)(idx / W);
-    int K = (int)(idx % W);
+    int col = blockIdx.x;
+    int level = blockIdx.y * blockDim.x + threadIdx.x;
+    int K = level <= nlayers ? level : nlayers;
+    extern __shared__ real tile[];
     size_t og = (size_t)col * RSW_NGPT;
     size_t og1 = (size_t)col * (nlayers + 1) * RSW_NGPT;
     size_t o1 = (size_t)col * (nlayers + 1);
@@ -2021,7 +2085,7 @@ void rsw_spc_accum_b(int ncol, int nlayers,
                        pbbfd + o1, pbbfu + o1, pbbcd + o1, pbbcu + o1,
                        pbbfddir + o1, pbbcddir + o1,
                        puvfd + o1, puvcd + o1, puvfddir + o1, puvcddir + o1,
-                       pnifd + o1, pnicd + o1, pnifddir + o1, pnicddir + o1);
+                       pnifd + o1, pnicd + o1, pnifddir + o1, pnicddir + o1, true, tile);
 }
 
 // ---------------------------------------------------------------------------
@@ -2150,4 +2214,35 @@ void rsw_post_b(int ncol, int nlayers, real heatfac,
     size_t o1 = (size_t)col * (nlayers + 1);
     rsw_post_body(i, nlayers, heatfac, pdp + o, pbbfu + o1, pbbfd + o1,
                   pbbcu + o1, pbbcd + o1, swhr + o, swhrc + o);
+}
+
+// Integer laysolfr scan: last matching layer wins, including the upper wrap.
+extern "C" __global__
+void rsw_laysolfr_b(int ncol, int nlayers, const int* jp, const int* laytrop,
+                    const int* spec, int* result)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= ncol * RSW_NBND) return;
+    int col = idx / RSW_NBND;
+    int band = idx % RSW_NBND;
+    int trop = laytrop[col];
+    int lr = spec[band];
+    int upper = spec[RSW_NBND + band];
+    int has_lr = spec[2 * RSW_NBND + band];
+    int value = upper ? nlayers : trop;
+    const int* row = jp + (size_t)col * nlayers;
+    if (!has_lr) value = trop;
+    else if (upper) {
+        for (int lay = trop + 1; lay <= nlayers; ++lay) {
+            int previous = (lay - 2 + nlayers) % nlayers;
+            if (row[previous] < lr && row[lay - 1] >= lr) value = lay;
+        }
+    } else {
+        for (int lay = 1; lay <= trop; ++lay) {
+            int next = lay < nlayers ? lay : nlayers - 1;
+            if (row[lay - 1] < lr && row[next] >= lr)
+                value = lay + 1 < trop ? lay + 1 : trop;
+        }
+    }
+    result[idx] = value;
 }

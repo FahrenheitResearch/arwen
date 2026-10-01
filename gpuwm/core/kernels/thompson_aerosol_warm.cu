@@ -232,7 +232,7 @@ __device__ __forceinline__ float thompson_aa_t_lcl(
     float temperature, float dewpoint)
 {
     const float denominator = 1.0f / (dewpoint - 56.0f)
-        + logf(temperature / dewpoint) / 800.0f;
+        + __fdiv_rn(logf(temperature / dewpoint), 800.0f);
     return 1.0f / denominator + 56.0f;
 }
 
@@ -260,7 +260,7 @@ __device__ __forceinline__ float thompson_aa_temperature_from_theta_e(
 {
     float guess = (theta_e_lcl - 0.5f
         * powf(fmaxf(theta_e_lcl - 270.0f, 0.0f), 1.05f))
-        * powf(pressure / 100000.0f, 0.2f);
+        * powf(__fdiv_rn(pressure, 100000.0f), 0.2f);
     for (int iteration = 0; iteration < 100; ++iteration) {
         const float w1 = thompson_rslf(pressure, guess);
         const float w2 = thompson_rslf(pressure, guess + 1.0f);
@@ -275,7 +275,7 @@ __device__ __forceinline__ float thompson_aa_temperature_from_theta_e(
         if (fabsf(correction) < 0.01f) return guess;
     }
     return thompson_aa_theta_wetb(theta_e_lcl)
-        * powf(pressure / 100000.0f, 0.286f);
+        * powf(__fdiv_rn(pressure, 100000.0f), 0.286f);
 }
 
 __device__ __forceinline__ float thompson_aa_wet_bulb_temperature(
@@ -1136,15 +1136,15 @@ extern "C" __global__ void thompson_aa_warm_source_network(
     if (rain_mass >= 1.0e-6f) {
         const int rain_bin = thompson_aa_decade_index(
             rain_mass, -6, 37);
-        const double rain_intercept = (double)((1.0f / 6.0f)
-            * rain_mass / am_r) * rain_lambda * rain_lambda
+        const double rain_intercept = (double)(__fdiv_rn((1.0f / 6.0f)
+            * rain_mass, am_r)) * rain_lambda * rain_lambda
             * rain_lambda * rain_lambda;
         const int rain_intercept_bin =
             thompson_aa_decade_index_double(rain_intercept, 6, 37);
         if (snow_mass >= 1.0e-6f) {
             const int snow_bin = thompson_aa_decade_index(
                 snow_mass, -6, 37);
-            const int raw_temp_bin = (int)((tempc - 2.5f) / 5.0f) - 1;
+            const int raw_temp_bin = (int)(__fdiv_rn((tempc - 2.5f), 5.0f)) - 1;
             const int temp_bin = min(9, max(1, -raw_temp_bin)) - 1;
             const size_t table_idx = (size_t)snow_bin
                 + (size_t)37 * ((size_t)temp_bin
@@ -1231,7 +1231,7 @@ extern "C" __global__ void thompson_aa_warm_source_network(
     }
 
     const float diffusivity = 2.11e-5f
-        * powf(temp0 / 273.15f, 1.94f) * (101325.0f / pressure0);
+        * powf(__fdiv_rn(temp0, 273.15f), 1.94f) * (101325.0f / pressure0);
     const float viscosity = (1.718f + 0.0049f * tempc) * 1.0e-5f;
     const float conductivity = (5.69f + 0.0168f * tempc)
         * 1.0e-5f * 418.936f;
@@ -1692,11 +1692,11 @@ extern "C" __global__ void thompson_aa_ncten_balance(
             (double)((THOMPSON_AA_BM_R + (float)nu_c) + 1.0f) / lamc);
         bool clamped = false;
         if (xdc < THOMPSON_AA_D0C) {
-            lamc = (double)(THOMPSON_AA_CCE2[nu_c] / THOMPSON_AA_D0C);
+            lamc = (double)thompson_aa_div(THOMPSON_AA_CCE2[nu_c], THOMPSON_AA_D0C);
             clamped = true;
         } else if (xdc > THOMPSON_AA_D0R * 2.0f) {
-            lamc = (double)(
-                THOMPSON_AA_CCE2[nu_c] / (THOMPSON_AA_D0R * 2.0f));
+            lamc = (double)thompson_aa_div(THOMPSON_AA_CCE2[nu_c],
+                                           THOMPSON_AA_D0R * 2.0f);
             clamped = true;
         }
         if (clamped) {

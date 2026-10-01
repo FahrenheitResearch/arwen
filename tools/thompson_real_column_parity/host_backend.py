@@ -470,6 +470,11 @@ def install() -> None:
         for attr, value in list(vars(mod).items()):
             if id(value) in replacements:
                 setattr(mod, attr, replacements[id(value)])
+    # The level-parallel fallout kernels need a block barrier, which the
+    # serial host launchers cannot honour, and are compiled for the device
+    # only; the column kernels they match bit for bit run here instead.
+    from gpuwm.core import thompson
+    thompson.LEVEL_PARALLEL_FALLOUT = False
 
 
 __all__ = [

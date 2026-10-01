@@ -107,7 +107,7 @@ function readRoute(args) {
 // missing or refused (a private window, blocked site data); the page then works as before, without the keeping.
 const KEPT = "gpuwm.create.draft";
 const KEPT_FIELDS = ["box", "source", "cycle", "hours", "grid", "dx", "card", "cardTouched", "nz", "name", "profile",
-  "products", "productsNamed", "render_section", "ladder", "clock", "startHour", "picks", "machine"];
+  "products", "productsNamed", "render_section", "ladder", "clock", "startHour", "picks", "machine", "wholeCycle"];
 function keepDraft(link, draft) {
   try {
     sessionStorage.setItem(KEPT, JSON.stringify({ link, draft: Object.fromEntries(KEPT_FIELDS.map((k) => [k, draft[k]])) }));
@@ -143,7 +143,7 @@ function eventFinder(w) {
     const mine = ++asked;
     let rows = [];
     try {
-      const data = await api.get(`/api/library/search?q=${encodeURIComponent(q)}&sort=score`);
+      const data = await api.get(`/api/wiki/search?q=${encodeURIComponent(q)}&sort=score`);
       rows = (data.results || []).filter((r) => r.kind === "event").slice(0, 7);
     } catch (err) {
       rows = [];
@@ -231,6 +231,9 @@ async function render(body, args, page) {
     // How the run steps: "" is the engine's choice (--clock auto), else adaptive or fixed.
     clock: "",
     startHour: 0,
+    // Run as the source posts (the default): start at the first hours and wait at an hour not posted yet. On,
+    // "Wait for the whole cycle" starts once the cycle's last hour is posted.
+    wholeCycle: false,
     // the physics schemes picked per family
     picks: {},
     machine: "this-computer",
@@ -240,7 +243,7 @@ async function render(body, args, page) {
   let recipe = null;
   if (route.event) {
     try {
-      recipe = await api.get(`/api/library/recipe/${encodeURIComponent(route.event)}${route.card ? `?card=${route.card}` : ""}`);
+      recipe = await api.get(`/api/wiki/recipe/${encodeURIComponent(route.event)}${route.card ? `?card=${route.card}` : ""}`);
     } catch (err) {
       notice(errorText(err), "warn");
     }
@@ -318,6 +321,7 @@ async function render(body, args, page) {
   const clock = h("select", { class: "input" }, h("option", { value: "" }, w.clock_auto),
     h("option", { value: "adaptive" }, w.clock_adaptive), h("option", { value: "fixed" }, w.clock_fixed));
   const startHour = h("input", { class: "input num", type: "number", min: "0", max: "384", step: "1", value: "0" });
+  const wholeCycle = h("input", { type: "checkbox" });
   function showDraft() {
     name.value = draft.name;
     dx.value = draft.dx === null ? "" : String(draft.dx);
@@ -327,6 +331,7 @@ async function render(body, args, page) {
     section.value = draft.render_section || "";
     customFields.hidden = !named;
     startHour.value = String(draft.startHour);
+    wholeCycle.checked = !!draft.wholeCycle;
     if ([...profile.options].some((o) => o.value === draft.profile)) profile.value = draft.profile;
     if ([...ladder.options].some((o) => o.value === draft.ladder)) ladder.value = draft.ladder;
     clock.value = ["adaptive", "fixed"].includes(draft.clock) ? draft.clock : "";
@@ -418,6 +423,7 @@ async function render(body, args, page) {
       products: draft.products || null, products_named: draft.productsNamed || null,
       render_section: draft.render_section || null,
       ladder: draft.ladder || null, clock: draft.clock || null, start_hour: draft.startHour,
+      whole_cycle: draft.wholeCycle ? true : null,
       physics_choices: picked() ? { ...draft.picks } : null,
       ...layout,
       era5_provider: recipe && recipe.era5_provider && draft.source === recipe.source ? recipe.era5_provider : null,
@@ -563,16 +569,35 @@ async function render(body, args, page) {
   // The picks stay in the key: whether a cumulus scheme was picked decides the cumulus the fit is sized with.
   // A fit's key leaves the pictures out, so its body leaves out the named-pictures choice: an empty named list refused
   // under a key that ignores it would stay refused after the names were typed.
-  const fitBody = (dxKm, nz) => ({ ...payload(dxKm, nz), products_named: null });
+  const fitBody = (dxKm, nz) => ({ ...payload(dxKm, nz), products_named: null, whole_cycle: null });
   const fitKey = (dxKm, nz = draft.nz) => JSON.stringify({ ...fitBody(dxKm, nz), name: "", products: null });
+  // The auto ladder's depth is its fit's. The grid its last answered fit landed on is kept for everything but the
+  // physics, so a pick (which changes the fit's key) still has its check read the default of the ladder the run is
+  // fitted to, and the check, Start and the night check name the physics the run carries.
+  const autoGrids = new Map();
+  const gridKey = (dxKm, nz = draft.nz) => {
+    const { profile, physics_choices, ...rest } = fitBody(dxKm, nz);
+    return JSON.stringify({ ...rest, name: "", products: null });
+  };
+  const fittedGrid = (fit) => {
+    const spacings = ((fit && fit.domains) || []).map((d) => d.dx_km).filter((dx) => dx > 0);
+    return spacings.length ? { finest_dx_km: Math.min(...spacings), domains: spacings.length } : null;
+  };
+  const autoGrid = () => (draft.ladder === "auto" ? autoGrids.get(gridKey(dxOf())) || null : null);
   function fitFor(dxKm, nz = draft.nz) {
     const key = fitKey(dxKm, nz);
     if (!fits.has(key)) {
+      const auto = draft.ladder === "auto" ? gridKey(dxKm, nz) : null;
       const promise = api.post("/api/create/fit", fitBody(dxKm, nz))
         .then((reply) => ({ ok: true, fit: reply.fit, command: reply.command }))
         .catch((err) => ({ ok: false, message: err.message, fix: err.fix, memory: err.body ? err.body.memory : null }));
       fits.set(key, { promise, done: null });
-      promise.then((result) => { fits.get(key).done = result; if (!closed) paintStep(); });
+      promise.then((result) => {
+        fits.get(key).done = result;
+        const grid = auto && result.ok ? fittedGrid(result.fit) : null;
+        if (grid) autoGrids.set(auto, grid);
+        if (!closed) paintStep();
+      });
     }
     return fits.get(key);
   }
@@ -680,6 +705,7 @@ async function render(body, args, page) {
     draft.startHour = Number.isInteger(n) && n >= 0 ? n : 0;
     paintStep();
   });
+  wholeCycle.addEventListener("change", () => { draft.wholeCycle = wholeCycle.checked; paintStep(); });
   // A set picked by name under More settings replaces the rows picked on the Physics step.
   profile.addEventListener("change", () => { draft.picks = {}; draft.profile = profile.value; paintStep(); });
 
@@ -1075,9 +1101,11 @@ async function render(body, args, page) {
     }
     return physics.catalogs.get(source).done;
   }
+  // The draft's nests go too, so the check reads the default at the finest grid, the set the run gets with none picked.
   const checkBody = () => {
     const out = { source: draft.source, cycle: draft.cycle, hours: draft.hours, nz: draft.nz,
-      dx_km: draft.ladder ? null : dxOf() };
+      dx_km: draft.ladder ? null : dxOf(), ladder: draft.ladder || null, chain: eventLayout(dxOf(), draft.nz).chain,
+      ...(autoGrid() || {}) };
     if (draft.box) { out.lat = draft.box.lat; out.lon = draft.box.lon; }
     if (picked()) out.choices = { ...draft.picks };
     else if (draft.profile) out.suite = draft.profile;
@@ -1162,7 +1190,10 @@ async function render(body, args, page) {
       const usable = scheme.implemented !== false && !scheme.blocker;
       const on = pick ? pick === scheme.choice : isRunning(scheme);
       const tags = [];
-      if (scheme.is_default) tags.push(h("span", { class: "tag" }, w.physics_default_row));
+      // The default set for this grid, as the check names it (below 1 km it is not the source's own).
+      const isDefault = result && result.default_suite ? (scheme.suites || []).includes(result.default_suite)
+        : scheme.is_default;
+      if (isDefault) tags.push(h("span", { class: "tag" }, w.physics_default_row));
       if (pick === scheme.choice) tags.push(h("span", { class: "tag a" }, w.physics_picked_row));
       else if (isRunning(scheme)) tags.push(h("span", { class: "tag a" }, w.physics_runs_row));
       // A native radio per scheme, one group per family: Tab reaches the family, the arrow keys pick in it.
@@ -1217,6 +1248,11 @@ async function render(body, args, page) {
         { profile: recipe.layout.physics.profile, why: recipe.layout.physics.why || "" }))) : null,
       verdict,
       picked() ? h("div", { class: "btns" }, button(w.physics_reset, { small: true, onclick: () => { draft.picks = {}; setProfile(""); paintStep(); } })) : null,
+      // The Cost column is measured against the catalog's own reference, the data source's default set. Below 1 km the
+      // grid's default is another set, so the rows tagged default are not the ones at 1.00x, and the step says so.
+      catalog && !catalog.error && result && result.default_suite && catalog.default_suite
+        && result.default_suite !== catalog.default_suite
+        ? h("p", { class: "note" }, w.physics_cost_reference, " ", setName(catalog.default_suite), ".") : null,
       !catalog ? h("p", { class: "fitline wait" }, w.physics_checking)
         : catalog.error ? h("p", { class: "fitline no" }, catalog.error)
           : (catalog.families || []).map((family) => familyTable(family, result)),
@@ -1319,6 +1355,55 @@ async function render(body, args, page) {
     const host = queueInfo ? queueInfo.host : "";
     return e && e.card_name ? fill(w.here_card, { host, card: e.card_name }) : fill(w.here, { host });
   }
+  // When the start's data is posted: the engine's readiness answer for this draft (gui/posting.py), asked once per
+  // start, window, box and choice. On an engine that runs every start on the whole cycle it says so.
+  const postings = new Map();
+  const postingCell = h("td", {});
+  // The opt-out is offered only where it changes something: an engine that starts every run on the whole cycle
+  // has nothing to opt out of, and its Data posting row says so.
+  const wholeCycleChoice = h("label", { class: "check" }, wholeCycle, " ", w.whole_cycle,
+    h("span", { class: "hint" }, w.whole_cycle_hint));
+  function showPosting(p) {
+    postingCell.textContent = postingWords(p);
+    wholeCycleChoice.hidden = !!(p && p.available === false && !draft.wholeCycle);
+  }
+  const postingKey = () => {
+    const b = payload();
+    return JSON.stringify([b.source, b.cycle, b.hours, b.start_hour, b.whole_cycle, b.lat, b.lon, b.width_km,
+      b.height_km, b.dx_km, b.ladder, b.chain || null]);
+  };
+  const at = (text) => (text ? utcText(text) : w.posting_unknown_time);
+  function postingWords(p) {
+    if (!p) return w.posting_checking;
+    if (p.failed) return fill(w.posting_failed, { why: p.failed });
+    if (!p.available) return draft.wholeCycle ? w.posting_engine_whole : w.posting_engine_whole_default;
+    if (p.error) return fill(w.posting_failed, { why: p.error });
+    if (p.state === "refused") return p.refusal || w.posting_refused;
+    const late = p.posting && p.posting.late_after_minutes;
+    if (!p.as_posted) return fill(w.posting_whole, { final: at(p.expected_final_at) });
+    if (p.posting && p.posting.streams === false) {
+      return fill(w.posting_cycle, { final: at(p.expected_ready_at || p.expected_final_at), why: p.posting.why || "" });
+    }
+    if (p.state === "unprobeable") return fill(w.posting_unprobeable, { final: at(p.expected_final_at) });
+    const lateWords = late ? fill(w.posting_late, { late }) : "";
+    const first = p.ready ? w.posting_ready : fill(w.posting_waiting, { ready: at(p.expected_ready_at) });
+    return [first, fill(w.posting_rest, { final: at(p.expected_final_at) }), lateWords].filter(Boolean).join(" ");
+  }
+  function askPosting() {
+    const key = postingKey();
+    if (!postings.has(key)) {
+      postings.set(key, null);
+      api.post("/api/create/posting", payload())
+        .then((reply) => reply.posting)
+        .catch((err) => ({ failed: err.message }))
+        .then((answer) => {
+          postings.set(key, answer);
+          if (!closed && postingKey() === key) showPosting(answer);
+        });
+    }
+    showPosting(postings.get(key));
+  }
+
   // What takes the start on the page: "now" Start, "queue" only Queue it (the forecast waits for the start to be
   // confirmed), "no" neither.
   const startsBy = (e) => (e && e.data ? e.data.starts : "now");
@@ -1343,7 +1428,9 @@ async function render(body, args, page) {
   let goState = { f: null, blocked: false };
   // What Start and Queue it send, and what their Show command asks for: one body, so the line shown is the one the
   // button runs, on the machine picked.
+  // An auto ladder carries the grid its fit landed on, so Start checks the physics the run gets there.
   const startBody = (queue) => ({ ...payload(), queue, need_gib: needGib(),
+    ...(draft.ladder === "auto" ? fittedGrid(currentFit()) || autoGrid() || {} : {}),
     ...(draft.machine !== "this-computer" ? { machine: draft.machine } : {}) });
   async function launch(queue) {
     for (const b of goBox.querySelectorAll("button")) b.disabled = true;
@@ -1438,7 +1525,9 @@ async function render(body, args, page) {
     ];
     const table = h("div", { class: "tablewrap" }, h("table", { class: "review" }, h("tbody", {},
       rows.map(([k, v]) => h("tr", {}, h("td", {}, k), h("td", {}, v))),
-      h("tr", {}, h("td", {}, w.rows.runs_on), runsOn), h("tr", {}, h("td", {}, w.rows.starts), startsAt))));
+      h("tr", {}, h("td", {}, w.rows.runs_on), runsOn), h("tr", {}, h("td", {}, w.rows.starts), startsAt),
+      h("tr", {}, h("td", {}, w.rows.posting), postingCell))));
+    askPosting();
     const more = fold(w.more,
       h("div", { class: "fields" },
         field(w.lat, lat), field(w.lon, lon), field(w.width, width), field(w.height, height),
@@ -1466,6 +1555,7 @@ async function render(body, args, page) {
       h("div", { class: "fields sub" }, h("label", { class: "wide" }, w.name, name, h("span", { class: "hint" }, w.name_hint)),
         machineField),
       table,
+      wholeCycleChoice,
       layoutLine(),
       entry.done ? (entry.done.ok ? h("p", { class: "fitline" }, f.words) : h("p", { class: "fitline no" }, fitLine(entry.done)))
         : h("p", { class: "fitline wait" }, w.fit_waiting),

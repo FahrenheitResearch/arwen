@@ -2670,13 +2670,17 @@ def test_cli_fetch_hrrr_transport_and_wait_contracts(tmp_path, capsys):
             ["fetch", "--source", "gfs", "--cycle", "2026-07-28T06",
              "--hours", "6", "--area", "30,-100,40,-90",
              "--out", str(tmp_path), "--transport", "s3"])
-    refused("--source hrrr only",
+    # --wait-for is the as-posted spelling for every source (A136 L2),
+    # and --wait-timeout-minutes the as-posted window cap, so what is
+    # refused is a wait budget beside --whole-cycle, which waits for nothing.
+    refused("--whole-cycle waits for nothing",
             ["fetch", "--source", "gfs", "--cycle", "2026-07-28T06",
              "--hours", "6", "--area", "30,-100,40,-90",
-             "--out", str(tmp_path), "--wait-for"])
-    refused("belongs to --wait-for",
+             "--out", str(tmp_path), "--whole-cycle",
+             "--late-after-minutes", "30"])
+    refused("--whole-cycle waits for nothing",
             ["fetch", "--source", "hrrr", "--cycle", "2026-07-28T05",
-             "--hours", "2", "--out", str(tmp_path),
+             "--hours", "2", "--out", str(tmp_path), "--whole-cycle",
              "--wait-timeout-minutes", "10"])
     refused("must be positive",
             ["fetch", "--source", "hrrr", "--cycle", "2026-07-28T05",
@@ -2712,16 +2716,27 @@ def test_cli_fetch_hrrr_wait_timeout_is_an_orderly_exit(tmp_path,
                                                         monkeypatch,
                                                         capsys):
     """A --wait-for window that never fills is an operational outcome
-    with a resume story -- exit 2 and the message, never a traceback."""
+    with a resume story -- exit 75 (the source fell behind, A136 L2) and
+    the message naming the hour and the resume, never a traceback."""
+    from gpuwm import fetch_endpoints
+
     monkeypatch.setattr(fetch, "_head_ok", lambda url: False)
+    monkeypatch.setattr(fetch, "_head_answer", lambda url: False)
+    # The publication check's own question says no too (the fixture's
+    # hosts say yes), so the window is not taken as posted whole.
+    monkeypatch.setattr(fetch_endpoints, "object_answer",
+                        lambda url, **kwargs: False)
     out = tmp_path / "hrrr"
     rc = cli.main(["fetch", "--source", "hrrr", "--engine", "python", "--cycle",
                    "2026-07-28T05", "--hours", "1", "--out", str(out),
                    "--wait-for", "--wait-timeout-minutes", "0.005"])
-    assert rc == 2
+    assert rc == 75
     err = capsys.readouterr().err
-    assert "timed out" in err
+    assert "f000 of the 2026-07-28T05 cycle" in err
+    assert "resumes from the fetched prefix" in err
     assert "Traceback" not in err
+    failed = json.loads((out / "posting" / "failed.json").read_text())
+    assert failed["code"] == "source_behind" and failed["lead"] == 0
 
 
 # ---------------------------------------------------------------------------

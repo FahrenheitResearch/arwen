@@ -1673,9 +1673,16 @@ device arrays directly.
 
 ## What is deliberately still on the host, and why
 
-`SFCDIAGS_RUCLSM` (`module_sf_sfcdiags_ruclsm.F`) raises `(1e5/psfc)` to
-`R/cp` with `np.power` on a float32 array.  **numpy's float32 power and
-CUDA's `powf` are two different non-glibc functions** -- that is the exact
+`SFCDIAGS_RUCLSM` (`module_sf_sfcdiags_ruclsm.F`) raises `(1e5/psfc)` and
+`(1e-5*psfc)` to `R/cp`, REAL `**` that gfortran lowers to glibc's `powf`.
+Through 2.8.0 that was NumPy's float32 power, which is the host's own
+function: glibc's on Linux, the MSVC runtime's on Windows, and NumPy 2.5's
+AVX-512 loop on an AVX-512 Linux host, which missed glibc on 25% of
+`(1e5/psfc)**R/cp` and 10.5% of `(1e-5*psfc)**R/cp` over every float32
+pressure from 45 to 110 kPa, so T2 and TH2 followed the CPU (A145).  Both
+now take `gpuwm.core.noahmp_libm.powf_array`, glibc 2.39's `powf` as array
+arithmetic, on every host (`ruc_runtime.sfcdiags_exner_powers`).  **CUDA's
+`powf` is a different function** -- that is the exact
 divergence class that put 2 ULP into `hfx` at width earlier in this lane and
 cost a session to find.  Moving it to the card is a transcendental-policy
 decision (see `_RUC_PROVISIONAL_TRANSCENDENTALS`), not a performance one, and

@@ -8,7 +8,7 @@
 // below are that Fortran file's; they are carried over from the authority so
 // every statement here can be walked back to the module it mirrors.  One CUDA
 // thread owns one complete surface-to-top column; element k (0-based) of
-// column col is [k*st + col] with st = ny*nx; the working arrays are local,
+// column col is [k*st + col] with st = ny*nx; the working arrays use a tiled global workspace,
 // indexed 1-based like the Fortran, and bounded by SHINHONG_KMAX.
 //
 // ARM A ONLY.  The oracle records two arms; this kernel implements arm A
@@ -97,6 +97,31 @@
 
 #define SHINHONG_KMAX 128
 #define SHINHONG_K2 (SHINHONG_KMAX + 2)
+
+// Interleaving levels across a warp keeps workspace accesses coalesced.
+#define SHWS_SLOTS 50
+#define SHWS_LANES 32
+struct ShCol {
+    real *p;
+    __device__ __forceinline__ real &operator[](int k) const {
+        return p[(size_t)k * (size_t)SHWS_LANES];
+    }
+};
+//: The read-only view, so a `const real *` parameter stays const.
+struct ShColC {
+    const real *p;
+    __device__ __forceinline__ ShColC(const ShCol &a) : p(a.p) {}
+    __device__ __forceinline__ real operator[](int k) const {
+        return p[(size_t)k * (size_t)SHWS_LANES];
+    }
+};
+
+#define SHWS_AT(base, idx, kp) \
+    (ShCol{(base) + (size_t)(idx) * (size_t)(kp) * (size_t)SHWS_LANES})
+//: This thread's lane inside its block's workspace region.
+#define SHWS_LANE_BASE(ws, kp) \
+    ((ws) + (size_t)blockIdx.x * (size_t)SHWS_SLOTS * (size_t)(kp) \
+     * (size_t)SHWS_LANES + (size_t)threadIdx.x)
 
 // 1-based access to a (nz, ny, nx) global field: SH_G(a, 1) is the surface.
 #define SH_G(a, k) a[(size_t)((k) - 1) * st + col]
@@ -266,8 +291,8 @@ __device__ real sh_ptke(real d, real h) {
 // Arrays are 1-based; lau is the LU upper band the Fortran calls au.
 // ------------------------------------------------------------------------
 
-__device__ void sh_tridi_factor(const real *al, const real *ad, const real *cu,
-                                real *fkk, real *lau, int n) {
+__device__ void sh_tridi_factor(ShColC al, ShColC ad, ShColC cu,
+                                ShCol fkk, ShCol lau, int n) {
     fkk[1] = 1.0f / ad[1];
     lau[1] = fkk[1] * cu[1];
     for (int k = 2; k <= n - 1; ++k) {
@@ -277,8 +302,8 @@ __device__ void sh_tridi_factor(const real *al, const real *ad, const real *cu,
     fkk[n] = 1.0f / (ad[n] - al[n - 1] * lau[n - 1]);
 }
 
-__device__ void sh_tridi_solve(const real *al, const real *fkk,
-                               const real *lau, real *f, int n) {
+__device__ void sh_tridi_solve(ShColC al, ShColC fkk,
+                               ShColC lau, ShCol f, int n) {
     f[1] = fkk[1] * f[1];
     for (int k = 2; k <= n - 1; ++k)
         f[k] = fkk[k] * (f[k] - al[k - 1] * f[k - 1]);
@@ -290,18 +315,18 @@ __device__ void sh_tridi_solve(const real *al, const real *fkk,
 // ------------------------------------------------------------------------
 // mixlen (:1776-2012), one column, lmh = lmxl = 1.  Writes s2, ri, el
 // (1-based, live entries 2..kte); gh is internal.  WRF also returns gh; the
-// caller never reads it, so it stays local here.
+// caller never reads it, so it uses a private workspace slot here.
 // ------------------------------------------------------------------------
 
 __device__ void sh_mixlen(const real *u, const real *v, const real *theta,
                           const real *exner, const real *qv, const real *qc,
                           int st, int col,
-                          const real *q2, const real *z, real ustar, real corf,
+                          ShColC q2, ShColC z, real ustar, real corf,
                           real epshol, real hpbl, int lpbl, bool pblflg,
                           real hgamu, real hgamv, real hgamq,
-                          const real *mf, const real *ufxpbl,
-                          const real *vfxpbl, const real *qfxpbl, int kte,
-                          real *s2, real *ri, real *el) {
+                          ShColC mf, ShColC ufxpbl,
+                          ShColC vfxpbl, ShColC qfxpbl, int kte,
+                          ShCol s2, ShCol ri, ShCol el, real *wsb, int wskp) {
     // Parameters (:1789-1826).  The a1/a2x/b1/b2/c1 decimals are
     // double-precision literals assigned to default REAL: one rounding of
     // the decimal to float32, which is what a C float literal is.  Every
@@ -361,9 +386,13 @@ __device__ void sh_mixlen(const real *u, const real *v, const real *theta,
     // ep1: WRF's EP_1 forming, see the kernel body's comment.
     const real ep1 = RV / RD - 1.0f;
 
-    real q1[SHINHONG_K2], dth[SHINHONG_K2], gh[SHINHONG_K2];
-    real en2[SHINHONG_K2], elm[SHINHONG_K2], rel[SHINHONG_K2];
-    for (int k = 0; k < SHINHONG_K2; ++k)
+    ShCol q1 = SHWS_AT(wsb, 0, wskp);
+    ShCol dth = SHWS_AT(wsb, 1, wskp);
+    ShCol gh = SHWS_AT(wsb, 2, wskp);
+    ShCol en2 = SHWS_AT(wsb, 3, wskp);
+    ShCol elm = SHWS_AT(wsb, 4, wskp);
+    ShCol rel = SHWS_AT(wsb, 5, wskp);
+    for (int k = 0; k < wskp; ++k)
         q1[k] = dth[k] = gh[k] = en2[k] = elm[k] = rel[k] = 0.0f;
 
     const real elocp = 2.72e6f / CP;             // :1880
@@ -470,7 +499,7 @@ __device__ void sh_mixlen(const real *u, const real *v, const real *theta,
         if (en2[k] >= 0.0f) {
             real vkrmz = (z[k] - z[1]) * karman;
             real rlb = rlambda + 1.0f / vkrmz;
-            real rln = sqrtf(2.0f * en2[k] / q2[k]) / cn;
+            real rln = __fdiv_rn(sqrtf(2.0f * en2[k] / q2[k]), cn);
             el[k] = 1.0f / (rlb + rln);
         }
     }
@@ -484,13 +513,13 @@ __device__ void sh_mixlen(const real *u, const real *v, const real *theta,
 
 __device__ void sh_prodq2(real dtturbl, real ustar,
                           const real *u, const real *v, const real *theta,
-                          int st, int col, const real *thvx,
-                          real *q2, const real *el, const real *z,
-                          const real *akm, const real *akh,
+                          int st, int col, ShColC thvx,
+                          ShCol q2, ShColC el, ShColC z,
+                          ShColC akm, ShColC akh,
                           real hgamu, real hgamv, real hgamq, real delxy,
                           real hpbl, bool pblflg, int kpbl,
-                          const real *mf, const real *ufxpbl,
-                          const real *vfxpbl, const real *qfxpbl, int kte) {
+                          ShColC mf, ShColC ufxpbl,
+                          ShColC vfxpbl, ShColC qfxpbl, int kte) {
     const real g_qnse = 9.81f;                   // prodq2 local g (:2029 block)
     const real c0 = 0.55f, ceps = 16.6f;
     const real epsq2l = 0.01f;
@@ -539,14 +568,18 @@ __device__ void sh_prodq2(real dtturbl, real ustar,
 // el here and never reads it.
 // ------------------------------------------------------------------------
 
-__device__ void sh_vdifq(real dtdif, real *q2, const real *z, const real *akhk,
-                         const real *ptke1, const real *hgame, real hpbl,
-                         bool pblflg, int kpbl, real efxpbl, int kte) {
+__device__ void sh_vdifq(real dtdif, ShCol q2, ShColC z, ShColC akhk,
+                         ShColC ptke1, ShColC hgame, real hpbl,
+                         bool pblflg, int kpbl, real efxpbl, int kte, real *wsb, int wskp) {
     const real c_k = 1.0f;
     const int lmh = 1;
-    real zfacentk[SHINHONG_K2], dtoz[SHINHONG_K2], akq[SHINHONG_K2];
-    real cr[SHINHONG_K2], cm[SHINHONG_K2], rsq2[SHINHONG_K2];
-    for (int k = 0; k < SHINHONG_K2; ++k)
+    ShCol zfacentk = SHWS_AT(wsb, 6, wskp);
+    ShCol dtoz = SHWS_AT(wsb, 7, wskp);
+    ShCol akq = SHWS_AT(wsb, 8, wskp);
+    ShCol cr = SHWS_AT(wsb, 9, wskp);
+    ShCol cm = SHWS_AT(wsb, 10, wskp);
+    ShCol rsq2 = SHWS_AT(wsb, 11, wskp);
+    for (int k = 0; k < wskp; ++k)
         zfacentk[k] = dtoz[k] = akq[k] = cr[k] = cm[k] = rsq2[k] = 0.0f;
 
     for (int k = 2; k <= kte; ++k) {             // :2183-2186
@@ -615,10 +648,11 @@ void shinhong_column(const real *u, const real *v, const real *theta,
                      real *hpbl_out, int *kpbl_out, real *wstar_out,
                      real *delta_out,
                      real dt, real dx, real dy, int tke_diag,
-                     int nz, int ny, int nx) {
-    int col = blockDim.x * blockIdx.x + threadIdx.x;
+                     int nz, int ny, int nx, real *ws, int wskp, int col0) {
+    int col = col0 + blockDim.x * blockIdx.x + threadIdx.x;
     int st = ny * nx;
     if (col >= st || nz > SHINHONG_KMAX) return;
+    real *wsb = SHWS_LANE_BASE(ws, wskp);
     const int kte = nz;
     const int klpbl = kte;                       // klpbl = kte (:531 region)
 
@@ -648,20 +682,37 @@ void shinhong_column(const real *u, const real *v, const real *theta,
     // chain on WRF's constant (ysu.cu precedent, measured there).
     const real karman = 0.4f, ep1 = RV / RD - 1.0f;
 
-    real thvx[SHINHONG_K2], zq[SHINHONG_K2], za[SHINHONG_K2];
-    real delp[SHINHONG_K2], dza[SHINHONG_K2];
-    real q2x[SHINHONG_K2], hgame2d[SHINHONG_K2];
-    real tflux_e[SHINHONG_K2], qflux_e[SHINHONG_K2], tvflux_e[SHINHONG_K2];
-    real mf[SHINHONG_K2], entfacmf[SHINHONG_K2], entfac[SHINHONG_K2];
-    real xkzm[SHINHONG_K2], xkzh[SHINHONG_K2], xkzq[SHINHONG_K2];
-    real xkzml[SHINHONG_K2], xkzhl[SHINHONG_K2], zfacent[SHINHONG_K2];
-    real al[SHINHONG_K2], ad[SHINHONG_K2], au[SHINHONG_K2];
-    real fkk[SHINHONG_K2], lau[SHINHONG_K2];
+    ShCol thvx = SHWS_AT(wsb, 12, wskp);
+    ShCol zq = SHWS_AT(wsb, 13, wskp);
+    ShCol za = SHWS_AT(wsb, 14, wskp);
+    ShCol delp = SHWS_AT(wsb, 15, wskp);
+    ShCol dza = SHWS_AT(wsb, 16, wskp);
+    ShCol q2x = SHWS_AT(wsb, 17, wskp);
+    ShCol hgame2d = SHWS_AT(wsb, 18, wskp);
+    ShCol tflux_e = SHWS_AT(wsb, 19, wskp);
+    ShCol qflux_e = SHWS_AT(wsb, 20, wskp);
+    ShCol tvflux_e = SHWS_AT(wsb, 21, wskp);
+    ShCol mf = SHWS_AT(wsb, 22, wskp);
+    ShCol entfacmf = SHWS_AT(wsb, 23, wskp);
+    ShCol entfac = SHWS_AT(wsb, 24, wskp);
+    ShCol xkzm = SHWS_AT(wsb, 25, wskp);
+    ShCol xkzh = SHWS_AT(wsb, 26, wskp);
+    ShCol xkzq = SHWS_AT(wsb, 27, wskp);
+    ShCol xkzml = SHWS_AT(wsb, 28, wskp);
+    ShCol xkzhl = SHWS_AT(wsb, 29, wskp);
+    ShCol zfacent = SHWS_AT(wsb, 30, wskp);
+    ShCol al = SHWS_AT(wsb, 31, wskp);
+    ShCol ad = SHWS_AT(wsb, 32, wskp);
+    ShCol au = SHWS_AT(wsb, 33, wskp);
+    ShCol fkk = SHWS_AT(wsb, 34, wskp);
+    ShCol lau = SHWS_AT(wsb, 35, wskp);
     // r1/r2/r3 are the solver right-hand sides: heat uses r1 (f1 :1141);
     // moisture uses r1/r2/r3 (f3 components 1..3, :1230-1245); momentum
     // reuses r1/r2 (f1/f2, :1389-1390).
-    real r1[SHINHONG_K2], r2[SHINHONG_K2], r3[SHINHONG_K2];
-    for (int k = 0; k < SHINHONG_K2; ++k) {
+    ShCol r1 = SHWS_AT(wsb, 36, wskp);
+    ShCol r2 = SHWS_AT(wsb, 37, wskp);
+    ShCol r3 = SHWS_AT(wsb, 38, wskp);
+    for (int k = 0; k < wskp; ++k) {
         thvx[k] = zq[k] = za[k] = delp[k] = dza[k] = 0.0f;
         q2x[k] = hgame2d[k] = 0.0f;
         tflux_e[k] = qflux_e[k] = tvflux_e[k] = 0.0f;
@@ -732,7 +783,7 @@ void shinhong_column(const real *u, const real *v, const real *theta,
     real thermal = thvx[1];
     bool pblflg = true;
     bool sfcflg = true;
-    real sflux = hfxv / rhox / CP + qfxv / rhox * ep1 * SH_THX(1);
+    real sflux = __fdiv_rn(hfxv / rhox, CP) + qfxv / rhox * ep1 * SH_THX(1);
     // :706 `if(br(i).gt.0.0) sfcflg = .false.` -- done in DOUBLE via
     // sh_f2d, not float32.  sm_120 DAZ reads a subnormal br as zero in
     // every FP32 operation including compares, so the plain float32 compare
@@ -799,14 +850,14 @@ void shinhong_column(const real *u, const real *v, const real *theta,
     real ust3 = powf(ustv, 3.0f);                // ust**3. stays powf
     real wscale = powf(ust3 + phifac * karman * wstar3 * 0.5f, h1);
     wscale = sh_min(wscale, ustv * aphi16);
-    wscale = sh_max(wscale, ustv / aphi5);
+    wscale = sh_max(wscale, __fdiv_rn(ustv, aphi5));
 
     // ---- countergradient terms (:785-800) ----
     if (sfcflg && sflux > 0.0f) {
         real gamfac = bfac / rhox / wscale;
-        hgamt = sh_min(gamfac * hfxv / CP, gamcrt);
+        hgamt = sh_min(__fdiv_rn(gamfac * hfxv, CP), gamcrt);
         hgamq = sh_min(gamfac * qfxv, gamcrq);
-        real vpert = (hgamt + ep1 * SH_THX(1) * hgamq) / bfac * afac;
+        real vpert = __fdiv_rn((hgamt + ep1 * SH_THX(1) * hgamq), bfac) * afac;
         thermal = thermal + (sh_max(vpert, 0.0f)
                              * sh_min(za[1] / (sfcfrac * hpbl), 1.0f));
         hgamt = sh_max(hgamt, 0.0f);
@@ -923,7 +974,7 @@ void shinhong_column(const real *u, const real *v, const real *theta,
         prpbl = 1.0f;
         real wm3 = wstar3 + 5.0f * ust3;
         wm2 = powf(wm3, h2);
-        bfxpbl = -0.15f * thvx[1] / G * wm3 / hpbl;
+        bfxpbl = __fdiv_rn(-0.15f * thvx[1], G) * wm3 / hpbl;
         dthvx = sh_max(thvx[kt + 1] - thvx[kt], tmin);
         real dthx = sh_max(SH_THX(kt + 1) - SH_THX(kt), tmin);
         real dqx = sh_min(SH_QVX(kt + 1) - SH_QVX(kt), 0.0f);
@@ -1050,10 +1101,10 @@ void shinhong_column(const real *u, const real *v, const real *theta,
                     && (SH_QCX(k + 1) + SH_QIX(k + 1)) > 0.01e-3f) {
                 real qmean = 0.5f * (SH_QVX(k) + SH_QVX(k + 1));
                 real tmean = 0.5f * (SH_TX(k) + SH_TX(k + 1));
-                real alpha = XLV * qmean / RD / tmean;
-                real chi = XLV * XLV * qmean / CP / RV / tmean / tmean;
+                real alpha = __fdiv_rn(XLV * qmean, RD) / tmean;
+                real chi = __fdiv_rn(__fdiv_rn(XLV * XLV * qmean, CP), RV) / tmean / tmean;
                 ri = (1.0f + alpha) * (
-                    ri - G * G / ss / tmean / CP
+                    ri - __fdiv_rn(G * G / ss / tmean, CP)
                     * ((chi - alpha) / (1.0f + chi)));
             }
             real zk = karman * zq[k + 1];
@@ -1132,7 +1183,7 @@ void shinhong_column(const real *u, const real *v, const real *theta,
 
     // ---- heat: matrix assembly (:1134-1187), solve, recover ----
     ad[1] = 1.0f;
-    r1[1] = SH_THX(1) - 300.0f + hfxv / cont / delp[1] * dt2;
+    r1[1] = SH_THX(1) - 300.0f + __fdiv_rn(hfxv, cont) / delp[1] * dt2;
     SH_G(exch_h, 1) = 0.0f;   // exch_h(:,1) is never written by the scheme
     for (int k = 1; k <= kte - 1; ++k) {
         real dtodsd = dt2 / delp[k];
@@ -1191,7 +1242,7 @@ void shinhong_column(const real *u, const real *v, const real *theta,
     }
 
     // ---- moisture, clouds, ice: assembly (:1217-1320), solve, recover ----
-    for (int k = 0; k < SHINHONG_K2; ++k) {
+    for (int k = 0; k < wskp; ++k) {
         al[k] = ad[k] = au[k] = 0.0f;
         r1[k] = r2[k] = r3[k] = 0.0f;
     }
@@ -1272,7 +1323,7 @@ void shinhong_column(const real *u, const real *v, const real *theta,
         SH_G(dqi, k) = 0.0f + (r3[k] - SH_QIX(k)) * rdt;
 
     // ---- momentum: assembly (:1374-1436), solve, recover ----
-    for (int k = 0; k < SHINHONG_K2; ++k) {
+    for (int k = 0; k < wskp; ++k) {
         al[k] = ad[k] = au[k] = 0.0f;
         r1[k] = r2[k] = 0.0f;
     }
@@ -1337,11 +1388,18 @@ void shinhong_column(const real *u, const real *v, const real *theta,
 
     // ---- SGS TKE diagnostics (:1478-1608) ----
     if (tke_diag == 1) {
-        real q2xk[SHINHONG_K2], ptke1[SHINHONG_K2];
-        real akmk[SHINHONG_K2], akhk[SHINHONG_K2], mfk[SHINHONG_K2];
-        real ufxpblk[SHINHONG_K2], vfxpblk[SHINHONG_K2], qfxpblk[SHINHONG_K2];
-        real s2k[SHINHONG_K2], rigk[SHINHONG_K2], elk[SHINHONG_K2];
-        for (int k = 0; k < SHINHONG_K2; ++k) {
+        ShCol q2xk = SHWS_AT(wsb, 39, wskp);
+        ShCol ptke1 = SHWS_AT(wsb, 40, wskp);
+        ShCol akmk = SHWS_AT(wsb, 41, wskp);
+        ShCol akhk = SHWS_AT(wsb, 42, wskp);
+        ShCol mfk = SHWS_AT(wsb, 43, wskp);
+        ShCol ufxpblk = SHWS_AT(wsb, 44, wskp);
+        ShCol vfxpblk = SHWS_AT(wsb, 45, wskp);
+        ShCol qfxpblk = SHWS_AT(wsb, 46, wskp);
+        ShCol s2k = SHWS_AT(wsb, 47, wskp);
+        ShCol rigk = SHWS_AT(wsb, 48, wskp);
+        ShCol elk = SHWS_AT(wsb, 49, wskp);
+        for (int k = 0; k < wskp; ++k) {
             q2xk[k] = akmk[k] = akhk[k] = mfk[k] = 0.0f;
             ufxpblk[k] = vfxpblk[k] = qfxpblk[k] = 0.0f;
             s2k[k] = rigk[k] = elk[k] = 0.0f;
@@ -1383,13 +1441,13 @@ void shinhong_column(const real *u, const real *v, const real *theta,
         sh_mixlen(u, v, theta, exner, qv, qc, st, col,
                   q2xk, zq, ustv, corfv, epshol, hpbl, kpbl, pblflg,
                   hgamu, hgamv, hgamq, mfk, ufxpblk, vfxpblk, qfxpblk, kte,
-                  s2k, rigk, elk);
+                  s2k, rigk, elk, wsb, wskp);
         sh_prodq2(dt, ustv, u, v, theta, st, col, thvx,
                   q2xk, elk, zq, akmk, akhk,
                   hgamu, hgamv, hgamq, delxy, hpbl, pblflg, kpbl,
                   mfk, ufxpblk, vfxpblk, qfxpblk, kte);
         sh_vdifq(dt, q2xk, zq, akhk, ptke1, hgame2d, hpbl, pblflg, kpbl,
-                 efxpbl, kte);
+                 efxpbl, kte, wsb, wskp);
         for (int k = 1; k <= kte; ++k) {         // :1601-1605
             q2x[k] = sh_max(q2xk[k], epsq2l);    // amax1: NaN propagates
             SH_G(tke_out, k) = 0.5f * q2x[k];

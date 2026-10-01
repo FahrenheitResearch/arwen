@@ -680,14 +680,33 @@ def test_registry_alias_resolves_to_its_row(tmp_path):
     "source", [a.source_id for a in registry.source_adapters()
                if a.packaged_profile and a.forcing_interval_seconds])
 def test_declared_cadence_matches_the_packaged_mapping(source):
+    """The registry's spacing is the one every door writes by default, so
+    the decode must take it.  It is the packaged mapping's declared
+    spacing, or (A173) a whole multiple of it that the mapping takes and
+    the source's route row names as its default: the mapping declares the
+    finest spacing the publisher posts, the row what a window that names
+    no cadence takes."""
+
+    from gpuwm import fetch_routes
+    from gpuwm.source_authorities import boundary_interval_refusal
+
     adapter = get_source_adapter(source)
     mapping = json.loads(
         packaged_authorities(adapter.packaged_profile)["mapping"]
         .read_text(encoding="utf-8"))
-    assert (float(mapping["target"]["boundary_interval_seconds"])
+    target = mapping["target"]
+    if float(target["boundary_interval_seconds"]) == adapter.forcing_interval_seconds:
+        return
+    assert boundary_interval_refusal(
+        target, int(adapter.forcing_interval_seconds)) is None, (
+        f"{source}: the packaged mapping refuses the registry row's own "
+        "boundary cadence")
+    route = fetch_routes.table_route(source)
+    assert (route is not None and route.default_cadence * 3600
             == adapter.forcing_interval_seconds), (
         f"{source}: the registry row and the packaged mapping disagree "
-        "about the source's own boundary cadence")
+        "about the source's own boundary cadence, and no route row names "
+        "the registry's as its default")
 
 
 def test_declared_conus_window_reproduces_the_native_grid_envelope():

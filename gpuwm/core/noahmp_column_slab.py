@@ -65,6 +65,7 @@ from __future__ import annotations
 import numpy as np
 
 from gpuwm.core import noahmp_vegeflux_gpu as _vege
+from gpuwm.core.noahmp_slab_libm import take_slab_rows
 from gpuwm.core.noahmp_energy import PINNED_OPTIONS
 from gpuwm.core.noahmp_energy_slab import (energy_seg1, energy_seg2,
                                            energy_seg3, energy_seg4)
@@ -364,24 +365,25 @@ def evaluate_sflx_slab(fields: dict, n: int) -> dict:
     veg_index = cp.nonzero(tile_veg)[0]
     nveg = int(veg_index.size)
 
-    vf_fields = {name: c(name)[veg_index] for name in _VEGE_CALL_THROUGH}
-    vf_fields["qsfc"] = c("qsfc")[veg_index]
-    vf_fields.update({name: rad[name][veg_index]
+    vf_sources = {name: c(name) for name in _VEGE_CALL_THROUGH}
+    vf_sources["qsfc"] = c("qsfc")
+    vf_sources.update({name: rad[name]
                       for name in ("sav", "sag", "laisun", "laisha",
                                    "parsun", "parsha", "fsr")})
-    vf_fields.update({name: g[name][veg_index]
+    vf_sources.update({name: g[name]
                       for name in ("ur", "vai", "cwp", "zlvl", "zpd",
                                    "z0m", "z0mg")})
-    vf_fields.update({name: e[name][veg_index]
+    vf_sources.update({name: e[name]
                       for name in ("gammav", "gammag", "emv", "emg",
                                    "rsurf", "latheav", "btran", "rhsur")})
-    vf_fields["latheag"] = e["latheag"][veg_index]
-    vf_fields.update({name: par(name)[veg_index]
+    vf_sources["latheag"] = e["latheag"]
+    vf_sources.update({name: par(name)
                       for name in _vege.PARAMETER_NAMES})
-    vf_fields.update({"isnow": c("isnow")[veg_index],
-                      "dzsnso": c("dzsnso")[veg_index],
-                      "stc": c("stc")[veg_index],
-                      "df": thermo["df"][veg_index]})
+    vf_sources.update({"isnow": c("isnow"),
+                      "dzsnso": c("dzsnso"),
+                      "stc": c("stc"),
+                      "df": thermo["df"]})
+    vf_fields = take_slab_rows(veg_index, vf_sources, n)
     vf = evaluate_vege_flux_slab(vf_fields, nveg)
 
     def spread(sub):

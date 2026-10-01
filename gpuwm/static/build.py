@@ -51,6 +51,8 @@ import numpy as np
 from gpuwm import perf_timing
 from .geog import GeogDataset, GeogWindow
 from .lambert import EARTH_RADIUS_M, LambertGrid, _parse_wps_namelist
+from .terrain_smoothing import (TerrainSmoothing, WPS_DEFAULT,
+                                smooth_terrain_reference, smoothing_for)
 
 #: metres per degree of a great circle on the WPS sphere.
 M_PER_DEG = EARTH_RADIUS_M * np.pi / 180.0
@@ -107,7 +109,11 @@ class GeogSelection:
     The recognized set is ``default``, ``5m``, and ``modis_lai``.  ``5m``
     selects NCAR's complete global low-resolution mandatory inventory;
     ``modis_lai`` is the available higher-resolution LAI override; and
-    ``default`` selects the established Phase-3 inventory.
+    ``default`` selects the established Phase-3 inventory.  A land-cover
+    token of :data:`gpuwm.static.highres_fetch.LANDCOVER_SOURCES`
+    (``cglc_modis_lcz``) is recognized too, and admitted only where the
+    case's ``[static.highres]`` block builds that collection
+    (:meth:`from_tokens`).
 
     :meth:`fallback` is intentionally the old code-constant selection and
     is used whenever a legacy caller supplies only ``geog_root``.
@@ -124,6 +130,7 @@ class GeogSelection:
     albedo: str
     snow_albedo: str
     soil_temperature: str
+    terrain_smoothing: TerrainSmoothing = WPS_DEFAULT
 
     @classmethod
     def fallback(cls, geog_root) -> "GeogSelection":
@@ -131,8 +138,23 @@ class GeogSelection:
                    **_DEFAULT_GEOG_DIRS)
 
     @classmethod
-    def from_tokens(cls, geog_root, tokens) -> "GeogSelection":
-        """Resolve one WPS ``geog_data_res`` token string or sequence."""
+    def from_tokens(cls, geog_root, tokens, *,
+                    highres_landcover: str | None = None
+                    ) -> "GeogSelection":
+        """Resolve one WPS ``geog_data_res`` token string or sequence.
+
+        A token naming a land-cover collection gpuwm builds through
+        ``[static.highres]`` (a row of
+        :data:`gpuwm.static.highres_fetch.LANDCOVER_SOURCES` with
+        ``wps_geog_tokens``) is admitted only where that block builds the
+        same collection on this domain, which the caller says through
+        ``highres_landcover`` (its ``landcover_source`` id).  The token
+        then names no GEOG directory: the block replaces the land use, and
+        the GEOG baseline beneath it resolves from the remaining tokens as
+        WPS's priority-1 entry does.  Anywhere else it is refused by name,
+        because building the GEOG tree's MODIS land use under the name of
+        the collection the namelist asked for is a silent substitution.
+        """
         if isinstance(tokens, str):
             values = tokens.split("+")
         else:
@@ -142,13 +164,34 @@ class GeogSelection:
                            if value.strip())
         if not normalized:
             normalized = ("default",)
+        from .highres_fetch import landcover_source_ids_by_wps_token
+        landcover_tokens = landcover_source_ids_by_wps_token()
+        for token in normalized:
+            source_id = landcover_tokens.get(token)
+            if source_id is None or source_id == highres_landcover:
+                continue
+            raise ValueError(
+                f"geog_data_res token {token!r} selects the {source_id} "
+                "land cover, which gpuwm builds only through "
+                "[static.highres] (enabled = true, fields = \"all\", "
+                f"landcover_source = \"{source_id}\"), and the static block "
+                "this selection was handed "
+                + ("builds none on this domain"
+                   if highres_landcover is None else
+                   f"builds {highres_landcover} here")
+                + ".  Building the GEOG tree's MODIS land use under that "
+                "name would be a silent substitution.  Declare the block "
+                "(`gpuwm import-namelist` writes it from this namelist), "
+                "or remove the token from this namelist.wps: a declared "
+                "block builds its land cover without it.")
         unrecognized = tuple(token for token in normalized
-                             if token not in _SUPPORTED_GEOG_TOKENS)
+                             if token not in _SUPPORTED_GEOG_TOKENS
+                             and token not in landcover_tokens)
         if unrecognized:
             raise ValueError(
                 f"geog_data_res contains unrecognized token(s) "
                 f"{unrecognized!r}; recognized: "
-                f"{sorted(_SUPPORTED_GEOG_TOKENS)}")
+                f"{sorted(_SUPPORTED_GEOG_TOKENS | set(landcover_tokens))}")
 
         # WPS applies the token list in priority order independently for each
         # field.  Resolve against the inventories this builder understands,
@@ -160,9 +203,12 @@ class GeogSelection:
             "modis_lai": {"lai": "lai_modis_30s"},
         }
         directories = {}
+        # A [static.highres] land-cover token names no GEOG directory.
+        geog_tokens = [token for token in normalized
+                       if token in token_directories]
         for field, fallback in _DEFAULT_GEOG_DIRS.items():
             directories[field] = next(
-                (token_directories[token][field] for token in normalized
+                (token_directories[token][field] for token in geog_tokens
                  if field in token_directories[token]),
                 fallback,
             )
@@ -195,7 +241,16 @@ class GeogSelection:
         # explicitly listed.  A single non-default value therefore affects
         # d01 only; it is not broadcast to child domains.
         value = values[index] if index < len(values) else "default"
-        return cls.from_tokens(data.geog_root, str(value))
+        from dataclasses import replace
+        highres = getattr(data, "static_highres", None)
+        # The domain's terrain smoothing rides on the case's static policy
+        # (gpuwm.static.terrain_smoothing); absent, WPS's default.
+        smoothing = smoothing_for(highres, domain_id)
+        return replace(
+            cls.from_tokens(data.geog_root, str(value),
+                            highres_landcover=_highres_landcover_on_slot(
+                                highres, namelist, index, str(value))),
+            terrain_smoothing=smoothing)
 
     def path(self, field: str) -> Path:
         try:
@@ -232,6 +287,60 @@ class GeogSelection:
                 f"selected land-use dataset {self.path('landuse')} lacks "
                 f"required WRF metadata {missing}")
         return required
+
+
+def _wps_slot_spacing_m(namelist, index: int) -> float:
+    """Grid spacing (m) of WPS slot ``index`` (0-based): the root ``dx``
+    divided down the ``parent_grid_ratio`` chain, which is how WPS and
+    :mod:`gpuwm.experiment` both derive a child's spacing."""
+    try:
+        spacing = float(namelist["dx"][0])
+        parents = namelist.get("parent_id", [1])
+        ratios = namelist.get("parent_grid_ratio", [1])
+        slot, visited = index, set()
+        while slot > 0:
+            if slot in visited or slot >= len(parents) or slot >= len(ratios):
+                raise ValueError
+            visited.add(slot)
+            spacing /= float(ratios[slot])
+            slot = int(parents[slot]) - 1
+    except (KeyError, IndexError, TypeError, ValueError,
+            ZeroDivisionError):
+        raise ValueError(
+            f"namelist.wps slot {index + 1}: its grid spacing cannot be "
+            "derived from dx, parent_id and parent_grid_ratio, so whether "
+            "the [static.highres] block's max_dx_m reaches it is unknown"
+        ) from None
+    return spacing
+
+
+def _highres_landcover_on_slot(config, namelist, index: int,
+                               value: str) -> str | None:
+    """The ``landcover_source`` id a ``[static.highres]`` block builds on
+    WPS slot ``index``, or ``None`` when it builds no land cover there
+    (no block, disabled, terrain only, or scoped away by ``max_dx_m``).
+
+    Asked only for a slot whose ``geog_data_res`` names a land-cover
+    collection; every other slot resolves exactly as before.
+    """
+    if config is None or not getattr(config, "enabled", False):
+        return None
+    if getattr(config, "fields", "auto") == "terrain":
+        return None
+    from .highres_fetch import (DEFAULT_LANDCOVER_SOURCE,
+                                landcover_source_ids_by_wps_token)
+    landcover_tokens = landcover_source_ids_by_wps_token()
+    if not any(token.strip().lower() in landcover_tokens
+               for token in value.split("+")):
+        return None
+    max_dx_m = getattr(config, "max_dx_m", None)
+    if max_dx_m is not None:
+        from .highres_production import _DX_TOLERANCE_M
+        if (_wps_slot_spacing_m(namelist, index)
+                > float(max_dx_m) + _DX_TOLERANCE_M):
+            return None
+    source = getattr(config, "landcover_source", "auto")
+    return DEFAULT_LANDCOVER_SOURCE if source == "auto" else source
 
 
 class _WpsLambert32:
@@ -1441,9 +1550,15 @@ def _build_static_routed(
     handle = grid._rust_sampling_handle(bridge)
     paths = {role: selection.path(role) for role in _DEFAULT_GEOG_DIRS}
     try:
-        fieldset = bridge.build_fields(handle, paths, int(halo))
+        if selection.terrain_smoothing.is_default:
+            fieldset = bridge.build_fields(handle, paths, int(halo))
+        else:
+            fieldset = bridge.build_fields_smoothed(
+                handle, paths, int(halo), selection.terrain_smoothing)
     except rust_bridge.StaticBridgeError as error:
         detail = str(error)
+        if "predates terrain-smoothing options" in detail:
+            raise
         detail = detail.split(": ", 1)[1] if ": " in detail else detail
         if "mandatory source coverage failed" in detail:
             raise FileNotFoundError(detail) from None
@@ -1476,7 +1591,8 @@ def _sampled_terrain(dom, selection: GeogSelection, require_coverage) -> np.ndar
     win = dom.window(topo)
     require_coverage("terrain", topo, win)
     hgt_e = dom.continuous(topo, win, 0)
-    return smth_desmth_special(hgt_e, passes=1)[dom.crop]
+    smoothed = smooth_terrain_reference(hgt_e, selection.terrain_smoothing)
+    return smoothed[dom.crop]
 
 
 def build_terrain(grid, geog_root, halo: int = HALO, *,
@@ -1511,8 +1627,19 @@ def build_terrain(grid, geog_root, halo: int = HALO, *,
             f"geog_root {root}")
     if bridge is not None and hasattr(grid, "_rust_sampling_handle"):
         try:
-            return bridge.build_terrain(grid._rust_sampling_handle(bridge), selection.path("terrain"), halo)
+            handle = grid._rust_sampling_handle(bridge)
+            if selection.terrain_smoothing.is_default:
+                return bridge.build_terrain(handle, selection.path("terrain"),
+                                            halo)
+            return bridge.build_terrain_smoothed(
+                handle, selection.path("terrain"), halo,
+                selection.terrain_smoothing)
         except rust_bridge.StaticBridgeError as error:
+            # The stale-library refusal is matched on the whole message:
+            # its remedy holds ": ", so the split below would keep only
+            # the rebuild command and lose what it is a remedy for.
+            if "predates terrain-smoothing options" in str(error):
+                raise
             detail = str(error).split(": ", 1)[-1]
             if "mandatory source coverage failed" in detail:
                 raise FileNotFoundError(detail) from None
@@ -1656,7 +1783,9 @@ def geog_selection_from_catalog(catalog, domain_id: int) -> GeogSelection:
             f"{sorted(map(str, roots))}")
     geog_root = roots.pop()
     return GeogSelection.from_case_data(
-        SimpleNamespace(wps_namelist=wps_paths[0], geog_root=geog_root),
+        SimpleNamespace(wps_namelist=wps_paths[0], geog_root=geog_root,
+                        static_highres=getattr(catalog, "static_highres",
+                                               None)),
         domain_id=domain_id)
 
 

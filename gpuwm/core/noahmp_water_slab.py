@@ -66,6 +66,8 @@ consumes.
 
 from __future__ import annotations
 
+from gpuwm.core.noahmp_slab_libm import copy_slab_slots, split_slab_slots
+
 import numpy as np
 
 from gpuwm.core.noahmp_water_gpu import (
@@ -142,6 +144,9 @@ def pack_water_slab(fields: dict, n: int):
     difference is that each slot is filled by one vectorised assignment across
     all columns instead of by one assignment per column.
     """
+    _slots_par = []
+    _slots_fin = []
+    _slots_iin = []
     import cupy as cp
 
     if n < 0:
@@ -153,25 +158,22 @@ def pack_water_slab(fields: dict, n: int):
 
     # --- the parameter block ------------------------------------------------
     for name, base in P_LAYER.items():
-        par[:, base:base + NSOIL] = _take(fields, name, NSOIL, n, cp)
+        _slots_par.append((base, _take(fields, name, NSOIL, n, cp)))
     for name, slot in P_SCALAR.items():
-        par[:, slot] = _take(fields, name, 1, n, cp)
+        _slots_par.append((slot, _take(fields, name, 1, n, cp)))
 
     # --- the packed snow/soil column ---------------------------------------
     for name, base in STATE_SLOT.items():
         width = STATE_WIDTH[name]
         block = _take(fields, name, width, n, cp)
-        if width == 1:
-            fin[:, base] = block
-        else:
-            fin[:, base:base + width] = block
+        _slots_fin.append((base, block))
 
     # --- the forcing ---------------------------------------------------------
     for name, slot in IN_SCALAR.items():
-        fin[:, NSTATE + slot] = _take(fields, name, 1, n, cp)
+        _slots_fin.append((NSTATE + slot, _take(fields, name, 1, n, cp)))
     for name, (offset, width) in IN_VECTOR.items():
         start = NSTATE + offset
-        fin[:, start:start + width] = _take(fields, name, width, n, cp)
+        _slots_fin.append((start, _take(fields, name, width, n, cp)))
 
     # --- the integer row -----------------------------------------------------
     # ``astype`` rather than a bare assignment so a bool slab (FROZEN_CANOPY,
@@ -185,28 +187,26 @@ def pack_water_slab(fields: dict, n: int):
     # identical; a slab carrying, say, 2 would not be, and is not a thing a
     # flag should carry.
     for name, slot in INT_SCALAR.items():
-        iin[:, slot] = _take(fields, name, 1, n, cp).astype(cp.int32,
-                                                            copy=False)
+        _slots_iin.append((slot, _take(fields, name, 1, n, cp).astype(cp.int32,
+                                                            copy=False)))
     for name, (offset, width) in INT_VECTOR.items():
-        iin[:, offset:offset + width] = _take(
-            fields, name, width, n, cp).astype(cp.int32, copy=False)
+        _slots_iin.append((offset, _take(
+            fields, name, width, n, cp).astype(cp.int32, copy=False)))
 
+    copy_slab_slots(iin, _slots_iin)
+    copy_slab_slots(fin, _slots_fin)
+    copy_slab_slots(par, _slots_par)
     return par, fin, iin
 
 
 def _unpack_slab(fout, iout, cp) -> dict:
     """Split the device rows into one owned, contiguous slab per output."""
-    values = {"isnow": cp.ascontiguousarray(iout)}
-    for name, base in STATE_SLOT.items():
-        width = STATE_WIDTH[name]
-        block = fout[:, base] if width == 1 else fout[:, base:base + width]
-        values[name] = cp.ascontiguousarray(block)
-    for name, (offset, width) in OUT_VECTOR.items():
-        start = NSTATE + offset
-        values[name] = cp.ascontiguousarray(fout[:, start:start + width])
-    for name, slot in OUT_SCALAR.items():
-        values[name] = cp.ascontiguousarray(fout[:, NSTATE + slot])
-    return values
+    specs = {name: (base, STATE_WIDTH[name]) for name, base in STATE_SLOT.items()}
+    specs.update({name: (NSTATE + offset, width)
+                  for name, (offset, width) in OUT_VECTOR.items()})
+    specs.update({name: (NSTATE + slot, 1) for name, slot in OUT_SCALAR.items()})
+    return {"isnow": cp.ascontiguousarray(iout),
+            **split_slab_slots(fout, specs)}
 
 
 def evaluate_water_slab(fields: dict, n: int) -> dict:

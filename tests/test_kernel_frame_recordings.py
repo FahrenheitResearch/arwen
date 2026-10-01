@@ -20,7 +20,7 @@ platforms:
   ysu                       9,232      9,232      7,184
   nssl2_fused_gs              112        216        112
   rrtmgp_cloud                  0         40          0
-  shinhong                 14,040     17,160     14,040
+  shinhong (to 2026-09-30) 14,040     17,160     14,040
   noahmp_leaves               272        208        208
   ======================  =========  =========  =========
 
@@ -407,3 +407,19 @@ def test_the_assumed_bound_is_never_below_a_reading():
         for key, frame in row.frames.items():
             assert bound >= frame, f"{key} is recorded above the assumed bound"
     assert kfr.ASSUMED_BOUND_PHRASE == "assumed bound, not measured"
+
+
+def test_shinhong_workspace_reading_is_on_every_platform():
+    """The workspace source was re-read on every recorded platform.
+
+    Before 2026-09-30 the column arrays sat in a 13,000-17,160 B local
+    frame.  A recording still carrying one of those would price a backing
+    store the kernel no longer reserves, and a recording that dropped the
+    row would lose its completeness claim; both are what this catches.
+    """
+    rows = [row for row in pf.KERNEL_LOCAL_FRAME_RECORDINGS
+            if "shinhong" in row.frames]
+    assert len(rows) >= 4
+    for row in rows:
+        assert row.frames["shinhong"] == 0, (row.box, row.nvrtc_build)
+    assert pf.KERNEL_MAX_LOCAL_SIZE_BYTES["shinhong"] == 0

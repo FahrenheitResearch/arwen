@@ -136,11 +136,40 @@ def test_full_snapshot_constructor_still_refuses_cropped_arrays(source):
         replace(full, fields={"T": full.fields["T"][:, :4, :5]})
 
 
-def test_cyclic_axis_keeps_existing_full_provider(source):
+def test_cyclic_axis_is_windowed_only_where_its_stored_cut_is_clear(source):
+    # The pin this replaces held every cyclic source full, because a domain
+    # near the stored cut is re-cut before it is read.  A domain clear of
+    # the cut is read in stored order, so its window is the support the
+    # preparation reads; that is what moves a global source such as GDPS
+    # off decoding the whole globe for a few hundred kilometres.
+    from gpuwm.ingest.horiz import global_ring_cut
     from gpuwm.ingest.source_metadata import SourceSnapshotMetadata
     from gpuwm.ingest.grib import Era5Snapshot
     meta = SourceSnapshotMetadata(Era5Snapshot, np.arange(-90., 91.), np.arange(360.))
-    assert atmospheric_window_for_grids(meta, (target(),)) is None
+    clear = target()
+    lons = [pair[1] for pair in (clear.latlon_mass(), clear.latlon_u(), clear.latlon_v())]
+    assert global_ring_cut(meta.longitude, *lons) is None
+    window = atmospheric_window_for_grids(meta, (clear,))
+    assert window is not None and window.source_shape == (181, 360)
+    assert window.shape[0] < 181 and window.shape[1] < 360
+    # Every stencil of the domain lies inside it: 96W is column 264.
+    assert window.columns[0] <= 262 and window.columns[1] >= 266
+    # A domain on the stored cut (0E here) is re-cut first, so it stays full.
+    on_cut = LambertGrid(50., 0., 30., 60., 0., 3000., 3000., 12, 14)
+    lons = [pair[1] for pair in (on_cut.latlon_mass(), on_cut.latlon_u(), on_cut.latlon_v())]
+    assert global_ring_cut(meta.longitude, *lons) is not None
+    assert atmospheric_window_for_grids(meta, (on_cut,)) is None
+    # One domain on the cut keeps the whole union full.
+    assert atmospheric_window_for_grids(meta, (clear, on_cut)) is None
+
+
+def test_decoded_window_validation_is_the_engine_s_own_spelling():
+    from gpuwm.ingest.atmospheric_window import WINDOW_DECODED_VALIDATION
+    source = (Path(__file__).resolve().parents[1] / "tools" / "rw_wps" / "crates"
+              / "mapped-engine" / "src" / "window.rs").read_text(encoding="utf-8")
+    match = re.search(r'pub const DECODED_VALIDATION: &str = "([^"]+)";', source)
+    assert match is not None
+    assert match.group(1) == WINDOW_DECODED_VALIDATION
 
 
 def test_window_fallback_provider_does_not_retain_cached_atmosphere_cycle(source):

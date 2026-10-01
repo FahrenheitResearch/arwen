@@ -536,7 +536,12 @@ def _child_binding_case(monkeypatch, child_id, soil_case=None):
             self.phb = np.full((3, 4, 5), 100.0, np.float32)
 
     state = State()
-    real = SimpleNamespace(state=state)
+    # The child's own float64 base before the blend: the fine operand of
+    # the float64 terrain blend (nest_init._blend_terrain_triple).
+    own_base = SimpleNamespace(
+        terrain_z=np.full((4, 5), 12.25), mub=np.full((4, 5), 91000.125),
+        phb=np.full((3, 4, 5), 101.0625))
+    real = SimpleNamespace(state=state, base=own_base)
     soil = object()
     static = {
         "HGT_M": np.full((4, 5), 10.0),
@@ -638,16 +643,27 @@ def _child_binding_case(monkeypatch, child_id, soil_case=None):
         ni, "_capture_parent_blend_fields",
         lambda *_: events.append("sint-ht-mub-phb") or captures)
 
-    targets = {id(state.ht): "ht", id(state.mub2d): "mub",
-               id(state.phb): "phb"}
+    # Each field is blended in float64: the parent capture against the
+    # child's own float64 base value, identified here by that value.
+    fields = {12.25: ("ht", 0), 91000.125: ("mub", 1), 101.0625: ("phb", 2)}
 
-    def blend(_parent, target, **_kwargs):
-        events.append("blend-" + targets[id(target)])
+    def blend(parent, target, **_kwargs):
+        name, index = fields[float(target.flat[0])]
+        assert target.dtype == np.float64
+        np.testing.assert_array_equal(parent, captures[index])
+        events.append("blend-" + name)
 
     monkeypatch.setattr(ni, "blend_terrain", blend)
     base = object()
-    def adjust_then_rederive(_state, _cfg, _coord, _save_mub, ht_fine):
+    def adjust_then_rederive(_state, _cfg, _coord, _save_mub, ht_fine, *,
+                             blended):
         assert ht_fine is static["HGT_M"]
+        # The re-derivation reads the float64 blend, and the FP32 state
+        # already holds its rounding.
+        assert [value.dtype for value in blended] == [np.float64] * 3
+        for value, stored in zip(blended, (state.ht, state.mub2d,
+                                           state.phb)):
+            np.testing.assert_array_equal(stored, value.astype(np.float32))
         events.append("adjust-then-rederive-eos-press-adj")
         return base
 
@@ -828,7 +844,7 @@ def test_press_adj_mu_matches_wrf_expression_after_eos(monkeypatch):
 
     ni._adjust_and_rederive(
         state, SimpleNamespace(hypsometric_opt=2), object(),
-        state.mub2d.copy(), ht_fine)
+        state.mub2d.copy(), ht_fine, blended=object())
 
     expected = np.array([
         10.0 + 0.02 / (0.80 * 0.78) * 9.81 * (120.0 - 100.0),

@@ -81,3 +81,34 @@ def test_the_class_count_is_read_from_the_table_not_hardcoded(params):
     """
     assert params.n_vegetation_classes == int(params._categories.scalar("NVEG"))
     assert params.n_vegetation_classes >= 1
+
+
+def test_the_cold_start_never_asks_the_table_for_a_local_climate_zone_row():
+    """NOAHMP_INIT never reads SLA_TABLE(IVGTYP) on an urban point
+    (module_sf_noahmpdrv.F:2163-2185), and the LCZ classes 51-61 the urban
+    land-cover legend keeps have no row in a 20-class table; asking for one
+    refused every LCZ run at the cold start ("land-use class 53 is outside
+    the 20 classes").  ISURBAN keeps its read, so an urban-off run is
+    unchanged, and any other out-of-table class still refuses by name."""
+    import math
+    from types import SimpleNamespace
+
+    from gpuwm.core.noahmp_runtime import _column_sla
+
+    asked = []
+
+    def veg_value(name, vegtyp):
+        asked.append((name, vegtyp))
+        if vegtyp > 20:
+            raise ValueError(f"land-use class {vegtyp} is outside the 20 classes")
+        return 5.0 + vegtyp
+
+    params = SimpleNamespace(veg_value=veg_value)
+    identity = SimpleNamespace(lcz=tuple(range(51, 62)), isurban=13, natural=14)
+    for lcz in range(51, 62):
+        assert math.isnan(_column_sla(params, identity, lcz))
+    assert asked == []
+    assert _column_sla(params, identity, 13) == 18.0
+    assert _column_sla(params, identity, 7) == 12.0
+    with pytest.raises(ValueError, match="outside the 20 classes"):
+        _column_sla(params, identity, 40)

@@ -67,7 +67,7 @@ import json
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Mapping
@@ -75,6 +75,7 @@ from typing import Mapping
 import numpy as np
 
 from .build import HALO
+from .terrain_smoothing import WPS_DEFAULT, smoothing_for
 from .highres import (BoundRaster, MODIS21_ISLAKE, MODIS21_ISURBAN,
                       MODIS21_ISWATER, baseline_ocean_mask,
                       build_highres_overrides, build_terrain_override,
@@ -201,6 +202,15 @@ class HighresStaticConfig:
     fields: str = "auto"
     landcover_source: str = "auto"
     max_dx_m: float | None = None
+    # (grid_id, smooth_option, smooth_passes[, smooth_precision]) per
+    # non-default domain: TerrainSmoothing.row / .from_row.
+    terrain_smoothing: tuple[tuple, ...] = ()
+    sf_urban_physics: int = 0
+    use_wudapt_lcz: int = 0
+
+    def smoothing_for(self, domain_id):
+        """This carrier's terrain smoothing for one domain."""
+        return smoothing_for(self, domain_id)
 
     def echo(self) -> dict[str, object]:
         echoed: dict[str, object] = {
@@ -213,6 +223,12 @@ class HighresStaticConfig:
         }
         if self.max_dx_m is not None:
             echoed["max_dx_m"] = float(self.max_dx_m)
+        if self.terrain_smoothing:
+            echoed["terrain_smoothing"] = [list(row)
+                                           for row in self.terrain_smoothing]
+        if self.sf_urban_physics > 0:
+            echoed["urban_legend"] = "urban"
+            echoed["use_wudapt_lcz"] = self.use_wudapt_lcz
         return echoed
 
     def applies_to(self, grid) -> bool:
@@ -365,7 +381,7 @@ def default_row_of(config) -> HighresDefaultRow | None:
     return None
 
 
-def resolve_static_highres(raw, *, source: str, base_dir, spacings_m=None
+def resolve_static_highres(raw, *, source: str, base_dir, spacings_m=None, run_config=None
                            ) -> HighresStaticConfig | None:
     """The ``[static.highres]`` a whole configuration runs with.
 
@@ -376,11 +392,19 @@ def resolve_static_highres(raw, *, source: str, base_dir, spacings_m=None
     when the caller already holds the built experiment.
     """
     if isinstance(raw, Mapping) and raw.get("static") is not None:
-        return parse_static_table(raw["static"], source=source,
-                                  base_dir=base_dir)
-    if spacings_m is None:
-        spacings_m = raw_domain_spacings(raw)
-    return default_static_highres(spacings_m)
+        config = parse_static_table(raw["static"], source=source, base_dir=base_dir)
+    else:
+        if spacings_m is None:
+            spacings_m = raw_domain_spacings(raw)
+        config = default_static_highres(spacings_m)
+    if config is not None and run_config is not None:
+        config = replace(config,
+                         sf_urban_physics=int(run_config.sf_urban_physics),
+                         use_wudapt_lcz=int(run_config.use_wudapt_lcz))
+    # Per-domain terrain smoothing ([[domain]] static) rides on the same
+    # carrier; all-default returns ``config`` unchanged.
+    from .terrain_smoothing import resolve_domain_smoothing
+    return resolve_domain_smoothing(raw, config, source=source)
 
 
 def parse_static_table(raw, *, source: str, base_dir
@@ -1002,6 +1026,12 @@ def apply_highres_statics(baseline, grid, *, config, domain_id: int,
     # requested.  See require_geography_stack: this is deliberately not
     # inside the try below, so `on_refuse = "fallback-30s"` cannot turn a
     # broken install into a silent 30-arc-second run.
+    urban = int(getattr(config, "sf_urban_physics", 0) or 0)
+    if urban > 0 and config.fields != "terrain":
+        from .highres import landcover_legend
+        landcover_legend(_select_landcover(config).source_id,
+                         sf_urban_physics=urban,
+                         use_wudapt_lcz=int(getattr(config, "use_wudapt_lcz", 0)))
     require_geography_stack()
 
     from .highres import static_compute_workaround
@@ -1022,11 +1052,15 @@ def apply_highres_statics(baseline, grid, *, config, domain_id: int,
     }
     if getattr(config, "max_dx_m", None) is not None:
         print(_scoped_plan_line(config, grid, domain_id))
+    # A default domain calls _apply exactly as before.
+    smoothing = smoothing_for(config, domain_id)
+    smoothing_kw = {} if smoothing.is_default else {
+        "terrain_smoothing": smoothing}
     try:
         fields, detail = _apply(baseline, grid, config=config,
                                 case_date=case_date,
                                 landuse_attrs=landuse_attrs,
-                                urlopen=urlopen)
+                                urlopen=urlopen, **smoothing_kw)
         receipt.update(detail)
         receipt["status"] = "APPLIED"
         path = _write_receipt(config, receipt)
@@ -1146,7 +1180,8 @@ def _terrain_only_reason(config, landcover: LandcoverSource | None,
 
 def _apply_terrain_only(baseline, grid, *, config: HighresStaticConfig,
                         coverage, bbox: FootprintBBox, urlopen=None,
-                        landcover: LandcoverSource | None = None):
+                        landcover: LandcoverSource | None = None,
+                        terrain_smoothing=WPS_DEFAULT):
     """Replace terrain alone from a near-global source.
 
     Land use, soil and every monthly climatology stay exactly as the
@@ -1161,7 +1196,8 @@ def _apply_terrain_only(baseline, grid, *, config: HighresStaticConfig,
         raise HighresRefusal("missing-source-coverage", str(error))             from error
 
     overrides, source_audit = build_terrain_override(
-        grid, terrain=terrain, halo=HALO, baseline=baseline)
+        grid, terrain=terrain, halo=HALO, baseline=baseline,
+        terrain_smoothing=terrain_smoothing)
     merged, merge_audit = merge_terrain_override(baseline, overrides)
 
     counts = _replacement_counts(baseline, merged, _REPLACED_FIELDS_TERRAIN)
@@ -1258,7 +1294,8 @@ def _landcover_record(source: LandcoverSource, fetch_manifest: dict,
 
 
 def _apply(baseline, grid, *, config: HighresStaticConfig,
-           case_date: date, landuse_attrs, urlopen=None):
+           case_date: date, landuse_attrs, urlopen=None,
+           terrain_smoothing=WPS_DEFAULT):
     _require_projected_grid(grid)
     bbox = domain_footprint(grid, HALO)
     # Plan review, before a single byte is requested: the window writers
@@ -1275,9 +1312,12 @@ def _apply(baseline, grid, *, config: HighresStaticConfig,
         _require_modis21(landuse_attrs)
 
     if mode == "terrain":
+        smoothing_kw = {} if terrain_smoothing.is_default else {
+            "terrain_smoothing": terrain_smoothing}
         return _apply_terrain_only(baseline, grid, config=config,
                                    coverage=coverage, bbox=bbox,
-                                   urlopen=urlopen, landcover=landcover_row)
+                                   urlopen=urlopen, landcover=landcover_row,
+                                   **smoothing_kw)
 
     try:
         terrain, landcover, soil_sources, fetch_manifest = _fetch_and_bind(
@@ -1295,13 +1335,19 @@ def _apply(baseline, grid, *, config: HighresStaticConfig,
     # which separates the sea from a lake; the pilot door derives the
     # mask from the same function.  The whole baseline goes too: every
     # cell a source does not cover takes it.
+    from .highres import landcover_legend, expand_landuse_baseline
+    mapping, category_count = landcover_legend(
+        landcover_row.source_id, sf_urban_physics=config.sf_urban_physics,
+        use_wudapt_lcz=config.use_wudapt_lcz)
+    baseline = expand_landuse_baseline(baseline, category_count)
     baseline_ocean = baseline_ocean_mask(baseline, iswater=_MODIS21_ISWATER)
     overrides, source_audit = build_highres_overrides(
         grid, terrain=terrain, landcover=landcover,
         soil_sources=soil_sources, soil_fallback=soil_fallback,
-        landcover_mapping=landcover_row.crosswalk,
+        landcover_mapping=mapping, category_count=category_count,
         baseline_ocean=baseline_ocean, halo=HALO, baseline=baseline,
-        landcover_water=landcover_row.water)
+        landcover_water=landcover_row.water,
+        terrain_smoothing=terrain_smoothing)
     merged, merge_audit = merge_highres_overrides(baseline, overrides)
     field_coverage = source_audit.pop("coverage")
 
@@ -1325,6 +1371,12 @@ def _apply(baseline, grid, *, config: HighresStaticConfig,
 
     landcover_record = _landcover_record(landcover_row, fetch_manifest,
                                          case_date)
+    if config.sf_urban_physics > 0:
+        landcover_record["crosswalk_target"] = "MODIFIED_IGBP_MODIS_NOAH, 61 categories"
+        landcover_record["urban_collapse"] = {
+            "legend": "urban", "rule": "urban categories retained",
+            "crosswalk": {str(k): v for k, v in mapping.items()},
+        }
     detail = {
         "mode": "all",
         "terrain_source": coverage.echo(),
@@ -1361,7 +1413,7 @@ def _apply(baseline, grid, *, config: HighresStaticConfig,
     return merged, detail
 
 
-def load_static_highres(config_path) -> HighresStaticConfig | None:
+def load_static_highres(config_path, *, run_config=None) -> HighresStaticConfig | None:
     """Resolve the declared overlay against its captured source authority."""
     if config_path is None:
         return None
@@ -1370,8 +1422,55 @@ def load_static_highres(config_path) -> HighresStaticConfig | None:
 
     authority = read_config_authority(config_path)
     raw = tomllib.loads(authority.payload.decode("utf-8"))
+    if run_config is None:
+        run_config = _urban_run_config(raw, source=str(authority.source))
     return resolve_static_highres(
-        raw, source=str(authority.source), base_dir=authority.base_dir)
+        raw, source=str(authority.source), base_dir=authority.base_dir,
+        run_config=run_config)
+
+
+#: The tables an experiment file carries beside the experiment itself, split
+#: off before it is built (as gpuwm.case_data.load_experiment_case_bytes does).
+_COMPANION_TABLES = ("case_data", "fetch", "ingest", "static")
+
+
+def _urban_run_config(raw, *, source: str):
+    """The run configuration whose urban selectors pick the land-cover legend.
+
+    Every preparation route (HRRR, GFS, ERA5, the tool doors) reads the
+    overlay through :func:`load_static_highres` without a run configuration,
+    so the legend fell back to the collapse and an urban run was prepared
+    with every Local Climate Zone and NLCD intensity class folded into
+    category 13 -- the urban model ran, but on one urban type instead of the
+    classes the file asked for.  The experiment in the same file is the
+    authority; a file that names no urban selector keeps today's path
+    byte for byte.
+    """
+    if not _mentions_urban(raw):
+        return None
+    from gpuwm.experiment import build_experiment
+
+    experiment = build_experiment(
+        {k: v for k, v in raw.items() if k not in _COMPANION_TABLES},
+        source=source)
+    selectors = {(int(dc.run.sf_urban_physics > 0),
+                  int(dc.run.use_wudapt_lcz) if dc.run.sf_urban_physics > 0
+                  else 0)
+                 for dc in experiment.domains}
+    if len(selectors) > 1:
+        raise ValueError(
+            f"{source}: domain urban legends differ: a shared prepared-static "
+            "identity would alias collapsed and urban categories")
+    return experiment.domains[0].run if experiment.domains else None
+
+
+def _mentions_urban(node) -> bool:
+    if isinstance(node, Mapping):
+        return any(key in ("sf_urban_physics", "use_wudapt_lcz")
+                   or _mentions_urban(value) for key, value in node.items())
+    if isinstance(node, list):
+        return any(_mentions_urban(value) for value in node)
+    return False
 
 
 def static_highres_identity(config):
@@ -1379,6 +1478,158 @@ def static_highres_identity(config):
     if config is None:
         return None
     return {**config.echo(), "enabled": config.enabled}
+
+
+def urban_legend_selector(run_config) -> tuple[bool, int]:
+    """The land-cover legend a run's urban selectors pick.
+
+    (an urban model runs, use_wudapt_lcz); the companion key is read by
+    nothing without an urban model, so it is 0 there.  This pair is all of
+    a run the carrier's legend depends on
+    (:func:`gpuwm.static.highres.landcover_legend`).
+    """
+    urban = int(getattr(run_config, "sf_urban_physics", 0) or 0) > 0
+    return urban, (int(getattr(run_config, "use_wudapt_lcz", 0) or 0)
+                   if urban else 0)
+
+
+def _legend_words(selector) -> str:
+    urban, lcz = selector
+    if not urban:
+        return "the land-cover legend without an urban model"
+    table = ("Local Climate Zones" if lcz
+             else "URBPARM.TBL's three urban types")
+    return f"the urban land-cover legend with {table}"
+
+
+def sealed_urban_legend(echo, *, source: str) -> tuple[bool, int]:
+    """The legend a sealed carrier echo recorded, as :func:`urban_legend_selector`.
+
+    :meth:`HighresStaticConfig.echo` writes ``urban_legend = "urban"`` and
+    ``use_wudapt_lcz`` (0 or 1) together when the run had an urban model,
+    and neither otherwise.  Anything else was not written by that echo, and
+    rebuilding land cover from it would pick a legend the seal does not
+    record, so it is refused.
+    """
+    echo = echo if isinstance(echo, Mapping) else {}
+    legend = echo.get("urban_legend")
+    lcz = echo.get("use_wudapt_lcz")
+    if legend is None and lcz is None:
+        return False, 0
+    if legend == "urban" and type(lcz) is int and lcz in (0, 1):
+        return True, lcz
+    raise ValueError(
+        f"the urban legend of {source} reads urban_legend = {legend!r}, "
+        f"use_wudapt_lcz = {lcz!r}, which the carrier never records (it "
+        'writes urban_legend = "urban" with use_wudapt_lcz 0 or 1, both or '
+        "neither); refusing to rebuild land cover under a legend the seal "
+        "does not record")
+
+
+def _sealed_carrier_enabled(echo) -> bool:
+    """True when a sealed echo's carrier replaced statics.
+
+    A prepared identity records ``enabled`` as a boolean
+    (:func:`static_highres_identity`), an overlay receipt as the echo's
+    ``"true"``/``"false"``.
+    """
+    enabled = echo.get("enabled") if isinstance(echo, Mapping) else None
+    return enabled is True or enabled == "true"
+
+
+def require_sealed_urban_legend(echo, run_config, *, source: str) -> None:
+    """Refuse a restore or rebuild whose run asks for another urban legend.
+
+    The legend decides which land-cover classes a prepared static keeps:
+    with an urban model the Local Climate Zone and NLCD intensity classes
+    stay categories 51-61 for the urban table the run reads, without one
+    they fold into category 13.  A run integrating statics sealed for
+    another legend reads land use it did not ask for.
+
+    Held only where the legend shaped the statics.  A disabled carrier
+    replaced no land cover, so no legend did, and it need not record one:
+    :func:`resolve_static_highres` gives the run's urban selectors only to
+    a carrier the configuration declared or defaulted, so the
+    smoothing-only carrier of an urban run with no ``[static.highres]``
+    seals without a legend.  Holding that seal to the run refused every
+    prepared forecast of such a run, and preparing again wrote the same
+    seal.
+    """
+    sealed = sealed_urban_legend(echo, source=source)
+    if not _sealed_carrier_enabled(echo):
+        return
+    requested = urban_legend_selector(run_config)
+    if sealed != requested:
+        raise ValueError(
+            f"urban legend mismatch: {source} was prepared with "
+            f"{_legend_words(sealed)}, and this run asks for "
+            f"{_legend_words(requested)} (sf_urban_physics = "
+            f"{int(getattr(run_config, 'sf_urban_physics', 0) or 0)}, "
+            f"use_wudapt_lcz = "
+            f"{int(getattr(run_config, 'use_wudapt_lcz', 0) or 0)}); the "
+            "legend decides which land-cover classes the prepared statics "
+            "keep, so this run would read land use it did not ask for. "
+            "Prepare again under this configuration, or run the urban "
+            "settings the preparation was sealed with")
+
+
+def parse_sealed_static_highres(echo, *, source: str, base_dir,
+                                run_config=None
+                                ) -> HighresStaticConfig | None:
+    """The carrier a sealed identity recorded (:func:`static_highres_identity`).
+
+    The echo is ``[static.highres]``'s keys plus two halves no
+    ``[static.highres]`` table declares: the carrier's per-domain
+    ``terrain_smoothing`` rows (from ``[[domain]] static``) and, when the
+    run had an urban model, its land-cover legend (``urban_legend`` and
+    ``use_wudapt_lcz``, from the run's own selectors).  Read through
+    :func:`parse_static_table` alone, each was refused as an unknown key,
+    so a sealed tree whose nests asked for their own smoothing, or any
+    sealed urban run with a carrier, could not be restored or rebuilt;
+    dropped, the rebuild would build terrain with the default smoother and
+    land cover with the legend of no urban model.  Every half is read
+    here, each through its owner's validation.
+
+    ``run_config`` is the run being restored or rebuilt.  Given, and the
+    sealed carrier enabled, the sealed legend must be its legend
+    (:func:`require_sealed_urban_legend`) and the carrier holds its urban
+    selectors, as :func:`resolve_static_highres` resolved them for the
+    sealed run.  A disabled carrier replaced no land cover and comes back
+    as it was sealed, so its rebuild records the identity its seal did.
+    The echo records the legend, not which urban model ran: without a run
+    the carrier holds ``sf_urban_physics = 1``, which it reads only as "an
+    urban model runs" (the echo and the legend).
+    """
+    if echo is None:
+        return None
+    if not isinstance(echo, Mapping):
+        raise ValueError(
+            f"the high-resolution identity of {source} must be a table, got "
+            f"{echo!r}")
+    urban, lcz = sealed_urban_legend(echo, source=source)
+    table = dict(echo)
+    rows = table.pop("terrain_smoothing", None)
+    table.pop("urban_legend", None)
+    table.pop("use_wudapt_lcz", None)
+    config = parse_static_table({"highres": table}, source=source,
+                                base_dir=base_dir)
+    if run_config is not None and config.enabled:
+        require_sealed_urban_legend(echo, run_config, source=source)
+        # Read as urban_legend_selector reads them: a run object that does
+        # not carry the urban selectors runs no urban model.
+        config = replace(
+            config,
+            sf_urban_physics=int(getattr(run_config, "sf_urban_physics", 0)
+                                 or 0),
+            use_wudapt_lcz=int(getattr(run_config, "use_wudapt_lcz", 0)
+                               or 0))
+    elif urban:
+        config = replace(config, sf_urban_physics=1, use_wudapt_lcz=lcz)
+    if rows is None:
+        return config
+    from .terrain_smoothing import smoothing_rows_from_echo
+    return replace(config, terrain_smoothing=smoothing_rows_from_echo(
+        rows, source=source))
 
 
 def prepared_highres_settings_match(recorded, config):
@@ -1425,6 +1676,8 @@ def apply_prepared_highres(baseline, grid, *, config, domain_id, case_date,
     and complete grid identity match. The caller verifies the input static
     payload against its containing receipt before handing it here.
     """
+    from .terrain_smoothing import require_root_smoothing
+    require_root_smoothing(config, domain_id, baseline_receipt)
     if not overlay_active(config, grid):
         return baseline, baseline_receipt
     previous = (baseline_receipt.get("highres")
@@ -1448,6 +1701,8 @@ __all__ = [
     "overlay_active", "raw_domain_spacings", "resolve_static_highres",
     "US_COVERAGE_ENVELOPE", "apply_highres_statics", "parse_static_table",
     "load_static_highres", "static_highres_identity",
+    "parse_sealed_static_highres", "require_sealed_urban_legend",
+    "sealed_urban_legend", "urban_legend_selector",
     "apply_prepared_highres", "require_prepared_highres",
     "prepared_highres_settings_match", "deepest_receipt_path",
 ]

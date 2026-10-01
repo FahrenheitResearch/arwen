@@ -170,7 +170,7 @@ def _force_probe(monkeypatch, coupler):
                         lambda *a, **k: None)
     seen = {}
 
-    def observe(state, kind, out):
+    def observe(state, kind, out, **kwargs):
         field = {"mu": state.mup[None], "t": state.thp,
                  "ph": state.php}.get(kind, getattr(state, kind, None))
         if field is not None:
@@ -292,7 +292,7 @@ def test_feedback_reads_the_whole_child_field_not_the_frame(monkeypatch):
     swept = child.state.thp + np.float32(3.0)
     _publish(child.state, {"thp": swept, "mup": child.state.mup.copy()})
     monkeypatch.setattr("gpuwm.core.nest.couple_nest_field",
-                        lambda state, kind, out: out)
+                        lambda state, kind, out, **kwargs: out)
     coupler._coupled_child_field("t")
     assert child.state.thp[0, 15, 15] == pytest.approx(
         float(swept[0, 15, 15]))

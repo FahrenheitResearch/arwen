@@ -458,6 +458,13 @@ def _kill(process: subprocess.Popen, *, own_group: bool) -> None:
     killing only ``gpuwm render`` would leave ``rw_wrfbatch`` drawing
     into a folder nobody reads.  In the caller's group only the render
     itself is signalled, because that group is the caller's too.
+
+    On Windows the render's whole process tree goes, group or not:
+    ``taskkill /T`` follows the processes a render started, never its
+    group, so it cannot reach the caller.  THE BREAKAGE: killing ``gpuwm
+    render`` alone left its renderer drawing with pictures open in the
+    folder, and a folder with a file open in it does not move (a forecast
+    attempt set aside before the forecast runs again).
     """
 
     try:
@@ -465,11 +472,13 @@ def _kill(process: subprocess.Popen, *, own_group: bool) -> None:
             import signal
 
             os.killpg(process.pid, signal.SIGKILL)
-        elif own_group and os.name == "nt":
+        elif os.name == "nt":
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(process.pid)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if process.poll() is None:
+                process.kill()
         else:
             process.kill()
     except OSError:
@@ -531,7 +540,8 @@ def end_render(thread: threading.Thread | None, *,
     On POSIX the render is sent SIGINT, which ``gpuwm render`` answers
     by ending the renderer process it runs and exiting 130; a render
     that ignores it (a run started with SIGINT ignored passes that on)
-    is killed after ``grace`` seconds.  Elsewhere it is terminated.
+    is killed after ``grace`` seconds.  Elsewhere it is killed with every
+    process it started (:func:`_kill`).
 
     A render started in a group of its own (:func:`_run_render`) is
     signalled as a group, so the renderer binary under it is told too,
@@ -578,13 +588,62 @@ def end_render(thread: threading.Thread | None, *,
                 process.wait(grace)
             except subprocess.TimeoutExpired:
                 _kill(process, own_group=own_group)
-        elif own_group:
-            _kill(process, own_group=True)
         else:
-            process.terminate()
+            _kill(process, own_group=own_group)
     except OSError:
         pass
     return True
+
+
+#: How long :func:`halt_renders_and_wait` waits for a render that outlived
+#: its halt to exit once killed, and then for each render thread.
+REAP_WAIT_SECONDS = 10.0
+
+
+def _render_processes(renders) -> list[subprocess.Popen]:
+    """The render processes ``renders``' threads are waiting on now."""
+
+    idents = {thread.ident for thread, _ in renders.render_threads()
+              if thread.ident is not None}
+    with _RUNNING_LOCK:
+        return [process for ident, process in _RUNNING.items()
+                if ident in idents and process.poll() is None]
+
+
+def halt_renders_and_wait(renders, *,
+                          timeout: float | None = HALT_WAIT_SECONDS,
+                          reap_seconds: float = REAP_WAIT_SECONDS) -> bool:
+    """Halt ``renders`` and return once none of their processes runs.
+
+    For a run about to move the folder its renders read frames from and
+    draw pictures into (a forecast attempt set aside before the forecast
+    runs again).  The halt ends the render in flight and waits
+    ``timeout`` for it (:meth:`FirstProducts.halt`); a render still
+    running after that is killed (:func:`_kill`) and waited for here, and
+    so is each render thread.  THE BREAKAGE: a halt waits only a bounded
+    time and then returns with the render possibly still drawing, and on
+    Windows a folder with a picture or a frame open in it does not move.
+
+    ``renders`` is a :class:`FirstProducts`, a
+    :class:`gpuwm.live_products.LiveProducts` or a
+    :class:`gpuwm.live_products.LandingRenders`.  Returns whether every
+    render process exited and every render thread returned.
+    """
+
+    renders.halt(timeout)
+    for process in _render_processes(renders):
+        if process.poll() is None:
+            _kill(process, own_group=bool(
+                getattr(process, _OWN_GROUP_ATTRIBUTE, False)))
+        try:
+            process.wait(reap_seconds)
+        except subprocess.TimeoutExpired:
+            pass
+    threads = renders.render_threads()
+    for _, ended in threads:
+        ended.wait(reap_seconds)
+    return (all(ended.ended for _, ended in threads)
+            and not _render_processes(renders))
 
 
 class FirstProducts:
@@ -657,6 +716,13 @@ class FirstProducts:
     @property
     def dispatched(self) -> bool:
         return self._thread is not None
+
+    def render_threads(self) -> list[tuple[threading.Thread, WorkerEnd]]:
+        """The threads that start this render's processes, with their ends
+        (:func:`halt_renders_and_wait`)."""
+
+        thread = self._thread
+        return [] if thread is None else [(thread, self._ended)]
 
     # -- the hook the observer calls ----------------------------------
 
@@ -1710,6 +1776,7 @@ __all__ = [
     "early_render_requested",
     "effective_products",
     "finished_pictures",
+    "halt_renders_and_wait",
     "keep",
     "published_frames",
     "published_pictures_are_original",

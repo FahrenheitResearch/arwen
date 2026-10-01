@@ -10,7 +10,7 @@ wrapper owns three things the column solver does not:
 * ``initflag = 1`` on ``itimestep == 1`` and 0 afterwards (``:1643-1647``),
   which is what selects ``mym_initialize`` over the carried state; and
 * the per-``j``-row packing that gpuwm replaces with a single
-  ``(ncol, nz)`` transpose, since every column is independent.
+  level-major column chunk, since every column is independent.
 
 Keeping it in its own module rather than inside :mod:`gpuwm.core.physics`
 means the unit conversions live next to the source anchor that justifies
@@ -40,6 +40,7 @@ from gpuwm.core.mynn_pbl_scratch import (
     SLOT_STAGE_LAYER,
     SLOT_ZERO_COLUMN,
     mynn_pbl_tendency_field_shapes,
+    mynn_column_pieces,
     resolve_mynn_column_chunk,
 )
 from gpuwm.core.state import DTYPE
@@ -171,10 +172,12 @@ def mynn_pbl_step(
     knobs, forwarded verbatim to the driver so the refusal for an unported
     branch comes from the routine that would have had to implement it.
 
-    The domain is walked in chunks of ``column_chunk`` columns
-    (:func:`gpuwm.core.mynn_pbl_scratch.resolve_mynn_column_chunk`, this
-    process's settled width, by default -- the same width the preflight
-    registry sized the shared arena with).
+    The domain is walked in equal pieces of at most ``column_chunk``
+    columns (:func:`gpuwm.core.mynn_pbl_scratch.resolve_mynn_column_chunk`,
+    this process's settled width, by default -- the same width the
+    preflight registry sized the shared arena with;
+    :func:`gpuwm.core.mynn_pbl_scratch.mynn_column_pieces` makes the pieces
+    equal, so no call is a short remainder).
     Every MYNN kernel gives one CUDA thread one complete column and reads no
     neighbour, so the chunk boundary is not a seam: the split is bitwise
     identical to the single wide call at every width measured, and that is
@@ -217,7 +220,7 @@ def mynn_pbl_step(
     # Stage B (W4 full admission): the qn columns for the five stock
     # mixscalars solves.  Key-off runs never enter this block, stage no
     # extra arrays, and pass no extra driver keys -- bit-identity of the
-    # mixscalars=0 path is by construction.  The per-chunk transposed
+    # mixscalars=0 path is by construction.  The per-chunk level-major
     # copies below are plain pool allocations, accepted behind the key
     # (the priced-scratch discipline covers the always-on path only).
     mixscalars_on = int(options.get("bl_mynn_mixscalars", 0)) == 1
@@ -258,12 +261,13 @@ def mynn_pbl_step(
                        for name, array in tendencies.items()}
 
     initflag = 1 if int(itimestep) == 1 else 0
-    for lo in range(0, ncol, chunk):
-        hi = min(lo + chunk, ncol)
+    piece = mynn_column_pieces(ncol, chunk)
+    for lo in range(0, ncol, piece):
+        hi = min(lo + piece, ncol)
         n = hi - lo
         stage = work.group(SLOT_STAGE_LAYER, MYNN_PBL_STAGE_LAYERS, (n, nz))
         for name in source:
-            stage[name][...] = source[name][:, lo:hi].T
+            stage[name].T[...] = source[name][:, lo:hi]
 
         # --- module_bl_mynn_wrapper.F:453-475 mixing ratio -> specific -----
         count = n * nz
@@ -293,11 +297,11 @@ def mynn_pbl_step(
         values["kpbl"] = flat_kpbl[lo:hi]
         if mixscalars_on:
             for solver_name, _, _ in MYNN_MIXSCALARS_QN:
-                values[solver_name] = cp.ascontiguousarray(
+                values[solver_name] = cp.asfortranarray(
                     qn_source[solver_name][:, lo:hi].T)
             # F_QNBCA is false in mp=28's Registry package; the zero
             # column solves to exactly zero (see MYNN_MIXSCALARS_QN).
-            values["qnbca"] = cp.zeros((n, nz), dtype=DTYPE)
+            values["qnbca"] = cp.zeros((n, nz), dtype=DTYPE, order="F")
 
         out = mynn_bl_driver_cuda(
             values, initflag=initflag, delt=DTYPE(delt), scratch=work,

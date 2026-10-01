@@ -1,0 +1,217 @@
+
+/lib/x86_64-linux-gnu/libm.so.6:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+000000000005af50 <exp@@GLIBC_2.29>:
+   5af50:	f3 0f 1e fa          	endbr64
+   5af54:	55                   	push   %rbp
+   5af55:	48 89 e5             	mov    %rsp,%rbp
+   5af58:	53                   	push   %rbx
+   5af59:	66 48 0f 7e c3       	movq   %xmm0,%rbx
+   5af5e:	48 83 ec 08          	sub    $0x8,%rsp
+   5af62:	e8 69 76 fb ff       	call   125d0 <*ABS*+0x602b0@plt>
+   5af67:	f2 0f 10 15 a9 0c 06 	movsd  0x60ca9(%rip),%xmm2        # bbc18 <f32subf64x@@GLIBC_2.28+0x22ef8>
+   5af6e:	00 
+   5af6f:	66 0f 28 c8          	movapd %xmm0,%xmm1
+   5af73:	66 0f 54 0d 85 79 05 	andpd  0x57985(%rip),%xmm1        # b2900 <f32subf64x@@GLIBC_2.28+0x19be0>
+   5af7a:	00 
+   5af7b:	66 0f 2e d1          	ucomisd %xmm1,%xmm2
+   5af7f:	72 17                	jb     5af98 <exp@@GLIBC_2.29+0x48>
+   5af81:	66 0f ef c9          	pxor   %xmm1,%xmm1
+   5af85:	66 0f 2e c1          	ucomisd %xmm1,%xmm0
+   5af89:	7a 02                	jp     5af8d <exp@@GLIBC_2.29+0x3d>
+   5af8b:	74 0b                	je     5af98 <exp@@GLIBC_2.29+0x48>
+   5af8d:	48 8b 5d f8          	mov    -0x8(%rbp),%rbx
+   5af91:	c9                   	leave
+   5af92:	c3                   	ret
+   5af93:	0f 1f 44 00 00       	nopl   0x0(%rax,%rax,1)
+   5af98:	66 48 0f 6e cb       	movq   %rbx,%xmm1
+   5af9d:	66 0f 54 0d 5b 79 05 	andpd  0x5795b(%rip),%xmm1        # b2900 <f32subf64x@@GLIBC_2.28+0x19be0>
+   5afa4:	00 
+   5afa5:	66 0f 2e d1          	ucomisd %xmm1,%xmm2
+   5afa9:	72 e2                	jb     5af8d <exp@@GLIBC_2.29+0x3d>
+   5afab:	48 8b 05 06 a0 0c 00 	mov    0xca006(%rip),%rax        # 124fb8 <f32subf64x@@GLIBC_2.28+0x8c298>
+   5afb2:	64 c7 00 22 00 00 00 	movl   $0x22,%fs:(%rax)
+   5afb9:	eb d2                	jmp    5af8d <exp@@GLIBC_2.29+0x3d>
+   5afbb:	0f 1f 44 00 00       	nopl   0x0(%rax,%rax,1)
+
+000000000005afc0 <ilogb@@GLIBC_2.2.5>:
+   5afc0:	f3 0f 1e fa          	endbr64
+   5afc4:	66 48 0f 7e c2       	movq   %xmm0,%rdx
+   5afc9:	48 89 d0             	mov    %rdx,%rax
+   5afcc:	48 c1 e8 34          	shr    $0x34,%rax
+   5afd0:	25 ff 07 00 00       	and    $0x7ff,%eax
+   5afd5:	74 19                	je     5aff0 <ilogb@@GLIBC_2.2.5+0x30>
+   5afd7:	8d 88 01 fc ff ff    	lea    -0x3ff(%rax),%ecx
+   5afdd:	3d ff 07 00 00       	cmp    $0x7ff,%eax
+   5afe2:	74 24                	je     5b008 <ilogb@@GLIBC_2.2.5+0x48>
+   5afe4:	89 c8                	mov    %ecx,%eax
+   5afe6:	c3                   	ret
+   5afe7:	66 0f 1f 84 00 00 00 	nopw   0x0(%rax,%rax,1)
+   5afee:	00 00 
+   5aff0:	48 c1 e2 0c          	shl    $0xc,%rdx
+   5aff4:	74 2a                	je     5b020 <ilogb@@GLIBC_2.2.5+0x60>
+   5aff6:	48 0f bd d2          	bsr    %rdx,%rdx
+   5affa:	8d 8a c2 fb ff ff    	lea    -0x43e(%rdx),%ecx
+   5b000:	eb e2                	jmp    5afe4 <ilogb@@GLIBC_2.2.5+0x24>
+   5b002:	66 0f 1f 44 00 00    	nopw   0x0(%rax,%rax,1)
+   5b008:	31 ff                	xor    %edi,%edi
+   5b00a:	48 c1 e2 0c          	shl    $0xc,%rdx
+   5b00e:	40 0f 95 c7          	setne  %dil
+   5b012:	f7 df                	neg    %edi
+   5b014:	81 f7 ff ff ff 7f    	xor    $0x7fffffff,%edi
+   5b01a:	e9 e1 90 03 00       	jmp    94100 <__iscanonicall@@GLIBC_2.25+0x1970>
+   5b01f:	90                   	nop
+   5b020:	bf 00 00 00 80       	mov    $0x80000000,%edi
+   5b025:	e9 d6 90 03 00       	jmp    94100 <__iscanonicall@@GLIBC_2.25+0x1970>
+   5b02a:	66 0f 1f 44 00 00    	nopw   0x0(%rax,%rax,1)
+
+000000000005b030 <llogb@@GLIBC_2.25>:
+   5b030:	f3 0f 1e fa          	endbr64
+   5b034:	66 48 0f 7e c2       	movq   %xmm0,%rdx
+   5b039:	48 89 d0             	mov    %rdx,%rax
+   5b03c:	48 c1 e8 34          	shr    $0x34,%rax
+   5b040:	25 ff 07 00 00       	and    $0x7ff,%eax
+   5b045:	74 19                	je     5b060 <llogb@@GLIBC_2.25+0x30>
+   5b047:	8d 88 01 fc ff ff    	lea    -0x3ff(%rax),%ecx
+   5b04d:	48 63 c9             	movslq %ecx,%rcx
+   5b050:	3d ff 07 00 00       	cmp    $0x7ff,%eax
+   5b055:	74 21                	je     5b078 <llogb@@GLIBC_2.25+0x48>
+   5b057:	48 89 c8             	mov    %rcx,%rax
+   5b05a:	c3                   	ret
+   5b05b:	0f 1f 44 00 00       	nopl   0x0(%rax,%rax,1)
+   5b060:	48 c1 e2 0c          	shl    $0xc,%rdx
+   5b064:	74 3a                	je     5b0a0 <llogb@@GLIBC_2.25+0x70>
+   5b066:	48 0f bd d2          	bsr    %rdx,%rdx
+   5b06a:	48 8d 8a c2 fb ff ff 	lea    -0x43e(%rdx),%rcx
+   5b071:	eb e4                	jmp    5b057 <llogb@@GLIBC_2.25+0x27>
+   5b073:	0f 1f 44 00 00       	nopl   0x0(%rax,%rax,1)
+   5b078:	48 b8 ff ff ff ff ff 	movabs $0x7fffffffffffffff,%rax
+   5b07f:	ff ff 7f 
+   5b082:	31 ff                	xor    %edi,%edi
+   5b084:	48 c1 e2 0c          	shl    $0xc,%rdx
+   5b088:	40 0f 95 c7          	setne  %dil
+   5b08c:	48 f7 df             	neg    %rdi
+   5b08f:	48 31 c7             	xor    %rax,%rdi
+   5b092:	e9 89 90 03 00       	jmp    94120 <__iscanonicall@@GLIBC_2.25+0x1990>
+   5b097:	66 0f 1f 84 00 00 00 	nopw   0x0(%rax,%rax,1)
+   5b09e:	00 00 
+   5b0a0:	48 bf 00 00 00 00 00 	movabs $0x8000000000000000,%rdi
+   5b0a7:	00 00 80 
+   5b0aa:	e9 71 90 03 00       	jmp    94120 <__iscanonicall@@GLIBC_2.25+0x1990>
+   5b0af:	90                   	nop
+
+000000000005b0b0 <log1p@@GLIBC_2.2.5>:
+   5b0b0:	f3 0f 1e fa          	endbr64
+   5b0b4:	f2 0f 10 0d ac 0c 06 	movsd  0x60cac(%rip),%xmm1        # bbd68 <f32subf64x@@GLIBC_2.28+0x23048>
+   5b0bb:	00 
+   5b0bc:	66 0f 2e c8          	ucomisd %xmm0,%xmm1
+   5b0c0:	73 0e                	jae    5b0d0 <log1p@@GLIBC_2.2.5+0x20>
+   5b0c2:	e9 29 74 fb ff       	jmp    124f0 <*ABS*+0x79220@plt>
+   5b0c7:	66 0f 1f 84 00 00 00 	nopw   0x0(%rax,%rax,1)
+   5b0ce:	00 00 
+   5b0d0:	66 0f 2e c1          	ucomisd %xmm1,%xmm0
+   5b0d4:	48 8b 05 dd 9e 0c 00 	mov    0xc9edd(%rip),%rax        # 124fb8 <f32subf64x@@GLIBC_2.28+0x8c298>
+   5b0db:	7a 13                	jp     5b0f0 <log1p@@GLIBC_2.2.5+0x40>
+   5b0dd:	75 11                	jne    5b0f0 <log1p@@GLIBC_2.2.5+0x40>
+   5b0df:	64 c7 00 22 00 00 00 	movl   $0x22,%fs:(%rax)
+   5b0e6:	eb da                	jmp    5b0c2 <log1p@@GLIBC_2.2.5+0x12>
+   5b0e8:	0f 1f 84 00 00 00 00 	nopl   0x0(%rax,%rax,1)
+   5b0ef:	00 
+   5b0f0:	64 c7 00 21 00 00 00 	movl   $0x21,%fs:(%rax)
+   5b0f7:	eb c9                	jmp    5b0c2 <log1p@@GLIBC_2.2.5+0x12>
+   5b0f9:	0f 1f 80 00 00 00 00 	nopl   0x0(%rax)
+
+000000000005b100 <log@@GLIBC_2.29>:
+   5b100:	f3 0f 1e fa          	endbr64
+   5b104:	66 0f ef c9          	pxor   %xmm1,%xmm1
+   5b108:	66 0f 2e c8          	ucomisd %xmm0,%xmm1
+   5b10c:	73 0a                	jae    5b118 <log@@GLIBC_2.29+0x18>
+   5b10e:	e9 cd 73 fb ff       	jmp    124e0 <*ABS*+0x71ba0@plt>
+   5b113:	0f 1f 44 00 00       	nopl   0x0(%rax,%rax,1)
+   5b118:	66 0f 2e c1          	ucomisd %xmm1,%xmm0
+   5b11c:	48 8b 05 95 9e 0c 00 	mov    0xc9e95(%rip),%rax        # 124fb8 <f32subf64x@@GLIBC_2.28+0x8c298>
+   5b123:	7a 0b                	jp     5b130 <log@@GLIBC_2.29+0x30>
+   5b125:	75 09                	jne    5b130 <log@@GLIBC_2.29+0x30>
+   5b127:	64 c7 00 22 00 00 00 	movl   $0x22,%fs:(%rax)
+   5b12e:	eb de                	jmp    5b10e <log@@GLIBC_2.29+0xe>
+   5b130:	64 c7 00 21 00 00 00 	movl   $0x21,%fs:(%rax)
+   5b137:	eb d5                	jmp    5b10e <log@@GLIBC_2.29+0xe>
+   5b139:	0f 1f 80 00 00 00 00 	nopl   0x0(%rax)
+
+000000000005b140 <pow@@GLIBC_2.29>:
+   5b140:	f3 0f 1e fa          	endbr64
+   5b144:	55                   	push   %rbp
+   5b145:	48 89 e5             	mov    %rsp,%rbp
+   5b148:	53                   	push   %rbx
+   5b149:	66 48 0f 7e c3       	movq   %xmm0,%rbx
+   5b14e:	48 83 ec 18          	sub    $0x18,%rsp
+   5b152:	f2 0f 11 4d e8       	movsd  %xmm1,-0x18(%rbp)
+   5b157:	e8 b4 73 fb ff       	call   12510 <*ABS*+0x723b0@plt>
+   5b15c:	f2 0f 10 1d b4 0a 06 	movsd  0x60ab4(%rip),%xmm3        # bbc18 <f32subf64x@@GLIBC_2.28+0x22ef8>
+   5b163:	00 
+   5b164:	f2 0f 10 4d e8       	movsd  -0x18(%rbp),%xmm1
+   5b169:	66 0f 28 d0          	movapd %xmm0,%xmm2
+   5b16d:	66 0f 54 15 8b 77 05 	andpd  0x5778b(%rip),%xmm2        # b2900 <f32subf64x@@GLIBC_2.28+0x19be0>
+   5b174:	00 
+   5b175:	66 0f 2e da          	ucomisd %xmm2,%xmm3
+   5b179:	72 15                	jb     5b190 <pow@@GLIBC_2.29+0x50>
+   5b17b:	66 0f ef d2          	pxor   %xmm2,%xmm2
+   5b17f:	66 0f 2e c2          	ucomisd %xmm2,%xmm0
+   5b183:	7a 02                	jp     5b187 <pow@@GLIBC_2.29+0x47>
+   5b185:	74 49                	je     5b1d0 <pow@@GLIBC_2.29+0x90>
+   5b187:	48 8b 5d f8          	mov    -0x8(%rbp),%rbx
+   5b18b:	c9                   	leave
+   5b18c:	c3                   	ret
+   5b18d:	0f 1f 00             	nopl   (%rax)
+   5b190:	66 48 0f 6e d3       	movq   %rbx,%xmm2
+   5b195:	66 0f 54 15 63 77 05 	andpd  0x57763(%rip),%xmm2        # b2900 <f32subf64x@@GLIBC_2.28+0x19be0>
+   5b19c:	00 
+   5b19d:	66 0f 2e da          	ucomisd %xmm2,%xmm3
+   5b1a1:	72 e4                	jb     5b187 <pow@@GLIBC_2.29+0x47>
+   5b1a3:	66 0f 54 0d 55 77 05 	andpd  0x57755(%rip),%xmm1        # b2900 <f32subf64x@@GLIBC_2.28+0x19be0>
+   5b1aa:	00 
+   5b1ab:	66 0f 2e d9          	ucomisd %xmm1,%xmm3
+   5b1af:	72 d6                	jb     5b187 <pow@@GLIBC_2.29+0x47>
+   5b1b1:	66 0f 2e c0          	ucomisd %xmm0,%xmm0
+   5b1b5:	7b 46                	jnp    5b1fd <pow@@GLIBC_2.29+0xbd>
+   5b1b7:	48 8b 05 fa 9d 0c 00 	mov    0xc9dfa(%rip),%rax        # 124fb8 <f32subf64x@@GLIBC_2.28+0x8c298>
+   5b1be:	64 c7 00 21 00 00 00 	movl   $0x21,%fs:(%rax)
+   5b1c5:	eb c0                	jmp    5b187 <pow@@GLIBC_2.29+0x47>
+   5b1c7:	66 0f 1f 84 00 00 00 	nopw   0x0(%rax,%rax,1)
+   5b1ce:	00 00 
+   5b1d0:	66 48 0f 6e eb       	movq   %rbx,%xmm5
+   5b1d5:	66 0f 28 e5          	movapd %xmm5,%xmm4
+   5b1d9:	66 0f 54 25 1f 77 05 	andpd  0x5771f(%rip),%xmm4        # b2900 <f32subf64x@@GLIBC_2.28+0x19be0>
+   5b1e0:	00 
+   5b1e1:	66 0f 2e dc          	ucomisd %xmm4,%xmm3
+   5b1e5:	72 a0                	jb     5b187 <pow@@GLIBC_2.29+0x47>
+   5b1e7:	66 0f 2e ea          	ucomisd %xmm2,%xmm5
+   5b1eb:	7a 02                	jp     5b1ef <pow@@GLIBC_2.29+0xaf>
+   5b1ed:	74 98                	je     5b187 <pow@@GLIBC_2.29+0x47>
+   5b1ef:	66 0f 54 0d 09 77 05 	andpd  0x57709(%rip),%xmm1        # b2900 <f32subf64x@@GLIBC_2.28+0x19be0>
+   5b1f6:	00 
+   5b1f7:	66 0f 2e d9          	ucomisd %xmm1,%xmm3
+   5b1fb:	72 8a                	jb     5b187 <pow@@GLIBC_2.29+0x47>
+   5b1fd:	48 8b 05 b4 9d 0c 00 	mov    0xc9db4(%rip),%rax        # 124fb8 <f32subf64x@@GLIBC_2.28+0x8c298>
+   5b204:	64 c7 00 22 00 00 00 	movl   $0x22,%fs:(%rax)
+   5b20b:	e9 77 ff ff ff       	jmp    5b187 <pow@@GLIBC_2.29+0x47>
+
+000000000005b210 <scalbln@@GLIBC_2.2.5>:
+   5b210:	f3 0f 1e fa          	endbr64
+   5b214:	f2 0f 10 15 fc 09 06 	movsd  0x609fc(%rip),%xmm2        # bbc18 <f32subf64x@@GLIBC_2.28+0x22ef8>
+   5b21b:	00 
+   5b21c:	66 0f 28 c8          	movapd %xmm0,%xmm1
+   5b220:	66 0f 54 0d d8 76 05 	andpd  0x576d8(%rip),%xmm1        # b2900 <f32subf64x@@GLIBC_2.28+0x19be0>
+   5b227:	00 
+   5b228:	66 0f 2e d1          	ucomisd %xmm1,%xmm2
+   5b22c:	72 0c                	jb     5b23a <scalbln@@GLIBC_2.2.5+0x2a>
+   5b22e:	66 0f ef c9          	pxor   %xmm1,%xmm1
+   5b232:	66 0f 2e c1          	ucomisd %xmm1,%xmm0
+   5b236:	7a 08                	jp     5b240 <scalbln@@GLIBC_2.2.5+0x30>
+   5b238:	75 06                	jne    5b240 <scalbln@@GLIBC_2.2.5+0x30>
+   5b23a:	f2 0f 58 c0          	addsd  %xmm0,%xmm0
+   5b23e:	c3                   	ret
+   5b23f:	90                   	nop

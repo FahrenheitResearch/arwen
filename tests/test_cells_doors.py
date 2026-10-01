@@ -354,3 +354,90 @@ def test_catalog_peak_w_equals_a_direct_numpy_maximum(series, tmp_path):
                 assert set(raster.tolist()) == set(cols.tolist())
                 checked += 1
     assert checked >= FRAMES - 1
+
+
+def _delayed_nest_frames(path: Path, *, stated_origin: bool) -> Path:
+    """Two frames of a d03 that starts an hour after its run.
+
+    Written by the production writer when ``stated_origin``: START_DATE is
+    the nest's own start, SIMULATION_START_DATE the run's, and XTIME is
+    minutes since START_DATE with that origin in its units.  Without it the
+    same stamps are written by netCDF4 with an XTIME that names no origin.
+    """
+
+    from types import SimpleNamespace
+
+    from gpuwm.io.wrfout import WrfoutWriter, wrf_global_attrs
+
+    run_start = dt.datetime(2026, 5, 20, 12)
+    nest_start = run_start + dt.timedelta(hours=1)
+    stamps = ("2026-05-20_13:00:00", "2026-05-20_14:00:00")
+    if stated_origin:
+        grid = SimpleNamespace(truelat1=38.0, truelat2=38.0, stand_lon=-98.0,
+                               ref_lat=38.0, ref_lon=-98.0)
+        attrs = wrf_global_attrs(
+            grid, nest_start, grid_id=3, parent_id=2, i_parent_start=5,
+            j_parent_start=5, parent_grid_ratio=3, dt=2.0,
+            simulation_start_time=run_start)
+        with WrfoutWriter(path, nx=NX, ny=NY, nz=NZ, dx=1000.0, dy=1000.0,
+                          global_attrs=attrs) as writer:
+            for stamp in stamps:
+                writer.write_frame(stamp, {
+                    "T2": np.full((NY, NX), 290.0, np.float32),
+                    "PSFC": np.full((NY, NX), 98000.0, np.float32)})
+        return path
+    netCDF4 = pytest.importorskip("netCDF4")
+    with netCDF4.Dataset(path, "w", format="NETCDF4") as ds:
+        ds.createDimension("Time", None)
+        ds.createDimension("DateStrLen", 19)
+        ds.START_DATE = nest_start.strftime("%Y-%m-%d_%H:%M:%S")
+        ds.SIMULATION_START_DATE = run_start.strftime("%Y-%m-%d_%H:%M:%S")
+        xtime = ds.createVariable("XTIME", "f4", ("Time",))
+        xtime[:] = [0.0, 60.0]
+        times = ds.createVariable("Times", "S1", ("Time", "DateStrLen"))
+        for index, stamp in enumerate(stamps):
+            times[index] = np.frombuffer(stamp.encode("ascii"), dtype="S1")
+    return path
+
+
+def test_a_delayed_nest_is_dated_from_the_origin_its_xtime_states(tmp_path):
+    """A137: SIMULATION_START_DATE + XTIME dated a delayed nest early.
+
+    The writer counts a domain's XTIME from its own START_DATE, which on a
+    nest that starts an hour after the run is an hour later than
+    SIMULATION_START_DATE, so every frame of it was dated an hour early
+    and titan tracked it on a clock an hour behind its parent's.
+    """
+
+    _bridge_or_skip()
+    from gpuwm import netcdf_bridge
+
+    path = _delayed_nest_frames(tmp_path / "wrfout_d03_2026-05-20_13_00_00",
+                                stated_origin=True)
+    with netcdf_bridge.open_dataset(path) as dataset:
+        assert dataset.global_attributes["START_DATE"] != \
+            dataset.global_attributes["SIMULATION_START_DATE"]
+        valid = cells_columns._valid_times(dataset, path, 2)
+    utc = dt.timezone.utc
+    assert valid == [dt.datetime(2026, 5, 20, 13, tzinfo=utc),
+                     dt.datetime(2026, 5, 20, 14, tzinfo=utc)]
+
+
+def test_an_xtime_with_no_origin_between_two_stamps_is_refused_by_name(
+        tmp_path):
+    """Which stamp an origin-less XTIME counts from is unknowable.
+
+    The two answers differ by the nest's delay, and the wrong one would
+    date every frame of a multi-frame file that far off, so a file that
+    cannot fall back to its one-frame file name is refused, naming why.
+    """
+
+    _bridge_or_skip()
+    from gpuwm import netcdf_bridge
+
+    path = _delayed_nest_frames(tmp_path / "wrfout_d03_2026-05-20_13_00_00",
+                                stated_origin=False)
+    with netcdf_bridge.open_dataset(path) as dataset:
+        with pytest.raises(cells_columns.ColumnsError,
+                           match="SIMULATION_START_DATE differ"):
+            cells_columns._valid_times(dataset, path, 2)

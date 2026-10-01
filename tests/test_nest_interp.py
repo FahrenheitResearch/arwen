@@ -883,6 +883,38 @@ def test_gpu_sint_limiter_fixture_bitwise():
 
 @requires_gpu
 @pytest.mark.gpu
+@pytest.mark.parametrize("ratio", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("stagger", ["", "x", "y"])
+def test_gpu_all_side_launch_matches_four_original_launches_wordwise(ratio, stagger):
+    import cupy as cp
+    from gpuwm.core import nest_interp as ni
+
+    reg = ni.register_nest(
+        nri=ratio, nrj=ratio, i_parent_start=5, j_parent_start=4,
+        child_nx=31, child_ny=47, parent_nx=96, parent_ny=96,
+        stagger=stagger, wrapper="bdy")
+    rng = np.random.default_rng(20260930)
+    coarse = cp.asarray(rng.normal(size=(3, reg.nyp, reg.nxp)).astype(np.float32))
+    fine = cp.asarray(rng.normal(size=(3, reg.nyc, reg.nxc)).astype(np.float32))
+    got = ni.bdy_interp1(coarse, fine, reg, parent_dt_fp32=np.float32(7.5))
+    tables = reg.device_tables()
+    for index, side in enumerate(ni._SIDES):
+        expected = tuple(cp.empty_like(array) for array in got[side])
+        count = 3 * 5 * (reg.nyc if index < 2 else reg.nxc)
+        ni._launch(ni._kernel("nest_bdy_interp1"), count, (
+            coarse, fine, *expected, tables["ci"], tables["ip"],
+            tables["cj"], tables["jp"], tables["xig"], tables["xjg"],
+            np.float32(7.5), np.int32(index), np.int32(5), np.int32(3),
+            np.int32(reg.nyc), np.int32(reg.nxc), np.int32(reg.nyp),
+            np.int32(reg.nxp)))
+        for actual, reference in zip(got[side], expected):
+            np.testing.assert_array_equal(
+                cp.asnumpy(actual).view(np.uint32),
+                cp.asnumpy(reference).view(np.uint32), err_msg=side)
+
+
+@requires_gpu
+@pytest.mark.gpu
 @pytest.mark.parametrize("nri,stagger", [(3, ""), (3, "x"), (4, "y")])
 def test_gpu_bdy_interp1_matches_mirror(nri, stagger):
     import cupy as cp

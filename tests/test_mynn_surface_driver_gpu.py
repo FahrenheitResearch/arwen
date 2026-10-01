@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from conftest import requires_gpu
+from _toolchain_rows import toolchain_row
 
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
 
@@ -158,12 +159,101 @@ SEEDED_ULP = {
     "cda": (2, 0, 2, 2, 0, 5, 0, 42, 0, 0),
 }
 
+#: ``SEEDED_ULP`` per compiler where a compiler reads it differently, keyed
+#: on (compute capability, NVRTC major.minor), the pair measured.
+#: A146 re-recorded this table: NVRTC had compiled every float division
+#: by a compile-time constant as a multiply by the rounded reciprocal on
+#: Blackwell, and the kernels now spell those divisions ``__fdiv_rn``, the
+#: IEEE quotient.  On sm_120 11 rows read more than ``SEEDED_ULP``;
+#: the reciprocal-multiply compiler's psim row reads at or below it now.
+#: MEASURED 2026-09-30 on the RTX 5070 Ti (sm_120, NVRTC 13.4.92) at the
+#: A146 review repair, every output of every stage compared.
+SEEDED_ULP_BY_TOOLCHAIN = {
+    ("120", (13, 4)): {
+        **SEEDED_ULP,
+        "cd": (2, 0, 3, 0, 1, 0, 2, 0, 0, 0),
+        "ck": (1, 0, 2, 0, 2, 0, 2, 1, 0, 0),
+        "lh": (0, 0, 0, 0, 0, 0, 0, 0, 0, 2),
+        "psih": (1, 0, 2, 0, 2, 0, 0, 1, 2, 1),
+        "qfx": (0, 0, 0, 0, 0, 0, 0, 1, 0, 4),
+        "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+        "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+        "rmol": (1, 0, 3, 0, 3, 2, 0, 2, 1, 2),
+        "u10": (0, 0, 0, 2, 1, 2, 0, 0, 0, 0),
+        "v10": (1, 0, 0, 0, 1, 4, 0, 0, 1, 0),
+        "zol": (1, 0, 3, 0, 2, 2, 0, 1, 1, 2),
+    },
+}
+#: A167: NVRTC 12.9.86, the compiler of the default gpuwm[gpu] extra
+#: (cupy-cuda12x), reads the sm_120 row A146 re-recorded under 13.4: every
+#: reading this file's tests take, and the device result behind each, is
+#: bit-identical under the two compilers.  Before this row 12.9.86 failed
+#: here by name (tests/_toolchain_rows.py).  MEASURED 2026-10-01 on node-4's
+#: RTX 5070 Ti and node-2's RTX 5090, two processes per compiler, at
+#: integrate/2.8 9dbb4a2db.
+SEEDED_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
+    SEEDED_ULP_BY_TOOLCHAIN[("120", (13, 4))])
+
+
+#: ``CHAINED_ULP`` per compiler where a compiler reads it differently, keyed
+#: on (compute capability, NVRTC major.minor), the pair measured.
+#: A146 re-recorded this table: NVRTC had compiled every float division
+#: by a compile-time constant as a multiply by the rounded reciprocal on
+#: Blackwell, and the kernels now spell those divisions ``__fdiv_rn``, the
+#: IEEE quotient.  On sm_120 10 rows read more than ``CHAINED_ULP``.
+#: MEASURED 2026-09-30 on the RTX 5070 Ti (sm_120, NVRTC 13.4.92) at the
+#: A146 review repair, every output of every stage compared.
+CHAINED_ULP_BY_TOOLCHAIN = {
+    ("120", (13, 4)): {
+        **CHAINED_ULP,
+        1: {
+            **CHAINED_ULP[1],
+            "lh": (1, 0, 0, 0, 0, 0, 4, 3, 0, 2),
+            "qfx": (1, 0, 0, 0, 0, 0, 3, 2, 0, 4),
+            "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+            "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "qstar": (0, 0, 0, 0, 0, 0, 0, 0, 0, 4),
+        },
+        2: {
+            **CHAINED_ULP[2],
+            "lh": (0, 0, 0, 0, 0, 0, 0, 1, 0, 2),
+            "qfx": (0, 0, 0, 0, 0, 0, 0, 1, 0, 2),
+            "qgh": (0, 0, 0, 0, 2, 0, 0, 0, 0, 2),
+            "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+            "qstar": (0, 0, 0, 0, 0, 0, 0, 0, 0, 4),
+        },
+    },
+}
+#: A167: as for SEEDED_ULP_BY_TOOLCHAIN above.
+CHAINED_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
+    CHAINED_ULP_BY_TOOLCHAIN[("120", (13, 4))])
+
+
 CARRIED_ULP = {
     "ust": (1, 0, 1, 1, 0, 1, 1, 21, 0, 0),
     "ustm": (1, 0, 1, 1, 0, 1, 1, 21, 0, 0),
     "mol": (0, 0, 0, 0, 0, 0, 0, 36, 0, 0),
     "qsfc": (0, 0, 0, 0, 0, 1, 0, 0, 1, 2),
 }
+
+#: ``CARRIED_ULP`` per compiler where a compiler reads it differently, keyed
+#: on (compute capability, NVRTC major.minor), the pair measured.
+#: A146 re-recorded this table: NVRTC had compiled every float division
+#: by a compile-time constant as a multiply by the rounded reciprocal on
+#: Blackwell, and the kernels now spell those divisions ``__fdiv_rn``, the
+#: IEEE quotient.  On sm_120 1 row reads more than ``CARRIED_ULP``.
+#: MEASURED 2026-09-30 on the RTX 5070 Ti (sm_120, NVRTC 13.4.92) at the
+#: A146 review repair, every output of every stage compared.
+CARRIED_ULP_BY_TOOLCHAIN = {
+    ("120", (13, 4)): {
+        **CARRIED_ULP,
+        "qsfc": (0, 0, 0, 0, 0, 0, 0, 0, 0, 3),
+    },
+}
+#: A167: as for SEEDED_ULP_BY_TOOLCHAIN above.
+CARRIED_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
+    CARRIED_ULP_BY_TOOLCHAIN[("120", (13, 4))])
+
 
 INPUT_ALIASES = {
     "hfx": "hfx_input", "qfx": "qfx_input", "znt": "znt_input",
@@ -298,7 +388,9 @@ def test_driver_launch_path_matches_wrf_across_two_timesteps():
     arrays = _driver_fields(step1)
 
     _launch(arrays, itimestep=1, isfflx=1)
-    _assert_oracle(arrays, step1, MYNN_SURFACE_OUTPUTS, CHAINED_ULP[1])
+    chained = toolchain_row(CHAINED_ULP_BY_TOOLCHAIN, CHAINED_ULP,
+                            "CHAINED_ULP_BY_TOOLCHAIN")
+    _assert_oracle(arrays, step1, MYNN_SURFACE_OUTPUTS, chained[1])
 
     # WRF carries ZNT/UST/MOL/QSFC forward; the driver holds them in the same
     # device arrays, so step 2 runs straight off the step-1 results.  ZNT is
@@ -308,14 +400,16 @@ def test_driver_launch_path_matches_wrf_across_two_timesteps():
                       ("ustm", "ustm_input")):
         _assert_ulp(
             cp.asnumpy(arrays[name]), step2[key], f"carried {name}",
-            _budget(CARRIED_ULP, name),
+            _budget(toolchain_row(CARRIED_ULP_BY_TOOLCHAIN, CARRIED_ULP,
+                                  "CARRIED_ULP_BY_TOOLCHAIN"),
+                    name),
         )
     # Only the externally supplied forcing is refreshed between steps.
     for name in ("hfx", "qfx"):
         arrays[name][...] = cp.asarray(step2[f"{name}_input"].copy())
 
     _launch(arrays, itimestep=2, isfflx=1)
-    _assert_oracle(arrays, step2, MYNN_SURFACE_OUTPUTS, CHAINED_ULP[2])
+    _assert_oracle(arrays, step2, MYNN_SURFACE_OUTPUTS, chained[2])
 
     water = step1["xland"] > 1.5
     assert np.all(
@@ -368,7 +462,8 @@ def test_driver_first_step_seeding_matches_the_wrf_wrapper():
     _assert_oracle(
         arrays, fields,
         tuple(n for n in MYNN_SURFACE_OUTPUTS if n not in ("wstar", "qstar")),
-        SEEDED_ULP,
+        toolchain_row(SEEDED_ULP_BY_TOOLCHAIN, SEEDED_ULP,
+                      "SEEDED_ULP_BY_TOOLCHAIN"),
     )
 
 
@@ -382,6 +477,11 @@ def test_every_table_row_is_the_right_width_and_carries_a_measurement():
     """
 
     tables = [CHAINED_ULP[1], CHAINED_ULP[2], SEEDED_ULP, CARRIED_ULP]
+    tables += list(SEEDED_ULP_BY_TOOLCHAIN.values())
+    tables += list(CARRIED_ULP_BY_TOOLCHAIN.values())
+    for rows in CHAINED_ULP_BY_TOOLCHAIN.values():
+        assert set(rows) == set(CHAINED_ULP)
+        tables += [rows[1], rows[2]]
     for table in tables:
         assert table
         for name, row in table.items():

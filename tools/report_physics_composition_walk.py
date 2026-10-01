@@ -432,6 +432,26 @@ REMEDIES = (
                "layer the config asked for",
      "before": _suite(bl_pbl_physics=1, sf_sfclay_physics=2),
      "after": _suite(bl_pbl_physics=2, sf_sfclay_physics=2)},
+    # The UW moist-turbulence PBL's two surface-layer rules.  The Eta cell
+    # refuses for its own reason (the TKE_MYJ scan), and the off cell
+    # because nothing would write UST/HFX/QFX; both messages name the
+    # layers the scheme takes, and both are followed to revised MM5, which
+    # keeps the UW PBL the config asked for.
+    {"id": "uw-pbl-with-the-eta-surface-layer",
+     "remedy": "'Select sf_sfclay_physics=1 (revised MM5), 91 (classic "
+               "MM5) or 5 (MYNN) with the UW PBL' -- followed the first way",
+     "before": _suite(bl_pbl_physics=9, sf_sfclay_physics=2),
+     "after": _suite(bl_pbl_physics=9, sf_sfclay_physics=1)},
+    {"id": "uw-pbl-needs-a-surface-layer",
+     "remedy": "'Select sf_sfclay_physics=1 (revised MM5), 91 (classic "
+               "MM5) or 5 (MYNN)' -- followed the first way, with the "
+               "land surface the config already had",
+     "before": _suite(bl_pbl_physics=9, sf_sfclay_physics=0,
+                      sf_surface_physics=0, ra_lw_physics=0,
+                      ra_sw_physics=0),
+     "after": _suite(bl_pbl_physics=9, sf_sfclay_physics=1,
+                     sf_surface_physics=0, ra_lw_physics=0,
+                     ra_sw_physics=0)},
     # milbrandt-yau-has-no-rrtmgp-cloud-optics is deliberately ABSENT, and
     # its absence is the record of a fix.  The pair walked the refusal's
     # Dudhia remedy while gpuwm.core.rrtmgp had no row for mp=9; the row

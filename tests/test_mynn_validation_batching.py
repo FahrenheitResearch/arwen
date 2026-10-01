@@ -147,3 +147,41 @@ def test_real_tendency_door_preserves_immediate_error_order_and_input_bytes(scen
         gpu.mynn_tendencies_nomf_cuda(inputs)
     assert str(caught.value) == message
     assert {name:cp.asnumpy(value).tobytes() for name,value in inputs.items()} == before
+
+
+@pytest.mark.parametrize('tripped, expected', [
+    ((), None),
+    ((0,), 'finite'),
+    ((0, 2), 'finite'),
+    ((2,), 'third'),
+    ((1, 3), 'second'),
+    ((3,), 'fourth'),
+])
+def test_one_read_per_call_site_keeps_the_first_refusal_in_order(tripped, expected):
+    """A call site that queues every check and reads the words once refuses
+    with the message of the first check, in the caller's order, that the
+    one-read-per-check sequence refused with."""
+    import cupy as cp
+    from gpuwm.core import mynn_pbl_gpu as gpu
+    finite = [cp.ones((7, 5), cp.float32, order='F') for _ in range(6)]
+    second = [cp.ones(9, cp.float32), cp.ones((3, 4), cp.float32)]
+    third = [cp.ones(11, cp.float32)]
+    fourth = [cp.ones((4, 6), cp.float32, order='F') for _ in range(5)]
+    if 0 in tripped:
+        finite[4][6, 2] = cp.nan
+    if 1 in tripped:
+        second[1][2, 3] = 0.0
+    if 2 in tripped:
+        third[0][10] = -1.0
+    if 3 in tripped:
+        fourth[3][0, 5] = 0.0
+    checks = ((gpu._nonfinite(), finite, 'finite'),
+              (gpu._nonpositive(), second, 'second'),
+              (gpu._nonpositive(), third, 'third'),
+              (gpu._nonpositive(), fourth, 'fourth'))
+    flags = cp.full(64, -1, cp.int32)
+    assert gpu._first_refusal(checks, flags) == expected
+    sequential = next((message for kernel, arrays, message in checks
+                       if gpu._tripped(kernel, arrays, cp.zeros(64, cp.int32))),
+                      None)
+    assert sequential == expected

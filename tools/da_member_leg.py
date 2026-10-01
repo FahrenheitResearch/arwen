@@ -65,8 +65,11 @@ import numpy as np
 CONTROL = "control"
 
 #: The physics-receipt fields that are registry VOCABULARY rather than
-#: physics; see the driver's module docstring.
-PHYSICS_VOCABULARY_FIELDS = ("maturity", "registry_sha256")
+#: physics; see the driver's module docstring and
+#: ``tools/da_cycle_prepared.py``'s copy, which says why
+#: ``registry_physics`` joined them (A153).
+PHYSICS_VOCABULARY_FIELDS = ("maturity", "registry_sha256",
+                             "registry_physics")
 
 
 def to_host(value) -> np.ndarray:

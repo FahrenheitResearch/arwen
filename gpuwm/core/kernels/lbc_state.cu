@@ -640,6 +640,149 @@ void couple_nest_field(
     out[tid] = __fmul_rn(ch, value);
 }
 
+// Same expression tree as the full-field coupling above. Only enumeration
+// changes; global coordinates preserve physical-face clamps and map factors.
+extern "C" __global__
+void couple_nest_field_window(
+    const real* __restrict__ target,
+    const real* __restrict__ mub2d,
+    const real* __restrict__ mup,
+    const real* __restrict__ thb,
+    const real* __restrict__ c1h,
+    const real* __restrict__ c2h,
+    const real* __restrict__ c1f,
+    const real* __restrict__ c2f,
+    const real* __restrict__ msft,
+    const real* __restrict__ msfu,
+    const real* __restrict__ msfv,
+    real* __restrict__ out,
+    int has_msf, int thb_3d, int kind,
+    int nz, int ny, int nx, int mny, int mnx,
+    int j0, int i0, int nj, int ni)
+{
+    int tid = blockIdx.x*blockDim.x + threadIdx.x;
+    if (tid >= nz*nj*ni) return;
+    int k = tid/(nj*ni);
+    int rem = tid - k*nj*ni;
+    int j = j0 + rem/ni;
+    int i = i0 + rem%ni;
+    tid = I3(k, j, i, ny, nx);
+    if (kind == LBC_MU) {
+        out[tid] = target[tid];
+        return;
+    }
+    real ch;
+    if (kind == LBC_U) {
+        ch = u_face_hybrid_current(
+            c1h[k], c2h[k], mub2d, mup, j, i, mny, mnx);
+        if (has_msf)
+            ch = __fdiv_rn(ch, msfu[(size_t)j*nx + i]);
+        out[tid] = __fmul_rn(ch, target[tid]);
+        return;
+    }
+    if (kind == LBC_V) {
+        ch = v_face_hybrid_current(
+            c1h[k], c2h[k], mub2d, mup, j, i, mny, mnx);
+        if (has_msf)
+            ch = __fdiv_rn(ch, msfv[(size_t)j*nx + i]);
+        out[tid] = __fmul_rn(ch, target[tid]);
+        return;
+    }
+    if (kind == LBC_W) {
+        ch = hybrid_point_current(
+            c1f[k], c2f[k], mub2d, mup, j, i, mnx);
+        if (has_msf)
+            ch = __fdiv_rn(ch, msft[(size_t)j*nx + i]);
+        out[tid] = __fmul_rn(ch, target[tid]);
+        return;
+    }
+    if (kind == LBC_PHI) {
+        ch = hybrid_point_current(
+            c1f[k], c2f[k], mub2d, mup, j, i, mnx);
+        out[tid] = __fmul_rn(ch, target[tid]);
+        return;
+    }
+    ch = hybrid_point_current(
+        c1h[k], c2h[k], mub2d, mup, j, i, mnx);
+    real value = target[tid];
+    if (kind == LBC_THETA) {
+        size_t h = thb_3d ? I3(k, j, i, mny, mnx) : (size_t)k;
+        value = __fsub_rn(__fadd_rn(thb[h], value), 300.0f);
+    }
+    out[tid] = __fmul_rn(ch, value);
+}
+
+// Boundary interpolation reads only this child frame. The existing ring
+// enumerator gives each corner one writer and retains physical coordinates.
+extern "C" __global__
+void couple_nest_field_frame(
+    const real* __restrict__ target,
+    const real* __restrict__ mub2d,
+    const real* __restrict__ mup,
+    const real* __restrict__ thb,
+    const real* __restrict__ c1h,
+    const real* __restrict__ c2h,
+    const real* __restrict__ c1f,
+    const real* __restrict__ c2f,
+    const real* __restrict__ msft,
+    const real* __restrict__ msfu,
+    const real* __restrict__ msfv,
+    real* __restrict__ out,
+    int has_msf, int thb_3d, int kind,
+    int nz, int ny, int nx, int mny, int mnx,
+    int width, int points)
+{
+    int tid = blockIdx.x*blockDim.x + threadIdx.x;
+    if (tid >= nz*points) return;
+    int k = tid/points;
+    int j, i, distance;
+    if (!frame_point(tid - k*points, ny, nx, width, &j, &i, &distance)) return;
+    tid = I3(k, j, i, ny, nx);
+    if (kind == LBC_MU) {
+        out[tid] = target[tid];
+        return;
+    }
+    real ch;
+    if (kind == LBC_U) {
+        ch = u_face_hybrid_current(
+            c1h[k], c2h[k], mub2d, mup, j, i, mny, mnx);
+        if (has_msf)
+            ch = __fdiv_rn(ch, msfu[(size_t)j*nx + i]);
+        out[tid] = __fmul_rn(ch, target[tid]);
+        return;
+    }
+    if (kind == LBC_V) {
+        ch = v_face_hybrid_current(
+            c1h[k], c2h[k], mub2d, mup, j, i, mny, mnx);
+        if (has_msf)
+            ch = __fdiv_rn(ch, msfv[(size_t)j*nx + i]);
+        out[tid] = __fmul_rn(ch, target[tid]);
+        return;
+    }
+    if (kind == LBC_W) {
+        ch = hybrid_point_current(
+            c1f[k], c2f[k], mub2d, mup, j, i, mnx);
+        if (has_msf)
+            ch = __fdiv_rn(ch, msft[(size_t)j*nx + i]);
+        out[tid] = __fmul_rn(ch, target[tid]);
+        return;
+    }
+    if (kind == LBC_PHI) {
+        ch = hybrid_point_current(
+            c1f[k], c2f[k], mub2d, mup, j, i, mnx);
+        out[tid] = __fmul_rn(ch, target[tid]);
+        return;
+    }
+    ch = hybrid_point_current(
+        c1h[k], c2h[k], mub2d, mup, j, i, mnx);
+    real value = target[tid];
+    if (kind == LBC_THETA) {
+        size_t h = thb_3d ? I3(k, j, i, mny, mnx) : (size_t)k;
+        value = __fsub_rn(__fadd_rn(thb[h], value), 300.0f);
+    }
+    out[tid] = __fmul_rn(ch, value);
+}
+
 // Child-to-parent feedback inverse. copy_fcn has already written the
 // restricted coupled values into the parent-shaped `coupled` buffer and MU
 // has already been restricted in the live parent. Only the registered

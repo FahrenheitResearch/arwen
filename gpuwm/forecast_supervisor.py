@@ -21,11 +21,24 @@ STOP_GRACE_SECONDS = 10.0
 
 
 class ForecastWatchdog:
-    def __init__(self, command):
+    def __init__(self, command, *, clock=None, utc_clock=None):
         # Preparation has no deadline, as gpuwm run has none by default: a
         # first run's kernel compilation and a large restore have no
         # measured price to bound them with.
         self.path = Path(command[command.index("--outdir") + 1]).resolve() / supervisor.HEARTBEAT_NAME
+        # A forecast bound to a chained head waits on that head's producer;
+        # its heartbeat carries the slowest forcing-time build, which sizes
+        # the silence limit of a waiting record.
+        self.producer = None
+        if "--prepared-root" in command:
+            from gpuwm.ingest.boundary_stream import PRODUCER_NAME, stream_dir
+
+            self.producer = stream_dir(Path(
+                command[command.index("--prepared-root") + 1])) / PRODUCER_NAME
+        # Read through the module at each call (``None``), so the clock a
+        # caller patches onto ``time`` is the one the watchdog reads.
+        self._clock = clock
+        self._utc_clock = utc_clock
         self.run_id = str(uuid.uuid4())
         self.started_at = supervisor.utc_now()
         config = (Path(command[command.index("--experiment-config") + 1])
@@ -39,12 +52,24 @@ class ForecastWatchdog:
                     "GPUWM_FORECAST_CONFIG_DIGEST": self.digest}
         self.command = [command[0], "-m", __name__, *command[2:]]
         self.last = None
-        self.last_signal = time.monotonic()
+        self.last_signal = self._now()
         self.history = supervisor.RollingStepWall()
         self.worker_pid = None
 
+    def _slowest_build_seconds(self):
+        if self.producer is None:
+            return None
+        try:
+            beat = json.loads(self.producer.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return beat.get("slowest_build_seconds") if isinstance(beat, dict) else None
+
+    def _now(self):
+        return time.monotonic() if self._clock is None else self._clock()
+
     def check(self, pid):
-        now = time.monotonic()
+        now = self._now()
         try:
             current = supervisor.read_heartbeat(self.path)
         except (OSError, ValueError):
@@ -75,6 +100,15 @@ class ForecastWatchdog:
             return None
         if status.startswith("preparing:"):
             return None
+        if status.startswith(supervisor.WAITING_PREFIX):
+            # A seam wait is timed by its own bound, never by the step
+            # bound: waits on a posting source last minutes, and before
+            # this record existed the watchdog stopped a forecast waiting
+            # on a lead that was on schedule.
+            return supervisor.waiting_stop_reason(
+                self.last, silent_seconds=now - self.last_signal,
+                slowest_build_seconds=self._slowest_build_seconds(),
+                now=None if self._utc_clock is None else self._utc_clock())
         # A write between two steps (``writing:``) is timed by the bytes it
         # declares, as finalization is: the step bound alone stopped a
         # finished 1132x906x55 streamed run while it wrote its last frame.
@@ -96,7 +130,7 @@ class ForecastWatchdog:
     def failed(self):
         if self.last is not None:
             supervisor.write_heartbeat(self.path, dataclasses.replace(
-                self.last, status="failed", work_bytes=None,
+                self.last, status="failed", work_bytes=None, wait=None,
                 updated_at_utc=supervisor.utc_now()))
 
     def terminate(self, process):
@@ -127,7 +161,7 @@ class ForecastHeartbeat(supervisor.RuntimeHeartbeat):
     #: The outer step of this process's first step beat, once published.
     entry_step = None
 
-    def _write(self, status, *, work_bytes=None):
+    def _write(self, status, *, work_bytes=None, wait=None):
         # A process's first step beat announces entry, not completed work:
         # step 0 on a cold start, the checkpoint's step on a restart. The
         # kernel compilation inside the step after it is still preparation,
@@ -137,7 +171,13 @@ class ForecastHeartbeat(supervisor.RuntimeHeartbeat):
                 self.entry_step = self.last_step
             if self.last_step <= self.entry_step:
                 status = "preparing:first-step"
-        super()._write(status, work_bytes=work_bytes)
+        super()._write(status, work_bytes=work_bytes, wait=wait)
+
+    def restarting(self, reason):
+        # A new attempt enters again: its first step beat is entry, as the
+        # process's first one was.
+        self.entry_step = None
+        super().restarting(reason)
 
 
 def main(argv=None):

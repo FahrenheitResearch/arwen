@@ -54,6 +54,24 @@ ROOT_DIMS = (200, 160)
 CHILD_DIMS = (160, 160)
 ROOT_DX_M = 12000.0
 RATIO = 4
+
+
+def _default_profile(forcing_source: str) -> str | None:
+    """The suite this setup binds with none named, at its finest grid.
+
+    The row `gpuwm domain` binds
+    (:func:`gpuwm.domain_wizard.resolved_physics_profile`), read at the
+    following nest's spacing for the two domains every setup authors, so
+    a nest that ever reaches below 1 km binds the sub-km suite as every
+    other door does.
+    """
+
+    from gpuwm import domain_wizard as dw
+
+    return dw.resolved_physics_profile(
+        forcing_source, None, finest_dx_m=ROOT_DX_M / RATIO, domains=2)
+
+
 #: The preset nest measured in the unit a nest is actually sized in: whole
 #: PARENT cells.  A following nest is square and registers on whole parent
 #: cells, so every size this door can choose is ``RATIO`` times an even
@@ -280,7 +298,7 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
     hints = fetch_hints(source=forcing_source, moment=moment, hours=hours,
                         projection=projection, dims=tuple(dims[0]),
                         dx_m=ROOT_DX_M, member=member, start_hour=start_hour)
-    profile = dw.resolved_physics_profile(forcing_source, None)
+    profile = _default_profile(forcing_source)
     text = dw.render_config(
         name=_config_name(adapter, name),
         start_time=start_time, hours=hours, projection=projection,
@@ -333,7 +351,8 @@ def configuration_text(*, cycle: str, point: tuple[float, float], hours: int = 6
     return text, experiment
 
 
-def _forcing_interval(forcing_source: str) -> float:
+def _forcing_interval(forcing_source: str, *, cycle=None, start_hour=0,
+                      hours=None) -> float:
     """The selected source's own boundary cadence, in seconds.
 
     An INGEST OPERAND, not a label: it sets the lateral-boundary store
@@ -342,9 +361,30 @@ def _forcing_interval(forcing_source: str) -> float:
     candidate on this door is priced with.  Read from the registry row
     rather than written down here, which is why a six-hourly source is
     priced as six-hourly without a line of its own.
+
+    With the window (``cycle``, ``start_hour``, ``hours``) it is the
+    spacing the fetch table takes (:func:`gpuwm.cyclone_sources.
+    window_cadence_hours`) where the cycle's ladder coarsens inside the
+    window: a 240 h IFS setup downloads 6-hourly files, and a namelist
+    or a price at the usual 3 h would describe files that never arrive.
     """
-    from gpuwm.cyclone_sources import source_adapter
-    return float(source_adapter(forcing_source).forcing_interval_seconds)
+    from gpuwm.cyclone_sources import source_adapter, window_cadence_hours
+    interval = float(source_adapter(forcing_source).forcing_interval_seconds)
+    if (type(hours) is not int or hours < 1 or type(start_hour) is not int
+            or start_hour < 0):
+        return interval
+    try:
+        moment = _cycle(cycle, forcing_source=forcing_source)
+    except ValueError:
+        # configuration_text refuses an unreadable cycle with its own
+        # words, after the checks that come before it on this door; the
+        # interval only prices a configuration that gets that far.
+        return interval
+    cadence = window_cadence_hours(forcing_source, moment=moment,
+                                   start_hour=start_hour, hours=hours)
+    if cadence is not None and cadence * 3600 > interval:
+        return float(cadence * 3600)
+    return interval
 
 
 def _nest_parent_cells(child_dims) -> int:
@@ -648,9 +688,11 @@ def _resident_alternative(intent, sizing, dims_of, scales_of):
             projection=tomllib.loads(_text)["projection"],
             source=forcing_source,
             name=intent["name"], root_dx_m=ROOT_DX_M,
-            profile=dw.resolved_physics_profile(forcing_source, None),
+            profile=_default_profile(forcing_source),
             tiles="off",
-            forcing_interval_seconds=_forcing_interval(forcing_source),
+            forcing_interval_seconds=_forcing_interval(
+                forcing_source, cycle=intent["cycle"],
+                start_hour=intent["start_hour"], hours=intent["hours"]),
             candidate_builder=lambda proposed: configuration_text(
                 **{**resident, "dimensions": proposed})[1],
             dimensions_builder=dims_of, candidate_scales=scales_of(exp),
@@ -914,7 +956,7 @@ def _unbudgeted_alternative(intent, *, sizing, operands):
             source=forcing_source,
             name=_config_name(source_adapter(forcing_source), plain["name"]),
             root_dx_m=ROOT_DX_M,
-            profile=dw.resolved_physics_profile(forcing_source, None),
+            profile=_default_profile(forcing_source),
             tiles=plain["tiles"],
             forcing_interval_seconds=operands["forcing_interval_seconds"],
             candidate_builder=lambda proposed: configuration_text(
@@ -978,30 +1020,35 @@ def _nest_budget_floor_refusal(floor_dims, *, budget: int, cost,
     registers on -- and what it actually costs on this card, measured by
     the same estimator that refused it rather than asserted.
 
-    WHAT THE FLOOR IS COMPARED AGAINST IS THE FIT TARGET, not the raw
-    budget: the admission stops short of the budget by
-    ``fit_headroom_bytes`` so nothing lands on the wall, and printing the
-    raw budget printed a number LARGER than the price beside a sentence
-    saying that price did not fit.  At a 5.0 GiB budget that read "prices
-    5141378237 bytes here, against a 5368709120 byte budget", 227 MB the
-    wrong way round, and a reader who raised the flag to just over the
-    printed price was refused again.
+    WHAT THE FLOOR IS COMPARED AGAINST IS THE BUDGET, the same number the
+    door compares the preset against without the flag
+    (:func:`_admitted_as_requested`), because the floor IS that layout.
+    It was the fit target -- the budget less ``fit_headroom_bytes`` --
+    while the flagless door used the budget, so on the band between the
+    two (5.25 to 5.475 GiB free on a 6 GiB card at the 1.13 margin) this
+    sentence said the card could not hold the preset nest and named a
+    smaller layout as the way out, and dropping the flag authored the
+    whole preset unchanged (A175).  Quoting the budget is safe from the
+    contradiction the fit target was once introduced to cure: that one
+    printed the budget while comparing against the target, so the
+    printed number sat above the price; here the printed number is the
+    one compared, so a floor the flat road refuses on card memory prices
+    above it.
 
-    AND THE FIT TARGET IS ONLY THE FLAT ROAD'S BOUND.  Fixing the above
-    fixed ``--tiles off`` alone: on the DEFAULT ``--tiles auto`` the tree
-    walk withholds the following nest's rebuild transient before it
-    compares anything, so it refuses against a SMALLER budget than the
-    fit target, and the same contradiction survived one road over -- at a
-    5.06 GiB budget the sentence printed a 5,161,476,948 byte target
-    above the 5,141,378,237 byte price and refused anyway, because the
-    number that bound was 5,139,501,921.  ``fit_bound``
-    (:func:`_tile_road_bound`) is that number where the tile road is what
-    refused, and it is quoted in place of the fit target whenever the two
-    differ, with the withholding that produced it and the walk's own way
-    out beside it.  The way out is re-aimed with it: "raise
-    --nest-budget-gib until its fit target clears what the floor prices"
-    is false advice on that road, where the target already cleared the
-    price and the run was refused anyway.
+    AND THE BUDGET IS ONLY THE FLAT ROAD'S BOUND.  On the DEFAULT
+    ``--tiles auto`` the tree walk withholds the following nest's rebuild
+    transient before it compares anything, so it refuses against a
+    SMALLER budget, and quoting the flat number there prints a figure
+    above the price beside a sentence saying the price did not fit -- at
+    a 5.06 GiB budget the flat road's number was 5,161,476,948 bytes
+    against a 5,141,378,237 byte price, and the number that bound was
+    5,139,501,921.  ``fit_bound`` (:func:`_tile_road_bound`) is that
+    number where the tile road is what refused, and it is quoted in place
+    of the flat one whenever the two differ, with the withholding that
+    produced it and the walk's own way out beside it.  The way out is
+    re-aimed with it: "raise --nest-budget-gib until it clears what the
+    floor prices" is false advice on that road, where the flat number
+    already cleared the price and the run was refused anyway.
 
     ``requested_bytes`` is what the caller asked for and is required on
     the card-bound branch, which states it.  It once had a ``None`` arm
@@ -1009,23 +1056,17 @@ def _nest_budget_floor_refusal(floor_dims, *, budget: int, cost,
     against {target}. the card is the bound"); no call site ever took it,
     so the arm is gone rather than being given a sentence of its own.
     """
-    from gpuwm import domain_wizard as dw
-
     priced = "" if cost is None else f", which prices {cost} bytes here"
     floor = (f"the floor is {floor_dims[1][0]}x{floor_dims[1][1]} "
              f"({_nest_parent_cells(floor_dims[1])} parent cells at ratio "
              f"{RATIO}){priced}")
-    headroom = dw.fit_headroom_bytes(budget)
-    whose = ("the {0} byte sizing budget this card's free memory leaves,"
-             if budget_bound == "card" else "a {0} byte budget")
-    target = (f"a {budget - headroom} byte fit target, which is "
-              f"{whose.format(budget)} less the {headroom} bytes of headroom "
-              "the admission leaves unspent so nothing lands on the wall")
-    aim = ("raise --nest-budget-gib until its fit target clears what the "
-           "floor prices")
+    target = (f"the {budget} byte sizing budget this card's free memory "
+              "leaves" if budget_bound == "card" else
+              f"a {budget} byte budget")
+    aim = "raise --nest-budget-gib until it clears what the floor prices"
     road_remedy = ""
     if (fit_bound is not None
-            and int(fit_bound["budget_bytes"]) != budget - headroom):
+            and int(fit_bound["budget_bytes"]) != budget):
         withheld = int(fit_bound.get("withheld_bytes") or 0)
         for_whom = fit_bound.get("withheld_for")
         held = ("" if not (withheld and for_whom) else
@@ -1033,12 +1074,12 @@ def _nest_budget_floor_refusal(floor_dims, *, budget: int, cost,
         target = (f"the {int(fit_bound['budget_bytes'])} byte admission "
                   "budget the tile road this run takes weighed it "
                   f"against{held}")
-        # AIMED AT THE NUMBER THAT BINDS, and the fit target is no
-        # longer printed beside it, so there is no second figure for a
+        # AIMED AT THE NUMBER THAT BINDS, and the flat road's budget is
+        # not printed beside it, so there is no second figure for a
         # reader to raise the flag against.  No derivation of the road's
         # budget from the flag is claimed: measured, it is this budget
-        # less the withholding and not less the headroom, which is a
-        # coincidence of one configuration.  What is claimed is that it
+        # less the withholding, which is a coincidence of one
+        # configuration.  What is claimed is that it
         # MOVES with the flag, which it does -- 5.045 GiB gives
         # 5,123,395,794 bytes and 5.06 GiB gives 5,139,501,921.
         aim = ("raise --nest-budget-gib until THAT budget clears what the "
@@ -1071,7 +1112,38 @@ def _nest_budget_floor_refusal(floor_dims, *, budget: int, cost,
             f"card's own available memory size the run{road_remedy}")
 
 
-def _size_nest_to_budget(intent, *, sizing, target_machine, operands,
+def _admitted_as_requested(exp, price, budget: int, cancelled=None):
+    """``(phases, refusal)`` for a layout judged AS REQUESTED; ``refusal``
+    is ``None`` when it is admitted.
+
+    A requested layout is admitted when the estimator prices it without a
+    memory refusal (the tile planner's tree road and the host wall raise
+    one) and its peak envelope is within ``budget``.  No fit headroom is
+    held back: the headroom is what a search leaves unspent when it GROWS
+    or shrinks a grid toward the budget, and a requested layout is
+    neither.  ONE test, asked by both doors of the same layout -- the
+    flagless door of the preset it was asked for, and the
+    ``--nest-budget-gib`` door of its floor, which is that preset.  They
+    were two tests, the floor's with the headroom, and on a card between
+    the two the flag refused the preset nest that dropping it authored
+    unchanged (A175).
+    """
+    from gpuwm import domain_wizard as dw
+
+    try:
+        phases = price(exp)
+    except dw.DomainFitError as error:
+        dw.check_fit_cancelled(cancelled)
+        if error.resource not in {"vram", "host", "memory"}:
+            raise
+        return error.phases, error
+    if phases.peak_envelope_bytes > budget:
+        return phases, dw.DomainFitError(phases.verdict(budget),
+                                         resource="vram", phases=phases)
+    return phases, None
+
+
+def _size_nest_to_budget(intent, *, sizing, target_machine, operands, price,
                          cancelled=None):
     """The largest square nest this budget holds, parent kept as it is.
 
@@ -1083,6 +1155,20 @@ def _size_nest_to_budget(intent, *, sizing, target_machine, operands,
     then reports.  The rungs are nest sizes rather than scale factors --
     square, whole even parent cells, the parent untouched -- and the
     largest that fits wins because the ladder is walked from the top.
+
+    THE FLOOR IS THE PRESET ITSELF, so when no rung clears the fit target
+    the floor is judged the way the door judges the preset without the
+    flag (:func:`_admitted_as_requested`): against the budget, with the
+    same estimator and the same machine.  Judged against the fit target
+    instead, the flag refused, on a card the flagless door filled with
+    the whole preset, the very layout that door authored (A175).  A floor
+    admitted that way still faces the bound the ladder asks of every
+    rung's parent, which the memory refusal kept it from reaching.
+
+    Returns ``(dimensions, searched)``: ``searched`` is True when the
+    ladder chose the nest, and so held the fit headroom back, and False
+    when the floor was admitted as requested, which holds none back.
+    The document's ``headroom_bytes`` says which.
     """
     from gpuwm import domain_wizard as dw
     from gpuwm.cyclone_sources import source_adapter
@@ -1092,24 +1178,41 @@ def _size_nest_to_budget(intent, *, sizing, target_machine, operands,
         **{**intent, "dimensions": floor_dims})
     projection = tomllib.loads(floor_text)["projection"]
     forcing_source = intent["forcing_source"]
-    dims, _exp = dw.fit_ladder(
-        ratios=(RATIO,), free_bytes=sizing.free_bytes,
-        vram_gib=sizing.vram_gib, device_profile=sizing.device_profile,
-        target_machine=target_machine, hours=intent["hours"],
-        start_time=(_cycle(intent["cycle"], forcing_source=forcing_source)
-                    + timedelta(hours=intent["start_hour"])),
-        projection=projection, source=forcing_source,
-        name=_config_name(source_adapter(forcing_source), intent["name"]),
-        root_dx_m=ROOT_DX_M,
-        profile=dw.resolved_physics_profile(forcing_source, None),
-        tiles=intent["tiles"],
-        forcing_interval_seconds=operands["forcing_interval_seconds"],
-        candidate_builder=lambda proposed: configuration_text(
-            **{**intent, "dimensions": proposed})[1],
-        dimensions_builder=lambda rung: _nest_dimensions(int(rung)),
-        candidate_scales=tuple(float(rung) for rung in _nest_ladder(floor_exp)),
-        layout_label="cyclone following nest", cancelled=cancelled)
-    return [list(pair) for pair in dims]
+    try:
+        dims, _exp = dw.fit_ladder(
+            ratios=(RATIO,), free_bytes=sizing.free_bytes,
+            vram_gib=sizing.vram_gib, device_profile=sizing.device_profile,
+            target_machine=target_machine, hours=intent["hours"],
+            start_time=(_cycle(intent["cycle"], forcing_source=forcing_source)
+                        + timedelta(hours=intent["start_hour"])),
+            projection=projection, source=forcing_source,
+            name=_config_name(source_adapter(forcing_source), intent["name"]),
+            root_dx_m=ROOT_DX_M,
+            profile=_default_profile(forcing_source),
+            tiles=intent["tiles"],
+            forcing_interval_seconds=operands["forcing_interval_seconds"],
+            candidate_builder=lambda proposed: configuration_text(
+                **{**intent, "dimensions": proposed})[1],
+            dimensions_builder=lambda rung: _nest_dimensions(int(rung)),
+            candidate_scales=tuple(float(rung) for rung in _nest_ladder(floor_exp)),
+            layout_label="cyclone following nest", cancelled=cancelled)
+    except dw.DomainFitError as error:
+        if error.resource not in {"vram", "host", "memory"}:
+            raise
+        _phases, refusal = _admitted_as_requested(
+            floor_exp, price, dw.sizing_budget_bytes(floor_exp, **operands),
+            cancelled)
+        if refusal is not None:
+            raise refusal
+        # Every rung shares this parent, so this is the bound the ladder
+        # would have named had memory let the floor reach it.
+        bound = dw.point_request_bound(projection, *ROOT_DIMS, ROOT_DX_M)
+        if bound is not None:
+            raise dw.DomainFitError(
+                f"{bound[1]}; {dw._exhausted_point_bound_remedy(bound[0])}",
+                resource="extent") from error
+        return [list(pair) for pair in floor_dims], False
+    return [list(pair) for pair in dims], True
 
 
 def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machine=None,
@@ -1130,7 +1233,8 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
     dw.check_fit_cancelled(cancelled)
     adapter = source_adapter(forcing_source)
     forcing_source = adapter.source_id
-    interval_s = _forcing_interval(forcing_source)
+    interval_s = _forcing_interval(forcing_source, cycle=cycle,
+                                   start_hour=start_hour, hours=hours)
     # ONE intent, carried by every re-price on this door -- the requested
     # layout, each rung of the ladder, the unreduced admission probe and
     # the resident probe.  The source and member live in it for the same
@@ -1215,6 +1319,9 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
         dw.check_fit_cancelled(cancelled)
         return phases
 
+    # Whether a search chose the layout, and so held the fit headroom back;
+    # the reduction road below is the other search.
+    nest_searched = False
     if nest_budget_gib is not None:
         # The nest is chosen FIRST and the chosen layout is then the
         # requested one: everything downstream -- the admission, the
@@ -1222,9 +1329,9 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
         # of the intent, so nothing here has a second idea of what was
         # asked for.
         try:
-            chosen = _size_nest_to_budget(
+            chosen, nest_searched = _size_nest_to_budget(
                 intent, sizing=sizing, target_machine=target_machine,
-                operands=operands, cancelled=cancelled)
+                operands=operands, price=price, cancelled=cancelled)
         except dw.DomainFitError as error:
             if error.resource not in {"vram", "host", "memory"}:
                 raise
@@ -1285,17 +1392,8 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
     # itself (see below) as well as of every rung the fit tries.
     request_bound = dw.point_request_bound(
         tomllib.loads(original_text)["projection"], *ROOT_DIMS, ROOT_DX_M)
-    refusal = None
-    try:
-        phases = price(experiment)
-        if phases.peak_envelope_bytes > budget:
-            refusal = dw.DomainFitError(phases.verdict(budget), resource="vram", phases=phases)
-    except dw.DomainFitError as error:
-        dw.check_fit_cancelled(cancelled)
-        if error.resource not in {"vram", "host", "memory"}:
-            raise
-        refusal = error
-        phases = error.phases
+    phases, refusal = _admitted_as_requested(experiment, price, budget,
+                                             cancelled)
 
     if refusal is None and request_bound is not None:
         # The card is not the only thing that decides how big a domain
@@ -1408,7 +1506,7 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
                 projection=tomllib.loads(original_text)["projection"],
                 source=forcing_source, name=_config_name(adapter, name),
                 root_dx_m=ROOT_DX_M,
-                profile=dw.resolved_physics_profile(forcing_source, None),
+                profile=_default_profile(forcing_source),
                 tiles=tiles, forcing_interval_seconds=interval_s,
                 candidate_builder=build, dimensions_builder=dims_of,
                 candidate_scales=scales_of(experiment),
@@ -1541,7 +1639,14 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
             "budget_gib": nest_budget_gib,
             "budget_bytes": budget if nest_budget_gib is not None else None,
             "budget_bound_by": budget_bound,
-            "headroom_bytes": dw.fit_headroom_bytes(budget),
+            # What the admission of THIS layout held back: the fit headroom
+            # when a search grew or shrank it, nothing when it was admitted
+            # as requested -- the preset without the flag, or the floor
+            # with it, which A175 made the same test.  It was the headroom
+            # whatever chose the layout, so a preset admitted inside it
+            # claimed bytes unspent that the envelope had spent.
+            "headroom_bytes": (dw.fit_headroom_bytes(budget)
+                               if reduced or nest_searched else 0),
             "peak_envelope_bytes": phases.peak_envelope_bytes,
             "sized_to_budget": nest_budget_gib is not None,
         },
@@ -1549,7 +1654,7 @@ def plan_cyclone(*, cycle: str, point: tuple[float, float], sizing, target_machi
         # document and the launch cannot disagree about whether the nest
         # this setup authors can be integrated on the selected chain.
         "follow_statics": moving_nest_note(forcing_source),
-        "profile": dw.resolved_physics_profile(forcing_source, None),
+        "profile": _default_profile(forcing_source),
         "streaming": _streaming_entry(phases, tiles, budget),
         "memory": {"peak_envelope_bytes": phases.peak_envelope_bytes, "budget_bytes": budget,
                    "binding_phase": phases.binding_phase, "free_bytes": sizing.free_bytes,

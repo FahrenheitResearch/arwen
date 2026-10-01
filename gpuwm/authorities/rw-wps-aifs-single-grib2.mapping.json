@@ -187,19 +187,10 @@
       }
     },
     "terrain_height": {
-      "selectors": [
-        {
-          "format": "grib2",
-          "discipline": 0,
-          "category": 3,
-          "parameter": 4,
-          "level_type": 1
-        }
-      ],
+      "provider": "composition_bound",
       "units": {
-        "source": "m2 s-2",
-        "target": "m",
-        "scale": 0.10197162129779283
+        "source": "m",
+        "target": "m"
       },
       "source_axes": ["y", "x"],
       "target_axes": ["y", "x"],
@@ -339,15 +330,7 @@
       }
     },
     "land_fraction": {
-      "selectors": [
-        {
-          "format": "grib2",
-          "discipline": 2,
-          "category": 0,
-          "parameter": 0,
-          "level_type": 1
-        }
-      ],
+      "provider": "composition_bound",
       "units": {
         "source": "1",
         "target": "1"
@@ -358,8 +341,7 @@
       "staggering": "none",
       "missing": {
         "kind": "reject"
-      },
-      "time_binding": "cycle_invariant"
+      }
     },
     "soil_temperature": {
       "selectors": [
@@ -453,6 +435,7 @@
     "target_vertical_levels": 49,
     "soil_layer_count": 2,
     "boundary_interval_seconds": 21600,
+    "accept_boundary_interval_multiples": true,
     "required_fields": [
       {"name": "air_temperature", "axes": ["vertical", "y", "x"], "location": "mass", "target_units": "K"},
       {"name": "specific_humidity", "axes": ["vertical", "y", "x"], "location": "mass", "target_units": "kg kg-1"},

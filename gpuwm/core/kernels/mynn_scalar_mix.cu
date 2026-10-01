@@ -75,11 +75,22 @@ __device__ __forceinline__ real smx_max2(real a, real b)
 
 // module_bl_mynn.F:5422 tridiag2, verbatim from the frozen unit's
 // mynn_tridiag2_column.  x may alias d; cpw/dpw may not alias anything.
+// Column views address level-major storage without changing arithmetic.
+template<class T> struct MynnColumn {
+    T* p;
+    size_t stride;
+    __device__ operator MynnColumn<const T>() const { return {p, stride}; }
+    __device__ T& operator[](size_t i) const { return p[i * stride]; }
+    __device__ MynnColumn operator+(size_t i) const {
+        return {p + i * stride, stride};
+    }
+};
+
 __device__ void smx_tridiag2_column(
-    const real* __restrict__ a, const real* __restrict__ b,
-    const real* __restrict__ c, const real* __restrict__ d,
-    real* __restrict__ cpw, real* __restrict__ dpw,
-    real* __restrict__ x, int n)
+    MynnColumn<const real> a, MynnColumn<const real> b,
+    MynnColumn<const real> c, MynnColumn<const real> d,
+    MynnColumn<real> cpw, MynnColumn<real> dpw,
+    MynnColumn<real> x, int n)
 {
     cpw[0] = SMX_DIV(c[0], b[0]);
     dpw[0] = SMX_DIV(d[0], b[0]);
@@ -120,29 +131,38 @@ __device__ void smx_tridiag2_column(
 // ===========================================================================
 extern "C" __global__
 void mynn_mix_scalar_columns(
-    const real* __restrict__ qn,      // (ncol, nz)
-    const real* __restrict__ dz,      // (ncol, nz)
-    const real* __restrict__ rho,     // (ncol, nz)
-    const real* __restrict__ dfh,     // (ncol, nz)
-    const real* __restrict__ s_aw,    // (ncol, nz+1)
-    const real* __restrict__ s_awqn,  // (ncol, nz+1)
+    const real* __restrict__ qn_raw,      // (ncol, nz)
+    const real* __restrict__ dz_raw,      // (ncol, nz)
+    const real* __restrict__ rho_raw,     // (ncol, nz)
+    const real* __restrict__ dfh_raw,     // (ncol, nz)
+    const real* __restrict__ s_aw_raw,    // (ncol, nz+1)
+    const real* __restrict__ s_awqn_raw,  // (ncol, nz+1)
     const real* __restrict__ delt_c,  // (ncol,)
-    real* __restrict__ qn2,           // (ncol, nz)
-    real* __restrict__ dqn,           // (ncol, nz)
-    real* __restrict__ scratch,       // (ncol, SMX_SOLVE_SCRATCH_FLOATS(nz))
+    real* __restrict__ qn2_raw,           // (ncol, nz)
+    real* __restrict__ dqn_raw,           // (ncol, nz)
+    real* __restrict__ scratch_raw,       // (ncol, SMX_SOLVE_SCRATCH_FLOATS(nz))
     int nz, int ncol)
 {
     const int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
-    const size_t base = (size_t)column * nz;
-    const size_t ibase = (size_t)column * (nz + 1);
-    real* khdz = scratch + (size_t)column * SMX_SOLVE_SCRATCH_FLOATS(nz);
-    real* a = khdz + (nz + 1);
-    real* b = a + nz;
-    real* c = b + nz;
-    real* d = c + nz;
-    real* cpw = d + nz;
-    real* dpw = cpw + nz;
+    MynnColumn<const real> qn = {qn_raw + column, (size_t)ncol};
+    MynnColumn<const real> dz = {dz_raw + column, (size_t)ncol};
+    MynnColumn<const real> rho = {rho_raw + column, (size_t)ncol};
+    MynnColumn<const real> dfh = {dfh_raw + column, (size_t)ncol};
+    MynnColumn<const real> s_aw = {s_aw_raw + column, (size_t)ncol};
+    MynnColumn<const real> s_awqn = {s_awqn_raw + column, (size_t)ncol};
+    MynnColumn<real> qn2 = {qn2_raw + column, (size_t)ncol};
+    MynnColumn<real> dqn = {dqn_raw + column, (size_t)ncol};
+    MynnColumn<real> scratch = {scratch_raw + column, (size_t)ncol};
+    const size_t base = 0;
+    const size_t ibase = 0;
+    MynnColumn<real> khdz = scratch + 0;
+    MynnColumn<real> a = khdz + (nz + 1);
+    MynnColumn<real> b = a + nz;
+    MynnColumn<real> c = b + nz;
+    MynnColumn<real> d = c + nz;
+    MynnColumn<real> cpw = d + nz;
+    MynnColumn<real> dpw = cpw + nz;
     const real delt = delt_c[column];
 
     // module_bl_mynn.F:4139-4157 rhoz/khdz, :4163-4169 stability floors —
@@ -235,27 +255,36 @@ void mynn_mix_scalar_columns(
 // ===========================================================================
 extern "C" __global__
 void mynn_dmp_qn_flux_columns(
-    const real* __restrict__ qn,        // (ncol, nz)
-    const real* __restrict__ dz,        // (ncol, nz)
-    const real* __restrict__ zw,        // (ncol, nz+1)
-    const real* __restrict__ up_w,      // (ncol, (nz+1)*nup) k-major
-    const real* __restrict__ up_a,      // (ncol, (nz+1)*nup) PRE-limiter
-    const real* __restrict__ ent,       // (ncol, nz*nup) k-major
-    const real* __restrict__ rhoz,      // (ncol, nz)
+    const real* __restrict__ qn_raw,        // (ncol, nz)
+    const real* __restrict__ dz_raw,        // (ncol, nz)
+    const real* __restrict__ zw_raw,        // (ncol, nz+1)
+    const real* __restrict__ up_w_raw,      // (ncol, (nz+1)*nup) k-major
+    const real* __restrict__ up_a_raw,      // (ncol, (nz+1)*nup) PRE-limiter
+    const real* __restrict__ ent_raw,       // (ncol, nz*nup) k-major
+    const real* __restrict__ rhoz_raw,      // (ncol, nz)
     const real* __restrict__ psig_w,    // (ncol,)
     const int*  __restrict__ plume_active,        // (ncol,) 0/1
     const real* __restrict__ limiter_adjustment,  // (ncol,)
-    real* __restrict__ s_awqn,          // (ncol, nz+1)
-    real* __restrict__ up_qn_scratch,   // (ncol, (nz+1)*nup) k-major
+    real* __restrict__ s_awqn_raw,          // (ncol, nz+1)
+    real* __restrict__ up_qn_scratch_raw,   // (ncol, (nz+1)*nup) k-major
     int nz, int nup, int ncol)
 {
     const int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
-    const size_t base = (size_t)column * nz;
-    const size_t ibase = (size_t)column * (nz + 1);
-    const size_t pbase = (size_t)column * (size_t)(nz + 1) * nup;
-    const size_t ebase = (size_t)column * (size_t)nz * nup;
-    real* up_qn = up_qn_scratch + pbase;
+    MynnColumn<const real> qn = {qn_raw + column, (size_t)ncol};
+    MynnColumn<const real> dz = {dz_raw + column, (size_t)ncol};
+    MynnColumn<const real> zw = {zw_raw + column, (size_t)ncol};
+    MynnColumn<const real> up_w = {up_w_raw + column, (size_t)ncol};
+    MynnColumn<const real> up_a = {up_a_raw + column, (size_t)ncol};
+    MynnColumn<const real> ent = {ent_raw + column, (size_t)ncol};
+    MynnColumn<const real> rhoz = {rhoz_raw + column, (size_t)ncol};
+    MynnColumn<real> s_awqn = {s_awqn_raw + column, (size_t)ncol};
+    MynnColumn<real> up_qn_scratch = {up_qn_scratch_raw + column, (size_t)ncol};
+    const size_t base = 0;
+    const size_t ibase = 0;
+    const size_t pbase = 0;
+    const size_t ebase = 0;
+    MynnColumn<real> up_qn = up_qn_scratch + pbase;
 
     for (int k = 0; k <= nz; ++k) s_awqn[ibase + k] = 0.0f;
     if (plume_active[column] == 0) return;

@@ -164,6 +164,93 @@ def test_nomads_jobs_never_exceed_the_politeness_cap():
     assert receipt["host_caps"] == {"nomads.ncep.noaa.gov": 2}
 
 
+def test_a_capped_hosts_files_start_in_submission_order():
+    """A worker that frees a capped host's slot never takes it past an
+    earlier file of that host still waiting for it.
+
+    The breakage this prevents, measured live on a GEFS window fetched as
+    it posted (2026-10-01 06Z, two objects per lead on NOMADS, cap 2, six
+    workers): each worker that finished took the next queued file and got
+    the slot back before the waiting ones woke, so f003 and f006 moved
+    after f024 and the forecast, which needs f000 and f003, could start
+    only once the whole window was in.
+    """
+
+    started = []
+    lock = threading.Lock()
+    url = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gens/prod/x"
+
+    def make(index):
+        def action():
+            with lock:
+                started.append(index)
+            time.sleep(0.02)
+            return _entry(f"n{index}")
+        return action
+
+    jobs = [_job(f"n{i}", make(i), url=url) for i in range(18)]
+    entries, _receipt = fetch_pool.run_transfers(jobs, workers=6)
+    assert started == list(range(18))
+    assert [entry["name"] for entry in entries] == [f"n{i}" for i in range(18)]
+
+
+def test_a_file_waiting_inside_its_slot_keeps_earlier_files_first():
+    """A file whose action waits (the as-posted gate, a lead not posted
+    yet) holds its slot, and the files behind it wait their turn; the
+    ones ahead of it still go first."""
+
+    started = []
+    lock = threading.Lock()
+    posted = threading.Event()
+    url = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gens/prod/y"
+
+    def make(index):
+        def action():
+            with lock:
+                started.append(index)
+            if index >= 4:
+                # Lead 2 (files 4 and 5) and later have not posted yet.
+                posted.wait(timeout=10.0)
+            time.sleep(0.01)
+            return _entry(f"p{index}")
+        return action
+
+    jobs = [_job(f"p{i}", make(i), url=url) for i in range(10)]
+    timer = threading.Timer(0.3, posted.set)
+    timer.start()
+    try:
+        fetch_pool.run_transfers(jobs, workers=6)
+    finally:
+        timer.cancel()
+    assert started == list(range(10))
+
+
+def test_a_stop_ends_files_still_waiting_for_their_turn():
+    """Files queued behind a capped host's turn are cancelled by another
+    file's failure instead of waiting for a turn that never comes."""
+
+    ran = []
+    lock = threading.Lock()
+    url = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gens/prod/z"
+
+    def make(index):
+        def action():
+            with lock:
+                ran.append(index)
+            if index == 1:
+                raise ValueError("p001 did not verify")
+            time.sleep(0.2)
+            return _entry(f"q{index}")
+        return action
+
+    jobs = [_job(f"q{i}", make(i), url=url) for i in range(12)]
+    began = time.perf_counter()
+    with pytest.raises(ValueError, match="p001 did not verify"):
+        fetch_pool.run_transfers(jobs, workers=6)
+    assert time.perf_counter() - began < 5.0
+    assert set(ran) <= {0, 1, 2, 3}
+
+
 def test_other_hosts_keep_the_requested_worker_count():
     gauge = _Gauge()
     url = "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.t00z.f000"
@@ -180,11 +267,21 @@ def test_other_hosts_keep_the_requested_worker_count():
 
 def test_a_failed_file_fails_the_request_and_keeps_the_refusal_text():
     admitted = []
+    landed = threading.Event()
 
     def good(name):
-        return lambda: _entry(name)
+        def action():
+            if name == "f003":
+                landed.set()
+            return _entry(name)
+        return action
 
     def bad():
+        # f006 fails once f003 has started, the order this test pins: a
+        # failure before f003 began would cancel it unstarted (measured
+        # on a loaded node-4: 7 of 60 runs), which is the pool's rule for
+        # a file not yet started, not the prefix asserted here.
+        landed.wait(timeout=10.0)
         raise ValueError("downloaded f006 carries 3 GRIB2 messages, "
                          "expected 124")
 

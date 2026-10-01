@@ -413,7 +413,7 @@ def test_batched_scratch_allocates_once_and_zeroes_only_the_named_slots():
     """The workspace hoist on the card: one allocation per slot for a
     whole multi-chunk call, none on the next call at the same chunk, and
     the bytes memset per call are exactly the read-before-write slots
-    sw_batched_memset_bytes prices (wkl and the abort flag per chunk).
+    sw_batched_memset_bytes prices (wkl per chunk, abort flag per call).
     Bit identity across the reuse is test_batched_vs_percolumn's job."""
     groups = _deck_groups()
     cs = max(groups.values(), key=len)
@@ -439,7 +439,7 @@ def test_batched_scratch_allocates_once_and_zeroes_only_the_named_slots():
     priced = sw.sw_batched_memset_bytes(len(cs), nlay, chunk)
     # The two clean-sky slabs are zeroed outside the scratch.
     assert zeroed == priced - 2 * len(cs) * (nlay + 1) * 4
-    assert zeroed == nchunks * 4 + len(cs) * nlay * sw.MXMOL * 4
+    assert zeroed == 4 + len(cs) * nlay * sw.MXMOL * 4
     # Second call at the same chunk: the slots are reused, nothing new.
     allocs1 = scratch.allocations
     _run_batched(cs, ins, chunk=chunk)
@@ -591,3 +591,16 @@ def test_batched_wide_determinism():
                 assert_bits(f"wide[{len(cs)}x{rep}]/{k}", out[k],
                             want[k])
         del ins, want, out
+
+
+@pytest.mark.parametrize("nlayers", [1, 2, 60, 121])
+def test_laysolfr_integer_scan_last_match_and_wrap(nlayers):
+    c = cuda()
+    rng = np.random.default_rng(3901)
+    jp = rng.integers(1, 60, (17, nlayers), dtype=np.int32)
+    trop = rng.integers(0, nlayers, 17, dtype=np.int32)
+    want = np.stack([c._laysolfr(int(trop[i]), nlayers, jp[i])
+                     for i in range(len(trop))])
+    for _ in range(DUAL_RUNS):
+        got = cp.asnumpy(c._laysolfr_batch_device(cp.asarray(jp), cp.asarray(trop), nlayers))
+        np.testing.assert_array_equal(got, want)

@@ -96,6 +96,8 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 
+from gpuwm.core.noahmp_slab_libm import copy_slab_slots, split_slab_slots
+
 import numpy as np
 
 from gpuwm.core.kernels import get_kernel
@@ -412,6 +414,7 @@ def _error_slab(cp, s, n, where, *, prcp, fsh) -> dict:
     it is held to ``noahmp-sflx-error.csv`` at ``max_ulp 0`` on all sixteen
     oracle cases.  Nothing about ERROR is re-expressed here.
     """
+    _slots_sc = []
     slots = _slot_table("SC_", "NSC")
     outs = _slot_table("OU_", "NOUT")
 
@@ -438,7 +441,7 @@ def _error_slab(cp, s, n, where, *, prcp, fsh) -> dict:
     sc = cp.empty((n, len(slots)), dtype=cp.float32)
     for name, slot in slots.items():
         try:
-            sc[:, slot] = values[name]
+            _slots_sc.append((slot, values[name]))
         except KeyError:
             raise AssertionError(
                 f"{where}: {_ERROR_UNIT}.cu declares SC_{name.upper()} and "
@@ -455,6 +458,7 @@ def _error_slab(cp, s, n, where, *, prcp, fsh) -> dict:
 
     out = cp.zeros((n, len(outs)), dtype=cp.float32)
     status = cp.zeros(n, dtype=cp.int32)
+    copy_slab_slots(sc, _slots_sc)
     if n:
         # A grid of zero blocks is a CUDA configuration error, so an empty
         # tile skips the launch and still answers with well-formed arrays.
@@ -464,8 +468,7 @@ def _error_slab(cp, s, n, where, *, prcp, fsh) -> dict:
              np.int32(n)))
 
     _raise_for_status(cp, status, out, outs)
-    return {name: cp.ascontiguousarray(out[:, slot])
-            for name, slot in outs.items()}
+    return split_slab_slots(out, {name: (slot, 1) for name, slot in outs.items()})
 
 
 def _raise_for_status(cp, status, out, outs) -> None:

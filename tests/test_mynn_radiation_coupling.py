@@ -78,7 +78,18 @@ def test_every_non_mynn_radiation_path_is_byte_identical(
 
     # Tie the identity assertion to each production adapter, rather than
     # merely exercising a stand-alone helper under three descriptive labels.
-    assert "merge_mynn_bl_clouds(" in inspect.getsource(adapter.__call__)
+    source = inspect.getsource(adapter.__call__)
+    if adapter is RRTMGLegacyRadiation:
+        # The legacy adapter runs this seam on the device, behind the same
+        # gate: MYNN fields are read only when mynn_bl_cloud_active holds,
+        # and the merge is the rla_mynn kernel, which
+        # tests/test_rrtmg_legacy_device_glue.py holds bitwise to
+        # merge_mynn_bl_clouds + mynn_bl_cloud_supplied + unsized_mynn_radii.
+        assert "active_bl = mynn_bl_cloud_active(" in source
+        assert '"rla_mynn"' in source
+        assert "if active_bl:" in source
+    else:
+        assert "merge_mynn_bl_clouds(" in source
     shape = (2, 3)
     qc = np.arange(6, dtype=np.float32).reshape(shape) * np.float32(1.0e-7)
     qi = qc * np.float32(1.0e-2)
@@ -152,7 +163,7 @@ def test_nssl_legacy_mass_radius_and_cloud_fraction_match_wrf():
     adapter_source = inspect.getsource(RRTMGLegacyRadiation.__call__)
     assert ("f_qi, f_qs = legacy_cloud_fraction_flags(mp_physics)"
             in adapter_source)
-    assert "radii[key] = legacy_radius_meters(eff_um)" in adapter_source
+    assert "radii = _radius_meters_blocks({" in adapter_source
     assert "f_qi=f_qi, f_qs=f_qs" in adapter_source
     # NSSL declares both species, so the pair is (True, True) and this
     # oracle comparison is unchanged by the P3 split.
@@ -163,6 +174,13 @@ def test_nssl_legacy_mass_radius_and_cloud_fraction_match_wrf():
     np.testing.assert_array_equal(
         legacy_radius_meters(effective_um),
         np.asarray([[12.0e-6, 35.0e-6, 90.0e-6]], dtype=np.float32),
+    )
+
+    from gpuwm.core.rrtmg_legacy import _radius_meters_blocks
+    converted = _radius_meters_blocks({"re_cloud": cp.asarray(effective_um)})
+    np.testing.assert_array_equal(
+        cp.asnumpy(converted["re_cloud"]).view(np.uint32),
+        legacy_radius_meters(effective_um).view(np.uint32),
     )
 
     qv = np.asarray([[0.006, 0.004, 0.002]], dtype=np.float32)

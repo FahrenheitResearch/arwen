@@ -290,6 +290,14 @@ class PreparedTileMemory:
         return self.cfg.nz
 
     @property
+    def pool_headroom(self) -> float:
+        """The forecast's measured pool margin (A163), the same number the
+        resident envelope carries for this experiment."""
+        from gpuwm.core import preflight as pf
+        return pf.forecast_pool_headroom(
+            dc.run for dc in self.experiment.domains)
+
+    @property
     def cam_ozone(self) -> bool:
         """Does this domain carry the CAM ozone climatology's arrays?
 
@@ -306,7 +314,16 @@ class PreparedTileMemory:
         context = getattr(self.options, "follower_context", None)
         return tuple(getattr(context, "slots", ()) or ())
 
-    def _domain(self, nx, ny):
+    def _domain(self, nx, ny, *, tile_buffer=False):
+        """``estimate_domain`` of this domain at ``nx x ny``.
+
+        ``tile_buffer=True`` for a tile buffer: its MYNN workspace is its
+        own, at the width a buffer walks
+        (:func:`gpuwm.core.mynn_pbl_scratch.resolve_mynn_tile_column_chunk`,
+        which :func:`gpuwm.core.streaming.prepared_tile_state_factory`
+        gives every buffer it builds).  The loader template and slab are
+        not buffers and keep the run's width.
+        """
         from gpuwm.core import preflight as pf
         exp = self.experiment
         dc = self.domain_config
@@ -315,7 +332,8 @@ class PreparedTileMemory:
             dc, spec_bdy_width=exp.spec_bdy_width,
             n_lbc_intervals=self.forcing_intervals,
             p_top=exp.vertical.p_top, column_chunk=exp.column_chunk,
-            cam_ozone=self.cam_ozone, follower_slots=self.follower_slots)
+            cam_ozone=self.cam_ozone, follower_slots=self.follower_slots,
+            tile_buffer=tile_buffer)
 
     def fixed_terms(self):
         if "fixed" not in self._cache:
@@ -407,7 +425,7 @@ class PreparedTileMemory:
         if key not in self._cache:
             exp = self.experiment
             nx, ny = key
-            itemized = self._domain(nx, ny)
+            itemized = self._domain(nx, ny, tile_buffer=True)
             run = replace(self.cfg, nx=nx, ny=ny)
             work_exp = replace(exp, domains=(replace(self.domain_config, run=run),))
             self._cache[key] = {
@@ -504,7 +522,7 @@ class PreparedTileMemory:
         pool = (int(nbuffers) * self.buffer_bytes(window_cells, shape)
                 + fixed["template_resident_bytes"] + fixed["k_tables_bytes"])
         pool = max(pool, fixed["loader_pool_peak_bytes"] + fixed["k_tables_bytes"])
-        return (math.ceil(pf.ALLOCATOR_HEADROOM * pool)
+        return (math.ceil(self.pool_headroom * pool)
                 + fixed["cuda_context_bytes"] + fixed["local_memory_bytes"]
                 + fixed["unmodelled_bytes"] + self.device_store_bytes())
 
@@ -529,8 +547,8 @@ class PreparedTileMemory:
         pool = buffers + fixed["template_resident_bytes"] + fixed["k_tables_bytes"]
         loader_peak = fixed["loader_pool_peak_bytes"] + fixed["k_tables_bytes"]
         pool_priced = max(pool, loader_peak)
-        pool_with_headroom = math.ceil(pf.ALLOCATOR_HEADROOM * pool_priced)
-        itemized = self._domain(nx, ny)
+        pool_with_headroom = math.ceil(self.pool_headroom * pool_priced)
+        itemized = self._domain(nx, ny, tile_buffer=True)
         return {
             "domain": f"{int(run.nx)}x{int(run.ny)}x{int(run.nz)}",
             # WHICH domain: a tree walk prices one footprint per node and
@@ -561,7 +579,7 @@ class PreparedTileMemory:
                            if pool >= loader_peak else
                            f"the {fixed['loader_rows']}-row loader's initialization "
                            "peak, which is larger than the buffers"),
-            "pool_headroom": f"x {pf.ALLOCATOR_HEADROOM:.2f}",
+            "pool_headroom": f"x {self.pool_headroom:.2f}",
             "pool_with_headroom_bytes": pool_with_headroom,
             "fixed/cuda_context_bytes": fixed["cuda_context_bytes"],
             "fixed/local_memory_bytes": fixed["local_memory_bytes"],
@@ -576,7 +594,7 @@ class PreparedTileMemory:
     def process_overhead_bytes(self):
         from gpuwm.core import preflight as pf
         f = self.fixed_terms()
-        return (math.ceil(pf.ALLOCATOR_HEADROOM * (
+        return (math.ceil(self.pool_headroom * (
                     f["template_resident_bytes"] + f["k_tables_bytes"]))
                 + f["cuda_context_bytes"] + f["local_memory_bytes"]
                 + f["unmodelled_bytes"])

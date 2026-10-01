@@ -29,10 +29,13 @@
 //!   sub-hourly max.)
 //! * 10 m wind — pointwise maxima of `wind_speed_10m_max_1h` (the native
 //!   sub-hourly `WIND:10 m above ground` max field the GRIB lane
-//!   consumed); m/s folds first, knots out. Hours without the stored max
-//!   field fall back to top-of-hour hypot(`u_10m`, `v_10m`) speeds — a
-//!   genuine lower bound on the sub-hourly max (the sfc file carries no
-//!   instantaneous wind-speed message), named in the strategy note.
+//!   consumed); m/s folds first, knots out. Hours without it read WRF
+//!   WSPD10MAX as the wrfout import stores it (`wrf_wspd10max`), the
+//!   exact max over the history interval ending at its frame, like
+//!   UP_HELI_MAX ([`HISTORY_INTERVAL_MAX_ROWS`]). Hours with neither fall
+//!   back to top-of-hour hypot(`u_10m`, `v_10m`) speeds — a genuine lower
+//!   bound on the sub-hourly max (the sfc file carries no instantaneous
+//!   wind-speed message), named in the strategy note.
 //! * 2 m temp/RH/dewpoint/VPD — pointwise max/min/range over the fixed
 //!   F001-F024 / F025-F048 / F001-F048 snapshot windows. Temperature and
 //!   dewpoint convert K -> degC per hour before the fold and RH clamps to
@@ -60,10 +63,10 @@
 //!   hour leads, exactly as on the whole-hour axis (the run totals are
 //!   cumulative, so the frames between add nothing);
 //! * the maxima (UH, 10 m wind) fold EVERY stored frame inside the
-//!   window.  WRF's UP_HELI_MAX is reset at each history write
-//!   (`gpuwm/core/uh_diag.py`), so on a 15-minute history the whole-hour
-//!   frame alone holds only the last quarter hour; a plane read from an
-//!   instant (the wrfout 10 m wind, from U10 and V10) is one of the
+//!   window.  WRF's UP_HELI_MAX and WSPD10MAX are reset at each history
+//!   write (`gpuwm/core/uh_diag.py`), so on a 15-minute history the
+//!   whole-hour frame alone holds only the last quarter hour; a plane read
+//!   from an instant (the wrfout 10 m wind, from U10 and V10) is one of the
 //!   window's instants and stays a labelled lower bound.  Either way the
 //!   frames inside a window must be evenly spaced from its start and the
 //!   frame at its start must be stored (unless the window starts with
@@ -588,8 +591,9 @@ pub fn compute_windowed_products(
                             PlaneFidelity::InstantaneousLowerBound => {
                                 accum.fallback_frames.push(name.at.clone());
                             }
-                            PlaneFidelity::HistoryIntervalMax => {
+                            PlaneFidelity::HistoryIntervalMax(row) => {
                                 accum.interval_max_frames.push(name.at.clone());
+                                accum.interval_max_field = Some(row.wrf_name);
                             }
                         }
                     }
@@ -650,9 +654,9 @@ impl FrameName {
 }
 
 /// The maxima folded from every stored frame inside a window on the
-/// exact-time axis: a wrfout UP_HELI_MAX plane holds the max over the
-/// interval since the history write before it, and a 10 m wind read from
-/// U10 and V10 is one instant of the window.
+/// exact-time axis: a wrfout UP_HELI_MAX or WSPD10MAX plane holds the max
+/// over the interval since the history write before it, and a 10 m wind
+/// read from U10 and V10 is one instant of the window.
 fn folds_interval_maxima(source: SourceKind) -> bool {
     matches!(source, SourceKind::Uh2to5km | SourceKind::WindSpeed10m)
 }
@@ -849,7 +853,8 @@ enum SourceKind {
     /// field is absent (stores ingested before it existed).
     Uh2to5km,
     /// `wind_speed_10m_max_1h` (m/s), the native sub-hourly WIND max;
-    /// falls back to top-of-hour hypot(`u_10m`, `v_10m`) when absent.
+    /// then the wrfout import's WRF WSPD10MAX (`wrf_wspd10max`), and
+    /// top-of-hour hypot(`u_10m`, `v_10m`) when both are absent.
     WindSpeed10m,
     /// `temperature_2m` converted K -> degC per hour.
     Temp2mC,
@@ -1311,17 +1316,64 @@ fn snapshot_plan(product: HrrrWindowedProduct) -> Option<SnapshotPlan> {
     })
 }
 
+/// A WRF history field that holds the maximum over the history interval
+/// ending at its frame, reset at every history write, as the wrfout import
+/// stores it: one row per windowed source that has one.  The row is read
+/// by [`read_source_plane`] and names the field in the strategy note
+/// [`Accum::finish`] writes.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): the wrfout import stores WRF
+/// WSPD10MAX as the raw extra `wrf_wspd10max`, and the 10 m wind windows
+/// read only the GRIB lane's `wind_speed_10m_max_1h` before falling back
+/// to top-of-hour U10/V10 speeds.  A WRF history with nwp_diagnostics = 1
+/// holds the true wind maximum, and its 1 h and run maxima were drawn as
+/// hourly snapshots, titled "no stored max" and described as a history
+/// that stores no WSPD10MAX.
+#[derive(Debug, PartialEq, Eq)]
+struct HistoryIntervalMaxRow {
+    source: SourceKind,
+    /// The store variable the wrfout import writes it under.
+    store_name: &'static str,
+    /// The unit spellings the import may stamp on it: the lane's own and
+    /// WRF's Registry spelling.  Any other unit blocks the window.
+    units: &'static [&'static str],
+    /// The WRF history field it is, for the strategy note.
+    wrf_name: &'static str,
+}
+
+static HISTORY_INTERVAL_MAX_ROWS: &[HistoryIntervalMaxRow] = &[
+    HistoryIntervalMaxRow {
+        source: SourceKind::Uh2to5km,
+        store_name: "updraft_helicity_2to5km",
+        units: &["m^2/s^2", "m2/s2"],
+        wrf_name: "UP_HELI_MAX",
+    },
+    HistoryIntervalMaxRow {
+        source: SourceKind::WindSpeed10m,
+        store_name: "wrf_wspd10max",
+        units: &["m/s", "m s-1"],
+        wrf_name: "WSPD10MAX",
+    },
+];
+
+/// The history-interval maximum `source` reads, if it has one.
+fn history_interval_max_row(source: SourceKind) -> Option<&'static HistoryIntervalMaxRow> {
+    HISTORY_INTERVAL_MAX_ROWS.iter().find(|row| row.source == source)
+}
+
 /// What one hour's source plane actually measures — recorded so the
 /// product's strategy note can label the fold accurately.  The
 /// distinction matters scientifically: an instantaneous snapshot makes
 /// the fold a lower bound on the sub-hourly max, while WRF's
-/// UP_HELI_MAX plane is itself an exact per-interval max.
+/// UP_HELI_MAX and WSPD10MAX planes are themselves exact per-interval
+/// maxima.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlaneFidelity {
     /// The stored sub-hourly max field (or an exact-equivalent plane):
     /// the fold is exact, no note needed.
     Exact,
-    /// WRF UP_HELI_MAX pulled verbatim from the wrfout import lane:
+    /// A [`HistoryIntervalMaxRow`] field (WRF UP_HELI_MAX, WSPD10MAX)
+    /// pulled verbatim from the wrfout import lane:
     /// the exact running max over the source run's history interval
     /// ending at this frame (reset at every history write).  NOT an
     /// instantaneous snapshot and NOT a lower bound, as long as every
@@ -1332,7 +1384,7 @@ enum PlaneFidelity {
     /// the source wrote history hourly; a run with sub-hourly history
     /// imported at its whole hours alone holds just the last interval,
     /// and the strategy note says so rather than claiming the hour.
-    HistoryIntervalMax,
+    HistoryIntervalMax(&'static HistoryIntervalMaxRow),
     /// Top-of-hour instantaneous plane (no stored max field at all):
     /// a genuine lower bound on the native sub-hourly max.
     InstantaneousLowerBound,
@@ -1414,6 +1466,20 @@ fn read_source_plane(
     let plain = |result: Result<Vec<f32>, ReadFailure>| -> Result<Vec<f32>, String> {
         result.map_err(ReadFailure::into_reason)
     };
+    // The wrfout import's per-history-interval maximum of this source
+    // ([`HISTORY_INTERVAL_MAX_ROWS`]), read only when the native max field
+    // is absent.
+    let read_interval_max = || -> Result<SourcePlane, ReadFailure> {
+        let row = history_interval_max_row(kind).ok_or_else(|| {
+            ReadFailure::MissingVariable(format!(
+                "no history-interval maximum is read for {kind:?}"
+            ))
+        })?;
+        read_any_units(row.store_name, row.units).map(|values| SourcePlane {
+            values: to_f64(values),
+            fidelity: PlaneFidelity::HistoryIntervalMax(row),
+        })
+    };
     match kind {
         SourceKind::Apcp1h => Ok(SourcePlane::exact(to_f64(plain(read(
             APCP_1H_VAR,
@@ -1460,20 +1526,13 @@ fn read_source_plane(
                     Err(ReadFailure::Failed(reason)) => Err(reason),
                     // The wrfout import stamps WRF's Registry spelling
                     // "m2/s2"; same quantity as the GRIB lane's "m^2/s^2".
-                    Err(_) => match read_any_units(
-                        "updraft_helicity_2to5km",
-                        &["m^2/s^2", "m2/s2"],
-                    ) {
-                        Ok(values) => Ok(SourcePlane {
-                            values: to_f64(values),
-                            fidelity: PlaneFidelity::HistoryIntervalMax,
-                        }),
-                        Err(err) => Err(format!(
+                    Err(_) => read_interval_max().map_err(|err| {
+                        format!(
                             "{missing}; hourly 'uh_2to5km' and wrfout-lane \
                              'updraft_helicity_2to5km' fallbacks also unavailable: {}",
                             err.into_reason()
-                        )),
-                    },
+                        )
+                    }),
                 }
             }
         },
@@ -1481,23 +1540,36 @@ fn read_source_plane(
             Ok(values) => Ok(SourcePlane::exact(to_f64(values))),
             Err(ReadFailure::Failed(reason)) => Err(reason),
             Err(ReadFailure::MissingVariable(missing)) => {
-                let speeds = (|| -> Result<Vec<f64>, ReadFailure> {
-                    let u = read("u_10m", "m/s")?;
-                    let v = read("v_10m", "m/s")?;
-                    Ok(u.iter()
-                        .zip(&v)
-                        .map(|(&u, &v)| f64::from(u).hypot(f64::from(v)))
-                        .collect())
-                })();
-                match speeds {
-                    Ok(values) => Ok(SourcePlane {
-                        values,
-                        fidelity: PlaneFidelity::InstantaneousLowerBound,
-                    }),
-                    Err(err) => Err(format!(
-                        "{missing}; hypot(u_10m, v_10m) fallback also unavailable: {}",
-                        err.into_reason()
-                    )),
+                // The wrfout import's `wrf_wspd10max` is WRF WSPD10MAX
+                // pulled verbatim, the same meaning as UP_HELI_MAX above:
+                // the exact max over the history interval ending at its
+                // frame, reset at each history write.  Present with other
+                // units it blocks; only a history without it falls back to
+                // the top-of-hour speed, a lower bound.
+                match read_interval_max() {
+                    Ok(plane) => Ok(plane),
+                    Err(ReadFailure::Failed(reason)) => Err(reason),
+                    Err(ReadFailure::MissingVariable(no_interval_max)) => {
+                        let speeds = (|| -> Result<Vec<f64>, ReadFailure> {
+                            let u = read("u_10m", "m/s")?;
+                            let v = read("v_10m", "m/s")?;
+                            Ok(u.iter()
+                                .zip(&v)
+                                .map(|(&u, &v)| f64::from(u).hypot(f64::from(v)))
+                                .collect())
+                        })();
+                        match speeds {
+                            Ok(values) => Ok(SourcePlane {
+                                values,
+                                fidelity: PlaneFidelity::InstantaneousLowerBound,
+                            }),
+                            Err(err) => Err(format!(
+                                "{missing}; {no_interval_max}; hypot(u_10m, v_10m) fallback \
+                                 also unavailable: {}",
+                                err.into_reason()
+                            )),
+                        }
+                    }
                 }
             }
         },
@@ -1548,6 +1620,15 @@ fn to_f64(values: Vec<f32>) -> Vec<f64> {
     values.into_iter().map(f64::from).collect()
 }
 
+/// `fold(a, b)`, or NaN (the store's missing value) when either is missing.
+fn missing_or(a: f64, b: f64, fold: impl Fn(f64, f64) -> f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        fold(a, b)
+    }
+}
+
 /// Per-product streaming accumulator: per-frame planes fold in ascending
 /// slot order; `failed` records the first per-frame read failure (the
 /// product's blocker reason: once failed, later frames stop folding).
@@ -1556,10 +1637,11 @@ fn to_f64(values: Vec<f32>) -> Vec<f64> {
 /// hour leads, or every frame inside it for an interval maximum.
 /// `fallback_frames` collects the frames whose plane was a genuine
 /// instantaneous snapshot (lower-bound note); `interval_max_frames` the
-/// frames served by the wrfout lane's UP_HELI_MAX per-history-interval
-/// max (exact-semantics note); `exact_planes` counts the native max
-/// planes.  `gaps` is what the window's stored frames lack, refused in
-/// `finish` for the planes it would make read low.
+/// frames served by a wrfout-lane per-history-interval maximum
+/// ([`HistoryIntervalMaxRow`], exact-semantics note), and
+/// `interval_max_field` the WRF field it was; `exact_planes` counts the
+/// native max planes.  `gaps` is what the window's stored frames lack,
+/// refused in `finish` for the planes it would make read low.
 struct Accum {
     spec: ProductSpec,
     slots: Vec<u16>,
@@ -1567,6 +1649,7 @@ struct Accum {
     failed: Option<String>,
     fallback_frames: Vec<String>,
     interval_max_frames: Vec<String>,
+    interval_max_field: Option<&'static str>,
     exact_planes: usize,
     gaps: WindowGaps,
 }
@@ -1599,6 +1682,7 @@ impl Accum {
             failed: None,
             fallback_frames: Vec::new(),
             interval_max_frames: Vec::new(),
+            interval_max_field: None,
             exact_planes: 0,
             gaps: WindowGaps::default(),
         }
@@ -1632,20 +1716,25 @@ impl Accum {
                     *target += *value;
                 }
             }
+            // A missing value (NaN) is missing for the whole window: `f64::max`
+            // and `min` return the other operand, which would fold a cell
+            // from fewer frames than its window holds and draw it low (a
+            // moving nest's new ground holds no value from before the nest
+            // arrived, rw_wrfbatch's `nest_move`).  Gaps are never skipped.
             Some(AccumState::Max(acc)) => {
                 for (target, value) in acc.iter_mut().zip(values) {
-                    *target = target.max(*value);
+                    *target = missing_or(*target, *value, f64::max);
                 }
             }
             Some(AccumState::Min(acc)) => {
                 for (target, value) in acc.iter_mut().zip(values) {
-                    *target = target.min(*value);
+                    *target = missing_or(*target, *value, f64::min);
                 }
             }
             Some(AccumState::Range { max, min }) => {
                 for ((max, min), value) in max.iter_mut().zip(min.iter_mut()).zip(values) {
-                    *max = max.max(*value);
-                    *min = min.min(*value);
+                    *max = missing_or(*max, *value, f64::max);
+                    *min = missing_or(*min, *value, f64::min);
                 }
             }
             Some(AccumState::DifferencePending(start)) => {
@@ -1663,8 +1752,12 @@ impl Accum {
                     // stored run totals are f32, and differencing two
                     // large near-equal ones can land a hair below zero.
                     // Clamping publishes the physical floor instead of a
-                    // negative rainfall pixel.
-                    *target = (*value - *target).max(0.0);
+                    // negative rainfall pixel.  A missing endpoint stays
+                    // missing: `NaN.max(0.0)` is 0.0, which would draw a
+                    // cell the earlier frame never covered as a dry hour.
+                    *target = missing_or(*value, *target, |later, earlier| {
+                        (later - earlier).max(0.0)
+                    });
                 }
                 self.state = Some(AccumState::DifferenceReady(increment));
             }
@@ -1740,8 +1833,36 @@ impl Accum {
                 }
             }
         }
+        // Top-of-hour snapshots on the whole-hour axis fold to the largest
+        // hourly snapshot, not the window's maximum.  A product whose
+        // catalog row names that fold is titled and described by the row
+        // ([`rustwx_products::windowed::SnapshotFoldRow`]); every other
+        // fold keeps its product title and its note below.  A window whose
+        // other hours read a stored maximum, native or per history
+        // interval, is titled as partly snapshots.
+        let snapshot_fold = if exact_axis || self.fallback_frames.is_empty() {
+            None
+        } else {
+            self.spec.product.snapshot_fold()
+        };
+        let read_a_maximum = self.exact_planes > 0 || !self.interval_max_frames.is_empty();
+        let title = match snapshot_fold {
+            None => self.spec.product.title(),
+            Some(row) if read_a_maximum => row.partial_title.unwrap_or(row.title),
+            Some(row) => row.title,
+        };
         let mut strategy = self.spec.strategy;
-        if !self.fallback_frames.is_empty() {
+        if let Some(row) = snapshot_fold {
+            strategy = format!(
+                "{} at {} ({})",
+                row.fold,
+                self.fallback_frames.join(", "),
+                row.why
+            );
+            if read_a_maximum {
+                strategy.push_str("; the other hours read the stored sub-hourly maximum");
+            }
+        } else if !self.fallback_frames.is_empty() {
             let frames = self.fallback_frames.join(", ");
             if exact_axis {
                 strategy.push_str(&format!(
@@ -1755,29 +1876,30 @@ impl Accum {
                 ));
             }
         }
-        if !self.interval_max_frames.is_empty() {
-            // The wrfout lane's UP_HELI_MAX is reset at every history
-            // write, so each folded plane is the exact max over the
-            // history interval ending at its frame, not a lower bound
-            // (that wording is reserved for genuinely instantaneous
-            // planes above).  On the exact-time axis every stored frame
-            // of the window was folded, so the fold is the window's max
-            // when every history frame was stored; a series thinned to
-            // every other file is evenly spaced too, and the store cannot
-            // tell it from a whole one.  On the whole-hour axis each plane
-            // is the whole hour only if the run wrote history hourly,
-            // which the store cannot prove either.
+        if let Some(field) = self.interval_max_field {
+            // The wrfout lane's per-history-interval maxima (WRF
+            // UP_HELI_MAX, WSPD10MAX: [`HISTORY_INTERVAL_MAX_ROWS`]) are
+            // reset at every history write, so each folded plane is the
+            // exact max over the history interval ending at its frame, not
+            // a lower bound (that wording is reserved for genuinely
+            // instantaneous planes above).  On the exact-time axis every
+            // stored frame of the window was folded, so the fold is the
+            // window's max when every history frame was stored; a series
+            // thinned to every other file is evenly spaced too, and the
+            // store cannot tell it from a whole one.  On the whole-hour
+            // axis each plane is the whole hour only if the run wrote
+            // history hourly, which the store cannot prove either.
             let frames = self.interval_max_frames.join(", ");
             if exact_axis {
                 strategy.push_str(&format!(
-                    " (WRF UP_HELI_MAX per-history-interval max at {frames}: reset at each \
+                    " (WRF {field} per-history-interval max at {frames}: reset at each \
                      history write and folded over every stored frame inside the window, so \
                      this is the exact max over the window when every history frame of the \
                      run was rendered; a series thinned to fewer frames reads low)"
                 ));
             } else {
                 strategy.push_str(&format!(
-                    " (WRF UP_HELI_MAX per-history-interval max at {frames}: reset at each \
+                    " (WRF {field} per-history-interval max at {frames}: reset at each \
                      history write, so this is the exact trailing 1 h max when history is \
                      written hourly; a run with sub-hourly history is exact only when \
                      rendered with its frames between the hours)"
@@ -1787,7 +1909,7 @@ impl Accum {
         Ok(WindowedGrid {
             slug: self.spec.product.slug().to_string(),
             units: self.spec.units.to_string(),
-            title: self.spec.product.title().to_string(),
+            title: title.to_string(),
             values,
             hours_used: self.spec.hours,
             window_hours: self.spec.window_hours,
@@ -2501,6 +2623,264 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// An hourly history with no stored 10 m wind maximum holds one
+    /// top-of-hour speed per hour, and a picture of their largest must not
+    /// be titled a maximum.  The catalog row names the fold, the frames and
+    /// why; a stored maximum and a sub-hourly history keep the product title.
+    #[test]
+    fn hourly_wind_snapshots_are_titled_as_snapshots_and_maxima_keep_their_title() {
+        let slugs = [
+            "10m_wind_1h_max",
+            "10m_wind_run_max",
+            "10m_wind_0_24h_max",
+            "uh_2to5km_run_max",
+            "2m_temp_0_24h_max",
+        ];
+        let snapshots = test_dir("wind-snapshots");
+        let hours: Vec<u16> = (1..=24).collect();
+        for &hour in &hours {
+            write_test_hour(&snapshots, "20260608_00z", hour, &["wind_speed_10m_max_1h"]);
+        }
+        let outcome = compute(&snapshots, "20260608_00z", &hours, &slugs);
+        for (slug, title) in [
+            ("10m_wind_1h_max", "10 m Wind Speed (hourly snapshot, no stored 1 h max)"),
+            ("10m_wind_run_max", "10 m Wind Speed (largest hourly snapshot, no stored max)"),
+            (
+                "10m_wind_0_24h_max",
+                "10 m Wind Speed (largest hourly snapshot 0-24 h, no stored max)",
+            ),
+        ] {
+            let grid = grid_named(&outcome, slug);
+            assert_eq!(grid.title, title);
+            let product = HrrrWindowedProduct::from_slug(slug).unwrap();
+            assert_ne!(grid.title, product.title(), "{slug}");
+            assert!(
+                grid.strategy.contains("F024")
+                    && grid.strategy.contains("hypot(u_10m, v_10m)")
+                    && grid.strategy.contains("WSPD10MAX")
+                    && grid.strategy.contains("not the maximum"),
+                "{slug}: {}",
+                grid.strategy
+            );
+            assert!(!grid.strategy.contains("stored sub-hourly 1 h max"), "{}", grid.strategy);
+        }
+        let frames = hours
+            .iter()
+            .map(|hour| format!("F{hour:03}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert_eq!(
+            grid_named(&outcome, "10m_wind_run_max").strategy,
+            format!(
+                "the largest top-of-hour 10 m wind speed, hypot(u_10m, v_10m), over the run at \
+                 {frames} (the history stores no sub-hourly 10 m wind maximum there (neither \
+                 wind_speed_10m_max_1h nor WRF WSPD10MAX), so the wind between its hourly \
+                 writes is not seen: a lower bound on the window's maximum, not the maximum)"
+            )
+        );
+        // Stored maxima and snapshot statistics are what their titles say.
+        for slug in ["uh_2to5km_run_max", "2m_temp_0_24h_max"] {
+            let grid = grid_named(&outcome, slug);
+            let product = HrrrWindowedProduct::from_slug(slug).unwrap();
+            assert_eq!(grid.title, product.title(), "{slug}");
+        }
+
+        // The stored sub-hourly maximum is a maximum, and keeps its title.
+        let maxima = test_dir("wind-maxima");
+        write_test_run(&maxima, "20260608_00z", &hours);
+        let outcome = compute(&maxima, "20260608_00z", &hours, &slugs);
+        for slug in ["10m_wind_1h_max", "10m_wind_run_max", "10m_wind_0_24h_max"] {
+            let grid = grid_named(&outcome, slug);
+            let product = HrrrWindowedProduct::from_slug(slug).unwrap();
+            assert_eq!(grid.title, product.title(), "{slug}");
+            assert!(!grid.strategy.contains("snapshot"), "{slug}: {}", grid.strategy);
+        }
+
+        // A sub-hourly history folds every instant inside the window and
+        // keeps the product title and its lower-bound note.
+        let exact = test_dir("wind-exact");
+        let run = "quarter_hour_title";
+        for (slot, lead) in [(0u16, 0u64), (1, 15), (2, 30), (3, 45), (4, 60)] {
+            write_exact_frame(&exact, run, slot, lead);
+        }
+        let outcome = compute(&exact, run, &[0, 1, 2, 3, 4], &["10m_wind_1h_max"]);
+        let wind = grid_named(&outcome, "10m_wind_1h_max");
+        assert_eq!(wind.title, "10 m Wind Speed (1 h max)");
+        assert!(wind.strategy.contains("lower bound"), "{}", wind.strategy);
+
+        for dir in [snapshots, maxima, exact] {
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// One wrfout-lane hour: the 10 m wind components, and WRF WSPD10MAX
+    /// as the import stores it (the raw extra `wrf_wspd10max`, in the
+    /// units the file declares) unless `wspd10max_units` is `None`.
+    fn write_wrfout_wind_hour(
+        store_root: &Path,
+        run: &str,
+        hour: u16,
+        wspd10max_units: Option<&str>,
+    ) {
+        let temp = field(
+            FieldSelector::height_agl(CanonicalField::Temperature, 2),
+            "K",
+            temp_k_plane(hour),
+        );
+        let (u_values, v_values) = wind_uv_planes(hour);
+        let u10 = field(FieldSelector::height_agl(CanonicalField::UWind, 10), "m/s", u_values);
+        let v10 = field(FieldSelector::height_agl(CanonicalField::VWind, 10), "m/s", v_values);
+        let wspd10max = wind_max_plane(hour);
+        let derived: Vec<DerivedFieldInput> = wspd10max_units
+            .map(|units| DerivedFieldInput {
+                name: "wrf_wspd10max",
+                units,
+                values: &wspd10max,
+            })
+            .into_iter()
+            .collect();
+        write_hour_from_fields_with_derived(
+            store_root,
+            "hrrr",
+            run,
+            hour,
+            &[("temperature_2m", &temp), ("u_10m", &u10), ("v_10m", &v10)],
+            &derived,
+            &[],
+            "windowed-store-test",
+            1_780_000_000 + hour as u64,
+        )
+        .unwrap();
+    }
+
+    fn knots(values: impl Iterator<Item = f64>) -> Vec<f64> {
+        values.map(|speed| speed * MS_TO_KT).collect()
+    }
+
+    /// A WRF history with nwp_diagnostics = 1 stores WSPD10MAX, the 10 m
+    /// wind maximum over each history interval, which the wrfout import
+    /// keeps as `wrf_wspd10max`.  The windows read it as a maximum, the
+    /// same meaning as UP_HELI_MAX, and keep their maximum titles; they
+    /// were drawn from top-of-hour U10/V10 speeds as "no stored max"
+    /// snapshots of a history that does store it.
+    #[test]
+    fn a_wrfout_wspd10max_is_read_as_the_wind_maximum_and_keeps_the_max_titles() {
+        let dir = test_dir("wrfout-wspd10max");
+        let run = "20260608_00z";
+        let hours: Vec<u16> = (1..=24).collect();
+        for &hour in &hours {
+            // WRF's Registry spelling, and the lane's own.
+            let units = if hour % 2 == 1 { "m s-1" } else { "m/s" };
+            write_wrfout_wind_hour(&dir, run, hour, Some(units));
+        }
+        let slugs = ["10m_wind_1h_max", "10m_wind_run_max", "10m_wind_0_24h_max"];
+        let outcome = compute(&dir, run, &hours, &slugs);
+        assert!(outcome.blockers.is_empty(), "{:?}", outcome.blockers);
+        for slug in slugs {
+            let grid = grid_named(&outcome, slug);
+            let product = HrrrWindowedProduct::from_slug(slug).unwrap();
+            assert_eq!(grid.title, product.title(), "{slug}");
+            assert!(
+                grid.strategy.contains("WRF WSPD10MAX per-history-interval max at")
+                    && grid.strategy.contains("exact trailing 1 h max"),
+                "{slug}: {}",
+                grid.strategy
+            );
+            for wrong in ["snapshot", "lower bound", "hypot", "UP_HELI_MAX", "not the maximum"] {
+                assert!(!grid.strategy.contains(wrong), "{slug} says {wrong:?}: {}", grid.strategy);
+            }
+        }
+        let run_max = grid_named(&outcome, "10m_wind_run_max");
+        let expected = knots((0..CELLS).map(|cell| {
+            hours
+                .iter()
+                .map(|&hour| f64::from(wind_max_plane(hour)[cell]))
+                .fold(f64::NEG_INFINITY, f64::max)
+        }));
+        assert_values(run_max, &expected);
+        assert!(run_max.strategy.contains("F001, F002") && run_max.strategy.contains("F024"));
+        let one_hour = grid_named(&outcome, "10m_wind_1h_max");
+        let expected = knots(wind_max_plane(24).into_iter().map(f64::from));
+        assert_values(one_hour, &expected);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A stored WSPD10MAX in units the lane does not read blocks the window
+    /// with the reason, as a native max field does, and is never replaced
+    /// by the top-of-hour speed without a word.
+    #[test]
+    fn a_wspd10max_plane_in_other_units_blocks_instead_of_falling_back() {
+        let dir = test_dir("wrfout-wspd10max-units");
+        let run = "20260608_00z";
+        for hour in 1..=3u16 {
+            let units = if hour == 2 { "kt" } else { "m s-1" };
+            write_wrfout_wind_hour(&dir, run, hour, Some(units));
+        }
+        let outcome = compute(&dir, run, &[1, 2, 3], &["10m_wind_run_max"]);
+        let reason = blocker_reason(&outcome, "10m_wind_run_max");
+        assert!(
+            reason.contains("'wrf_wspd10max'") && reason.contains("'kt'"),
+            "{reason}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A window whose hours read a stored maximum at some hours and a
+    /// top-of-hour snapshot at the others is neither a maximum nor wholly
+    /// snapshots, and is titled as partly snapshots; the note names the
+    /// snapshot hours and the maximum the others read.
+    #[test]
+    fn a_window_partly_read_from_a_stored_maximum_is_titled_partly_snapshots() {
+        // WSPD10MAX at F001 and F003, none at F002.
+        let wrfout = test_dir("wspd10max-partial");
+        let run = "20260608_00z";
+        for hour in 1..=3u16 {
+            write_wrfout_wind_hour(&wrfout, run, hour, (hour != 2).then_some("m s-1"));
+        }
+        let outcome = compute(&wrfout, run, &[1, 2, 3], &["10m_wind_run_max"]);
+        let grid = grid_named(&outcome, "10m_wind_run_max");
+        assert_eq!(grid.title, "10 m Wind Speed (run max, partly hourly snapshots)");
+        assert!(
+            grid.strategy.starts_with(
+                "the largest top-of-hour 10 m wind speed, hypot(u_10m, v_10m), over the run at \
+                 F002 ("
+            ) && grid.strategy.contains(
+                "; the other hours read the stored sub-hourly maximum (WRF WSPD10MAX \
+                 per-history-interval max at F001, F003:"
+            ),
+            "{}",
+            grid.strategy
+        );
+        let expected = knots((0..CELLS).map(|cell| {
+            let (u, v) = wind_uv_planes(2);
+            f64::from(wind_max_plane(1)[cell])
+                .max(f64::from(u[cell]).hypot(f64::from(v[cell])))
+                .max(f64::from(wind_max_plane(3)[cell]))
+        }));
+        assert_values(grid, &expected);
+
+        // The GRIB lane's native maximum at F001 and F003, none at F002.
+        let grib = test_dir("wind-max-partial");
+        write_test_hour(&grib, run, 1, &[]);
+        write_test_hour(&grib, run, 2, &["wind_speed_10m_max_1h"]);
+        write_test_hour(&grib, run, 3, &[]);
+        let outcome = compute(&grib, run, &[1, 2, 3], &["10m_wind_run_max"]);
+        let grid = grid_named(&outcome, "10m_wind_run_max");
+        assert_eq!(grid.title, "10 m Wind Speed (run max, partly hourly snapshots)");
+        assert!(
+            grid.strategy.contains("at F002 (")
+                && grid.strategy.ends_with("; the other hours read the stored sub-hourly maximum"),
+            "{}",
+            grid.strategy
+        );
+
+        for dir in [wrfout, grib] {
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
     #[test]
     fn mixed_stores_fall_back_only_for_hours_missing_the_max_field() {
         let dir = test_dir("mixed-fallback");
@@ -2649,6 +3029,78 @@ mod tests {
             .collect();
         assert_values(qpf_total, &expected);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// WHAT BREAKAGE THIS PREVENTS (gate law): a moving nest's earlier
+    /// frame, moved onto the nest's later place, holds NaN on the ground the
+    /// nest had not reached yet.  `NaN.max(0.0)` is 0.0 and `f64::max`
+    /// returns its other operand, so the difference drew that ground as a
+    /// dry hour and a maximum folded it from the frames after the nest
+    /// arrived, drawn as the whole window.  Missing stays missing.
+    #[test]
+    fn a_cell_missing_from_one_frame_is_missing_from_its_window() {
+        let dir = test_dir("missing-cell");
+        let run = "20260930_00z";
+        for hour in 0..=2u16 {
+            let mut total = apcp_run_accum_plane(hour);
+            if hour == 1 {
+                // New ground on the nest's leading edge: no F001 value.
+                total[0] = f32::NAN;
+            }
+            write_wrfout_apcp_hour(&dir, run, hour, total);
+        }
+        let outcome = compute(&dir, run, &[0, 1, 2], &["qpf_1h", "qpf_total"]);
+        let qpf_1h = grid_named(&outcome, "qpf_1h");
+        assert!(qpf_1h.values[0].is_nan(), "{:?}", qpf_1h.values);
+        for cell in 1..CELLS {
+            let want = (f64::from(apcp_run_accum_plane(2)[cell])
+                - f64::from(apcp_run_accum_plane(1)[cell]))
+                / MM_PER_INCH;
+            assert_eq!(qpf_1h.values[cell].to_bits(), want.to_bits(), "cell {cell}");
+        }
+        // The run total at F002 has its own value there and keeps it.
+        assert!(grid_named(&outcome, "qpf_total").values.iter().all(|v| v.is_finite()));
+        let _ = fs::remove_dir_all(&dir);
+
+        let dir = test_dir("missing-cell-max");
+        for hour in 1..=3u16 {
+            let temp = field(
+                FieldSelector::height_agl(CanonicalField::Temperature, 2),
+                "K",
+                temp_k_plane(hour),
+            );
+            let mut values = uh_plane(hour);
+            if hour == 1 {
+                values[1] = f32::NAN;
+            }
+            let uh = field(
+                FieldSelector::height_layer_agl(CanonicalField::UpdraftHelicity, 2000, 5000),
+                "m2/s2",
+                values,
+            );
+            write_hour_from_fields_with_derived(
+                &dir,
+                "hrrr",
+                run,
+                hour,
+                &[("temperature_2m", &temp), ("updraft_helicity_2to5km", &uh)],
+                &[],
+                &[],
+                "windowed-store-test",
+                1_780_000_000 + hour as u64,
+            )
+            .unwrap();
+        }
+        let outcome = compute(&dir, run, &[1, 2, 3], &["uh_2to5km_3h_max"]);
+        let uh = grid_named(&outcome, "uh_2to5km_3h_max");
+        assert!(uh.values[1].is_nan(), "{:?}", uh.values);
+        for cell in [0usize, 2, 3] {
+            let want = (1..=3)
+                .map(|hour| f64::from(uh_plane(hour)[cell]))
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert_eq!(uh.values[cell].to_bits(), want.to_bits(), "cell {cell}");
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

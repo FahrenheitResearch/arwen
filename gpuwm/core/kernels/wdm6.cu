@@ -45,6 +45,10 @@ using std::isfinite;
 #define __device__
 #define __forceinline__ inline
 #define __global__
+// A146: the device divides by constants through __fdiv_rn (NVRTC
+// rewrites a plain constant division on Blackwell); on the host it
+// is the IEEE quotient the compiler already gives.
+static inline float __fdiv_rn(float a, float b) { return a / b; }
 #endif
 
 #ifndef WDM6_KMAX
@@ -477,7 +481,7 @@ __device__ unsigned int wdm6_column_impl(
     float delt, int hail_opt, int nz, int stride, int col)
 {
     if (!isfinite(delt) || delt <= 0.0f) return 1u;
-    int loops = wdm6_checked_steps(delt / 120.0f + 0.5f);
+    int loops = wdm6_checked_steps(__fdiv_rn(delt, 120.0f) + 0.5f);
     if (loops < 0) return 2u;
     float dtcld = delt <= 120.0f ? delt : delt / (float)loops;
     int mstep = 1;
@@ -594,7 +598,7 @@ __device__ unsigned int wdm6_column_impl(
                 float work2 = wdm6_venfac(p[id], t[k], den[k]);
                 if (qs[k] > 0.0f) {
                     float coeres = ss.r2 * sqrtf(ss.r * ss.rb);
-                    float psmlt = wdm6_xka(t[k], den[k]) / xlf
+                    float psmlt = __fdiv_rn(wdm6_xka(t[k], den[k]), xlf)
                         * (273.15f - t[k]) * 3.14159265f / 2.0f
                         * n0sfac * (5.2e6f * ss.r2
                                     + 1.86818719e7f * work2 * coeres)
@@ -611,7 +615,7 @@ __device__ unsigned int wdm6_column_impl(
                     // pgmlt reads t AFTER the psmlt update (:932), with
                     // work2 from the block-entry t (:906).
                     float coeres = gg.r2 * sqrtf(gg.r * gg.rb);
-                    float pgmlt = wdm6_xka(t[k], den[k]) / xlf
+                    float pgmlt = __fdiv_rn(wdm6_xka(t[k], den[k]), xlf)
                         * (273.15f - t[k])
                         * (gcn.precg1 * gg.r2
                            + gcn.precg2 * work2 * coeres) / den[k];
@@ -648,18 +652,18 @@ __device__ unsigned int wdm6_column_impl(
             float fallsum_qsi = fall2_sfc + fallc_sfc;
             float fallsum_qg = fall3_sfc;
             if (fallsum > 0.0f) {
-                float step = fallsum * delz[0] / 1000.0f * dtcld * 1000.0f;
+                float step = __fdiv_rn(fallsum * delz[0], 1000.0f) * dtcld * 1000.0f;
                 rainncv[col] += step;
                 rainnc[col] += step;
             }
             if (fallsum_qsi > 0.0f) {
-                float step = fallsum_qsi * delz[0] / 1000.0f * dtcld
+                float step = __fdiv_rn(fallsum_qsi * delz[0], 1000.0f) * dtcld
                            * 1000.0f;
                 snowncv[col] += step;
                 snownc[col] += step;
             }
             if (fallsum_qg > 0.0f) {
-                float step = fallsum_qg * delz[0] / 1000.0f * dtcld
+                float step = __fdiv_rn(fallsum_qg * delz[0], 1000.0f) * dtcld
                            * 1000.0f;
                 graupelncv[col] += step;
                 graupelnc[col] += step;
@@ -703,14 +707,14 @@ __device__ unsigned int wdm6_column_impl(
             if (supcol > 0.0f && qc[k] > 1.0e-15f) {   // pihtf/nihtf
                 float supcolt = fminf(supcol, 70.0f);
                 float pfrzdtc = fminf(
-                    9.86960440f * 100.0f * (expf(0.66f * supcolt) - 1.0f)
-                    * 1000.0f / den[k] * nc[k] * rslopec3 * rslopec3
-                    / 18.0f * dtcld, qc[k]);
+                    __fdiv_rn(9.86960440f * 100.0f * (expf(0.66f * supcolt) - 1.0f)
+                    * 1000.0f / den[k] * nc[k] * rslopec3 * rslopec3,
+                    18.0f) * dtcld, qc[k]);
                 if (nc[k] > 1.0e1f) {
                     float nfrzdtc = fminf(
-                        3.14159265f * 100.0f
+                        __fdiv_rn(3.14159265f * 100.0f
                         * (expf(0.66f * supcolt) - 1.0f) * nc[k]
-                        * rslopec3 / 6.0f * dtcld, nc[k]);
+                        * rslopec3, 6.0f) * dtcld, nc[k]);
                     nc[k] -= nfrzdtc;
                 }
                 qi[k] += pfrzdtc;
@@ -846,7 +850,25 @@ __device__ unsigned int wdm6_column_impl(
                         nr[k] = 0.0f;
                     }
                 } else {
-                    prevp = fminf(prevp, satdt / 2.0f);
+                    // DELIBERATE, DOCUMENTED DIVERGENCE from :1255 (A144).
+                    // This branch caps CONDENSATION at half the water
+                    // supersaturation.  WRF also enters it with a rate of
+                    // exactly zero -- rain carrying no number (nr = 0) makes
+                    // the product -0, and -0 < 0 is false -- and in
+                    // subsaturated air min(0, satdt/2) then turns "no drops"
+                    // into evaporation of half the saturation deficit,
+                    // never bounded by qr (that bound, :1243, sits in the
+                    // other branch).  pidep, psdep, pgdep and pigen count
+                    // that vapour source in supice (:1527 on) and deposit
+                    // against it; the rain limiter (:1670-1680) shrinks
+                    // prevp back to the tiny qr but never revisits the
+                    // deposition, so vapour goes negative.  WRF's own
+                    // Fortran does exactly that on the captured column
+                    // (docs/wdm6_oracle_known_deltas.md, section 6).  The
+                    // cap keeps its meaning and never changes the sign: a
+                    // zero rate stays zero, and the numberless rain joins
+                    // the cloud water in the di82 collapse at :1938.
+                    prevp = fmaxf(fminf(prevp, satdt / 2.0f), 0.0f);
                 }
             }
 
@@ -877,9 +899,9 @@ __device__ unsigned int wdm6_column_impl(
                           * fabsf(vt2r - vt2i) * acrfac / 4.0f;
                     praci *= wdm6_eff01(qr[k] / qi[k]);
                     praci = fminf(praci, qi[k] / dtcld);
-                    piacr = 9.86960440f * 841.9f * nr[k] * 1000.0f * xni
+                    piacr = __fdiv_rn(9.86960440f * 841.9f * nr[k] * 1000.0f * xni
                           * denfac * 3.36666752e3f * rr.r3 * rr.r2
-                          * rr.rb / 24.0f / den[k];
+                          * rr.rb, 24.0f) / den[k];
                     piacr *= wdm6_eff01(qi[k] / qr[k]);
                     piacr = fminf(piacr, qr[k] / dtcld);
                 }
@@ -976,8 +998,8 @@ __device__ unsigned int wdm6_column_impl(
             if (supcol <= 0.0f) {                          // pseml/pgeml
                 float xlf = 3.5e5f;
                 if (qs[k] > 0.0f) {
-                    pseml = fminf(fmaxf(4190.0f * supcol
-                                        * (paacw + psacr) / xlf,
+                    pseml = fminf(fmaxf(__fdiv_rn(4190.0f * supcol
+                                        * (paacw + psacr), xlf),
                                         -qs[k] / dtcld), 0.0f);
                     if (qs[k] > 1.0e-9f) {         // nseml (:1500-1503)
                         float sfac = ss.r * 2.0e6f * n0sfac / qs[k];
@@ -985,8 +1007,8 @@ __device__ unsigned int wdm6_column_impl(
                     }
                 }
                 if (qg[k] > 0.0f) {
-                    pgeml = fminf(fmaxf(4190.0f * supcol
-                                        * (paacw + pgacr) / xlf,
+                    pgeml = fminf(fmaxf(__fdiv_rn(4190.0f * supcol
+                                        * (paacw + pgacr), xlf),
                                         -qg[k] / dtcld), 0.0f);
                     if (qg[k] > 1.0e-9f) {         // ngeml (:1515-1518)
                         float gfac = gg.r * gcn.n0g / qg[k];
@@ -1235,7 +1257,7 @@ __device__ unsigned int wdm6_column_impl(
             if (rhw[k] > 1.0f) {
                 float ncact = fmaxf(0.0f,
                     (nn[k] + nc[k])
-                    * fminf(1.0f, powf(rhw[k] / 1.0048f, 0.6f))
+                    * fminf(1.0f, powf(__fdiv_rn(rhw[k], 1.0048f), 0.6f))
                     - nc[k]) / dtcld;
                 ncact = fminf(ncact, fmaxf(nn[k], 0.0f) / dtcld);
                 float pcact = fminf(
@@ -1276,12 +1298,12 @@ __device__ unsigned int wdm6_column_impl(
                                    * 0.33333333f);
                 if (lamdr <= 2.0e3f) {
                     lamdr = 2.0e3f;
-                    nr[k] = den[k] * qr[k] * lamdr * lamdr * lamdr
-                          / 1.25663706e4f;
+                    nr[k] = __fdiv_rn(den[k] * qr[k] * lamdr * lamdr * lamdr,
+                          1.25663706e4f);
                 } else if (lamdr >= 5.0e4f) {
                     lamdr = 5.0e4f;
-                    nr[k] = den[k] * qr[k] * lamdr * lamdr * lamdr
-                          / 1.25663706e4f;
+                    nr[k] = __fdiv_rn(den[k] * qr[k] * lamdr * lamdr * lamdr,
+                          1.25663706e4f);
                 }
             }
             if (qc[k] >= 1.0e-15f && nc[k] >= 1.0e1f) {
@@ -1290,12 +1312,12 @@ __device__ unsigned int wdm6_column_impl(
                                    * 0.33333333f);
                 if (lamdc <= 2.0e4f) {
                     lamdc = 2.0e4f;
-                    nc[k] = den[k] * qc[k] * lamdc * lamdc * lamdc
-                          / 5.23598776e2f;
+                    nc[k] = __fdiv_rn(den[k] * qc[k] * lamdc * lamdc * lamdc,
+                          5.23598776e2f);
                 } else if (lamdc >= 5.0e5f) {
                     lamdc = 5.0e5f;
-                    nc[k] = den[k] * qc[k] * lamdc * lamdc * lamdc
-                          / 5.23598776e2f;
+                    nc[k] = __fdiv_rn(den[k] * qc[k] * lamdc * lamdc * lamdc,
+                          5.23598776e2f);
                 }
             }
         }

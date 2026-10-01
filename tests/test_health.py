@@ -244,8 +244,12 @@ def test_real_domainstate_physics_inventory_names_and_dtypes_are_pinned(
     }
     assert integer_fields == {
         "surface.ebal", "surface.isltyp", "surface.ivgtyp", "surface.kpbl"}
+    # surface.utype_urb2d is the urban category map (sf_urban_physics 1-3),
+    # absent from this default-off inventory and excluded like IVGTYP; the
+    # urban inventories are classified by tests/
+    # test_urban_default_off_identity.py.
     assert GPU_INTEGER_EXCLUSIONS == {
-        "surface.isltyp", "surface.ivgtyp"} | {
+        "surface.isltyp", "surface.ivgtyp", "surface.utype_urb2d"} | {
         f"nest.scratch.nest_sint_{name}_{stag}"
         for name in ("ci", "ip", "cj", "jp") for stag in ("m", "x", "y")}
     assert all(np.dtype(field.values.dtype) in {

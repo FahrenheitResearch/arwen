@@ -684,6 +684,141 @@ def test_prepared_cache_extension_refuses_a_gap(tmp_path):
     assert not output.exists()
 
 
+def _header(path):
+    import json
+
+    return json.loads((path / "header.json").read_text(encoding="utf-8"))
+
+
+def _cleared_out_extension(tmp_path, *, predecessor_built=True,
+                           seam_delta=0.0):
+    """A predecessor hour whose ``u`` table clears out at its end, and a
+    suffix hour from that frame (moved by ``seam_delta``), each interval
+    from the builder, which records the frame its tendency was built
+    toward.  ``predecessor_built=False`` drops that record, as a cache
+    written before 2.8.1 carries none."""
+
+    from dataclasses import replace
+
+    from gpuwm.ingest.lateral_bc import build_lateral_interval_from_sides
+
+    start = datetime(2026, 7, 20)
+    prior_identity = _extension_identity(
+        source_hours=[0, 1], model_start=start, domain_start=start,
+        bridge="a" * 64, source_manifest="b" * 64)
+    suffix_identity = _extension_identity(
+        source_hours=[1, 2], model_start=start + timedelta(hours=1),
+        domain_start=start + timedelta(hours=1), bridge="e" * 64,
+        source_manifest="f" * 64)
+    extended_identity = _extension_identity(
+        source_hours=[0, 1, 2], model_start=start, domain_start=start,
+        bridge="9" * 64, source_manifest="f" * 64)
+    rng = np.random.default_rng(5)
+
+    def frame(values):
+        values = np.asarray(values, dtype=np.float32).astype(np.float64)
+        return {side: {"u": values}
+                for side in ("west", "east", "south", "north")}
+
+    first = frame(rng.uniform(1e-5, 1e-3, (1, 5, 12)))
+    cleared = frame(np.zeros((1, 5, 12)))
+    last = frame(rng.uniform(1e-5, 1e-3, (1, 5, 12)))
+    old = build_lateral_interval_from_sides(
+        first, cleared, start_seconds=0.0, end_seconds=3600.0)
+    if not predecessor_built:
+        old = replace(old)
+    new = build_lateral_interval_from_sides(
+        frame(np.full((1, 5, 12), seam_delta)), last,
+        start_seconds=0.0, end_seconds=3600.0)
+    initial, met, _ = _fixture()
+    initial.state.lateral_boundaries = LateralBoundaries((old,), 5, 1, 4)
+    suffix_initial, suffix_met, _ = _fixture()
+    suffix_initial.state.lateral_boundaries = LateralBoundaries(
+        (new,), 5, 1, 4)
+    prior, suffix, output = (
+        tmp_path / "prior", tmp_path / "suffix", tmp_path / "extended")
+    write_prepared_cache(
+        prior, identity=prior_identity, initial_result=initial, met=met,
+        boundaries=initial.state.lateral_boundaries,
+        sealed_forcing_extension=True)
+    write_prepared_cache(
+        suffix, identity=suffix_identity, initial_result=suffix_initial,
+        met=suffix_met, boundaries=suffix_initial.state.lateral_boundaries)
+    arguments = dict(
+        predecessor=prior, suffix=suffix, identity=extended_identity,
+        metadata={"forcing_hours": [0, 1, 2]},
+        source_manifest_extension=_manifest_extension(
+            prior_identity, extended_identity),
+        bridge_manifest_extension=_bridge_extension(
+            prior_identity, suffix_identity, extended_identity))
+    return output, arguments, extended_identity
+
+
+def test_prepared_cache_extension_joins_a_frame_that_clears_out(tmp_path):
+    """A140b: the predecessor's last row records the frame its tendency
+    was built toward, which is the suffix's start frame, so an hour that
+    clears a hydrometeor out at the join extends; the rebuilt identity read
+    the same join as a changed endpoint frame."""
+
+    from gpuwm.state_serialization_contract import (
+        BUILT_END_FRAME_PREFIX_SCHEMA)
+
+    output, arguments, identity = _cleared_out_extension(tmp_path)
+    prior = _header(arguments["predecessor"])
+    prior_rows = prior["metadata"]["lbc"]["intervals"]
+    assert set(prior_rows[0]) == {
+        "start_seconds", "end_seconds", "fields", "end_frame_sha256"}
+    assert prior["metadata"]["lateral_boundary_prefix"]["schema"] \
+        == BUILT_END_FRAME_PREFIX_SCHEMA
+
+    extend_prepared_cache(output, **arguments)
+
+    reader = PreparedCacheReader(output, expected_identity=identity)
+    assert reader.verify_all()["status"] == "PASS"
+    stored = reader.header["metadata"]["lateral_boundary_prefix"]
+    assert stored["schema"] == BUILT_END_FRAME_PREFIX_SCHEMA
+    boundaries = prepared_cache_module._reader_boundaries(reader)
+    assert prepared_cache_module._forcing_prefix(boundaries) == stored
+    rows = stored["intervals"]
+    assert rows[0]["end_frame_sha256"] == rows[1]["start_frame_sha256"]
+    assert [row.get("end_frame_sha256")
+            for row in reader.header["metadata"]["lbc"]["intervals"]] == [
+        row["end_frame_sha256"] for row in rows]
+    from gpuwm.state_serialization_contract import (
+        lateral_boundary_prefix_identity)
+    rebuilt = lateral_boundary_prefix_identity(
+        SimpleNamespace(lateral_boundaries=boundaries),
+        rebuilt_end_frames=True)["intervals"]
+    assert rebuilt[0]["end_frame_sha256"] != rebuilt[1]["start_frame_sha256"]
+
+
+def test_prepared_cache_extension_refuses_a_real_discontinuity_at_a_clear_out(
+        tmp_path):
+    output, arguments, _ = _cleared_out_extension(tmp_path, seam_delta=1e-4)
+    with pytest.raises(PreparedCacheMismatchError,
+                       match="shared endpoint frame$"):
+        extend_prepared_cache(output, **arguments)
+    assert not output.exists()
+
+
+def test_a_cache_written_before_end_frames_extends_in_the_rebuilt_identity(
+        tmp_path):
+    """A predecessor that records no end frame (every cache written before
+    2.8.1) still reads and extends, hashed in the rebuilt identity, as the
+    existing extension tests show.  A clear-out at its join is refused by
+    name, because that identity cannot tell it from another frame."""
+
+    output, arguments, _ = _cleared_out_extension(
+        tmp_path, predecessor_built=False)
+    prior = _header(arguments["predecessor"])
+    assert set(prior["metadata"]["lbc"]["intervals"][0]) == {
+        "start_seconds", "end_seconds", "fields"}
+    with pytest.raises(PreparedCacheMismatchError,
+                       match="rebuilt end-frame identity"):
+        extend_prepared_cache(output, **arguments)
+    assert not output.exists()
+
+
 def test_prepared_cache_staging_collision_preserves_foreign_tree(
         tmp_path, monkeypatch):
     initial, met, boundaries = _fixture()
@@ -1032,14 +1167,19 @@ def test_a_v101_shape_header_still_binds_after_the_upgrade():
     live = _live_domain_identity()
     # 11 v1.0.1 keys + start_time (v1.1.0) + spawn (v1.8, dormant
     # spawn-triggered nests) + tiles (df5cf42d0) + output (8d8855a8c) +
-    # retire/rearm/follow (8e663a751/21254c056).  Every post-v1.0.1 field
+    # retire/rearm/follow (8e663a751/21254c056) + WRF's history window,
+    # history_begin_s/history_end_s (cb8af5ccb).  Every post-v1.0.1 field
     # must appear in BOTH the live document and the tolerance table, or
-    # this pin moves.  The last five landed WITHOUT tolerance entries and
-    # re-opened the V-12 hole; the entries were added when this pin
-    # caught up with them (2026-08-30).
+    # this pin moves.  The lifecycle five landed WITHOUT tolerance entries
+    # and re-opened the V-12 hole; the entries were added when this pin
+    # caught up with them (2026-08-30).  The window pair repeated it: the
+    # single-domain runner and the stock-WRF export refused every bundle
+    # prepared before it, 2.8.0's included, until its entries were added
+    # (A168).
     post_v101 = ("start_time", "spawn", "tiles", "output",
-                 "retire", "rearm", "follow")
-    assert len(live) == 18
+                 "retire", "rearm", "follow",
+                 "history_begin_s", "history_end_s")
+    assert len(live) == 20
     for field in post_v101:
         assert field in live
     cached = {key: value for key, value in live.items()
@@ -1065,6 +1205,36 @@ def test_a_field_absent_from_the_header_but_IN_USE_still_refuses():
         cached, live, not_in_use=_undelayed())
     assert tolerated == []
     assert differing == ["start_time"]
+
+
+def test_a_header_from_before_the_history_window_binds():
+    """A168: the window pair is tolerated absent at its default on the raw
+    walk (the stock-WRF export's comparison), and dropped at any value
+    once both documents are normalised, because preparation reads
+    neither key."""
+
+    from gpuwm.ingest.prepared_cache import (
+        compare_prepared_domain_config, effective_prepared_domain_config)
+
+    window = ("history_begin_s", "history_end_s")
+    live = _live_domain_identity()
+    assert (live["history_begin_s"], live["history_end_s"]) == (0.0, None)
+    cached = {key: value for key, value in live.items()
+              if key not in window}
+
+    tolerated, differing = compare_prepared_domain_config(
+        cached, live, not_in_use=_undelayed())
+    assert sorted(tolerated) == sorted(window)
+    assert differing == []
+
+    windowed = {**live, "history_begin_s": 3600.0}
+    _, differing = compare_prepared_domain_config(
+        cached, windowed, not_in_use=_undelayed())
+    assert differing == ["history_begin_s"]
+    _, differing = compare_prepared_domain_config(
+        effective_prepared_domain_config(cached),
+        effective_prepared_domain_config(windowed), not_in_use=_undelayed())
+    assert differing == []
 
 
 def test_a_real_configuration_change_is_still_refused():

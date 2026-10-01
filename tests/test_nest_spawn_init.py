@@ -15,8 +15,10 @@ mass at -g/alpha per metre, a valley must RAISE it).
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from datetime import datetime
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -158,6 +160,99 @@ def test_off_grid_fired_placement_refuses_at_the_stencil(micro):
 
 
 # ---------------------------------------------------------------------------
+# The per-spawn fit check: a card that cannot hold the child refuses first
+# ---------------------------------------------------------------------------
+
+def _expected_spawn_parts(child_dc, parent_dc):
+    """The child's state, physics and nest tables, from the forecast's
+    own per-domain inventory, summed here independently."""
+    from gpuwm.core.preflight import estimate_domain
+
+    estimate = estimate_domain(child_dc, spec_bdy_width=5, parent=parent_dc)
+    return {category: estimate.category_bytes(category)
+            for category in ("state", "physics", "nest")}
+
+
+def test_a_spawn_the_card_cannot_hold_refuses_before_any_allocation(
+        micro, monkeypatch):
+    """A stand-in card with half the child's bytes free.  The refusal
+    comes before the child's state exists, and names every size it
+    compared."""
+    import gpuwm.ingest.nest_spawn_init as spawn_init
+
+    def _reached(*_args, **_kwargs):
+        raise AssertionError("the child was allocated before the fit check")
+
+    monkeypatch.setattr(spawn_init, "parent_only_init", _reached)
+    child_dc = micro["exp"].domains[1]
+    expected = _expected_spawn_parts(child_dc, micro["exp"].root)
+    # A163 moved this figure: the spawn check carries the forecast's
+    # measured pool margin over the itemized parts, as the startup
+    # envelope does, instead of the bare itemized sum.
+    from gpuwm.core.preflight import forecast_pool_headroom
+    headroom = forecast_pool_headroom(dc.run for dc in micro["exp"].domains)
+    need = math.ceil(headroom * sum(expected.values()))
+    small = need // 2
+    with pytest.raises(SpawnInitRefusal) as caught:
+        spawn_child_from_parent(child_dc, micro["parent"], array_module=np,
+                                device_free_bytes=lambda: small)
+    text = str(caught.value)
+    mib = 1024 ** 2
+    assert f"spawning d02 needs {need / mib:.1f} MiB on the card" in text
+    assert f"state {expected['state'] / mib:.1f} MiB" in text
+    assert f"physics {expected['physics'] / mib:.1f} MiB" in text
+    assert f"nest interpolation tables {expected['nest'] / mib:.1f} MiB" in text
+    assert f"can hand out {small / mib:.1f} MiB now" in text
+    assert "out-of-memory" in text
+
+
+def test_a_spawn_the_card_can_hold_is_built_unchanged(micro):
+    """The same spawn with room to spare: admitted, receipted, and the
+    child is bitwise the one built with no fit check at all."""
+    child_dc = micro["exp"].domains[1]
+    unchecked = spawn_child_from_parent(child_dc, micro["parent"],
+                                        array_module=np)
+    checked = spawn_child_from_parent(child_dc, micro["parent"],
+                                      array_module=np,
+                                      device_free_bytes=lambda: 1 << 40)
+    expected = _expected_spawn_parts(child_dc, micro["exp"].root)
+    admission = checked["device_admission"]
+    assert admission["fits"] is True
+    assert admission["card_free_bytes"] == 1 << 40
+    assert admission["parts_bytes"] == {
+        "state": expected["state"], "physics": expected["physics"],
+        "interpolation": expected["nest"]}
+    assert unchecked["device_admission"] is None
+    assert checked["child_state_sha256"] == unchecked["child_state_sha256"]
+
+
+def test_spawn_price_leaves_out_what_the_shared_buffers_already_hold(micro):
+    """The tree's scratch arena and dycore workspace were sized over every
+    declared domain, dormant ones included, so a slot or symbol they back
+    is not a new allocation at the spawn."""
+    from gpuwm.core.preflight import (estimate_domain,
+                                      shared_dycore_state_symbols)
+    from gpuwm.ingest.nest_spawn_init import spawned_child_device_bytes
+
+    child_dc = micro["exp"].domains[1]
+    parent_dc = micro["exp"].root
+    alone = spawned_child_device_bytes(child_dc, parent_dc)
+    every_slot = SimpleNamespace(has_slot=lambda _slot: True)
+    shared = spawned_child_device_bytes(
+        child_dc, parent_dc, scratch_arena=every_slot,
+        dycore_state_workspace=object())
+    rebuilt = shared_dycore_state_symbols()
+    estimate = estimate_domain(child_dc, spec_bdy_width=5, parent=parent_dc)
+    workspace_backed = sum(item.nbytes for item in estimate.items
+                           if item.category == "state"
+                           and item.name in rebuilt)
+    assert workspace_backed > 0
+    assert shared["state"] == alone["state"] - workspace_backed
+    assert shared["physics"] == alone["physics"]
+    assert alone["interpolation"] > 0 and shared["interpolation"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Terrain adoption: calibration and treatment, both directions
 # ---------------------------------------------------------------------------
 
@@ -165,7 +260,14 @@ def test_flat_terrain_adoption_is_the_identity(micro):
     """The null spawn: fine terrain identical to the parent-SINT terrain
     must reproduce the plain parent-only child.  Bitwise on every field
     except thp, whose one-ULP wobble is the real path's own theta
-    -300K/+300K FP32 roundtrip (adjust_tempqv's frame), not ours."""
+    -300K/+300K FP32 roundtrip (adjust_tempqv's frame), not ours.
+
+    The adopted child's base is carried in float64
+    (nest_init._blend_terrain_triple), so it keeps the FP32 EOS
+    correction of its own base -- here the parent's own, column for
+    column -- where the plain child, built from the parent's FP32 phb,
+    carries none.  That correction is the ONLY difference: the plain
+    child re-diagnosed with it gives p, al and alt bitwise."""
     child_dc = micro["exp"].domains[1]
     crun = child_dc.run
     plain = spawn_child_from_parent(child_dc, micro["parent"],
@@ -174,6 +276,12 @@ def test_flat_terrain_adoption_is_the_identity(micro):
         child_dc, micro["parent"], array_module=np,
         static_fields={"HGT_M": np.zeros((crun.ny, crun.nx))})
     a, b = plain["child_result"].state, flat["child_result"].state
+    parent_resid = _host(micro["parent"].state.dphb_resid)
+    for j, i in ((10, 10), (22, 22), (34, 34)):   # inside the blend frame
+        assert np.array_equal(_host(b.dphb_resid)[:, j, i],
+                              parent_resid[:, 20, 20])
+    a.dphb_resid[...] = b.dphb_resid
+    update_diagnostics(a, crun.hypsometric_opt)
     for name in ("ht", "mub2d", "phb", "pb", "alb", "thb",
                  "mup", "php", "u", "v", "w", "qv", "p", "al", "alt"):
         left, right = getattr(a, name, None), getattr(b, name, None)
@@ -221,6 +329,51 @@ def test_hill_and_valley_shift_column_mass_hydrostatically(micro):
     assert results["valley"][5, 5] == 0.0
     # And the two arms are mirror images to first order.
     assert abs(per_metre_hill - per_metre_valley) < 0.1 * expected_per_m
+
+
+def test_an_adopted_hill_keeps_the_fp32_eos_correction(micro):
+    """The blended base is carried in float64 (nest_init.
+    _blend_terrain_triple), so a child on its parent's ladder keeps the
+    FP32 EOS correction of its own base.  Blending the FP32 state and
+    reading it back made phb float32-exact, so dphb_resid carried only the
+    rounding of the FP32 subtraction itself -- zero wherever that
+    subtraction is exact, which on a real ladder over terrain is every
+    layer -- and the surface geopotential missed g times the terrain (an
+    HRRR 12/3 km tree measured phb[0]/g minus ht at 3.5e-4 m on d02
+    against 4.5e-13 m on d01)."""
+    child_dc = micro["exp"].domains[1]
+    crun = child_dc.run
+    yy, xx = np.mgrid[0:crun.ny, 0:crun.nx]
+    terrain = 900.0 * np.exp(-((yy - 22.0) ** 2 + (xx - 22.0) ** 2) / 60.0)
+    out = spawn_child_from_parent(
+        child_dc, micro["parent"], array_module=np,
+        static_fields={"HGT_M": terrain})
+    result = out["child_result"]
+    state = result.state
+    resid = _host(state.dphb_resid)
+    phb = np.asarray(state._phb_host, dtype=np.float64)
+    np.testing.assert_array_equal(_host(state.phb), phb.astype(np.float32))
+    # Inside the blend frame the base IS the child's own analytic base on
+    # its own terrain, in float64, and its surface geopotential is g times
+    # that terrain as on a root.
+    fine = _make_real_base(result.coord, terrain, P_TOP, crun.base_temp,
+                           crun.hypsometric_opt)
+    interior = (slice(None), slice(10, 35), slice(10, 35))
+    np.testing.assert_array_equal(phb[interior], fine.phb[interior])
+    gap = np.abs(phb[0] / G - terrain)[10:35, 10:35]
+    assert float(gap.max()) < 1.0e-9
+    # So the EOS correction there is the one that base carries: the
+    # float64 layer thickness minus the FP32 subtraction the EOS kernel
+    # performs, which a root on this terrain carries too.
+    own = (np.diff(fine.phb, axis=0)
+           - np.diff(fine.phb.astype(np.float32), axis=0).astype(np.float64)
+           ).astype(np.float32)
+    assert np.count_nonzero(own[interior]) > 0
+    np.testing.assert_array_equal(resid[interior], own[interior])
+    # And everywhere it describes the base the child holds.
+    expected = (np.diff(phb, axis=0)
+                - np.diff(phb.astype(np.float32), axis=0).astype(np.float64))
+    np.testing.assert_array_equal(resid, expected.astype(np.float32))
 
 
 def test_adoption_refusals_are_loud(micro):

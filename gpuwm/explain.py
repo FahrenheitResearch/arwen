@@ -329,8 +329,37 @@ def warning_scope():
         _WARNING_KEYS.reset(token)
 
 
+#: True inside :func:`muted_warnings`: the warnings raised there are
+#: about a configuration nobody asked for, so they go nowhere.
+_WARNINGS_MUTED = contextvars.ContextVar("warnings_muted", default=False)
+
+
+@contextlib.contextmanager
+def muted_warnings():
+    """Drop every :func:`warn` raised inside, printed and observed alike.
+
+    For a door that loads configurations it only PRICES: the memory
+    refusal's candidate suites and shallower ladders are built and
+    loaded to price them, and each one's loader warnings described a
+    file the reader never asked for and will not get.  Measured on a
+    6 GiB card: ``gpuwm domain --ladder 12-3-1-0.5 --source gfs`` printed
+    four SASE and km_opt nest warnings from pricing suites the refusal
+    then named or dropped, above the refusal itself.  A muted warning
+    spends no ``once`` or keyed slot either, so the same sentence about
+    the file that IS written still prints.
+    """
+
+    token = _WARNINGS_MUTED.set(True)
+    try:
+        yield
+    finally:
+        _WARNINGS_MUTED.reset(token)
+
+
 def warn_once(key: str, action: str, why: str = "") -> None:
     """Emit a keyed advisory once in the current review, or once per direct call."""
+    if _WARNINGS_MUTED.get():
+        return
     keys = _WARNING_KEYS.get()
     if keys is not None:
         if key in keys:
@@ -367,6 +396,8 @@ def warn(action: str, why: str = "", *, once: bool = False) -> None:
     call, so one attached after the first print keeps its record.
     """
 
+    if _WARNINGS_MUTED.get():
+        return
     action = " ".join(str(action).split())
     if not (once and action in _PRINTED_ONCE):
         if once:
@@ -387,7 +418,8 @@ def warn(action: str, why: str = "", *, once: bool = False) -> None:
 
 __all__ = [
     "EXPLAIN_MARK", "add_explain_flag", "add_warning_observer",
-    "explain_enabled", "explain_scope", "layered", "reinvocation",
+    "explain_enabled", "explain_scope", "layered", "muted_warnings",
+    "reinvocation",
     "remove_warning_observer", "render", "set_explain",
     "set_invocation", "split", "warn",
 ]

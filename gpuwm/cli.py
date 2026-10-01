@@ -534,11 +534,20 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
                      help="shorten a --wrfinput or --met-em run inside its forcing coverage")
     run.add_argument("--outdir", type=Path, default=Path("out/run"),
                      metavar="OUT", help="wrfout output directory")
+    run.add_argument(
+        "--preprocess-backend", choices=("cuda", "cpu", "auto"), default=None,
+        help="CONFIG: where the root domain's preparation runs, overriding "
+             "[case_data] preprocess_backend (default: that key, else auto, "
+             "which prepares on the CPU when the card reads busy or cannot "
+             "hold it); pin it so two runs you compare start from the same "
+             "preparation. Nests prepare on the card either way")
     run.add_argument("--restart", type=Path, default=None, metavar="RST",
                      help="resume from a gpuwmrst restart file written by "
                           "an earlier run of the SAME config (only the "
                           "forecast length / output and restart cadence "
-                          "may differ); restart writing itself is the "
+                          "and each domain's history window, "
+                          "history_begin_s / history_end_s, may differ); "
+                          "restart writing itself is the "
                           "restart_interval_s config key")
     resume = sub.add_parser(
         "resume",
@@ -589,6 +598,20 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
     imp.add_argument("--output", type=Path, default=None, metavar="TOML",
                      help="write the resolved experiment TOML here "
                           "(omit to print the report only)")
+    imp.add_argument("--geogrid-tbl", type=Path, default=None, metavar="PATH",
+                     help="GEOGRID.TBL (file or directory) whose HGT_M "
+                          "smooth_option/smooth_passes set every domain's "
+                          "terrain smoothing (default: the namelist.wps "
+                          "opt_geogrid_tbl_path, else ./geogrid/ beside it)")
+    imp.add_argument("--terrain-smoothing-precision", default=None,
+                     choices=("float64", "wps-float32"),
+                     help="arithmetic of every domain whose terrain "
+                          "smoother is WPS's default smth-desmth_special x1: "
+                          "wps-float32 reproduces geogrid.exe's HGT_M "
+                          "exactly, float64 is ArWen's own smoother "
+                          "(default: the GEOGRID.TBL HGT_M smooth_precision, "
+                          "else float64); every other smoother always runs "
+                          "WPS's float32")
     imp.add_argument("--name", default=None, metavar="NAME",
                      help="[experiment].name for the resolved TOML "
                           "(default derived from start time and domain "
@@ -610,6 +633,14 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
                           "e.g. shortwave-on/longwave-off physics "
                           "across a window that includes local night -- "
                           "names the id it wants in its refusal")
+    imp.add_argument("--static-cache-root", type=Path, default=None,
+                     metavar="DIR", dest="static_cache_root",
+                     help="cache_root of the [static.highres] block a "
+                          "land-cover geog_data_res token (cglc_modis_lcz) "
+                          "imports as (default: the per-user "
+                          "high-resolution cache the engine's default "
+                          "terrain already uses); unused when the "
+                          "namelist names no such token")
     # ONE layering convention, registered in ONE place, after every
     # registrar has run.  Every subcommand takes --explain, so the
     # pointer the refusal boundary appends -- the reader's own
@@ -698,6 +729,10 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
             parser.error("--vertical-levels is for --met-em inputs")
         if args.vertical_grid is not None and args.met_em is None:
             parser.error("--vertical-grid is for --met-em inputs")
+        if args.preprocess_backend is not None and args.config is None:
+            parser.error("--preprocess-backend pins CONFIG's preparation; the "
+                         "--wrfinput and --met-em routes do not read it, so it "
+                         "would be dropped")
     # Library code emits one-line warnings through gpuwm.explain.warn;
     # stamping the flag once here is what lets --explain add their
     # mechanism prose without threading args through every call chain.
@@ -759,13 +794,25 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
         # forecast stage -- it answers "what would you run?", which is a
         # question a third party integrating against the boundary asks
         # on a machine that has no card at all.
+        # `go --readiness` is the same gesture again: it answers "can this
+        # window start?" from HEADs (or, with --no-probe, from the table)
+        # and runs nothing, and a site asks it from a scheduler that may
+        # have no card (DESIGN A136 3.4, 3.7).
         _spends_nothing = (
-            (args.command == "go" and getattr(args, "dry_run", False))
+            (args.command == "go" and (getattr(args, "dry_run", False)
+                                       or getattr(args, "readiness", False)))
             or (args.command == "sim"
                 and getattr(args, "print_command", False)))
         if not _spends_nothing:
             capabilities.require_for_command(args.command)
-        return _dispatch(args)
+        # --no-memory-gate reaches every process this command starts: the
+        # forecast stage `go` runs, the worker `run` supervises, the runner
+        # `sim` and `downscale` host.  Their envelope admissions read it
+        # there; set here once, it cannot be forgotten by one door.
+        from gpuwm.core.resident_admission import memory_gate_override
+
+        with memory_gate_override(getattr(args, "no_memory_gate", False)):
+            return _dispatch(args)
     except KeyboardInterrupt:
         # Ctrl-C.  Every subcommand gets the same bounded contract: one
         # sentence, exit 130 (the shell's 128 + SIGINT), no child and no
@@ -1053,8 +1100,11 @@ def _dispatch(args) -> int:
         try:
             toml_text, report = import_namelists(
                 args.wps, args.input, name=args.name,
+                static_cache_root=(None if args.static_cache_root is None
+                                   else args.static_cache_root.resolve()),
                 rrtmg_variant=args.rrtmg_variant,
-                acknowledgements=tuple(args.ack))
+                acknowledgements=tuple(args.ack), geogrid_tbl=args.geogrid_tbl,
+                terrain_smoothing_precision=args.terrain_smoothing_precision)
         except NotImplementedError as error:
             # validate_run_config raises its "not executable yet" refusals
             # (e.g. ra_lw_physics=1, WRF RRTM longwave) as
@@ -1219,6 +1269,9 @@ def _dispatch(args) -> int:
             if not args.no_supervise:
                 from gpuwm.supervisor import supervise_from_cli
                 return supervise_from_cli(args)
+            if getattr(args, "preprocess_backend", None) is not None:
+                from dataclasses import replace
+                data = replace(data, preprocess_backend=args.preprocess_backend)
             summary = runtime.run_experiment(exp, data, args.outdir,
                                              restart=args.restart,
                                              health_debug=args.health_debug)
@@ -1238,6 +1291,12 @@ def _dispatch(args) -> int:
                    "restarted": args.restart is not None})
         return 0
 
+    if getattr(args, "preprocess_backend", None) is not None:
+        raise ValueError(
+            f"--preprocess-backend pins an experiment config's preparation, "
+            f"and {args.config} is a legacy [run] config whose frozen case "
+            "path does not read it; refusing to drop it and run the case's "
+            "own preparation under your pin")
     cfg = load_config(args.config)
     if not cfg.case:
         raise ValueError(

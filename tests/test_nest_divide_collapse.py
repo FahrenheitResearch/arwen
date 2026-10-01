@@ -65,6 +65,165 @@ def test_the_refusal_names_the_remedy():
     assert "373" in text, text
 
 
+def _bounded_tree(root_ticks=6276, child_ticks=450, ratio=3,
+                  third_ticks=None):
+    from test_adaptive_clock_driver import (
+        FakeRun, FakeCfg, FakeNode, FakeClock, FakeSpec, FakeModel)
+
+    nodes = []
+    for gid, ticks in enumerate((root_ticks, child_ticks, third_ticks), 1):
+        if ticks is None:
+            continue
+        run = FakeRun(gid, ticks / 100, dx=10000. / ratio ** (gid - 1),
+                      dy=10000. / ratio ** (gid - 1))
+        node = FakeNode(FakeCfg(gid, run, ratio if gid > 1 else 1),
+                        FakeClock(FakeSpec(gid, ticks)))
+        if nodes:
+            node.parent = nodes[-1]
+            nodes[-1].children.append(node)
+        nodes.append(node)
+    return FakeModel(nodes[0])
+
+
+def _bounded_driver(model, calls=None):
+    from gpuwm.core.adaptive_clock import AdaptiveClockDriver
+
+    def cfl(gid):
+        if calls is not None:
+            calls.append(gid)
+        return 0., 0.
+
+    return AdaptiveClockDriver(model, cfl_source=cfl, tick_den=100,
+                               map_factor_source=lambda gid: 1.)
+
+
+def test_default_tree_shortens_a_poor_divisor_parent_before_stepping():
+    """6276 = 12 * 523 is smooth, yet the child has no bounded divide."""
+    from fractions import Fraction
+
+    with pytest.raises(NestDivideRefusal, match="523 substeps"):
+        nest_ticks_from_parent(6276, 450, max_substeps=24, grid_id=2)
+    model = _bounded_tree()
+    calls = []
+    drv = _bounded_driver(model, calls)
+    clocks = {gid: model.node(gid).clock for gid in drv.order}
+    drv(0, clocks)
+    assert calls == [1, 2]
+    assert 0 < clocks[1].step_ticks < 6276
+    assert 0 < clocks[2].step_ticks <= 450
+    assert clocks[1].step_ticks % clocks[2].step_ticks == 0
+    assert clocks[1].step_ticks // clocks[2].step_ticks <= 24
+    # Recovery changes applied steps, not the controller's CFL baseline.
+    assert drv.controllers[1].last_dt == Fraction(6276, 100)
+    assert drv.controllers[2].last_dt == Fraction(450, 100)
+    assert model.root.cfg.run.dt == clocks[1].step_ticks / 100
+    assert model.node(2).cfg.run.dt == clocks[2].step_ticks / 100
+
+
+def test_default_tree_bounds_a_flow_required_child_step_at_every_level():
+    model = _bounded_tree(root_ticks=6000, child_ticks=10, third_ticks=1)
+    drv = _bounded_driver(model)
+    clocks = {gid: model.node(gid).clock for gid in drv.order}
+    drv(0, clocks)
+    for gid, ceiling in ((1, 6000), (2, 10), (3, 1)):
+        assert 0 < clocks[gid].step_ticks <= ceiling
+        if gid > 1:
+            parent = clocks[gid - 1].step_ticks
+            assert parent % clocks[gid].step_ticks == 0
+            assert parent // clocks[gid].step_ticks <= 24
+
+
+@pytest.mark.parametrize("alarm", ["history", "restart", "boundary", "end"])
+def test_tiny_alarm_remainder_is_never_enlarged_by_root_smoothing(alarm):
+    model = _bounded_tree(root_ticks=1200, child_ticks=400)
+    # Three ticks remain, less than the root's twelve-tick smoothing unit.
+    for node in (model.root, model.node(2)):
+        node.clock.ticks = 8561997
+    if alarm == "end":
+        model.root.clock.run_ticks = 8562000
+    else:
+        name = {"history": "history_ticks", "restart": "restart_ticks",
+                "boundary": "lbc_interval_ticks"}[alarm]
+        setattr(model.root.clock.spec, name, 8562000)
+    drv = _bounded_driver(model)
+    clocks = {gid: model.node(gid).clock for gid in drv.order}
+    drv(0, clocks)
+    assert clocks[1].step_ticks == 3
+    assert clocks[2].step_ticks == 3
+    assert clocks[1].ticks + clocks[1].step_ticks == 8562000
+
+
+def test_alarm_landing_with_no_bounded_divide_reaches_the_exact_alarm(monkeypatch):
+    from gpuwm.core.adaptive_timestep import AdaptiveTimestepController
+
+    model = _bounded_tree(root_ticks=12000, child_ticks=450)
+    model.root.clock.spec.history_ticks = 6276
+    drv = _bounded_driver(model)
+    clocks = {gid: model.node(gid).clock for gid in drv.order}
+    # Hold the same sanctioned controller proposals to isolate the landing.
+    proposals = {id(ctl): ctl.last_dt for ctl in drv.controllers.values()}
+    monkeypatch.setattr(AdaptiveTimestepController, "next_dt",
+                        lambda self, **kwargs: proposals[id(self)])
+    for period in range(30):
+        drv(period, clocks)
+        assert clocks[1].ticks + clocks[1].step_ticks <= 6276
+        for gid in drv.order:
+            clocks[gid].ticks += clocks[1].step_ticks
+        if clocks[1].ticks == 6276:
+            break
+    assert clocks[1].ticks == clocks[2].ticks == 6276
+
+
+def test_two_tick_proposal_with_three_ticks_to_history_lands_without_overshoot():
+    model = _bounded_tree(root_ticks=2, child_ticks=1)
+    model.root.clock.spec.history_ticks = 3
+    drv = _bounded_driver(model)
+    clocks = {gid: model.node(gid).clock for gid in drv.order}
+    drv(0, clocks)
+    # The look-ahead landing halves three ticks. It must round down to one
+    # tick, rather than the twelve-tick smoothing floor.
+    assert clocks[1].step_ticks == clocks[2].step_ticks == 1
+    assert clocks[1].ticks + clocks[1].step_ticks < 3
+    for clock in clocks.values():
+        clock.ticks = 1
+    drv(1, clocks)
+    assert clocks[1].ticks + clocks[1].step_ticks == 3
+
+
+def test_cfl_snapshot_is_rescaled_once_and_each_controller_is_queried_once(
+        monkeypatch):
+    from fractions import Fraction
+    from gpuwm.core.adaptive_timestep import AdaptiveTimestepController
+
+    model = _bounded_tree(root_ticks=1200, child_ticks=400)
+    drv = _bounded_driver(model)
+    values = {1: (0.4, 0.2), 2: (0.3, 0.1)}
+    drv.cfl_source = lambda gid: values[gid]
+    calls = []
+    expected = {}
+    gids = {id(ctl): gid for gid, ctl in drv.controllers.items()}
+    original = AdaptiveTimestepController.next_dt
+    for gid, ctl in drv.controllers.items():
+        ctl.started = True
+        drv._last_applied[gid] = ctl.last_dt / 2
+        vert, horiz = values[gid]
+        expected[gid] = ctl.next_dt(max_vert_cfl=vert * 2,
+                                    max_horiz_cfl=horiz * 2)
+
+    def record(self, *, max_vert_cfl, max_horiz_cfl):
+        calls.append((gids[id(self)], max_vert_cfl, max_horiz_cfl))
+        return original(self, max_vert_cfl=max_vert_cfl,
+                        max_horiz_cfl=max_horiz_cfl)
+
+    monkeypatch.setattr(AdaptiveTimestepController, "next_dt", record)
+    clocks = {gid: model.node(gid).clock for gid in drv.order}
+    drv(1, clocks)
+    assert calls == [(1, 0.8, 0.4), (2, 0.6, 0.2)]
+    for gid, ctl in drv.controllers.items():
+        assert ctl.last_dt == expected[gid]
+        assert Fraction(clocks[gid].step_ticks, 100) <= expected[gid]
+
+
 # ------------------------------------------- the smooth root that fixes it
 
 def test_a_smooth_root_gives_the_nest_a_ladder_to_adapt_along():

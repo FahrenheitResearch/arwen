@@ -193,8 +193,8 @@ wps_namelist = "${GPUWM_CASE_DATA_ROOT}/WRF_1974_MP55_reference_bundle/namelists
 geog_root = "${GPUWM_CASE_DATA_ROOT}/WRF_1974_MP55_reference_bundle/static/WPS_GEOG"
 # Provenance exception: the retained ERA5 GRIB lacks invariant geopotential,
 # so each grid-specific 12Z WPS met_em SOILHGT is declared from repo-local
-# copies retained off the reference run's own WPS chain (weather-node-1
-# Morrison matched run met_em; sfcprs2-forward-verified against the retained
+# copies retained off the reference run's own WPS chain (the
+# Morrison matched run's met_em; sfcprs2-forward-verified against the retained
 # wrfinput PSFC to <=0.09 Pa).  The Downloads bundle's met_em SOILHGT is a
 # regenerated artifact byte-equal to HGT_M -- feeding it here silently
 # disables the sfcp_to_sfcp source-orography remap real.exe actually

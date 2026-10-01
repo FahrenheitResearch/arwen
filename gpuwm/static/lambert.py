@@ -1,6 +1,9 @@
 """Lambert conformal projection grids with WPS conventions.
 
-Pure NumPy float64, setup-time only (no GPU).  The projection math is
+NumPy float64, setup-time only (no GPU), with the transcendentals taken
+from the C library element by element (:mod:`gpuwm.core.host_libm`), as the
+Rust crate takes them, so NumPy's AVX-512 loops cannot move a bit on one
+machine that the crate does not move.  The projection math is
 transcribed from WRF v4.6.1 ``share/module_llxy.F`` (``lc_cone``:1138,
 ``set_lc``:1097, ``ijll_lc``:1174, ``llij_lc``:1250 -- the same code WPS
 geogrid links); the derived fields follow the ARW tech note sec 2 / Snyder
@@ -48,6 +51,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from gpuwm.core import host_libm
 from gpuwm.static.projection import (  # noqa: F401  (compat re-exports)
     EARTH_RADIUS_M, OMEGA_E, ProjectedGrid, _DEG_PER_RAD, _RAD_PER_DEG,
     _parse_wps_namelist, _wrap180, grids_from_projection_config,
@@ -57,10 +61,12 @@ from gpuwm.static.projection import (  # noqa: F401  (compat re-exports)
 def _lc_cone(truelat1: float, truelat2: float) -> float:
     """Cone constant, transcribed from module_llxy.F lc_cone (:1138)."""
     if abs(truelat1 - truelat2) > 0.1:  # secant
-        num = (np.log10(np.cos(truelat1 * _RAD_PER_DEG))
-               - np.log10(np.cos(truelat2 * _RAD_PER_DEG)))
-        den = (np.log10(np.tan((45.0 - abs(truelat1) / 2.0) * _RAD_PER_DEG))
-               - np.log10(np.tan((45.0 - abs(truelat2) / 2.0) * _RAD_PER_DEG)))
+        num = (host_libm.log10(np.cos(truelat1 * _RAD_PER_DEG))
+               - host_libm.log10(np.cos(truelat2 * _RAD_PER_DEG)))
+        den = (host_libm.log10(host_libm.tan(
+                   (45.0 - abs(truelat1) / 2.0) * _RAD_PER_DEG))
+               - host_libm.log10(host_libm.tan(
+                   (45.0 - abs(truelat2) / 2.0) * _RAD_PER_DEG)))
         return float(num / den)
     return float(np.sin(abs(truelat1) * _RAD_PER_DEG))  # tangent
 
@@ -89,9 +95,11 @@ class LambertGrid(ProjectedGrid):
         # radius (grid lengths) from the pole to the known point
         self.rsw = float(
             self.rebydx * ctl1r / self.cone
-            * (np.tan((90.0 * self.hemi - self.ref_lat) * _RAD_PER_DEG / 2.0)
-               / np.tan((90.0 * self.hemi - self.truelat1)
-                        * _RAD_PER_DEG / 2.0)) ** self.cone)
+            * host_libm.power(
+                host_libm.tan((90.0 * self.hemi - self.ref_lat)
+                              * _RAD_PER_DEG / 2.0)
+                / host_libm.tan((90.0 * self.hemi - self.truelat1)
+                                * _RAD_PER_DEG / 2.0), self.cone))
         arg = self.cone * (deltalon1 * _RAD_PER_DEG)
         self.polei = float(self.hemi * self.known_x
                            - self.hemi * self.rsw * np.sin(arg))
@@ -113,16 +121,18 @@ class LambertGrid(ProjectedGrid):
         yy = self.polej - self.hemi * y
         r2 = xx * xx + yy * yy
         r = np.sqrt(r2) / self.rebydx
-        lon = self.stand_lon + _DEG_PER_RAD * np.arctan2(self.hemi * xx,
-                                                         yy) / self.cone
+        lon = self.stand_lon + _DEG_PER_RAD * host_libm.arctan2(
+            self.hemi * xx, yy) / self.cone
         lon = np.mod(lon + 360.0, 360.0)
         if chi1 == chi2:  # tangent (exact-equality branch, as in Fortran)
-            chi = 2.0 * np.arctan((r / np.tan(chi1)) ** (1.0 / self.cone)
-                                  * np.tan(chi1 * 0.5))
+            chi = 2.0 * host_libm.arctan(
+                host_libm.power(r / host_libm.tan(chi1), 1.0 / self.cone)
+                * host_libm.tan(chi1 * 0.5))
         else:             # secant
-            chi = 2.0 * np.arctan(
-                (r * self.cone / np.sin(chi1)) ** (1.0 / self.cone)
-                * np.tan(chi1 * 0.5))
+            chi = 2.0 * host_libm.arctan(
+                host_libm.power(r * self.cone / np.sin(chi1),
+                                1.0 / self.cone)
+                * host_libm.tan(chi1 * 0.5))
         lat = (90.0 - chi * _DEG_PER_RAD) * self.hemi
         # pole point (r2 == 0): the formulas above already yield
         # lat = 90*hemi, lon = stand_lon in IEEE arithmetic, but mirror the
@@ -143,9 +153,10 @@ class LambertGrid(ProjectedGrid):
         deltalon = _wrap180(lon - self.stand_lon)
         ctl1r = np.cos(self.truelat1 * _RAD_PER_DEG)
         rm = (self.rebydx * ctl1r / self.cone
-              * (np.tan((90.0 * self.hemi - lat) * _RAD_PER_DEG / 2.0)
-                 / np.tan((90.0 * self.hemi - self.truelat1)
-                          * _RAD_PER_DEG / 2.0)) ** self.cone)
+              * host_libm.power(
+                  host_libm.tan((90.0 * self.hemi - lat) * _RAD_PER_DEG / 2.0)
+                  / host_libm.tan((90.0 * self.hemi - self.truelat1)
+                                  * _RAD_PER_DEG / 2.0), self.cone))
         arg = self.cone * (deltalon * _RAD_PER_DEG)
         x = self.polei + self.hemi * rm * np.sin(arg)
         y = self.polej - rm * np.cos(arg)
@@ -160,7 +171,8 @@ class LambertGrid(ProjectedGrid):
         half_colat1 = (90.0 * self.hemi - self.truelat1) * _RAD_PER_DEG / 2.0
         return (np.cos(self.truelat1 * _RAD_PER_DEG)
                 / np.cos(lat * _RAD_PER_DEG)
-                * (np.tan(half_colat) / np.tan(half_colat1)) ** self.cone)
+                * host_libm.power(host_libm.tan(half_colat)
+                                  / host_libm.tan(half_colat1), self.cone))
 
     def rotation(self, lon):
         """(SINALPHA, COSALPHA) at longitudes LON.

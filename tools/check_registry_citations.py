@@ -90,6 +90,7 @@ _TOKEN = re.compile(
     r"|(?<![\w.])(?P<bare>:(?P<b1>\d+)(?:\s*-\s*(?P<b2>\d+))?)")
 
 _WRF = "WRF v4.6.1 @ d66e442fccc04111067e29274c9f9eaccc3cef28, not vendored here"
+_WRF471 = "WRF v4.7.1, not vendored here"
 
 #: Citations into another source tree.  Declared, not inferred: an unknown file
 #: that happens not to exist here must fail rather than be assumed external.
@@ -112,6 +113,11 @@ EXTERNAL: dict[str, str] = {
     "dyn_em/module_diffusion_em.F": _WRF,
     "dyn_em/module_em.F": _WRF,
     "dyn_em/module_first_rk_step_part2.F": _WRF,
+    # WRF v4.7.1's IEVA module: the zadvect_implicit row cites
+    # advect_w_implicit's lower (:1231-1244) and upper (:1248-1253)
+    # boundary terms, the two gpuwm corrects (A179); tools/ieva_wrf_oracle
+    # builds the module from a WRF v4.7.1 tree.
+    "dyn_em/module_ieva_em.F": _WRF471,
     "dyn_em/module_initialize_real.F": _WRF,
     "phys/module_bl_myjpbl.F": _WRF,
     "phys/module_bl_myjurb.F": _WRF,
@@ -132,6 +138,9 @@ EXTERNAL: dict[str, str] = {
     "module_sf_noahmpdrv.F": _WRF,
     "phys/module_sf_noahmpdrv.F": _WRF,
     "module_sf_ruclsm.F": _WRF,
+    # WRF v4.7.1's single-layer urban canopy model: the urban rows cite its
+    # T2 construction (:1686) and its first-level FATAL_ERROR (:825).
+    "module_sf_urban.F": _WRF,
     "phys/module_sf_ruclsm.F": _WRF,
     "module_surface_driver.F": _WRF,
     "phys/module_surface_driver.F": _WRF,
@@ -156,13 +165,13 @@ AMBIGUOUS: dict[str, str] = {}
 #: bless a drifted citation as correct, which is the failure this table exists
 #: to prevent.
 RESOLVED: dict[str, tuple[str, str]] = {
-    "kernels/ysu.cu:203": (
+    "kernels/ysu.cu:250": (
         "gpuwm/core/kernels/ysu.cu",
-        "if (us == 0.0f && hf == 0.0f && qf == 0.0f)"),
+        "us == 0.0f && hf == 0.0f && qf == 0.0f"),
     # YSU: the guard that skips the top-down block where WRF would read
     # thlix(i,k+2) one past an array declared kts:kte.  The anchor is the
     # guard condition the warning names.
-    "kernels/ysu.cu:390": (
+    "kernels/ysu.cu:437": (
         "gpuwm/core/kernels/ysu.cu",
         "kpbl < nz"),
     # Shin-Hong: the two guards on WRF's out-of-bounds q2xk(kpbl+1) read --
@@ -171,7 +180,13 @@ RESOLVED: dict[str, tuple[str, str]] = {
     "gpuwm/verify/shinhong_ref.py:1275": (
         "gpuwm/verify/shinhong_ref.py",
         "kpbl < kte"),
-    "kernels/shinhong.cu:1371": (
+    #
+    # RE-PINNED with a reading.  The default-pieces speed lane (878435c39,
+    # the column arrays moved into a global workspace) moved the kernel's
+    # guard 58 lines: :1371 is now the `if (pblflg && k < kpbl)` loop body
+    # and the `if (pblflg && kpbl < kte)` guard is at :1429.  Anchor
+    # unchanged.
+    "kernels/shinhong.cu:1429": (
         "gpuwm/core/kernels/shinhong.cu",
         "kpbl < kte"),
     # Shin-Hong: the transcription of WRF's br .gt. 0.0 stability-regime
@@ -204,10 +219,22 @@ RESOLVED: dict[str, tuple[str, str]] = {
     # :1131 (launch_wrf_smag3d_km, def at :1129).  The registry text
     # carrying them is the builder's carried-through input, so the fix is
     # made there and the builder reproduces it.
-    "gpuwm/core/dycore.py:1041": (
+    #
+    # RE-PINNED a third time, with a reading.  The dycore-host speed lane
+    # (66af318bc, the fused RK bookkeeping, surface w, face mass and held
+    # heating launches) moved both 106 lines: :1041 became a DTYPE argument
+    # row in a kernel call and :1131 the tke_km seed-rule docstring, while
+    # the km_opt=2 header is now at :1147 (launch_wrf_tke_km, def at :1145)
+    # and the km_opt=3 header at :1237 (launch_wrf_smag3d_km, def at
+    # :1235).  Anchors unchanged.
+    #
+    # RE-PINNED a fourth time: A158 (zadvect_implicit, 04e80dc82) moved both
+    # 71 lines.  The km_opt=2 header is now at :1218 and the km_opt=3 header
+    # at :1308.  Anchors unchanged.
+    "gpuwm/core/dycore.py:1218": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=2:"),
-    "gpuwm/core/dycore.py:1131": (
+    "gpuwm/core/dycore.py:1308": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=3:"),
 }

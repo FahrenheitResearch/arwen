@@ -1492,9 +1492,14 @@ def test_mynn_component_dependencies_are_the_wrf_v461_cells():
     """
 
     components = physics_registry()["components"]
+    # "uw" on the same terms as SASE: the UW moist-turbulence PBL reads
+    # only ust/hfx/qfx from its surface layer, WRF v4.7.1 places no isfc
+    # law on CAMUWPBLSCHEME (module_physics_init.F:3825-3832), and the
+    # scheme is outside the v4.6.1 transcription's PBL axis
+    # (gpuwm.wrf461_compatibility.AXIS_EXCLUSIONS).
     assert components["surface_layer"]["options"]["mynn"]["constraints"][
         "requires_components"
-    ] == {"pbl": ["off", "mynn", "sase"]}
+    ] == {"pbl": ["off", "mynn", "sase", "uw"]}
     assert components["pbl"]["options"]["mynn"]["constraints"][
         "requires_components"
     ] == {

@@ -125,7 +125,8 @@ class ComposedRadiation:
             rthratenlw=lw.rthratenlw if lw is not None else zero,
             rthratensw=sw.rthratensw if sw is not None else zero,
             swdown=swdown, glw=lw.glw if lw is not None else fields["glw"],
-            gsw=gsw, coszen=coszen, olr=lw.olr if lw is not None else None)
+            gsw=gsw, coszen=coszen, olr=lw.olr if lw is not None else None,
+            swddif=getattr(sw, "swddif", None) if sw is not None else None)
 
     def restart_identity(self):
         from gpuwm.io.restart import _array_setup_identity

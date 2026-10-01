@@ -121,6 +121,25 @@ def _config(tmp_path, *, tiles="", nested=False, follow=False,
     return path
 
 
+def moist_specified_config(tmp_path, **kwargs):
+    """:func:`_config` with a moist Thompson root on specified boundaries.
+
+    The plain fixture is dry, so the hydrometeor boundary tables its
+    recorded source publishes are carried by no field of its root and a
+    price that left them out read the same bytes as one that did not.
+    """
+
+    path = _config(tmp_path, **kwargs)
+    text = path.read_text(encoding="utf-8")
+    assert "ztop = 12000.0\n" in text and "dx = 12000.0\n" in text
+    path.write_text(
+        text.replace("ztop = 12000.0\n",
+                     "ztop = 12000.0\nmoist = true\nmp_physics = 8\n", 1)
+        .replace("dx = 12000.0\n", "dx = 12000.0\nspecified = true\n", 1),
+        encoding="utf-8")
+    return path
+
+
 def _plan(tmp_path, config_path, **run_options):
     geog = tmp_path / "GEOG"
     geog.mkdir(exist_ok=True)
@@ -161,7 +180,7 @@ def _drive(tmp_path, monkeypatch, *, tiles="", nested=False):
                     "status": "PASS"}, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8")
 
-    def fake_fetch(arguments, run_dir, *, events=None):
+    def fake_fetch(arguments, run_dir, *, events=None, posting_relay=False):
         out = Path(arguments[arguments.index("--out") + 1])
         out.mkdir(parents=True, exist_ok=True)
         (out / "SHA256SUMS").write_text("x", encoding="utf-8")
@@ -717,9 +736,16 @@ def resident_estimate_on_the_documents_device(estimate, config):
     on every box with a card and green on every box without one.  With
     no card read the document states ``None`` for both, and this IS the
     bare direct call.
+
+    The boundary tables are priced on the species the document states,
+    and those are held to be the recorded source's own: the document
+    prices the hydrometeor tables the configuration's source publishes,
+    as ``gpuwm check`` prices them for the same file.
     """
 
+    from gpuwm.boundary_fields import source_boundary_species
     from gpuwm.core.preflight import (DeviceLocalMemoryProfile,
+                                      config_forcing_source,
                                       estimate_experiment)
 
     vram = estimate["vram"]
@@ -729,11 +755,15 @@ def resident_estimate_on_the_documents_device(estimate, config):
             None if stated["compile_platform"] is None
             else tuple(stated["compile_platform"]))})
     total = vram["device_total_bytes"]
+    species = tuple(vram["boundary_species"])
+    assert species == source_boundary_species(
+        config_forcing_source(config, priced_only=False))
     return estimate_experiment(
         load_experiment(config), profile=profile,
         vram_gib=None if total is None else total / 1024 ** 3,
         forcing_interval_seconds=vram["forcing_interval_seconds"],
-        forcing_intervals=vram["retained_forcing_intervals"])
+        forcing_intervals=vram["retained_forcing_intervals"],
+        boundary_species=species)
 
 
 def test_the_estimate_of_a_resident_plan_is_unchanged(tmp_path):

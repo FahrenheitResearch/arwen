@@ -14,6 +14,10 @@ use crate::refusal::{frame_invalid, Result};
 
 pub const SCHEMA: &str = "gpuwm-mapped-atmospheric-window-v1";
 pub const FRAMESET_SCHEMA: &str = "gpuwm-mapped-windowed-frameset-v1";
+/// The `original.validation` of a field decoded over the window alone
+/// (`DecodeStream::request_decode_window`): its values were checked over
+/// the window, and no value outside it was ever decoded.
+pub const DECODED_VALIDATION: &str = "window-decoded-canonical-field-v1";
 
 // The eleven source operands consumed by the Python regular-join window ABI.
 // Having vertical/y/x axes alone does not authorize publication of a diagnostic
@@ -224,12 +228,58 @@ fn exchange(request: &str, output: &mut impl Write, input: &mut impl BufRead) ->
 }
 
 impl Window {
+    /// This window as the requester answers it for a frame carrying
+    /// `inventory` (`window_request_response`): the same rows and columns
+    /// over every canonical atmospheric field that frame carries.  A
+    /// window granted before the decode was asked with the primary's
+    /// inventory alone; a composed frame can carry more, and each frame
+    /// is published as a request of its own would have answered.
+    pub fn for_inventory(&self, inventory: &[String]) -> Window {
+        Window {
+            fields: inventory
+                .iter()
+                .filter(|name| CANONICAL_ATMOSPHERIC_FIELDS.contains(&name.as_str()))
+                .cloned()
+                .collect(),
+            ..self.clone()
+        }
+    }
+
     pub fn validate_field(&self, field: &crate::derive::CanonicalField) -> Result<()> {
         if self.fields.contains(&field.name) && (field.axes != ["vertical", "y", "x"]
             || field.values.shape().len() != 3
             || field.values.shape()[1..] != self.source_shape) {
             return Err(frame_invalid(format!(
                 "window field {} must retain vertical/y/x source axes", field.name)));
+        }
+        Ok(())
+    }
+
+    /// Whether `field` is one the decode produced over this window alone:
+    /// a windowed vertical/y/x field whose rows and columns are the
+    /// window's.  A window never covers its whole source (the stream
+    /// refuses that as full mode), so a full-grid field never passes.
+    pub fn holds_decoded(&self, field: &crate::derive::CanonicalField) -> bool {
+        let shape = field.values.shape();
+        self.fields.contains(&field.name)
+            && field.axes == ["vertical", "y", "x"]
+            && shape.len() == 3
+            && shape[1] == self.rows[1] - self.rows[0]
+            && shape[2] == self.columns[1] - self.columns[0]
+            && [shape[1], shape[2]] != self.source_shape
+    }
+
+    /// The axis check a decoded-window field gets in place of the full
+    /// grid's: the frame's whole ladder over the window's rows and columns.
+    pub fn validate_decoded(&self, field: &crate::derive::CanonicalField, levels: usize) -> Result<()> {
+        if !self.holds_decoded(field) || field.values.shape()[0] != levels {
+            return Err(frame_invalid(format!(
+                "{} was decoded over the atmospheric window but does not carry the \
+                 frame's {levels} levels over its {}x{} cells",
+                field.name,
+                self.rows[1] - self.rows[0],
+                self.columns[1] - self.columns[0]
+            )));
         }
         Ok(())
     }

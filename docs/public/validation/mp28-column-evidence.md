@@ -145,12 +145,12 @@ here for the first time: the flat gate and the adapter's gate agree on it.
 | `aero-init-profile` | PASS | - | 0.0 | `thompson_init`'s synthetic CCN/IN fill and the `nwfa2d` derivation |
 | `aero-sfc-emit` | PASS | - | 0.0 | surface emission lands only on k=kts and is unclamped |
 | `aero-scav-frozen` | PASS | qg | 9.507e-08 | snow/graupel aerosol scavenging, `Eff_aero` |
-| `aero-nc-effrad` | PASS | nr_per_kg | 1.863e-07 | all three `inu_c` branches of `calc_effectRad` |
-| `aero-nc-sed` | PASS | nr_per_kg | 2.154e-07 | number-weighted cloud sedimentation |
-| `aero-nc-auto` | PASS | nr_per_kg | 2.328e-07 | nu_c-driven Berry-Reinhardt autoconversion |
+| `aero-nc-effrad` | PASS | nr_per_kg | 1.242e-07 | all three `inu_c` branches of `calc_effectRad` |
+| `aero-nc-sed` | PASS | nr_per_kg | 2.872e-07 | number-weighted cloud sedimentation |
+| `aero-nc-auto` | PASS | nr_per_kg | 1.998e-07 | nu_c-driven Berry-Reinhardt autoconversion |
 | `aero-ice-koop` | PASS | ni_per_kg | 3.396e-07 | **homogeneous haze freezing — closed a revision ago; see §3.4** |
 | `aero-nc-cap` | PASS | nr_per_kg | 3.821e-07 | the `Nt_c_max` caps and the `2/rho` floor |
-| `aero-scav-rain` | PASS | nr_per_kg | 3.858e-07 | rain scavenging of CCN and IN |
+| `aero-scav-rain` | PASS | nr_per_kg | 3.285e-07 | rain scavenging of CCN and IN |
 | `aero-drop-evap` | PASS | nr_per_kg | 3.919e-07 | the aerosol-only `tnc_wev` droplet-evaporation branch — **closed this revision; see §3.3** |
 | `aero-warm-overlap` | PASS | nr_per_kg | 4.195e-07 | **cross-network `ncten`/`nwfaten` reconciliation, warm half** |
 | `aero-ice-demott-dep` | PASS | ni_per_kg | 4.339e-07 | `iceDeMott` replacing Cooper nucleation |
@@ -166,9 +166,14 @@ The three columns outside the spec'd nineteen, measured the same way:
 `wp08-nusweep` MISS (`qr` 4.642e-06, 2.3x the gate).
 
 **The numbers are per card class.** The table above is sm_120's: an RTX
-5090 and an RTX 5070 Ti read it alike. The same kernels compiled for an RTX
-4090 (sm_89) round four rows differently, every one inside the gate and
-none changing a verdict or a count:
+5090 and an RTX 5070 Ti read it alike. Until A146 the same kernels compiled
+for an RTX 4090 (sm_89) rounded four rows differently from sm_120, every one
+inside the gate and none changing a verdict or a count. The difference was
+NVRTC compiling a float division by a compile-time constant as a multiply
+by the rounded reciprocal on Blackwell: since the kernels spell those
+divisions `__fdiv_rn`, sm_120 reads these four rows as sm_89 does (it read
+2.328e-07, 1.863e-07, 2.154e-07 and 3.858e-07), measured on the RTX 5070 Ti
+on 2026-09-30:
 
 | card class | fixture | verdict | worst field | worst relative difference |
 | --- | --- | --- | --- | --- |
@@ -177,11 +182,12 @@ none changing a verdict or a count:
 | sm_89 | `aero-nc-sed` | PASS | nr_per_kg | 2.872e-07 |
 | sm_89 | `aero-scav-rain` | PASS | nr_per_kg | 3.285e-07 |
 
-In ULPs, sm_89 reads `aero-cold-overlap` `nr_per_kg` 17 at level 1 (16 on
-sm_120) and the worst over all 23 quantities of `aero-nc-effrad` 2 (3),
-`aero-nc-sed` 4 (3) and `aero-reduces-to-classic` 3 (4). The tests hold each
-card class to its own row, keyed by compute capability; a card class with
-no row is held to the gate's verdicts only, and the test output says so.
+In ULPs, sm_89 reads `aero-cold-overlap` `nr_per_kg` 17 at level 1 and the
+worst over all 23 quantities of `aero-nc-effrad` 2, `aero-nc-sed` 4 and
+`aero-reduces-to-classic` 3, and since A146 so does sm_120 (it read 16, 3, 3
+and 4). The tests hold each card class to its own row, keyed by compute
+capability; a card class with no row is held to the gate's verdicts only,
+and the test output says so.
 
 ### 3.1 Every field that misses, with its number
 
@@ -752,10 +758,15 @@ removed:
 | quantity | with the profile (what a run does today) | with it removed | change |
 | --- | --- | --- | --- |
 | initial mean `nwfa` | 6.653e+07 kg⁻¹ | 0 | — |
-| final interior `nwfa` | 2.174e+07 kg⁻¹ | 4.288e+06 kg⁻¹ | floor where the scheme runs, zero in clear columns |
+| final interior `nwfa` | 2.174e+07 kg⁻¹ | 4.298e+06 kg⁻¹ | floor where the scheme runs, zero in clear columns |
 | peak `nc` over the run | 1.598e+08 kg⁻¹ | 2.945e+07 kg⁻¹ | **5.4× fewer droplets** |
-| domain-total `RAINNC` | 1.957 mm | 3.207 mm | **+63.8%** |
-| peak `RAINNC` | 0.794 mm | 1.029 mm | +29.6% |
+| domain-total `RAINNC` | 1.958 mm | 3.286 mm | **+67.8%** |
+| peak `RAINNC` | 0.793 mm | 1.016 mm | +28.1% |
+
+Re-measured 2026-09-30 on the RTX 5070 Ti (sm_120) when A146 made Blackwell
+cards divide by compile-time constants IEEE-correctly: the stripped run's
+rain moved from 3.207 to 3.286 mm, so removing the profile now adds 67.8%
+rather than 63.8%.
 
 Both runs are re-executed and this table rebuilt by
 `tests/test_physics_md_aerosol_claims.py::test_the_published_aerosol_sensitivity_is_a_live_measurement`,
@@ -765,7 +776,7 @@ measurement machine and every value was bit-identical across repeats; if
 that stops holding, the right response is to publish the spread.
 
 Read that precisely: removing the CCN loading raises domain-total surface
-precipitation by 63.8% over half an hour and cuts the peak droplet count by
+precipitation by 67.8% over half an hour and cuts the peak droplet count by
 a factor of 5.4. (Both forecasts were re-run for the 2.8 line. Measured
 commit by commit, most of the move from the earlier 74% rise came from the
 2026-09-24 mp=28 Thompson repairs; WRF's `:2020` column exit, which stopped

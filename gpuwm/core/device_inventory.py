@@ -350,24 +350,30 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
 #: d01 external-LBC field inventory (state boundaries built by
 #: build_state_lateral_boundaries: u/v/theta/phi/mu + selected scalars) with
 #: each field's (levels, ny-extent, nx-extent) source dims.
-def _lbc_field_dims(cfg: RunConfig) -> dict[str, tuple[int, int, int]]:
+#: ``boundary_species`` is the source's published hydrometeor inventory
+#: (gpuwm.boundary_fields.source_boundary_species): the analysed masses and
+#: their seeded numbers the root's boundary tables then carry.
+def _lbc_field_dims(cfg: RunConfig, *, boundary_species=()
+                    ) -> dict[str, tuple[int, int, int]]:
     nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
     dims = {"u": (nz, ny, nx + 1), "v": (nz, ny + 1, nx),
             "theta": (nz, ny, nx), "phi": (nz + 1, ny, nx),
             "mu": (1, ny, nx)}
     from gpuwm.boundary_fields import potential_external_scalar_fields
-    for name in potential_external_scalar_fields(cfg):
+    for name in potential_external_scalar_fields(
+            cfg, boundary_species=boundary_species):
         dims[name] = (nz, ny, nx)
     return dims
 
 
-def lbc_interval_values(cfg: RunConfig) -> int:
+def lbc_interval_values(cfg: RunConfig, *, boundary_species=()) -> int:
     """FP32 values in ONE interval's side tables (value + tendency), per
     ``_field_boundary`` (lateral_bc.py:149-167): west/east
     ``(lev, ny, W)`` + south/north ``(lev, W, nx)``, each twice."""
     width = cfg.spec_bdy_width
     total = 0
-    for lev, ny, nx in _lbc_field_dims(cfg).values():
+    for lev, ny, nx in _lbc_field_dims(
+            cfg, boundary_species=boundary_species).values():
         total += 2 * (2 * lev * ny * width + 2 * lev * width * nx)
     return total
 

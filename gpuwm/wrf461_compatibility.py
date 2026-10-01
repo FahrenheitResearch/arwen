@@ -136,6 +136,16 @@ AXIS_EXCLUSIONS = MappingProxyType({
         "gpuwm.config.validate_myj_pairing raises exactly that, in both "
         "directions, before this module is consulted. A row here would be "
         "a second authority over a question that already has one."),
+    ("bl_pbl_physics", 9): (
+        "the UW moist-turbulence PBL is ported from WRF v4.7.1 "
+        "(module_bl_camuwpbl_driver.F), not the v4.6.1 this matrix "
+        "transcribes, and WRF has no surface-layer law for it to "
+        "transcribe: its init case (module_physics_init.F:3825-3832) "
+        "carries only the BEP/BEM urban fatal, which "
+        "gpuwm.config.validate_uwpbl_config implements, and the Eta-layer "
+        "cell is refused by gpuwm.config.validate_myj_pairing for its own "
+        "reason (the TKE_MYJ scan). A row here would be a second "
+        "authority over questions that already have one."),
     ("bl_pbl_physics", 900): (
         "SASE is an ArWen closure with no WRF counterpart: WRF v4.6.1 "
         "registers no package at bl_pbl_physics=900, so there is no "

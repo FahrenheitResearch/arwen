@@ -180,7 +180,7 @@ def main(arguments: argparse.Namespace) -> int:
 
 def register_cli(subparsers: argparse._SubParsersAction) -> None:
     command = subparsers.add_parser(
-        "assistant", help="say what you want to see; get a checked plan (the same assistant as the Weather Library's panel)")
+        "assistant", help="say what you want to see; get a checked plan (the same assistant as gpuwm gui's panel)")
     command.add_argument("--root", type=Path, default=None,
                          help="the folder that holds your forecasts (default: $GPUWM_RUNS_ROOT, else ~/arwen-runs)")
     whats = command.add_subparsers(dest="what", required=True)

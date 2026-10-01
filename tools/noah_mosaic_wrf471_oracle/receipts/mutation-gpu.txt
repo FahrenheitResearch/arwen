@@ -1,0 +1,433 @@
+.......................FF                                                [100%]
+=================================== FAILURES ===================================
+______________________________ test_nopac_bitwise ______________________________
+tests/test_noah_mosaic_wrf471_parity.py:142: in test_nopac_bitwise
+    assert all(v["max_ulp"] == 0 for v in result["table"].values()), result["first_differences"]
+E   AssertionError: [{'field': 'smois', 'column': 0, 'index': (0, 0, 0), 'wrf_word': '0x3e8fa360', ...}]
+E   assert False
+E    +  where False = all(<generator object test_nopac_bitwise.<locals>.<genexpr> at 0x737df63f7c60>)
+----------------------------- Captured stdout call -----------------------------
+{
+  "columns": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    38,
+    40,
+    44,
+    47
+  ],
+  "table": {
+    "qgh": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "glw": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "swdown": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "rainbl": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "sr": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "chs": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "cqs2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "chs2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "rib": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "vegfra": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "shdmin": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "shdmax": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "tmn": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "xland": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "xice": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "snoalb": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "embck": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "tsk": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "hfx": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "qfx": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "lh": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "grdflx": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "qsfc": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "canwat": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "snow": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "snowc": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "snowh": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "albedo": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "albbck": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "emiss": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "znt": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "z0": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "snotime": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "lai": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "smstav": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "smstot": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "sfcrunoff": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "udrunoff": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "acsnow": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "acsnom": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "snopcx": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "potevp": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "noahres": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "chklowq": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "smois": {
+      "max_ulp": 1519178,
+      "n_nonzero": 81,
+      "n": 112
+    },
+    "tslb": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 112
+    },
+    "sh2o": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 112
+    },
+    "smcrel": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 112
+    },
+    "tsk_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "qsfc_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "canwat_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "snow_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "snowh_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "snowc_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "albedo_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "albbck_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "emiss_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "embck_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "znt_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "z0_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "hfx_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "qfx_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "lh_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "grdflx_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "snotime_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "tslb_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 336
+    },
+    "smois_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 336
+    },
+    "sh2o_mosaic": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 336
+    },
+    "ivgtyp": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "isltyp": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 28
+    },
+    "mosaic_cat_index": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    },
+    "landusef2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 84
+    }
+  },
+  "first_differences": [
+    {
+      "field": "smois",
+      "column": 0,
+      "index": [
+        0,
+        0,
+        0
+      ],
+      "wrf_word": "0x3e8fa360",
+      "cuda_word": "0x3e8f5ba0"
+    }
+  ]
+}
+__________________________ test_every_family_bitwise ___________________________
+tests/test_noah_mosaic_wrf471_parity.py:230: in test_every_family_bitwise
+    assert set(map(tuple, result["difference_pairs"])) == set(FTZ_PINNED_SHA256)
+E   AssertionError: assert {('base', 'v1...'smois'), ...} == {('ftz', 'v11...mosaic'), ...}
+E
+E     Extra items in the left set:
+E     ('lcz', 'v7_s3', 37, 'smois')
+E     ('base', 'v4_s1', 20, 'smois')
+E     ('base', 'v4_s3', 35, 'smois')
+E     ('cats', 'v6_s1', 24, 'smois')
+E     ('base', 'v1_s3', 18, 'smois')...
+E
+E     ...Full output truncated (1094 lines hidden), use '-vv' to show
+=========================== short test summary info ============================
+FAILED tests/test_noah_mosaic_wrf471_parity.py::test_nopac_bitwise - Assertio...
+FAILED tests/test_noah_mosaic_wrf471_parity.py::test_every_family_bitwise - A...
+2 failed, 23 passed in 8.33s

@@ -296,6 +296,666 @@ def registry_sha256(registry: Mapping[str, object] | None = None) -> str:
     return canonical_sha256(physics_registry() if registry is None else registry)
 
 
+# ------------------------------------------------ physics identity (A153)
+#: What a physics selection binds of this registry.
+#:
+#: The document digest (:func:`registry_sha256`) moves with every byte of
+#: the document, and most of the document is prose: warnings, notes and
+#: reasons that cite ``file:line`` and are re-pinned whenever the cited
+#: code moves.  A selection receipt that bound the document digest refused
+#: every earlier preparation as "physics selection differs" after a
+#: citation-only commit, while the forecast it would have run was byte
+#: identical (A153: the Shin-Hong ``kpbl < kte`` guard citation and the
+#: LES ``km_opt`` header citations refused the default, NSSL, P3, KF,
+#: Noah-MP and Shin-Hong selections across 2.8.0 -> 2.8.1).  It also bound
+#: every OTHER scheme: a change to WDM6's restart identity refused a
+#: Thompson preparation.
+#:
+#: So a selection binds the registry's physics PARTS it runs on, each with
+#: its documentation and its admission rules removed and nothing else
+#: removed:
+#:
+#: ``document``
+#:     ``schema`` and ``registry_version``, the format the rest is read in.
+#: ``components.<component>``
+#:     every component's selector keys and per-domain selector rules,
+#:     because they decide which option a configuration resolves to.
+#: ``components.<component>.options.<option>``
+#:     each SELECTED option: selectors, parameters (the option's own
+#:     identity values, the Noah-MP ``opt_*`` and MYNN ``bl_mynn_*`` pins
+#:     among them), the constraints the preflight cannot re-check (see
+#:     :data:`REGISTRY_CONSTRAINTS_KEPT_IN_PHYSICS_IDENTITY`), implemented
+#:     flag, reachability state, table assets and their SHA-256s, consumer
+#:     rows (restart algorithm identity, callable class, moment and field
+#:     inventories) and extensions.  This is where a changed option, table
+#:     or kernel identity moves the digest.
+#: ``parameters.<knob>``
+#:     each IMPLEMENTED knob's type, default, bounds and enum, one part per
+#:     knob so a refusal names the knob.  A default is read by any scheme
+#:     whose configuration omits the knob, so a knob is in every
+#:     selection's scope, except a knob the registry gives to one component
+#:     (``component_id``) that only that component's unselected options
+#:     read (see :func:`registry_knob_readers`).  A knob the registry
+#:     declares but does not implement (:func:`parameter_is_implemented`)
+#:     is no part: no configuration can set it, so it has no physics, and
+#:     implementing it later is an addition to the parts.  A knob whose
+#:     declaration says it is read only under other settings
+#:     (``read_when``, see :func:`registry_knob_is_read`) is still a part,
+#:     because which settings hold is a property of a configuration, not
+#:     of the registry; it is the comparison against a preparation made
+#:     before the knob existed that reads the condition.
+#: ``transitions``
+#:     the nest microphysics transitions.
+#: ``templates.<profile>``
+#:     the named profile's components and parameters, when a profile is
+#:     named, less the entries at their off values (see
+#:     :func:`registry_off_template`), since a template that states a
+#:     component's off option or a knob's off value composes what one that
+#:     omits it does.
+#:
+#: The receipt records one digest per part, so a refusal names the part
+#: that changed.  v1 bound each option's constraints whole and the
+#: parameters block as one part: a new PBL admitted beside GF and the MYNN
+#: surface layer refused every 2.8.0 preparation of either, and a knob
+#: added for one scheme refused every selection, naming only "parameters".
+#: v2 bound every declared knob and every template entry: off-by-default
+#: physics (an urban component whose ``none`` option every template names,
+#: two knobs only its other options read, two radiation knobs implemented
+#: at their off value) refused all 56 of 2.8.0's receipts by component,
+#: knob and template, 54 of them for physics that runs only when selected.
+#:
+#: What a preparation's registry lacked is resolved by the comparison
+#: (:func:`gpuwm.physics_compat.physics_selection_differences`): a
+#: component, option or knob this build added counts as equal when the
+#: configuration resolves it to its off value (:func:`setting_off_value`,
+#: :func:`component_off_option`), and is refused, named, when it does not.
+#: What is outside the parts, by top-level block and why:
+REGISTRY_PHYSICS_IDENTITY_SCHEMA = "gpuwm-physics-registry-parts-v3"
+
+#: Top-level blocks no selection's physics identity binds.
+REGISTRY_BLOCKS_OUTSIDE_PHYSICS_IDENTITY: Mapping[str, str] = {
+    "authority": (
+        "the registry's declarations of its own contracts and the WRF "
+        "v4.6.1 compatibility matrix: statements about the document and "
+        "about WRF.  What they decide for a selection, its resolved "
+        "components and its acknowledgement, the receipt records and "
+        "compares itself"),
+    "runner_routes": (
+        "admission: which templates, options and keys each runner offers. "
+        "Its outcome for a selection is the receipt's governance record, "
+        "compared field by field"),
+    "plan_binding": (
+        "the physics-plan document's binding contract, read by plan review "
+        "and never by a forecast"),
+    "plan_schema": "the plan document's schema id, read by plan review",
+    "validation_schema": "the plan review report's schema id",
+    "evidence_axes": (
+        "the conformance and scientific-evidence vocabularies: how far an "
+        "option has been checked, not what it computes"),
+    "maturity_ladder": (
+        "the conformance rungs and the template composition rule: evidence "
+        "bookkeeping a registry test enforces"),
+    "warning_policy": (
+        "which maturity tiers print a warning; it decides what is said "
+        "about a run, never what runs (maturity_never_blocks)"),
+    "templates": (
+        "bound per part: only the profile a receipt names "
+        "(templates.<profile>)"),
+    "components": "bound per part (see above)",
+    "parameters": "bound per knob (parameters.<knob>)",
+    "transitions": "bound as the transitions part",
+    "schema": "bound in the document part",
+    "registry_version": "bound in the document part",
+}
+
+#: Evidence records nested inside an option, dropped whole wherever they
+#: hold an object.
+REGISTRY_EVIDENCE_RECORDS: Mapping[str, str] = {
+    "column_oracle_evidence": (
+        "a scheme's recorded column-oracle and trajectory comparison "
+        "(fixtures, gate constants, verdicts, measured numbers): the "
+        "verification of the scheme, not the scheme"),
+    "measured_forecast_sensitivity": (
+        "a measured sensitivity snapshot and its test pointer, which the "
+        "registry itself calls a snapshot and not a physics pin"),
+}
+
+#: Fields that hold documentation wherever their value is prose (a
+#: string, a list of strings, or null).  A field of the same name that
+#: holds an object is walked, not dropped.
+REGISTRY_DOCUMENTATION_FIELDS: Mapping[str, str] = {
+    # User-facing caveats.  They cite file:line and are re-pinned when the
+    # cited code moves; both A153 cases were edits here.
+    "warnings": "user-facing caveats with file:line citations",
+    # Citations and provenance: where WRF or this package does a thing.
+    "source": "a citation (a WRF Registry line, a table's provenance)",
+    "wrf_source": "a WRF file:line citation",
+    "wrf_authority": "a WRF citation",
+    "wrf_call_site": "a WRF file:line citation",
+    "wrf_coefficient_policy": "a WRF file:line citation",
+    "wrf_flag_source": "a WRF file:line citation",
+    "wrf_live_consumer": "a WRF file:line citation",
+    "wrf_package": "a WRF Registry citation",
+    "wrf_counterpart": "the WRF counterpart named in words",
+    "gpuwm_runtime_source": "a citation of this package's own source",
+    "gpuwm_evidence": "a citation of this package's own source",
+    "gpuwm_implementation": "a path::routine pointer",
+    "gpuwm_implementation_evidence": "a test pointer",
+    "production_call_site": "a path::routine pointer",
+    "production_call_site_note": "prose about that call site",
+    "consuming_read": "the file that reads a knob; it moves with the code",
+    "call_site_pin": "a test pointer",
+    "installed_state_pin": "a test pointer",
+    "validator": "a path::routine pointer",
+    "authority": "a citation in words",
+    "classification": "prose classifying a requirement",
+    # The words of a decision whose value a sibling field carries.
+    "reason": "the words of a constraint or refusal",
+    # (No unimplemented_reason row: only a knob the registry does not
+    # implement carries one, and such a knob is no part at all.)
+    "clear_air_floor_reason": "clear_air_floor_status carries the fact",
+    "reflectivity_route_reason": "reflectivity_route carries the fact",
+    "reflectivity_native_reason": "the reflectivity route carries the fact",
+    "blocker": "reachability.state carries the fact",
+    "basis": "the basis of a claim in words",
+    "consequence": "the consequence of a claim in words",
+    "restart_identity_binding": "prose about where an identity is bound",
+    # Descriptive prose and display text.
+    "note": "an explanatory note",
+    "withheld_aerosol_number_note": "an explanatory note",
+    "evidence": "the evidence for a claim in words",
+    "behaviour": "a measured behaviour in words",
+    "measured": "a measured result in words",
+    "execution_model": "where a scheme runs, in words",
+    "fixed_mode": "a mode described in words",
+    "default_lane": "a mode described in words",
+    "activation": "the selectors that activate an extension, in words",
+    "activation_bin_edge_policy": "a policy described in words",
+    "ordering": "an ordering described in words",
+    "ported_operators": "the ported operators named in words",
+    "shipped_consequence": "prose",
+    "shipped_profile": "prose",
+    "operator_workaround": "prose",
+    "removed_constraint": "prose about a constraint no longer present",
+    "label": "a display name",
+    # Evidence labels; the vocabularies they name are outside the parts.
+    "maturity": "a conformance evidence label",
+    "scientific_evidence": "a scientific evidence label",
+}
+
+#: Objects whose KEYS are physics and whose values are prose: the key set
+#: stays bound (which settings a constraint names, which siblings a family
+#: refuses) and the words go.
+REGISTRY_DOCUMENTATION_VALUE_MAPS: Mapping[str, str] = {
+    "family_siblings_refused": "the refused sibling ids stay bound",
+    "unported_wrf_siblings": "the unported sibling ids stay bound",
+}
+
+#: Constraint kinds (keys of an option's ``constraints``) that are
+#: ADMISSION and leave the parts, for the reason ``runner_routes`` is
+#: outside them: they decide whether a configuration is admitted, never
+#: what an admitted one computes.  The preflight recomputes the receipt
+#: from the prepared configuration through
+#: ``gpuwm.physics_compat.validate_physics_capabilities``, which reads all
+#: three, so a rule that no longer admits the prepared configuration
+#: refuses there, naming the rule (a named profile raises; a per-domain
+#: receipt records the blocker, and ``registry_blocker`` and ``components``
+#: are compared).  A rule that still admits it leaves its physics alone:
+#: 2.8.1's UW PBL joining GF's and the MYNN surface layer's admitted PBLs
+#: refused 18 of 2.8.0's 56 receipts while v1 bound them.  An option's own
+#: identity values that ``required_settings`` repeats stay bound through
+#: its ``parameters`` block, which carries the same values.
+REGISTRY_ADMISSION_CONSTRAINTS: Mapping[str, str] = {
+    "requires_components": (
+        "which options of another component this one runs beside"),
+    "requires_components_reasons": "the words of requires_components",
+    "required_settings": (
+        "the single value a setting must hold; the option's own values are "
+        "repeated in its parameters block, and the rest (moist, km_opt, "
+        "khdif, kvdif, bl_pbl_physics, num_soil_layers) are settings the "
+        "prepared configuration carries"),
+    "required_settings_reasons": "the words of required_settings",
+    "admitted_setting_values": "the values a setting may hold",
+    "admitted_setting_values_reasons": (
+        "the words of admitted_setting_values"),
+}
+
+#: Constraint kinds that STAY in an option's part, each because the
+#: preflight's recomputation does not re-check it, so the identity is the
+#: only place a change to it reaches a prepared receipt.
+REGISTRY_CONSTRAINTS_KEPT_IN_PHYSICS_IDENTITY: Mapping[str, str] = {
+    "forbidden_setting_values": (
+        "read by plan review (validate_physics_plan) only; "
+        "validate_physics_capabilities does not evaluate it"),
+    "refused_when": (
+        "a rule with a sources clause fires only at plan review and the "
+        "preparation door, never in the preflight's recomputation"),
+}
+
+
+def _is_prose(value: object) -> bool:
+    return value is None or isinstance(value, str) or (
+        isinstance(value, list)
+        and all(isinstance(item, str) for item in value))
+
+
+def strip_registry_documentation(node: object) -> object:
+    """``node`` with every documentation field of the tables above removed,
+    and every admission constraint (:data:`REGISTRY_ADMISSION_CONSTRAINTS`)
+    removed from a ``constraints`` object."""
+
+    if isinstance(node, Mapping):
+        kept: dict[str, object] = {}
+        for key, value in node.items():
+            if (key in REGISTRY_EVIDENCE_RECORDS
+                    and isinstance(value, Mapping)):
+                continue
+            if key == "constraints" and isinstance(value, Mapping):
+                value = {name: rule for name, rule in value.items()
+                         if name not in REGISTRY_ADMISSION_CONSTRAINTS}
+            if key in REGISTRY_DOCUMENTATION_FIELDS and _is_prose(value):
+                continue
+            if (key in REGISTRY_DOCUMENTATION_VALUE_MAPS
+                    and isinstance(value, Mapping)
+                    and all(_is_prose(item) for item in value.values())):
+                kept[key] = sorted(value)
+                continue
+            kept[key] = strip_registry_documentation(value)
+        return kept
+    if isinstance(node, list):
+        return [strip_registry_documentation(item) for item in node]
+    return node
+
+
+#: A setting this build has no single off value for (see
+#: :func:`setting_off_value`).
+NO_OFF_VALUE = object()
+
+_RUN_CONFIG_DEFAULTS: dict[str, object] | None = None
+
+
+def _run_config_defaults() -> Mapping[str, object]:
+    """What a configuration that states no value for a setting runs with:
+    a ``RunConfig`` built from its own defaults, as a loaded TOML that
+    omits the setting is."""
+
+    global _RUN_CONFIG_DEFAULTS
+    if _RUN_CONFIG_DEFAULTS is None:
+        from dataclasses import MISSING, fields
+
+        from gpuwm.config import RunConfig
+
+        built = RunConfig(nx=1, ny=1, nz=1, dx=1.0, dy=1.0, ztop=1.0,
+                          dt=1.0, run_seconds=1.0)
+        _RUN_CONFIG_DEFAULTS = {
+            field.name: getattr(built, field.name)
+            for field in fields(RunConfig)
+            if field.default is not MISSING
+            or field.default_factory is not MISSING}
+    return _RUN_CONFIG_DEFAULTS
+
+
+def same_setting_value(left: object, right: object) -> bool:
+    """Equal as setting values: a boolean never equals a number."""
+
+    if isinstance(left, bool) != isinstance(right, bool):
+        return False
+    try:
+        return bool(left == right)
+    except (TypeError, ValueError):
+        return False
+
+
+def setting_off_value(name: str,
+                      registry: Mapping[str, object] | None = None) -> object:
+    """The value this build runs a setting at when a configuration omits it.
+
+    ``RunConfig``'s default, or the registry knob's declared ``default``
+    where ``RunConfig`` has no such field; :data:`NO_OFF_VALUE` when
+    neither declares one, or when both do and disagree (then which of the
+    two a configuration gets depends on the door, so neither is off).
+    Physics added off by default is off at this value, which is what lets
+    a preparation made before it existed resolve (A153).
+    """
+
+    selected = physics_registry() if registry is None else registry
+    parameters = selected.get("parameters")
+    spec = (parameters.get(name) if isinstance(parameters, Mapping)
+            else None)
+    declared = (spec.get("default", NO_OFF_VALUE)
+                if isinstance(spec, Mapping) else NO_OFF_VALUE)
+    run = _run_config_defaults().get(name, NO_OFF_VALUE)
+    if run is NO_OFF_VALUE:
+        return declared
+    if declared is not NO_OFF_VALUE and not same_setting_value(
+            declared, run):
+        return NO_OFF_VALUE
+    return run
+
+
+def component_off_option(component_id: str,
+                         registry: Mapping[str, object] | None = None
+                         ) -> str | None:
+    """The option of a component a configuration stating none of its
+    selectors resolves to: the one option whose selectors all sit at their
+    :func:`setting_off_value`, or ``None`` when no single option does."""
+
+    selected = physics_registry() if registry is None else registry
+    component = (selected.get("components") or {}).get(component_id)
+    options = (component.get("options")
+               if isinstance(component, Mapping) else None)
+    if not isinstance(options, Mapping):
+        return None
+    matched = [
+        option_id for option_id, option in options.items()
+        if isinstance(option, Mapping)
+        and isinstance(option.get("selectors"), Mapping)
+        and option["selectors"]
+        and all(same_setting_value(setting_off_value(key, selected), value)
+                for key, value in option["selectors"].items())]
+    return matched[0] if len(matched) == 1 else None
+
+
+def registry_knob_readers(knob: str,
+                          registry: Mapping[str, object] | None = None
+                          ) -> frozenset[str] | None:
+    """The options that read a knob the registry gives to one component.
+
+    ``None`` unless the knob's declaration names its ``component_id``:
+    only then does the registry say which code reads it, and a knob
+    without one may be read anywhere.  Otherwise the options of that
+    component that name the knob in their parameters or in a setting rule
+    of their constraints.  A selection that selects none of them does not
+    read the knob (an empty set means the component reads it whatever its
+    option, so it is read whenever the component is selected).
+    """
+
+    selected = physics_registry() if registry is None else registry
+    spec = (selected.get("parameters") or {}).get(knob)
+    owner = spec.get("component_id") if isinstance(spec, Mapping) else None
+    if not isinstance(owner, str):
+        return None
+    component = (selected.get("components") or {}).get(owner)
+    options = (component.get("options")
+               if isinstance(component, Mapping) else None)
+    readers = set()
+    for option_id, option in (options or {}).items():
+        if not isinstance(option, Mapping):
+            continue
+        rules = option.get("constraints")
+        rules = rules if isinstance(rules, Mapping) else {}
+        if knob in (option.get("parameters") or {}) or any(
+                isinstance(rule, Mapping) and knob in rule
+                for rule in rules.values()):
+            readers.add(f"{owner}.{option_id}")
+    return frozenset(readers)
+
+
+def registry_knob_is_read(knob: str, settings: Mapping[str, object] | object,
+                          registry: Mapping[str, object] | None = None
+                          ) -> bool:
+    """Whether a configuration reads a knob at all.
+
+    A knob's declaration may name the settings it is read under,
+    ``read_when: {setting: value, ...}``, every one of which must hold (a
+    tile count read only with tiles on).  A setting the configuration
+    omits holds its :func:`setting_off_value`.  ``True`` when the
+    declaration names no condition, when every condition holds, or when an
+    omitted setting has no single off value (then it cannot be shown
+    unread).  ``settings`` is a mapping or an object with the settings as
+    attributes (a ``RunConfig``).
+    """
+
+    selected = physics_registry() if registry is None else registry
+    parameters = selected.get("parameters")
+    spec = (parameters.get(knob) if isinstance(parameters, Mapping)
+            else None)
+    condition = spec.get("read_when") if isinstance(spec, Mapping) else None
+    if not isinstance(condition, Mapping) or not condition:
+        return True
+    absent = object()
+    for name, wanted in condition.items():
+        if isinstance(settings, Mapping):
+            value = settings.get(name, absent)
+        else:
+            value = getattr(settings, name, absent)
+        if value is absent:
+            value = setting_off_value(str(name), selected)
+            if value is NO_OFF_VALUE:
+                return True
+        if not same_setting_value(value, wanted):
+            return False
+    return True
+
+
+def registry_off_template(template: object,
+                          registry: Mapping[str, object] | None = None
+                          ) -> object:
+    """A template less the entries at their off values.
+
+    A component entry naming the component's :func:`component_off_option`
+    and a parameter entry at its :func:`setting_off_value` compose what the
+    template without them composes, so a template that gained them (every
+    template naming a new component's ``none`` option) keeps its
+    identity, and one that names any other option or value moves it.
+    """
+
+    if not isinstance(template, Mapping):
+        return template
+    selected = physics_registry() if registry is None else registry
+    kept = dict(template)
+    components = template.get("components")
+    if isinstance(components, Mapping):
+        kept["components"] = {
+            component_id: option_id
+            for component_id, option_id in components.items()
+            if option_id != component_off_option(component_id, selected)}
+    parameters = template.get("parameters")
+    if isinstance(parameters, Mapping):
+        kept["parameters"] = {
+            name: value for name, value in parameters.items()
+            if not same_setting_value(
+                value, setting_off_value(name, selected))}
+    return kept
+
+
+def _selected_option_ids(options: Mapping[str, object] | None,
+                         component_id: str,
+                         available: Mapping[str, object]) -> tuple[str, ...]:
+    if options is None:
+        return tuple(available)
+    wanted = options.get(component_id)
+    return (wanted,) if isinstance(wanted, str) else tuple(wanted or ())
+
+
+def registry_physics_part_sources(
+        registry: Mapping[str, object] | None = None,
+        *,
+        options: Mapping[str, object] | None = None,
+        profile: str | None = None,
+) -> dict[str, object]:
+    """``part -> registry value`` of the parts a selection runs on, before
+    :func:`strip_registry_documentation`; see :func:`registry_physics_parts`.
+    """
+
+    selected = physics_registry() if registry is None else registry
+    every = options is None
+    components = selected.get("components")
+    components = components if isinstance(components, Mapping) else {}
+    chosen_by_component = {
+        component_id: _selected_option_ids(
+            options, component_id,
+            component.get("options")
+            if isinstance(component.get("options"), Mapping) else {})
+        for component_id, component in components.items()
+        if isinstance(component, Mapping)}
+    chosen_options = {
+        f"{component_id}.{option_id}"
+        for component_id, chosen in chosen_by_component.items()
+        for option_id in chosen}
+    parts: dict[str, object] = {
+        "document": {
+            "schema": selected.get("schema"),
+            "registry_version": selected.get("registry_version"),
+        },
+        "transitions": selected.get("transitions"),
+    }
+    parameters = selected.get("parameters")
+    if isinstance(parameters, Mapping):
+        for knob, spec in parameters.items():
+            if isinstance(spec, Mapping) and not parameter_is_implemented(
+                    spec):
+                continue
+            readers = registry_knob_readers(knob, selected)
+            if (not every and readers
+                    and not readers & chosen_options):
+                continue
+            parts[f"parameters.{knob}"] = spec
+    else:
+        parts["parameters"] = parameters
+    for component_id, component in components.items():
+        if not isinstance(component, Mapping):
+            continue
+        parts[f"components.{component_id}"] = {
+            key: value for key, value in component.items()
+            if key != "options"}
+        available = component.get("options")
+        available = available if isinstance(available, Mapping) else {}
+        for option_id in chosen_by_component[component_id]:
+            # An option the registry does not carry is a part of its own
+            # (null), so a receipt that names one differs by name.
+            parts[f"components.{component_id}.options.{option_id}"] = (
+                available.get(option_id))
+    templates = selected.get("templates")
+    templates = templates if isinstance(templates, Mapping) else {}
+    for template_id in (tuple(templates) if every
+                        else (() if profile is None else (profile,))):
+        parts[f"templates.{template_id}"] = registry_off_template(
+            templates.get(template_id), selected)
+    return dict(sorted(parts.items()))
+
+
+def registry_physics_parts(
+        registry: Mapping[str, object] | None = None,
+        *,
+        options: Mapping[str, object] | None = None,
+        profile: str | None = None,
+) -> dict[str, str]:
+    """``part -> digest`` of the registry parts a selection runs on.
+
+    ``options`` maps a component id to the option ids selected for it
+    (one id, or an iterable of ids across a tree's domains); ``None``
+    takes every option and every template, which is the whole-registry
+    record :data:`REGISTRY_PHYSICS_HISTORY_PATH` keeps.
+    """
+
+    return {
+        name: canonical_sha256(strip_registry_documentation(value))
+        for name, value in registry_physics_part_sources(
+            registry, options=options, profile=profile).items()
+    }
+
+
+def registry_physics_receipt(
+        registry: Mapping[str, object] | None = None,
+        *,
+        options: Mapping[str, object],
+        profile: str | None = None,
+) -> dict[str, object]:
+    """The registry physics a selection receipt records, part by part."""
+
+    return {
+        "schema": REGISTRY_PHYSICS_IDENTITY_SCHEMA,
+        "parts": registry_physics_parts(
+            registry, options=options, profile=profile),
+    }
+
+
+def registry_physics_sha256(
+        registry: Mapping[str, object] | None = None) -> str:
+    """One digest of the WHOLE registry's physics (every part).
+
+    Documentation, citations, labels, maturity and admission rules leave
+    it unchanged; any other option, parameter, transition or template
+    change moves it.  It keys
+    :data:`REGISTRY_PHYSICS_HISTORY_PATH`; a selection binds its parts.
+    """
+
+    return canonical_sha256({
+        "schema": REGISTRY_PHYSICS_IDENTITY_SCHEMA,
+        "parts": registry_physics_parts(registry),
+    })
+
+
+#: The registry documents a selection receipt bound BEFORE receipts
+#: carried ``registry_physics``, each with its physics parts.  Such a
+#: receipt records only the document digest it was prepared under
+#: (``registry_sha256``); this record is how it resolves.  It holds the
+#: 2.8 line's documents from the 2.8.0 release on and is written by
+#: ``tools/registry_physics_history.py`` from the committed documents, so
+#: every row is a fact about a document git holds.  A document not in it
+#: is refused by name, as one whose physics this build cannot establish.
+REGISTRY_PHYSICS_HISTORY_PATH = Path(__file__).with_name(
+    "physics_registry_history.json")
+REGISTRY_PHYSICS_HISTORY_SCHEMA = "gpuwm-physics-registry-history-v1"
+
+_registry_physics_history: dict[str, object] | None = None
+
+
+def registry_physics_history() -> dict[str, object]:
+    """The legacy record: ``documents`` (digest -> physics) and ``physics``
+    (physics digest -> parts)."""
+
+    global _registry_physics_history
+    if _registry_physics_history is None:
+        value = json.loads(
+            REGISTRY_PHYSICS_HISTORY_PATH.read_text(encoding="utf-8"),
+            parse_constant=_reject_json_constant)
+        if (not isinstance(value, dict)
+                or value.get("schema") != REGISTRY_PHYSICS_HISTORY_SCHEMA
+                or value.get("identity_schema")
+                != REGISTRY_PHYSICS_IDENTITY_SCHEMA
+                or not isinstance(value.get("documents"), dict)
+                or not isinstance(value.get("physics"), dict)):
+            raise RuntimeError(
+                f"{REGISTRY_PHYSICS_HISTORY_PATH.name} is not a "
+                f"{REGISTRY_PHYSICS_HISTORY_SCHEMA} record for "
+                f"{REGISTRY_PHYSICS_IDENTITY_SCHEMA}")
+        _registry_physics_history = value
+    return deepcopy(_registry_physics_history)
+
+
+def recorded_registry_physics_parts(
+        receipt: Mapping[str, object]) -> dict[str, str] | None:
+    """The physics parts a selection receipt was written under, or None.
+
+    A receipt that carries ``registry_physics`` names its parts.  One
+    written before that field existed, or in another identity schema,
+    resolves through the document digest it was prepared under to every
+    part that document had in the history record; ``None`` means that
+    document is not in it.
+    """
+
+    recorded = receipt.get("registry_physics")
+    if isinstance(recorded, Mapping):
+        parts = recorded.get("parts")
+        if (recorded.get("schema") == REGISTRY_PHYSICS_IDENTITY_SCHEMA
+                and isinstance(parts, Mapping)):
+            return dict(parts)
+    # Parts in another identity schema are not comparable with this one's;
+    # the document digest every receipt records still is, through the
+    # history.
+    document = receipt.get("registry_sha256")
+    if not isinstance(document, str):
+        return None
+    history = registry_physics_history()
+    row = history["documents"].get(document)
+    physics = row.get("physics_sha256") if isinstance(row, Mapping) else None
+    parts = history["physics"].get(physics) if isinstance(
+        physics, str) else None
+    return dict(parts) if isinstance(parts, Mapping) else None
+
+
 # ----------------------------------------------------------- consumer rows
 #: The per-option object under which the registry publishes what every
 #: CONSUMER of a scheme needs -- the checkpoint identity, the vertical
@@ -445,6 +1105,16 @@ CONSUMER_ROW_CONTRACT: dict[str, dict[str, str]] = {
         "restart_algorithm_identity": (
             "the checkpoint writer names the surface-layer scheme at the "
             "first restart interval"),
+    },
+    "urban": {
+        "restart_algorithm_identity": (
+            "the checkpoint writer binds the urban model whose arrays ride "
+            "the surface inventory (physics_setup_identity), so a resume "
+            "across urban models is refused"),
+        "vertical_level_bounds": (
+            "no urban model bounds the column: the UCM is a surface model "
+            "and BEP/BEM map their own urban grid onto whatever levels the "
+            "PBL admits"),
     },
     "land_surface": {
         "restart_algorithm_identity": (
@@ -2485,6 +3155,20 @@ def validate_physics_plan(
             if name in selector_owners and _is_json_scalar(value):
                 settings[name] = value
 
+        # Use the run door's coupling law after parameter values resolve.
+        from types import SimpleNamespace
+        from gpuwm.config import validate_noah_mosaic_config
+        try:
+            validate_noah_mosaic_config(SimpleNamespace(
+                sf_surface_mosaic=settings.get("sf_surface_mosaic", 0),
+                mosaic_cat=settings.get("mosaic_cat", 3),
+                sf_surface_physics=settings.get("sf_surface_physics", 0),
+                sf_urban_physics=settings.get("sf_urban_physics", 0),
+                mosaic_urban_canopy=settings.get("mosaic_urban_canopy",
+                                                 "dominant")))
+        except ValueError as exc:
+            errors.append(_issue("noah-mosaic-pairing", base_path, str(exc)))
+
         # AUDIT R-005, and it runs HERE -- after every source of a setting
         # and before the constraint battery below -- because the value it
         # judges is part of the configuration the constraints are judged
@@ -3308,5 +3992,19 @@ __all__ = [
     "load_physics_plan",
     "physics_registry",
     "registry_sha256",
+    "NO_OFF_VALUE",
+    "REGISTRY_PHYSICS_IDENTITY_SCHEMA",
+    "component_off_option",
+    "recorded_registry_physics_parts",
+    "registry_knob_is_read",
+    "registry_knob_readers",
+    "registry_off_template",
+    "registry_physics_part_sources",
+    "registry_physics_parts",
+    "registry_physics_receipt",
+    "registry_physics_sha256",
+    "same_setting_value",
+    "setting_off_value",
+    "strip_registry_documentation",
     "validate_physics_plan",
 ]

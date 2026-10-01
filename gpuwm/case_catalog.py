@@ -603,7 +603,11 @@ def _write_geometry_case(selection: dict, *, case_id: str, staged: Path,
                                    root_dx_m=root_dx_m, target_option=target)
     cycle = wizard.parse_cycle(selection["cycle"], source)
     lead = selection["source_option"].get("forecast_start_hour", 0)
-    cadence = selection["source_option"].get("cadence_hours", wizard._fetch_cadence_h(source, lead))
+    # The spacing this cycle's ladder publishes over the whole run, the
+    # domain door's rule: the source's usual one, or the coarser one a
+    # window past f144 (IFS) or f240 (GEFS) runs into.
+    cadence = selection["source_option"].get(
+        "cadence_hours", wizard._fetch_cadence_h(source, lead, geometry["run_hours"], cycle=cycle))
     data_dir = destination.parent / "data" / destination.stem
     hints = {"source": source, "cycle": selection["cycle"],
              "hours": (geometry["run_hours"] if cadence is None else

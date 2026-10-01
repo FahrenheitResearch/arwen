@@ -594,7 +594,8 @@ class _ScriptedProcess:
             f"2026-07-16T00:00:{self._generation:02d}Z", status,
             float(event.get("model_seconds", event.get("step", 0) * 60.0)),
             int(event.get("step", 0)), None,
-            None if checkpoint is None else str(Path(checkpoint).resolve())))
+            None if checkpoint is None else str(Path(checkpoint).resolve()),
+            restart=event.get("restart")))
 
     def _publish_capsule(self, capsule):
         """Leave a worker-authored failure capsule, as a real worker does.

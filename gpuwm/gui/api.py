@@ -26,19 +26,21 @@ path segment with its slash written ``%2F``.
                                            answers at once, each row "checking" until its probe is in
                                            (ask again while "pending" is above zero)
     GET  /api/system                       this computer's cards (NVML only)
-    GET  /api/library                      the Weather Library's main page: kinds, places, featured, recent changes
-    GET  /api/library/event/ID             an event page with every source it cites and the runs of it
-    GET  /api/library/kind/ID              a phenomenon page and every event of that kind
-    GET  /api/library/place/ID             a place page, its events rarest first
-    GET  /api/library/places               every place, grouped by kind
-    GET  /api/library/run/RUN              a run as an article: facts citing its own files, events it covers
-    GET  /api/library/search               ?q=&type=&region=&decade=&season=&place=&seed=&sort= over the store
-    GET  /api/library/changes              new events and runs, newest first
-    GET  /api/library/recipe/ID            ?card=GB an event's run recipe for that card size, for New forecast
-    POST /api/library/simulate             start an event's best run for one card size
+    GET  /api/wiki                         the wiki's main page: kinds, places, featured, recent changes
+    GET  /api/wiki/event/ID                an event page with every source it cites and the runs of it
+    GET  /api/wiki/kind/ID                 a phenomenon page and every event of that kind
+    GET  /api/wiki/place/ID                a place page, its events rarest first
+    GET  /api/wiki/places                  every place, grouped by kind
+    GET  /api/wiki/run/RUN                 a run as an article: facts citing its own files, events it covers
+    GET  /api/wiki/search                  ?q=&type=&region=&decade=&season=&place=&seed=&sort= over the store
+    GET  /api/wiki/changes                 new events and runs, newest first
+    GET  /api/wiki/recipe/ID               ?card=GB an event's run recipe for that card size, for New forecast
+    POST /api/wiki/simulate                start an event's best run for one card size
     GET  /api/physics                      every physics family, scheme, suite and preset
     POST /api/physics/check                does this combination run; if not, why and what does
     POST /api/create/fit                   the wizard's fit for a draft (run-plan --resolve)
+    POST /api/create/posting               when a draft can start and when its source posts the rest (run-plan
+                                           --readiness), or that this engine starts on the whole cycle
     POST /api/create/start                 write the run folder and launch run-plan ("queue": true waits for the card,
                                            and for a start from the last day no check has confirmed yet)
     GET  /api/queue                        the queued forecasts in order, the card's state, when each expects to start;
@@ -91,7 +93,7 @@ from typing import Any, Iterator
 from urllib.parse import quote, unquote
 import uuid
 
-from . import downscale, frames, runs
+from . import downscale, frames, posting, runs
 from .wiki import RUN_LINK, Wiki, recipe_of, recipe_row
 from .machines import LOCAL, MachineError, Registry, check_row
 from .files import (COPY_DIR, SERVER_DIR, PathRefused, plain_message, read_json, require_name, safe_file, scrub,
@@ -123,6 +125,23 @@ class Reply:
     file: Path | None = None
     headers: dict[str, str] = field(default_factory=dict)
     run_file: bool = False
+
+
+def _draft_route(draft: dict[str, Any]) -> str:
+    """The run-plan route a draft's plan names.
+
+    A storm-following draft runs the configuration its cyclone setup writes, which belongs on the route that
+    source's row gives it (:func:`gpuwm.cyclone_sources.plan_route`): the config-driven route for a source whose
+    setup declares case data, the prepared route (what ``gpuwm go`` runs) for every other.  The breakage this
+    prevents (A152): every storm-following plan named the config-driven route, which ``gpuwm run-plan`` refuses
+    for a GFS storm.  Any other draft keeps the route its source was offered on.
+    """
+
+    if draft.get("following"):
+        from gpuwm.cyclone_sources import plan_route
+
+        return plan_route(str(draft["source"]))
+    return draft.get("route") or "prepared"
 
 
 class ApiError(Exception):
@@ -581,6 +600,116 @@ def ladder_names() -> list[str]:
     return [*LADDER_RATIOS, "auto"]
 
 
+def fitted_grid(payload: dict[str, Any], ladder: str | None) -> dict[str, Any] | None:
+    """The grid an ``auto`` ladder's fit landed on, as its caller read it off that fit, or ``None`` when not sent.
+
+    ``finest_dx_km`` and ``domains`` are the fit's finest spacing and how many grids it has.  The run binds the
+    default at that grid (the sub-km suite when the fit reaches a 500 m nest), so the physics check, Start and the
+    night check read it there; without it they read the source's own default, which on 2.8.1 before this named
+    Morrison, YSU and Noah for a fitted 500 m ladder that runs Thompson, MYNN and RUC.  Only an ``auto`` ladder
+    takes it: every other shape fixes its own grids, and a fitted grid beside one would be a second answer the check
+    read instead of the plan's.  It must be a grid the auto ladder reaches, one of the wizard's preset ladders.
+    """
+
+    from gpuwm.domain_wizard import LADDER_RATIOS, ROOT_DX_M, finest_spacing_m
+
+    finest = _number(payload, "finest_dx_km", 0.01, 200.0)
+    domains = _number(payload, "domains", 1, 64, integral=True)
+    if finest is None and domains is None:
+        return None
+    if ladder != "auto":
+        raise ApiError(400, "finest_dx_km and domains are the auto ladder's fitted grid. A grid spacing, a named "
+                            "ladder or a chain fixes its own grids, and the physics check would read the sent grid "
+                            "instead of the one the plan runs.", "Leave finest_dx_km and domains out.")
+    if finest is None or domains is None:
+        raise ApiError(400, "finest_dx_km and domains go together: the default a run binds is read at its finest "
+                            "grid for that many grids.", "Send both, as the auto ladder's fit answered them.")
+    reached = [(finest_spacing_m(ROOT_DX_M, ratios) / 1000.0, len(ratios) + 1) for ratios in LADDER_RATIOS.values()]
+    if not any(abs(km - finest) <= 1e-6 * km and count == domains for km, count in reached):
+        raise ApiError(400, f"The auto ladder does not reach {domains} grids down to {finest:g} km.",
+                       "Send the finest spacing and grid count of the auto ladder's own fit.")
+    return {"finest_dx_km": float(finest), "domains": int(domains)}
+
+
+def fit_grid(fit: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A fit's finest spacing and grid count (:func:`describe_fit`), the keys :func:`fitted_grid` reads."""
+
+    spacings = [float(domain["dx_km"]) for domain in (fit or {}).get("domains") or [] if domain.get("dx_km")]
+    if not spacings:
+        return None
+    return {"finest_dx_km": min(spacings), "domains": len(spacings)}
+
+
+def draft_finest_dx_m(draft: dict[str, Any]) -> float | None:
+    """The finest grid a New forecast draft asks for, in metres.
+
+    Its grid spacing (the wizard's own root when none is set) refined by
+    its nest chain, or its nest ladder's finest grid.  For a ladder of
+    ``auto``, whose depth the fit chooses for the card, the finest grid of
+    that fit (:func:`fitted_grid`), and ``None`` before the fit answered.
+    """
+
+    from gpuwm.domain_wizard import LADDER_RATIOS, ROOT_DX_M, finest_spacing_m
+
+    ladder = draft.get("ladder")
+    if ladder == "auto":
+        fitted = draft.get("fitted")
+        return float(fitted["finest_dx_km"]) * 1000.0 if fitted else None
+    if ladder:
+        return finest_spacing_m(ROOT_DX_M, LADDER_RATIOS[ladder])
+    root_m = ROOT_DX_M if draft.get("dx_km") is None else float(draft["dx_km"]) * 1000.0
+    ratios = tuple(int(value) for value in str(draft.get("chain") or "").split(",") if value)
+    return finest_spacing_m(root_m, ratios)
+
+
+def draft_domains(draft: dict[str, Any]) -> int:
+    """How many grids a New forecast draft has: its root and each nest of its ladder or chain, or its auto fit's."""
+
+    from gpuwm.domain_wizard import LADDER_RATIOS
+
+    ladder = draft.get("ladder")
+    if ladder == "auto":
+        return int((draft.get("fitted") or {}).get("domains") or 1)
+    ratios = (LADDER_RATIOS.get(ladder, ()) if ladder else
+              [value for value in str(draft.get("chain") or "").split(",") if value])
+    return len(ratios) + 1
+
+
+def draft_default_suite(draft: dict[str, Any]) -> str | None:
+    """The suite a draft with no physics set runs: the wizard's own default for its source at its finest grid.
+
+    The same row `gpuwm domain` binds (:func:`gpuwm.physics_menu.default_profile_for`), so the suite New forecast
+    checks is the suite the plan's run will carry: below 1 km that is the spacing table's suite wherever the source
+    admits it, not the source's own default.
+    """
+
+    from gpuwm.physics_menu import default_profile_for
+
+    return default_profile_for(draft["source"], draft_finest_dx_m(draft), draft_domains(draft))
+
+
+def draft_check_grid(draft: dict[str, Any]) -> dict[str, Any]:
+    """The physics check's grid keys for a draft with nests: its root, its finest spacing and how many grids it has.
+
+    The check reads the default a request naming no suite runs at the finest grid, the row `gpuwm domain` binds
+    (:func:`draft_default_suite` reads the same one), and the root's schemes, its cumulus among them, at ``dx_km``.
+    A nest ladder's root is the wizard's own 12 km root, which the page leaves out: without it the check read the
+    root at its 3 km probe spacing and showed cumulus off where the run's 12 km root runs Kain-Fritsch.  Empty for
+    a draft of one grid, which the check reads at its ``dx_km``; only the root for a ladder of ``auto`` before its
+    fit answered.
+    """
+
+    from gpuwm.domain_wizard import ROOT_DX_M
+
+    root = {"dx_km": ROOT_DX_M / 1000.0} if draft.get("ladder") else {}
+    if not (draft.get("ladder") or draft.get("chain")):
+        return root
+    finest = draft_finest_dx_m(draft)
+    if finest is None:
+        return root
+    return {**root, "finest_dx_km": finest / 1000.0, "domains": draft_domains(draft)}
+
+
 def _check_render_selection(products: str | None, section: str | None) -> None:
     """Check before creating a draft whose requested pictures cannot be drawn."""
     from gpuwm.go_cli import GoRefusal, admit_render_products
@@ -631,6 +760,9 @@ class CreateMixin:
         card = str(payload.get("card") or "").strip().lower()
         if card not in CARDS:
             raise ApiError(400, "Pick the card memory the run is sized for.", f"One of {', '.join(CARDS)}.")
+        whole_cycle = payload.get("whole_cycle")
+        if whole_cycle is not None and not isinstance(whole_cycle, bool):
+            raise ApiError(400, "whole_cycle must be true or false.", "")
         draft = {
             "name": str(name),
             "source": source,
@@ -663,6 +795,9 @@ class CreateMixin:
             # run with this draft's source, start, length and card.
             "following": payload.get("following") is True,
             "cyclone_setup": None,
+            # Run as the source posts (the default): start at the window's first hours and wait at a seam for an
+            # hour not posted yet.  "Wait for the whole cycle" (whole_cycle) is the opt-out (gui/posting.py).
+            "as_posted": whole_cycle is not True,
         }
         if draft["preset"]:
             # A preset is a suite and a grid spacing.  An explicit suite or
@@ -732,7 +867,23 @@ class CreateMixin:
             if draft["dx_km"] is not None:
                 raise ApiError(400, "A nest ladder and a grid spacing cannot both be set; the ladder fixes the spacing.",
                                "Clear one of them.")
+        # The grid an auto ladder's fit landed on, when the caller has that fit: the physics this plan runs with
+        # none named is the default there.  A Start without it is fitted here first (bind_auto_grid).
+        draft["fitted"] = fitted_grid(payload, draft["ladder"])
         return draft
+
+    def bind_auto_grid(self, payload: dict[str, Any], draft: dict[str, Any]) -> None:
+        """Fit an auto-ladder draft that came without its fitted grid, and keep the grid it lands on.
+
+        The run binds the default at the ladder its own fit picks, so the physics a Start checks, records and asks
+        the night check about is read there.  New forecast sends the grid of the fit it shows; any other caller's
+        Start is fitted once here, with the same plan.
+        """
+
+        if draft.get("ladder") != "auto" or draft.get("fitted") or draft.get("following"):
+            return
+        asked = {key: value for key, value in payload.items() if key not in ("finest_dx_km", "domains")}
+        draft["fitted"] = fit_grid(self.fit(asked, False).body.get("fit"))
 
     def _event_keys(self, payload: dict[str, Any], draft: dict[str, Any]) -> dict[str, Any]:
         """The rest of an event's best run, for a draft that keeps the event's grids.
@@ -879,13 +1030,16 @@ class CreateMixin:
         options = {"render_products": draft["products"]} if draft["products"] else {}
         if section:
             options["render_section"] = section
+        # "Wait for the whole cycle", on an engine whose plans take the choice; as posted is its default.
+        options.update(posting.plan_options(_draft_route(draft), draft.get("as_posted", True)))
         if draft.get("following"):
-            # The cyclone setup writes the configuration; the plan runs it as it is.
+            # The cyclone setup writes the configuration; the plan runs it as it is, on the route that
+            # configuration belongs to (_draft_route).
             # A configuration file's run draws nothing unless its plan says what to draw, so the page's
             # standard set is named here as an intent plan gets it by default.
             from gpuwm.first_products import DEFAULT_RENDER_PRODUCTS
 
-            return {"schema": PLAN_SCHEMA, "name": draft["name"] or "draft", "route": "experiment",
+            return {"schema": PLAN_SCHEMA, "name": draft["name"] or "draft", "route": _draft_route(draft),
                     "config": {"path": str(rundir / FOLLOWING_CONFIG)}, "output_root": str(rundir),
                     "run_options": {**options, "render_products": draft["products"] or DEFAULT_RENDER_PRODUCTS}}
         intent: dict[str, Any] = {
@@ -952,7 +1106,7 @@ class CreateMixin:
         source = draft["source"]
         catalog = self._cached("physics:" + source,
                                engine_argv("physics-catalog", "--json", "--source", source), CACHE_S)
-        suite = draft["profile"] or catalog.get("default_suite")
+        suite = draft["profile"] or draft_default_suite(draft) or catalog.get("default_suite")
         row = next((r for r in catalog.get("suites") or [] if r.get("id") == suite), None)
         if not row or not row.get("day_only"):
             return
@@ -962,6 +1116,7 @@ class CreateMixin:
             request["suite"] = draft["profile"]
         if draft["dx_km"] is not None:
             request["dx_km"] = draft["dx_km"]
+        request.update(draft_check_grid(draft))
         argv = engine_argv("physics-catalog", "--json", "--check",
                            json.dumps(request, separators=(",", ":"), sort_keys=True))
         try:
@@ -1020,6 +1175,38 @@ class CreateMixin:
             fit["warning"] = warning
             fit["words"] = f"{fit['words']} {warning}".strip()
         return Reply(200, {"ok": True, "argv": argv, "command": display(argv), "fit": fit})
+
+    def posting_schedule(self, payload: dict[str, Any], dry: bool) -> Reply:
+        """When a draft can start and when its source posts the rest: the engine's readiness answer for it.
+
+        Asked of the draft's plan, as Start would write it (``gpuwm run-plan PLAN.json --readiness``), so a nest
+        that starts later than the forecast counts its own start hour; a storm-following draft, whose configuration
+        is written only at Start, asks for its source window (``gpuwm fetch ... --readiness``).  On an engine that
+        runs every start on the whole cycle the answer says so and asks nothing (:mod:`.posting`).
+        """
+
+        draft = self.draft(payload, need_name=False)
+        route = _draft_route(draft)
+        offered = posting.support()
+        asks = "fetch_readiness" if draft["following"] else "run_plan_readiness"
+        if not offered.get(asks) or not posting.runs_as_posted(route):
+            return Reply(200, {"ok": True, "posting": posting.unavailable(draft["as_posted"])})
+        if draft["following"]:
+            argv = posting.readiness_argv(engine_argv, draft=draft, as_posted=draft["as_posted"])
+            if dry:
+                return _dry(argv)
+            answer = posting.ask(self.runner, argv, cwd=None, as_posted=draft["as_posted"])
+            return Reply(200, {"ok": True, "argv": argv, "command": display(argv), "posting": answer})
+        folder = self.root / SERVER_DIR / "drafts" / uuid.uuid4().hex[:12]
+        argv = posting.readiness_argv(engine_argv, plan=folder / runs.PLAN)
+        if dry:
+            return _dry(argv)
+        try:
+            self._write_plan(draft, folder)
+            answer = posting.ask(self.runner, argv, cwd=folder, as_posted=draft["as_posted"])
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+        return Reply(200, {"ok": True, "argv": argv, "command": display(argv), "posting": answer})
 
     def _following_fit(self, draft: dict[str, Any], dry: bool) -> Reply:
         """A storm-following draft priced by the cyclone setup that will write it, as the start runs it."""
@@ -1111,6 +1298,7 @@ class CreateMixin:
                            "Give this forecast another name.")
         refuse_without_geography(self.runner)
         region_polygon(draft["lat"], draft["lon"], draft["width_km"], draft["height_km"])
+        self.bind_auto_grid(payload, draft)
         physics = self.composed_physics(payload, draft)
         if dry:
             extra = {"prepare": self.cyclone_argv(draft, rundir / FOLLOWING_CONFIG)} if draft["following"] else {}
@@ -1244,12 +1432,24 @@ class CreateMixin:
         if not isinstance(choices, dict) or not all(isinstance(k, str) and isinstance(v, str)
                                                     for k, v in choices.items()):
             raise ApiError(400, "physics_choices must map each family to one scheme.", "")
+        auto = draft.get("ladder") == "auto"
+        if auto:
+            # The auto ladder's run fits each preset with the picks written over that preset's own default and keeps
+            # the deepest that fits, so the picks ride into the plan as they are: a set named from one grid would be
+            # asserted on whichever ladder the run's fit lands on.
+            draft["profile"] = draft["cumulus"] = None
+            draft["physics_choices"] = dict(choices)
+            if not draft.get("fitted"):
+                # The fit itself, before the depth is known: nothing to check the picks against yet.
+                return None
         request = {"choices": choices, "source": draft["source"], "cycle": draft["cycle"], "hours": draft["hours"],
                    "lat": draft["lat"], "lon": draft["lon"]}
         if draft["dx_km"] is not None:
             request["dx_km"] = draft["dx_km"]
         if draft.get("nz") is not None:
             request["nz"] = draft["nz"]
+        # Picks naming no set change the default at this draft's finest grid, as the wizard writes them.
+        request.update(draft_check_grid(draft))
         argv = engine_argv("physics-catalog", "--json", "--check",
                            json.dumps(request, separators=(",", ":"), sort_keys=True))
         try:
@@ -1262,6 +1462,9 @@ class CreateMixin:
                            "Pick another scheme on the Physics step; it lists the nearest ones that run.",
                            argv=argv, command=display(argv))
         suite = verdict.get("named_suite")
+        if auto:
+            # The set the picks make on the fitted ladder, recorded beside the plan's picks.
+            return self._physics_choice(verdict, choices, suite, argv)
         if draft["profile"] and draft["profile"] != suite:
             raise ApiError(409, f"The physics set on the form ({draft['profile']}) is not the one the chosen schemes "
                                 f"make ({suite or 'no named set'}).", "Open the Physics step again so the two agree.")
@@ -1279,9 +1482,16 @@ class CreateMixin:
             suite = None
             draft["profile"] = draft["cumulus"] = None
             draft["physics_choices"] = dict(choices)
+        return self._physics_choice(verdict, choices, suite, argv, cumulus=draft["cumulus"])
+
+    @staticmethod
+    def _physics_choice(verdict: dict[str, Any], choices: dict[str, Any], suite: str | None, argv: list[str], *,
+                        cumulus: str | None = None) -> dict[str, Any]:
+        """The composer's checked choice as the run folder keeps it (:data:`PHYSICS_CHOICE`)."""
+
         return {"schema": "gpuwm.gui-physics-choice.v1", "suite": suite,
                 "label": verdict.get("named_suite_label") if suite else None,
-                "base_suite": verdict.get("base_suite"), "cumulus": draft["cumulus"], "choices": choices,
+                "base_suite": verdict.get("base_suite"), "cumulus": cumulus, "choices": choices,
                 "resolved": verdict.get("resolved") or {}, "words": verdict.get("words"),
                 "cost": (verdict.get("cost") or {}).get("words"), "command": display(argv)}
 
@@ -1596,7 +1806,10 @@ class SimulateMixin:
                                                      for key, value in args.items()],
                                   "--out", str(rundir / "cyclone.toml"), "--json")
             config: dict[str, Any] = {"path": str(rundir / "cyclone.toml")}
-            route = "experiment"
+            # The route the configuration it writes belongs to (A152).
+            from gpuwm.cyclone_sources import plan_route
+
+            route = plan_route(str(args.get("source") or source))
         else:
             config = {"intent": {**row["intent"], "polygon": str(rundir / "region.geojson")}}
         plan: dict[str, Any] = {"schema": PLAN_SCHEMA, "name": name, "route": route, "config": config,
@@ -1834,7 +2047,10 @@ class SystemMixin:
                          "step_hours": max(1, int(round(float(row.get("forcing_interval_seconds") or 3600) / 3600))),
                          "coverage": bounds, "coverage_words": coverage.get("describe"),
                          "status": maturity.get("status"),
-                         "default_profile": own.get("default_profile_id"), "profiles": profiles})
+                         "default_profile": own.get("default_profile_id"),
+                         # The default by grid spacing, which binds ahead of default_profile on a grid finer than a
+                         # row's bound (gpuwm.physics_menu.SPACING_DEFAULTS), for one domain and for a tree.
+                         "spacing_defaults": own.get("spacing_defaults") or [], "profiles": profiles})
         preferred = preferred_order(rows)
         moment = now or _utcnow()
         # Each source's hours and usual publication delay, so a page works out where to open from its own clock
@@ -1984,6 +2200,15 @@ class PhysicsMixin:
                    ("suite", "preset", "choices", "settings", "dx_km", "nz", "source", "card",
                     "cycle", "hours", "lat", "lon")
                    if key in payload and payload[key] not in (None, "")}
+        # The Physics step's nest ladder or chain, as the draft carries them: the check reads the default at the
+        # finest grid, the suite the plan's run gets with none named.
+        ladder = str(payload.get("ladder") or "").strip() or None
+        if ladder is not None and ladder not in ladder_names():
+            raise ApiError(400, f"No nest ladder called {ladder}.", f"One of {', '.join(ladder_names())}.")
+        request.update(draft_check_grid({"ladder": ladder, "dx_km": request.get("dx_km"),
+                                         "chain": _nest_list(payload.get("chain"), "chain", r"^[1-9]\d*(,[1-9]\d*)*$"),
+                                         # An auto ladder's depth is its fit's: the page sends the grid it landed on.
+                                         "fitted": fitted_grid(payload, ladder)}))
         argv = engine_argv("physics-catalog", "--json", "--check",
                            json.dumps(request, separators=(",", ":"), sort_keys=True))
         if dry:
@@ -2196,6 +2421,7 @@ class MachinesMixin:
         if not payload.get("card"):
             payload = {**payload, "card": probe.get("card")}
         draft = self.draft(payload, need_name=True, settle=settle, queue=queue)
+        self.bind_auto_grid(payload, draft)
         physics = self.composed_physics(payload, draft)
         rundir = self.root / draft["name"]
         # A folder the queue wrote for this forecast is the one it starts in; any other is a name clash.
@@ -2654,7 +2880,7 @@ class WikiMixin:
                 return Reply(body=recipe_of(self.wiki.store, ident, self.offered_sources(), card_gb))
             if head == "run":
                 return Reply(body=self.wiki.run_page(ident, runs.existing_run(self.root, ident)))
-        raise ApiError(404, "No such Weather Library page.", "Go to the Weather Library's main page.")
+        raise ApiError(404, "No such wiki page.", "Go to the wiki's main page.")
 
 
 class Api(RunsMixin, PicturesMixin, CreateMixin, SimulateMixin, SystemMixin, PhysicsMixin, MachinesMixin,
@@ -2725,16 +2951,9 @@ class Api(RunsMixin, PicturesMixin, CreateMixin, SimulateMixin, SystemMixin, Phy
             reply.body["shown"] = plain_command(reply.body["argv"], self.root)
         return reply
 
-    #: API sections whose path differs from the name their handler goes by: the Weather Library's
-    #: pages are served under library by the handler named wiki, and wiki, their path before the page
-    #: took that name, answers the same.
-    SECTIONS = {"library": "wiki"}
-
     def _dispatch(self, method: str, raw_path: str, query: dict[str, list[str]], body: bytes,
                   content_type: str = "") -> Reply:
         segments = [unquote(part) for part in raw_path.split("/") if part]
-        if len(segments) > 1 and segments[0] == "api":
-            segments[1] = self.SECTIONS.get(segments[1], segments[1])
         try:
             if segments[:1] != ["api"]:
                 raise ApiError(404, "No such page.")
@@ -2818,6 +3037,8 @@ class Api(RunsMixin, PicturesMixin, CreateMixin, SimulateMixin, SystemMixin, Phy
         raise ApiError(404, "No such endpoint.")
 
     def _post(self, parts: list[str], payload: dict[str, Any], dry: bool) -> Reply:
+        if parts == ["create", "posting"]:
+            return self.posting_schedule(payload, dry)
         if parts == ["create", "fit"]:
             return self.fit(payload, dry)
         if parts == ["create", "start"]:
@@ -2850,5 +3071,6 @@ class Api(RunsMixin, PicturesMixin, CreateMixin, SimulateMixin, SystemMixin, Phy
         raise ApiError(404, "No such action.")
 
 
-__all__ = ["Api", "ApiError", "Reply", "default_cycle", "describe_fit", "ladder_names", "memory_fit", "recent_cycles", "region_polygon",
-           "run_url"]
+__all__ = ["Api", "ApiError", "Reply", "default_cycle", "describe_fit", "draft_check_grid", "draft_default_suite",
+           "draft_domains", "draft_finest_dx_m", "fit_grid", "fitted_grid", "ladder_names", "memory_fit",
+           "recent_cycles", "region_polygon", "run_url"]

@@ -1,0 +1,304 @@
+meta_nz f4 0
+meta_ncol f4 0
+meta_nstep f4 0
+meta_use_wudapt_lcz f4 0
+meta_dt f4 0
+meta_declin_urb f4 0
+dz8w f4 2 21 31
+u_phy f4 2 21 31
+v_phy f4 2 21 31
+th_phy f4 2 21 31
+rho f4 2 21 31
+p_phy f4 2 21 31
+swdown f4 1 21
+glw f4 1 21
+cosz_urb2d f4 1 21
+omg_urb2d f4 1 21
+frc_urb2d f4 1 21
+utype_urb2d i4 1 21
+lp_urb2d f4 1 21
+lb_urb2d f4 1 21
+hgt_urb2d f4 1 21
+hi_urb2d f4 2 21 15
+lsm_ust f4 1 21
+lsm_tsk f4 1 21
+lsm_hfx f4 1 21
+lsm_qfx f4 1 21
+lsm_grdflx f4 1 21
+lsm_albedo f4 1 21
+lsm_emiss f4 1 21
+s1_in_trb_urb4d f4 2 21 360
+s1_in_tw1_urb4d f4 2 21 360
+s1_in_tw2_urb4d f4 2 21 360
+s1_in_tgb_urb4d f4 2 21 20
+s1_in_sfw1_urb3d f4 2 21 36
+s1_in_sfw2_urb3d f4 2 21 36
+s1_in_sfr_urb3d f4 2 21 36
+s1_in_sfg_urb3d f4 2 21 2
+noah_s1_pre_a_u_bep f4 2 21 31
+noah_s1_pre_a_v_bep f4 2 21 31
+noah_s1_pre_a_t_bep f4 2 21 31
+noah_s1_pre_a_q_bep f4 2 21 31
+noah_s1_pre_a_e_bep f4 2 21 31
+noah_s1_pre_b_u_bep f4 2 21 31
+noah_s1_pre_b_v_bep f4 2 21 31
+noah_s1_pre_b_t_bep f4 2 21 31
+noah_s1_pre_b_q_bep f4 2 21 31
+noah_s1_pre_b_e_bep f4 2 21 31
+noah_s1_pre_dlg_bep f4 2 21 31
+noah_s1_pre_dl_u_bep f4 2 21 31
+noah_s1_pre_sf_bep f4 2 21 31
+noah_s1_pre_vl_bep f4 2 21 31
+noah_s1_bep_rl_up_urb f4 1 21
+noah_s1_bep_rs_abs_urb f4 1 21
+noah_s1_bep_emiss_urb f4 1 21
+noah_s1_bep_grdflx_urb f4 1 21
+noah_s1_bep_a_u_bep f4 2 21 31
+noah_s1_bep_a_v_bep f4 2 21 31
+noah_s1_bep_a_t_bep f4 2 21 31
+noah_s1_bep_a_q_bep f4 2 21 31
+noah_s1_bep_a_e_bep f4 2 21 31
+noah_s1_bep_b_u_bep f4 2 21 31
+noah_s1_bep_b_v_bep f4 2 21 31
+noah_s1_bep_b_t_bep f4 2 21 31
+noah_s1_bep_b_q_bep f4 2 21 31
+noah_s1_bep_b_e_bep f4 2 21 31
+noah_s1_bep_dlg_bep f4 2 21 31
+noah_s1_bep_dl_u_bep f4 2 21 31
+noah_s1_bep_sf_bep f4 2 21 31
+noah_s1_bep_vl_bep f4 2 21 31
+noah_s1_out_a_u_bep f4 2 21 31
+noah_s1_out_a_v_bep f4 2 21 31
+noah_s1_out_a_t_bep f4 2 21 31
+noah_s1_out_a_q_bep f4 2 21 31
+noah_s1_out_a_e_bep f4 2 21 31
+noah_s1_out_b_u_bep f4 2 21 31
+noah_s1_out_b_v_bep f4 2 21 31
+noah_s1_out_b_t_bep f4 2 21 31
+noah_s1_out_b_q_bep f4 2 21 31
+noah_s1_out_b_e_bep f4 2 21 31
+noah_s1_out_dlg_bep f4 2 21 31
+noah_s1_out_dl_u_bep f4 2 21 31
+noah_s1_out_sf_bep f4 2 21 31
+noah_s1_out_vl_bep f4 2 21 31
+noah_s1_out_ust f4 1 21
+noah_s1_out_tsk f4 1 21
+noah_s1_out_hfx f4 1 21
+noah_s1_out_qfx f4 1 21
+noah_s1_out_lh f4 1 21
+noah_s1_out_grdflx f4 1 21
+noah_s1_out_albedo f4 1 21
+noah_s1_out_emiss f4 1 21
+noah_s1_out_ts_urb2d f4 1 21
+noah_s1_out_sh_urb2d f4 1 21
+noah_s1_out_lh_urb2d f4 1 21
+noah_s1_out_g_urb2d f4 1 21
+noah_s1_out_rn_urb2d f4 1 21
+noahmp_s1_pre_a_u_bep f4 2 21 31
+noahmp_s1_pre_a_v_bep f4 2 21 31
+noahmp_s1_pre_a_t_bep f4 2 21 31
+noahmp_s1_pre_a_q_bep f4 2 21 31
+noahmp_s1_pre_a_e_bep f4 2 21 31
+noahmp_s1_pre_b_u_bep f4 2 21 31
+noahmp_s1_pre_b_v_bep f4 2 21 31
+noahmp_s1_pre_b_t_bep f4 2 21 31
+noahmp_s1_pre_b_q_bep f4 2 21 31
+noahmp_s1_pre_b_e_bep f4 2 21 31
+noahmp_s1_pre_dlg_bep f4 2 21 31
+noahmp_s1_pre_dl_u_bep f4 2 21 31
+noahmp_s1_pre_sf_bep f4 2 21 31
+noahmp_s1_pre_vl_bep f4 2 21 31
+noahmp_s1_bep_rl_up_urb f4 1 21
+noahmp_s1_bep_rs_abs_urb f4 1 21
+noahmp_s1_bep_emiss_urb f4 1 21
+noahmp_s1_bep_grdflx_urb f4 1 21
+noahmp_s1_bep_a_u_bep f4 2 21 31
+noahmp_s1_bep_a_v_bep f4 2 21 31
+noahmp_s1_bep_a_t_bep f4 2 21 31
+noahmp_s1_bep_a_q_bep f4 2 21 31
+noahmp_s1_bep_a_e_bep f4 2 21 31
+noahmp_s1_bep_b_u_bep f4 2 21 31
+noahmp_s1_bep_b_v_bep f4 2 21 31
+noahmp_s1_bep_b_t_bep f4 2 21 31
+noahmp_s1_bep_b_q_bep f4 2 21 31
+noahmp_s1_bep_b_e_bep f4 2 21 31
+noahmp_s1_bep_dlg_bep f4 2 21 31
+noahmp_s1_bep_dl_u_bep f4 2 21 31
+noahmp_s1_bep_sf_bep f4 2 21 31
+noahmp_s1_bep_vl_bep f4 2 21 31
+noahmp_s1_out_a_u_bep f4 2 21 31
+noahmp_s1_out_a_v_bep f4 2 21 31
+noahmp_s1_out_a_t_bep f4 2 21 31
+noahmp_s1_out_a_q_bep f4 2 21 31
+noahmp_s1_out_a_e_bep f4 2 21 31
+noahmp_s1_out_b_u_bep f4 2 21 31
+noahmp_s1_out_b_v_bep f4 2 21 31
+noahmp_s1_out_b_t_bep f4 2 21 31
+noahmp_s1_out_b_q_bep f4 2 21 31
+noahmp_s1_out_b_e_bep f4 2 21 31
+noahmp_s1_out_dlg_bep f4 2 21 31
+noahmp_s1_out_dl_u_bep f4 2 21 31
+noahmp_s1_out_sf_bep f4 2 21 31
+noahmp_s1_out_vl_bep f4 2 21 31
+noahmp_s1_out_ust f4 1 21
+noahmp_s1_out_tsk f4 1 21
+noahmp_s1_out_hfx f4 1 21
+noahmp_s1_out_qfx f4 1 21
+noahmp_s1_out_lh f4 1 21
+noahmp_s1_out_grdflx f4 1 21
+noahmp_s1_out_albedo f4 1 21
+noahmp_s1_out_emiss f4 1 21
+noahmp_s1_out_ts_urb2d f4 1 21
+noahmp_s1_out_sh_urb2d f4 1 21
+noahmp_s1_out_lh_urb2d f4 1 21
+noahmp_s1_out_g_urb2d f4 1 21
+noahmp_s1_out_rn_urb2d f4 1 21
+s1_out_trb_urb4d f4 2 21 360
+s1_out_tw1_urb4d f4 2 21 360
+s1_out_tw2_urb4d f4 2 21 360
+s1_out_tgb_urb4d f4 2 21 20
+s1_out_sfw1_urb3d f4 2 21 36
+s1_out_sfw2_urb3d f4 2 21 36
+s1_out_sfr_urb3d f4 2 21 36
+s1_out_sfg_urb3d f4 2 21 2
+s2_in_trb_urb4d f4 2 21 360
+s2_in_tw1_urb4d f4 2 21 360
+s2_in_tw2_urb4d f4 2 21 360
+s2_in_tgb_urb4d f4 2 21 20
+s2_in_sfw1_urb3d f4 2 21 36
+s2_in_sfw2_urb3d f4 2 21 36
+s2_in_sfr_urb3d f4 2 21 36
+s2_in_sfg_urb3d f4 2 21 2
+noah_s2_pre_a_u_bep f4 2 21 31
+noah_s2_pre_a_v_bep f4 2 21 31
+noah_s2_pre_a_t_bep f4 2 21 31
+noah_s2_pre_a_q_bep f4 2 21 31
+noah_s2_pre_a_e_bep f4 2 21 31
+noah_s2_pre_b_u_bep f4 2 21 31
+noah_s2_pre_b_v_bep f4 2 21 31
+noah_s2_pre_b_t_bep f4 2 21 31
+noah_s2_pre_b_q_bep f4 2 21 31
+noah_s2_pre_b_e_bep f4 2 21 31
+noah_s2_pre_dlg_bep f4 2 21 31
+noah_s2_pre_dl_u_bep f4 2 21 31
+noah_s2_pre_sf_bep f4 2 21 31
+noah_s2_pre_vl_bep f4 2 21 31
+noah_s2_bep_rl_up_urb f4 1 21
+noah_s2_bep_rs_abs_urb f4 1 21
+noah_s2_bep_emiss_urb f4 1 21
+noah_s2_bep_grdflx_urb f4 1 21
+noah_s2_bep_a_u_bep f4 2 21 31
+noah_s2_bep_a_v_bep f4 2 21 31
+noah_s2_bep_a_t_bep f4 2 21 31
+noah_s2_bep_a_q_bep f4 2 21 31
+noah_s2_bep_a_e_bep f4 2 21 31
+noah_s2_bep_b_u_bep f4 2 21 31
+noah_s2_bep_b_v_bep f4 2 21 31
+noah_s2_bep_b_t_bep f4 2 21 31
+noah_s2_bep_b_q_bep f4 2 21 31
+noah_s2_bep_b_e_bep f4 2 21 31
+noah_s2_bep_dlg_bep f4 2 21 31
+noah_s2_bep_dl_u_bep f4 2 21 31
+noah_s2_bep_sf_bep f4 2 21 31
+noah_s2_bep_vl_bep f4 2 21 31
+noah_s2_out_a_u_bep f4 2 21 31
+noah_s2_out_a_v_bep f4 2 21 31
+noah_s2_out_a_t_bep f4 2 21 31
+noah_s2_out_a_q_bep f4 2 21 31
+noah_s2_out_a_e_bep f4 2 21 31
+noah_s2_out_b_u_bep f4 2 21 31
+noah_s2_out_b_v_bep f4 2 21 31
+noah_s2_out_b_t_bep f4 2 21 31
+noah_s2_out_b_q_bep f4 2 21 31
+noah_s2_out_b_e_bep f4 2 21 31
+noah_s2_out_dlg_bep f4 2 21 31
+noah_s2_out_dl_u_bep f4 2 21 31
+noah_s2_out_sf_bep f4 2 21 31
+noah_s2_out_vl_bep f4 2 21 31
+noah_s2_out_ust f4 1 21
+noah_s2_out_tsk f4 1 21
+noah_s2_out_hfx f4 1 21
+noah_s2_out_qfx f4 1 21
+noah_s2_out_lh f4 1 21
+noah_s2_out_grdflx f4 1 21
+noah_s2_out_albedo f4 1 21
+noah_s2_out_emiss f4 1 21
+noah_s2_out_ts_urb2d f4 1 21
+noah_s2_out_sh_urb2d f4 1 21
+noah_s2_out_lh_urb2d f4 1 21
+noah_s2_out_g_urb2d f4 1 21
+noah_s2_out_rn_urb2d f4 1 21
+noahmp_s2_pre_a_u_bep f4 2 21 31
+noahmp_s2_pre_a_v_bep f4 2 21 31
+noahmp_s2_pre_a_t_bep f4 2 21 31
+noahmp_s2_pre_a_q_bep f4 2 21 31
+noahmp_s2_pre_a_e_bep f4 2 21 31
+noahmp_s2_pre_b_u_bep f4 2 21 31
+noahmp_s2_pre_b_v_bep f4 2 21 31
+noahmp_s2_pre_b_t_bep f4 2 21 31
+noahmp_s2_pre_b_q_bep f4 2 21 31
+noahmp_s2_pre_b_e_bep f4 2 21 31
+noahmp_s2_pre_dlg_bep f4 2 21 31
+noahmp_s2_pre_dl_u_bep f4 2 21 31
+noahmp_s2_pre_sf_bep f4 2 21 31
+noahmp_s2_pre_vl_bep f4 2 21 31
+noahmp_s2_bep_rl_up_urb f4 1 21
+noahmp_s2_bep_rs_abs_urb f4 1 21
+noahmp_s2_bep_emiss_urb f4 1 21
+noahmp_s2_bep_grdflx_urb f4 1 21
+noahmp_s2_bep_a_u_bep f4 2 21 31
+noahmp_s2_bep_a_v_bep f4 2 21 31
+noahmp_s2_bep_a_t_bep f4 2 21 31
+noahmp_s2_bep_a_q_bep f4 2 21 31
+noahmp_s2_bep_a_e_bep f4 2 21 31
+noahmp_s2_bep_b_u_bep f4 2 21 31
+noahmp_s2_bep_b_v_bep f4 2 21 31
+noahmp_s2_bep_b_t_bep f4 2 21 31
+noahmp_s2_bep_b_q_bep f4 2 21 31
+noahmp_s2_bep_b_e_bep f4 2 21 31
+noahmp_s2_bep_dlg_bep f4 2 21 31
+noahmp_s2_bep_dl_u_bep f4 2 21 31
+noahmp_s2_bep_sf_bep f4 2 21 31
+noahmp_s2_bep_vl_bep f4 2 21 31
+noahmp_s2_out_a_u_bep f4 2 21 31
+noahmp_s2_out_a_v_bep f4 2 21 31
+noahmp_s2_out_a_t_bep f4 2 21 31
+noahmp_s2_out_a_q_bep f4 2 21 31
+noahmp_s2_out_a_e_bep f4 2 21 31
+noahmp_s2_out_b_u_bep f4 2 21 31
+noahmp_s2_out_b_v_bep f4 2 21 31
+noahmp_s2_out_b_t_bep f4 2 21 31
+noahmp_s2_out_b_q_bep f4 2 21 31
+noahmp_s2_out_b_e_bep f4 2 21 31
+noahmp_s2_out_dlg_bep f4 2 21 31
+noahmp_s2_out_dl_u_bep f4 2 21 31
+noahmp_s2_out_sf_bep f4 2 21 31
+noahmp_s2_out_vl_bep f4 2 21 31
+noahmp_s2_out_ust f4 1 21
+noahmp_s2_out_tsk f4 1 21
+noahmp_s2_out_hfx f4 1 21
+noahmp_s2_out_qfx f4 1 21
+noahmp_s2_out_lh f4 1 21
+noahmp_s2_out_grdflx f4 1 21
+noahmp_s2_out_albedo f4 1 21
+noahmp_s2_out_emiss f4 1 21
+noahmp_s2_out_ts_urb2d f4 1 21
+noahmp_s2_out_sh_urb2d f4 1 21
+noahmp_s2_out_lh_urb2d f4 1 21
+noahmp_s2_out_g_urb2d f4 1 21
+noahmp_s2_out_rn_urb2d f4 1 21
+s2_out_trb_urb4d f4 2 21 360
+s2_out_tw1_urb4d f4 2 21 360
+s2_out_tw2_urb4d f4 2 21 360
+s2_out_tgb_urb4d f4 2 21 20
+s2_out_sfw1_urb3d f4 2 21 36
+s2_out_sfw2_urb3d f4 2 21 36
+s2_out_sfr_urb3d f4 2 21 36
+s2_out_sfg_urb3d f4 2 21 2
+sfcdiag_psfc f4 1 21
+sfcdiag_qv f4 2 21 31
+sfcdiag_t2 f4 1 21
+sfcdiag_th2 f4 1 21
+sfcdiag_q2 f4 1 21
+sfcdiag_u10 f4 1 21
+sfcdiag_v10 f4 1 21

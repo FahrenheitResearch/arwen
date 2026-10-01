@@ -76,7 +76,214 @@ extern "C" __global__ void rrtmgp_interpolation_inline_reference(
   fpress_out[cell] = locpress - (float)jp1;
 }
 
+struct RRTMGPFlavorWeights {
+  float cmix;
+  int je;
+  float fm0;
+  float fm1;
+};
+
 extern "C" __global__ void rrtmgp_gas_optics(
+    const float* play, const float* plev, const float* tlay,
+    const float* vmr, const int* iatm_meta, const int* jt_meta,
+    const int* jp_meta, const float* ftemp_meta, const float* fpress_meta,
+    const float* vmr_ref, const int* flavor, const int* gpoint_flavor,
+    const float* kmajor,
+    const float* kminor_lower, const float* kminor_upper,
+    const int* minor_limits_lower, const int* minor_limits_upper,
+    const unsigned char* density_lower, const unsigned char* density_upper,
+    const unsigned char* complement_lower,
+    const unsigned char* complement_upper,
+    const int* idx_minor_lower, const int* idx_minor_upper,
+    const int* idx_scaling_lower, const int* idx_scaling_upper,
+    const int* kminor_start_lower, const int* kminor_start_upper,
+    const int* minor_gpt_start_lower, const int* minor_gpt_list_lower,
+    const int* minor_gpt_start_upper, const int* minor_gpt_list_upper,
+    const float* rayleigh,
+    float* tau, float* ssa,
+    int ncol, int nlay, int ngas, int nflav, int ngpt,
+    int ntemp, int npres, int neta,
+    int nk_lower, int nk_upper, int idx_h2o, int is_sw,
+    int nminor_lower, int nminor_upper) {
+  // Four independent cells per block, one warp per cell. Exited tail
+  // warps never participate in another cell's warp-local synchronization.
+  const int cell_id = blockIdx.x * 4 + threadIdx.x / 32;
+  if (cell_id >= ncol * nlay) return;
+  const int col = cell_id / nlay;
+  const int lay = cell_id - col * nlay;
+  extern __shared__ float s_storage[];
+  float* s_scaling = s_storage + (threadIdx.x / 32)
+      * (max(nminor_lower, nminor_upper) + 8 * nflav);
+
+  const int npressk = npres + 1;
+  const float avogad = 6.02214076e23f;
+  const float m_dry = 0.028964f;
+  const float m_h2o = 0.018016f;
+  const float grav = 9.80665f;
+
+  {
+    const int cell = col * nlay + lay;
+    const float p = play[cell];
+    const float t = tlay[cell];
+    const float h2o_vmr = vmr[cell * (ngas + 1) + idx_h2o];
+    const float fact_dry = 1.0f / (1.0f + h2o_vmr);
+    const float m_air = __fmul_rn(__fmaf_rn(m_h2o, h2o_vmr, m_dry), fact_dry);
+    const float dp = fabsf(plev[col * (nlay + 1) + lay + 1]
+                           - plev[col * (nlay + 1) + lay]);
+    const float col_dry = dp * avogad * fact_dry
+                          / (10000.0f * m_air * grav);
+    const int iatm = iatm_meta[cell];
+    const int jt = jt_meta[cell];
+    const int jp = jp_meta[cell];
+    const float ftemp = ftemp_meta[cell];
+    const float fpress = fpress_meta[cell];
+
+    const int nk = iatm == 0 ? nk_lower : nk_upper;
+    const float* kminor = iatm == 0 ? kminor_lower : kminor_upper;
+    const int* limits = iatm == 0 ? minor_limits_lower : minor_limits_upper;
+    const unsigned char* density = iatm == 0 ? density_lower : density_upper;
+    const unsigned char* complement = iatm == 0
+        ? complement_lower : complement_upper;
+    const int* idx_minor = iatm == 0 ? idx_minor_lower : idx_minor_upper;
+    const int* idx_scaling = iatm == 0
+        ? idx_scaling_lower : idx_scaling_upper;
+    const int* starts = iatm == 0 ? kminor_start_lower : kminor_start_upper;
+    // Only the minor entries whose g-point range covers a given thread, in
+    // ascending `m`.  Scanning all of them and skipping was 94% waste: a
+    // g-point matches 3.8 of the 60 LW lower entries on average.  The CSR
+    // list preserves the visit order exactly, so `tau_abs` takes the same
+    // additions in the same sequence -- bit-identical, not close.
+    const int* mstart = iatm == 0
+        ? minor_gpt_start_lower : minor_gpt_start_upper;
+    const int* mlist = iatm == 0
+        ? minor_gpt_list_lower : minor_gpt_list_upper;
+    // `scaling` is a function of the CELL and the minor entry, never of the
+    // g-point -- but each entry covers a band, so every entry's scaling was
+    // being evaluated once per g-point in that band: ~16 evaluations of one
+    // expression, two divisions each.  The block computes each exactly once.
+    // Same expression, same operand order, same bits.
+    const int nminor = iatm == 0 ? nminor_lower : nminor_upper;
+    for (int mm = threadIdx.x % 32; mm < nminor; mm += 32) {
+      const int im = idx_minor[mm];
+      float scaling = (im == 0 ? col_dry
+          : vmr[cell * (ngas + 1) + im] * col_dry);
+      if (density[mm]) {
+        scaling *= 0.01f * p / t;
+        const int iscale = idx_scaling[mm];
+        if (iscale > 0) {
+          const float special = vmr[cell * (ngas + 1) + iscale]
+                                / (1.0f + h2o_vmr);
+          scaling *= complement[mm] ? 1.0f - special : special;
+        }
+      }
+      s_scaling[mm] = scaling;
+    }
+    // Ratios and eta weights depend on cell, flavor and temperature row.
+    // Pin the base SASS contraction before storing each value for reuse.
+    RRTMGPFlavorWeights* s_flavor = reinterpret_cast<RRTMGPFlavorWeights*>(
+        s_scaling + max(nminor_lower, nminor_upper));
+    for (int f = threadIdx.x % 32; f < nflav * 2; f += 32) {
+        const int iflav = f / 2;
+        const int itemp = f % 2;
+        const int gas1 = flavor[iflav * 2];
+        const int gas2 = flavor[iflav * 2 + 1];
+        const int jtr = jt + itemp;
+        const float ref1 = vmr_ref[(iatm * (ngas + 1) + gas1) * ntemp + jtr];
+        const float ref2 = vmr_ref[(iatm * (ngas + 1) + gas2) * ntemp + jtr];
+        const float ratio = ref1 / ref2;
+        const float col1 = (gas1 == 0) ? col_dry
+            : vmr[cell * (ngas + 1) + gas1] * col_dry;
+        const float col2 = (gas2 == 0) ? col_dry
+            : vmr[cell * (ngas + 1) + gas2] * col_dry;
+        const float cmix_value = __fmaf_rn(ratio, col2, col1);
+        const float eta = cmix_value > 2.0f * 1.17549435e-38f
+            ? col1 / cmix_value : 0.5f;
+        const float loceta = eta * (neta - 1);
+        const int je_value = min((int)loceta, neta - 2);
+        const float feta = loceta - truncf(loceta);
+        const float wt = itemp == 0 ? 1.0f - ftemp : ftemp;
+        const float fm0 = __fmul_rn(__fsub_rn(1.0f, feta), wt);
+        const float fm1 = __fmul_rn(feta, wt);
+
+        s_flavor[f].cmix = cmix_value;
+        s_flavor[f].je = je_value;
+        s_flavor[f].fm0 = fm0;
+        s_flavor[f].fm1 = fm1;
+    }
+    __syncwarp();
+
+    for (int gpt = threadIdx.x % 32; gpt < ngpt; gpt += 32) {
+      const int iflav = gpoint_flavor[iatm * ngpt + gpt];
+      int je[2];
+      float fm[2][2];
+      float cmix[2];
+      float tau_abs = 0.0f;
+
+#pragma unroll
+      for (int itemp = 0; itemp < 2; ++itemp) {
+        const int jtr = jt + itemp;
+        const RRTMGPFlavorWeights weights = s_flavor[iflav * 2 + itemp];
+        cmix[itemp] = weights.cmix;
+        je[itemp] = weights.je;
+        fm[0][itemp] = weights.fm0;
+        fm[1][itemp] = weights.fm1;
+        const float w00 = (1.0f - fpress) * fm[0][itemp];
+        const float w10 = (1.0f - fpress) * fm[1][itemp];
+        const float w01 = fpress * fm[0][itemp];
+        const float w11 = fpress * fm[1][itemp];
+        // The base rounds the second product, then fuses the first.
+        const float major01 = __fmaf_rn(w00,
+            kmajor[km_index(jtr, je[itemp], jp, gpt, neta, npressk, ngpt)],
+            __fmul_rn(w10, kmajor[km_index(jtr, je[itemp] + 1, jp, gpt,
+                                          neta, npressk, ngpt)]));
+        const float major2 = __fmaf_rn(w01,
+            kmajor[km_index(jtr, je[itemp], jp + 1, gpt,
+                           neta, npressk, ngpt)], major01);
+        const float major3 = __fmaf_rn(w11,
+            kmajor[km_index(jtr, je[itemp] + 1, jp + 1, gpt,
+                           neta, npressk, ngpt)], major2);
+        tau_abs = __fmaf_rn(cmix[itemp], major3, tau_abs);
+      }
+
+      const int q_end = mstart[gpt + 1];
+      for (int q = mstart[gpt]; q < q_end; ++q) {
+        const int m = mlist[q];
+        const int gs = limits[m * 2];
+        const float scaling = s_scaling[m];
+        const int kk = starts[m] + (gpt - gs);
+        const float minor01 = __fmaf_rn(fm[0][0],
+            kminor[k2_index(jt, je[0], kk, neta, nk)],
+            __fmul_rn(fm[1][0], kminor[k2_index(jt, je[0] + 1, kk, neta, nk)]));
+        const float minor2 = __fmaf_rn(fm[0][1],
+            kminor[k2_index(jt + 1, je[1], kk, neta, nk)], minor01);
+        const float kval = __fmaf_rn(fm[1][1],
+            kminor[k2_index(jt + 1, je[1] + 1, kk, neta, nk)], minor2);
+        tau_abs = __fmaf_rn(scaling, kval, tau_abs);
+      }
+
+      const int out = cell * ngpt + gpt;
+      if (is_sw) {
+        const float* kr = rayleigh + iatm * ntemp * neta * ngpt;
+        const float ray01 = __fmaf_rn(fm[0][0],
+            kr[(jt * neta + je[0]) * ngpt + gpt],
+            __fmul_rn(fm[1][0], kr[(jt * neta + je[0] + 1) * ngpt + gpt]));
+        const float ray2 = __fmaf_rn(fm[0][1],
+            kr[((jt + 1) * neta + je[1]) * ngpt + gpt], ray01);
+        const float ray_k = __fmaf_rn(fm[1][1],
+            kr[((jt + 1) * neta + je[1] + 1) * ngpt + gpt], ray2);
+        const float tau_ray = ray_k * col_dry * (1.0f + h2o_vmr);
+        const float total = tau_abs + tau_ray;
+        tau[out] = total;
+        ssa[out] = tau_ray / fmaxf(3.0f * 1.17549435e-38f, total);
+      } else {
+        tau[out] = tau_abs;
+      }
+    }
+  }
+}
+
+// Frozen base kernel for exact-output tests. Keep its arithmetic unchanged.
+extern "C" __global__ void rrtmgp_gas_optics_reference(
     const float* play, const float* plev, const float* tlay,
     const float* vmr, const int* iatm_meta, const int* jt_meta,
     const int* jp_meta, const float* ftemp_meta, const float* fpress_meta,
@@ -397,15 +604,17 @@ extern "C" __global__ void rrtmgp_gas_vmr_fill(
     float* __restrict__ vmr,             // (ncol, nlay, ngas + 1)
     float h2o_scale, int h2o_index, int o3_index,
     int ntrace, int ncells, int nslot) {
-  const int cell = blockDim.x * blockIdx.x + threadIdx.x;
-  if (cell >= ncells) return;
-
-  float* row = vmr + (long long)cell * nslot;
-  for (int s = 0; s < nslot; ++s) row[s] = 0.0f;
-  if (h2o_index >= 0) row[h2o_index] = qv[cell] * h2o_scale;
-  // DOUBLE in, float out: cupy.interp promotes to float64 even for float32
-  // tables, and the CuPy path narrowed it on the store into the float32
-  // cube.  Narrowing here is that same store, not an extra rounding.
-  if (o3_index >= 0) row[o3_index] = (float)o3[cell];
-  for (int t = 0; t < ntrace; ++t) row[trace_index[t]] = trace_value[t];
+  // Adjacent threads own adjacent slots, so each store is coalesced.
+  const long long index = (long long)blockDim.x * blockIdx.x + threadIdx.x;
+  if (index >= (long long)ncells * nslot) return;
+  const int cell = index / nslot;
+  const int slot = index % nslot;
+  float value = 0.0f;
+  if (slot == h2o_index) value = qv[cell] * h2o_scale;
+  // Preserve the float64 interpolation result's narrowing on store.
+  if (slot == o3_index) value = (float)o3[cell];
+  // Preserve assignment precedence, including repeated trace slots.
+  for (int t = 0; t < ntrace; ++t)
+    if (slot == trace_index[t]) value = trace_value[t];
+  vmr[index] = value;
 }

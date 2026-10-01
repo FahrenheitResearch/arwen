@@ -509,6 +509,11 @@ def start_setup(*, setup_path, cycle, hours, forecast_start_hour, name, out):
     retimed = copy.deepcopy(original)
     retimed["experiment"]["name"] = name
     retimed["experiment"]["start_time"] = start_time
+    # A nest that starts later keeps its offset into the run: left at the
+    # saved date it fell outside the new window and the start was refused
+    # ("must lie in the experiment window").
+    delayed = _move_delayed_nests(
+        retimed, start_time - original["experiment"]["start_time"])
     retimed["experiment"]["run_seconds"] = hours * 3600
     retimed["fetch"]["cycle"] = resolved_cycle.strftime("%Y-%m-%dT%H")
     retimed["fetch"]["hours"] = fetch_hours
@@ -523,7 +528,7 @@ def start_setup(*, setup_path, cycle, hours, forecast_start_hour, name, out):
         retimed["case_data"]["wps_namelist"] = str(wps_output)
     carried = _carry_case_data_files(retimed, setup_dir=authority.source.parent,
                                      out=out, exists_refusal=exists_refusal)
-    _guard(original, retimed, START_TIMED_CHANGES,
+    _guard(original, retimed, START_TIMED_CHANGES | delayed,
            "Starting changed a setting it must keep: {field}. Nothing was written.")
     timed = [{"field": field, "before": before, "after": after}
              for field, before, after in changes(original, retimed)]
@@ -662,6 +667,163 @@ def _start_through_forcing_editor(*, raw, out, authority, document, timed,
         "setup_name": document.get("name"), "timing": timing,
         "changes": timed, "configuration": forcing["configuration"],
         "validation": dict(forcing["validation"], fetch_hints="passed")}
+
+
+# ---------------------------------------------------------------------------
+# One configuration at another cycle (``gpuwm go --cycle``,
+# run-plan ``run_options.cycle``)
+# ---------------------------------------------------------------------------
+
+CYCLE_HEADER = ("# {source} retimed to the {cycle} cycle for a launch that "
+                "named it (gpuwm go --cycle or run-plan run_options.cycle); "
+                "every other setting is the original's.\n")
+
+
+def _datetime_fields(value, prefix=""):
+    """Every TOML date-time in ``value``, by the field name ``changes`` uses."""
+    from datetime import date, time
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _datetime_fields(item, f"{prefix}.{key}" if prefix else key)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _datetime_fields(item, f"{prefix}[{index}]")
+    elif isinstance(value, (datetime, date, time)):
+        yield prefix
+
+
+def _move_delayed_nests(raw, shift: timedelta) -> set[str]:
+    """Move every ``[[domain]] start_time`` in ``raw`` by ``shift``.
+
+    Returns the moved fields by the name :func:`changes` gives them, for
+    the guard: a delayed nest keeps its offset into the run when the run
+    is re-timed, the one absolute instant a configuration carries besides
+    ``[experiment].start_time``.
+    """
+    moved = set()
+    for index, domain in enumerate(raw.get("domain") or ()):
+        if isinstance(domain, dict) and isinstance(domain.get("start_time"), datetime):
+            domain["start_time"] = domain["start_time"] + shift
+            moved.add(f"domain[{index}].start_time")
+    return moved
+
+
+def retime_to_cycle(config_path, cycle: datetime, out) -> dict:
+    """``config_path`` at ``cycle``, published at ``out`` with its route files.
+
+    The saved-setup start's re-timing, for a launch that names its cycle:
+    ``[fetch].cycle`` becomes ``cycle``, ``[experiment].start_time`` moves
+    to ``cycle`` plus the config's own ``forecast_start_hour``, and every
+    nest that starts later (``[[domain]] start_time``) moves by the same
+    amount, so a delayed nest keeps its offset into the run.  The window,
+    the domains, the physics and everything else are the original's.
+    Declared inputs are made absolute (the file lives in another folder),
+    and the WPS namelist and the route's namelists are rendered again from
+    the re-timed experiment, through the same helpers
+    :func:`start_setup` publishes them with, because a copied one would
+    carry the original's dates.
+
+    Refused, each naming the breakage:
+
+    * a config with ``[case_data]``: its forcing files are named, and a
+      cycle cannot move what they hold;
+    * any other date-time in the file: it would stay at the original's
+      date while the run moved.
+
+    ``out``'s files are written only when they differ, so a launch again
+    of the same config and cycle reuses them.  Returns
+    ``{"config_path", "cycle", "start_time", "changes", "written"}``.
+    """
+    from gpuwm import fetch, fetch_routes
+    from gpuwm.companion_domains import _build, _wps_text
+    from gpuwm.hrrr_route_inputs import candidate_companions
+    from gpuwm.starter_template import changes
+    from gpuwm.toml_document import emit_experiment_toml
+
+    authority = _read_authority(config_path, lambda sentence: sentence)
+    original = tomllib.loads(authority.payload.decode("utf-8-sig"))
+    fetch_table = original.get("fetch")
+    if not isinstance(fetch_table, dict) or not {"source", "cycle"} <= fetch_table.keys():
+        raise ValueError(
+            f"{authority.source} has no [fetch] source and cycle, so there is "
+            "no cycle to move it from.")
+    if "case_data" in original:
+        raise ValueError(
+            f"{authority.source} names its input files in [case_data], and a "
+            "cycle cannot move what those files hold: the run would start at "
+            "the new time on the old forcing. Regenerate the config for that "
+            "cycle with `gpuwm domain --cycle`.")
+    source = str(fetch_table["source"])
+    old_cycle = fetch.parse_cycle(str(fetch_table["cycle"]), source)
+    lead = fetch_table.get("forecast_start_hour", 0)
+    if isinstance(lead, bool) or not isinstance(lead, int) or lead < 0:
+        raise ValueError("[fetch].forecast_start_hour must be a nonnegative integer.")
+    start_time = original["experiment"]["start_time"]
+    new_start = cycle + timedelta(hours=lead)
+    shift = new_start - start_time
+
+    retimed = copy.deepcopy(original)
+    retimed["experiment"]["start_time"] = new_start
+    retimed["fetch"]["cycle"] = cycle.strftime("%Y-%m-%dT%H")
+    moved = {"experiment.start_time", *_move_delayed_nests(retimed, shift)}
+    stranded = sorted(set(_datetime_fields(original)) - moved)
+    if stranded:
+        raise ValueError(
+            f"{authority.source} carries {', '.join(stranded)}, a date-time "
+            "that does not move with the cycle, so the run would keep it at "
+            f"the {old_cycle:%Y-%m-%dT%H} cycle's date while it started at "
+            f"{new_start:%Y-%m-%dT%H}. Regenerate the config for that cycle "
+            "with `gpuwm domain --cycle`.")
+    if retimed["fetch"].get("out"):
+        # [fetch].out is relative to the folder the wizard ran in; its
+        # meaning is kept, as saving a setup keeps it.
+        retimed["fetch"]["out"] = str(Path(retimed["fetch"]["out"]).expanduser().resolve())
+    _guard(original, retimed, {"fetch.cycle", "fetch.out", *moved},
+           "Moving the cycle changed a setting it must keep: {field}.")
+    timed = [{"field": field, "before": str(before), "after": str(after)}
+             for field, before, after in changes(original, retimed)]
+
+    out = Path(out).expanduser().resolve()
+    raw = _resolve_declared_paths(copy.deepcopy(retimed),
+                                  base_dir=authority.base_dir,
+                                  source=authority.source)
+    fetch.validate_fetch_hints(raw["fetch"], source=str(out))
+    try:
+        route = fetch_routes.route_for(source)
+    except ValueError:
+        route = None
+    if route is not None:
+        # A cycle the route does not publish (a 00Z-only product at 06Z) or
+        # a window its ladder does not carry at that cycle is refused here,
+        # in the route's words, before anything is written.
+        fetch_routes.resolve_cycle(route, cycle)
+        fetch_routes.resolve_leads(
+            route, cycle, int(math.ceil(float(raw["fetch"].get("hours", 0)))),
+            cadence=int(_cadence_hours(raw["fetch"], source)), start_hour=lead)
+    exp = _build(raw, out)
+    text = CYCLE_HEADER.format(source=authority.source.name,
+                               cycle=raw["fetch"]["cycle"]) + emit_experiment_toml(raw)
+    published = _build(tomllib.loads(text), out)
+    beside = authority.source.with_suffix(".namelist.wps")
+    wps = _wps_text(exp, beside if beside.is_file() else None,
+                    out.with_suffix(".namelist.wps"), raw, len(exp.domains),
+                    original_domain_ids=[domain.grid_id for domain in exp.domains])
+    files = [*candidate_companions(out, published, wps_text=wps, source=source),
+             (out, text)]
+    written = []
+    out.parent.mkdir(parents=True, exist_ok=True)
+    for path, content in files:
+        path = Path(path)
+        data = content.encode("utf-8")
+        if path.is_file() and path.read_bytes() == data:
+            continue
+        staged = path.with_name(path.name + f".{os.getpid()}.tmp")
+        staged.write_bytes(data)
+        os.replace(staged, path)
+        written.append(str(path))
+    return {"config_path": str(out), "cycle": raw["fetch"]["cycle"],
+            "start_time": new_start.isoformat(), "changes": timed,
+            "written": written}
 
 
 # ---------------------------------------------------------------------------

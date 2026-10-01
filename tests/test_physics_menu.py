@@ -558,3 +558,98 @@ def test_the_load_time_nocturnal_refusal_names_a_universally_admissible_suite():
     for adapter in source_adapters():
         assert profile_route_blocker(profile, adapter.source_id) is None, (
             adapter.source_id)
+
+
+# ---------------------------------------------------------------------------
+# The soil a source publishes, asked before the download
+# ---------------------------------------------------------------------------
+
+
+def _ruc_suites():
+    from gpuwm.physics_menu import _switches, shipped_profiles
+
+    return tuple(profile for profile in shipped_profiles()
+                 if int(_switches(profile)["sf_surface_physics"]) == 3)
+
+
+def test_a_ruc_suite_on_a_source_whose_soil_ruc_cannot_start_is_refused_at_the_door():
+    """GEM GDPS publishes one 0-10 cm slab, and RUC's remap needs two.
+
+    On 2.8.0 a RUC suite on ``--source gem-gdps`` passed ``gpuwm domain``,
+    ``gpuwm check`` and ``gpuwm go --dry-run``, and the only refusal was
+    the preparation's soil ingest after the cycle had been downloaded.
+    The pairing predicate asks that ingest's own question now, so the
+    wizard refuses before anything is fetched, naming the one-layer soil.
+    """
+
+    from gpuwm.domain_wizard import _refuse_profile_its_source_cannot_prepare
+    from gpuwm.physics_compat import THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID
+    from gpuwm.physics_menu import admissible_profiles, profile_route_blocker
+
+    suites = _ruc_suites()
+    assert THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID in suites
+    for profile in suites:
+        blocker = profile_route_blocker(profile, "gem-gdps")
+        assert blocker is not None, profile
+        assert "RUC land surface" in blocker
+        assert "1 source layer(s)" in blocker
+        assert profile not in admissible_profiles("gem-gdps")
+    with pytest.raises(ValueError) as refused:
+        _refuse_profile_its_source_cannot_prepare(
+            THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID, "gem-gdps")
+    assert "cannot be initialised from the soil --source gem-gdps" in str(
+        refused.value)
+
+
+def test_template_evidence_membership_still_refuses_nothing():
+    """The control: every source whose soil RUC can start keeps the suites.
+
+    ``source_template_ids`` is the route's evidence catalogue, and the
+    owner ruling that retired the membership gate stands: hrrr-prs, GFS
+    and the rest list no RUC template and run RUC.  Only a source whose
+    published soil the RUC ingest refuses is refused, so this walks every
+    registered source and holds the refusals to exactly that set.
+    """
+
+    from gpuwm.ingest.soil_contract import ruc_soil_remap_policy
+    from gpuwm.physics_menu import (_source_soil_contract,
+                                    profile_route_blocker,
+                                    registered_sources)
+
+    refused = set()
+    for source in registered_sources():
+        contract = _source_soil_contract(source)
+        try:
+            if contract is not None:
+                ruc_soil_remap_policy(contract)
+            expected_refused = False
+        except ValueError:
+            expected_refused = True
+        blocked = {profile_route_blocker(profile, source) is not None
+                   for profile in _ruc_suites()}
+        assert blocked == {expected_refused}, source
+        if expected_refused:
+            refused.add(source)
+    assert refused == {"gem-gdps"}
+    for source in ("hrrr-prs", "gfs", "era5", "hrrr", "rap"):
+        assert source not in refused
+
+
+def test_every_route_answers_a_tree_as_it_answers_one_domain():
+    """No route refuses on a tree a suite it runs on one domain.
+
+    The nested HRRR route's hierarchy stage pinned four soil layers, so a
+    RUC suite on a --source hrrr tree was refused by a gate that bound
+    only trees.  The pin follows the land surface now, and the gate is
+    gone: every source answers a tree with its single-domain answer.
+    """
+
+    from gpuwm.physics_menu import (profile_route_blocker, registered_sources,
+                                    shipped_profiles)
+
+    for profile in _ruc_suites():
+        assert profile_route_blocker(profile, "hrrr", domains=2) is None, profile
+    for source in registered_sources():
+        for profile in shipped_profiles():
+            assert profile_route_blocker(profile, source, domains=3) == \
+                profile_route_blocker(profile, source), (source, profile)

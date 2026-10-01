@@ -35,6 +35,11 @@ pub struct Invocation {
     pub input_manifest: Option<String>,
     pub input_manifest_sha256: Option<String>,
     pub atmospheric_window: bool,
+    /// `compose --lead-batch`: the input list is some of a window's
+    /// leads, so the series rules the window answers to (at least two
+    /// times on one uniform cadence) are the caller's to hold across its
+    /// batches; every other check is unchanged.
+    pub lead_batch: bool,
 }
 
 pub const USAGE: &str = "usage: gpuwm_mapped_engine {decode|compose|inspect} \
@@ -42,7 +47,7 @@ pub const USAGE: &str = "usage: gpuwm_mapped_engine {decode|compose|inspect} \
 [--composition COMPOSITION.json] [--supplement ROLE=PATH]... \
 [--provenance ROLE=PATH]... [--contributing-mapping ROLE=PATH]... \
 [--input-manifest MANIFEST.json --input-manifest-sha256 HEX] \
-[--atmospheric-window stdio]\n\
+[--atmospheric-window stdio] [--lead-batch]\n\
    or: gpuwm_mapped_engine inventory --input-list FILES.txt\n\
    or: gpuwm_mapped_engine capabilities";
 
@@ -148,6 +153,14 @@ impl Invocation {
                         return Err(usage("--atmospheric-window requires stdio"));
                     }
                     invocation.atmospheric_window = true;
+                }
+                "--lead-batch" => {
+                    if invocation.subcommand != "compose" {
+                        return Err(usage("--lead-batch belongs to compose"));
+                    }
+                    invocation.lead_batch = true;
+                    position += 1;
+                    continue;
                 }
                 "--composition" => invocation.composition = Some(value()?),
                 "--input-manifest" => invocation.input_manifest = Some(value()?),
@@ -618,6 +631,11 @@ struct ObjectInventory {
     /// Selected records read through `mapping.record_aliases`, counted
     /// per field they answer.
     aliased: BTreeMap<String, usize>,
+    /// Per selected record (by message index): the cells its decode
+    /// unpacks over the whole grid, and the fields it answers.  What
+    /// prices the pool before anything is decoded
+    /// ([`DecodeStream::first_time_estimate`]).
+    answers: BTreeMap<usize, (u64, Vec<String>)>,
 }
 
 /// Staged bytes the inventory pass may hold IN FLIGHT at once, counted
@@ -631,7 +649,7 @@ struct ObjectInventory {
 /// so admission is priced in BYTES and the worker cap applies inside
 /// that.  The effect is that concurrency follows object size without
 /// anyone naming a source: a list of small objects inventories at the
-/// full [`crate::threads::THREAD_CAP`], a list of large ones collapses
+/// full pool width, a list of large ones collapses
 /// to the serial pass this replaces, and a single object larger than the
 /// budget is still admitted alone.
 ///
@@ -649,6 +667,24 @@ struct ObjectInventory {
 /// property, and a source that publishes small objects is exactly the
 /// one whose inventory was serial.
 const INVENTORY_STAGED_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The staged-byte budget one inventory batch is admitted under: the
+/// [`INVENTORY_STAGED_BYTES`] floor, raised to a quarter of the memory
+/// share the valid times in flight may use (a staged object's decoded
+/// twin and parsed form sit at a small multiple of its supplied bytes).
+///
+/// Named breakage the raise removes: a per-lead 3 km CONUS object is
+/// about 400 MB, so the fixed 64 MiB floor admitted ONE at a time and
+/// the inventory of a 49-lead series ran serially -- one object read and
+/// parsed after another, on one core -- before a single field was
+/// decoded.  The floor still governs a box that cannot report its
+/// memory, and a batch still runs on at most the pool's width at once.
+fn inventory_budget() -> u64 {
+    let share = crate::threads::available_memory().map_or(0, |bytes| {
+        (bytes as f64 * crate::threads::MEMORY_SHARE / 4.0) as u64
+    });
+    INVENTORY_STAGED_BYTES.max(share)
+}
 
 /// How many of `sizes` the next inventory batch admits under `budget`.
 ///
@@ -703,8 +739,9 @@ fn inventory_objects(
         .collect();
     let mut inventories: Vec<ObjectInventory> = Vec::with_capacity(files.len());
     let mut start = 0usize;
+    let budget = inventory_budget();
     while start < files.len() {
-        let end = start + inventory_batch_len(&sizes[start..], INVENTORY_STAGED_BYTES);
+        let end = start + inventory_batch_len(&sizes[start..], budget);
         let batch = &files[start..end];
         let slots: Vec<Result<ObjectInventory>> = crate::threads::install(|| {
             use rayon::prelude::*;
@@ -753,11 +790,13 @@ fn inventory_one_object(
         invariant: Vec::new(),
         cycles: BTreeMap::new(),
         aliased: BTreeMap::new(),
+        answers: BTreeMap::new(),
     };
     for index in wanted {
         let identity = &inventory.identities[index];
         let mut dependent = false;
         let mut invariant = false;
+        let mut answered: Vec<String> = Vec::new();
         for field in &fields {
             if field.derivation().is_some() {
                 continue;
@@ -779,11 +818,21 @@ fn inventory_one_object(
             if aliased[index] {
                 *inventory.aliased.entry(field.name.clone()).or_default() += 1;
             }
+            answered.push(field.name.clone());
             if invariant_fields.contains(&field.name) {
                 invariant = true;
             } else {
                 dependent = true;
             }
+        }
+        let message = &file.messages[index];
+        if !answered.is_empty() {
+            let grid = &message.grid;
+            let cells = match u64::from(grid.nx).saturating_mul(u64::from(grid.ny)) {
+                0 => u64::from(grid.num_data_points),
+                cells => cells,
+            };
+            inventory.answers.insert(index, (cells, answered));
         }
         if invariant {
             inventory.invariant.push(index);
@@ -791,7 +840,6 @@ fn inventory_one_object(
         if !dependent {
             continue;
         }
-        let message = &file.messages[index];
         let valid_time = crate::grib::embedded_valid_time(
             message.reference_time,
             message.product.time_range_unit,
@@ -810,6 +858,7 @@ struct ObjectPlan {
     source: String,
     by_key: BTreeMap<crate::assemble::TimeKey, Vec<usize>>,
     invariant: Vec<usize>,
+    answers: BTreeMap<usize, (u64, Vec<String>)>,
 }
 
 /// A decode that hands over ONE valid time at a time.
@@ -846,6 +895,16 @@ pub struct DecodeStream<'a> {
     direct_names: std::collections::BTreeSet<String>,
     /// Selected records read through `mapping.record_aliases`, per field.
     aliased: BTreeMap<String, usize>,
+    /// The atmospheric window the requester granted BEFORE the first
+    /// record was decoded, when it granted one, and the fields whose
+    /// records are therefore decoded over that window alone.
+    decode_window: Option<crate::window::Window>,
+    decode_fields: std::collections::BTreeSet<String>,
+    /// Fields a pressure-level frame completes hydrostatically where the
+    /// source leaves them out, watched on every window-decoded frame: a
+    /// frame that leaves one out is decoded again whole
+    /// ([`DecodeStream::completes_over_whole_columns`]).
+    completion_watch: std::collections::BTreeSet<String>,
 }
 
 enum StreamKind {
@@ -872,6 +931,22 @@ impl<'a> DecodeStream<'a> {
         mapping: &'a Mapping,
         files: &[String],
         progress: &mut dyn FnMut(Value),
+    ) -> Result<Self> {
+        Self::open_within(mapping, files, progress, false, &std::collections::BTreeSet::new())
+    }
+
+    /// [`DecodeStream::open`], asking the requester for the atmospheric
+    /// window before any record is decoded when `request_window` is set.
+    /// `keep_whole` names fields the caller reads over the whole source
+    /// grid itself (a composition's terrain derivation reads the first
+    /// valid time's columns beside full-grid surface fields), so they are
+    /// never decoded over the window.
+    pub fn open_within(
+        mapping: &'a Mapping,
+        files: &[String],
+        progress: &mut dyn FnMut(Value),
+        request_window: bool,
+        keep_whole: &std::collections::BTreeSet<String>,
     ) -> Result<Self> {
         let format = mapping.format()?.to_owned();
         if format != "grib2" {
@@ -922,6 +997,7 @@ impl<'a> DecodeStream<'a> {
                 source: source.clone(),
                 by_key: inventory.by_key,
                 invariant: inventory.invariant,
+                answers: inventory.answers,
             });
         }
         if wanted_total == 0 {
@@ -969,6 +1045,7 @@ impl<'a> DecodeStream<'a> {
             summary: crate::frames::SeriesSummary {
                 source_cycles,
                 grid_fingerprint: String::new(),
+                lead_batch: false,
             },
             latitude: Vec::new(),
             longitude: Vec::new(),
@@ -977,7 +1054,20 @@ impl<'a> DecodeStream<'a> {
             hybrid_b: Vec::new(),
             direct_names: std::collections::BTreeSet::new(),
             aliased,
+            decode_window: None,
+            decode_fields: std::collections::BTreeSet::new(),
+            completion_watch: std::collections::BTreeSet::new(),
         };
+        if request_window {
+            stream.request_decode_window(keep_whole)?;
+        }
+        // The pool is narrowed to what the first valid time fits beside
+        // in memory BEFORE it is decoded, from the records the inventory
+        // read: that decode is the first to run at full width, and
+        // narrowing only after it was measured to hold more, not less
+        // (`threads::admit_width`).
+        let estimate = stream.first_time_estimate();
+        crate::threads::admit_width(stream.price(&estimate), &estimate);
         // The first valid time establishes the header every cross-time
         // check and every join plan reads: the grid, the vertical ladder,
         // the fingerprint and the decoded field inventory.  It is kept
@@ -1020,11 +1110,116 @@ impl<'a> DecodeStream<'a> {
             summary: crate::frames::SeriesSummary {
                 source_cycles: collection.source_cycles.clone(),
                 grid_fingerprint: collection.grid_fingerprint.clone(),
+                lead_batch: false,
             },
             keys,
             aliased: BTreeMap::new(),
+            decode_window: None,
+            decode_fields: std::collections::BTreeSet::new(),
+            completion_watch: std::collections::BTreeSet::new(),
             kind: StreamKind::Whole { collection },
         }
+    }
+
+    /// The window granted before decoding, which every frame publishes.
+    pub fn decode_window(&self) -> Option<&crate::window::Window> {
+        self.decode_window.as_ref()
+    }
+
+    /// Ask for the atmospheric window from Section 3 alone, before a
+    /// single record is unpacked.
+    ///
+    /// THE BREAKAGE THIS PREVENTS: the window used to be asked for after
+    /// a valid time had been decoded whole, so a source whose grid is
+    /// the globe and whose domain is a few hundred kilometres decoded
+    /// every cell of every level to publish the few it keeps; MSC GDPS
+    /// (175 JPEG2000 fields of 2400x1201 per valid time) spent about
+    /// 46 s per forecast time there on an 8 vCPU box.  The window
+    /// depends only on the source axes and the target domains, and both
+    /// are known now.
+    ///
+    /// A field is decoded over the window only when the requester
+    /// granted it, it is a direct vertical/y/x field of a regular
+    /// latitude/longitude grid, and nothing reads it beside a full-grid
+    /// field ([`decode_window_candidates`]).  Anything else, a projected
+    /// grid included, keeps the per-frame request and the full decode.
+    fn request_decode_window(&mut self, keep_whole: &std::collections::BTreeSet<String>) -> Result<()> {
+        let mapping = self.mapping;
+        let first_key = self.keys[0].clone();
+        let StreamKind::Sliced { declaration, plan, parsed, .. } = &mut self.kind else {
+            return Ok(());
+        };
+        if declaration.is_lambert() {
+            return Ok(());
+        }
+        let Some(object) = plan.iter().find(|object| {
+            object.by_key.get(&first_key).is_some_and(|wanted| !wanted.is_empty())
+        }) else {
+            return Ok(());
+        };
+        let index = object.by_key[&first_key][0];
+        if !parsed.contains_key(&object.source) {
+            parsed.insert(object.source.clone(), parse_grib2_object(&object.source)?);
+        }
+        let file = &parsed[&object.source];
+        let message = &file.messages[index];
+        let Ok(axes) = crate::grib::regular_latlon_axes(message) else {
+            return Ok(());
+        };
+        let (candidates, watch) = decode_window_candidates(mapping, keep_whole)?;
+        let mut inventory: Vec<String> = Vec::new();
+        for field in mapping.fields()? {
+            if !field.dependency_only()? {
+                inventory.push(field.name.clone());
+            }
+        }
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        let grid = crate::frames::regular_latlon_grid(&axes.latitude, &axes.longitude);
+        let Some(window) = crate::window::request_for_source(
+            &axes.latitude,
+            &axes.longitude,
+            &grid,
+            &inventory,
+            0,
+            &crate::grib::grid_fingerprint(message),
+        )?
+        else {
+            return Ok(());
+        };
+        if window.rows == [0, axes.latitude.len()] && window.columns == [0, axes.longitude.len()] {
+            return Err(crate::refusal::frame_invalid(
+                "an atmospheric window that covers the whole source must use full mode",
+            ));
+        }
+        self.decode_fields = window.fields.intersection(&candidates).cloned().collect();
+        self.decode_window = Some(window);
+        // The watch matters only when a completion operand, or the field
+        // it completes, is decoded over the window.
+        let operands: std::collections::BTreeSet<&str> = crate::derive::HYPSOMETRIC_OPERANDS
+            .iter()
+            .map(|(name, _)| *name)
+            .chain(watch.iter().map(String::as_str))
+            .collect();
+        if self.decode_fields.iter().any(|name| operands.contains(name.as_str())) {
+            self.completion_watch = watch;
+        }
+        Ok(())
+    }
+
+    /// Whether a frame decoded over the window must be decoded again
+    /// whole: it leaves out (at some level, or entirely) a field the
+    /// frame completes hydrostatically, and that completion reads whole
+    /// columns of the operands beside the full-grid surface pressure and
+    /// terrain.  A frame that publishes every such field whole reads
+    /// none of that, and keeps its window.
+    fn completes_over_whole_columns(&self, collection: &DecodedCollection,
+                                    key: &crate::assemble::TimeKey) -> bool {
+        self.completion_watch.iter().any(|name| {
+            !matches!(collection.direct.get(&(key.0, key.1.clone(), name.clone())),
+                      Some(direct) if direct.missing_count == 0)
+        })
     }
 
     /// Selected records read through `mapping.record_aliases`, per field
@@ -1041,6 +1236,240 @@ impl<'a> DecodeStream<'a> {
             StreamKind::Sliced { first, .. } => first.as_ref(),
             StreamKind::Whole { .. } => None,
         }
+    }
+
+    /// Hand out the first valid time's collection, decoded when the
+    /// stream opened, for a writer that pulls valid times by position
+    /// ([`Self::slice_detached`] for every later one).
+    pub fn take_first(&mut self) -> Option<DecodedCollection> {
+        match &mut self.kind {
+            StreamKind::Sliced { first, .. } => first.take(),
+            StreamKind::Whole { .. } => None,
+        }
+    }
+
+    /// Whether every valid time can be decoded on its own, from `&self`:
+    /// a GRIB2 series in which no object is read by more than one valid
+    /// time and none carries a cycle-invariant record every slice needs.
+    ///
+    /// That is the shape of every per-lead publication (one object per
+    /// forecast hour).  A series that shares objects between valid times
+    /// keeps the one-lane decode, which parses a shared object once and
+    /// hands it on; decoding such a series in parallel would parse the
+    /// shared object once per valid time in flight.
+    pub fn times_are_independent(&self) -> bool {
+        match &self.kind {
+            StreamKind::Sliced { plan, .. } => plan
+                .iter()
+                .all(|object| object.by_key.len() <= 1 && object.invariant.is_empty()),
+            StreamKind::Whole { .. } => false,
+        }
+    }
+
+    /// What ONE valid time holds between its decode and its write, for
+    /// sizing how many run at once: twice the first valid time's decoded
+    /// arrays (the unpacked records and the assembled arrays coexist
+    /// until assembly returns) plus three times the largest input object
+    /// (its bytes, its staged payload and its parsed form).
+    ///
+    /// A field decoded over the granted window is counted over the whole
+    /// source grid when a frame of this stream can be decoded again
+    /// whole ([`Self::completes_over_whole_columns`]).  Named breakage:
+    /// sized on the first valid time's window alone, the lanes of a
+    /// series whose later frames leave a watched height level out would
+    /// each re-decode their frame whole at once -- about seventeen times
+    /// the windowed size on a GDPS regional domain -- far past the
+    /// memory share the lanes were sized to fit.
+    pub fn per_time_bytes(&self) -> u64 {
+        self.price(&self.field_bytes())
+    }
+
+    /// Twice `field_bytes` plus three times the largest input object:
+    /// what one valid time holds, as [`Self::per_time_bytes`] states it.
+    fn price(&self, field_bytes: &[u64]) -> u64 {
+        let StreamKind::Sliced { plan, .. } = &self.kind else {
+            return 0;
+        };
+        let decoded: u64 = field_bytes.iter().sum();
+        let object = plan
+            .iter()
+            .map(|object| std::fs::metadata(&object.source).map(|meta| meta.len()).unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+        decoded.saturating_mul(2).saturating_add(object.saturating_mul(3))
+    }
+
+    /// What the first valid time's decoded arrays hold now, in bytes,
+    /// while they wait to be written; 0 once they have been handed out.
+    pub fn held_bytes(&self) -> u64 {
+        self.first_slice().map_or(0, |collection| {
+            collection
+                .direct
+                .values()
+                .map(|value| (value.values.len() as u64).saturating_mul(8))
+                .sum()
+        })
+    }
+
+    /// The first valid time's decoded fields, in bytes, largest first,
+    /// each counted as [`Self::per_time_bytes`] counts it (over the whole
+    /// source grid when a frame of this stream can be decoded again
+    /// whole); empty on a whole-object format.  What the lanes are
+    /// priced with (`threads::series_price`).
+    pub fn field_bytes(&self) -> Vec<u64> {
+        let StreamKind::Sliced { first, .. } = &self.kind else {
+            return Vec::new();
+        };
+        let whole = self.decode_window.as_ref().filter(|_| !self.completion_watch.is_empty());
+        let mut sizes: Vec<u64> = first.as_ref().map_or_else(Vec::new, |collection| {
+            collection
+                .direct
+                .iter()
+                .map(|((_time, _member, name), value)| {
+                    let bytes = (value.values.len() as u64).saturating_mul(8);
+                    let shape = value.values.shape();
+                    match whole {
+                        Some(window)
+                            if self.decode_fields.contains(name)
+                                && shape.len() >= 2
+                                && shape[shape.len() - 2..]
+                                    == [window.rows[1] - window.rows[0],
+                                        window.columns[1] - window.columns[0]]
+                                && shape[shape.len() - 2..] != window.source_shape =>
+                        {
+                            let cells = (shape[shape.len() - 2] * shape[shape.len() - 1]) as u64;
+                            let source = (window.source_shape[0] * window.source_shape[1]) as u64;
+                            (bytes / cells).saturating_mul(source)
+                        }
+                        _ => bytes,
+                    }
+                })
+                .collect()
+        });
+        sizes.sort_unstable_by(|a, b| b.cmp(a));
+        sizes
+    }
+
+    /// [`Self::field_bytes`] before anything is decoded: the first valid
+    /// time's records (and every cycle-invariant one, which each valid
+    /// time reads) summed per field they answer, at eight bytes a cell,
+    /// over the granted window for a field decoded over it and over the
+    /// whole grid otherwise, as the decode will unpack them.
+    pub fn first_time_estimate(&self) -> Vec<u64> {
+        let StreamKind::Sliced { plan, .. } = &self.kind else {
+            return Vec::new();
+        };
+        let Some(first_key) = self.keys.first() else {
+            return Vec::new();
+        };
+        let window = self
+            .decode_window
+            .as_ref()
+            .filter(|_| self.completion_watch.is_empty())
+            .map(|window| {
+                ((window.rows[1] - window.rows[0]) * (window.columns[1] - window.columns[0])) as u64
+            });
+        let mut by_field: BTreeMap<&str, u64> = BTreeMap::new();
+        for object in plan {
+            let mut wanted: Vec<usize> = object.by_key.get(first_key).cloned().unwrap_or_default();
+            wanted.extend(object.invariant.iter().copied());
+            wanted.sort_unstable();
+            wanted.dedup();
+            for index in wanted {
+                let Some((cells, fields)) = object.answers.get(&index) else {
+                    continue;
+                };
+                for name in fields {
+                    let cells = match window {
+                        Some(window) if self.decode_fields.contains(name) => window,
+                        _ => *cells,
+                    };
+                    let bytes = by_field.entry(name.as_str()).or_default();
+                    *bytes = bytes.saturating_add(cells.saturating_mul(8));
+                }
+            }
+        }
+        let mut sizes: Vec<u64> = by_field.into_values().collect();
+        sizes.sort_unstable_by(|a, b| b.cmp(a));
+        sizes
+    }
+
+    /// ONE valid time decoded on its own: nothing is cached between
+    /// calls, so several may run at once.  Only for a stream whose
+    /// [`Self::times_are_independent`] holds; the result is the one
+    /// [`Self::slice`] returns for the same key, checked against the
+    /// series header the same way: the records the granted window names
+    /// are decoded over it alone, and a frame that completes a watched
+    /// field is decoded again whole, exactly as [`Self::decode_slice`]
+    /// does on the one-lane path.
+    pub fn slice_detached(&self, key: &crate::assemble::TimeKey) -> Result<DecodedCollection> {
+        if !self.keys.iter().any(|candidate| candidate == key) {
+            return Err(crate::refusal::frame_invalid(format!(
+                "the mapped decode has no valid time {}",
+                crate::frames::naive_isoformat(key.0)
+            )));
+        }
+        let collection = self.decode_records_detached(key, true)?;
+        let collection = if self.decode_window.is_some()
+            && self.completes_over_whole_columns(&collection, key)
+        {
+            drop(collection);
+            self.decode_records_detached(key, false)?
+        } else {
+            collection
+        };
+        self.require_one_series(&collection)?;
+        Ok(collection)
+    }
+
+    /// [`Self::decode_records`] for [`Self::slice_detached`]: every object
+    /// the valid time reads is parsed here and dropped with it, so no
+    /// state is shared between valid times in flight.
+    fn decode_records_detached(
+        &self,
+        key: &crate::assemble::TimeKey,
+        windowed: bool,
+    ) -> Result<DecodedCollection> {
+        let StreamKind::Sliced { declaration, plan, .. } = &self.kind else {
+            return Err(crate::refusal::frame_invalid(
+                "a whole-object decode has no detached valid times",
+            ));
+        };
+        let mapping = self.mapping;
+        let decode_window = if windowed { self.decode_window.as_ref() } else { None };
+        let aliases = crate::grib::record_aliases(mapping)?;
+        let mut records: Vec<GribRecord> = Vec::new();
+        for object in plan.iter() {
+            let mut wanted: Vec<usize> = object.by_key.get(key).cloned().unwrap_or_default();
+            wanted.extend(object.invariant.iter().copied());
+            wanted.sort_unstable();
+            wanted.dedup();
+            if wanted.is_empty() {
+                continue;
+            }
+            let file = parse_grib2_object(&object.source)?;
+            let windowed = match decode_window {
+                Some(_) => windowed_records(mapping, &file, &wanted, &aliases, &self.decode_fields)?,
+                None => std::collections::BTreeSet::new(),
+            };
+            let record_window = decode_window.map(|window| crate::grib::RecordWindow {
+                rows: window.rows,
+                columns: window.columns,
+                records: &windowed,
+            });
+            let mut decoded = crate::grib::grib2_records_within(
+                &file,
+                &object.source,
+                &wanted,
+                declaration,
+                record_window.as_ref(),
+            )?;
+            crate::grib::alias_records(&aliases, &mut decoded);
+            records.extend(decoded);
+        }
+        let collection = assemble_grib(mapping, &records)?;
+        drop(records);
+        Ok(collection)
     }
 
     /// The `(valid_time, member)` keys, in frameset order.
@@ -1131,7 +1560,28 @@ impl<'a> DecodeStream<'a> {
         key: &crate::assemble::TimeKey,
         next: Option<&crate::assemble::TimeKey>,
     ) -> Result<DecodedCollection> {
+        let collection = self.decode_records(key, next, true)?;
+        if self.decode_window.is_some() && self.completes_over_whole_columns(&collection, key) {
+            // A completion would pair window-decoded columns with the
+            // full-grid surface pressure and terrain, so this one frame is
+            // decoded whole and cropped by the writer, as every frame was
+            // before the window was granted ahead of the decode.
+            drop(collection);
+            return self.decode_records(key, next, false);
+        }
+        Ok(collection)
+    }
+
+    /// One valid time's records, assembled; with `windowed`, the records
+    /// the granted window names are decoded over it alone.
+    fn decode_records(
+        &mut self,
+        key: &crate::assemble::TimeKey,
+        next: Option<&crate::assemble::TimeKey>,
+        windowed: bool,
+    ) -> Result<DecodedCollection> {
         let mapping = self.mapping;
+        let decode_window = if windowed { self.decode_window.as_ref() } else { None };
         match &mut self.kind {
             StreamKind::Whole { collection } => Ok(carve(collection, key)),
             StreamKind::Sliced {
@@ -1155,26 +1605,26 @@ impl<'a> DecodeStream<'a> {
                         continue;
                     }
                     if !parsed.contains_key(&object.source) {
-                        let raw = std::fs::read(&object.source).map_err(|error| {
-                            missing_input(format!("cannot read {}: {error}", object.source))
-                        })?;
-                        let payload = crate::codec::decoded_payload(raw, &object.source)?;
-                        let file = grib_core::grib2::Grib2File::from_bytes(&payload).map_err(
-                            |error| {
-                                crate::refusal::decode_failed(format!(
-                                    "GRIB2 parse failed for {}: {error}",
-                                    object.source
-                                ))
-                            },
-                        )?;
-                        parsed.insert(object.source.clone(), file);
+                        parsed.insert(object.source.clone(), parse_grib2_object(&object.source)?);
                     }
                     let file = &parsed[&object.source];
-                    let mut decoded = crate::grib::grib2_records(
+                    let windowed = match decode_window {
+                        Some(_) => windowed_records(mapping, file, &wanted, &aliases, &self.decode_fields)?,
+                        None => std::collections::BTreeSet::new(),
+                    };
+                    let record_window = decode_window.map(|window| {
+                        crate::grib::RecordWindow {
+                            rows: window.rows,
+                            columns: window.columns,
+                            records: &windowed,
+                        }
+                    });
+                    let mut decoded = crate::grib::grib2_records_within(
                         file,
                         &object.source,
                         &wanted,
                         declaration,
+                        record_window.as_ref(),
                     )?;
                     crate::grib::alias_records(&aliases, &mut decoded);
                     records.extend(decoded);
@@ -1197,6 +1647,145 @@ impl<'a> DecodeStream<'a> {
             }
         }
     }
+}
+
+/// Read, stage and parse one GRIB2 object.
+fn parse_grib2_object(source: &str) -> Result<grib_core::grib2::Grib2File> {
+    let raw = std::fs::read(source)
+        .map_err(|error| missing_input(format!("cannot read {source}: {error}")))?;
+    let payload = crate::codec::decoded_payload(raw, source)?;
+    grib_core::grib2::Grib2File::from_bytes(&payload).map_err(|error| {
+        crate::refusal::decode_failed(format!("GRIB2 parse failed for {source}: {error}"))
+    })
+}
+
+/// The fields a granted window may decode over itself alone, and the
+/// fields a frame completes hydrostatically that every window-decoded
+/// frame is watched for.
+///
+/// A candidate is a direct vertical/y/x field that nothing reads beside a
+/// full-grid field:
+///
+/// * no derivation reads it (a derivation's other operands keep the
+///   full grid, so its operands must too);
+/// * it is not `air_pressure`, whose whole plane gives the per-level
+///   pressures the frame publishes (`original_pressure_hpa`).  Named
+///   breakage: a direct pressure field decoded over the window was
+///   published without that ladder, and the reader could not open the
+///   frameset (ICON-D2 publishes air_pressure directly);
+/// * it is not in `keep_whole`, what the caller reads whole itself;
+/// * it is not an operand of a hydrostatic completion whose need the
+///   window cannot see.  A completed field (geopotential height on a
+///   pressure ladder) that the source publishes directly under the
+///   reject or value policy leaves NaN only on the levels it does not
+///   publish, which are NaN over the window too: such a field is
+///   watched instead, and a frame that leaves it out is decoded whole
+///   ([`DecodeStream::completes_over_whole_columns`]).  A completed
+///   field that is derived, not declared, or under a policy that keeps
+///   NaN cells can need its completion outside the window alone, so its
+///   operands and the field itself are never decoded over the window.
+///   Named breakage: the completion then read window-decoded columns
+///   beside full-grid surface pressure, and every pressure-level source
+///   given a window refused a frame that left a height level out.
+pub fn decode_window_candidates(
+    mapping: &Mapping,
+    keep_whole: &std::collections::BTreeSet<String>,
+) -> Result<(std::collections::BTreeSet<String>, std::collections::BTreeSet<String>)> {
+    let fields = mapping.fields()?;
+    let mut whole: std::collections::BTreeSet<String> = keep_whole.clone();
+    whole.insert("air_pressure".to_owned());
+    for field in &fields {
+        let Some(derivation) = field.derivation() else { continue };
+        let operation = mapping.derivation(derivation).ok_or_else(|| {
+            crate::refusal::mapping_invalid(format!(
+                "field {} names unknown derivation '{derivation}'",
+                field.name
+            ))
+        })?;
+        if let Some(names) =
+            crate::derive::derivation_dependencies(operation, mapping.vertical()?, &field.name)?
+        {
+            whole.extend(names);
+        }
+    }
+    let required: std::collections::BTreeSet<String> =
+        mapping.required_field_names()?.into_iter().collect();
+    let mut watch: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for name in crate::derive::completed_fields(mapping.vertical_kind()?, &required) {
+        let declared = fields.iter().find(|field| field.name == name);
+        let visible = match declared {
+            Some(field) if field.derivation().is_none() => {
+                matches!(field.missing_kind()?, "reject" | "value")
+            }
+            _ => false,
+        };
+        if visible {
+            watch.insert(name.to_owned());
+        } else {
+            whole.insert(name.to_owned());
+            whole.extend(
+                crate::derive::HYPSOMETRIC_OPERANDS.iter().map(|(operand, _)| (*operand).to_owned()),
+            );
+        }
+    }
+    let mut candidates: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for field in &fields {
+        if field.derivation().is_none()
+            && field.source_axes()? == ["vertical", "y", "x"]
+            && field.target_axes()? == ["vertical", "y", "x"]
+            && !whole.contains(&field.name)
+        {
+            candidates.insert(field.name.clone());
+        }
+    }
+    Ok((candidates, watch))
+}
+
+/// The wanted records of one object that answer ONLY fields decoded over
+/// the window, matched the way assembly matches them (aliased identity,
+/// selectors, declared levels).  A record that also answers a full-grid
+/// field is decoded whole.
+fn windowed_records(
+    mapping: &Mapping,
+    file: &grib_core::grib2::Grib2File,
+    wanted: &[usize],
+    aliases: &[crate::grib::RecordAlias],
+    decode_fields: &std::collections::BTreeSet<String>,
+) -> Result<std::collections::BTreeSet<usize>> {
+    let mut identities = grib2_identities(&file.messages);
+    crate::grib::alias_identities(aliases, &mut identities);
+    let source_format = mapping.format()?.to_owned();
+    let declared_levels = mapping.declared_levels()?;
+    let interface_levels = mapping.interface_levels()?;
+    let fields = mapping.fields()?;
+    let mut windowed = std::collections::BTreeSet::new();
+    for index in wanted {
+        let identity = &identities[*index];
+        let mut answers: Vec<&str> = Vec::new();
+        for field in &fields {
+            if field.derivation().is_some() {
+                continue;
+            }
+            let hit = field
+                .selectors()
+                .iter()
+                .any(|selector| crate::grib::selector_matches(selector, identity, &source_format));
+            if hit
+                && crate::grib::declared_vertical_admits(
+                    &declared_levels,
+                    &interface_levels,
+                    field,
+                    identity.level_value,
+                )?
+            {
+                answers.push(field.name.as_str());
+            }
+        }
+        if !answers.is_empty() && answers.iter().all(|name| decode_fields.contains(*name)) {
+            windowed.insert(*index);
+        }
+    }
+    Ok(windowed)
 }
 
 /// One valid time MOVED out of a whole decoded collection.
@@ -1435,7 +2024,13 @@ pub fn run_decode(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> R
     ) {
         verify_input_manifest(manifest, expected, &mapping, &files, &digests)?;
     }
-    let mut stream = DecodeStream::open(&mapping, &files, progress)?;
+    let mut stream = DecodeStream::open_within(
+        &mapping,
+        &files,
+        progress,
+        invocation.atmospheric_window,
+        &std::collections::BTreeSet::new(),
+    )?;
     progress(json!({"event": "assembled", "valid_times": stream.keys().len()}));
     let output = PathBuf::from(invocation.output.as_ref().expect("decode requires --output"));
     // The series is decoded, materialized and written ONE VALID TIME AT
@@ -1444,10 +2039,40 @@ pub fn run_decode(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> R
     // once -- about 9 GiB per time on a 3 km CONUS source.
     let summary = stream.summary().clone();
     let grid_fingerprint = summary.grid_fingerprint.clone();
-    let document = crate::frames::write_frameset_with_window(
-        &output, &mapping, &summary, &digests, invocation.atmospheric_window,
-        |key| stream.slice(key),
-    )?;
+    // A window granted before the first record was decoded is published
+    // by every frame, on either writer.
+    let decode_window = stream.decode_window().cloned();
+    // Several valid times at once when every one decodes on its own
+    // (see `compose::run_compose`), still written one at a time.
+    let lanes = if stream.times_are_independent() {
+        crate::threads::lanes(
+            stream.per_time_bytes(), &stream.field_bytes(), stream.held_bytes(), stream.keys().len())
+    } else {
+        1
+    };
+    let document = if lanes > 1 {
+        let first = std::sync::Mutex::new(stream.take_first());
+        let stream = &stream;
+        crate::frames::write_frameset_lanes(
+            &output, &mapping, &summary, &digests, invocation.atmospheric_window, decode_window,
+            lanes, |index, key| {
+                let held = if index == 0 {
+                    first.lock().ok().and_then(|mut slot| slot.take())
+                } else {
+                    None
+                };
+                match held {
+                    Some(collection) => Ok(collection),
+                    None => stream.slice_detached(key),
+                }
+            },
+        )?
+    } else {
+        crate::frames::write_frameset_with_decode_window(
+            &output, &mapping, &summary, &digests, invocation.atmospheric_window, decode_window,
+            |key| stream.slice(key),
+        )?
+    };
     let frame_count = document
         .get("frames")
         .and_then(Value::as_array)
@@ -1757,6 +2382,79 @@ pub fn canonical_json(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A packaged mapping, edited by `edit`, loaded from a scratch copy.
+    fn packaged_mapping(name: &str, edit: impl FnOnce(&mut Value)) -> Mapping {
+        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(4).unwrap();
+        let mut document: Value = serde_json::from_slice(
+            &std::fs::read(repository.join("gpuwm").join("authorities").join(name)).unwrap(),
+        )
+        .unwrap();
+        edit(&mut document);
+        let path = std::env::temp_dir().join(format!(
+            "gpuwm-candidates-{}-{}-{name}",
+            std::process::id(),
+            document.to_string().len()
+        ));
+        std::fs::write(&path, document.to_string()).unwrap();
+        let mapping = Mapping::load(&path.display().to_string()).unwrap();
+        let _ = std::fs::remove_file(&path);
+        mapping
+    }
+
+    fn names(items: &[&str]) -> std::collections::BTreeSet<String> {
+        items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_decode_window_keeps_whole_every_field_read_beside_the_full_grid() {
+        let none = std::collections::BTreeSet::new();
+        // GEM GDPS publishes its heights directly under the reject policy:
+        // a height level it leaves out is NaN over the window too, so its
+        // columns are decoded over the window and the heights watched.
+        let gdps = packaged_mapping("rw-wps-gem-gdps-grib2.mapping.json", |_| {});
+        let (candidates, watch) = decode_window_candidates(&gdps, &none).unwrap();
+        assert_eq!(
+            candidates,
+            names(&["air_temperature", "eastward_wind", "geopotential_height",
+                    "northward_wind", "specific_humidity"])
+        );
+        assert_eq!(watch, names(&["geopotential_height"]));
+        // What the caller reads whole (a composition's terrain derivation)
+        // is never decoded over the window.
+        let kept = names(&["air_temperature", "geopotential_height", "specific_humidity"]);
+        let (candidates, _) = decode_window_candidates(&gdps, &kept).unwrap();
+        assert_eq!(candidates, names(&["eastward_wind", "northward_wind"]));
+        // A pressure field the source publishes directly: its whole plane
+        // gives the frame's per-level pressures, so it is decoded whole.
+        let direct = packaged_mapping("rw-wps-gem-gdps-grib2.mapping.json", |document| {
+            let field = &mut document["fields"]["air_pressure"];
+            field.as_object_mut().unwrap().remove("derivation");
+            field["selectors"] = serde_json::json!([{"format": "grib2", "discipline": 0,
+                "category": 3, "parameter": 0, "level_type": 100}]);
+        });
+        let (candidates, _) = decode_window_candidates(&direct, &none).unwrap();
+        assert!(!candidates.contains("air_pressure"));
+        assert!(candidates.contains("air_temperature"));
+        let icon_d2 = packaged_mapping("rw-wps-icon-d2-grib2.mapping.json", |_| {});
+        let (candidates, watch) = decode_window_candidates(&icon_d2, &none).unwrap();
+        assert!(!candidates.contains("air_pressure") && candidates.contains("air_temperature"));
+        assert!(watch.is_empty(), "a model-level frame completes nothing");
+        // ICON-EU derives its heights: whether a completion runs is not
+        // visible over the window, so its operands stay whole.
+        let icon_eu = packaged_mapping("rw-wps-icon-eu-regular-grib2.mapping.json", |_| {});
+        let (candidates, watch) = decode_window_candidates(&icon_eu, &none).unwrap();
+        assert_eq!(candidates, names(&["eastward_wind", "northward_wind"]));
+        assert!(watch.is_empty());
+        // A height field the mapping leaves out entirely is completed on
+        // every frame, so the same holds.
+        let absent = packaged_mapping("rw-wps-gem-gdps-grib2.mapping.json", |document| {
+            document["fields"].as_object_mut().unwrap().remove("geopotential_height");
+        });
+        let (candidates, watch) = decode_window_candidates(&absent, &none).unwrap();
+        assert_eq!(candidates, names(&["eastward_wind", "northward_wind"]));
+        assert!(watch.is_empty());
+    }
 
     #[test]
     fn the_manifest_pair_is_atomic() {

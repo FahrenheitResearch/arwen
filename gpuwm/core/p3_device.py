@@ -19,13 +19,12 @@ storage directly as ``(nk, ncol)``.
 
 LAYOUT, AND WHY
 ---------------
-One thread per COLUMN, k as a loop index inside the thread.  P3 is not
-level-parallel: sedimentation carries an adaptive substep loop whose trip
-count comes from a Courant reduction over the column, the two goto targets
-are column-scope logical flags, and the flux divergence couples adjacent
-levels.  A thread-per-column decomposition makes all of that plain
-sequential code and therefore preserves the authority's arithmetic ORDER
-by construction rather than by care.
+The reference uses one thread per column. The level arms divide the
+independent process updates among four threads per column, with adjacent
+x threads still reading adjacent columns. Column flags are combined with
+integer OR. The sedimentation level arm also divides each substep among
+four threads: it reduces the Courant maximum, completes all fluxes, then
+updates levels. Floating point sums retain their original order.
 
 Fields stay LEVEL-MAJOR -- element (k, i) at ``k * ncol + i`` -- so a warp
 reading level k touches 32 consecutive floats.  That is fully coalesced AND
@@ -57,6 +56,10 @@ Fusing reorders nothing here, but "reorders nothing" is checked by a byte
 gate (``tests/test_p3_cuda.py``) rather than asserted, because this program
 has already shipped a vectorisation that was wrong in 39 elements out of
 37.8 million and only a byte gate caught it.
+``levels`` uses four launches with level-parallel preparation, process
+rates and final diagnostics. ``sedlevels`` also parallelises sedimentation
+substeps and is selected by ``cuda``. The sequential arms remain available
+as references; ``tests/test_p3_speed_levels.py`` compares their buffers.
 
 CONTRACTION
 -----------
@@ -126,14 +129,28 @@ ARM_KERNELS: dict[str, tuple[str, ...]] = {
                 "p3k_sed_cloud", "p3k_sed_rain", "p3k_sed_ice",
                 "p3k_homofreeze", "p3k_final", "p3k_saveold_precip"),
     "fused": ("p3k_fused_process", "p3k_fused_sed", "p3k_fused_finish"),
+    "sedlevels": ("p3k_levels_prepare", "p3k_levels_process",
+                  "p3k_levels_sed", "p3k_levels_finish"),
+    "levels": ("p3k_levels_prepare", "p3k_levels_process",
+               "p3k_fused_sed", "p3k_levels_finish"),
 }
 
 #: ``run.p3_backend`` -> the arm it selects.  The config spelling is the
 #: user-facing one ("cuda" is what a run asks for); the arm name is the
-#: verification one ("unfused" is what every agreement number in
-#: evidence/p3-cuda-20260829 was measured on).  They are kept as two names
-#: on purpose so a receipt can never be read as naming the other thing.
-CONFIG_ARM: dict[str, str] = {"cuda": "unfused", "fused": "fused"}
+#: verification one. Historical authority receipts name "unfused";
+#: default runs select "sedlevels" and explicit "fused" keeps its meaning.
+CONFIG_ARM: dict[str, str] = {"cuda": "sedlevels", "fused": "fused"}
+
+#: Launch shape (columns per block at most, level groups) of each level-group
+#: kernel.  The group counts and column caps are the shared-array shapes in
+#: p3.cu (flags[8][16], flags[16][8], co[16][4]); a column's levels are dealt
+#: to its groups round-robin, and only flags and the Courant maximum are
+#: combined across groups, so the shape moves speed, never bits.
+LEVEL_GROUP_SHAPE: dict[str, tuple[int, int]] = {
+    "p3k_levels_prepare": (16, 8),
+    "p3k_levels_process": (8, 16),
+    "p3k_levels_sed": (4, 16),
+}
 
 #: Threads per block.  One thread is one column, so this is a pure
 #: occupancy knob and changes no number; the byte gate covers it.
@@ -323,11 +340,8 @@ def run_p3_device(fields: dict, diag: dict, surf: dict, *,
     """
     if arm not in ARM_KERNELS:
         raise ValueError(
-            f"unknown P3 arm {arm!r}: the port ships 'unfused' (the "
-            "reference every agreement number was measured on) and "
-            "'fused' (the same device step functions in three launches). "
-            "A third arm has to be verified against 'unfused' byte for "
-            "byte before it can be selected here.")
+            f"unknown P3 arm {arm!r}: expected one of "
+            f"{tuple(ARM_KERNELS)}")
     ncol, nk = workspace.ncol, workspace.nk
     if tables is None:
         tables = device_tables()
@@ -363,4 +377,13 @@ def run_p3_device(fields: dict, diag: dict, surf: dict, *,
             np.float32(clbfact_dep), np.float32(clbfact_sub))
     grid = ((ncol + block - 1) // block,)
     for name in ARM_KERNELS[arm]:
-        module.get_function(name)(grid, (block,), args)
+        if name == "p3k_levels_finish":
+            module.get_function(name)((grid[0], nk), (block,), args)
+        elif name in LEVEL_GROUP_SHAPE:
+            columns, groups = LEVEL_GROUP_SHAPE[name]
+            level_block = min(block, columns)
+            module.get_function(name)(
+                ((ncol + level_block - 1) // level_block,),
+                (level_block, groups), args)
+        else:
+            module.get_function(name)(grid, (block,), args)

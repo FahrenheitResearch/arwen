@@ -883,6 +883,26 @@ def test_state_finalize_reproduces_wrfs_per_kg_vs_per_m3_clamp():
     assert got.max() <= float(_NT_C_MAX) / rho_value * (1.0 + 1e-6)
 
 
+#: What each NVRTC that has run the demonstration below does with the two
+#: unpinned spellings of the REAL(4) prefactor: "widens" keeps the float32
+#: chain in double (the pins in thompson_aerosol_state.cu are essential),
+#: "real4" rounds it as Fortran does (the pins are belt and suspenders).
+#: One row per (major, minor) that was run, because the behaviour is not
+#: monotonic in the version: 13.1 rounds, 13.0 and 13.4 widen.
+NVRTC_UNPINNED_CLASS = {
+    # RTX 5090 sm_120 hosts; 13.0 on driver 610.74, 2026-08-03.
+    (12, 8): "widens",
+    (12, 9): "widens",
+    (13, 0): "widens",
+    # RTX 4090 sm_89, driver 590.48.01, 2026-08-03 (arwen-stress-4090).
+    (13, 1): "real4",
+    # An RTX PRO 4500 (sm_120, 2026-09-28) and the RTX 5070 Ti (sm_120,
+    # NVRTC 13.4.92, driver 595.91.07, 2026-09-29): both spellings give
+    # 3.5430368e+08, the widened answer, against WRF's 3.543037e+08.
+    (13, 4): "widens",
+}
+
+
 def test_state_finalize_rounds_every_real4_subexpression_that_feeds_a_double():
     """REGRESSION.  nvrtc widens a float32 chain whose result is consumed by a
     double expression, and WRF's :4012-4020 does not.
@@ -910,11 +930,13 @@ def test_state_finalize_rounds_every_real4_subexpression_that_feeds_a_double():
     essential.  Exact agreement is measured only at NVRTC 13.1 (RTX 4090
     sm_89, driver 590.48.01, 2026-08-03, arwen-stress-4090): there all
     three spellings agree bitwise with the Fortran-faithful answer, 1 FP32
-    ULP away from the widened one.  So the split below is ``>= (13, 1)``,
-    not ``>= (13, 0)`` -- a first cut at this boundary guessed the major
-    version was where the behaviour changed and misclassified 13.0, which
-    the reference box falsified by producing the widened answer under it.
-    Do not move this boundary to a version nobody has run.
+    ULP away from the widened one.  NVRTC 13.4 widens again (an RTX PRO
+    4500 and the RTX 5070 Ti, both sm_120, 13.4.92 on the 5070 Ti,
+    2026-09-29), which falsified the ``>= (13, 1)`` boundary this test used
+    to draw, as 13.0 had falsified the ``>= (13, 0)`` guess before it.  So
+    the classes are a table of the versions that were run
+    (``NVRTC_UNPINNED_CLASS``), and a version missing from it fails until
+    it is measured and recorded.
 
     This test fired its own "re-measure before relaxing the pins"
     instruction on 13.1, and the re-measurement's verdict is recorded per
@@ -1005,35 +1027,41 @@ def test_state_finalize_rounds_every_real4_subexpression_that_feeds_a_double():
     from cupy.cuda import nvrtc
 
     nvrtc_version = tuple(nvrtc.getVersion())
-    if nvrtc_version >= (13, 1):
+    measured = NVRTC_UNPINNED_CLASS.get(nvrtc_version)
+    assert measured is not None, (
+        f"NVRTC {nvrtc_version} has no recorded class for the unpinned "
+        f"spellings (widened: {F(inlined) == widened_answer}, REAL(4): "
+        f"{F(inlined) == wrf_answer}); record what it does in "
+        f"NVRTC_UNPINNED_CLASS before touching the pins in "
+        f"gpuwm/core/kernels/thompson_aerosol_state.cu")
+    if measured == "real4":
         # Measured on NVRTC 13.1: the toolchain rounds every float32
         # subexpression to REAL(4) exactly as the pinned spelling does, so
         # all three spellings agree bitwise and the pins are belt and
-        # suspenders here.  13.1 is the FIRST toolchain measured to do so:
-        # 13.0 still widens (reference RTX 5090, driver 610.74,
-        # 2026-08-03), so the boundary is the minor version, not the major.
-        # Asserted exactly -- an unpinned spelling landing anywhere else is
-        # a new toolchain behaviour to measure, not one to absorb.
+        # suspenders here.  13.1 is the only toolchain measured to do so:
+        # 13.0 widens (reference RTX 5090, driver 610.74, 2026-08-03) and
+        # so does 13.4.  Asserted exactly -- an unpinned spelling landing
+        # anywhere else is a new toolchain behaviour to measure, not one to
+        # absorb.
         assert F(inlined) == wrf_answer and F(via_named) == wrf_answer, (
-            f"NVRTC {nvrtc_version} neither widens the unpinned spellings "
-            f"(the 12.8/12.9/13.0 behaviour) nor rounds them to the "
-            f"REAL(4) answer (the 13.1 behaviour); re-measure and record "
-            f"this toolchain's class before touching the pins in "
-            f"gpuwm/core/kernels/thompson_aerosol_state.cu")
+            f"NVRTC {nvrtc_version} was recorded rounding the unpinned "
+            f"spellings to the REAL(4) answer and no longer does; "
+            f"re-measure and record this toolchain's class before touching "
+            f"the pins in gpuwm/core/kernels/thompson_aerosol_state.cu")
         print("NVRTC %s does not widen the unpinned spellings: all three "
               "agree with the REAL(4) answer bitwise; the .cu pins are "
               "belt and suspenders on this toolchain and essential on "
-              "the toolchains measured to widen (12.8, 12.9, 13.0)"
+              "the toolchains measured to widen (12.8, 12.9, 13.0, 13.4)"
               % (".".join(str(p) for p in nvrtc_version),))
     else:
-        # Widening measured at 12.8, 12.9 and 13.0 -- everything below the
-        # 13.1 boundary above.  The pins are essential here.
+        # Widening measured at 12.8, 12.9, 13.0 and 13.4.  The pins are
+        # essential here.
         assert (F(inlined) == widened_answer
                 and F(via_named) == widened_answer), (
             f"NVRTC {nvrtc_version} no longer widens the unpinned "
-            f"spellings, but widening is what was measured on every "
-            f"toolchain below 13.1 (12.8, 12.9, 13.0); re-measure and "
-            f"move the boundary above rather than relaxing the pins in "
+            f"spellings, but widening is what was recorded for it in "
+            f"NVRTC_UNPINNED_CLASS; re-measure and record its class there "
+            f"rather than relaxing the pins in "
             f"gpuwm/core/kernels/thompson_aerosol_state.cu")
 
     # ---- 2.  The kernel itself, bitwise, over every fixture state. --------

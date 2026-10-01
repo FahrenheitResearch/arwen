@@ -43,9 +43,11 @@ What the port actually offers, verified against
     ``_run_steps(*, stack, start_step, end_step, capture_steps,
     boundary_observer=None)``.
 
-``src/mpas_port``
+``src/hexcore`` (``src/mpas_port`` before the port's 0.2.0 rename)
     ``state.PrognosticState`` -- level-major ``(nVertLevels, nCells)``.
     ``driver.DrySavedDiagnostics`` -- the seven-field sidecar.
+    The package is a row of ``PORT_PACKAGES``; a bound tree's is the first
+    row it holds, and every port import goes through it.
 
 There is no ``_download_state``.  :func:`download_stack` is that
 function, written on this side rather than in the port: the port is
@@ -67,21 +69,23 @@ from __future__ import annotations
 from mpas_cycle_bridge.portbind import (BACKEND_RESTART_KEYS,
                                         PORT_FORECAST_RELPATH,
                                         PORT_MESH_BINDING_RELPATH,
-                                        PORT_PROOF_RELPATH, PORT_SRC_RELDIR,
-                                        PROGNOSTIC_FIELDS,
+                                        PORT_PACKAGES, PORT_PROOF_RELPATH,
+                                        PORT_SRC_RELDIR, PROGNOSTIC_FIELDS,
                                         REQUIRED_FORECAST_SYMBOLS,
                                         REQUIRED_PROOF_SYMBOLS,
                                         SAVED_DIAGNOSTIC_FIELDS, PortBinding,
                                         PortBindingError, bind_port,
                                         download_stack, join_backend_restart,
-                                        prognostic_state, saved_diagnostics,
+                                        port_package, prognostic_state,
+                                        saved_diagnostics,
                                         split_backend_restart)
 
 __all__ = [
     "BACKEND_RESTART_KEYS", "PORT_FORECAST_RELPATH",
-    "PORT_MESH_BINDING_RELPATH", "PORT_PROOF_RELPATH", "PORT_SRC_RELDIR",
-    "PROGNOSTIC_FIELDS", "REQUIRED_FORECAST_SYMBOLS", "REQUIRED_PROOF_SYMBOLS",
-    "SAVED_DIAGNOSTIC_FIELDS", "PortBinding", "PortBindingError", "bind_port",
-    "download_stack", "join_backend_restart", "prognostic_state",
-    "saved_diagnostics", "split_backend_restart",
+    "PORT_MESH_BINDING_RELPATH", "PORT_PACKAGES", "PORT_PROOF_RELPATH",
+    "PORT_SRC_RELDIR", "PROGNOSTIC_FIELDS", "REQUIRED_FORECAST_SYMBOLS",
+    "REQUIRED_PROOF_SYMBOLS", "SAVED_DIAGNOSTIC_FIELDS", "PortBinding",
+    "PortBindingError", "bind_port", "download_stack", "join_backend_restart",
+    "port_package", "prognostic_state", "saved_diagnostics",
+    "split_backend_restart",
 ]

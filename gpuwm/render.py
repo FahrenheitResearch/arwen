@@ -1256,7 +1256,9 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
             return [], [], unavailable
         batches = (["all"] if timeidx is None else [str(timeidx)])
         if timeidx is None and wanted_times is not None:
-            batches = _wanted_slots(series, wanted_times) or batches
+            batches = _wanted_slots(
+                series, wanted_times,
+                each=_joined_across_moves(subject, context_paths)) or batches
         written, failures, skipped = [], [], []
         for frames in batches:
             batch = rustwx.run_renderer_series(
@@ -1305,23 +1307,53 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
     return written, failures, skipped
 
 
-def _wanted_slots(series, wanted_times) -> list[str] | None:
+def _joined_across_moves(subject: Path, context_paths) -> bool:
+    """Whether a context frame is the subject's nest at another recorded
+    place (:func:`history_series_groups` joined it across a move)."""
+
+    mine = _history_series_identity(subject)[1]
+    for path in context_paths:
+        theirs = _history_series_identity(path)[1]
+        if theirs[:3] == mine[:3] and theirs[3] != mine[3]:
+            return True
+    return False
+
+
+def _wanted_slots(series, wanted_times, *, each: bool = False) -> list[str] | None:
     """``[index]`` when ONE frame of a context series is wanted, else ``None``.
+
+    ``each``: one launch per wanted frame, however many are wanted, for a
+    series joined across a moving nest's moves.  Its baselines are the
+    nest's frames at other places, usually many more than the frames the
+    series delivers, and a launch into the same store reuses the first
+    one's import.  Measured on node-4 over a 3 km 48 x 48 storm nest's
+    series of 20 frames (17 baselines, 3 wanted, every product): 17.7 s
+    drawing every frame, 6.2 s for three single-frame launches, and the
+    206 pictures both drew byte-identical.  Drawing every frame also put a
+    product the engine draws once per store (terrain height, on the
+    store's first frame) on a discarded baseline, so a place the nest
+    moved to never delivered it; the single-frame launches draw it at
+    each wanted frame.
 
     A series with context frames exists so a windowed product has its
     baselines, not so the baselines are drawn: with ``--frames all`` the
     engine draws every baseline and the caller throws those pictures
     away.  The engine draws one stored slot per launch (``--frames N``,
-    ordinal over the store's ascending valid times), but every launch
-    imports the whole series again, and the import is the larger cost:
-    measured at 1 km (414x402) on the 5070 Ti host, about 6 s per frame
-    to import against 3.5 s to draw one frame's 204 pictures.  One launch
-    per wanted frame therefore wins only when a single frame is wanted.
+    ordinal over the store's ascending valid times), and this was
+    decided when every launch imported the whole series again: measured
+    at 1 km (414x402) on the 5070 Ti host, about 6 s per frame to import
+    against 3.5 s to draw one frame's 204 pictures, so one launch per
+    wanted frame won only when a single frame was wanted.  A later launch
+    into the same store now reuses the first one's import, but it still
+    reads and hashes every frame of the series to find it, so the rule
+    is kept until that cost is measured against drawing the baselines.
     """
 
     stamps = sorted({stamp for path in series
                      for stamp in _history_series_record(path)[1]})
     wanted = sorted(set(wanted_times) & set(stamps))
+    if each and wanted and len(stamps) > len(wanted):
+        return [str(stamps.index(stamp)) for stamp in wanted]
     if len(wanted) != 1 or len(stamps) < 2:
         return None
     return [str(stamps.index(wanted[0]))]
@@ -1357,8 +1389,34 @@ def _history_identity_attribute(name: str) -> bool:
             or name.startswith("GPUWM_") and not name.startswith("GPUWM_CARRIER_"))
 
 
+#: What one moving nest's history frames differ by and nothing else: where
+#: the nest sits in its parent, and the centre that follows from it (with
+#: XLAT/XLONG).  The history writer refreshes all of them after a move.
+_PLACEMENT_ATTRIBUTES = frozenset({"I_PARENT_START", "J_PARENT_START",
+                                   "CEN_LAT", "CEN_LON"})
+
+
 def _history_series_record(path: Path) -> tuple[tuple, tuple[datetime.datetime, ...]]:
     """Identify one actual grid and run before sharing its native time store."""
+    key, _nest, stamps = _history_series_identity(path)
+    return key, stamps
+
+
+def _history_series_identity(path: Path
+                             ) -> tuple[tuple, tuple, tuple[datetime.datetime, ...]]:
+    """``(series key, nest key, valid times)`` of one history file.
+
+    The series key is the grid's whole identity, its place included, which
+    is what one store may hold.  The nest key is ``(folder, episode, the
+    identity without the place, the recorded place, (ratio, nx, ny))``, the
+    place being :data:`_PLACEMENT_ATTRIBUTES` and the coordinates: two
+    frames whose nest keys differ only in the recorded place are one moving
+    nest before and after a move, whose earlier frames a later series needs
+    to close its windows (:func:`history_series_groups`).  Frames at one
+    recorded place with other coordinates are not a move and stay apart.
+    The last member is what says whether two places share ground
+    (:func:`_places_share_ground`).
+    """
     import netCDF4
 
     path = Path(path).resolve()
@@ -1373,10 +1431,15 @@ def _history_series_record(path: Path) -> tuple[tuple, tuple[datetime.datetime, 
                     raise ValueError(f"missing {name}")
             if not metadata.get("START_DATE") and not metadata.get("SIMULATION_START_DATE"):
                 raise ValueError("missing model initialization date")
-            digest = hashlib.sha256(json.dumps(metadata, sort_keys=True,
-                                               allow_nan=False).encode("utf-8"))
             dimensions = [(name, len(value)) for name, value in dataset.dimensions.items()
                           if name not in {"Time", "DateStrLen"}]
+            nest = hashlib.sha256(json.dumps(
+                {name: value for name, value in metadata.items()
+                 if name not in _PLACEMENT_ATTRIBUTES},
+                sort_keys=True, allow_nan=False).encode("utf-8"))
+            nest.update(repr(sorted(dimensions)).encode("utf-8"))
+            digest = hashlib.sha256(json.dumps(metadata, sort_keys=True,
+                                               allow_nan=False).encode("utf-8"))
             digest.update(repr(sorted(dimensions)).encode("utf-8"))
             for name in ("XLAT", "XLONG"):
                 variable = dataset.variables[name]
@@ -1400,24 +1463,80 @@ def _history_series_record(path: Path) -> tuple[tuple, tuple[datetime.datetime, 
         raise ValueError(f"Cannot group history series {path}: {error}") from error
     # Separate folders are separate run/lifecycle authorities. In particular,
     # never difference independent case folders or a nest's retire/rearm lives.
-    return (str(path.parent), history_episode(path), digest.hexdigest()), stamps
+    episode = history_episode(path)
+    place = (metadata.get("I_PARENT_START"), metadata.get("J_PARENT_START"))
+    sizes = dict(dimensions)
+    extent = (metadata.get("PARENT_GRID_RATIO"), sizes.get("west_east"),
+              sizes.get("south_north"))
+    return ((str(path.parent), episode, digest.hexdigest()),
+            (str(path.parent), episode, nest.hexdigest(), place, extent), stamps)
+
+
+def _places_share_ground(mine, theirs) -> bool:
+    """Whether two recorded places of one nest have a mass cell in common.
+
+    A nest moves by whole parent cells, so place ``(i, j)`` and place
+    ``(i', j')`` are ``(i - i') * ratio`` nest cells apart in x (and so in
+    y), and they overlap exactly when that is less than the grid's width
+    in both.  A place whose numbers are not all recorded shares nothing:
+    no move can be read from it.
+    """
+
+    (i, j), (ratio, nx, ny) = mine[3], mine[4]
+    (i_other, j_other) = theirs[3]
+    try:
+        dx = abs(int(i) - int(i_other)) * int(ratio)
+        dy = abs(int(j) - int(j_other)) * int(ratio)
+        return int(ratio) > 0 and dx < int(nx) and dy < int(ny)
+    except (TypeError, ValueError):
+        return False
 
 
 def group_history_series(paths, *, context_paths=()) -> list[list[Path]]:
     """Group compatible files, with explicit earlier context for a continuation.
+
+    The file lists of :func:`history_series_groups`, which says which frames
+    of each are context.
+    """
+    return [series for series, _context in
+            history_series_groups(paths, context_paths=context_paths)]
+
+
+def history_series_groups(paths, *, context_paths=()
+                          ) -> list[tuple[list[Path], list[Path]]]:
+    """Group compatible files, with explicit earlier context for a continuation.
+
+    ``(series, context)`` per group, ``context`` being the frames of the
+    series that are there to close its windows and are not drawn.
 
     Ordinary inputs retain their separate directory authorities. An explicit
     context frame in another directory may join one unique target series only
     when its grid, episode and scientific identity match and its times precede
     that series. This lets a restart's saved history supply its first window
     without silently joining independent target runs.
+
+    A MOVING NEST's frames at an earlier place join each later place's series
+    as context: same folder, same episode, the same identity but for the place
+    (:func:`_history_series_identity`), valid before that series' last frame,
+    at a place that shares ground with the series' own
+    (:func:`_places_share_ground`).  The renderer moves them onto the series'
+    place by the move the frames record, with the ground they did not cover
+    missing, so the first window after a move is drawn (rw_wrfbatch
+    ``nest_move``).  Split by place alone, a 3 km storm-following nest drew
+    its 1 h rain only at the hours it did not move (4 of 12) and the render
+    stage failed.  A place the nest has travelled a whole width away from
+    holds no value on the series' ground: joined anyway, every such frame was
+    imported (and with ``--frames all`` drawn) again for every later place,
+    and the renderer refused the whole series over it.
     """
     groups = {}
+    nests = {}
     context = {Path(path).resolve() for path in context_paths}
     earlier = []
     for raw in paths:
         path = Path(raw)
-        key, stamps = _history_series_record(path)
+        key, nest, stamps = _history_series_identity(path)
+        nests[key] = nest
         if path.resolve() in context:
             earlier.append((path, key, stamps))
             continue
@@ -1437,9 +1556,29 @@ def group_history_series(paths, *, context_paths=()) -> list[list[Path]]:
             if matches:
                 key = matches[0]
         groups.setdefault(key, []).append((path, stamps))
+    def moved_from(other, key):
+        # Same folder, episode and identity, another recorded place, and
+        # ground in common with this one.
+        mine, theirs = nests.get(key), nests.get(other)
+        return (other != key and mine is not None and theirs is not None
+                and mine[:3] == theirs[:3] and mine[3] != theirs[3]
+                and _places_share_ground(mine, theirs))
+
+    moved = {}
+    for key, rows in groups.items():
+        if all(path.resolve() in context for path, _stamps in rows):
+            continue
+        last = max(stamps[-1] for _path, stamps in rows)
+        own = {stamp for _path, stamps in rows for stamp in stamps}
+        moved[key] = [
+            (path, stamps)
+            for other, other_rows in groups.items() if moved_from(other, key)
+            for path, stamps in other_rows
+            if stamps[-1] < last and own.isdisjoint(stamps)]
     result = []
-    for rows in groups.values():
-        rows.sort(key=lambda item: item[1][0])
+    for key, rows in groups.items():
+        before = moved.get(key, [])
+        rows = sorted([*rows, *before], key=lambda item: item[1][0])
         seen = set()
         for path, stamps in rows:
             overlap = seen.intersection(stamps)
@@ -1447,7 +1586,11 @@ def group_history_series(paths, *, context_paths=()) -> list[list[Path]]:
                 raise ValueError(f"History series has overlapping valid times at {path}; "
                                  "select one run and one copy of each history frame")
             seen.update(stamps)
-        result.append([path for path, _stamps in rows])
+        joined = {path.resolve() for path, _stamps in before}
+        result.append((
+            [path for path, _stamps in rows],
+            [path for path, _stamps in rows
+             if path.resolve() in context or path.resolve() in joined]))
     return result
 
 
@@ -1620,7 +1763,8 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
     if series:
         context = {Path(path).resolve() for path in context_paths}
         written, failures, skipped = [], [], []
-        for group in group_history_series([*paths, *context_paths], context_paths=context_paths):
+        for group, group_context in history_series_groups(
+                [*paths, *context_paths], context_paths=context_paths):
             if all(path.resolve() in context for path in group):
                 continue
             options = dict(products=products, timeidx=timeidx, outdir=outdir,
@@ -1634,8 +1778,7 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
                 batch = render_wrfouts_rust(group, **options)
             else:
                 batch = render_series_rust(
-                    group, context_paths=[path for path in group if path.resolve() in context],
-                    **options)
+                    group, context_paths=group_context, **options)
                 for png in batch[0]:
                     print(f"render: {png}")
             written.extend(batch[0])

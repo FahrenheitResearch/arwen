@@ -2514,6 +2514,7 @@ def test_sealed_extension_rejects_changed_suffix_seam(
         monkeypatch, tmp_path):
     from gpuwm.ingest.lateral_bc import (
         BoundaryInterval, LateralBoundaries, SideBoundary,
+        record_built_end_frame,
     )
 
     cfg = _cfg(
@@ -2534,8 +2535,13 @@ def test_sealed_extension_rejects_changed_suffix_seam(
     fields["u"] = replace(
         boundary,
         west=SideBoundary(changed, boundary.west.tendency))
-    intervals[1] = BoundaryInterval(
-        suffix.start_seconds, suffix.end_seconds, fields)
+    # The suffix keeps the end frame its builder recorded and starts from
+    # a changed frame: a hand-built interval records none, and a live
+    # series that does not record every end frame is refused against a
+    # checkpoint that does before its seam is read (A140b).
+    intervals[1] = record_built_end_frame(BoundaryInterval(
+        suffix.start_seconds, suffix.end_seconds, fields),
+        suffix.end_frame_sha256)
     live.lateral_boundaries = LateralBoundaries(
         tuple(intervals), live.lateral_boundaries.spec_bdy_width,
         live.lateral_boundaries.spec_zone,
@@ -2988,10 +2994,19 @@ def _member_names(path) -> list[str]:
 #: exactly, root and child, so the config echo is the whole diff.  Its
 #: default 0 leaves WRF's derived count, and nothing reads it under the
 #: fixed clock this fixture runs.
+#:
+#: RE-PINNED for THREE appended RunConfig fields (`sf_urban_physics`,
+#: `use_wudapt_lcz`, `num_urban_hi`, lane/urban-infra), from
+#: 0cd69d00f667 / db0cff6b5e09.  Same gate: the three keys joined
+#: _WIF_CONFIG_KEYS below and the reconstruction lands on the pre-WIF pair
+#: exactly, root and child, so the config ECHO is the whole diff.  The
+#: configuration digest does not move: with no urban model the three keys
+#: are dropped from it (restart._configuration_digest_values), so every
+#: checkpoint written before them still resumes.
 _LIFECYCLE_FREE_ROOT_DIGEST = \
-    "0cd69d00f6676d7bc24aea46ded07416e4bfabe4ade4aa6d8e23606dc2f38187"
+    "9ead8250634097dc3d514611b5b2aed7aefec327008f36c8b2897683a7325b93"
 _LIFECYCLE_FREE_CHILD_DIGEST = \
-    "db0cff6b5e093496fd06e6c1c844086492aa9926b2324c30aefba8512e8f2fee"
+    "231ea033d29f5c3fabea95e4ce46bf4ad0a83907eaf2688d33453d1a3b53d4da"
 
 
 #: The values these pins carried immediately before the two mp=28 aerosol
@@ -3029,6 +3044,9 @@ _PRE_WIF_CHILD_DIGEST = \
 _WIF_CONFIG_KEYS = ("mp28_aerosol_source", "wif_climatology_path",
                     "p3_backend", "ntiedtke_tiedtke_closure", "eta_levels",
                     "relax_timescale_s", "relax_w",
+                    # The urban canopy selector and its two companions
+                    # (lane/urban-infra), appended last to RunConfig.
+                    "sf_urban_physics", "use_wudapt_lcz", "num_urban_hi",
                     ) + ADAPTIVE_TIMESTEP_RUN_FIELDS
 
 

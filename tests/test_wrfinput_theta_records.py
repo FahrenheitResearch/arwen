@@ -187,6 +187,97 @@ def test_a_boundary_from_another_real_exe_run_reports_the_size_of_the_mismatch()
     assert "use the pair produced by the same real.exe run" in text
 
 
+# ---------------------------------------------------------------------------
+# A real.exe whose compiler contracts multiply-adds (GCC with FMA in its
+# -march) rounds the moist-theta conversion and couple() once per fused
+# pair.  Float64 holds every float32 product exactly, so a float64 product
+# rounded once to float32 is that build's single final rounding.
+# ---------------------------------------------------------------------------
+def _fma_moist_theta(data):
+    """(t_2 + T0) * (1. + (R_v/R_d) * qv) - T0 with 1. + a*qv and s*f - T0 fused."""
+    ratio = np.float64(np.float32(461.6) / np.float32(287.0))
+    s = np.asarray(data["T"] + np.float32(300.), np.float32).astype(np.float64)
+    f = np.asarray(1.0 + ratio * data["QVAPOR"].astype(np.float64), np.float32)
+    return np.asarray(s * f.astype(np.float64) - 300.0, np.float32)
+
+
+def _fma_coupling(data, field):
+    """couple(): field * (C1H*MU + (C1H*MUB + C2H)), both multiply-adds fused."""
+    c1h = data["C1H"][:, None, None].astype(np.float64)
+    c2h = data["C2H"][:, None, None].astype(np.float64)
+    inner = np.asarray(c1h * data["MUB"][None] + c2h, np.float32).astype(np.float64)
+    weight = np.asarray(c1h * data["MU"][None] + inner, np.float32).astype(np.float64)
+    return np.asarray(field.astype(np.float64) * weight, np.float32)
+
+
+def _fma_pair(moist_boundary=True, moist_flag=True):
+    """The stock strip with its T_BXS and QVAPOR_BXS as a contracting build writes them."""
+    restored, tables, layouts, data = _stock_strip(moist_flag)
+    theta = _fma_moist_theta(data) if moist_boundary else data["T"]
+    tables["theta"]["west"] = (_fma_coupling(data, theta), tables["theta"]["west"][1])
+    tables["qv"]["west"] = (_fma_coupling(data, data["QVAPOR"]), tables["qv"]["west"][1])
+    return restored, tables, layouts, data
+
+
+def test_an_fma_contracting_real_exe_pair_passes_the_seam():
+    # A user's WRF 4.6.1 real.exe pair (3 km, 74 levels) was refused this
+    # way: "24752 of 57860 points differ, max |difference| 4.6875".
+    restored, tables, layouts, data = _fma_pair()
+    boundary = tables["theta"]["west"][0]
+    ours = _stock_coupling(data, wi._moist_theta_from_dry(data["T"], data["QVAPOR"]))
+    over = np.abs(boundary.astype(np.float64) - ours) > 4.0 * np.abs(np.spacing(ours)) + 1e-6
+    # The fixture is the defect: a per-element budget of the coupled theta-300
+    # refuses it, because the reconstruction's rounding sits on the full theta.
+    assert np.count_nonzero(over) > 100
+    wi._check_initial_boundary_pair(restored, tables, _WIDTH, layouts=layouts)
+
+
+def test_the_moist_theta_bound_is_a_few_spacings_of_the_full_theta():
+    data = np.load(_STRIP)
+    bound = wi._moist_theta_build_bound(data["T"], data["QVAPOR"])
+    ours = wi._moist_theta_from_dry(data["T"], data["QVAPOR"]).astype(np.float64)
+    assert np.all(np.abs(_fma_moist_theta(data) - ours) <= bound)
+    full = np.abs(np.spacing((ours + 300.0).astype(np.float32))).astype(np.float64)
+    # Scale-aware, not a floor: two to six spacings of theta_m, wherever
+    # theta_m - 300 sits.
+    assert np.all(bound >= 2.0 * full) and np.all(bound <= 6.0 * full)
+    near_300 = np.abs(ours) < 4.0
+    assert near_300.any()
+    assert np.all(bound[near_300] > 16.0 * np.abs(np.spacing(ours[near_300].astype(np.float32))))
+
+
+def test_a_dry_fma_boundary_under_the_moist_flag_still_refuses_and_says_so():
+    restored, tables, layouts, _ = _fma_pair(moist_boundary=False)
+    with pytest.raises(ValueError, match="does not match initial") as refusal:
+        wi._check_initial_boundary_pair(restored, tables, _WIDTH, layouts=layouts)
+    text = str(refusal.value)
+    assert "USE_THETA_M=1 on both files" in text
+    assert "equals the DRY coupling of this wrfinput T at every point" in text
+
+
+def test_a_moist_fma_boundary_under_the_dry_flag_is_named_moist():
+    restored, tables, layouts, _ = _fma_pair(moist_flag=False)
+    with pytest.raises(ValueError, match="does not match initial") as refusal:
+        wi._check_initial_boundary_pair(restored, tables, _WIDTH, layouts=layouts)
+    text = str(refusal.value)
+    assert "USE_THETA_M=0 on both files" in text
+    assert "equals the MOIST coupling of this wrfinput T at every point" in text
+
+
+def test_the_next_forcing_time_boundary_still_refuses():
+    # The strip's forcing interval is six hours; its tendency carries the
+    # first record to the second, which is not this initial state.
+    restored, tables, layouts, _ = _fma_pair()
+    value, tendency = tables["theta"]["west"]
+    later = np.asarray(value + np.float32(21600.) * tendency, np.float32)
+    tables["theta"]["west"] = (later, tendency)
+    with pytest.raises(ValueError, match="does not match initial") as refusal:
+        wi._check_initial_boundary_pair(restored, tables, _WIDTH, layouts=layouts)
+    text = str(refusal.value)
+    assert "not the DRY coupling of this T either" in text
+    assert "use the pair produced by the same real.exe run" in text
+
+
 def test_the_wrf_input_doors_carry_every_field_the_tree_runner_reads():
     """run_prepared_tree serves the prepared, wrfinput and met_em doors, so
     every ``inputs.<name>`` it reads must be a field of the WRF-input inputs

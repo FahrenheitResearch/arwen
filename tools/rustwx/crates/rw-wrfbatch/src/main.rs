@@ -23,6 +23,8 @@
 mod grib_import;
 #[path = "local_import.rs"]
 mod local_import;
+#[path = "nest_move.rs"]
+mod nest_move;
 #[path = "postproc_severe.rs"]
 mod postproc_severe;
 #[path = "wrf_process.rs"]
@@ -377,14 +379,24 @@ meshdiff:<...> (need --mesh-grid FILE.nc; meshdiff also --mesh-reference)"
 /// name.
 const VARIABLES_KEYWORD: &str = "variables";
 
-/// Named plots do not consume arbitrary diagnostic browse grids. Keep the
-/// full importer for catalog inspection, generic variables and unknown terms.
+/// Named plots do not consume arbitrary diagnostic browse grids.  A render
+/// of named products, and a listing of them, imports them with the named
+/// profile, so the listing imports what its render will; a listing of group
+/// keywords alone, generic variables and unknown terms still import in full.
 fn named_product_request(products: &str) -> bool {
     let known = rusty_weather::render_all::known_product_slugs();
     let terms: Vec<_> = products.split(',').map(str::trim).collect();
     !terms.is_empty() && terms.iter().all(|term| {
         matches!(*term, "all" | "direct" | "derived" | "windowed")
             || known.iter().any(|slug| slug == term)
+    })
+}
+
+/// Whether a request names at least one product rather than only the
+/// group keywords [`named_product_request`] accepts.
+fn names_a_product(products: &str) -> bool {
+    products.split(',').map(str::trim).any(|term| {
+        !term.is_empty() && !matches!(term, "all" | "direct" | "derived" | "windowed")
     })
 }
 
@@ -1318,10 +1330,17 @@ fn run(args: Args) -> Result<(), String> {
         }
         return Ok(());
     }
+    // A listing asked about NAMED products imports the frames exactly as the
+    // render of those products does, so the render that follows into the
+    // same store finds that run there and imports nothing
+    // (`wrf_process::published_import_record`).  A listing of group keywords
+    // alone, the default, still imports in full: it answers what the frames
+    // can draw at all.
     let mut options = WrfProcessOptions {
         heavy_ecape: args.heavy,
-        named_products_only: !args.list_products && !args.heavy
-            && named_product_request(&store_products),
+        named_products_only: !args.heavy
+            && named_product_request(&store_products)
+            && (!args.list_products || names_a_product(&store_products)),
         ..WrfProcessOptions::default()
     };
     if !args.heavy {

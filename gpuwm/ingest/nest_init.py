@@ -42,6 +42,7 @@ from gpuwm.case_data import (PerDomainSourceOrography, SourceOrography,
                              SourceOrographyDeclaration,
                              resolve_source_orography)
 from gpuwm.core import constants as c
+from gpuwm.core import portable_math as pm
 from gpuwm.core.diagnostics import update_diagnostics
 from gpuwm.core.grid import (BaseState, VerticalCoord,
                             hybrid_column_ordering_refusal,
@@ -504,7 +505,8 @@ def _static_catalog(catalog):
     selected = getattr(catalog, "static_catalog", catalog)
     if selected is None:
         raise ValueError("input catalog does not bind a static WPS_GEOG catalog")
-    return selected
+    from gpuwm.static.terrain_smoothing import catalog_with_smoothing
+    return catalog_with_smoothing(selected, getattr(catalog, "static_highres", None))
 
 
 def _read_source_orography(artifact: SourceOrography) -> np.ndarray:
@@ -649,8 +651,50 @@ def _capture_parent_blend_fields(child_dc: DomainConfig,
             _reconstruction_sint(parent.phb, reg, **sint_args))
 
 
-def _base_from_blended(state: DomainState, cfg, coord: VerticalCoord,
-                       p_top: float) -> BaseState:
+def _blend_terrain_triple(state: DomainState, captures, fine: BaseState,
+                          **blend_args) -> tuple[np.ndarray, ...]:
+    """WRF's three-operand terrain blend, carried in float64.
+
+    ``captures`` are the parent's SINT captures ``(ht, mub, phb)``
+    (:func:`_capture_parent_blend_fields`, WRF's own FP32 operator) and
+    ``fine`` is the float64 base the child held before the blend: its own
+    analytic base on its own terrain.  Each field is blended
+    (``blend_terrain``, dyn_em/nest_init_utils.F:712-785, on all three as
+    mediation_integrate.F:733-741 does) in float64, the FP32 state arrays
+    take its rounding, and the float64 triple is returned for
+    :func:`_base_from_blended`.  ``blend_args`` are ``blend_terrain``'s.
+
+    Named breakage: blending the FP32 state arrays in place and reading
+    them back made the child's base geopotential float32-exact, so
+    ``set_base_geopotential`` subtracted a profile from its own rounding:
+    the FP32 EOS correction ``dphb_resid`` carried only the rounding of
+    the FP32 subtraction itself, zero wherever that subtraction is exact
+    (on a real ladder over terrain, every layer), on every child on its
+    parent's ladder, and the child's surface geopotential missed g times
+    its terrain (an HRRR 12/3 km tree measured phb[0]/g minus ht at
+    3.5e-4 m on d02 against 4.5e-13 m on d01).  Outside the blend frame
+    the triple IS the child's own analytic base, so its FP32 storage is
+    what it was.
+    """
+    blended = []
+    for capture, own, target in zip(
+            captures, (fine.terrain_z, fine.mub, fine.phb),
+            (state.ht, state.mub2d, state.phb)):
+        value = np.array(own, dtype=np.float64, copy=True)
+        coarse = np.asarray(_host(capture), dtype=np.float64)
+        if value.shape != tuple(target.shape) or coarse.shape != value.shape:
+            raise ValueError(
+                f"terrain blend operands {coarse.shape} (parent capture) and "
+                f"{value.shape} (child base) do not match the child state's "
+                f"{tuple(target.shape)}")
+        blend_terrain(coarse, value, **blend_args)
+        target[...] = _as_like(value, target)
+        blended.append(value)
+    return tuple(blended)
+
+
+def _base_from_blended(cfg, coord: VerticalCoord, p_top: float,
+                       blended) -> BaseState:
     """Reconstitute WRF's real multi-domain base fields after blending.
 
     ``start_domain_em.F:682-698`` recomputes ``pb``, ``t_init`` and ``alb``
@@ -658,10 +702,15 @@ def _base_from_blended(state: DomainState, cfg, coord: VerticalCoord,
     ``rebalance=0``.  gpuwm's real-base constants and operation ordering are
     reused here.  The adjusted total theta is rebased by the caller after
     this object is loaded.
+
+    ``blended`` is the float64 ``(ht, mub, phb)`` triple
+    :func:`_blend_terrain_triple` returned, not the FP32 state it wrote:
+    the base is carried in float64 so the loaded ``phb`` keeps the EOS
+    correction (``DomainState.set_base_geopotential``) its FP32 store
+    drops.
     """
-    terrain = np.array(_host(state.ht), copy=True)
-    mub = np.array(_host(state.mub2d), copy=True)
-    phb = np.array(_host(state.phb), copy=True)
+    terrain, mub, phb = (np.array(value, dtype=np.float64, copy=True)
+                         for value in blended)
     pb = (coord.c3h[:, None, None] * mub[None]
           + coord.c4h[:, None, None] + float(p_top))
     if np.any(pb <= 0.0) or not np.all(np.diff(pb, axis=0) < 0.0):
@@ -680,9 +729,9 @@ def _base_from_blended(state: DomainState, cfg, coord: VerticalCoord,
             or "blended hybrid base pressure is not monotonic")
     lapse = 50.0
     temperature = np.maximum(
-        200.0, cfg.base_temp + lapse * np.log(pb / c.P0))
-    thb = temperature * (c.P0 / pb) ** c.RCP
-    alb = c.RD * thb * (pb / c.P0) ** c.RCP / pb
+        200.0, cfg.base_temp + lapse * pm.log(pb / c.P0))
+    thb = temperature * pm.power(c.P0 / pb, c.RCP)
+    alb = c.RD * thb * pm.power(pb / c.P0, c.RCP) / pb
     return BaseState(mub=mub, p_top=float(p_top), pb=pb, alb=alb,
                      thb=thb, phb=phb, terrain_z=terrain)
 
@@ -718,9 +767,13 @@ def _apply_press_adj_mu(state: DomainState, ht_fine) -> None:
 
 
 def _adjust_and_rederive(state: DomainState, cfg, coord: VerticalCoord,
-                         save_mub, ht_fine, *,
+                         save_mub, ht_fine, *, blended,
                          column_mass_correction: bool = True) -> BaseState:
     """Run adjust_tempqv, base/EOS re-derivation, then nest press_adj.
+
+    ``blended`` is the float64 ``(ht, mub, phb)`` triple
+    :func:`_blend_terrain_triple` returned; the re-derived base is built
+    from it (:func:`_base_from_blended`).
 
     ``column_mass_correction=False`` drops the first and last of those and
     keeps only the re-derivation, WHICH IS WHAT A MOVE GETS IN WRF.
@@ -762,7 +815,7 @@ def _adjust_and_rederive(state: DomainState, cfg, coord: VerticalCoord,
             float(state.p_top), theta_300, pressure_perturbation, state.qv,
             use_theta_m=0)
     adjusted_theta = theta_300 + np.float32(300.0)
-    base = _base_from_blended(state, cfg, coord, float(state.p_top))
+    base = _base_from_blended(cfg, coord, float(state.p_top), blended)
     state.load_base(coord, base)
     state.thp[...] = adjusted_theta - state.thb
     update_diagnostics(state, cfg.hypsometric_opt)
@@ -1243,26 +1296,25 @@ def finalize_prepared_child(
     phb_int = _as_like(phb_int, state.phb)
 
     # (3) WRF blends all three fields.  Never replace this with
-    # blend-ht-then-derive: base-state construction is nonlinear.
+    # blend-ht-then-derive: base-state construction is nonlinear.  The
+    # fine operand is the child's own float64 base, so the blended base
+    # stays float64 (_blend_terrain_triple).
     spec_width = int(cfg.spec_bdy_width)
     blend_width = int(getattr(child_dc, "blend_width", 5))
-    blend_terrain(ht_int, state.ht, spec_bdy_width=spec_width,
-                  blend_width=blend_width)
-    blend_terrain(mub_int, state.mub2d, spec_bdy_width=spec_width,
-                  blend_width=blend_width)
-    blend_terrain(phb_int, state.phb, spec_bdy_width=spec_width,
-                  blend_width=blend_width)
+    blended = _blend_terrain_triple(
+        state, (ht_int, mub_int, phb_int), real.base,
+        spec_bdy_width=spec_width, blend_width=blend_width)
 
     # (4) theta/qv adjustment, then (5) start_domain base/EOS re-derivation
     # followed by its real-nest press_adj MU correction.  HGT_M remains the
     # saved pre-blend ht_fine operand.
     base = _adjust_and_rederive(
-        state, cfg, coord, save_mub, static_fields["HGT_M"])
+        state, cfg, coord, save_mub, static_fields["HGT_M"], blended=blended)
     updated = _updated_real_result(real, base)
 
     # The three SINT captures and adjustment work arrays are init-only.  Soil
     # remains exactly the pre-blend object constructed above.
-    del ht_int, mub_int, phb_int, save_mub
+    del ht_int, mub_int, phb_int, save_mub, blended
     return ChildInitResult(
         state=state, grid=grid, coord=coord, real=updated,
         static_fields=static_fields, horizontal=horizontal, soil=soil,

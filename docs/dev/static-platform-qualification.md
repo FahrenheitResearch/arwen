@@ -89,6 +89,25 @@ Two findings are distinct from those arithmetic failures:
   excluding the newly added provenance. This qualification change does
   not alter production corridor behavior or rewrite committed goldens.
 
+## NumPy's AVX-512 loops (2026-09-29)
+
+The Python grid transforms (`gpuwm/static/lambert.py` and the Mercator
+and polar classes in `gpuwm/static/projection.py`) now take tan, atan,
+atan2, log, log10, exp, asin, acos and pow from `gpuwm.core.host_libm`,
+the C library one element at a time, which is what the Rust crate calls.
+The Lambert inverse's atan2 came in with the log1p fix: NumPy 2.5.3's
+AVX-512 arctan2 differed from glibc on 32,883 of 400,000 random pairs and
+6,096 of 400,000 Lambert-inverse-shaped pairs.
+Measured on the Ubuntu 24.04 WSL2 host above with NumPy 2.5.3: the two
+`TestLane1GridParity` comparisons in `tests/test_static_rust_parity.py`
+failed with NumPy's AVX-512 dispatch on and passed with
+`NPY_DISABLE_CPU_FEATURES="X86_V4 AVX512_ICL"`; they now pass both
+ways. With those loops disabled, NumPy 2.5.3's float64 exp, log, log10,
+tan, atan, asin, acos and pow equal glibc's on every probed input. The
+NumPy 2.2.6 authority extraction and the cargo lane-1 comparison were
+not re-run, so whether the Linux differences listed above are the same
+loops is not measured.
+
 ## Reproduce without overwriting another platform's fixtures
 
 Use a Python environment with `numpy==2.2.6` on the target OS. Run the

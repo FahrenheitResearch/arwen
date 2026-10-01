@@ -828,6 +828,67 @@ class RunConfig:
     #: out of every fixed-clock identity and is controller policy under an
     #: adaptive one.
     min_time_step_sound: int = 0
+    #: Minimise nested cell-steps with a shorter root step. Changes answers.
+    adaptive_nest_lattice: bool = False
+    # APPENDED LAST, after adaptive_nest_lattice, on the same discipline.
+    #: WRF's urban canopy selector (``&physics sf_urban_physics``,
+    #: Registry.EM_COMMON:2489).  0 = no urban model: city cells are the
+    #: land-surface scheme's bulk urban category, which is WRF's default
+    #: and every configuration before this field.  1 = the single-layer
+    #: UCM (phys/module_sf_urban.F), 2 = BEP (module_sf_bep.F), 3 = BEP+BEM
+    #: (module_sf_bep_bem.F).  :func:`validate_urban_config` is the law.
+    sf_urban_physics: int = 0
+    #: ``&physics use_wudapt_lcz``: 1 reads URBPARM_LCZ.TBL and maps the
+    #: eleven Local Climate Zone categories to urban types 1-11; 0 reads
+    #: URBPARM.TBL (three types).  Read only when ``sf_urban_physics > 0``.
+    use_wudapt_lcz: int = 0
+    #: ``&physics num_urban_hi`` (Registry.EM_COMMON:2534): the bin count of
+    #: the building-height histogram HI_URB2D.  WRF's default 15.
+    num_urban_hi: int = 15
+    #: WRF &physics slope_rad (Registry.EM_COMMON, max_domains, default 0):
+    #: 1 hands the land surface the shortwave on the local slope, and
+    #: removes its direct beam where topo_shading finds the sun hidden
+    #: (module_surface_driver.F:1920-1936, TOPO_RAD_ADJ).  WRF applies it
+    #: only with a longwave scheme on, and so does gpuwm
+    #: (:mod:`gpuwm.core.topo_radiation`).
+    slope_rad: int = 0
+    #: WRF &physics topo_shading (max_domains, default 0): 1 computes the
+    #: terrain shadow mask at every radiation call (toposhad); only the
+    #: slope_rad adjustment reads it.
+    topo_shading: int = 0
+    #: WRF &physics shadlen (scalar, default 25000. m): how far toward the
+    #: sun the shadow search looks.
+    shadlen: float = 25000.0
+    # APPENDED LAST, after the urban and topographic-radiation fields.
+    #: WRF ``zadvect_implicit`` (WRF 4.3 and later, dynamics namelist,
+    #: Registry default 0): 1 runs the implicit-explicit vertical advection
+    #: of Wicker and Skamarock (2020) on the last RK3 substep (:mod:`gpuwm.
+    #: core.ieva`; its w solve's two boundary terms take consistent units, a
+    #: declared divergence from WRF 4.7.1, A179).  0 leaves every step as is.
+    zadvect_implicit: int = 0
+    # APPENDED LAST, after zadvect_implicit (A165).
+    #: WRF ``w_crit_cfl`` (dynamics namelist, one value for every domain,
+    #: Registry default 1.0): the vertical Courant number ``w_damp``
+    #: (``w_damping = 1``) measures its excess from, and, under
+    #: ``zadvect_implicit = 1``, where it starts (WRF 4.7.1
+    #: module_big_step_utilities_em.F w_damp; without zadvect_implicit it
+    #: starts at w_beta = 1).  WRF's comments recommend 2.0 with
+    #: zadvect_implicit.  1.0 runs exactly the limiter gpuwm always ran.
+    w_crit_cfl: float = 1.0
+    # APPENDED LAST, after w_crit_cfl, on the same discipline.
+    #: Noah land-use tiles (WRF v4.7.1 Registry.EM_COMMON:2536).
+    #: Default off preserves the dominant-category surface column.
+    sf_surface_mosaic: int = 0
+    #: Tile count, read only when mosaic is on (Registry.EM_COMMON:2537).
+    mosaic_cat: int = 3
+    #: Where the urban canopy runs under Noah mosaic with
+    #: ``sf_urban_physics = 1``; one of :data:`MOSAIC_URBAN_CANOPY_RULES`.
+    #: "dominant" is WRF v4.7.1: urban_var_init zeroes FRC_URB2D wherever a
+    #: cell's dominant category is not urban (module_sf_urban.F:2820-2821),
+    #: so the urban tile of a mostly rural cell runs as vegetation.
+    #: "every_tile" gives that tile its urban type's own fraction instead.
+    #: Per domain; read only when mosaic and urban option 1 are both on.
+    mosaic_urban_canopy: str = "dominant"
 
 
 #: The Noah-MP option identity gpuwm admits, field -> the only accepted
@@ -999,6 +1060,104 @@ SURFACE_LAYER_SCHEMES = (0, 1, 2, 5, 91)
 #: WRF sf_surface_physics values in gpuwm's schema.
 LAND_SURFACE_SCHEMES = (0, 2, 3, 4)
 
+#: WRF ``sf_urban_physics`` values in gpuwm's schema: 0 none, 1 single-layer
+#: UCM, 2 BEP, 3 BEP+BEM.
+URBAN_PHYSICS_SCHEMES = (0, 1, 2, 3)
+#: The model module each urban option runs, loaded by NAME
+#: (:mod:`gpuwm.core.urban_driver`), so an option whose module is absent
+#: from this build is refused at the door rather than failing as an
+#: ImportError on the first surface step.
+URBAN_MODEL_MODULES = {1: "gpuwm.core.urban_ucm", 2: "gpuwm.core.urban_bep",
+                       3: "gpuwm.core.urban_bem"}
+#: The land-surface schemes WRF couples an urban model to: Noah calls the
+#: UCM inside its column loop and BEP/BEP_BEM after it
+#: (module_sf_noahdrv.F:1317, :1603-1790); Noah-MP calls ``noahmp_urban``
+#: from the surface driver (module_surface_driver.F:3184).  RUC and the
+#: no-LSM path never call one.
+URBAN_LAND_SURFACE_SCHEMES = (2, 4)
+#: The PBL schemes WRF runs with BEP/BEP_BEM that gpuwm has: YSU (1) and MYJ
+#: (2, through ``myjurb``).  WRF also admits BouLac (8) and KEPS, which gpuwm
+#: does not port (module_physics_init.F:3705-3790).
+URBAN_BEP_PBL_SCHEMES = (1, 2)
+#: WRF's only admitted ``num_urban_hi`` in this build.
+URBAN_HEIGHT_BINS = 15
+
+
+def urban_model_in_build(option: int) -> bool:
+    """True when the model module for urban ``option`` ships in this build."""
+    import importlib.util
+
+    name = URBAN_MODEL_MODULES.get(int(option))
+    if name is None:
+        return False
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def validate_urban_config(cfg) -> None:
+    """The ``sf_urban_physics`` law, each refusal naming what it prevents.
+
+    Everything here is inert at the default ``sf_urban_physics = 0``: the two
+    companion keys are then read by nothing, so no value of them can make a
+    run wrong and none is refused.
+    """
+    option = getattr(cfg, "sf_urban_physics", 0)
+    lcz = getattr(cfg, "use_wudapt_lcz", 0)
+    bins = getattr(cfg, "num_urban_hi", URBAN_HEIGHT_BINS)
+    for name, value in (("sf_urban_physics", option),
+                        ("use_wudapt_lcz", lcz), ("num_urban_hi", bins)):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"{name} must be an integer, got {value!r}: WRF declares it "
+                "an integer namelist key (Registry.EM_COMMON:2489, 2534).")
+    if option not in URBAN_PHYSICS_SCHEMES:
+        raise ValueError(
+            "sf_urban_physics must be 0 (none), 1 (single-layer UCM), 2 (BEP) "
+            f"or 3 (BEP+BEM), WRF numbering, got {option}.")
+    if option == 0:
+        return
+    if lcz not in (0, 1):
+        raise ValueError(
+            f"use_wudapt_lcz must be 0 (URBPARM.TBL, 3 urban types) or 1 "
+            f"(URBPARM_LCZ.TBL, 11 LCZ types), got {lcz}: urban_param_init "
+            "opens one of those two tables and nothing else.")
+    if bins != URBAN_HEIGHT_BINS:
+        raise ValueError(
+            f"num_urban_hi={bins}: the BEP/BEM kernels in this build index "
+            f"HI_URB2D with WRF's default {URBAN_HEIGHT_BINS}-bin stride, and "
+            "the gridded morphology (URB_PARAM) that alone could fill another "
+            "bin count is not ingested, so any other count would read past "
+            "the array the kernels were built for.")
+    lsm = int(cfg.sf_surface_physics)
+    if lsm not in URBAN_LAND_SURFACE_SCHEMES:
+        raise ValueError(
+            f"sf_urban_physics={option} needs sf_surface_physics=2 (Noah) or "
+            f"4 (Noah-MP), got sf_surface_physics={lsm}: WRF's RUC and no-LSM "
+            "paths never call an urban model, so the selector would be "
+            "silently ignored and city cells would run as bulk urban land. "
+            "Select sf_surface_physics=2 or 4, or set sf_urban_physics=0.")
+    if option in (2, 3):
+        pbl = int(cfg.bl_pbl_physics)
+        if pbl not in URBAN_BEP_PBL_SCHEMES:
+            raise ValueError(
+                f"sf_urban_physics={option} (BEP{'+BEM' if option == 3 else ''})"
+                f" needs bl_pbl_physics=1 (YSU) or 2 (MYJ), got "
+                f"bl_pbl_physics={pbl}: BEP injects its drag, heat and TKE "
+                "sources through the PBL's implicit solve, and every other "
+                "PBL would drop them -- WRF fatals the same pairing "
+                "(module_physics_init.F:3705-3790).  WRF's BouLac (8) also "
+                "takes them but is not ported in gpuwm.  Select "
+                "bl_pbl_physics=1 or 2, or set sf_urban_physics=1 (the "
+                "single-layer UCM feeds any PBL through its surface fluxes).")
+    if not urban_model_in_build(option):
+        raise ValueError(
+            f"sf_urban_physics={option}: option {option}'s kernel is not in "
+            f"this build ({URBAN_MODEL_MODULES[option]} is absent), so no "
+            "urban model would run and the selector would be silently "
+            "ignored.")
+
 #: ``cu_physics`` values whose scheme consumes the dycore's PURE ADVECTIVE
 #: theta/qv forcing pair -- WRF's ``RTHFTEN``/``RQVFTEN``.
 #:
@@ -1081,13 +1240,34 @@ MYNN_SFCLAY_SCHEME = 5
 MYJ_SFCLAY_SCHEME = 2
 MYJ_PBL_SCHEME = 2
 
-#: ``bl_pbl_physics`` values in gpuwm's schema.  0/1/2/5/11 are WRF's --
-#: 2 is MYJ (module_bl_myjpbl.F) and 11 is Shin-Hong
+#: WRF's CAMUWPBLSCHEME: the University of Washington moist-turbulence
+#: PBL of CAM5 (Bretherton and Park 2009), ported from WRF v4.7.1
+#: ``phys/module_bl_camuwpbl_driver.F`` and the CAM modules it calls
+#: (gpuwm/core/uwpbl.py, graded against tools/uwpbl_wrf471_oracle).  WRF
+#: has no surface-layer pairing law for it (module_physics_init.F:3825-3832
+#: carries only the BEP/BEM urban fatal): it reads UST, HFX and QFX, which
+#: every ported surface layer publishes.  :func:`validate_uwpbl_config`.
+UW_PBL_SCHEME = 9
+
+#: Microphysics selectors whose state carries WRF's ``P_QNI`` (cloud-ice
+#: number), mapped to ArWen's name for that species.  The UW scheme mixes
+#: the ice number and returns RQNIBLTEN, which WRF adds to exactly that
+#: scalar (module_physics_addtendc.F:966-970, the adv_moist_cond default
+#: arm); for every other scheme WRF hands the PBL its zero dummy slot and
+#: the tendency goes nowhere.  Registry.EM_COMMON package lines: thompson
+#: (8) and thompsonaero (28) scalar:qni; milbrandt2mom (9) qni; morr_two_
+#: moment (10) qni; nssl_2mom (18) qni; p3_1category (50) qni.
+UW_PBL_ICE_NUMBER_SPECIES = {8: "ni", 9: "ni", 10: "ni", 18: "qni",
+                             28: "ni", 50: "ni"}
+
+#: ``bl_pbl_physics`` values in gpuwm's schema.  0/1/2/5/9/11 are WRF's --
+#: 2 is MYJ (module_bl_myjpbl.F), 9 the UW moist-turbulence PBL
+#: (:data:`UW_PBL_SCHEME`) and 11 is Shin-Hong
 #: (module_bl_shinhong.F, ported at max ULP 0 against the byte-frozen WRF
 #: v4.6.1 module; runtime wired by _run_shinhong in
 #: gpuwm/core/physics.py) -- and 900 is :data:`SASE_PBL_SCHEME`,
 #: ArWen-only (see there).
-PBL_SCHEMES = (0, 1, MYJ_PBL_SCHEME, 5, 11, SASE_PBL_SCHEME)
+PBL_SCHEMES = (0, 1, MYJ_PBL_SCHEME, 5, UW_PBL_SCHEME, 11, SASE_PBL_SCHEME)
 # 0 = none, 1 = Kain-Fritsch, 3 = Grell-Freitas, 16 = New Tiedtke.
 #
 # 16 IS WRF'S OWN NUMBER for NTIEDTKESCHEME (module_cumulus_driver.F), not
@@ -2370,11 +2550,12 @@ def validate_myj_pairing(cfg: RunConfig) -> None:
     scan reads the carried ``TKE_MYJ`` column, which is allocated for the
     MYJ PBL selector alone.
 
-    Urban is refused by ABSENCE, deliberately: WRF sends the MYJ PBL
-    through ``myjurb`` when ``sf_urban_physics`` is 2 or 3 (BEP/BEM,
-    module_physics_init.F:3775-3781, phys/module_bl_myjurb.F).  gpuwm has
-    no ``sf_urban_physics`` selector at all, so that arm is unreachable
-    rather than silently substituted; the registry option records it.
+    Urban: WRF sends the MYJ PBL through ``myjurb`` when
+    ``sf_urban_physics`` is 2 or 3 (BEP/BEM, module_physics_init.F:
+    3775-3781, phys/module_bl_myjurb.F).  gpuwm does the same
+    (``PhysicsDriver._run_myj_pbl`` routes to ``gpuwm.core.myjurb``), and
+    :func:`validate_urban_config` refuses the option while that module is
+    not in the build.
     """
     pbl = int(cfg.bl_pbl_physics)
     sfclay = int(cfg.sf_sfclay_physics)
@@ -2428,6 +2609,21 @@ def validate_myj_pairing(cfg: RunConfig) -> None:
             f"Select bl_pbl_physics={MYJ_PBL_SCHEME} to run the Eta layer, "
             "or sf_sfclay_physics=1 (revised MM5) or 91 (classic MM5), "
             "which carry no TKE column and run with the PBL slot off.")
+    if sfclay == MYJ_SFCLAY_SCHEME and pbl == UW_PBL_SCHEME:
+        # The generic arm below names the FM/FH pair, which the UW scheme
+        # never reads (it takes UST/HFX/QFX only), so it gets its own
+        # breakage: the Eta layer's surface call itself scans TKE_MYJ.
+        raise ValueError(
+            f"sf_sfclay_physics={MYJ_SFCLAY_SCHEME} (Eta similarity) is "
+            f"admitted with bl_pbl_physics={MYJ_PBL_SCHEME} (MYJ) only, got "
+            f"bl_pbl_physics={UW_PBL_SCHEME} (UW). The UW scheme reads "
+            "only UST, HFX and QFX from its surface layer, but the Eta "
+            "layer's PBLH scan is MYJSFC's own TKE scan "
+            "(module_sf_myjsfc.F:263-277) over the carried TKE_MYJ column, "
+            "which only the MYJ PBL allocates and advances: under UW the "
+            "surface call would scan a column no scheme writes. Select "
+            "sf_sfclay_physics=1 (revised MM5), 91 (classic MM5) or 5 "
+            "(MYNN) with the UW PBL.")
     if sfclay == MYJ_SFCLAY_SCHEME and pbl != MYJ_PBL_SCHEME:
         raise ValueError(
             f"sf_sfclay_physics={MYJ_SFCLAY_SCHEME} (Eta similarity) is "
@@ -2445,6 +2641,60 @@ def validate_myj_pairing(cfg: RunConfig) -> None:
             "sf_sfclay_physics=1 (revised MM5) or 91 (classic MM5) for "
             f"those schemes, or bl_pbl_physics={MYJ_PBL_SCHEME} for this "
             "one.")
+
+
+def validate_uwpbl_config(cfg: RunConfig) -> None:
+    """Admission for the UW moist-turbulence PBL (bl_pbl_physics=9).
+
+    WRF's own law for the scheme is one fatal, the BEP/BEM urban pairing
+    (module_physics_init.F:3825-3827), and it is reproduced here for the
+    day ``sf_urban_physics`` exists in this schema.  Any surface layer that
+    publishes UST/HFX/QFX is admitted; the Eta-layer cell is refused in
+    :func:`validate_myj_pairing` for its own reason.  The ArWen-side
+    refusals each name what would break: no surface layer (the scheme's
+    whole lower boundary would be the allocated zeros) and the held
+    ice-number tendency under a positive PBL cadence.  A dry state is
+    admitted, as for every scheme in the PBL slot: in WRF the moisture
+    arrays are the microphysics package's to provide, not the PBL's to
+    demand, and the scheme reads the driver's persistent zero planes
+    (total water at CAM's 1e-30 floor, no condensate).
+    """
+    if int(cfg.bl_pbl_physics) != UW_PBL_SCHEME:
+        return
+    if not cfg.sf_sfclay_physics:
+        raise ValueError(
+            f"bl_pbl_physics={UW_PBL_SCHEME} (UW) requires a surface-layer "
+            "scheme (sf_sfclay_physics != 0): the scheme's lower boundary "
+            "is the friction velocity and the surface heat and moisture "
+            "fluxes (UST, HFX, QFX; module_pbl_driver.F:1937-1939), and "
+            "with the slot off nothing writes them, so the surface stress "
+            "and both fluxes would stay the allocated zeros for the whole "
+            "run. Select sf_sfclay_physics=1 (revised MM5), 91 (classic "
+            "MM5) or 5 (MYNN).")
+    urban = int(getattr(cfg, "sf_urban_physics", 0) or 0)
+    if urban in (2, 3):
+        raise ValueError(
+            f"bl_pbl_physics={UW_PBL_SCHEME} (UW) cannot run with "
+            f"sf_urban_physics={urban} (BEP/BEM). WRF v4.7.1 fatals this "
+            "pairing (module_physics_init.F:3826-3827: 'use ysu (option1), "
+            "myj (option 2), or boulac (option 8) with BEP/BEM urban "
+            "scheme'): the UW scheme has no arm for the multi-layer "
+            "canopy's drag and heat source terms (the A_*_BEP/B_*_BEP "
+            "coefficients), so the urban momentum and heat exchange would "
+            "be dropped. Select bl_pbl_physics=1 (YSU) or 2 (MYJ) with "
+            "BEP/BEM, or sf_urban_physics=1 (the single-layer UCM, which "
+            "acts through the surface fluxes) with the UW PBL.")
+    if cfg.bldt != 0.0 and int(cfg.mp_physics) in UW_PBL_ICE_NUMBER_SPECIES:
+        raise NotImplementedError(
+            f"bl_pbl_physics={UW_PBL_SCHEME} (UW) with mp_physics="
+            f"{cfg.mp_physics} requires bldt=0, got {cfg.bldt!r}. The "
+            "scheme's cloud-ice number tendency (RQNIBLTEN) is held "
+            "outside the restart TENDENCY_COMPONENTS manifest and is "
+            "restart-exact only when recomputed every step "
+            "(gpuwm/core/physics.py PhysicsTendencies.scalar_for, the "
+            "MYNN mixscalars precedent); a positive cadence would make a "
+            "mid-interval restart silently drop it. bldt=0 is WRF's "
+            "default and its recommendation.")
 
 
 def validate_sase_config(cfg: RunConfig) -> None:
@@ -2626,7 +2876,46 @@ _DYNAMICS_CHOICES: dict[str, tuple] = {
     "w_damping": ((0, 1),
                   "0 (off) or 1 (WRF's per-stage vertical-velocity "
                   "limiter)"),
+    "zadvect_implicit": ((0, 1),
+                         "0 (explicit vertical advection) or 1 (WRF's "
+                         "implicit-explicit vertical advection on the last "
+                         "RK substep); WRF 4.7.1 runs 2 and 3 exactly as 1, "
+                         "their other-substep variants being commented out "
+                         "of CHK_IEVA, so write 1"),
 }
+
+
+def w_crit_cfl_refusal(w_crit_cfl, *, w_damping: int,
+                       zadvect_implicit: int) -> str | None:
+    """Why ``w_crit_cfl`` cannot run beside these switches, or None (A165).
+
+    One authority for :func:`_validate_dynamics_coefficients` and the
+    namelist importer.  WRF 4.7.1 ``w_damp`` starts at ``w_crit_cfl``
+    under ``zadvect_implicit`` and at w_beta = 1 without it, and measures
+    the excess from ``w_crit_cfl`` either way
+    (module_big_step_utilities_em.F:2601-2607, :2689).
+    """
+    try:
+        value = float(w_crit_cfl)
+    except (TypeError, ValueError):
+        return "must be a number (WRF Registry default 1.0)."
+    if (isinstance(w_crit_cfl, bool) or not math.isfinite(value)
+            or value <= 0.0):
+        # w_damp acts where vert_cfl > its onset: at zero or below, under
+        # zadvect_implicit, that is every interior w level of every column.
+        return ("must be a positive vertical Courant number (WRF Registry "
+                "default 1.0; WRF recommends 2.0 with zadvect_implicit = "
+                "1): at zero or below w_damp drags every vertical motion, "
+                "not just the fast ones.")
+    if int(w_damping) == 1 and not int(zadvect_implicit) and value > 1.0:
+        return ("with w_damping = 1 and zadvect_implicit = 0 turns WRF's "
+                "w-damping into an amplifier: without zadvect_implicit it "
+                "starts at vertical Courant number 1 but measures the excess "
+                "from w_crit_cfl, so between 1 and w_crit_cfl it pushes w "
+                "along its own direction.  Set zadvect_implicit = 1 (WRF "
+                "recommends w_crit_cfl = 2.0 there) or w_crit_cfl = 1.0 "
+                "(WRF's setting without it).")
+    return None
 
 
 def _validate_dynamics_coefficients(cfg: RunConfig) -> None:
@@ -2662,6 +2951,10 @@ def _validate_dynamics_coefficients(cfg: RunConfig) -> None:
             f"layer below the model top ztop = {cfg.ztop}, so it has to "
             "be smaller than it; as written the damper covers the whole "
             "column.")
+    why = w_crit_cfl_refusal(cfg.w_crit_cfl, w_damping=cfg.w_damping,
+                             zadvect_implicit=cfg.zadvect_implicit)
+    if why is not None:
+        raise ValueError(f"w_crit_cfl = {cfg.w_crit_cfl!r} {why}")
 
 
 #: PBL schemes that produce horizontal mixing of their OWN.
@@ -3183,6 +3476,15 @@ def warn_anisotropic_w_mixing(*, where: str, km_opt: int, mix_isotropic: int,
 #: stays the resolved WRF integer (0/1) everywhere downstream.
 MIX_ISOTROPIC_AUTO = "auto"
 
+#: The TOML sentinel for "let the model choose the off-centering": the same
+#: meaning as leaving ``epssm`` unset, and what ``gpuwm import-namelist``
+#: writes where WRF's Registry default fills a domain the namelist did not
+#: assign.  The domain starts on ``RunConfig.epssm`` (WRF's 0.1) and the
+#: off-centering floor (:func:`gpuwm.acoustic_adaptation.offcentering_floor`)
+#: raises it over ground that value was not measured stable on.  Only the
+#: experiment loader consumes it; ``RunConfig.epssm`` stays a number.
+EPSSM_AUTO = "auto"
+
 
 def auto_mix_isotropic_selection(*, where: str, ratio: float,
                                  ladder: str = "") -> str:
@@ -3355,6 +3657,10 @@ def _validate_adaptive_time_step(cfg: RunConfig) -> None:
             "time_step_sound//2 acoustic substeps of dt/time_step_sound, "
             "which only integrates to dt/2 for even counts.")
 
+    if not isinstance(cfg.adaptive_nest_lattice, bool):
+        raise ValueError("adaptive_nest_lattice must be true or false")
+    if cfg.adaptive_nest_lattice and not cfg.use_adaptive_time_step:
+        raise ValueError("adaptive_nest_lattice needs use_adaptive_time_step = true")
     if not cfg.use_adaptive_time_step:
         return
 
@@ -3376,6 +3682,67 @@ def _validate_adaptive_time_step(cfg: RunConfig) -> None:
             "the first cadence check fail mid-run instead of now.")
 
 
+#: ``mosaic_urban_canopy``: where Noah mosaic runs the urban canopy model
+#: (``sf_surface_mosaic = 1`` with ``sf_urban_physics = 1``), rule -> what it
+#: does.  WRF's rule is the default; the town rule is an option until it
+#: beats WRF's against station observations over several nights.
+MOSAIC_URBAN_CANOPY_RULES = {
+    "dominant": (
+        "WRF v4.7.1: the canopy runs only in cells whose dominant land-use "
+        "category is urban; an urban tile in a mostly rural cell runs as "
+        "vegetation, because urban_var_init sets its urban fraction to 0 "
+        "(module_sf_urban.F:2820-2821)"),
+    "every_tile": (
+        "every land cell with an urban tile runs the canopy in that tile at "
+        "its urban type's own fraction (URBPARM FRC_URB, the largest urban "
+        "tile's type); cells whose dominant category is urban are WRF's"),
+}
+MOSAIC_URBAN_CANOPY_DEFAULT = "dominant"
+
+
+def validate_noah_mosaic_config(cfg) -> None:
+    """Refuse selectors that would skip Noah or integrate the wrong surface."""
+    option = getattr(cfg, "sf_surface_mosaic", 0)
+    if isinstance(option, bool) or not isinstance(option, int) or option not in (0, 1):
+        raise ValueError(
+            "sf_surface_mosaic must be an integer 0 or 1: neither Noah arm "
+            "would run, so the land surface would not be integrated "
+            "(module_surface_driver.F:2662,2778).")
+    canopy = getattr(cfg, "mosaic_urban_canopy", MOSAIC_URBAN_CANOPY_DEFAULT)
+    if not isinstance(canopy, str) or canopy not in MOSAIC_URBAN_CANOPY_RULES:
+        raise ValueError(
+            f"mosaic_urban_canopy must be one of "
+            f"{sorted(MOSAIC_URBAN_CANOPY_RULES)}, got {canopy!r}: no other "
+            "rule says where the urban canopy runs under Noah mosaic.")
+    if canopy != MOSAIC_URBAN_CANOPY_DEFAULT:
+        if option != 1:
+            raise ValueError(
+                f"mosaic_urban_canopy = {canopy!r} needs sf_surface_mosaic = "
+                "1: without land-use tiles a cell has no urban tile for the "
+                "canopy to run in, so the setting would be ignored.")
+        if getattr(cfg, "sf_urban_physics", 0) != 1:
+            raise ValueError(
+                f"mosaic_urban_canopy = {canopy!r} needs sf_urban_physics = "
+                "1: it says where the single-layer urban canopy runs inside "
+                "the tiles, and with no canopy model there is nothing for it "
+                "to place (options 2 and 3 cannot run with mosaic at all).")
+    if option == 0:
+        return
+    if cfg.sf_surface_physics != 2:
+        raise ValueError(
+            "sf_surface_mosaic=1 requires sf_surface_physics=2: every other "
+            "LSM silently ignores the switch (module_surface_driver.F:2662).")
+    count = cfg.mosaic_cat
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError(
+            "mosaic_cat must be an integer >= 1: otherwise Noah has no tile "
+            "to integrate (Registry.EM_COMMON:2537).")
+    if getattr(cfg, "sf_urban_physics", 0) in (2, 3):
+        raise ValueError(
+            "mosaic option cannot work with urban options 2 and 3 "
+            "(WRF module_check_a_mundo.F:505-518).")
+
+
 def validate_run_config(cfg: RunConfig) -> RunConfig:
     """The RunConfig invariant battery, shared by BOTH loaders.
 
@@ -3387,6 +3754,17 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     experiment TOML fails exactly as it always has on the legacy path.
     Returns ``cfg`` unchanged on success.
     """
+    for name in ("slope_rad", "topo_shading"):
+        value = getattr(cfg, name)
+        if isinstance(value, bool) or value not in (0, 1):
+            raise ValueError(
+                f"{name} must be 0 or 1 (WRF Registry.EM_COMMON: 1 turns "
+                f"it on), got {value!r}")
+    if not (math.isfinite(float(cfg.shadlen)) and float(cfg.shadlen) > 0.0):
+        raise ValueError(
+            f"shadlen must be a finite positive length in metres (WRF's "
+            f"default is 25000.), got {cfg.shadlen!r}: the shadow search "
+            "steps int(shadlen/dx + 1) cells toward the sun")
     if cfg.eta_levels is not None:
         # Shape and monotonicity only.  p_top is NOT a RunConfig field, so
         # the pressure-dependent half of the eta contract cannot run here;
@@ -3460,11 +3838,13 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     if cfg.bl_pbl_physics not in PBL_SCHEMES:
         raise ValueError(
             f"bl_pbl_physics must be 0 (none), 1 (YSU), "
-            f"{MYJ_PBL_SCHEME} (MYJ), 5 (MYNN), 11 (Shin-Hong), or "
-            f"{SASE_PBL_SCHEME} (SASE, experimental), got "
-            f"{cfg.bl_pbl_physics}."
+            f"{MYJ_PBL_SCHEME} (MYJ), 5 (MYNN), {UW_PBL_SCHEME} (UW), "
+            f"11 (Shin-Hong), or {SASE_PBL_SCHEME} (SASE, experimental), "
+            f"got {cfg.bl_pbl_physics}."
         )
     validate_sase_config(cfg)
+    validate_uwpbl_config(cfg)
+    validate_urban_config(cfg)
     require_ready_wrf_physics(
         mp_physics=cfg.mp_physics,
         sf_sfclay_physics=cfg.sf_sfclay_physics,
@@ -3565,6 +3945,7 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "sf_surface_physics=2, got "
             f"sf_surface_physics={cfg.sf_surface_physics}."
         )
+    validate_noah_mosaic_config(cfg)
     if cfg.sf_surface_physics != 2 and (
             cfg.usemonalb or cfg.rdlai2d or cfg.opt_thcnd != 1):
         raise ValueError(
@@ -4266,6 +4647,16 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "advance_w_phi) differences the terrain height with "
             "unconditional periodic wraps, coupling the two open "
             "boundaries through the terrain slope."
+        )
+    if cfg.zadvect_implicit and (cfg.open_x or cfg.open_y):
+        raise NotImplementedError(
+            "zadvect_implicit = 1 with radiative open boundaries is not "
+            "wired: the implicit u (v) column solve on an open boundary "
+            "face averages the implicit eta mass flux of the column on "
+            "each side of the face, and outside an open boundary there is "
+            "no column (WRF reads its halo there), so the solve would run "
+            "on an invented flux.  Periodic, specified and nested "
+            "boundaries are wired."
         )
     if ((cfg.open_x or cfg.open_y or cfg.specified)
             and (cfg.khdif > 0.0 or cfg.kvdif > 0.0)):

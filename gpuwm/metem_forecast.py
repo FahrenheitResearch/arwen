@@ -97,8 +97,15 @@ class MetemInitialization:
         return bundle.cache_reader.content_sha256
 
     def preparation_receipt_sha256(self):
-        """Bind the verified preparation science, excluding resource observations."""
+        """Bind the verified preparation science, excluding resource observations.
+
+        The observations are the memory admission, the backend selection's
+        measured members and what else the preparation measured (A138:
+        the CPU count and worker counts), so two preparations of the same
+        met_em files bind one checkpoint identity whatever the machine read.
+        """
         import hashlib
+        from gpuwm.ingest.preprocess_backend import preprocess_selection_identity
 
         content = self.inputs.artifact_paths['preparation_receipt'].read_bytes()
         if hashlib.sha256(content).hexdigest() != self.inputs.authority_sha256['preparation_receipt']:
@@ -107,6 +114,10 @@ class MetemInitialization:
         if not isinstance(payload, dict) or payload.get('schema') != 'gpuwm-metgrid-import-v1':
             raise ValueError('Metgrid checkpoint identity requires the verified metgrid import schema')
         payload.pop('memory_admission', None)
+        payload.pop('preprocess_backend_measurements', None)
+        if 'preprocess_backend_selection' in payload:
+            payload['preprocess_backend_selection'] = preprocess_selection_identity(
+                payload['preprocess_backend_selection'])
         authority = {'schema': 'gpuwm-metgrid-scientific-authority-v1',
                      'preparation': payload}
         return hashlib.sha256(json.dumps(authority, sort_keys=True,
@@ -505,10 +516,22 @@ def prepare_metem_run(run, directory, *, run_seconds=None, preprocess_backend=No
     # written before anything is interpolated; what the vertical
     # interpolation actually ran on, and why this backend was selected,
     # are facts of this preparation and are recorded in
-    # metgrid-import.json below instead.
-    implementation_receipt = dict(backend.receipt())
+    # metgrid-import.json below instead.  Nor does it carry the machine's
+    # CPU count or the worker counts (A138): its digest is a member of
+    # every domain's cache identity, and a CPU preparation of the same
+    # met_em files differed by them alone.  Both are taken from the
+    # measured receipt, before it is bound, so metgrid-import.json keeps
+    # the whole selection (reason, device fit, device load) and what else
+    # the preparation measured.
+    from gpuwm.ingest.preprocess_backend import preprocess_identity, preprocess_measurements
+
+    measured_receipt = dict(backend.receipt())
+    backend_selection = measured_receipt.get('selection')
+    backend_measurements = preprocess_measurements(measured_receipt)
+    backend_measurements.pop('selection', None)
+    implementation_receipt = dict(preprocess_identity(measured_receipt))
     implementation_receipt.pop('vertical_interpolation', None)
-    backend_selection = implementation_receipt.pop('selection', None)
+    implementation_receipt.pop('selection', None)
     documents = {'experiment.toml': text.encode('utf-8'),
                  'preprocess.json': json_bytes(implementation_receipt)}
     import hashlib
@@ -553,6 +576,7 @@ def prepare_metem_run(run, directory, *, run_seconds=None, preprocess_backend=No
     # Every forcing time is built before the forecast starts; say so, the
     # way a chained route says why it declined.
     say_prepared_sealed("met_em")
+    root_blend: dict = {}
     for domain, grid in zip(exp.domains, grids):
         cfg = domain.run
         frames = StateBoundaryFrames(spec_bdy_width=cfg.spec_bdy_width, spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
@@ -564,6 +588,11 @@ def prepare_metem_run(run, directory, *, run_seconds=None, preprocess_backend=No
         order = start_last_forcing_order(len(files)) if domain.parent_id == 0 else (0,)
         for index in order:
             case = read_met_em(files[index])
+            if domain.parent_id == 0:
+                # WRF's smooth_cg_topo (gpuwm.ingest.cg_topo): real.exe
+                # blends d01's HT toward SOILHGT at its first time and
+                # every later time reuses that terrain (ht_smooth).
+                case = _smooth_cg_case(exp, case, root_blend)
             controls = metgrid_initialization_controls(case, run, cfg=cfg)
             lat, lon = grid.latlon_mass()
             if max(np.max(np.abs(lat-case.statics['XLAT_M'])), np.max(np.abs((lon-case.statics['XLONG_M']+180)%360-180))) > .005:
@@ -634,7 +663,13 @@ def prepare_metem_run(run, directory, *, run_seconds=None, preprocess_backend=No
         memory_receipt = original_receipt['memory_admission']
         backend_selection = original_receipt.get(
             'preprocess_backend_selection', backend_selection)
+        # Absent from a receipt that did not record them, never today's.
+        backend_measurements = original_receipt.get('preprocess_backend_measurements')
     write_document(receipt_path, json_bytes({'schema':'gpuwm-metgrid-import-v1','source_files':source_hashes,
+        # What preprocess.json no longer carries (A138): the machine's
+        # CPU count and the worker counts this preparation ran with.
+        **({} if backend_measurements is None
+           else {'preprocess_backend_measurements':backend_measurements}),
         'vertical_coordinate':vertical_policy,'vertical_generation':vertical_generation,
         # The EFFECTIVE hybrid coordinate and the derivation behind it.
         # 'vertical_coordinate' above is the eta LADDER's provenance and
@@ -830,3 +865,30 @@ def main(argv=None):
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
+
+def _smooth_cg_case(exp, case, held: dict):
+    """The root's met_em case with WRF's smooth_cg_topo terrain, when set.
+
+    The first time read blends HGT_M toward that file's SOILHGT
+    (dyn_em/module_initialize_real.F:739-752); every later time takes the
+    same blended terrain, as real.exe's ``ht_smooth`` does (:754-761).
+    """
+    if not getattr(exp, "smooth_cg_topo", False):
+        return case
+    from dataclasses import replace
+    from types import MappingProxyType
+
+    from gpuwm.ingest.cg_topo import apply_smooth_cg_topo
+
+    if "HGT_M" not in held:
+        source = case.source_orography
+        held["HGT_M"] = apply_smooth_cg_topo(
+            exp, {"HGT_M": case.terrain},
+            source_orography=(source if source is not None
+                              and np.size(source) else None),
+            route="met_em")["HGT_M"]
+    terrain = np.ascontiguousarray(held["HGT_M"], dtype=np.float64)
+    statics = dict(case.statics)
+    statics["HGT_M"] = terrain
+    return replace(case, terrain=terrain, statics=MappingProxyType(statics))

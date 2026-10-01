@@ -178,7 +178,7 @@ FROZEN_RUNOFF_REL = 1.0e-4
 #:                          trap, in a field that is diagnostic only: noahres
 #:                          feeds no prognostic variable.
 #:
-#:   snopcx          1125   SNOWMELT BOOKKEEPING, cases 13 and 14.  Both are
+#:   snopcx          1141   SNOWMELT BOOKKEEPING, cases 13 and 14.  Both are
 #:   acsnom           836   SNOMLT*1000 accumulations, and both inherit the
 #:                          same expf/powf gap through SNOPAC.  Neither moved
 #:                          with FRZX.
@@ -228,25 +228,38 @@ FROZEN_RUNOFF_REL = 1.0e-4
 #:     224 B against sm_120's 176 B) is the one release platform this table
 #:     has not been read on, and it is read at the cut's Windows step; a
 #:     different answer there makes this table per-architecture.
+#:
+#: (3) RE-MEASURED 2026-09-30 for A146 on the RTX 5070 Ti (sm_120, NVRTC
+#:     13.4.92): NVRTC had compiled every float division by a compile-time
+#:     constant as a multiply by the rounded reciprocal on Blackwell, and
+#:     noah.cu now spells those divisions ``__fdiv_rn``, the IEEE quotient.
+#:     Eight rows moved, and six of them to the sm_86 reading below, so the
+#:     reciprocal multiply was most of what split the two cards:
+#:
+#:       snow 10 -> 2      snowh 9 -> 1      tsk 2 -> 1       znt 1 -> 0
+#:       canwat 8 -> 5     lh 3 -> 4 (worse)  qsfc 3 -> 6 (worse)
+#:       snopcx 1125 -> 1141 (worse)
+#:
+#:     Every other row, the six FRZX rows in (1) included, read as before.
 BASELINE_MAX_ULP = {
     "noahres": 164754,
     "sfcrunoff": 2812,
-    "snopcx": 1125,
+    "snopcx": 1141,
     "acsnom": 836,
     "hfx": 375,
     "grdflx": 170,
-    "snow": 10,
-    "snowh": 9,
+    "snow": 2,
+    "snowh": 1,
     "snowc": 8,
-    "canwat": 8,
+    "canwat": 5,
     "qfx": 5,
     "potevp": 5,
-    "qsfc": 3,
-    "lh": 3,
+    "qsfc": 6,
+    "lh": 4,
     "albedo": 3,
     "smstav": 2,
-    "tsk": 2,
-    "znt": 1,
+    "tsk": 1,
+    "znt": 0,
     "lai": 1,
     "udrunoff": 1,
     "smstot": 1,
@@ -264,12 +277,37 @@ BASELINE_MAX_ULP = {
 
 #: sm_86 reads the eight rows (2) names differently, and exactly as the
 #: unrecorded reading did: MEASURED 2026-09-28 on the RTX 3080 (sm_86,
-#: NVRTC 13.4.92, Windows) at the 2.8.0 rehearsal.  Every other row equals
-#: the sm_120 table above.
+#: NVRTC 13.4.92, Windows) at the 2.8.0 rehearsal (snow 0, snowh 0, tsk 1,
+#: znt 0, canwat 5, lh 4, qsfc 6, snopcx 1141).  sm_89 reads them exactly as
+#: sm_86 does: MEASURED 2026-09-30 on the node-1 RTX 4090 (sm_89, NVRTC
+#: 13.4.92, Linux), the same dict at the 5f6007af9 noah.cu and at the urban
+#: hand-over's noah.cu, so the row records the card and no change to the
+#: Noah column.  Since A146 (3) the sm_120 table above reads six of those
+#: eight the same, so only snow and snowh remain per-architecture (A146
+#: moves neither card: NVRTC keeps the IEEE division below compute_100).
+_SM86_ROWS = {**BASELINE_MAX_ULP, "snow": 0, "snowh": 0}
 BASELINE_MAX_ULP_BY_ARCHITECTURE = {
-    "86": {**BASELINE_MAX_ULP, "snow": 0, "snowh": 0, "tsk": 1, "znt": 0,
-           "canwat": 5, "lh": 4, "qsfc": 6, "snopcx": 1141},
+    "86": _SM86_ROWS,
+    "89": _SM86_ROWS,
 }
+
+#: Where an architecture reads differently under one NVRTC build, keyed
+#: (compute capability as CuPy writes it, NVRTC build); it wins over the
+#: architecture's row.  A167: the sm_120 table above is A146's reading under
+#: 13.4.92.  Under 12.9.86, the compiler of the default [gpu] extra
+#: (cupy-cuda12x), sm_120 reads snow 0 and snowh 0 and every other row as
+#: that table: the sm_86/89 row exactly.  Before A146, 12.9.86, 13.0.48
+#: and 13.4.92 read one table on the RTX 5090 ((2) above); with the
+#: divisions spelled __fdiv_rn the two compilers read snow and snowh
+#: differently on sm_120.  MEASURED 2026-10-01 on node-4's RTX 5070 Ti and
+#: node-2's RTX 5090, cupy-cuda12x 14.2.0, two processes each, at the A167
+#: lane tip on integrate/2.8 1a0e0090e; under 13.4.92 both cards read the
+#: sm_120 table above.
+BASELINE_MAX_ULP_BY_ARCH_AND_BUILD = {
+    ("120", "12.9.86"): _SM86_ROWS,
+}
+#: Rows an (architecture, build) row may move from its architecture's row.
+ARCH_AND_BUILD_SENSITIVE_FIELDS = ("snow", "snowh")
 
 #: The absolute size of the SFLX_GLACIAL restriction on case 28, in each
 #: field's own units.  Not ULP: this is a routine gpuwm does not have, so a
@@ -448,6 +486,19 @@ def test_the_baseline_table_names_every_measured_field():
         SOIL_OUTPUT_COLUMNS)
 
 
+def test_a_compiler_row_moves_only_what_the_compiler_reaches():
+    """A167: an (architecture, build) row may differ from its
+    architecture's row only in ARCH_AND_BUILD_SENSITIVE_FIELDS, so a
+    compiler row cannot quietly re-baseline a field no compiler moved."""
+    for (capability, build), row in BASELINE_MAX_ULP_BY_ARCH_AND_BUILD.items():
+        base = BASELINE_MAX_ULP_BY_ARCHITECTURE.get(capability,
+                                                    BASELINE_MAX_ULP)
+        assert set(row) == set(base), (capability, build)
+        moved = {name for name in row if row[name] != base[name]}
+        assert moved and moved <= set(ARCH_AND_BUILD_SENSITIVE_FIELDS), (
+            capability, build, sorted(moved))
+
+
 def test_the_mirror_reproduces_wrfs_frozen_ground_infiltration():
     """SRT must spend REDPRM's ``FRZX``, and only WRF can say whether it does.
 
@@ -528,11 +579,17 @@ def test_noah_cuda_column_holds_its_measured_distance_from_wrf():
         one = _measure(fixture, port, _arithmetic_mask(fixture))
         for name, value in one.items():
             measured[name] = max(measured.get(name, 0), value)
-    recorded = BASELINE_MAX_ULP_BY_ARCHITECTURE.get(
-        cupy.cuda.Device().compute_capability, BASELINE_MAX_ULP)
+    from gpuwm.certify.compile_platform import nvrtc_build
+
+    capability = str(cupy.cuda.Device().compute_capability)
+    build = nvrtc_build()
+    recorded = BASELINE_MAX_ULP_BY_ARCH_AND_BUILD.get(
+        (capability, build),
+        BASELINE_MAX_ULP_BY_ARCHITECTURE.get(capability, BASELINE_MAX_ULP))
     assert measured == recorded, (
         "Noah's distance from the unmodified WRF driver changed.\n"
-        f"  measured {measured}\n  recorded {BASELINE_MAX_ULP}\n"
+        f"  measured {measured}\n  recorded {recorded}\n"
+        f"  on sm_{capability} under NVRTC {build}\n"
         "If a field got worse, something regressed.  If it got better, say so:"
         " update the table in the same commit as the improvement, with the"
         " expression that changed.")

@@ -111,8 +111,14 @@ def verify_unchanged(receipt: Mapping | None) -> None:
             raise MemberIdentityRefusal(f"Member input changed during preparation: {row['path']}")
 
 
-def prepare_verified(receipt: Mapping | None, root: Path, prepare):
-    """Reuse only a preparation that records this exact verified member input."""
+def prepare_verified(receipt: Mapping | None, root: Path, prepare, *,
+                     notes: dict | None = None):
+    """Reuse only a preparation that records this exact verified member input.
+
+    ``notes``, when given, receives ``member_input_superseded`` before
+    ``prepare`` runs, so a chain that reports the seal from inside
+    ``prepare`` carries the same record the returned receipt does.
+    """
     if receipt is None:
         return prepare()
     from gpuwm import stage_reuse
@@ -127,6 +133,8 @@ def prepare_verified(receipt: Mapping | None, root: Path, prepare):
     superseded = None
     if Path(root).exists() and previous != receipt:
         superseded = stage_reuse.supersede(Path(root))
+        if notes is not None:
+            notes["member_input_superseded"] = superseded
     result = prepare()
     verify_unchanged(receipt)
     path.write_text(json.dumps(dict(receipt), indent=2, sort_keys=True) + "\n",

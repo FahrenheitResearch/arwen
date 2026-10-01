@@ -521,14 +521,6 @@ def validate_nest_admissibility(child_run, *, parent_run,
 # config derivation
 # ---------------------------------------------------------------------------
 
-#: Sixth-order diffusion factor by nest depth, the wizard's ladder
-#: (``gpuwm.domain_wizard._DIFF6_FACTORS``) indexed the same way.
-def _diff6_factor(depth: int) -> float:
-    from gpuwm.domain_wizard import _DIFF6_FACTORS
-    index = min(int(depth), len(_DIFF6_FACTORS) - 1)
-    return float(_DIFF6_FACTORS[index])
-
-
 def nest_domain_config(exp: ExperimentConfig, geometry: NestGeometry,
                        *, acknowledgements=()) -> DomainConfig:
     """Derive the child ``DomainConfig`` from the parent experiment.
@@ -538,6 +530,8 @@ def nest_domain_config(exp: ExperimentConfig, geometry: NestGeometry,
     performs in ``share/set_timekeeping.F``, because that -- not the exact
     rational -- is the number the physics actually receives.
     """
+    from gpuwm.domain_wizard import nest_diff6_factors
+
     parent_dc = exp.root
     parent_run = parent_dc.run
     ratio = int(geometry.ratio)
@@ -570,7 +564,11 @@ def nest_domain_config(exp: ExperimentConfig, geometry: NestGeometry,
         # Explicit convection at the nest's spacing; the wizard pins this
         # on every nest it emits regardless of the parent's selection.
         cu_physics=0, cudt_minutes=0.0,
-        diff_6th_factor=_diff6_factor(1),
+        # The wizard's rule for a first nest: the depth ladder's value or
+        # the parent's, whichever is smaller.  The ladder's 0.10 alone
+        # damped the child harder than a parent on 0.08 (the MYNN,
+        # PBL-off, no-radiation and sub-km default suites) that drives it.
+        diff_6th_factor=nest_diff6_factors(parent_run.diff_6th_factor, 2)[1],
         output_interval_s=history,
         case=f"{parent_run.case}_nest" if parent_run.case else "nest",
     )
@@ -888,7 +886,9 @@ def _initialize_child_physics(initialized, child_run, inventory,
     grid = initialized.grid
 
     required = {"MMINLU", "ISWATER", "ISLAKE", "ISICE"}
-    if set(landuse_identity) != required:
+    admitted = (required | {"ISURBAN"}
+                if getattr(child_run, "sf_surface_mosaic", 0) == 1 else required)
+    if not required <= set(landuse_identity) <= admitted:
         raise NestedForecastRefusal(
             "nested child land-use identity must contain exactly "
             f"{sorted(required)}")
@@ -897,6 +897,7 @@ def _initialize_child_physics(initialized, child_run, inventory,
     lat, lon = grid.latlon_mass()
     landuse = initialize_landuse(
         static["LU_INDEX"], soil_type=static["SCT_DOM"],
+        urban_legend=int(getattr(child_run, "sf_urban_physics", 0)) > 0,
         landmask=static["LANDMASK"], snow=fields["SNOW"],
         xice=fields["SEAICE"], valid_time=valid_time,
         cen_lat=float(getattr(grid, "cen_lat", grid.ref_lat)
@@ -937,6 +938,13 @@ def _initialize_child_physics(initialized, child_run, inventory,
     driver.fields["shdmax"][...] = cp.asarray(
         100.0 * static["GREENFRAC"].max(axis=0), dtype=cp.float32)
     _nest_down_near_surface(driver, parent_driver, registration, cp)
+    if getattr(child_run, "sf_surface_mosaic", 0) == 1:
+        from gpuwm.core.noah_mosaic_door import attach_noah_mosaic_to_driver
+        # The child's land use above is initialised fractional_seaice=True.
+        attach_noah_mosaic_to_driver(
+            driver, child_run, landusef=static.get("LANDUSEF"),
+            processed=False, landuse_attrs=landuse_identity,
+            landmask=static["LANDMASK"], fractional_seaice=True)
     return driver
 
 

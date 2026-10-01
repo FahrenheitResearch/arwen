@@ -758,6 +758,8 @@ def build_child_statics_corridor(*, child_dc, parent_run, reference_grid,
     corridor is the size it is."""
     from gpuwm.static.build import build_static, geog_selection_from_catalog
 
+    from .terrain_smoothing import catalog_with_smoothing
+    static_catalog = catalog_with_smoothing(static_catalog, static_highres)
     geometry = corridor_geometry(child_dc, parent_run, **(frame_kwargs or {}),
                                  window=window)
     grid = corridor_grid(reference_grid, geometry)
@@ -992,6 +994,65 @@ def write_statics_corridor_set(directory: Path,
         json.dumps(receipt, indent=2, sort_keys=True, allow_nan=False)
         + "\n", encoding="utf-8")
     return receipt
+
+
+def copy_statics_corridor_set(source: Path, directory: Path, *,
+                              receipt: Mapping[str, object]
+                              ) -> dict[str, object]:
+    """Copy a sealed corridor set to ``directory``, byte for byte.
+
+    A chained tree builds its corridor set into its head, because a moving
+    nest's forecast re-grounds over it from its first move and the head is
+    where that forecast starts; the seal then needs the same set in its
+    one-shot ``hierarchy-artifacts/`` tree.  Building it a second time
+    there would cost the build again for bytes the head already holds, so
+    the seal copies them.  ``receipt`` is the set receipt the head bound:
+    the source's ``receipt.json`` must equal it and every cache must match
+    its recorded size and digest, before and after the copy, which is the
+    breakage this prevents: a sealed tree whose corridor is not the one
+    the head-bound forecast moved its nest over.  Returns the receipt.
+    """
+    import shutil
+
+    source = Path(source)
+    directory = Path(directory)
+    if directory.exists():
+        raise FileExistsError(
+            f"refusing to overwrite statics corridor set {directory}")
+    expected = json.loads(json.dumps(dict(receipt)))
+    try:
+        on_disk = json.loads(
+            (source / STATICS_CORRIDOR_RECEIPT).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CorridorRefusal(
+            f"the statics corridor set to copy has no readable receipt in "
+            f"{source}") from exc
+    if on_disk != expected:
+        raise CorridorRefusal(
+            f"the statics corridor set in {source} is not the one its "
+            "receipt names")
+    domains = expected.get("domains")
+    _require(isinstance(domains, Mapping) and bool(domains),
+             "a statics corridor set requires at least one child corridor")
+
+    def check(folder: Path, cache: Mapping[str, object], label: str) -> None:
+        path = folder / str(cache["path"])
+        _require(path.is_file()
+                 and path.stat().st_size == int(cache["bytes"])
+                 and _sha256(path) == cache["sha256"],
+                 f"{label} statics corridor {path} is not the cache its "
+                 "receipt names")
+
+    for label, entry in sorted(domains.items()):
+        check(source, entry["cache"], label)
+    directory.mkdir(parents=True)
+    for label, entry in sorted(domains.items()):
+        name = str(entry["cache"]["path"])
+        shutil.copyfile(source / name, directory / name)
+        check(directory, entry["cache"], label)
+    shutil.copyfile(source / STATICS_CORRIDOR_RECEIPT,
+                    directory / STATICS_CORRIDOR_RECEIPT)
+    return expected
 
 
 # ---------------------------------------------------------------------------
@@ -1303,7 +1364,8 @@ __all__ = [
     "PlannedCorridor", "planned_corridor", "planned_corridor_cost",
     "moving_grid_ids", "origin_in_frame_cells",
     "relocating_subtree_grid_ids",
-    "corridor_grid", "emit_statics_corridor_set", "grid_identity_probes",
+    "copy_statics_corridor_set", "corridor_grid",
+    "emit_statics_corridor_set", "grid_identity_probes",
     "grid_probe_drift",
     "load_child_statics_corridor", "validated_corridor_selection",
     "write_statics_corridor_set",

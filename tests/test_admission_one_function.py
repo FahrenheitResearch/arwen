@@ -87,8 +87,8 @@ def test_the_run_route_takes_its_admission_from_the_reviews_own_function(
     # the base is that the run route never reaches it before the fetch.
     real_estimate = pf.admission_estimate
 
-    def priced(exp_arg, *, machine=None):
-        estimate = real_estimate(exp_arg, machine=machine)
+    def priced(exp_arg, *, machine=None, source=None):
+        estimate = real_estimate(exp_arg, machine=machine, source=source)
         seen.setdefault("machine", machine)
         seen.setdefault("estimate", estimate)
         return estimate
@@ -413,7 +413,7 @@ def test_a_pinned_single_domain_tiling_consults_no_admission_estimate(
 
     asked: list = []
 
-    def priced(exp_arg, *, machine=None):
+    def priced(exp_arg, *, machine=None, source=None):
         asked.append(machine)
         raise AssertionError("a pinned tiling priced an admission estimate")
 
@@ -446,9 +446,9 @@ def test_the_single_domain_run_door_prices_its_admission_once(monkeypatch,
     real_estimate = pf.admission_estimate
     calls: list = []
 
-    def priced(exp_arg, *, machine=None):
+    def priced(exp_arg, *, machine=None, source=None):
         calls.append(machine)
-        return real_estimate(exp_arg, machine=machine)
+        return real_estimate(exp_arg, machine=machine, source=source)
 
     monkeypatch.setattr(pf, "admission_estimate", priced)
 
@@ -648,10 +648,10 @@ def test_the_nested_streaming_sentence_walks_the_shared_admission(monkeypatch):
     seen: list = []
     real = st.tree_road_plan
 
-    def spy(exp_arg, *, machine=None, resident_estimate=None):
+    def spy(exp_arg, *, machine=None, resident_estimate=None, source=None):
         seen.append(resident_estimate)
         return real(exp_arg, machine=machine,
-                    resident_estimate=resident_estimate)
+                    resident_estimate=resident_estimate, source=source)
 
     monkeypatch.setattr(st, "tree_road_plan", spy)
     pf.streaming_advisory(exp, machine=machine)

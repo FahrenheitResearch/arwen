@@ -31,6 +31,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import re
 import tarfile
 from types import SimpleNamespace
 import zipfile
@@ -53,6 +54,9 @@ PYPI_FILE_CAP_BYTES_BINARY = 104_857_600
 #: How a platform-tagged wheel is told from the universal one.  The
 #: universal wheel is the only artifact PyPI receives today.
 _UNIVERSAL_WHEEL_TAG = "-py3-none-any.whl"
+
+#: A NetCDF member's attribute text, as strings(1) would print it.
+_PRINTABLE_RUN = re.compile(rb"[\x20-\x7e]{6,}")
 
 #: Where the staged Rust artifacts live inside a distribution.
 _STAGED_MEMBER_PREFIX = "gpuwm/libexec/bridges/"
@@ -123,6 +127,67 @@ def _sibling_distributions(directory: Path, published: set[str]) -> list[Path]:
         and path.name not in published
         and (path.name.endswith(".whl") or path.name.endswith(".tar.gz"))
     )
+
+
+def private_host_members(wheel: Path,
+                         repo_root: Path | None = None) -> list[dict]:
+    """Data members of ``wheel`` that name a private machine.
+
+    The breakage this refuses: a private machine's name published in a
+    wheel.  2.8.1's fetch route table carried the lab host that watched
+    the posting times in 20 measured rows (A154), and nothing between the
+    tree and PyPI read a wheel's data files for one.  The rule, its scope,
+    its patterns and its one allowance are ``tools/release_exclusions.py``'s,
+    the same the public-tree scan applies; a member is read as text when its
+    first block holds no NUL, and a NetCDF container by its printable runs.
+    A row whose member is the exact bytes a committed WRF reference pins
+    (read from ``repo_root``) carries ``pinned_record: True`` and is not
+    refused.
+    """
+
+    from tools.release_exclusions import (PRIVATE_HOST_MARKERS,
+                                          is_wheel_data_member,
+                                          pinned_record_digests)
+
+    pinned = (frozenset() if repo_root is None
+              else pinned_record_digests(repo_root))
+    rows = []
+    with zipfile.ZipFile(wheel) as archive:
+        for info in archive.infolist():
+            if info.is_dir() or not is_wheel_data_member(info.filename):
+                continue
+            payload = archive.read(info)
+            if info.filename.lower().endswith((".nc", ".nc4")):
+                texts = [run.decode("ascii") for run in
+                         _PRINTABLE_RUN.findall(payload)]
+            elif b"\x00" in payload[:8192]:
+                continue
+            else:
+                texts = payload.decode("utf-8", "replace").splitlines()
+            record = hashlib.sha256(payload).hexdigest() in pinned
+            for text in texts:
+                for pattern, kind in PRIVATE_HOST_MARKERS:
+                    found = pattern.search(text)
+                    if found is not None:
+                        rows.append({"member": info.filename, "kind": kind,
+                                     "token": found.group(0),
+                                     "pinned_record": record})
+                        break
+    return rows
+
+
+def _refuse_private_hosts(wheel: Path, repo_root: Path) -> list[str]:
+    """Refuse the wheel, or return the pinned records the rule allowed."""
+
+    found = private_host_members(wheel, repo_root)
+    rows = [row for row in found if not row["pinned_record"]]
+    if rows:
+        raise SystemExit(
+            f"{wheel.name} publishes a private machine's name in "
+            f"{len(rows)} data member line(s): {rows[:10]}.  Reword the "
+            "record to name the measurement rather than the machine it "
+            "ran on (tools/release_exclusions.py holds the rule).")
+    return sorted({row["member"] for row in found})
 
 
 def _sha256(path: Path) -> str:
@@ -249,6 +314,8 @@ def main(argv: list[str] | None = None) -> int:
                                           {wheel.name, sdist.name}):
         distributions.append(_size_record(sibling, published=False))
     _refuse_over_cap(distributions)
+    pinned_records_with_machine_names = _refuse_private_hosts(
+        wheel, REPO_ROOT if repo is None else repo)
 
     expected_pins = pins_path.read_bytes()
     pins_document = json.loads(expected_pins)
@@ -518,6 +585,9 @@ def main(argv: list[str] | None = None) -> int:
             "sha256": distributions[0]["sha256"],
             "pins_bytes_exact": True,
             "record_digest_and_size_exact": True,
+            "private_machine_names_in_data_members": 0,
+            "pinned_records_allowed_their_machine_names":
+                pinned_records_with_machine_names,
         },
         "sdist": {
             "filename": sdist.name,

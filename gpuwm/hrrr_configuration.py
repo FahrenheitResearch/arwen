@@ -8,6 +8,31 @@ import tempfile
 import tomllib
 
 
+#: The route name a native HRRR root preparation gives the shared
+#: [perturbation] owner, in its refusal and its deferral alike.
+NATIVE_ROOT_PREPARATION_ROUTE = "native HRRR root preparation"
+
+
+def root_perturbation_deferral(experiment_config, *, announce=True):
+    """The [perturbation] deferral a native root preparation records.
+
+    This route prepares d01 alone and builds the children in a later
+    stage from namelists, so the configuration is read here or nowhere:
+    the root seals the receipt into its source identity and the
+    hierarchy stage relays it (gpuwm.hrrr_hierarchy_direct).  The tree
+    is the configuration's, not the root's, which is why the whole
+    configuration is loaded rather than the d01 slice this route
+    prepares.  WRF namelists spell no [perturbation], so a namelist-only
+    preparation has nothing to defer.
+    """
+    if experiment_config is None:
+        return None
+    from gpuwm.experiment import deferred_initial_perturbation, load_experiment
+    return deferred_initial_perturbation(
+        load_experiment(experiment_config), NATIVE_ROOT_PREPARATION_ROUTE,
+        announce=announce)
+
+
 def resolved_run_settings(cfg):
     """Wire representation of actual RunConfig with resolved radiation selectors."""
     from gpuwm.config import radiation_scheme_ids
@@ -33,8 +58,10 @@ def resolve_root_experiment(*, target, vertical, namelist_input, start_time,
     from gpuwm.physics_compat import single_domain_runtime_switches
 
     if experiment_config is not None:
-        from gpuwm.experiment import load_experiment
-        load_experiment(experiment_config)  # validate companion tables through their owners
+        # Validates the companion tables through their owners, and refuses
+        # a single-domain [perturbation] block here, before any source is
+        # decoded: the prepared single-domain runner applies no bubble.
+        root_perturbation_deferral(experiment_config, announce=False)
         raw = tomllib.loads(read_config_authority(experiment_config).payload.decode("utf-8"))
         authority = str(read_config_authority(experiment_config).source)
         # Prepared meteorological identity is independent of execution capacity

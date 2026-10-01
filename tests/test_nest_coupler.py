@@ -119,6 +119,29 @@ def _nodes():
     return parent, child
 
 
+@pytest.mark.parametrize("ratio", [1, 2, 3, 4, 5, 7])
+@pytest.mark.parametrize("start", [4, 31])
+def test_parent_coupling_window_contains_all_sint_donors(ratio, start):
+    from gpuwm.core.nest import parent_footprint_window
+    from gpuwm.core.streaming import window_slices
+    from gpuwm.core.nest_interp import register_nest
+
+    cfg = SimpleNamespace(parent_grid_ratio=ratio,
+                          i_parent_start=start, j_parent_start=start + 1,
+                          run=_run(37, 43, nested=True, grid_id=2))
+    for stagger in ("", "x", "y"):
+        reg = register_nest(
+            nri=ratio, nrj=ratio, i_parent_start=start,
+            j_parent_start=start + 1, child_nx=37, child_ny=43,
+            parent_nx=96, parent_ny=96, stagger=stagger, wrapper="bdy")
+        _, y, x = window_slices((reg.nyp, reg.nxp),
+                                parent_footprint_window(cfg))
+        assert x.start <= int(reg.ci.min()) - 2
+        assert int(reg.ci.max()) + 2 < x.stop
+        assert y.start <= int(reg.cj.min()) - 2
+        assert int(reg.cj.max()) + 2 < y.stop
+
+
 def test_f16_manifest_equals_landed_registration_inventory_and_dtypes():
     parent, child = _nodes()
     coupler = NestCoupler(child)
@@ -454,7 +477,7 @@ def test_force_uses_node_parent_clock_and_preserves_parent(monkeypatch):
     monkeypatch.setattr(coupler, "_bind_geometry", lambda: None)
     monkeypatch.setattr(
         nest_mod, "couple_nest_field",
-        lambda state, kind, out: out.__setitem__(
+        lambda state, kind, out, **kwargs: out.__setitem__(
             Ellipsis, np_couple_nest_field(state, kind, dtype=np.float32)))
     calls = []
 
@@ -573,6 +596,81 @@ def test_gpu_couple_nest_field_all_kinds_matches_independent_wrf_mirror():
         expected = np_couple_nest_field(host, name, dtype=np.float32)
         np.testing.assert_array_equal(cp.asnumpy(out), expected,
                                       err_msg=name)
+
+
+@requires_gpu
+@pytest.mark.gpu
+@pytest.mark.parametrize("width", [1, 5, 32])
+@pytest.mark.parametrize("has_msf", [True, False])
+def test_gpu_frame_coupling_preserves_words_and_untouched_interior(width, has_msf):
+    import cupy as cp
+
+    parent, _ = _nodes()
+    host = parent.state
+    host.has_msf = has_msf
+    rng = np.random.default_rng(20260930)
+    for value in vars(host).values():
+        if isinstance(value, np.ndarray):
+            value[...] += rng.uniform(-0.1, 0.1, value.shape).astype(np.float32)
+    host.thb = np.broadcast_to(host.thb[:, None, None], host.thp.shape).copy()
+    device = _DeviceState(host, cp)
+    for kind in ("u", "v", "w", "t", "ph", "mu", "qv", "qc", "qr",
+                 "qi", "qs", "qg", "nr", "ni", "ns", "ng"):
+        attr = {"t": "thp", "ph": "php", "mu": "mup"}.get(kind, kind)
+        shape = ((1, *host.mup.shape) if kind == "mu"
+                 else getattr(host, attr).shape)
+        full = cp.empty(shape, dtype=cp.float32)
+        couple_nest_field(device, kind, out=full)
+        bounded = cp.full(shape, np.float32(-123.25), dtype=cp.float32)
+        couple_nest_field(device, kind, out=bounded, frame_width=width)
+        j, i = np.indices(shape[-2:])
+        mask = np.minimum(np.minimum(j, shape[-2] - 1 - j),
+                          np.minimum(i, shape[-1] - 1 - i)) < width
+        expected = np.full(shape, np.float32(-123.25), dtype=np.float32)
+        expected[:, mask] = cp.asnumpy(full)[:, mask]
+        np.testing.assert_array_equal(
+            cp.asnumpy(bounded).view(np.uint32), expected.view(np.uint32),
+            err_msg=kind)
+
+
+@requires_gpu
+@pytest.mark.gpu
+@pytest.mark.parametrize("window", [
+    (3, 9, 4, 11), (-8, 5, -8, 6), (10, 24, 10, 24),
+    (-8, 24, -8, 24), (30, 40, 30, 40)])
+@pytest.mark.parametrize("has_msf,thb_3d", [(True, False), (False, True)])
+def test_gpu_window_coupling_preserves_words_and_untouched_exterior(
+        window, has_msf, thb_3d):
+    import cupy as cp
+    from gpuwm.core.streaming import window_slices
+
+    parent, _ = _nodes()
+    host = parent.state
+    rng = np.random.default_rng(20260930)
+    for name, value in vars(host).items():
+        if isinstance(value, np.ndarray):
+            value[...] += rng.uniform(-0.1, 0.1, value.shape).astype(np.float32)
+    host.has_msf = has_msf
+    if thb_3d:
+        host.thb = np.broadcast_to(
+            host.thb[:, None, None], host.thp.shape).copy()
+        host.thb += rng.uniform(-1, 1, host.thp.shape).astype(np.float32)
+    device = _DeviceState(host, cp)
+    for kind in ("u", "v", "w", "t", "ph", "mu", "qv", "qc", "qr",
+                 "qi", "qs", "qg", "nr", "ni", "ns", "ng"):
+        attr = {"t": "thp", "ph": "php", "mu": "mup"}.get(kind, kind)
+        shape = ((1, *host.mup.shape) if kind == "mu"
+                 else getattr(host, attr).shape)
+        full = cp.empty(shape, dtype=cp.float32)
+        couple_nest_field(device, kind, out=full)
+        bounded = cp.full(shape, np.float32(-123.25), dtype=cp.float32)
+        couple_nest_field(device, kind, out=bounded, window=window)
+        expected = np.full(shape, np.float32(-123.25), dtype=np.float32)
+        sl = window_slices(shape, window)
+        expected[sl] = cp.asnumpy(full)[sl]
+        np.testing.assert_array_equal(
+            cp.asnumpy(bounded).view(np.uint32), expected.view(np.uint32),
+            err_msg=kind)
 
 
 @requires_gpu
@@ -741,7 +839,7 @@ def test_force_composes_both_store_corridors(monkeypatch):
     monkeypatch.setattr(coupler, "_bind_geometry", lambda: None)
     monkeypatch.setattr(nest_mod, "bdy_interp1", lambda *a, **k: k["out"])
     monkeypatch.setattr(nest_mod, "attach_nest_boundaries", lambda *a, **k: None)
-    monkeypatch.setattr(nest_mod, "couple_nest_field", lambda state, kind, out: out)
+    monkeypatch.setattr(nest_mod, "couple_nest_field", lambda state, kind, out, **kwargs: out)
     seen = []
     original = nest_mod._sync_in
     def record(state, attrs, window=None):
@@ -808,7 +906,7 @@ def test_force_reads_the_parent_STORE_and_not_the_frozen_state(monkeypatch):
     seen = []
     monkeypatch.setattr(
         nest_mod, "couple_nest_field",
-        lambda state, kind, out: (seen.append((kind, float(state.mup[0, 0]))),
+        lambda state, kind, out, **kwargs: (seen.append((kind, float(state.mup[0, 0]))),
                                   out)[1])
 
     swept = parent.state.mup.copy() + np.float32(7.0)

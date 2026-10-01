@@ -295,9 +295,19 @@ def _published(root: Path, *, strict_single: bool = False):
     root = Path(root).resolve()
     if not root.is_dir():
         return None, None, (), f"{root} does not exist"
+    from gpuwm.ingest.boundary_stream import HIERARCHY_HEAD_DIRNAME
+
+    # A chained domain tree's head (hierarchy-head/) holds the stream's
+    # own caches: the root's streamed cache and each child's start.  The
+    # sealed tree is the domain-artifact manifest's; counting the head's
+    # headers too refused every chained tree as "not covering every
+    # header", so a rerun of the same plan could never reuse it.  The head
+    # files stay bound through the file inventory below.
     headers = sorted(path for path in root.rglob("prepared-cache/header.json")
                      if not any(SUPERSEDED_MARK in part
-                                for part in path.relative_to(root).parts))
+                                for part in path.relative_to(root).parts)
+                     and path.relative_to(root).parts[0]
+                     != HIERARCHY_HEAD_DIRNAME)
     if not headers:
         return None, None, (), (
             f"{root} exists but publishes no prepared-cache header, so it "

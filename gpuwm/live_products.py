@@ -585,6 +585,12 @@ class LiveProducts:
 
         return self._thread is not None and not self._ended.ended
 
+    def render_threads(self) -> list:
+        """The threads that start this render's processes, with their ends."""
+
+        with self._cond:
+            return list(self._workers)
+
     # -- the hook -------------------------------------------------------
 
     def frame_committed(self, *, domain: int, valid_time: Any, path: Any,
@@ -1188,6 +1194,9 @@ class LandingRenders(FirstProducts):
         except Exception:  # noqa: BLE001 - telemetry never fails a run
             pass
         return claimed
+
+    def render_threads(self) -> list:
+        return super().render_threads() + self.live.render_threads()
 
     def wait(self, timeout: float | None = DEFAULT_WAIT_SECONDS
              ) -> dict[str, Any] | None:

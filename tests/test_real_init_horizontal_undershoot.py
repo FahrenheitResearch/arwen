@@ -22,6 +22,7 @@ names the receipt it came from.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 
 import numpy as np
@@ -41,10 +42,16 @@ from gpuwm.ingest.real import (
     initialize_real,
 )
 
-#: The root domain the 16 GiB sizing emits at that centre, and its nest.
-SIZED_16GIB_LAYOUTS = [(276, 220), (552, 440)]
-#: The 8 GiB sizing of the same centre, which never met the undershoot.
-SIZED_8GIB_LAYOUTS = [(154, 124), (304, 248)]
+#: The root domain the 16 GiB sizing emits at that centre, and its nest:
+#: 278x222 / 560x448 since A163 measured the forecast margin at 1.13 of
+#: the subtotal (276x220 / 552x440 on the plan's 1.15).
+SIZED_16GIB_LAYOUTS = [(278, 222), (560, 448)]
+#: The plan whose run measured MEASURED_PEAK_BYTES: the 16 GiB sizing's
+#: layouts at the plan's 1.15 margin.
+MEASURED_16GIB_LAYOUTS = [(276, 220), (552, 440)]
+#: The 8 GiB sizing of the same centre, which never met the undershoot
+#: (154x124 / 304x248 on the plan's 1.15 margin).
+SIZED_8GIB_LAYOUTS = [(156, 124), (312, 248)]
 #: The source field the mapper was handed for the root's first valid time
 #: (ERA5 SPFH, 37 levels, 117x173 source cells, 748,917 values), which is
 #: also where the whole file's two extremes fall: its other valid time
@@ -391,8 +398,14 @@ def test_the_16_gib_sizing_prices_at_or_above_what_its_run_measured(
         projection=projection, source="era5", name="arco-sizing")
     assert [tuple(int(v) for v in pair) for pair in small_dims] == [
         tuple(pair) for pair in SIZED_8GIB_LAYOUTS]
+    # The price is read on the plan that was RUN, so a sizing that now
+    # emits a different layout still has to price the measured one at or
+    # above what it took.
+    measured_plan = dataclasses.replace(exp, domains=tuple(
+        dataclasses.replace(dc, run=dataclasses.replace(dc.run, nx=nx, ny=ny))
+        for dc, (nx, ny) in zip(exp.domains, MEASURED_16GIB_LAYOUTS)))
     estimate = estimate_experiment(
-        exp, vram_gib=16.0,
+        measured_plan, vram_gib=16.0,
         forcing_interval_seconds=dw.source_forcing_interval_seconds("era5"))
     priced = int(estimate.peak_envelope_bytes)
     assert priced >= MEASURED_PEAK_BYTES, (

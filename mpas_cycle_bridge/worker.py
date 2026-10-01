@@ -201,7 +201,9 @@ def _prepare(args: argparse.Namespace, guard: Any) -> dict[str, Any]:
     guard.arm(arwen)
 
     binding = portbind.bind_port(args.port_root)
-    from mpas_port.cuda_backend import KernelCache, require_cuda
+    cuda_backend = binding.module("cuda_backend")
+    KernelCache = cuda_backend.KernelCache
+    require_cuda = cuda_backend.require_cuda
 
     paths = {role: Path(config[role]).expanduser().absolute()
              for role in ("grid", "static", "init")}

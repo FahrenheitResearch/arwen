@@ -68,7 +68,7 @@ def test_the_declared_workspace_does_not_grow_with_the_domain():
     from gpuwm.config import RunConfig
     from gpuwm.core import preflight as pf
     from gpuwm.core.mynn_pbl_scratch import (
-        MYNN_PBL_COLUMN_CHUNK_DEFAULT, mynn_pbl_scratch_bytes,
+        choose_mynn_column_chunk, mynn_pbl_scratch_bytes,
         resolve_mynn_column_chunk)
 
     common = dict(nz=49, dx=750.0, dy=750.0, ztop=16000.0, dt=3.0,
@@ -85,12 +85,11 @@ def test_the_declared_workspace_does_not_grow_with_the_domain():
                 if not name.startswith("mynn_pbl_out_")}
 
     chunk = resolve_mynn_column_chunk(49)
-    # The resolver hands back the shipped width, not the derivation's
-    # floor: those were one number until the 2026-09-15 downward sweep put
-    # the measured optimum at 8,192 columns, and a guard that asked for the
-    # floor here would fail on a correct tree while claiming to be testing
-    # how the workspace scales.
-    assert chunk == MYNN_PBL_COLUMN_CHUNK_DEFAULT
+    # The resolver hands back the width the policy chooses (the widest the
+    # card's memory admits, capped), not the derivation's floor, and a
+    # guard that asked for the floor here would fail on a correct tree
+    # while claiming to be testing how the workspace scales.
+    assert chunk == choose_mynn_column_chunk(49).chunk
     assert pf.mynn_pbl_column_chunk(d04) == min(chunk, 600 * 600)
     assert pf.mynn_pbl_column_chunk(d03) == min(chunk, 501 * 501)
     if chunk <= 501 * 501:

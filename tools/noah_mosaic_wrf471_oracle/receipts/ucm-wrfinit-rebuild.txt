@@ -1,0 +1,28 @@
+Noah mosaic oracle rebuild for the ucm_wrfinit and ucm_lcz_wrfinit families
+(lane/281-mosaic-town), 2026-10-01, node-1 (Ubuntu 26.04, x86-64).
+
+Toolchain: GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0; GLIBC 2.43-2ubuntu2.4.
+Sources: every file in SOURCES.sha256 and SOURCES-surface-driver.sha256 fetched
+at WRF commit f52c197ed39d12e087d02c50f412d90d418f6186 and checked by build.sh
+before compilation; the build exited 0 and the libmvec report is unchanged
+from receipts/ucm-libmvec-report.txt (no _ZGV symbol in any -O0 object, the
+-Ofast positive control produced one).
+
+Command: bash tools/noah_mosaic_wrf471_oracle/build.sh WRF_SOURCE_ROOT BUILD_DIR
+
+run_mosaic_ucm.F90 gained families 3 and 4, which repeat families 1 and 2
+(ucm, ucm_lcz) with FRC_URB2D exactly as urban_var_init leaves it: the table
+fraction where the dominant category is urban (0.9 for ISURBAN as type 2;
+0.95 for LCZ 1) and 0 in the urban-secondary cells (module_sf_urban.F:
+2811-2821).  Families 1 and 2 and the mosaic and mosaic_init drivers are
+unchanged by the edit, and the rebuild proves it:
+
+  recorded raw arrays (.bin) regenerated:      13,808 of 13,808, 0 different
+  recorded case manifests regenerated:              48 of 48, 0 different
+  new raw files (ucm_wrfinit, ucm_lcz_wrfinit):  4,848 (2,424 per family)
+
+The new hashes are appended to receipts/fixture-sha256sums.txt by
+pack_ucm_run.py, which refuses any recorded word that moved.  Per family:
+48 columns, three tiles, four carried steps; ucm_wrfinit has 12
+dominant-urban and 24 urban-secondary cells, ucm_lcz_wrfinit 24 and 12.
+The full build's source hash list is receipts/ucm-wrfinit-oracle-sha256sums.txt.

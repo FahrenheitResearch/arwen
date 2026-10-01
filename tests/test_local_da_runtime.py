@@ -132,6 +132,32 @@ def test_generated_authorities_are_bound_before_any_work(tmp_path, filename):
     assert not backend.calls
 
 
+def test_a_case_whose_route_reads_companions_launches_and_a_changed_companion_is_refused(tmp_path):
+    """The HRRR chain's namelists are published beside the configuration; the launch read the three alone."""
+    path, plan = saved(tmp_path, source='hrrr')
+    companions = sorted(set(json.loads(path.read_text())['files']) - {'experiment.toml', 'ensemble.toml',
+                                                                     'experiment.namelist.wps'})
+    assert len(companions) > 1, f'the HRRR chain publishes {companions}; a partial roster needs two or more'
+    assert read_plan(path)['review_sha256'] == plan['review_sha256']
+    for name in companions:
+        with (path.parent / name).open('a') as file:
+            file.write('\n')
+        with pytest.raises(PlanError, match='differs from the reviewed configuration') as refused:
+            read_plan(path)
+        assert refused.value.code == 'CONFIGURATION_CHANGED'
+        (path.parent / name).write_bytes((path.parent / name).read_bytes()[:-1])
+    # A plan published before the publisher wrote the companions records the three alone and still launches.
+    doc = json.loads(path.read_text())
+    doc['files'] = {name: doc['files'][name] for name in ('experiment.toml', 'ensemble.toml', 'experiment.namelist.wps')}
+    path.write_text(json.dumps(doc))
+    assert read_plan(path)['review_sha256'] == plan['review_sha256']
+    # A record naming some companions and not the others is an incomplete roster.
+    doc['files'][companions[0]] = 'f' * 64
+    path.write_text(json.dumps(doc))
+    with pytest.raises(PlanError, match='roster is incomplete'):
+        read_plan(path)
+
+
 def test_review_digest_tamper_refused(tmp_path):
     path, _ = saved(tmp_path)
     doc = json.loads(path.read_text())

@@ -15,11 +15,10 @@ from pathlib import Path
 import numpy as np
 
 
-#: Launch block, and the tile's granularity.  ``kernels/kf.cu`` indexes the
-#: column workspace by the thread's LANE within its block, so this must equal
-#: the kernel's ``KFWS_LANES`` and a launch at any other block width would
-#: alias lanes.  ``tests/test_kf_workspace.py`` pins the two together.
-_TPB = 32
+#: Eight warps share a column-order buffer, while each workspace warp
+#: remains interleaved over the kernel's 32 lanes.
+_TPB = 256
+_WS_LANES = 32
 _VALIDATION_TPB = 256
 #: ``KF_KMAX`` in ``kernels/kf.cu`` and the ceiling on nz.  It is a REFUSAL
 #: ceiling and nothing else since the column workspace landed: no array in
@@ -48,19 +47,17 @@ DTYPE = np.float32
 # it from the .cu source and fails if either side moves alone.
 KFWS_SLOTS = 52
 
-#: Blocks per SM the tile is sized for.  MEASURED, not assumed -- see the
-#: sweep recorded in docs/kernel_local_memory_bounds.md.  The workspace is
-#: real device memory, so an over-sized tile hands back exactly the
-#: over-reservation the cut removed.
-KF_TILE_BLOCKS_PER_SM = 8
+#: One eight-warp block keeps the previous 256-column cap per SM.
+#: The occupancy query can reduce the cap without increasing workspace.
+KF_TILE_BLOCKS_PER_SM = 1
 
 
 def kf_workspace_floats(nz: int, columns: int) -> int:
     """Workspace floats for ``columns`` columns in flight at this ``nz``.
 
-    Rounded up to whole blocks: kf.cu interleaves the workspace by LANE
-    within a block, the way CUDA lays local memory out across a warp, so the
-    unit of allocation is one block's region, not one column's.
+    Rounded up to whole launch blocks.  Each warp owns a separate region
+    interleaved across its 32 lanes, so the column-order buffer can group
+    several warps without changing the workspace's access stride.
 
     The per-slot extent is the RUNTIME ``nz``, not ``KF_KMAX``: every loop in
     ``kf_column`` runs to ``nz`` and the highest index any of them forms is
@@ -305,20 +302,22 @@ def launch_kf(u, v, temperature, qv, qc, pressure, exner, dz, w, *,
     except (TypeError, ValueError) as exc:
         raise ValueError(f"invalid KF phase_mode {phase_mode!r}") from exc
 
-    out = {name: cp.zeros(shape, dtype=DTYPE) for name in
+    # The column kernel initializes every output before any scheme exit.
+    # Host fills would write the same arrays twice and add separate launches.
+    out = {name: cp.empty(shape, dtype=DTYPE) for name in
            ("rthcuten", "rqvcuten", "rqccuten", "rqicuten",
             "rqrcuten", "rqscuten",
             "updraft_mass_flux", "downdraft_mass_flux")}
     out.update(
-        rainc=cp.zeros((ny, nx), dtype=DTYPE),
-        triggered=cp.zeros((ny, nx), dtype=cp.int32),
-        cape_before=cp.zeros((ny, nx), dtype=DTYPE),
-        cape_after=cp.zeros((ny, nx), dtype=DTYPE),
-        timec=cp.zeros((ny, nx), dtype=DTYPE),
-        nca_seconds=cp.zeros((ny, nx), dtype=DTYPE),
-        shallow=cp.zeros((ny, nx), dtype=cp.int32),
-        cloud_base=cp.full((ny, nx), -1, dtype=cp.int32),
-        cloud_top=cp.full((ny, nx), -1, dtype=cp.int32),
+        rainc=cp.empty((ny, nx), dtype=DTYPE),
+        triggered=cp.empty((ny, nx), dtype=cp.int32),
+        cape_before=cp.empty((ny, nx), dtype=DTYPE),
+        cape_after=cp.empty((ny, nx), dtype=DTYPE),
+        timec=cp.empty((ny, nx), dtype=DTYPE),
+        nca_seconds=cp.empty((ny, nx), dtype=DTYPE),
+        shallow=cp.empty((ny, nx), dtype=cp.int32),
+        cloud_base=cp.empty((ny, nx), dtype=cp.int32),
+        cloud_top=cp.empty((ny, nx), dtype=cp.int32),
     )
     from gpuwm.core.kernels import get_kernel
 

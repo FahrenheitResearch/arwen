@@ -37,6 +37,8 @@ REGISTRY_PATH = MODEL / "gpuwm" / "physics_registry_v2.json"
 
 from gpuwm.config import (  # noqa: E402
     GF_CLOSURE_MEMBERS,
+    MOSAIC_URBAN_CANOPY_DEFAULT,
+    MOSAIC_URBAN_CANOPY_RULES,
     MP28_AEROSOL_SOURCES as MP28_AEROSOL_SOURCES,
 )
 from gpuwm.physics_registry import (  # noqa: E402
@@ -100,6 +102,23 @@ IMPLEMENTED: dict[str, dict] = {
     # transport
     "h_sca_adv_order": {"type": "integer", "enum": [2, 5], "default": 2},
     "moist_adv_opt": {"type": "integer", "enum": [0, 1], "default": 1},
+    # WRF 4.3+ implicit-explicit vertical advection (gpuwm.core.ieva), off
+    # by default.  Its warning is the declared divergence of its w solve
+    # (A179), which the option's own documentation also records.
+    "zadvect_implicit": {
+        "type": "integer", "enum": [0, 1], "default": 0,
+        "warnings": [
+            "DIVERGENCE from WRF v4.7.1, declared: the implicit w solve's "
+            "two boundary terms take the units of the w terms beside them. "
+            "WRF's lower boundary (dyn_em/module_ieva_em.F:1231-1244) builds "
+            "the surface w increment from the mass-coupled u/v tendencies, "
+            "about one column mass too large, and a steep-ridge run went "
+            "NaN in three steps; gpuwm uncouples each tendency by its map "
+            "factor and face column mass first. WRF's upper boundary "
+            "(:1248-1253) leaves the geopotential change over dt undivided "
+            "by g; gpuwm divides it. Every other IEVA routine matches WRF "
+            "v4.7.1 word for word, and the w solve matches WRF's routine "
+            "with those two corrections (tools/ieva_wrf_oracle)."]},
     # microphysics heating controls
     "no_mp_heating": {"type": "integer", "enum": [0, 1], "default": 0},
     "mp_tend_lim": {"type": "number", "minimum": 0.0, "default": 10.0},
@@ -116,6 +135,10 @@ IMPLEMENTED: dict[str, dict] = {
     "ysu_topdown_pblmix": {"type": "integer", "enum": [0, 1], "default": 1},
     # radiation
     "swrad_scat": {"type": "number", "minimum": 0.0, "default": 1.0},
+    # WRF v4.7.1 slope-dependent surface shortwave and terrain shadowing
+    # (gpuwm.core.topo_radiation, lane 281-namelist-gaps), off by default.
+    "slope_rad": {"type": "integer", "enum": [0, 1], "default": 0},
+    "topo_shading": {"type": "integer", "enum": [0, 1], "default": 0},
     "o3input": {
         "type": "integer", "enum": [0, 2], "default": 2,
         "warnings": [
@@ -151,6 +174,34 @@ IMPLEMENTED: dict[str, dict] = {
     "usemonalb": {"type": "boolean", "default": False},
     "rdlai2d": {"type": "boolean", "default": False},
     "opt_thcnd": {"type": "integer", "enum": [1, 2], "default": 1},
+    "sf_surface_mosaic": {
+        "type": "integer", "enum": [0, 1], "default": 0,
+        "warnings": ["Noah only: WRF v4.7.1 lsm_mosaic tile state. "
+                     "Stock-WRF export of mosaic land state and moving-nest "
+                     "tile interpolation are not reproduced. Urban option 1 "
+                     "runs inside the tile loop, by default only where a "
+                     "cell's dominant category is urban (mosaic_urban_canopy); "
+                     "mosaic option cannot work with urban options 2 and 3 "
+                     "(WRF module_check_a_mundo.F:505-518)."]},
+    # read_when: the settings a knob is read under at all
+    # (gpuwm.physics_registry.registry_knob_is_read), so a WRF namelist or a
+    # TOML that carries a tile count with mosaic off runs what a 2.8.0
+    # preparation ran and is not refused as new physics (A153).
+    "mosaic_cat": {"type": "integer", "minimum": 1, "default": 3,
+                   "component_id": "land_surface",
+                   "read_when": {"sf_surface_mosaic": 1}},
+    "mosaic_urban_canopy": {
+        "type": "string", "enum": list(MOSAIC_URBAN_CANOPY_RULES),
+        "default": MOSAIC_URBAN_CANOPY_DEFAULT,
+        "read_when": {"sf_surface_mosaic": 1, "sf_urban_physics": 1},
+        "warnings": ["Read only with sf_surface_mosaic = 1 and "
+                     "sf_urban_physics = 1. dominant is WRF v4.7.1: the urban "
+                     "canopy runs only where a cell's dominant category is "
+                     "urban. every_tile also runs the urban tiles of a mostly "
+                     "rural cell at their own land-use weights, sharing the "
+                     "largest urban tile type's URBPARM urban fraction, a "
+                     "gpuwm option WRF does not have; the 10 m wind override "
+                     "stays on dominant-urban cells."]},
     "rdmaxalb": {
         "type": "boolean", "default": True,
         "warnings": [
@@ -743,11 +794,6 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "SEAICE_THRESHOLD is consumed by WRF's unported slab land-surface "
         "scheme. The ported LSMs use their own XICE_THRESHOLD contracts and "
         "cannot honor this different selector."),
-    "sf_surface_mosaic": (
-        "c",
-        "Surface mosaics require a tile dimension, per-tile land-use/soil "
-        "fractions and LSM states, aggregation, restart/wrfout contracts, and "
-        "driver loops; gpuwm carries one surface column per grid cell."),
     "shallowcu_forced_ra": (
         "c",
         "Forced shallow-cumulus radiation needs persistent shallow-convective "
@@ -768,11 +814,6 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "This selects independent shallow-cumulus schemes. No shallow-"
         "cumulus component, tendencies, cadence state, restart contract, or "
         "radiation coupling is ported."),
-    "slope_rad": (
-        "c",
-        "Slope-aware radiation needs slope/aspect terrain statics and modified "
-        "solar-incidence geometry in the radiation driver; those fields and "
-        "branches are absent."),
     "sst_update": (
         "c",
         "SST updates require a time-varying lower-boundary input stream, "
@@ -801,10 +842,6 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "Updating deep-soil temperature needs a running/calendar mean "
         "algorithm, lower-boundary history, restart state, and ownership "
         "across ingest and LSM cadence; gpuwm carries a fixed analysis TMN."),
-    "topo_shading": (
-        "c",
-        "Terrain shadowing needs horizon/terrain statics, solar azimuth and "
-        "shadow geometry, plus radiation-driver state; none is carried."),
     "topo_wind": (
         "c",
         "Topographic wind correction needs terrain-subgrid static fields and "
@@ -3445,6 +3482,7 @@ _VERTICAL_BOUND_SOURCES: dict[str, dict[str, tuple[str, str]]] = {
         "mynn": ("MYNN PBL", "MYNN_VERTICAL_LEVEL_BOUNDS"),
         "ysu": ("YSU PBL", "YSU_VERTICAL_LEVEL_BOUNDS"),
         "myj": ("MYJ PBL", "MYJ_VERTICAL_LEVEL_BOUNDS"),
+        "uw": ("UW moist-turbulence PBL", "UWPBL_VERTICAL_LEVEL_BOUNDS"),
         "shinhong": ("Shin-Hong PBL", "SHINHONG_VERTICAL_LEVEL_BOUNDS"),
         "sase": ("SASE PBL", "SASE_VERTICAL_LEVEL_BOUNDS"),
     },
@@ -4334,8 +4372,142 @@ def _tke_nest_child(registry: dict) -> None:
         for warning in tke.get("warnings", [])]
 
 
+def _urban_component(registry: dict) -> None:
+    """WRF's urban canopy selector (``sf_urban_physics``), per option.
+
+    Implemented: each model's CUDA column is graded against WRF v4.7.1's own
+    routine (tests/test_urban_*_wrf471_parity.py).  Maturity stays at the
+    implemented-unverified rung until the observation verification of record
+    (ASOS, urban against rural stations) is recorded against it.
+    """
+    # The restart identities are gpuwm.checkpoint_identity's table, the
+    # source the checkpoint writer reads, copied here as every component's
+    # are.
+    from gpuwm.checkpoint_identity import URBAN_ALGORITHM_IDENTITIES
+
+    options = {}
+    for value, option_id, module in (
+            (0, "none", None), (1, "slucm", "gpuwm.core.urban_ucm"),
+            (2, "bep", "gpuwm.core.urban_bep"),
+            (3, "bep-bem", "gpuwm.core.urban_bem")):
+        row = {
+            "label": option_id, "selectors": {"sf_urban_physics": value},
+            "implemented": True,
+            "maturity": "supported" if value == 0 else "implemented-unverified",
+            "scientific_evidence": "none",
+            "parameters": ({"use_wudapt_lcz": 0, "num_urban_hi": 15}
+                           if value else {}),
+            "asset_requirements": [], "warnings": [], "extensions": {},
+        }
+        if module:
+            row["consumers"] = {
+                "restart_algorithm_identity": URBAN_ALGORITHM_IDENTITIES[value],
+                "vertical_level_bounds": None}
+            # Selected in a run's [shared] table.  WRF runs one urban
+            # selector on every domain, so the per-domain override lists
+            # exclude it (_PER_DOMAIN_EXCLUSION_REASONS) and no template
+            # names it yet.
+            row["reachability"] = {
+                "state": "unreachable",
+                "blocker": (
+                    "selected by sf_urban_physics in a run's [shared] "
+                    "table; WRF runs one urban selector on every domain, "
+                    "so no per-domain route override offers it and no "
+                    "registered template names it yet")}
+            row["constraints"] = {
+                "admitted_setting_values": {"use_wudapt_lcz": [0, 1], "num_urban_hi": [15]},
+                "admitted_setting_values_reasons": {
+                    "use_wudapt_lcz": "urban_param_init opens only URBPARM.TBL or URBPARM_LCZ.TBL",
+                    "num_urban_hi": "HI_URB2D uses a 15-bin stride; another count would read past the array"},
+                "requires_components": {"land_surface": ["noah", "noah-mp"]},
+                "requires_components_reasons": {
+                    "land_surface": "RUC and no-LSM never call an urban model; "
+                    "the selector would be silently ignored."},
+            }
+            if value in (2, 3):
+                row["constraints"]["requires_components"]["pbl"] = ["ysu", "myj"]
+                row["constraints"]["requires_components_reasons"]["pbl"] = (
+                    "BEP drag, heat and TKE sources enter the PBL implicit "
+                    "solve; other ported PBL schemes would drop them.")
+        else:
+            row["consumers"] = {
+                "restart_algorithm_identity": URBAN_ALGORITHM_IDENTITIES[0],
+                "vertical_level_bounds": None}
+        if value == 1:
+            row["warnings"] = [
+                "DECLARED DIVERGENCE from WRF v4.7.1: under Noah-MP the "
+                "UCM's 2 m temperature is blended as the absolute "
+                "temperature it is. module_surface_driver.F:3393 divides it "
+                "by (1e5/PSFC)**RCP as if it were potential temperature, "
+                "but module_sf_urban.F:1686 builds it from TS and TA, both "
+                "absolute; the conversion cools every Noah-MP city cell by "
+                "FRC x T x (1-(PSFC/1e5)**RCP), about 12 K at 1,900 m. "
+                "Bitwise against WRF built with that one line fixed "
+                "(tests/test_urban_ucm_noahmp_wrf471_parity.py).",
+                "WRF stops the model (module_sf_urban.F:825) on any urban "
+                "cell whose ZDC + Z0C + 2 m reaches the first model level; "
+                "gpuwm refuses such a configuration when it loads, from the "
+                "table's classes and the eta ladder (Local Climate Zones 1 "
+                "and 4 need a first level above about 34 and 31 m).",
+            ]
+        elif value in (2, 3):
+            row["warnings"] = [
+                "DECLARED DIVERGENCE from WRF v4.7.1 under YSU: the rural "
+                "surface drag is applied once. bl_ysu.F90:1313-1314 removes "
+                "only the urban fraction of YSU's own drag while the BEP "
+                "couple (module_sf_noahdrv.F:1708-1711) already folds the "
+                "rural drag into a_u_bep, so WRF drags every column that is "
+                "not wholly urban twice, ocean included (1.25 m/s of 10 m "
+                "wind over the sea within two hours at 750 m). kernels/"
+                "ysu.cu removes the whole of YSU's own drag; graded against "
+                "WRF built with that one-line fix "
+                "(tests/test_ysu_bep_rural_drag.py). MYJ is unaffected.",
+            ]
+        options[option_id] = row
+    registry["components"]["urban"] = {
+        "scope": "per-domain", "selector_keys": ["sf_urban_physics"],
+        "options": options,
+    }
+    for name, default in (("use_wudapt_lcz", 0), ("num_urban_hi", 15)):
+        registry["parameters"][name] = {
+            "type": "integer", "default": default,
+            "component_id": "urban", "consuming_read": "gpuwm/config.py",
+        }
+    for template in registry["templates"].values():
+        template["components"]["urban"] = "none"
+#: The UW moist-turbulence PBL option's warnings (bl_pbl_physics=9).  The
+#: measured numbers are the parity tests' own (tests/test_uwpbl_*).
+_UWPBL_WARNINGS = (
+    "The UW PBL's distance from WRF v4.7.1 is MEASURED against the "
+    "byte-unmodified CAMUWPBL sources: tools/uwpbl_wrf471_oracle builds "
+    "them at gfortran -O0 and records every step of six regime families "
+    "(convective day, stable night, stratocumulus, valley cold pool, "
+    "mixed-phase, shallow cumulus) on three vertical grids, and the "
+    "binary64 CPU reference gpuwm/verify/uwpbl_ref and the CUDA kernel are "
+    "graded against those words bit for bit (tests/test_uwpbl_driver_"
+    "wrf471_parity.py). That is conformance evidence, not scientific "
+    "validation: no gpuwm/WRF forecast trajectory comparison and no "
+    "observation score exists for this scheme yet, which is why this "
+    "option is 'implemented-unverified'.",
+    "THE ONE LICENCE-BOUND DIFFERENCE: WRF's cos and acos are glibc's "
+    "binary64 IBM Accurate Mathematical Library (LGPL), which is not "
+    "transcribed; the kernel uses correctly rounded cos/acos instead "
+    "(gpuwm/core/kernels/glibc_flt64.cuh). They enter only the "
+    "trigonometric root of the entrainment cubic, and where glibc does not "
+    "round correctly there a column can differ from WRF in its last bits; "
+    "the rate is measured and stated in the kernel header. exp, log and "
+    "pow are glibc's own (Arm optimized-routines, MIT) and bitwise.",
+    "WRF-AS-BUILT: gfortran's -O2 -ftree-vectorize build of these sources "
+    "(WRF's configure default) is not byte-identical to its -O0 build on "
+    "this toolchain: the vectoriser routes loops in eddy_diff through "
+    "libmvec's cos/pow and folds x**2._r8 to x*x. The port follows the "
+    "-O0 build, which calls glibc's scalar functions everywhere.",
+)
+
+
 def build(registry: dict) -> dict:
     """Apply this pass's tables to ``registry`` in place and return it."""
+    _urban_component(registry)
     _surface_coupling_warnings(registry)
     _thompson_aerosol_mp28(registry)
     _milbrandt2mom_mp9(registry)
@@ -4626,10 +4798,9 @@ def build(registry: dict) -> dict:
         "OUT OF SCOPE, refused rather than approximated. WRF sends the MYJ "
         "PBL through myjurb (phys/module_bl_myjurb.F:130-771) when sf_urban_physics "
         "is 2 or 3, the BEP/BEM multi-layer urban canopies "
-        "(phys/module_physics_init.F:3775-3781). gpuwm has no "
-        "sf_urban_physics selector at all, so that arm is UNREACHABLE "
-        "rather than silently substituted by the non-urban one; a future "
-        "urban port must add the selector and its own registry option. "
+        "(phys/module_physics_init.F:3775-3781). gpuwm does the same: "
+        "PhysicsDriver._run_myj_pbl routes MYJ to gpuwm.core.myjurb under "
+        "the bep and bep-bem urban options. "
         "With sf_surface_physics=0 the land branch stops evolving surface "
         "humidity rather than failing: MYJPBL rebuilds QSFC over land from "
         "ELFLX and CHKLOWQ, both of which an LSM writes, and its "
@@ -4703,6 +4874,50 @@ def build(registry: dict) -> dict:
                      _MYJ_QUIRK_WARNING, _MYJ_DIVERGENCE_WARNING,
                      _MYJ_SCOPE_WARNING],
     }
+    # ---- UW moist turbulence (bl_pbl_physics=9) ---------------------------
+    # WRF v4.7.1's CAMUWPBLSCHEME, ported with its CAM modules and graded
+    # against tools/uwpbl_wrf471_oracle.  It reads UST/HFX/QFX from its
+    # surface layer and nothing else of the surface layer's set, so the
+    # fm/fh reason that ties YSU and Shin-Hong to the MM5 layers does not
+    # reach it and the MYNN layer is admitted beside it; the Eta layer is
+    # refused for its own reason (its PBLH scan reads TKE_MYJ).
+    pbl_options["uw"] = {
+        "asset_requirements": [],
+        "constraints": {
+            "required_settings": {},
+            "requires_components": {
+                "surface_layer": ["revised-mm5", "classic-mm5", "mynn"]},
+            "requires_components_reasons": {
+                "surface_layer": (
+                    "the UW scheme takes its lower boundary from the "
+                    "friction velocity and the surface heat and moisture "
+                    "fluxes (UST/HFX/QFX), which the revised MM5, classic "
+                    "MM5 and MYNN surface layers publish; the Eta layer "
+                    "publishes them too but its own PBLH scan reads the "
+                    "TKE_MYJ column only the MYJ PBL advances, and the off "
+                    "option writes none of them")},
+        },
+        "extensions": {
+            "arwen_pairing_requirement": {
+                "reason": (
+                    "the Eta surface layer's PBLH scan is MYJSFC's TKE scan "
+                    "over TKE_MYJ, which only the MYJ PBL allocates"),
+                "classification": (
+                    "ArWen structural constraint; WRF v4.7.1 places no "
+                    "surface-layer law on CAMUWPBLSCHEME and fatals only "
+                    "the BEP/BEM urban pairing"),
+                "wrf_source": "phys/module_physics_init.F:3825-3832",
+            },
+        },
+        "implemented": True,
+        "label": "UW moist-turbulence PBL",
+        "maturity": "implemented-unverified",
+        "parameters": {},
+        "reachability": {"state": "component-override"},
+        "scientific_evidence": "none",
+        "selectors": {"bl_pbl_physics": 9},
+        "warnings": list(_UWPBL_WARNINGS),
+    }
     surface_options["eta-similarity"] = {
         "asset_requirements": [],
         "constraints": {
@@ -4764,7 +4979,7 @@ def build(registry: dict) -> dict:
             # registry and validate_run_config into disagreement over 816
             # combinations.
             "requires_components": {
-                "pbl": ["ysu", "mynn", "shinhong", "sase", "myj"]},
+                "pbl": ["ysu", "mynn", "shinhong", "sase", "myj", "uw"]},
             "requires_components_reasons": {
                 "pbl": (
                     "ArWen's Grell-Freitas adapter reads KPBL and the "
@@ -4920,7 +5135,7 @@ def build(registry: dict) -> dict:
     }
     surface_options["mynn"]["constraints"]["requires_components"][
         "pbl"
-    ] = ["off", "mynn", "sase"]
+    ] = ["off", "mynn", "sase", "uw"]
     # WHY, not just WHAT.  "requires pbl in [...]" told a reader which
     # tuples were refused and nothing about what breaks, which is half a
     # refusal under the gate law; the evaluator renders this string after
@@ -4936,8 +5151,8 @@ def build(registry: dict) -> dict:
             "would run on the allocated zeros -- finite, plausible and "
             "wrong -- for the whole forecast. Select the revised MM5 (1) "
             "or classic MM5 (91) surface layer for them, or the MYNN PBL, "
-            "SASE, or no PBL scheme for this surface layer, all of which "
-            "read only fields it publishes"),
+            "SASE, the UW PBL or no PBL scheme for this surface layer, all "
+            "of which read only fields it publishes"),
     }
     # ---- New Tiedtke (cu_physics=16) -------------------------------------
     # THE PBL REQUIREMENT IS RETIRED, and this row is owned here now so
@@ -5168,7 +5383,9 @@ def build(registry: dict) -> dict:
         # names one without the other is refused by their own
         # requires_components and again by
         # gpuwm.config.validate_myj_pairing.
-        "pbl": ["off", "ysu", "mynn", "sase", "shinhong", "myj"],
+        # "uw" is listed so the UW moist-turbulence PBL is selectable per
+        # domain here; no template selects it (component-override).
+        "pbl": ["off", "ysu", "mynn", "sase", "shinhong", "myj", "uw"],
         "surface_layer": [
             "revised-mm5", "classic-mm5", "mynn", "eta-similarity"],
         # "wrf-rrtm-dudhia" is WRF's classic 1/1 pair.  No template
@@ -5895,6 +6112,8 @@ def build(registry: dict) -> dict:
     # After every option, template and route the passes above created, and
     # before the maturity/evidence/consumer-row passes below, which walk
     # whatever this one leaves behind.
+    for template in registry["templates"].values():
+        template["components"]["urban"] = "none"
     _phase2c_route_declarations(registry)
     _every_served_source_declares_a_template_list(registry)
     _phase2c_soil_geometry(registry)
@@ -6027,6 +6246,11 @@ _BENCHMARK_OVERRIDE_REFUSAL = (
 #: naming land_surface what is wrong with an analytic radiation scheme, and
 #: restated the admitted lists the surrounding sentence already names.
 _PER_DOMAIN_EXCLUSION_REASONS = {
+    **{("urban", option): (
+        "WRF runs one urban selector on every domain (it resets them all to "
+        "the innermost domain's value, share/module_check_a_mundo.F:"
+        "1063-1077); set sf_urban_physics in [shared], not per domain.")
+       for option in ("none", "slucm", "bep", "bep-bem")},
     ("radiation", "analytic-clear-sky"): (
         "analytic-clear-sky is not a forecast radiation scheme: it computes "
         "a clear-sky flux from solar geometry alone and carries no cloud, "

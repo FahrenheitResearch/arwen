@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import contextvars
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib.util
 import json
@@ -85,7 +85,61 @@ SILENT_FLOOR_SECONDS = 120.0
 SEAL_ONLY_PROOF_KEYS = frozenset({
     "prepared_cache", "export", "initialization_artifacts",
     "timing_seconds", "proof_content_sha256", "boundary_stream",
+    # A domain tree's one-shot artifact tree and its companion WRF
+    # hierarchy are written at the seal.  No single-domain proof carries
+    # these keys, so a single domain's contract is unchanged.  A tree's
+    # statics corridor is not among them: it needs no boundary time, so a
+    # chained tree builds it into its head (hierarchy-head/statics-corridor)
+    # and the head's proof binds it, which is what lets a moving nest's
+    # forecast start at the head.
+    "artifact_receipt", "wrf_manifest",
+    # An as-posted preparation's record of the leads it waited for
+    # (DESIGN A136 2.4 item 6); no one-shot proof carries it.
+    "posting",
+    # A native HRRR domain tree's record of the root preparation it was
+    # joined to: the root's sealed cache content digest, which exists
+    # only once the root preparation seals.  No other proof carries it.
+    "root_preparation",
 })
+
+#: An as-posted head (DESIGN A136 2.4 item 5 and the L3 design ruling):
+#: the head is written from the start leads, before the input manifest
+#: exists, so it binds the INPUT PLAN (every lead, every object name and
+#: every non-lead input the manifest will bind) and the start leads'
+#: object digests instead.  The seal writes the one-shot identity and the
+#: one-shot proof; :func:`verify_seal` accepts exactly the identity keys
+#: below and the head's declared seal-authored proof keys changing, and
+#: holds every sealed manifest row to its lead's posted marker and the
+#: plan recomputed from the sealed manifest to the head's.
+AS_POSTED_SCHEMA = "gpuwm.as-posted-head.v1"
+INPUT_PLAN_SCHEMA = "gpuwm.input-plan.v1"
+#: The seal's record of every lead the preparation consumed, as its
+#: posted marker named it (``boundary-stream/posted-leads.json``), so a
+#: verifier without the fetch folder can hold the manifest to it.
+POSTED_LEADS_NAME = "posted-leads.json"
+POSTED_LEADS_SCHEMA = "gpuwm.posted-leads.v1"
+#: The cache identity keys the L3 design ruling lets an as-posted seal
+#: write: the input manifest's and the composition receipt's digests,
+#: which an as-posted head cannot know.  Its head carries
+#: :func:`as_posted_placeholder` in each; the seal the digest.  A route
+#: whose identity carries the input manifest's digest under another name
+#: too (GFS: ``bridge_manifest_sha256`` and ``source_manifest_sha256``)
+#: declares those keys manifest-bound in its head, and the seal may write
+#: there only that same manifest digest.  Any other identity difference,
+#: and any placeholder left in the sealed identity, is refused.
+AS_POSTED_IDENTITY_KEYS = frozenset({
+    "input_manifest_sha256", "composition_receipt_sha256",
+})
+#: The prefix of :func:`as_posted_placeholder`.
+AS_POSTED_PLACEHOLDER_PREFIX = "as-posted:"
+
+#: ``head.layout`` for a prepared domain tree (a single domain omits it).
+LAYOUT_DOMAIN_TREE = "domain_tree"
+#: Where a domain tree's head keeps every domain's artifacts: the children
+#: complete, the root's static files and its streamed prepared cache.
+HIERARCHY_HEAD_DIRNAME = "hierarchy-head"
+#: Where a domain tree's seal writes the one-shot artifact tree.
+SEALED_HIERARCHY_DIRNAME = "hierarchy-artifacts"
 
 
 class BoundaryStreamError(RuntimeError):
@@ -102,6 +156,197 @@ class BoundaryProducerSilent(BoundaryStreamError):
 
 class BoundaryStreamStopped(BoundaryStreamError):
     """The consumer wrote ``stop.json``; the producer exits unsealed."""
+
+
+class StreamedClockChanged(BoundaryStreamError):
+    """A later boundary interval moved the terrain-derived clock.
+
+    Raised by the tree runner's clock guard
+    (``prepared_domain_tree_forecast.StreamedClockGuard``) as the interval
+    loads.  The run
+    so far stepped on a clock a sealed run of the same tree would not
+    choose, so it is not that forecast; the runner restarts on the seal.
+    """
+
+
+#: The exit code of a run a source left behind: a lead passed its
+#: ``late_at`` (``posting.late_after_minutes`` past its scheduled time).
+#: The shell's EX_TEMPFAIL, because the same launch succeeds once the lead
+#: posts; every door (fetch --as-posted, go, run-plan) exits with it.
+SOURCE_BEHIND_EXIT_CODE = 75
+SOURCE_BEHIND_CODE = "source_behind"
+#: What a ``source_behind`` record names about the late lead.
+SOURCE_BEHIND_FIELDS = ("source", "cycle", "lead", "valid_time",
+                        "expected_at", "late_at", "late_after_minutes",
+                        "last_answer")
+#: What a waiting producer's heartbeat names about the lead it waits on
+#: (``producer.json`` ``waiting_for``).  ``state`` and ``first_seen_at``
+#: are the fetch's own word on the lead (its schedule row), refreshed while
+#: the wait lasts, so a wait reason says what the fetch knows: not posted,
+#: not asked for yet, or posted and still downloading.
+WAITING_FOR_FIELDS = ("source", "cycle", "lead", "valid_time",
+                      "expected_at", "late_at", "since_utc", "state",
+                      "first_seen_at")
+#: How often a source wait is said again on the event stream while it
+#: lasts: nothing else moves in the stream during a wait, and a reader
+#: that only tails it cannot otherwise tell a wait from a hang.
+SOURCE_WAIT_PROGRESS_SECONDS = 60.0
+#: The runner's own record of every wait event it said, one JSON object
+#: per line, in its output directory.  ``gpuwm go`` runs the forecast as a
+#: subprocess with no event stream, and relays this file onto its own.
+WAIT_LOG_NAME = "waits.jsonl"
+
+
+def _lead_words(lead) -> str:
+    try:
+        return f"f{int(lead):03d}"
+    except (TypeError, ValueError):
+        return f"lead {lead}"
+
+
+def _clock_words(text) -> str:
+    """``2026-09-30T15:53:04Z`` -> ``15:53Z``; anything else verbatim."""
+
+    try:
+        instant = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except ValueError:
+        return str(text)
+    if instant.tzinfo is not None:
+        instant = instant.astimezone(timezone.utc)
+    return instant.strftime("%H:%MZ")
+
+
+def _fetch_knows(cause: Mapping[str, object]) -> str:
+    """What the fetch knows of a lead a run waits on, from its schedule row.
+
+    ``posted`` once a host has held it (``first_seen_at``, or the row's
+    ``posted`` state): the run then waits on the download, not on the
+    publisher.  ``unasked`` while the row is still ``scheduled``: the
+    fetch has not reached the lead (a late launch moving its posted
+    backlog), so whether it is posted is not known.  Otherwise
+    ``not_posted`` (``waiting``: the fetch announced it as not posted
+    yet), which is also the word for a record with no state, as before
+    the fetch said one.  The breakage this prevents: a seam wait said
+    "gfs f060 is not posted yet" for a lead the fetch had seen posted 23 s
+    earlier and was downloading, and "not posted" for a lead the fetch had
+    not asked about at all (DESIGN A136 3.6: something the engine could
+    not see is never reported as the publisher being late).
+    """
+
+    if cause.get("first_seen_at") or cause.get("state") == "posted":
+        return "posted"
+    if cause.get("state") == "scheduled":
+        return "unasked"
+    return "not_posted"
+
+
+def lead_wait_words(cause: Mapping[str, object]) -> str:
+    """The state half of a wait line: ``not posted yet (scheduled from about 15:53Z)``."""
+
+    known = _fetch_knows(cause)
+    if known == "posted":
+        seen = cause.get("first_seen_at")
+        return ("posted" + (f" at {_clock_words(seen)}" if seen else "")
+                + ", still downloading")
+    words = "not fetched yet" if known == "unasked" else "not posted yet"
+    if cause.get("expected_at"):
+        words += (" (scheduled from about "
+                  f"{_clock_words(cause.get('expected_at'))})")
+    return words
+
+
+def source_wait_reason(cause: Mapping[str, object]) -> str:
+    """The reason a run waiting on a source lead gives, from that lead's record.
+
+    ``cause`` names ``source``, ``lead``, ``expected_at`` and ``late_at``
+    and, when the fetch has said them, ``state`` and ``first_seen_at`` (a
+    producer's ``waiting_for``, or the fetch's schedule row for a start
+    need; :func:`_fetch_knows`).  One wording for the seam wait and the
+    start wait, so the two cannot describe the same lead differently.
+    """
+
+    lead = f"{cause.get('source')} {_lead_words(cause.get('lead'))}"
+    when = (f"scheduled from about {_clock_words(cause.get('expected_at'))}; "
+            f"late at {_clock_words(cause.get('late_at'))}")
+    known = _fetch_knows(cause)
+    if known == "posted":
+        seen = cause.get("first_seen_at")
+        return (f"{lead} has posted"
+                + (f" (first seen {_clock_words(seen)})" if seen else "")
+                + " and is still downloading")
+    if known == "unasked":
+        return f"{lead} is not fetched yet; the fetch has not reached it ({when})"
+    return f"{lead} is not posted yet ({when})"
+
+
+def _model_words(elapsed, valid) -> str:
+    seconds = int(round(float(elapsed)))
+    words = f"{seconds // 3600}:{(seconds % 3600) // 60:02d}"
+    if valid:
+        try:
+            instant = datetime.fromisoformat(str(valid).replace("Z", "+00:00"))
+            words += f" (valid {instant.strftime('%Y-%m-%dT%HZ')})"
+        except ValueError:
+            words += f" (valid {valid})"
+    return words
+
+
+def source_behind_sentence(details: Mapping[str, object]) -> str:
+    """The refusal a late lead ends a run with, naming the lead.
+
+    A lead the engine could not hear about is never reported as the
+    publisher being late: the sentence says the host was not heard.
+    """
+
+    source = details.get("source") or "the source"
+    lead = _lead_words(details.get("lead"))
+    answer = details.get("last_answer")
+    verb = {"not_heard": "could not be heard from about",
+            "failed_verification": "posted but did not verify by"}.get(
+                str(answer), "has not posted by")
+    budget = details.get("late_after_minutes")
+    budget_words = ("its budget" if budget is None
+                    else f"{float(budget):g} min")
+    head = (f"{source} {lead} of the {details.get('cycle')} cycle "
+            f"{verb} {_clock_words(details.get('late_at'))}, "
+            f"{budget_words} after its scheduled time "
+            f"({_clock_words(details.get('expected_at'))}; the source "
+            f"table's late_after_minutes is "
+            f"{'unset' if budget is None else f'{float(budget):g}'}).")
+    if details.get("model_elapsed_seconds") is not None:
+        head += (" The forecast stopped at "
+                 f"{_model_words(details['model_elapsed_seconds'], details.get('model_valid_time'))}; "
+                 "the frames through that time are kept.")
+    return (head + f"\nwhat to do: launch the same config again once {lead} "
+            "posts (it resumes from the fetched prefix), or raise [fetch] "
+            "late_after_minutes for this source.")
+
+
+class SourceBehind(BoundaryProducerFailed):
+    """A source lead passed its ``late_at``: the run stops with exit 75.
+
+    ``details`` carries :data:`SOURCE_BEHIND_FIELDS`, and the forecast
+    adds where it stopped (``model_elapsed_seconds``, ``model_valid_time``,
+    ``frames_kept``, ``checkpoint``) before the error leaves the runner.
+    """
+
+    code = SOURCE_BEHIND_CODE
+    exit_code = SOURCE_BEHIND_EXIT_CODE
+
+    def __init__(self, details: Mapping[str, object] | None = None,
+                 message: str | None = None):
+        details = dict(details or {})
+        self.details = {key: details.get(key) for key in SOURCE_BEHIND_FIELDS}
+        for key in ("model_elapsed_seconds", "model_valid_time",
+                    "frames_kept", "checkpoint"):
+            if key in details:
+                self.details[key] = details[key]
+        super().__init__(message or source_behind_sentence(self.details))
+
+    def at(self, **where) -> "SourceBehind":
+        """The same refusal, saying where the forecast stopped."""
+
+        return SourceBehind({**self.details, **where})
 
 
 #: Whether preparations chain when ``GPUWM_CHAINED_PREP`` is unset.  On:
@@ -175,10 +420,13 @@ def _sealed_line(reason: str) -> str:
 #: its forcing (:func:`say_prepared_sealed`), so a run that did not start
 #: early says why.
 SEALED_REASONS = {
-    "domain_tree": (
-        "chained preparation not used: a domain tree's children are "
-        "prepared from every root boundary interval, so the tree is "
-        "published sealed"),
+    # Every domain tree chains: a mapped or GFS-series tree on either
+    # backend (its children need only the start time, so they are prepared
+    # into the head, and the seal re-reads every start state from the head:
+    # TreeStartStates), and a native HRRR tree on its root preparation's
+    # head (gpuwm.hrrr_hierarchy_direct relays the root's intervals).  Its
+    # forecast starts on that head (the tree runner's
+    # --prepared-head-sha256), so no tree row is left here.
     "water_overlay": (
         "chained preparation not used: the water-temperature overlay binds "
         "its receipt over every forcing time into the cache identity, so "
@@ -186,9 +434,6 @@ SEALED_REASONS = {
     "met_em": (
         "chained preparation not used: the met_em route writes each "
         "domain's prepared cache whole"),
-    "native_hrrr": (
-        "chained preparation not used: the native HRRR route builds every "
-        "boundary hour into one prepared cache"),
     "experiment_run": (
         "chained preparation not used: this route builds its forcing "
         "times in the forecast's own process, before the model starts"),
@@ -235,12 +480,319 @@ def _read_json(path: Path):
         return None
 
 
+#: The waits between reads of a file another process keeps replacing: the
+#: writer's own permission-error backoff
+#: (:func:`gpuwm.filesystem_paths.replace_file_with_retry`), so a read
+#: outlasts one replace however the two interleave.
+_REPLACED_READ_BACKOFF_SECONDS = (0.01, 0.02, 0.04, 0.08, 0.16, 0.19)
+
+
+def read_replaced_json(path, *, sleep: Callable[[float], None] = time.sleep):
+    """A JSON file another process replaces while this one reads it.
+
+    The as-posted fetch rewrites ``posting/schedule.json`` (and the growing
+    ``fetch-manifest.json``) with an atomic replace each time a lead moves.
+    On Windows a read that meets the replace fails with a permission error
+    for a moment, although the file is whole before and after.  The
+    breakage this prevents: such a read answered "no route table" and
+    failed an as-posted seal.  A read is tried again on any ``OSError``
+    (and on a document that does not parse) for about half a second; the
+    last error is then raised, so a file that is really missing or broken
+    is still said by name.
+    """
+
+    path = Path(path)
+    for delay in (*_REPLACED_READ_BACKOFF_SECONDS, None):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            if delay is None:
+                raise
+            sleep(delay)
+
+
 def stream_dir(root) -> Path:
     return Path(root) / STREAM_DIRNAME
 
 
 def segment_marker_path(root, index: int) -> Path:
     return stream_dir(root) / SEGMENTS_DIRNAME / f"{int(index):05d}.json"
+
+
+def input_plan(manifest: Mapping[str, object], *,
+               lead_role_prefix: str, route_table_sha256: str,
+               derived_roles=(), fixed_rows=None) -> dict:
+    """The input plan a manifest implies: itself with every lead's payload digest blanked.
+
+    ``manifest`` is a route's input manifest document, whose ``files``
+    maps a role to ``{"name", "sha256"}``; a role spelled
+    ``<lead_role_prefix><digits>`` is one lead's payload.  An as-posted
+    head builds the manifest it will seal with those digests unknown
+    (``None``) and binds this plan's digest; the seal recomputes it from
+    the sealed manifest, so every lead, every object name, the source
+    block and every non-lead input (the decoder, the namelist, the
+    experiment, the series) are held at the head, and only the payload
+    digests, which the posted markers bind lead by lead, arrive later.
+    ``derived_roles`` are non-lead inputs whose bytes are written from the
+    lead rows as the leads arrive (a series file listing every lead's
+    object), so their digest is blanked too: the lead rows the plan keeps
+    fix their content, and the route's seal checks it against them.
+    ``route_table_sha256`` is the route table the as-posted fetch planned
+    and fetched the leads under (its ``schedule.json`` ``table_sha256``,
+    DESIGN A136 2.4 item 5); the seal recomputes the plan with the table
+    the fetch's schedule names then, so leads fetched under another table
+    are another plan.
+    """
+
+    if not _is_sha256(route_table_sha256):
+        raise BoundaryStreamError(
+            f"an input plan binds the route table the fetch planned its "
+            f"leads under, and {route_table_sha256!r} is not a sha256")
+    if fixed_rows is not None:
+        return _composition_inputs_plan(
+            manifest, route_table_sha256=route_table_sha256,
+            fixed_rows=fixed_rows)
+    files = manifest.get("files")
+    if not isinstance(files, Mapping):
+        raise BoundaryStreamError("an input manifest carries no files table")
+    blanked = {}
+    for role, spec in files.items():
+        spec = dict(spec)
+        if (lead_payload_lead(role, lead_role_prefix) is not None
+                or str(role) in set(derived_roles)):
+            spec["sha256"] = None
+        blanked[str(role)] = spec
+    return {"schema": INPUT_PLAN_SCHEMA,
+            "route_table_sha256": str(route_table_sha256),
+            "manifest": json.loads(_canonical({**dict(manifest),
+                                               "files": blanked}))}
+
+
+#: The sections of a composition-inputs manifest
+#: (``gpuwm-mapped-composition-inputs-v1``) whose rows are source data: a
+#: lead's objects are among them, and an as-posted plan blanks those rows.
+COMPOSITION_DATA_SECTIONS = ("primary_files", "supplements")
+
+
+def composition_data_rows(manifest: Mapping[str, object]) -> list[dict]:
+    """Every data row of a composition-inputs manifest, in document order."""
+
+    rows = []
+    primary = manifest.get("primary_files")
+    supplements = manifest.get("supplements")
+    if not isinstance(primary, list) or not isinstance(supplements, Mapping):
+        raise BoundaryStreamError(
+            "a composition-inputs manifest carries no primary_files list or "
+            "supplements table")
+    rows.extend(primary)
+    for role in sorted(supplements):
+        value = supplements[role]
+        rows.extend(value if isinstance(value, list) else [value])
+    for row in rows:
+        if not isinstance(row, Mapping) or not isinstance(row.get("path"), str):
+            raise BoundaryStreamError(
+                "a composition-inputs manifest row names no path")
+    return rows
+
+
+def _composition_inputs_plan(manifest: Mapping[str, object], *,
+                             route_table_sha256: str, fixed_rows) -> dict:
+    """:func:`input_plan` of a composition-inputs manifest.
+
+    Every data row (the primary files and the supplements) is a lead's
+    object unless it is in ``fixed_rows``, the inputs the head read whole
+    (a donor analysis fetched before the first lead); a lead row keeps its
+    path, and its byte count and digest are blanked, because the posted
+    marker of its lead binds them.  Everything else (the mapping and
+    composition digests, the member, the provenance and decoder rows) is
+    kept whole.
+    """
+
+    fixed = {str(path) for path in fixed_rows}
+
+    def blank(row):
+        row = dict(row)
+        if str(row.get("path")) not in fixed:
+            row["bytes"] = None
+            row["sha256"] = None
+        return row
+
+    document = dict(manifest)
+    composition_data_rows(document)  # shape check
+    document["primary_files"] = [blank(row) for row in
+                                 manifest["primary_files"]]
+    document["supplements"] = {
+        role: ([blank(row) for row in value] if isinstance(value, list)
+               else blank(value))
+        for role, value in dict(manifest["supplements"]).items()}
+    return {"schema": INPUT_PLAN_SCHEMA,
+            "route_table_sha256": str(route_table_sha256),
+            "fixed_rows": sorted(fixed),
+            "manifest": json.loads(_canonical(document))}
+
+
+def _is_sha256(value) -> bool:
+    return (isinstance(value, str) and len(value) == 64
+            and all(c in "0123456789abcdef" for c in value))
+
+
+def posted_lead_marker_sha256(marker: Mapping[str, object]) -> str:
+    """The digest a head, a segment and the seal bind a posted-lead marker by."""
+
+    return hashlib.sha256(
+        _canonical(dict(marker)).encode("utf-8")).hexdigest()
+
+
+def lead_payload_lead(role, prefix: str) -> int | None:
+    """The lead a manifest role is the payload of, or ``None``."""
+
+    role = str(role)
+    if not role.startswith(prefix):
+        return None
+    rest = role[len(prefix):]
+    return int(rest) if rest.isdigit() else None
+
+
+def input_plan_sha256(plan: Mapping[str, object]) -> str:
+    return hashlib.sha256(_canonical(plan).encode("utf-8")).hexdigest()
+
+
+def as_posted_placeholder(plan_sha256: str) -> str:
+    """What an as-posted head's identity carries where the seal puts a manifest digest."""
+
+    return f"{AS_POSTED_PLACEHOLDER_PREFIX}{plan_sha256}"
+
+
+def is_as_posted_placeholder(value) -> bool:
+    """Whether ``value`` is exactly :func:`as_posted_placeholder` of some plan digest."""
+
+    return (isinstance(value, str)
+            and value.startswith(AS_POSTED_PLACEHOLDER_PREFIX)
+            and _is_sha256(value[len(AS_POSTED_PLACEHOLDER_PREFIX):]))
+
+
+def _placeholders_left(identity, path=()) -> list[str]:
+    """Every dotted path of ``identity`` that still holds a placeholder."""
+
+    if isinstance(identity, Mapping):
+        found = []
+        for key in sorted(identity):
+            found += _placeholders_left(identity[key], path + (key,))
+        return found
+    if isinstance(identity, (list, tuple)):
+        found = []
+        for index, item in enumerate(identity):
+            found += _placeholders_left(item, path + (index,))
+        return found
+    if (isinstance(identity, str)
+            and identity.startswith(AS_POSTED_PLACEHOLDER_PREFIX)):
+        return [".".join(str(part) for part in path) or "identity"]
+    return []
+
+
+def _identity_changes(head, sealed, path=()) -> list[tuple]:
+    """Every leaf where two identities differ, or a structural difference."""
+
+    if isinstance(head, Mapping) and isinstance(sealed, Mapping):
+        if set(head) != set(sealed):
+            return [(path, "keys", sorted(set(head) ^ set(sealed)))]
+        changes = []
+        for key in sorted(head):
+            changes += _identity_changes(head[key], sealed[key], path + (key,))
+        return changes
+    if head != sealed:
+        return [(path, head, sealed)]
+    return []
+
+
+def check_as_posted_identity(head_identity, sealed_identity, *,
+                             plan_sha256: str,
+                             manifest_sha256: str,
+                             manifest_bound=("input_manifest_sha256",),
+                             ) -> list[str]:
+    """Refuse any sealed identity change an as-posted head does not allow.
+
+    Allowed: a key named in :data:`AS_POSTED_IDENTITY_KEYS` or in
+    ``manifest_bound`` whose head value is this plan's placeholder and
+    whose sealed value is a digest.  ``manifest_bound`` names the route's
+    identity keys that carry the input manifest's own digest
+    (``input_manifest_sha256`` always does), and each must be exactly
+    ``manifest_sha256``, the digest of the manifest the seal wrote, so a
+    key the ruling does not name changes only to that same digest.  A
+    placeholder left anywhere in the sealed identity is refused: the seal
+    would publish a cache no one-shot preparation of the same bytes can
+    name.  Returns the dotted paths that changed.
+    """
+
+    if not _is_sha256(manifest_sha256):
+        raise BoundaryStreamError(
+            "an as-posted seal names the input manifest it wrote, whose "
+            f"digest its identity carries; {manifest_sha256!r} is not one")
+    placeholder = as_posted_placeholder(plan_sha256)
+    bound = set(manifest_bound) | {"input_manifest_sha256"}
+    # Compared as the header will hold them (a tuple and a list of the
+    # same values are one identity).
+    head_identity = json.loads(_canonical(head_identity))
+    sealed_identity = json.loads(_canonical(sealed_identity))
+    changed = []
+    for path, before, after in _identity_changes(head_identity,
+                                                 sealed_identity):
+        where = ".".join(str(part) for part in path) or "identity"
+        if before == "keys":
+            raise BoundaryStreamError(
+                f"the sealed cache identity adds or drops {after} at {where}, "
+                "which an as-posted head does not allow")
+        key = path[-1] if path else None
+        if ((key not in AS_POSTED_IDENTITY_KEYS and key not in bound)
+                or before != placeholder or not _is_sha256(after)):
+            raise BoundaryStreamError(
+                f"the sealed cache identity differs from the as-posted head "
+                f"at {where}, which only a manifest or composition-receipt "
+                "digest may")
+        if key in bound and after != manifest_sha256:
+            raise BoundaryStreamError(
+                f"the sealed cache identity names manifest {after} at "
+                f"{where}, not the sealed input manifest {manifest_sha256}")
+        changed.append(where)
+    left = _placeholders_left(sealed_identity)
+    if left:
+        raise BoundaryStreamError(
+            f"the sealed cache identity still carries the as-posted "
+            f"placeholder at {', '.join(left)}; the seal writes the digest "
+            "there, or the cache names inputs no preparation read")
+    return changed
+
+
+def _leaves_named(identity, key, path=()) -> list[tuple[tuple, object]]:
+    found = []
+    if isinstance(identity, Mapping):
+        for name in sorted(identity):
+            if name == key and not isinstance(identity[name],
+                                              (Mapping, list, tuple)):
+                found.append((path + (name,), identity[name]))
+            found += _leaves_named(identity[name], key, path + (name,))
+    elif isinstance(identity, (list, tuple)):
+        for index, item in enumerate(identity):
+            found += _leaves_named(item, key, path + (index,))
+    return found
+
+
+def posted_identity_leaf(identity, key: str) -> str:
+    """The one digest a sealed identity carries under ``key``.
+
+    An as-posted head's user metadata may name a digest its identity also
+    carries (the mapped engine's ``composition_receipt_sha256``); its seal
+    writes there the value the sealed identity holds, so a key the
+    identity does not carry exactly once, as a digest, is refused.
+    """
+
+    leaves = _leaves_named(json.loads(_canonical(identity)), str(key))
+    if len(leaves) != 1 or not _is_sha256(leaves[0][1]):
+        raise BoundaryStreamError(
+            f"an as-posted seal writes user metadata {key!r} from the sealed "
+            f"identity's one {key!r} digest, and the identity carries "
+            f"{len(leaves)} such values")
+    return str(leaves[0][1])
 
 
 def head_sha256(head: Mapping[str, object]) -> str:
@@ -277,7 +829,10 @@ def bind_head(root, head_sha256: str, *,
     :func:`unfinished_tree_reason`), which is the breakage this prevents:
     a forecast started on boundaries that never arrive; and, with
     ``require_manifest``, when the head names no source manifest for the
-    forecast to bind.
+    forecast to bind.  An as-posted head names none by design: it binds
+    its input plan (``basis.as_posted``), which its head digest covers, and
+    the manifest its seal writes is held to that plan
+    (:func:`verify_as_posted_seal`).
     """
 
     root = Path(root)
@@ -286,7 +841,8 @@ def bind_head(root, head_sha256: str, *,
     if reason is not None:
         raise BoundaryStreamError(
             f"the prepared head in {root} will never be sealed: {reason}")
-    if require_manifest and not isinstance(
+    if require_manifest and head["basis"].get("as_posted") is None \
+            and not isinstance(
             head["basis"].get("input_manifest_sha256"), str):
         raise BoundaryStreamError(
             f"the prepared head in {root} names no source manifest, so the "
@@ -316,14 +872,37 @@ def live_chained_head(root) -> dict | None:
     return head
 
 
-def prepared_tree_complete(root) -> bool:
-    """A prepared tree is complete when ``proof.json`` exists.
+def proof_document_name(head: Mapping[str, object] | None) -> str:
+    """The file a head's seal writes its proof to.
 
-    The one test for "prepared", so no code reads "the output root exists"
-    as "the preparation finished" once a head can be published early.
+    ``proof.json`` unless the head names another (``basis.proof_name``): a
+    native HRRR domain tree's sealed document has always been
+    ``receipt.json``, and its chained head keeps that name so the sealed
+    tree is the one-shot tree file for file.
     """
 
-    return (Path(root) / PROOF_NAME).is_file()
+    if head is None:
+        return PROOF_NAME
+    return str((head.get("basis") or {}).get("proof_name") or PROOF_NAME)
+
+
+def prepared_tree_complete(root) -> bool:
+    """A prepared tree is complete when its seal document exists.
+
+    That is ``proof.json``, or the document its head names
+    (:func:`proof_document_name`).  The one test for "prepared", so no code
+    reads "the output root exists" as "the preparation finished" once a
+    head can be published early.
+    """
+
+    root = Path(root)
+    if (root / PROOF_NAME).is_file():
+        return True
+    head = _read_json(stream_dir(root) / HEAD_NAME)
+    if not isinstance(head, dict) or not isinstance(head.get("basis"), dict):
+        return False
+    name = proof_document_name(head)
+    return name != PROOF_NAME and (root / name).is_file()
 
 
 def unfinished_tree_reason(root, *, now: float | None = None) -> str | None:
@@ -371,7 +950,9 @@ def remove_unfinished_tree(root, *, log=None) -> bool:
     return True
 
 
-#: Share of the card a chained forecast and its producer leave unclaimed.
+#: Share of the HOST RAM a chained forecast and its producer leave
+#: unclaimed (:func:`host_admission`).  The card's side prices the
+#: forecast's whole-process envelope instead (:func:`chained_admission`).
 CHAINED_HEADROOM = 0.10
 _GIB = float(1 << 30)
 
@@ -406,8 +987,27 @@ def _measure_card() -> tuple[int, int] | None:
 
 def chained_admission(*, experiment, backend: str,
                       device_bytes: int | None = None,
-                      card: tuple[int, int] | None = None) -> dict:
-    """Whether a forecast may run beside this producer; see ``admit``."""
+                      card: tuple[int, int] | None = None,
+                      source=None) -> dict:
+    """Whether a forecast may run beside this producer; see ``admit``.
+
+    ``source`` is what the producer prepares from (a registered name, or
+    the mapping document a mapped route reads), so the forecast is priced
+    with the analysed hydrometeor tables that source puts on its boundary.
+
+    The forecast is priced at its whole-process PEAK ENVELOPE, the number
+    ``gpuwm check`` and the resident door refuse on (A163: one figure on
+    every surface), and the card keeps
+    :data:`~gpuwm.core.preflight.EXTERNAL_MARGIN_BYTES` for other
+    processes, as those doors do.  It used to be the pool estimate
+    against 90% of the card (:data:`CHAINED_HEADROOM`): the 10% stood in
+    for the forecast's CUDA context and local-memory backing store, which
+    the envelope itemizes, and on a 16 GiB card it was 1.6 GiB against
+    1.6-1.9 GiB of itemized non-pool residency, so a pair could be
+    admitted that the forecast's own envelope does not fit.  The
+    breakage this prevents is that out-of-memory, in the forecast or in
+    the producer beside it.
+    """
 
     if str(backend) != "cuda":
         # The card is not shared; host RAM is, and write_head prices it
@@ -415,9 +1015,10 @@ def chained_admission(*, experiment, backend: str,
         return {"admitted": True, "device": "host",
                 "reason": "the producer prepares on the host, so the "
                           "forecast's card is not shared"}
-    from gpuwm.core.preflight import admission_estimate
+    from gpuwm.core.preflight import EXTERNAL_MARGIN_BYTES, admission_estimate
 
-    forecast_bytes = int(admission_estimate(experiment).alloc_estimate_bytes)
+    forecast_bytes = int(admission_estimate(
+        experiment, source=source).peak_envelope_bytes)
     card = _measure_card() if card is None else card
     if card is None or device_bytes is None:
         return {"admitted": False, "device": "cuda",
@@ -427,7 +1028,7 @@ def chained_admission(*, experiment, backend: str,
                            "measured, so a forecast beside it could run "
                            "both out of memory")}
     free, pool = card
-    budget = int((free + pool) * (1.0 - CHAINED_HEADROOM))
+    budget = int(free + pool) - int(EXTERNAL_MARGIN_BYTES)
     need = forecast_bytes + int(device_bytes)
     admitted = need <= budget
     return {
@@ -650,7 +1251,7 @@ def _head_created_epoch(head: Mapping[str, object]) -> float | None:
 def run_chained(*, prepared_root, prepare: Callable[[], object],
                 forecast: Callable[[str | None], object],
                 on_head: Callable[[str], None] | None = None,
-                poll_seconds: float = 0.5):
+                poll_seconds: float = 0.5, observer=None):
     """Run ``prepare`` beside ``forecast``; the forecast starts at the head.
 
     The one orchestration every chain uses.  ``prepare`` runs the
@@ -673,7 +1274,9 @@ def run_chained(*, prepared_root, prepare: Callable[[], object],
     ``failed.json`` and, in this process, through the worker thread
     having ended.  A forecast that fails leaves the producer running to
     its seal and waits for it, so a retry reuses the complete preparation
-    instead of building every forcing time again.  A stop asks the
+    instead of building every forcing time again; while it waits, the
+    run's heartbeat says ``waiting:preparation`` through ``observer``'s
+    ``waiting``/``waited`` hooks (:func:`_hold_for_seal`).  A stop asks the
     producer to stop (``stop.json``), waits for it to exit and re-raises:
     ``KeyboardInterrupt``, ``SystemExit``, and every exception
     :func:`gpuwm.runplan._is_interrupt` reads as the user's stop, which
@@ -736,6 +1339,7 @@ def run_chained(*, prepared_root, prepare: Callable[[], object],
                 if worker.is_alive():
                     _say("prepare: the forecast failed; the preparation "
                          "continues to its seal so a retry reuses it")
+                    _hold_for_seal(root, worker, observer)
                 worker.join()
                 raise
             request_stop(root, f"the forecast ended: "
@@ -750,6 +1354,49 @@ def run_chained(*, prepared_root, prepare: Callable[[], object],
         with _LOCAL_PRODUCERS_LOCK:
             if _LOCAL_PRODUCERS.get(key) is worker:
                 del _LOCAL_PRODUCERS[key]
+
+
+def _hold_for_seal(root, worker: threading.Thread, observer, *,
+                   report_seconds: float = WAIT_REPORT_SECONDS) -> None:
+    """Wait for this run's preparation after its forecast failed, said so.
+
+    The run reports the forecast's failure only once the preparation has
+    ended.  Until then the heartbeat says ``waiting:preparation``,
+    refreshed every ``report_seconds`` while the producer is alive, then
+    ``waited`` hands back the status the wait interrupted.  A producer in
+    another process that has gone silent past its limit stops the
+    refresh, so a watchdog still ends a hold on a hung producer by the
+    ``waiting:preparation`` bound.  The breakage this prevents: through
+    the hold the heartbeat kept the failed forecast's last phase with
+    nothing said, so a reader saw a stalled forecast and a supervisor
+    timing that phase stopped the run, and with it the preparation the
+    retry would reuse.
+    """
+
+    waiting = getattr(observer, "waiting", None)
+    waited = getattr(observer, "waited", None)
+    if not callable(waiting):
+        return
+    since = _utc_now()
+    said = False
+    try:
+        while worker.is_alive():
+            beat = _read_json(stream_dir(root) / PRODUCER_NAME)
+            age = None if _same_process(beat) else _heartbeat_age(beat)
+            if age is None or age <= _silence_limit(beat):
+                try:
+                    waiting("preparation", since_utc=since, lead=None,
+                            expected_at=None, late_at=None)
+                except Exception:  # noqa: BLE001 - the forecast's failure is the one reported
+                    return
+                said = True
+            worker.join(report_seconds)
+    finally:
+        if said and callable(waited):
+            try:
+                waited()
+            except Exception:  # noqa: BLE001 - as above
+                pass
 
 
 def _is_stop(error: BaseException) -> bool:
@@ -769,6 +1416,22 @@ def _fresh_head(root, *, since: float) -> dict | None:
         return None
     created = _head_created_epoch(head)
     if created is None or created < since:
+        return None
+    return head
+
+
+def fresh_chained_head(root, *, since: float) -> dict | None:
+    """The chained head ``root`` got at or after ``since``, or ``None``.
+
+    What :func:`run_chained` waits for, for a chain with a stage between
+    two preparations (a native HRRR tree's hierarchy starts on its root
+    preparation's head): a head from an earlier attempt, or one published
+    at its seal, is not one to start on.
+    """
+
+    head = _fresh_head(root, since=since)
+    if head is None or not (head.get("decision") or {}).get(
+            "chained", False):
         return None
     return head
 
@@ -899,13 +1562,17 @@ class PreparedTreeWriter:
                  chained: bool | None = None,
                  sealed_forcing_extension: bool = False,
                  cache_name: str = "prepared-cache",
-                 publish: Callable[[Path, Path], None] | None = None):
+                 publish: Callable[[Path, Path], None] | None = None,
+                 proof_name: str = PROOF_NAME):
         from gpuwm.ingest.prepared_cache import PreparedCacheStream
 
         self.staging = Path(staging)
         self.output_root = Path(output_root)
         self.chained = chained_enabled() if chained is None else bool(chained)
         self.cache_name = str(cache_name)
+        #: The document :meth:`publish` writes last; a head names it in
+        #: ``basis.proof_name`` only when it is not ``proof.json``.
+        self.proof_name = str(proof_name)
         self._publish_tree = publish or (lambda src, dst: os.replace(src, dst))
         self.published = False
         self.head: dict | None = None
@@ -926,6 +1593,48 @@ class PreparedTreeWriter:
                               "reason": PREPARATION_ONLY_REASON}
         self.head_seconds: float | None = None
         self._started = time.perf_counter()
+        #: What the heartbeat says this producer is doing: ``producing``,
+        #: or ``waiting_for_source`` with the lead in ``_waiting_for``.
+        self._state = "producing"
+        self._waiting_for: dict | None = None
+        #: The last lead a source wait ended on, with when it was first
+        #: seen posted, so a consumer closing its own wait can say so.
+        self._arrived: dict | None = None
+
+    def waiting_for_source(self, waiting_for: Mapping[str, object]) -> None:
+        """Say on the heartbeat that this producer waits for a source lead.
+
+        ``waiting_for`` names :data:`WAITING_FOR_FIELDS`.  A forecast
+        waiting at a seam reads it to say its wait is on the source
+        (``waiting:source``) rather than on the preparation.  Said again
+        for the lead already waited on (the fetch's word on it changed),
+        the wait keeps the time it began.
+        """
+
+        record = {key: waiting_for.get(key) for key in WAITING_FOR_FIELDS}
+        if record["since_utc"] is None:
+            held = self._waiting_for
+            same = held is not None and all(
+                held.get(key) == record[key]
+                for key in ("source", "cycle", "lead"))
+            record["since_utc"] = held["since_utc"] if same else _utc_now()
+        self._state, self._waiting_for = "waiting_for_source", record
+        if self._heartbeat is not None:
+            self._heartbeat.beat()
+
+    def source_arrived(self, *, first_seen_at: str | None = None) -> None:
+        """End a :meth:`waiting_for_source`: the lead posted, building resumes."""
+
+        if self._waiting_for is not None:
+            self._arrived = {
+                "source": self._waiting_for.get("source"),
+                "cycle": self._waiting_for.get("cycle"),
+                "lead": self._waiting_for.get("lead"),
+                "first_seen_at": first_seen_at,
+            }
+        self._state, self._waiting_for = "producing", None
+        if self._heartbeat is not None:
+            self._heartbeat.beat()
 
     @property
     def root(self) -> Path:
@@ -951,29 +1660,33 @@ class PreparedTreeWriter:
 
     def admit(self, *, experiment, backend: str,
               device_bytes: int | None = None,
-              card: tuple[int, int] | None = None) -> dict:
+              card: tuple[int, int] | None = None,
+              source=None) -> dict:
         """Admit the forecast and this producer on one machine, or decline.
 
         The breakage this prevents is both processes out of memory mid-run:
         a chained forecast starts on the card while the producer is still
         building forcing times.  A host (CPU) producer never shares the
         forecast's device and is admitted.  A CUDA producer is admitted
-        when the forecast's admission estimate plus the producer's own
+        when the forecast's peak envelope plus the producer's own
         measured holding for one forcing time (``device_bytes``, the
         memory pool after the start time was built) fits what the card
-        can give both, with 10% headroom; otherwise the head is published
+        can give both, less the other-process margin every memory door
+        keeps; otherwise the head is published
         at the seal and the run starts after preparation, as before.
         ``card`` is ``(free_bytes, pool_bytes)`` when the caller measured
-        it; otherwise it is measured here.  An installation with no
-        forecast has nothing to admit and keeps the decision it recorded
-        at construction.
+        it; otherwise it is measured here.  ``source`` is what this
+        producer prepares from, whose published hydrometeors the
+        forecast's boundary tables carry (:func:`chained_admission`).  An
+        installation with no forecast has nothing to admit and keeps the
+        decision it recorded at construction.
         """
 
         if not self.forecast_installed:
             return dict(self._decision)
         decision = chained_admission(
             experiment=experiment, backend=backend,
-            device_bytes=device_bytes, card=card)
+            device_bytes=device_bytes, card=card, source=source)
         if self.chained and not decision["admitted"]:
             self.decline_chaining(decision["reason"])
         self._decision = {"chained": self.chained, **decision}
@@ -983,7 +1696,11 @@ class PreparedTreeWriter:
                    lbc, proof_head: Mapping[str, object],
                    input_manifest_sha256: str | None = None,
                    reservation: Mapping[str, object] | None = None,
-                   forcing=None) -> str:
+                   forcing=None,
+                   tree: Mapping[str, object] | None = None,
+                   extra_head_payload_bytes: int = 0,
+                   seal_completes: Sequence[str] = (),
+                   as_posted: Mapping[str, object] | None = None) -> str:
         """Write everything the start time makes; publish it when chained.
 
         ``lbc`` is ``{"spec_bdy_width", "spec_zone", "relax_zone",
@@ -994,21 +1711,116 @@ class PreparedTreeWriter:
         start time, which prices one boundary interval for the host RAM
         admission; a chained head without it is not admitted, because the
         boundary series the forecast will hold would be unpriced.
+
+        ``tree`` makes this a domain tree's head (see
+        :func:`domain_tree_head_fields`): ``head.json`` then carries
+        ``layout``, ``domains`` and ``children_artifacts``, and the same
+        three under ``basis.tree`` so the head digest binds them.
+        ``extra_head_payload_bytes`` is what the children's prepared
+        caches add to the forecast's host RAM.  ``seal_completes`` names
+        user metadata the start time holds only part of, which
+        :meth:`seal_cache` completes
+        (:meth:`gpuwm.ingest.prepared_cache.PreparedCacheStream.write_head`).
+
+        ``as_posted`` makes this an as-posted head (see
+        :data:`AS_POSTED_SCHEMA`): ``{"input_plan", "start_markers",
+        "forcing_leads", "seal_authored_proof_keys", "manifest_path",
+        "lead_role_prefix", "derived_roles",
+        "manifest_bound_identity_keys"}``.  ``input_plan`` is
+        :func:`input_plan` of the manifest the seal will write;
+        ``start_markers`` maps each lead the head's own decode read (the
+        start lead, and on a backlog the leads posted with it) to its posted
+        marker, whose digest the head binds; ``forcing_leads`` is the lead
+        of each forcing time in order, so interval k's segment marker binds
+        the markers of leads ``forcing_leads[k]`` and ``[k + 1]``
+        (:meth:`bind_posted_leads`); and ``seal_authored_proof_keys`` are
+        the proof keys that read every lead, which the head proof leaves
+        out and the seal adds.  ``input_manifest_sha256`` is then ``None``:
+        the head binds the plan's digest instead.
         """
 
         stray = sorted(set(proof_head) & SEAL_ONLY_PROOF_KEYS)
         if stray:
             raise ValueError(f"the head proof carries seal-only keys {stray}")
+        posted_block = None
+        if as_posted is not None:
+            if input_manifest_sha256 is not None:
+                raise ValueError(
+                    "an as-posted head binds its input plan, never an input "
+                    "manifest digest, which does not exist before the last "
+                    "lead")
+            keys = sorted(str(key) for key in
+                          as_posted["seal_authored_proof_keys"])
+            stray = sorted(set(proof_head) & set(keys))
+            if stray:
+                raise ValueError(
+                    f"the as-posted head proof carries seal-authored keys "
+                    f"{stray}")
+            plan = json.loads(_canonical(dict(as_posted["input_plan"])))
+            forcing_leads = [int(lead) for lead in as_posted["forcing_leads"]]
+            if lbc is not None and len(forcing_leads) \
+                    != len(lbc["schedule"]) + 1:
+                raise ValueError(
+                    f"an as-posted head names {len(forcing_leads)} forcing "
+                    f"leads for {len(lbc['schedule'])} boundary intervals; "
+                    "each interval's segment binds the leads of its two "
+                    "times")
+            posted_block = {
+                "schema": AS_POSTED_SCHEMA,
+                "input_plan": plan,
+                "input_plan_sha256": input_plan_sha256(plan),
+                "start_marker_sha256": {
+                    str(int(lead)): posted_lead_marker_sha256(marker)
+                    for lead, marker
+                    in sorted(dict(as_posted["start_markers"]).items())},
+                "forcing_leads": forcing_leads,
+                "seal_authored_proof_keys": keys,
+                "manifest_path": str(as_posted["manifest_path"]),
+                "lead_role_prefix": str(as_posted["lead_role_prefix"]),
+                "derived_roles": sorted(
+                    str(role) for role in as_posted.get("derived_roles", ())),
+                "manifest_bound_identity_keys": sorted(
+                    str(key) for key in as_posted.get(
+                        "manifest_bound_identity_keys",
+                        ("input_manifest_sha256",))),
+            }
+            # Named only by a route whose manifest is a composition-inputs
+            # document (the mapped engine), so a GFS head's block, and so
+            # its digest, is what it was.
+            if as_posted.get("fixed_rows") is not None:
+                posted_block["fixed_rows"] = sorted(
+                    str(path) for path in as_posted["fixed_rows"])
+            if as_posted.get("proof_manifest_key") is not None:
+                posted_block["proof_manifest_key"] = str(
+                    as_posted["proof_manifest_key"])
+            if as_posted.get("posted_user_metadata"):
+                keys = sorted(str(key) for key in
+                              as_posted["posted_user_metadata"])
+                placeholder = as_posted_placeholder(
+                    posted_block["input_plan_sha256"])
+                user = dict(metadata or {})
+                wrong = [key for key in keys if user.get(key) != placeholder]
+                if wrong:
+                    raise ValueError(
+                        f"an as-posted head's user metadata {wrong} must hold "
+                        "the plan's placeholder, which its seal replaces with "
+                        "the digest the sealed identity carries")
+                posted_block["posted_user_metadata"] = keys
+        # Named only when a route completes metadata at its seal, so every
+        # other route calls its cache stream exactly as before.
+        completes = ({"seal_completes": tuple(seal_completes)}
+                     if seal_completes else {})
         cache_head = self._cache.write_head(
             initial_result=initial_result, met=met, surface=surface,
-            metadata=metadata, lbc=lbc)
+            metadata=metadata, lbc=lbc, **completes)
         cache_head["directory"] = self.cache_name
         if self.chained:
             # Host RAM, on every backend: the forecast process holds the
             # head's arrays, every boundary interval it loads and its own
             # working set while the producer keeps building beside it.
             forecast = forecast_host_bytes(
-                head_payload_bytes=int(cache_head["payload_bytes"]),
+                head_payload_bytes=(int(cache_head["payload_bytes"])
+                                    + int(extra_head_payload_bytes)),
                 interval_host_bytes=(None if forcing is None
                                      else forcing.interval_host_bytes),
                 intervals=len(lbc["schedule"]))
@@ -1024,6 +1836,17 @@ class PreparedTreeWriter:
             "proof_head": json.loads(_canonical(proof_head)),
             "input_manifest_sha256": input_manifest_sha256,
         }
+        # Added only for a tree, so a single domain's head basis (and so
+        # its digest) is what it was before trees chained.
+        if tree is not None:
+            basis["tree"] = json.loads(_canonical(dict(tree)))
+        # Named only when the seal writes another document than proof.json,
+        # so every other head's basis (and digest) is unchanged.
+        if self.proof_name != PROOF_NAME:
+            basis["proof_name"] = self.proof_name
+        # Added only as posted, by the same rule.
+        if posted_block is not None:
+            basis["as_posted"] = posted_block
         head = {
             "schema": HEAD_SCHEMA,
             "basis": basis,
@@ -1031,6 +1854,11 @@ class PreparedTreeWriter:
             "decision": dict(self._decision),
             "reservation": dict(reservation or {}),
         }
+        if tree is not None:
+            # Mirrored at the top level for readers; basis.tree is the copy
+            # the digest binds.
+            head.update({key: basis["tree"][key] for key in (
+                "layout", "domains", "children_artifacts")})
         head["head_sha256"] = head_sha256(head)
         _write_json_atomic(self.stream_path / HEAD_NAME, head)
         (self.stream_path / SEGMENTS_DIRNAME).mkdir(parents=True, exist_ok=True)
@@ -1077,18 +1905,55 @@ class PreparedTreeWriter:
                 "the forecast stopped this preparation: "
                 f"{stop.get('reason', 'no reason given')}")
 
+    #: An as-posted preparation's posted-lead markers by lead, as it reads
+    #: them (:meth:`bind_posted_leads`); ``None`` for any other head.
+    _posted_markers: Mapping[int, Mapping[str, object]] | None = None
+
+    def bind_posted_leads(self, markers: Mapping[int, Mapping[str, object]]
+                          ) -> None:
+        """Hand an as-posted head's writer the lead markers its route reads.
+
+        ``markers`` is the route's own mapping from a lead to its posted
+        marker, filled as each lead is waited for; each segment then binds
+        the digests of the markers of the two times it spans (DESIGN A136
+        2.4 item 4), and the seal holds every manifest row to them.
+        """
+
+        self._posted_markers = markers
+
+    def _segment_leads(self, index: int) -> dict | None:
+        posted = (self.head or {}).get("basis", {}).get("as_posted")
+        if posted is None:
+            return None
+        leads = posted["forcing_leads"][int(index):int(index) + 2]
+        bound = {}
+        for lead in leads:
+            marker = (self._posted_markers or {}).get(int(lead))
+            if marker is None:
+                raise RuntimeError(
+                    f"interval {index} spans lead {lead}, whose posted "
+                    "marker this preparation has not read; an as-posted "
+                    "segment binds the markers of the leads it was built "
+                    "from")
+            bound[str(int(lead))] = posted_lead_marker_sha256(marker)
+        return bound
+
     def write_segment(self, index: int, interval) -> dict:
         """Write interval ``index``'s arrays, then its ready marker."""
 
         if self.head is None:
             raise RuntimeError("a segment needs its head first")
         self.check_stop()
+        leads = self._segment_leads(index)
         segment = self._cache.write_segment(int(index), interval)
         marker = {
             "schema": SEGMENT_SCHEMA,
             "head_sha256": self.head_sha256,
             **segment,
         }
+        if leads is not None:
+            # Only as posted, so every other segment marker is unchanged.
+            marker["posted_leads"] = leads
         _write_json_atomic(segment_marker_path(self.root, index), marker)
         self._segments_written += 1
         return marker
@@ -1096,7 +1961,7 @@ class PreparedTreeWriter:
     def stream_forcing_times(self, *, count: int,
                              build_forcing_time: Callable[[int], tuple],
                              forcing, times: Sequence,
-                             release: Callable[[], None] | None = None
+                             release: Callable[[], None] | None = None,
                              ) -> None:
         """Build forcing times 1..count-1 and write each interval as it closes.
 
@@ -1109,7 +1974,9 @@ class PreparedTreeWriter:
         exists, then time k is released, so at most two forcing times are
         held and the files are numbered in the order the one-shot writer
         numbered them.  ``release`` hands the build's device or pool memory
-        back after each time.
+        back after each time.  A domain tree's seal reads the root's whole
+        boundary set back from the sealed cache (:class:`TreeStartStates`),
+        so no interval is held here after it is written.
         """
 
         from gpuwm.progress import prep_progress
@@ -1122,7 +1989,9 @@ class PreparedTreeWriter:
             if release is not None:
                 release()
             self.note_build_seconds(time.perf_counter() - built)
-            self.write_segment(index - 1, forcing.interval(index - 1, times))
+            interval = forcing.interval(index - 1, times)
+            self.write_segment(index - 1, interval)
+            del interval
             forcing.release(index - 1)
             # Said per interval: this loop is most of a preparation's wall on
             # a long run, and a chained forecast is already stepping beside
@@ -1136,18 +2005,79 @@ class PreparedTreeWriter:
         for index, interval in enumerate(intervals):
             self.write_segment(index, interval)
 
-    def seal_cache(self) -> dict:
-        """Write ``header.json``; return the one-shot writer's receipt."""
+    def seal_cache(self, *, identity=None,
+                   manifest_sha256: str | None = None,
+                   completed_metadata: Mapping[str, object] | None
+                   = None) -> dict:
+        """Write ``header.json``; return the one-shot writer's receipt.
 
-        return self._cache.seal()
+        ``identity`` is the one-shot identity an as-posted head's seal
+        writes and ``manifest_sha256`` the digest of the input manifest
+        that seal wrote (see :func:`check_as_posted_identity`); a head that
+        is not as posted seals the identity it was written under.
+        ``completed_metadata`` completes the user metadata the head named
+        in ``seal_completes`` (checked by :func:`verify_seal`).
+        """
+
+        # Named only when a route completes metadata at its seal, so every
+        # other head seals with the call it always made.
+        completes = ({} if completed_metadata is None
+                     else {"completed_metadata": completed_metadata})
+        if identity is None:
+            return self._cache.seal(**completes)
+        posted = (self.head or {}).get("basis", {}).get("as_posted")
+        if posted is None:
+            raise RuntimeError(
+                "only an as-posted head's seal writes another identity")
+        check_as_posted_identity(
+            self.head["basis"]["cache"]["identity"], identity,
+            plan_sha256=posted["input_plan_sha256"],
+            manifest_sha256=manifest_sha256,
+            manifest_bound=posted["manifest_bound_identity_keys"])
+        keys = posted.get("posted_user_metadata") or ()
+        if keys:
+            # Each is the digest the sealed identity carries under the
+            # same name, so the header's metadata and identity agree as a
+            # one-shot preparation's do.
+            completes["posted_user_metadata"] = {
+                key: posted_identity_leaf(identity, key) for key in keys}
+        return self._cache.seal(identity=identity, **completes)
+
+    def write_posted_leads(self, markers: Mapping[int, Mapping[str, object]],
+                           *, route_table_sha256: str) -> dict:
+        """Record every lead this preparation consumed, as its marker named it.
+
+        ``markers`` maps a lead to its posted marker
+        (:class:`PostedLeads`), kept whole so a verifier recomputes the
+        digest the head and the segments bound; ``route_table_sha256`` is
+        the route table the fetch's schedule names at the seal.  Written
+        beside the head, so a verifier holds the sealed manifest to these
+        rows without the fetch folder.
+        """
+
+        record = {
+            "schema": POSTED_LEADS_SCHEMA,
+            "head_sha256": self.head_sha256,
+            "route_table_sha256": str(route_table_sha256),
+            "leads": {
+                str(int(lead)): {
+                    "marker_sha256": posted_lead_marker_sha256(marker),
+                    "marker": json.loads(_canonical(dict(marker))),
+                }
+                for lead, marker in sorted(dict(markers).items())
+            },
+        }
+        _write_json_atomic(self.stream_path / POSTED_LEADS_NAME, record)
+        return record
 
     def publish(self, proof: dict) -> dict:
         """Write ``proof.json`` last (and the tree's rename when unchained)."""
 
         if self.head is None:
             raise RuntimeError("the seal needs its head first")
+        sealed_keys = _seal_keys(self.head)
         stray = {key: value for key, value in proof.items()
-                 if key not in SEAL_ONLY_PROOF_KEYS}
+                 if key not in sealed_keys}
         if json.loads(_canonical(stray)) != self.head["basis"]["proof_head"]:
             differing = sorted(
                 key for key in set(stray) | set(self.head["basis"]["proof_head"])
@@ -1156,7 +2086,7 @@ class PreparedTreeWriter:
             raise RuntimeError(
                 "the sealed proof differs from the head it was published "
                 f"under in {differing}")
-        _write_json_atomic(self.root / PROOF_NAME, proof)
+        _write_json_atomic(self.root / self.proof_name, proof)
         if not self.published:
             self._publish_tree(self.staging, self.output_root)
             self.published = True
@@ -1183,15 +2113,21 @@ class PreparedTreeWriter:
             reason = (str(error) or type(error).__name__)
             stage = ("stopped" if isinstance(error, BoundaryStreamStopped)
                      else "producing")
+            record = {
+                "reason": reason,
+                "stage": stage,
+                "error_type": type(error).__name__,
+                "traceback_tail": "".join(traceback.format_exception(
+                    type(error), error, error.__traceback__))[-4000:],
+                "failed_utc": _utc_now(),
+            }
+            if isinstance(error, SourceBehind):
+                # Named, so the waiting forecast ends with exit 75 and the
+                # lead rather than as a failed preparation.
+                record["code"] = SOURCE_BEHIND_CODE
+                record["details"] = dict(error.details)
             try:
-                _write_json_atomic(self.stream_path / FAILED_NAME, {
-                    "reason": reason,
-                    "stage": stage,
-                    "error_type": type(error).__name__,
-                    "traceback_tail": "".join(traceback.format_exception(
-                        type(error), error, error.__traceback__))[-4000:],
-                    "failed_utc": _utc_now(),
-                })
+                _write_json_atomic(self.stream_path / FAILED_NAME, record)
             except (OSError, TypeError, ValueError):
                 pass
 
@@ -1207,35 +2143,827 @@ class _Heartbeat(threading.Thread):
         self.path = Path(path)
         self.writer = writer
         self._done = threading.Event()
-        self.beat("producing")
+        self.beat()
 
-    def beat(self, state: str) -> None:
+    def beat(self, state: str | None = None) -> None:
+        state = self.writer._state if state is None else state
+        record = {
+            "pid": os.getpid(),
+            "host": socket.gethostname(),
+            "state": state,
+            "times_built": self.writer.times_built,
+            "segments_written": self.writer._segments_written,
+            "slowest_build_seconds": self.writer.slowest_build_seconds,
+            "updated_utc": _utc_now(),
+            "updated_epoch": time.time(),
+        }
+        if state == "waiting_for_source" and self.writer._waiting_for:
+            record["waiting_for"] = dict(self.writer._waiting_for)
+        if self.writer._arrived is not None:
+            record["arrived"] = dict(self.writer._arrived)
         try:
-            _write_json_atomic(self.path / PRODUCER_NAME, {
-                "pid": os.getpid(),
-                "host": socket.gethostname(),
-                "state": state,
-                "times_built": self.writer.times_built,
-                "segments_written": self.writer._segments_written,
-                "slowest_build_seconds": self.writer.slowest_build_seconds,
-                "updated_utc": _utc_now(),
-                "updated_epoch": time.time(),
-            })
+            _write_json_atomic(self.path / PRODUCER_NAME, record)
         except OSError:
             pass
 
     def run(self) -> None:
         while not self._done.wait(HEARTBEAT_SECONDS):
-            self.beat("producing")
+            self.beat()
 
     def stop(self, *, final: str) -> None:
         self._done.set()
         self.beat(final)
 
 
+#: The as-posted fetch's folder and files (``<fetch out>/posting/``), the
+#: names :mod:`gpuwm.source_posting` declares.  Copied, not imported: the
+#: preparation package stages this module without the fetch's tables, and
+#: a test holds the two copies equal.
+POSTING_DIRNAME = "posting"
+POSTING_SCHEDULE_NAME = "schedule.json"
+POSTING_FAILED_NAME = "failed.json"
+#: The schema of one verified lead's marker (``posting/fNNN.json``), as
+#: :data:`gpuwm.fetch_as_posted.MARKER_SCHEMA` writes it.
+POSTED_LEAD_SCHEMA = "gpuwm.posted-lead.v1"
+#: How often a preparation waiting on a lead looks for its marker.  A
+#: marker is a local file the fetch writes, so this costs a stat, never a
+#: request to the source's host.
+POSTED_LEAD_POLL_SECONDS = 1.0
+
+
+def posted_lead_marker_name(lead: int) -> str:
+    return f"f{int(lead):03d}.json"
+
+
+class PostedLeads:
+    """A preparation's wait for the leads an as-posted fetch publishes.
+
+    ``folder`` is the fetch's ``posting/`` folder, ``source`` and
+    ``cycle`` (``YYYY-MM-DDTHH``) the window it fetches.  :meth:`wait`
+    blocks until lead N's marker (``fNNN.json``, written after the lead's
+    objects are fetched and verified) is there and returns it.  While it
+    waits, the producer heartbeat says ``waiting_for_source`` with the
+    lead's scheduled and late times from ``schedule.json``
+    (:meth:`PreparedTreeWriter.waiting_for_source`), so a forecast at a
+    seam says its wait is on the source.
+
+    The preparation never asks a host itself: whether a lead is posted,
+    late or unheard is the fetch loop's answer, and only
+    ``posting/failed.json`` ends a wait.  So a host that answers "not
+    there" in any form (a 404, or the 403 NOMADS gives for a path under a
+    cycle directory it has not created yet) is a lead not posted yet,
+    never a failed preparation.  ``failed.json`` with ``code:
+    source_behind`` raises :class:`SourceBehind` (exit 75, naming the
+    lead); any other failure, or a fetch that ended (``fetch_alive``
+    answers False) without the lead and without a failure record, raises
+    :class:`BoundaryProducerFailed` naming the lead, so the forecast does
+    not wait for a marker nothing will write.
+
+    Modelled on the wait of finalprep/producer's scheduled inputs (a
+    wait per lead, a heartbeat naming the lead, a late lead failed by
+    name), without its decode store: the markers are the fetch loop's own.
+    """
+
+    def __init__(self, folder, *, source: str, cycle: str,
+                 writer: "PreparedTreeWriter | None" = None,
+                 fetch_alive: Callable[[], bool] | None = None,
+                 poll_seconds: float = POSTED_LEAD_POLL_SECONDS,
+                 sleep: Callable[[float], None] = time.sleep):
+        self.folder = Path(folder)
+        self.source = str(source)
+        self.cycle = str(cycle)
+        self.writer = writer
+        self.fetch_alive = fetch_alive
+        self.poll_seconds = float(poll_seconds)
+        self.sleep = sleep
+        #: Every wait this preparation made: ``{lead, seconds}`` in order
+        #: (the ``posting.waits`` a proof records).
+        self.waits: list[dict[str, object]] = []
+
+    # -- reading ---------------------------------------------------------
+
+    def marker(self, lead: int) -> dict | None:
+        """Lead ``lead``'s verified marker, or ``None`` if it is not there.
+
+        A marker from another window (a folder reused across cycles) is
+        refused by name rather than read as this one's lead.
+        """
+
+        path = self.folder / posted_lead_marker_name(lead)
+        record = _read_json(path)
+        if not isinstance(record, dict):
+            return None
+        if record.get("schema") != POSTED_LEAD_SCHEMA:
+            raise BoundaryProducerFailed(
+                f"{path} is not a posted-lead marker (schema "
+                f"{record.get('schema')!r})")
+        if (record.get("source") != self.source
+                or record.get("cycle") != self.cycle
+                or record.get("lead") != int(lead)):
+            raise BoundaryProducerFailed(
+                f"{path} marks {record.get('source')} "
+                f"{_lead_words(record.get('lead'))} of the "
+                f"{record.get('cycle')} cycle, not {self.source} "
+                f"{_lead_words(lead)} of the {self.cycle} cycle this "
+                "preparation waits for")
+        return record
+
+    def posted(self, leads: Sequence[int]) -> list[int]:
+        """The leads of ``leads`` whose markers are there now, in order."""
+
+        return [int(lead) for lead in leads
+                if (self.folder / posted_lead_marker_name(lead)).is_file()]
+
+    def _schedule_row(self, lead: int) -> dict:
+        # Replaced by the fetch each time a lead moves: read through the
+        # replace, so the heartbeat names the lead's scheduled and late
+        # times rather than none.
+        try:
+            schedule = read_replaced_json(self.folder / POSTING_SCHEDULE_NAME)
+        except (OSError, ValueError):
+            schedule = None
+        rows = schedule.get("leads") if isinstance(schedule, dict) else None
+        for row in rows or ():
+            if isinstance(row, dict) and row.get("lead") == int(lead):
+                return row
+        return {}
+
+    def route_table_sha256(self) -> str:
+        """The route table the fetch planned this window's leads under.
+
+        Read from ``schedule.json`` (``table_sha256``), which the fetch
+        writes before any lead; an as-posted plan binds it (DESIGN A136 2.4
+        item 5).  The fetch replaces the file as leads move, so it is read
+        through a replace (:func:`read_replaced_json`).
+        """
+
+        path = self.folder / POSTING_SCHEDULE_NAME
+        try:
+            schedule = read_replaced_json(path)
+        except (OSError, ValueError) as error:
+            raise BoundaryProducerFailed(
+                f"{path} is not readable ({error}); the as-posted fetch "
+                "writes it before any lead, and an as-posted plan binds the "
+                "route table it names") from None
+        digest = (schedule.get("table_sha256")
+                  if isinstance(schedule, dict) else None)
+        if not _is_sha256(digest):
+            raise BoundaryProducerFailed(
+                f"{path} names no route table (table_sha256), which the "
+                "as-posted fetch writes before any lead; an as-posted plan "
+                "binds the table its leads were fetched under")
+        return str(digest)
+
+    def _failure(self, lead: int) -> BoundaryProducerFailed | None:
+        record = _read_json(self.folder / POSTING_FAILED_NAME)
+        if not isinstance(record, dict):
+            return None
+        if record.get("code") == SOURCE_BEHIND_CODE:
+            return SourceBehind(record)
+        return BoundaryProducerFailed(
+            f"the fetch of {self.source} {self.cycle} failed before "
+            f"{_lead_words(lead)} was fetched: "
+            f"{record.get('message') or record.get('reason') or record}")
+
+    # -- waiting ---------------------------------------------------------
+
+    def _waiting_for(self, lead: int, row: Mapping[str, object]) -> dict:
+        """The heartbeat's record of a wait on ``lead`` (:data:`WAITING_FOR_FIELDS`)."""
+
+        return {"source": self.source, "cycle": self.cycle, "lead": lead,
+                "valid_time": row.get("valid_time"),
+                "expected_at": row.get("expected_at"),
+                "late_at": row.get("late_at"), "since_utc": None,
+                "state": row.get("state"),
+                "first_seen_at": row.get("first_seen_at")}
+
+    def wait(self, lead: int) -> dict:
+        """Block until lead ``lead`` is fetched and verified; its marker."""
+
+        lead = int(lead)
+        started = time.monotonic()
+        waiting = False
+        record = None
+        try:
+            while True:
+                record = self.marker(lead)
+                if record is not None:
+                    break
+                failure = self._failure(lead)
+                if failure is not None:
+                    raise failure
+                if self.fetch_alive is not None and not self.fetch_alive():
+                    # Asked once more: the fetch may have written the
+                    # marker (or its failure) just before it ended.
+                    record = self.marker(lead)
+                    if record is not None:
+                        break
+                    failure = self._failure(lead)
+                    if failure is not None:
+                        raise failure
+                    raise BoundaryProducerFailed(
+                        f"the fetch of {self.source} {self.cycle} ended "
+                        f"without fetching {_lead_words(lead)} and without "
+                        "saying why; the preparation cannot build the "
+                        "boundary time that needs it")
+                if self.writer is not None:
+                    self.writer.check_stop()
+                row = self._schedule_row(lead)
+                if not waiting:
+                    waiting = True
+                    cause = self._waiting_for(lead, row)
+                    _say(f"prepare: waiting for {self.source} "
+                         f"{_lead_words(lead)} of the {self.cycle} cycle, "
+                         f"{lead_wait_words(cause)}")
+                    if self.writer is not None:
+                        self.writer.waiting_for_source(cause)
+                elif row and ((row.get("state"), row.get("first_seen_at"))
+                              != (cause["state"], cause["first_seen_at"])):
+                    # The fetch's word on the lead changed (asked, posted):
+                    # the heartbeat says it, so the seam's reason does.
+                    cause = self._waiting_for(lead, row)
+                    if _fetch_knows(cause) == "posted":
+                        _say(f"prepare: {self.source} {_lead_words(lead)} "
+                             f"of the {self.cycle} cycle "
+                             f"{lead_wait_words(cause)}")
+                    if self.writer is not None:
+                        self.writer.waiting_for_source(cause)
+                self.sleep(self.poll_seconds)
+        finally:
+            if waiting and self.writer is not None:
+                self.writer.source_arrived(
+                    first_seen_at=None if record is None
+                    else record.get("first_seen_at"))
+        if waiting:
+            self.waits.append({"lead": lead, "seconds": round(
+                time.monotonic() - started, 3)})
+        return record
+
+
+def domain_tree_head_fields(domain_labels: Sequence[str], *,
+                            root_cache: str,
+                            children_receipts: Mapping[str, str] | None = None
+                            ) -> dict:
+    """What a domain tree's head adds to ``head.json`` (and ``basis.tree``).
+
+    ``layout`` is :data:`LAYOUT_DOMAIN_TREE`; ``domains`` the domain
+    labels root first (``d01``, ``d02`` ...); ``children_artifacts`` the
+    folder under the prepared root that holds every domain's head
+    artifacts, laid out like the sealed ``hierarchy-artifacts/``:
+    ``domains/dNN/{receipt.json, native-static.npz, geometry-receipt.json,
+    prepared-cache/}`` complete for each child, and for the root its
+    static files plus the streamed ``prepared-cache/`` (``root_cache``,
+    the head's ``basis.cache.directory``) whose header is written at the
+    seal.  ``children_receipts`` is ``{"dNN": sha256 of the child's
+    receipt.json}``, which binds every child's head files into the head
+    digest (the receipt carries each file's own digest).
+    """
+
+    labels = [str(label) for label in domain_labels]
+    if len(labels) < 2 or labels[0] != "d01":
+        raise ValueError("a domain tree head needs d01 and at least one child")
+    root = f"{HIERARCHY_HEAD_DIRNAME}/domains/d01"
+    return {
+        "layout": LAYOUT_DOMAIN_TREE,
+        "domains": labels,
+        "children_artifacts": HIERARCHY_HEAD_DIRNAME,
+        "root": {
+            "prepared_cache": str(root_cache),
+            "static_cache": f"{root}/native-static.npz",
+            "geometry_receipt": f"{root}/geometry-receipt.json",
+        },
+        **({"children_receipts": dict(sorted(children_receipts.items()))}
+           if children_receipts else {}),
+    }
+
+
+#: What a start state's head restore gives back itself; every other
+#: attribute of an initialization result is kept by :class:`TreeStartStates`.
+_RESTORED_RESULT_NAMES = frozenset({
+    "state", "coord", "base", "surface_pressure", "surface_qv"})
+
+
+def _array_valued(value) -> bool:
+    return isinstance(value, np.ndarray) or hasattr(
+        value, "__cuda_array_interface__")
+
+
+def _attributes(value) -> dict:
+    from dataclasses import fields, is_dataclass
+
+    found = dict(getattr(value, "__dict__", None) or {})
+    if is_dataclass(value) and not isinstance(value, type):
+        found.update({item.name: getattr(value, item.name)
+                      for item in fields(value)})
+    return found
+
+
+def _shell(value, *, restored) -> dict:
+    """``value``'s attributes but its arrays and the ``restored`` names."""
+
+    return {name: item for name, item in _attributes(value).items()
+            if name not in restored and not _array_valued(item)}
+
+
+class TreeStartStates:
+    """A chained domain tree's start states, released at the head, re-read at the seal.
+
+    The head holds every domain's start state: the root's in its streamed
+    prepared cache, each child's in its complete artifact set under
+    ``hierarchy-head/domains/dNN``.  :meth:`release` keeps only what those
+    arrays do not carry (the initialization receipts and moisture floors,
+    the met fields' receipts, a child's domain, grid, soil and static
+    fields), so no start state stays resident while the root's later
+    forcing times are built.  :meth:`reread` restores each state on the
+    host from the head, through the checks a forecast restoring the head
+    makes (each array's digest, the header digest, the setup fingerprint),
+    and the seal writes the one-shot tree from them with the one-shot
+    writer.  :meth:`require_sealed_is_head` then holds every sealed
+    domain's prepared cache to the head's.
+
+    The breakage this prevents: on the card, the start state held under
+    every later build doubled the residency the one-shot tree's start-last
+    order exists to avoid, so a CUDA-prepared tree (the auto backend's
+    choice on a GPU box) could not chain; on the host it held the root and
+    every child for the whole stream.
+    """
+
+    def __init__(self, *, root, root_met, children):
+        self._root = root
+        self._root_met = root_met
+        self._children = tuple(children)
+
+    @classmethod
+    def release(cls, *, root_result, root_met, child_results,
+                child_content_sha256: Mapping[str, str]) -> "TreeStartStates":
+        """Keep what the head's arrays do not carry; drop every array.
+
+        ``child_content_sha256`` is ``{"dNN": content_sha256}`` of each
+        child's head prepared cache, as the head's child receipts record
+        it; :meth:`reread` holds each re-read child to it.
+        """
+
+        children = []
+        for child in child_results:
+            label = f"d{int(child.domain.grid_id):02d}"
+            children.append({
+                "label": label,
+                "content_sha256": str(child_content_sha256[label]),
+                "child": _shell(child, restored={
+                    "state", "real", "horizontal"}),
+                "real": _shell(child.real, restored=_RESTORED_RESULT_NAMES),
+                "met": _shell(child.horizontal, restored={"fields"}),
+            })
+        return cls(root=_shell(root_result, restored=_RESTORED_RESULT_NAMES),
+                   root_met=_shell(root_met, restored={"fields"}),
+                   children=children)
+
+    @staticmethod
+    def _restore(directory: Path, *, domain, grid, identity,
+                 content_sha256: str, nested: bool):
+        from gpuwm.ingest.prepared_cache import (
+            PreparedCacheReader, restore_prepared_cache)
+        from gpuwm.native_wrf_contract import load_native_static_cache
+
+        cfg = domain.run
+        reader = PreparedCacheReader(directory / "prepared-cache",
+                                     expected_identity=identity)
+        if reader.content_sha256 != content_sha256:
+            raise RuntimeError(
+                f"the head's d{int(domain.grid_id):02d} prepared cache is "
+                f"not the one the head recorded ({reader.content_sha256} "
+                f"against {content_sha256}), so the tree cannot be sealed "
+                "from it")
+        static = load_native_static_cache(
+            directory / "native-static.npz", grid, cfg.ny, cfg.nx)
+        return restore_prepared_cache(
+            reader.path, expected_identity=identity, cfg=cfg, static=static,
+            allow_nested_without_lbc=nested, reader=reader, array_module=np)
+
+    @staticmethod
+    def _result(shell, restored):
+        from types import SimpleNamespace
+
+        result = restored.initial_result
+        return SimpleNamespace(**shell, **{
+            name: getattr(result, name) for name in _RESTORED_RESULT_NAMES})
+
+    def reread(self, root, *, exp, grids, root_identity,
+               root_content_sha256: str):
+        """``(root_result, root_met, root_boundaries, child_results)`` on the host.
+
+        ``root`` is where the tree lives now (the writer's ``root``);
+        ``root_identity`` and ``root_content_sha256`` are the root's head
+        cache identity and its sealed content digest.
+        """
+
+        from types import SimpleNamespace
+
+        domains = Path(root) / HIERARCHY_HEAD_DIRNAME / "domains"
+        restored = self._restore(
+            domains / "d01", domain=exp.domains[0], grid=grids[0],
+            identity=root_identity, content_sha256=root_content_sha256,
+            nested=False)
+        root_result = self._result(self._root, restored)
+        root_met = SimpleNamespace(**self._root_met,
+                                   fields=restored.met.fields)
+        return (root_result, root_met, restored.boundaries,
+                self.reread_children(root, exp=exp))
+
+    def reread_children(self, root, *, exp) -> tuple:
+        """Every child's start state, restored on the host from the head.
+
+        The half of :meth:`reread` a tree needs when its root is re-read
+        from elsewhere: a native HRRR tree joins the root preparation's own
+        sealed cache, exactly as its one-shot tree does, and only its
+        children come from ``hierarchy-head/``.
+        """
+
+        from types import SimpleNamespace
+
+        domains = Path(root) / HIERARCHY_HEAD_DIRNAME / "domains"
+        by_label = {f"d{int(domain.grid_id):02d}": domain
+                    for domain in exp.domains}
+        children = []
+        for child in self._children:
+            directory = domains / child["label"]
+            header = _read_json(directory / "prepared-cache" / "header.json")
+            if not isinstance(header, dict) or "identity" not in header:
+                raise RuntimeError(
+                    f"the head's {child['label']} prepared cache has no "
+                    "readable header, so the tree cannot be sealed from it")
+            shell = child["child"]
+            restored_child = self._restore(
+                directory, domain=by_label[child["label"]],
+                grid=shell["grid"], identity=header["identity"],
+                content_sha256=child["content_sha256"], nested=True)
+            real = self._result(child["real"], restored_child)
+            children.append(SimpleNamespace(
+                **shell, state=real.state, real=real,
+                horizontal=SimpleNamespace(
+                    **child["met"], fields=restored_child.met.fields)))
+        return tuple(children)
+
+    def require_sealed_is_head(self, artifact_receipt: Mapping[str, object],
+                               *, root_content_sha256: str,
+                               as_posted: Mapping[str, object] | None = None
+                               ) -> None:
+        """Refuse a sealed tree whose prepared caches are not the head's.
+
+        A forecast may already be integrating the head's arrays when the
+        seal is written; a sealed domain that differed from them would bind
+        the run to a tree it did not integrate.
+
+        ``as_posted`` is ``{"root", "head", "manifest_sha256"}`` for an
+        as-posted tree: its head prepared every child under the input
+        plan's placeholder, so a sealed child carries another content
+        digest than its head twin.  Each child is then held to that twin
+        by :func:`verify_as_posted_tree_children` (the same arrays,
+        metadata and static files, the identity changed only where the
+        manifest digest goes), and the receipt must record the sealed
+        cache that check read.
+        """
+
+        expected = {"d01": root_content_sha256, **{
+            child["label"]: child["content_sha256"]
+            for child in self._children}}
+        if as_posted is not None:
+            checked = verify_as_posted_tree_children(
+                as_posted["root"], head=as_posted["head"],
+                manifest_sha256=str(as_posted["manifest_sha256"]))
+            for child in self._children:
+                record = checked.get(child["label"]) or {}
+                if record.get("head_content_sha256") \
+                        != child["content_sha256"]:
+                    raise RuntimeError(
+                        f"the head's {child['label']} prepared cache is not "
+                        "the one the head recorded, so the sealed tree "
+                        "cannot be held to it")
+                expected[child["label"]] = record["sealed_content_sha256"]
+        sealed = {
+            f"d{int(domain['grid_id']):02d}": domain["artifacts"][
+                "prepared_cache"]["content_sha256"]
+            for domain in artifact_receipt["domains"]}
+        differing = sorted(label for label in expected | sealed
+                           if expected.get(label) != sealed.get(label))
+        if differing:
+            raise RuntimeError(
+                "the sealed tree's prepared caches differ from its head's in "
+                f"{differing}, so a forecast started on the head would be "
+                "bound to arrays it did not integrate")
+
+
 # ---------------------------------------------------------------------------
 # The consumer
 # ---------------------------------------------------------------------------
+
+
+def _instant(text) -> datetime | None:
+    try:
+        instant = datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return (instant.replace(tzinfo=timezone.utc) if instant.tzinfo is None
+            else instant.astimezone(timezone.utc))
+
+
+def wait_cause(beat, *, needed_valid_time: datetime | None = None
+               ) -> dict | None:
+    """The source lead a producer waits on, when it is why a seam waits.
+
+    ``beat`` is the producer heartbeat.  A producer ``waiting_for_source``
+    on the lead the waiting interval needs, or on an earlier one, is the
+    reason (``on: source``); otherwise, ``None``, the wait is on the
+    preparation.  ``needed_valid_time`` is the valid time at the end of
+    the interval the forecast waits for; without it any source wait of
+    this producer counts, since it builds forcing times in order.
+    """
+
+    if not isinstance(beat, dict) or beat.get("state") != "waiting_for_source":
+        return None
+    waiting = beat.get("waiting_for")
+    if not isinstance(waiting, dict):
+        return None
+    if needed_valid_time is not None:
+        valid = _instant(waiting.get("valid_time"))
+        if valid is not None and valid > needed_valid_time:
+            return None
+    return {"on": "source",
+            **{key: waiting.get(key) for key in WAITING_FOR_FIELDS}}
+
+
+class SeamWaits:
+    """One forecast's waits for boundary intervals, said in three places.
+
+    The ``on_wait`` callback of :class:`StreamedIntervals`.  Each report
+    names a cause: a source lead not posted yet (``on: source``, from the
+    producer heartbeat) or the interval not built yet (``preparation``).
+    A wait whose cause changes (the lead posts, then the build runs)
+    closes one record and opens the other.  Each record is said:
+
+    * on the event stream (``emit``) and in :data:`WAIT_LOG_NAME`:
+      ``source_wait_started``, ``source_wait_progress`` every
+      :data:`SOURCE_WAIT_PROGRESS_SECONDS`, ``source_wait_finished``; or
+      ``boundary_wait_started`` / ``boundary_wait_finished`` with
+      ``cause: preparation``; each with the model time reached;
+    * in ``progress.json``, through ``publish(block)`` (``None`` once the
+      wait ends): the ``waiting`` block;
+    * on the supervisor heartbeat, through the observer's ``waiting`` /
+      ``waited`` hooks (``waiting:source`` or ``waiting:preparation``),
+      so a watchdog times the wait by its own bound.
+
+    ``model_time(interval)`` returns ``{phase, model_elapsed_seconds,
+    model_valid_time, interval}`` for where the model stands; ``phase``
+    is ``start`` before the model has stepped (model time and interval
+    ``None``) and ``seam`` after.
+    """
+
+    def __init__(self, *, emit: Callable[..., None] | None = None,
+                 observer=None,
+                 publish: Callable[[dict | None], None] | None = None,
+                 model_time: Callable[[int | None], dict] | None = None,
+                 say: Callable[[str], None] | None = None,
+                 log_path=None, producer_path=None,
+                 clock: Callable[[], float] = time.monotonic):
+        self._emit = emit
+        self._observer = observer
+        self._publish = publish
+        self._model_time = model_time
+        self._say = say
+        self.log_path = None if log_path is None else Path(log_path)
+        self.producer_path = (None if producer_path is None
+                              else Path(producer_path))
+        self._clock = clock
+        self._open: dict | None = None
+        self._lock = threading.Lock()
+        #: Every record this run closed: (on, lead or interval, seconds).
+        self.closed: list[tuple[str, object, float]] = []
+
+    # -- the callback ----------------------------------------------------
+
+    def __call__(self, waiting: dict | None) -> None:
+        with self._lock:
+            if waiting is None:
+                self._close()
+                self._hook("waited")
+                self._call(self._publish, None)
+                return
+            self._report(waiting)
+
+    def abandon(self) -> None:
+        """Drop the open record unsaid: the wait ended in a refusal.
+
+        A late lead did not arrive, so no ``*_finished`` event is said;
+        the heartbeat goes back to the status the wait interrupted before
+        the run writes its seam checkpoint and its failure.
+        """
+
+        with self._lock:
+            self._open = None
+            self._hook("waited")
+
+    @property
+    def open_record(self) -> dict | None:
+        return None if self._open is None else dict(self._open)
+
+    # -- records ---------------------------------------------------------
+
+    def _report(self, waiting: Mapping[str, object]) -> None:
+        now = self._clock()
+        cause = (waiting.get("cause")
+                 if isinstance(waiting.get("cause"), dict) else None)
+        on = "source" if cause is not None else "preparation"
+        interval = waiting.get("interval")
+        if cause is not None:
+            key = (on, cause.get("source"), cause.get("cycle"),
+                   cause.get("lead"))
+        else:
+            key = (on, interval)
+        if self._open is not None and self._open["key"] != key:
+            self._close()
+        if self._open is None:
+            where = self._where(interval)
+            record = {
+                "key": key, "on": on, "since": now,
+                "since_utc": _utc_now(), "last_said": now,
+                "interval": where.get("interval"),
+                "phase": where.get("phase", "seam"),
+                "model_elapsed_seconds": where.get("model_elapsed_seconds"),
+                "model_valid_time": where.get("model_valid_time"),
+                "reason": str(waiting.get("reason") or ""),
+                "cause": dict(cause or {}),
+            }
+            self._open = record
+            self._started(record)
+        record = self._open
+        record["reason"] = str(waiting.get("reason") or record["reason"])
+        waited = now - record["since"]
+        due = now - record["last_said"] >= SOURCE_WAIT_PROGRESS_SECONDS
+        if on == "source" and due:
+            record["last_said"] = now
+            self._event("source_wait_progress",
+                        **self._source_fields(record, waited))
+        self._call(self._publish, self._block(record, waited))
+        self._hook("waiting", on,
+                   since_utc=record["since_utc"],
+                   lead=record["cause"].get("lead"),
+                   expected_at=record["cause"].get("expected_at"),
+                   late_at=record["cause"].get("late_at"))
+
+    def _where(self, interval) -> dict:
+        unknown = {"phase": "seam", "interval": interval,
+                   "model_elapsed_seconds": None, "model_valid_time": None}
+        if self._model_time is None:
+            return unknown
+        try:
+            return dict(self._model_time(interval))
+        except Exception:  # noqa: BLE001 - telemetry never fails a run
+            return unknown
+
+    @staticmethod
+    def _source_fields(record, waited) -> dict:
+        cause = record["cause"]
+        return {
+            "phase": record["phase"], "source": cause.get("source"),
+            "cycle": cause.get("cycle"), "lead": cause.get("lead"),
+            "valid_time": cause.get("valid_time"),
+            "expected_at": cause.get("expected_at"),
+            "late_at": cause.get("late_at"),
+            "waited_seconds": round(float(waited), 3),
+            "model_elapsed_seconds": record["model_elapsed_seconds"],
+            "model_valid_time": record["model_valid_time"],
+            "interval": record["interval"],
+            "reason": record["reason"],
+        }
+
+    def _started(self, record) -> None:
+        if record["on"] == "source":
+            self._event("source_wait_started",
+                        **self._source_fields(record, 0.0))
+            cause = record["cause"]
+            if record["model_elapsed_seconds"] is None:
+                where = "before its first step"
+            else:
+                where = "at " + _model_words(record["model_elapsed_seconds"],
+                                             record["model_valid_time"])
+            self._line(f"forecast: waiting {where} for {cause.get('source')} "
+                       f"{_lead_words(cause.get('lead'))}, "
+                       f"{lead_wait_words(cause)}")
+            return
+        self._event("boundary_wait_started", interval=record["interval"],
+                    reason=record["reason"], cause="preparation",
+                    model_elapsed_seconds=record["model_elapsed_seconds"],
+                    model_valid_time=record["model_valid_time"])
+        self._line(f"prepared forecast: waiting: {record['reason']}")
+
+    def _close(self) -> None:
+        record, self._open = self._open, None
+        if record is None:
+            return
+        waited = self._clock() - record["since"]
+        if record["on"] == "source":
+            cause = record["cause"]
+            self.closed.append(("source", cause.get("lead"), waited))
+            self._event(
+                "source_wait_finished", phase=record["phase"],
+                source=cause.get("source"), cycle=cause.get("cycle"),
+                lead=cause.get("lead"), waited_seconds=round(waited, 3),
+                first_seen_at=self._first_seen_at(cause),
+                model_elapsed_seconds=record["model_elapsed_seconds"],
+                model_valid_time=record["model_valid_time"])
+            self._line(f"forecast: {cause.get('source')} "
+                       f"{_lead_words(cause.get('lead'))} arrived after "
+                       f"{waited:.0f} s; stepping")
+            return
+        self.closed.append(("preparation", record["interval"], waited))
+        self._event("boundary_wait_finished", interval=record["interval"],
+                    seconds=round(waited, 3), cause="preparation",
+                    model_elapsed_seconds=record["model_elapsed_seconds"],
+                    model_valid_time=record["model_valid_time"])
+        self._line(f"prepared forecast: boundary interval "
+                   f"{record['interval']} arrived after {waited:.1f} s")
+
+    def _first_seen_at(self, cause) -> str | None:
+        if self.producer_path is None:
+            return None
+        beat = _read_json(self.producer_path)
+        arrived = beat.get("arrived") if isinstance(beat, dict) else None
+        if (isinstance(arrived, dict)
+                and arrived.get("lead") == cause.get("lead")
+                and arrived.get("cycle") == cause.get("cycle")):
+            return arrived.get("first_seen_at")
+        return None
+
+    @staticmethod
+    def _block(record, waited) -> dict:
+        cause = record["cause"]
+        return {
+            "reason": record["reason"],
+            "waited_seconds": float(waited),
+            "on": record["on"],
+            "phase": record["phase"],
+            "since_utc": record["since_utc"],
+            "source": cause.get("source"),
+            "cycle": cause.get("cycle"),
+            "lead": cause.get("lead"),
+            "valid_time": cause.get("valid_time"),
+            "expected_at": cause.get("expected_at"),
+            "late_at": cause.get("late_at"),
+            "interval": record["interval"],
+        }
+
+    # -- sinks -----------------------------------------------------------
+
+    def record_source_behind(self, error: "SourceBehind") -> None:
+        """Log the terminal ``source_behind`` record (``gpuwm go`` relays it).
+
+        Not emitted on the event stream here: the door that ends the run
+        says it once, from the error, just before ``failed``.
+        """
+
+        self._log("source_behind", dict(error.details))
+
+    def _event(self, event: str, **fields) -> None:
+        if self._emit is not None:
+            try:
+                self._emit(event, **fields)
+            except Exception:  # noqa: BLE001 - telemetry never fails a run
+                pass
+        self._log(event, fields)
+
+    def _log(self, event: str, fields: Mapping[str, object]) -> None:
+        if self.log_path is None:
+            return
+        line = json.dumps({"event": event, **fields,
+                           "emitted_unix_ms": int(time.time() * 1000)},
+                          default=str)
+        try:
+            with self.log_path.open("a", encoding="utf-8") as stream:
+                stream.write(line + "\n")
+        except OSError:
+            pass
+
+    def _hook(self, name: str, *args, **kwargs) -> None:
+        hook = getattr(self._observer, name, None)
+        if hook is None:
+            return
+        try:
+            hook(*args, **kwargs)
+        except Exception:  # noqa: BLE001 - telemetry never fails a run
+            pass
+
+    @staticmethod
+    def _call(function, *args) -> None:
+        if function is None:
+            return
+        try:
+            function(*args)
+        except Exception:  # noqa: BLE001 - telemetry never fails a run
+            pass
+
+    def _line(self, text: str) -> None:
+        if self._say is not None:
+            self._say(text)
 
 
 class StreamedIntervals(Sequence):
@@ -1254,9 +2982,15 @@ class StreamedIntervals(Sequence):
                  on_wait: Callable[[dict | None], None] | None = None,
                  poll_seconds: float = 0.2,
                  validate: Callable[[object], None] | None = None,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 start_time: datetime | None = None):
         self.root = Path(root)
         self.head = head
+        #: The run's start valid time, which dates each interval's end so
+        #: a producer's source wait can be matched to the interval asked.
+        self.start_time = start_time
+        if start_time is not None and start_time.tzinfo is None:
+            self.start_time = start_time.replace(tzinfo=timezone.utc)
         self.head_sha256 = str(head["head_sha256"])
         cache = head["basis"]["cache"]
         lbc = cache.get("lbc")
@@ -1304,6 +3038,17 @@ class StreamedIntervals(Sequence):
         for k in range(len(self)):
             yield self[k]
 
+    def release(self, index: int) -> None:
+        """Let interval ``index`` go; a later ``self[index]`` loads it again.
+
+        For a reader that passes each interval on once (a native HRRR tree
+        relaying its root preparation's intervals into its own d01 stream),
+        so no interval stays held after it is written.
+        """
+
+        with self._lock:
+            self._loaded.pop(int(index), None)
+
     # Readiness ---------------------------------------------------------
 
     def is_ready(self, index: int) -> bool:
@@ -1325,11 +3070,32 @@ class StreamedIntervals(Sequence):
         return (f"boundary interval {index} ({start:g} s to {end:g} s) is "
                 "not prepared yet")
 
+    def _wait_report(self, index: int | None, waited: float, *,
+                     reason: str | None = None) -> dict:
+        """One wait report: its reason, and its cause from the producer."""
+
+        needed = None
+        if self.start_time is not None:
+            end = self.bounds[-1 if index is None else index][1]
+            needed = self.start_time + timedelta(seconds=float(end))
+        cause = wait_cause(_read_json(stream_dir(self.root) / PRODUCER_NAME),
+                           needed_valid_time=needed)
+        if cause is not None:
+            reason = source_wait_reason(cause)
+        elif reason is None:
+            reason = self._wait_reason(index)
+        return {"reason": reason, "interval": index,
+                "waited_seconds": waited, "cause": cause}
+
     def _producer_verdict(self, index: int,
                           ready: Callable[[], bool] | None = None) -> None:
         stream = stream_dir(self.root)
         failed = _read_json(stream / FAILED_NAME)
         if isinstance(failed, dict):
+            if failed.get("code") == SOURCE_BEHIND_CODE:
+                details = failed.get("details")
+                raise SourceBehind(details if isinstance(details, dict)
+                                   else {})
             raise BoundaryProducerFailed(
                 "the boundary producer failed: "
                 f"{failed.get('reason', 'no reason recorded')}")
@@ -1384,9 +3150,7 @@ class StreamedIntervals(Sequence):
             if last_report is None or now - last_report >= WAIT_REPORT_SECONDS:
                 last_report = now
                 if self.on_wait is not None:
-                    self.on_wait({"reason": self._wait_reason(k),
-                                  "interval": k,
-                                  "waited_seconds": now - started})
+                    self.on_wait(self._wait_report(k, now - started))
             self._producer_verdict(k, ready=path.is_file)
             time.sleep(self.poll_seconds)
         if started is not None:
@@ -1419,10 +3183,9 @@ class StreamedIntervals(Sequence):
             if last_report is None or now - last_report >= WAIT_REPORT_SECONDS:
                 last_report = now
                 if self.on_wait is not None:
-                    self.on_wait({
-                        "reason": "the preparation is not sealed yet",
-                        "interval": None,
-                        "waited_seconds": now - started})
+                    self.on_wait(self._wait_report(
+                        None, now - started,
+                        reason="the preparation is not sealed yet"))
             self._producer_verdict(len(self) - 1, ready=self.sealed)
             if timeout is not None and now - started > timeout:
                 raise BoundaryStreamError(
@@ -1441,9 +3204,11 @@ class StreamedIntervals(Sequence):
     def _load(self, k: int, marker: Mapping[str, object]):
         from gpuwm.ingest.lateral_bc import (
             BoundaryInterval, FieldBoundary, RationalTimeLaw, SideBoundary,
+            record_built_end_frame,
         )
         from gpuwm.ingest.prepared_cache import (
-            PreparedCacheCorruptError, read_manifest_array,
+            PreparedCacheCorruptError, interval_built_end_frame,
+            read_manifest_array,
         )
 
         arrays = marker["arrays"]
@@ -1473,9 +3238,13 @@ class StreamedIntervals(Sequence):
                                         arrays[f"{prefix}/tendency"]),
                     law)
             fields[name] = FieldBoundary(**sides)
-        interval = BoundaryInterval(
+        # The end frame the builder recorded rides the marker (A140b), so a
+        # streamed interval hashes to the forcing row of the sealed cache's
+        # interval, and a checkpoint written before the seal records it.
+        interval = record_built_end_frame(BoundaryInterval(
             float(marker["start_seconds"]), float(marker["end_seconds"]),
-            fields)
+            fields), interval_built_end_frame(
+                marker, where=f"segment {k} marker"))
         if k > 0:
             _require_same_layout(self[0], interval, k)
         if self.validate is not None:
@@ -1502,17 +3271,386 @@ def _require_same_layout(first, interval, index: int) -> None:
             "layout than interval 0")
 
 
-def streamed_boundaries(root, *, head, on_wait=None, validate=None):
+class ClockBasis:
+    """What the long-step derivation read, before it chose a clock.
+
+    Kept so a run streaming its root's boundaries can ask the same
+    derivation again as each interval arrives (the tree runner's
+    ``StreamedClockGuard``).
+    ``experiment`` is the experiment before the clock was applied,
+    ``acoustic`` the substep derivation, ``readers`` and ``statics`` each
+    domain's cache reader and static fields by grid id, and ``reach`` the
+    corridor terrain of each following nest.
+    """
+
+    __slots__ = ("experiment", "acoustic", "readers", "statics", "reach")
+
+    def __init__(self, *, experiment, acoustic, readers, statics, reach):
+        self.experiment = experiment
+        self.acoustic = tuple(acoustic)
+        self.readers = readers
+        self.statics = statics
+        self.reach = reach
+
+
+def derived_clock(receipt) -> dict[int, tuple]:
+    """The clock a derivation chose for each domain, without its reading.
+
+    ``receipt`` is a :func:`gpuwm.terrain_clock.clock_receipt`.  The
+    reading (which instant held the strongest crest wind, and its speed)
+    may differ between two derivations that choose the same clock; the
+    clock is what the integration runs.
+    """
+
+    return {
+        int(row["grid_id"]): (
+            json.dumps(row.get("dt_s"), sort_keys=True),
+            int(row.get("step_division", 1)),
+            int(row.get("time_step_sound", 0)),
+            json.dumps(row.get("max_time_step_s"), sort_keys=True),
+            row.get("min_time_step_sound"))
+        for row in (receipt or {}).get("domains", ())}
+
+
+def keep_interval_check(intervals, check) -> None:
+    """Chain ``check`` after the per-interval check the series already has.
+
+    A streaming attachment can install its own layout check as the
+    series' ``validate`` hook, replacing what was there; the breakage this
+    prevents is a clock check installed before it that silently stopped
+    running.  Calling it again with the same check is a no-op.
+    """
+
+    if check is None:
+        return
+    attached = getattr(intervals, "validate", None)
+    if attached is check or getattr(attached, "_keeps", None) is check:
+        return
+
+    def validate(interval):
+        if attached is not None:
+            attached(interval)
+        check(interval)
+
+    validate._keeps = check
+    intervals.validate = validate
+
+
+def streamed_boundaries(root, *, head, on_wait=None, validate=None,
+                        start_time=None):
     """A :class:`LateralBoundaries` whose intervals stream from ``root``."""
 
     from gpuwm.ingest.lateral_bc import LateralBoundaries
 
     intervals = StreamedIntervals(root, head=head, on_wait=on_wait,
-                                  validate=validate)
+                                  validate=validate, start_time=start_time)
     lbc = intervals.lbc
     return LateralBoundaries(
         intervals, int(lbc["spec_bdy_width"]), int(lbc["spec_zone"]),
         int(lbc["relax_zone"]))
+
+
+def _seal_keys(head: Mapping[str, object]) -> frozenset:
+    """The proof keys only this head's seal may write."""
+
+    posted = head["basis"].get("as_posted") or {}
+    return SEAL_ONLY_PROOF_KEYS | frozenset(
+        posted.get("seal_authored_proof_keys") or ())
+
+
+def hold_composition_rows(manifest: Mapping[str, object],
+                           markers: Mapping[str, Mapping[str, object]], *,
+                           fixed_rows) -> None:
+    """Every lead row of a composition-inputs manifest is a posted object.
+
+    A row the head did not read whole (not in ``fixed_rows``) must be an
+    object some lead's marker named: the same path (a manifest sealed as
+    posted sits in the fetch folder, whose paths the markers name), bytes
+    and digest.  A marker names its fetched ``objects`` and, for a route
+    that composes a lead's parts into one file, that file under
+    ``composed``; a composed primary's row is held to the latter.
+    """
+
+    posted = {}
+    for lead, marker in markers.items():
+        for key in ("objects", "composed"):
+            for item in marker.get(key) or ():
+                posted.setdefault(str(item.get("name")), []).append(
+                    (lead, item.get("bytes"), item.get("sha256")))
+    fixed = {str(path) for path in fixed_rows}
+    for row in composition_data_rows(manifest):
+        path = str(row["path"])
+        if path in fixed:
+            continue
+        named = [entry for entry in posted.get(path, ())
+                 if entry[1:] == (row.get("bytes"), row.get("sha256"))]
+        if not named:
+            raise BoundaryStreamError(
+                f"sealed manifest row {path} ({row.get('bytes')} bytes, "
+                f"{row.get('sha256')}) is not an object any lead's posted "
+                "marker named")
+
+
+def verify_as_posted_seal(root, *, head: Mapping[str, object],
+                          proof: Mapping[str, object],
+                          header: Mapping[str, object]) -> dict:
+    """Hold an as-posted seal to its head (the L3 design ruling).
+
+    The sealed manifest, with the route table the fetch's schedule named
+    at the seal, implies the head's input plan; each of its lead rows is
+    the object the lead's posted marker named; the start leads' markers
+    are the ones the head bound and every segment's are the ones its two
+    times were built from; the proof names that manifest; and the cache
+    identity changed only where the manifest's digest goes.
+    """
+
+    root = Path(root)
+    posted = head["basis"]["as_posted"]
+    manifest_path = root / posted["manifest_path"]
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except (OSError, ValueError) as error:
+        raise BoundaryStreamError(
+            f"the as-posted seal wrote no readable input manifest at "
+            f"{manifest_path}: {error}") from None
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    record = _read_json(stream_dir(root) / POSTED_LEADS_NAME)
+    if (not isinstance(record, dict)
+            or record.get("schema") != POSTED_LEADS_SCHEMA
+            or record.get("head_sha256") != head["head_sha256"]):
+        raise BoundaryStreamError(
+            f"the as-posted seal left no {POSTED_LEADS_NAME} for this head")
+    prefix = posted["lead_role_prefix"]
+    plan = input_plan(manifest, lead_role_prefix=prefix,
+                      route_table_sha256=record.get("route_table_sha256"),
+                      derived_roles=posted.get("derived_roles") or (),
+                      fixed_rows=posted.get("fixed_rows"))
+    if input_plan_sha256(plan) != posted["input_plan_sha256"]:
+        raise BoundaryStreamError(
+            f"the sealed input manifest {manifest_path} is not the input "
+            "plan the head bound (a lead, an object name, a non-lead input "
+            "or the fetch's route table differs)")
+    proof_key = str(posted.get("proof_manifest_key")
+                    or "input_manifest_sha256")
+    named = proof
+    for part in proof_key.split("."):
+        named = named.get(part) if isinstance(named, Mapping) else None
+    if named != manifest_sha256:
+        raise BoundaryStreamError(
+            f"the sealed proof names input manifest {named}, not the one "
+            f"the seal wrote ({manifest_sha256})")
+    markers = {}
+    for lead, row in (record.get("leads") or {}).items():
+        marker = row.get("marker") if isinstance(row, Mapping) else None
+        if (not isinstance(marker, Mapping)
+                or posted_lead_marker_sha256(marker)
+                != row.get("marker_sha256")):
+            raise BoundaryStreamError(
+                f"{POSTED_LEADS_NAME} records lead {lead} with a marker "
+                "that is not the digest it names")
+        markers[str(lead)] = dict(marker)
+    if posted.get("fixed_rows") is not None:
+        hold_composition_rows(manifest, markers,
+                               fixed_rows=posted["fixed_rows"])
+    else:
+        for role, spec in manifest["files"].items():
+            lead = lead_payload_lead(role, prefix)
+            if lead is None:
+                continue
+            objects = {str(item.get("name")): item.get("sha256") for item in
+                       (markers.get(str(lead)) or {}).get("objects") or ()}
+            if objects.get(spec.get("name")) != spec.get("sha256"):
+                raise BoundaryStreamError(
+                    f"sealed manifest row {role} ({spec.get('name')}, "
+                    f"{spec.get('sha256')}) is not the object lead {lead}'s "
+                    "posted marker named")
+    digests = {lead: row["marker_sha256"]
+               for lead, row in (record.get("leads") or {}).items()}
+    for lead, digest in (posted.get("start_marker_sha256") or {}).items():
+        if digests.get(str(lead)) != digest:
+            raise BoundaryStreamError(
+                f"start lead {lead}'s marker at the seal is not the one the "
+                "head bound")
+    forcing_leads = posted["forcing_leads"]
+    for k in range(len(head["basis"]["cache"]["lbc"]["schedule"])):
+        segment = _read_json(segment_marker_path(root, k)) or {}
+        spans = {str(int(lead)): digests.get(str(int(lead)))
+                 for lead in forcing_leads[k:k + 2]}
+        if segment.get("posted_leads") != spans:
+            raise BoundaryStreamError(
+                f"segment {k} was built from lead markers "
+                f"{segment.get('posted_leads')}, not the ones the seal "
+                f"records for leads {sorted(spans, key=int)}")
+    changed = check_as_posted_identity(
+        head["basis"]["cache"]["identity"], header.get("identity"),
+        plan_sha256=posted["input_plan_sha256"],
+        manifest_sha256=manifest_sha256,
+        manifest_bound=posted["manifest_bound_identity_keys"])
+    left = _placeholders_left(proof)
+    if left:
+        # The sealed proof is the one-shot proof of the same bytes; a
+        # placeholder in it names a plan where a digest belongs.
+        raise BoundaryStreamError(
+            f"the sealed proof still carries the as-posted placeholder at "
+            f"{', '.join(left)}")
+    return {"input_manifest_sha256": manifest_sha256,
+            "identity_changed": changed}
+
+
+def _header_content_sha256(header: Mapping[str, object]) -> str:
+    """A prepared cache header's content digest, recomputed from its basis."""
+
+    basis = {key: header.get(key) for key in (
+        "schema", "identity", "metadata", "arrays", "payload_bytes")}
+    return hashlib.sha256(_canonical(basis).encode("utf-8")).hexdigest()
+
+
+def verify_as_posted_tree_children(root, *, head: Mapping[str, object],
+                                   manifest_sha256: str) -> dict:
+    """Hold each sealed child of an as-posted tree to the child its head prepared.
+
+    An as-posted tree's head prepares every child before the input
+    manifest exists, so each child's identity carries the input plan's
+    placeholder where the manifest digest goes (the children bind
+    ``input_plan_sha256``); the seal writes the one-shot tree
+    (``hierarchy-artifacts/``) with the manifest's digest.  Each sealed
+    child must be its head twin (``hierarchy-head/domains/dNN``, whose
+    receipt the head digest binds, and whose cache header must carry its
+    own content digest and be the cache that receipt records) in
+    everything but that: the same array table and payload, the same cache
+    metadata, the same static cache and geometry receipt, a header whose
+    content digest is its own, the identity changed only as
+    :func:`check_as_posted_identity` allows, and no placeholder left
+    anywhere in the sealed header or receipt.  The breakage this prevents:
+    a forecast started on the head integrates the head's children; a
+    sealed child that differed from them, or that still named the plan,
+    would bind the run's receipt to a tree it did not run or to inputs no
+    preparation read.  Returns ``{"dNN": {"head_content_sha256",
+    "sealed_content_sha256", "identity_changed"}}``, the head digest being
+    the one the head binds through the child's receipt.
+    """
+
+    root = Path(root)
+    posted = head["basis"]["as_posted"]
+    tree = head["basis"].get("tree")
+    if not isinstance(tree, Mapping):
+        raise BoundaryStreamError(
+            "only a domain tree's head has children to hold to its seal")
+    labels = [str(label) for label in tree.get("domains") or ()][1:]
+    receipts = dict(tree.get("children_receipts") or {})
+    if sorted(receipts) != sorted(labels):
+        raise BoundaryStreamError(
+            f"the as-posted tree head binds child receipts "
+            f"{sorted(receipts)}, not every child {labels}")
+    found = {}
+    for label in labels:
+        head_dir = root / HIERARCHY_HEAD_DIRNAME / "domains" / label
+        sealed_dir = root / SEALED_HIERARCHY_DIRNAME / "domains" / label
+        try:
+            receipt_bytes = (head_dir / "receipt.json").read_bytes()
+        except OSError as error:
+            raise BoundaryStreamError(
+                f"the head's {label} receipt is not readable: {error}"
+            ) from None
+        if hashlib.sha256(receipt_bytes).hexdigest() != receipts[label]:
+            raise BoundaryStreamError(
+                f"the head's {label} receipt is not the one the head binds")
+        head_header = _read_json(head_dir / "prepared-cache" / "header.json")
+        sealed_header = _read_json(
+            sealed_dir / "prepared-cache" / "header.json")
+        sealed_receipt = _read_json(sealed_dir / "receipt.json")
+        if not all(isinstance(value, dict) and "identity" in value
+                   for value in (head_header, sealed_header)) \
+                or not isinstance(sealed_receipt, dict):
+            raise BoundaryStreamError(
+                f"the as-posted tree's {label} has no readable head and "
+                "sealed cache headers and receipt")
+        try:
+            recorded = json.loads(receipt_bytes)["artifacts"][
+                "prepared_cache"]["content_sha256"]
+        except (ValueError, TypeError, KeyError):
+            recorded = None
+        if _header_content_sha256(head_header) \
+                != head_header.get("content_sha256") \
+                or recorded != head_header.get("content_sha256"):
+            # The head digest binds the receipt and the receipt the cache:
+            # a head header that is not the one recorded would hand the
+            # forecast, and its restart identity, a child the head never
+            # bound.
+            raise BoundaryStreamError(
+                f"the head's {label} prepared cache is not the one its "
+                "receipt records")
+        differing = [key for key in ("schema", "metadata", "arrays",
+                                     "payload_bytes")
+                     if head_header.get(key) != sealed_header.get(key)]
+        for name in ("native-static.npz", "geometry-receipt.json"):
+            try:
+                same = (hashlib.sha256((head_dir / name).read_bytes())
+                        .hexdigest()
+                        == hashlib.sha256((sealed_dir / name).read_bytes())
+                        .hexdigest())
+            except OSError:
+                same = False
+            if not same:
+                differing.append(name)
+        if differing:
+            raise BoundaryStreamError(
+                f"the sealed {label} differs from the child its as-posted "
+                f"head prepared in {differing}")
+        if _header_content_sha256(sealed_header) \
+                != sealed_header.get("content_sha256"):
+            raise BoundaryStreamError(
+                f"the sealed {label} cache header fails its content digest")
+        changed = check_as_posted_identity(
+            head_header["identity"], sealed_header["identity"],
+            plan_sha256=posted["input_plan_sha256"],
+            manifest_sha256=manifest_sha256,
+            manifest_bound=posted["manifest_bound_identity_keys"])
+        left = (_placeholders_left(sealed_header)
+                + _placeholders_left(sealed_receipt))
+        if left:
+            raise BoundaryStreamError(
+                f"the sealed {label} still carries the as-posted placeholder "
+                f"at {', '.join(left)}")
+        found[label] = {
+            "head_content_sha256": head_header.get("content_sha256"),
+            "sealed_content_sha256": sealed_header["content_sha256"],
+            "identity_changed": changed,
+        }
+    return found
+
+
+#: The head cache record naming user metadata its seal completes
+#: (:data:`gpuwm.ingest.prepared_cache.SEAL_COMPLETES_KEY`).
+SEAL_COMPLETES_KEY = "seal_completes_user_metadata"
+
+
+def _require_completed_user(sealed, head_user, completes) -> None:
+    """The sealed user metadata is the head's, completed only where named.
+
+    A key the head named in ``seal_completes`` may gain entries at the
+    seal; every entry the head wrote must be there unchanged, and every
+    other key must be equal.  The breakage this prevents: a seal that
+    rewrites a start-time receipt a head-bound forecast already checked.
+    """
+
+    if not isinstance(sealed, Mapping) or set(sealed) != set(head_user):
+        raise BoundaryStreamError(
+            "the sealed header metadata 'user' differs from the head")
+    for key, value in head_user.items():
+        if key not in completes:
+            if sealed[key] != value:
+                raise BoundaryStreamError(
+                    f"the sealed header metadata 'user' {key!r} differs "
+                    "from the head")
+            continue
+        if not isinstance(sealed[key], Mapping) or any(
+                sealed[key].get(name) != entry
+                for name, entry in value.items()):
+            raise BoundaryStreamError(
+                f"the sealed header metadata 'user' {key!r} changes an entry "
+                "the head wrote")
 
 
 def verify_seal(root, *, head: Mapping[str, object],
@@ -1530,7 +3668,7 @@ def verify_seal(root, *, head: Mapping[str, object],
 
     root = Path(root)
     head_digest = str(head["head_sha256"])
-    proof_path = root / PROOF_NAME
+    proof_path = root / proof_document_name(head)
     proof = _read_json(proof_path)
     if not isinstance(proof, dict):
         raise BoundaryStreamError(f"{proof_path} is not readable")
@@ -1540,7 +3678,7 @@ def verify_seal(root, *, head: Mapping[str, object],
             f"{proof_path} seals head {named}, not the pinned head "
             f"{head_digest}")
     stray = {key: value for key, value in proof.items()
-             if key not in SEAL_ONLY_PROOF_KEYS}
+             if key not in _seal_keys(head)}
     if json.loads(_canonical(stray)) != head["basis"]["proof_head"]:
         raise BoundaryStreamError(
             f"{proof_path} differs from the head proof outside the seal keys")
@@ -1572,26 +3710,78 @@ def verify_seal(root, *, head: Mapping[str, object],
     content = hashlib.sha256(_canonical(basis).encode("utf-8")).hexdigest()
     if content != header.get("content_sha256"):
         raise BoundaryStreamError("the sealed header fails its content digest")
-    if header.get("identity") != cache["identity"]:
+    as_posted = None
+    if head["basis"].get("as_posted") is not None:
+        as_posted = verify_as_posted_seal(root, head=head, proof=proof,
+                                          header=header)
+        if head["basis"].get("tree") is not None:
+            # A tree's children bound the plan at the head too; each is
+            # held to its sealed twin here.
+            as_posted["children"] = verify_as_posted_tree_children(
+                root, head=head,
+                manifest_sha256=as_posted["input_manifest_sha256"])
+    elif header.get("identity") != cache["identity"]:
         raise BoundaryStreamError("the sealed header names another identity")
+    completes = set(cache.get(SEAL_COMPLETES_KEY) or ())
+    posted_user = ((head["basis"].get("as_posted") or {})
+                   .get("posted_user_metadata") or ())
     for key, value in cache["metadata"].items():
-        if header["metadata"].get(key) != value:
+        if key == "user" and posted_user:
+            # An as-posted head held the plan's placeholder where the seal
+            # writes the digest its sealed identity carries (see
+            # PreparedTreeWriter.seal_cache); nothing else may change.
+            placeholder = as_posted_placeholder(
+                head["basis"]["as_posted"]["input_plan_sha256"])
+            value = dict(value)
+            for name in posted_user:
+                if value.get(name) != placeholder:
+                    raise BoundaryStreamError(
+                        f"the as-posted head's user metadata {name!r} is not "
+                        "the plan's placeholder")
+                value[name] = posted_identity_leaf(header.get("identity"),
+                                                   name)
+        if key == "user" and completes:
+            _require_completed_user(header["metadata"].get(key), value,
+                                    completes)
+        elif header["metadata"].get(key) != value:
             raise BoundaryStreamError(
                 f"the sealed header metadata {key!r} differs from the head")
     digest = hashlib.sha256(proof_path.read_bytes()).hexdigest()
-    return {"proof_sha256": digest, "content_sha256": content,
-            "head_sha256": head_digest}
+    sealed = {"proof_sha256": digest, "content_sha256": content,
+              "head_sha256": head_digest}
+    if as_posted is not None:
+        sealed["as_posted"] = as_posted
+    return sealed
 
 
 __all__ = [
+    "HIERARCHY_HEAD_DIRNAME", "LAYOUT_DOMAIN_TREE", "domain_tree_head_fields",
+    "AS_POSTED_IDENTITY_KEYS", "AS_POSTED_SCHEMA", "INPUT_PLAN_SCHEMA",
+    "COMPOSITION_DATA_SECTIONS", "composition_data_rows",
+    "hold_composition_rows", "posted_identity_leaf",
+    "POSTED_LEADS_NAME", "POSTED_LEADS_SCHEMA", "as_posted_placeholder",
+    "check_as_posted_identity", "input_plan", "input_plan_sha256",
+    "is_as_posted_placeholder", "SEALED_HIERARCHY_DIRNAME",
+    "lead_payload_lead", "verify_as_posted_seal",
+    "verify_as_posted_tree_children",
+    "AS_POSTED_PLACEHOLDER_PREFIX", "posted_lead_marker_sha256",
+    "POSTED_LEAD_SCHEMA", "POSTING_DIRNAME", "POSTING_FAILED_NAME",
+    "POSTING_SCHEDULE_NAME", "PostedLeads", "posted_lead_marker_name",
+    "read_replaced_json",
+    "ClockBasis", "StreamedClockChanged", "derived_clock",
+    "keep_interval_check",
     "BoundaryProducerFailed", "BoundaryProducerSilent", "BoundaryStreamError",
     "BoundaryStreamStopped", "CHAINED_DEFAULT", "CHAINED_ENV", "FAILED_NAME",
+    "SOURCE_BEHIND_CODE", "SOURCE_BEHIND_EXIT_CODE", "SOURCE_BEHIND_FIELDS",
+    "SourceBehind", "SeamWaits", "WAIT_LOG_NAME", "WAITING_FOR_FIELDS",
+    "source_behind_sentence", "source_wait_reason", "wait_cause",
+    "SOURCE_WAIT_PROGRESS_SECONDS",
     "FORECAST_HOST_FLOOR_BYTES", "HEAD_NAME", "HEAD_SCHEMA", "PRODUCER_NAME",
     "PreparedTreeWriter", "SEAL_ONLY_PROOF_KEYS", "SEGMENT_SCHEMA",
     "STOP_NAME", "STREAM_DIRNAME", "StreamedIntervals", "bind_head",
     "chained_enabled", "forecast_host_bytes", "forecast_installed",
     "head_sha256", "host_admission", "live_chained_head",
-    "prepared_tree_complete",
+    "fresh_chained_head", "prepared_tree_complete", "proof_document_name",
     "process_memory_bytes", "read_head", "remove_unfinished_tree",
     "SEALED_REASONS", "request_stop", "run_chained", "say_prepared_sealed",
     "segment_marker_path", "stream_dir", "streamed_boundaries",

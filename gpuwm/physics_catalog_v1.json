@@ -7,10 +7,11 @@
     "pbl": {"name": "Boundary layer", "what": "Mixing of heat, moisture and wind in the lowest one to three kilometres."},
     "surface_layer": {"name": "Surface layer", "what": "Heat, moisture and drag exchanged between the ground and the lowest model level."},
     "land_surface": {"name": "Land surface", "what": "Soil temperature and moisture, vegetation and snow on the ground."},
+    "urban": {"name": "Urban", "what": "Urban canopy heat, drag and building energy exchange."},
     "radiation": {"name": "Radiation", "what": "Sunlight (shortwave) and infrared (longwave) heating and cooling."},
     "turbulence": {"name": "Turbulent mixing", "what": "The mixing operator inside the dynamics, apart from the boundary-layer scheme."}
   },
-  "family_order": ["microphysics", "cumulus", "pbl", "surface_layer", "land_surface", "radiation", "turbulence"],
+  "family_order": ["microphysics", "cumulus", "pbl", "surface_layer", "land_surface", "radiation", "turbulence", "urban"],
   "descriptions": {
     "microphysics": {
       "kessler-mp1": "Warm rain only: cloud water and rain, no ice. For tests, not real forecasts.",
@@ -37,6 +38,7 @@
       "off": "No boundary-layer scheme. Pair with a 3-D turbulence closure below about 1 km.",
       "sase": "ArWen's own scale-adaptive closure, experimental and not a WRF scheme.",
       "shinhong": "Scale-aware YSU for grids between about 0.5 and 4 km.",
+      "uw": "Moist-turbulence boundary layer from the University of Washington (CAM5), strong in cloud-topped layers and calm nights.",
       "ysu": "Nonlocal boundary layer from Yonsei University; the common default."
     },
     "surface_layer": {
@@ -51,6 +53,12 @@
       "noah-mp": "Noah with a canopy layer, layered snow and groundwater options; heavier.",
       "off": "No land model: the ground temperature is held as given.",
       "ruc-lsm": "Nine soil levels and layered snow; the land model HRRR uses."
+    },
+    "urban": {
+      "none": "No urban model.",
+      "slucm": "Single-layer urban canopy: roofs, walls and roads blended with the natural ground on city cells.",
+      "bep": "Multi-layer urban canopy: building drag and heat enter the lowest levels. Needs YSU or MYJ.",
+      "bep-bem": "Multi-layer urban canopy with indoor temperature and air conditioning. Needs YSU or MYJ."
     },
     "radiation": {
       "analytic-clear-sky": "Clear-sky formulas with no clouds or gases. For tests only.",

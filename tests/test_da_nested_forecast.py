@@ -157,6 +157,22 @@ def test_the_derived_child_pins_cumulus_off_even_under_a_cumulus_parent():
     assert child.run.cudt_minutes == 0.0
 
 
+@pytest.mark.parametrize("parent,child", [(0.12, 0.10), (0.10, 0.10), (0.08, 0.08), (0.05, 0.05)])
+def test_the_derived_child_is_never_damped_harder_than_its_parent(parent, child):
+    """The wizard's rule: the first nest takes the depth ladder's 0.10 or its parent's value, whichever is smaller.
+
+    The child used to take 0.10 whatever the parent carried, so a parent on 0.08 (the MYNN, PBL-off,
+    no-radiation and sub-km default suites pin it) drove a child damped harder than itself.
+    """
+
+    from gpuwm.domain_wizard import nest_diff6_factors
+
+    exp = _nowcast_experiment(_nowcast_run(diff_6th_factor=parent))
+    derived = nf.nest_domain_config(exp, nf.NestGeometry(ratio=3, nx=126, ny=126))
+    assert derived.run.diff_6th_factor == pytest.approx(child)
+    assert derived.run.diff_6th_factor == nest_diff6_factors(parent, 2)[1]
+
+
 def test_pbl_below_the_gray_zone_is_refused_without_an_acknowledgement():
     from gpuwm.domain_wizard import GRAY_ZONE_DX_KM
 

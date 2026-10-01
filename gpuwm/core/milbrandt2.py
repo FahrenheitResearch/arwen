@@ -198,11 +198,11 @@ def launch_milbrandt2(
     warm((cell_blocks,), (_CELL_TPB,),
          (t, qv, qc, qr, qi, nc, nr, ni, w, pres, de, ide, qsw,
           qc_in, qr_in, nc_in, nr_in, ck, DTYPE(dt)) + dims)
-    sediment((column_blocks,), (_COLUMN_TPB,),
+    sediment((column_blocks,), (_COLUMN_TPB, 5),
              (t, qv, qc, qr, qi, qs, qg, qh, nc, nr, ni, ns, ng, nh,
               de, ide, dz, idz, gamfact,
               rainnc, rainncv, snownc, snowncv, graupelnc, graupelncv,
-              hailnc, hailncv, sr, ck, DTYPE(dt)) + dims)
+              hailnc, hailncv, sr, ck, DTYPE(dt)) + dims, shared_mem=5 * _COLUMN_TPB * 4)
     diagnostics((cell_blocks,), (_CELL_TPB,),
                 (t, qv, qc, qr, qi, qs, qg, qh, nc, nr, ni, ns, ng, nh,
                  pres, zet, ck) + dims)

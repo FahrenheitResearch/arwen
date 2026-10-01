@@ -318,3 +318,27 @@ def test_invalid_control_config_keeps_conservative_byte_identity(tmp_path):
     binding = stage_reuse.argument_binding(["--experiment-config", str(config)])
     assert binding["--experiment-config"] == {
         "name": config.name, "sha256": hashlib.sha256(config.read_bytes()).hexdigest()}
+
+
+def test_a_chained_tree_head_is_bound_but_not_counted_as_domains(
+        tmp_path, monkeypatch):
+    # A chained tree also publishes its head (hierarchy-head/): the root's
+    # static files and streamed cache and each child's start.  Those
+    # caches are the stream's, not extra domains the manifest must list;
+    # counted as domains, every chained tree was refused its reuse.
+    from gpuwm.ingest.boundary_stream import HIERARCHY_HEAD_DIRNAME
+
+    monkeypatch.setattr(stage_reuse, "engine_source_identity", lambda: dict(ENGINE))
+    root = _tree(tmp_path / "hierarchy")
+    for grid_id in (1, 2):
+        _domain(root / HIERARCHY_HEAD_DIRNAME / "domains" / f"d{grid_id:02}",
+                grid_id)
+    stage_reuse.write_binding(root, arguments=["--cycle", "2026-08-25T18:00:00"],
+                              stated={"source_manifest_sha256": SOURCE})
+    result = _decide(root)
+    assert result["decision"] == stage_reuse.REUSE
+    assert result["domains"] == ["d01", "d02"]
+    # Still bound through the file inventory: a changed head byte refuses.
+    (root / HIERARCHY_HEAD_DIRNAME / "domains" / "d02" / "native-static.npz"
+     ).write_bytes(b"changed")
+    assert _decide(root)["decision"] == stage_reuse.REBUILD

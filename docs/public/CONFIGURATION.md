@@ -79,9 +79,9 @@ wrote.
 | `co2_vmr` | Positive CO₂ mole fraction consumed by the selected classic RRTM, legacy RRTMG or RRTMGP absorption; e.g. `0.000420` for 420 ppm. Off, analytic and Dudhia-only radiation retain it as inactive input authority. |
 | `water_temperature_overlay` | a water-temperature overlay file ([water-temperature-overlay](../water-temperature-overlay.md)). |
 | `water_temperature_policy` | how that overlay is applied. |
+| `preprocess_backend` | where the root domain's preparation runs: `"cuda"`, `"cpu"` or `"auto"`. Absent is `auto`, which prepares on the CPU when the card reads busy or cannot hold the preparation, so two runs you compare could start from different preparations; naming it pins both. `gpuwm run --preprocess-backend` overrides it. Nests prepare on the card either way. |
 
-Per-domain source orography is declared as `d01`, `d02`, ... keys inside
-`[case_data.source_orography]`.
+Per-domain source orography is declared as `d01`, `d02`, ... keys inside `[case_data.source_orography]`.
 
 `gpuwm run` on a config with **no** `[case_data]` table refuses by name
 and lists the required inputs; that refusal and this table are the same
@@ -101,6 +101,7 @@ list.
 | `smooth_option` | `smooth_option` | 0 | **0 only** | the parent smoother acts only under two-way feedback |
 | `blend_width` | `blend_width` | 5 | >= 0 | terrain blend zone; enters the parent-row clearance rule |
 | `spec_bdy_width` | `&bdy_control spec_bdy_width` | 5 | >= spec_zone + relax_zone | |
+| `smooth_cg_topo` | `&domains smooth_cg_topo` | false | bool | WRF v4.7.1's d01 boundary terrain blend: the outer `spec_bdy_width + blend_width` rows of domain 1's terrain are blended toward the source model's own terrain, bit for bit as WRF's `blend_terrain` does, once at the first time. Needs the source's terrain (its SOILHGT); refused without it |
 | `column_chunk` | -- | 3125 | >= 1 | ArWen-only radiation throughput knob; byte-identical across values |
 | `physics_mode` | -- | absent (see note) | `"wrf-faithful"` or `"arwen-patched"` | ArWen-only physics-FIDELITY axis. Present, it becomes the author of every divergence-ledger key and writes the faithful or patched side of each edge onto every domain; an explicit occurrence of one of those keys in `[shared]` or `[[domain]]` is then refused rather than merged, because a key with two authors runs a value neither of them chose. ABSENT it authors nothing, which is what every configuration written before the axis means -- and the reported mode is still `wrf-faithful`, because no registered patch is applied. The register is PROVENANCE.md, "Divergence ledger v1"; the resolved vector lands in the run receipt |
 | `patchset` | -- | `"v1"` | a registered patch-set version | Which frozen ledger set the axis resolves. A version is frozen when it is registered, so a receipt naming `v1` keeps meaning the vector it meant; later entries get a new version beside it |
@@ -192,7 +193,11 @@ leaving the surface-pressure floor at zero so no ground can reach it.
 carry no clock: `dt_child = dt_parent / parent_time_step_ratio`
 exactly, chained in float32 exactly as WRF chains it.
 `history_interval_s` is per-domain and must divide into whole domain
-steps. With the adaptive time step on (`use_adaptive_time_step` in
+steps. `history_begin_s` / `history_end_s` (per-domain, WRF's
+`history_begin_*` / `history_end_*`) window the frames: the first frame is
+written at `history_begin_s` after the start, rounded up to the domain's
+step as WRF's alarm rings, and none after `history_end_s`; absent, every
+interval from the start is written. With the adaptive time step on (`use_adaptive_time_step` in
 `[shared]`, `docs/ADAPTIVE-TIMESTEP.md`) each domain's step instead follows
 its own measured Courant number between `min_time_step` and
 `max_time_step`, landing on every output time.
@@ -211,10 +216,48 @@ does not already give it, so every cadence stays a whole number of steps.
 Under the adaptive clock the held step caps `max_time_step`, and a count
 the rule raises becomes `min_time_step_sound`, the fewest substeps that
 clock takes whatever step it adapts to. A domain the map holds runs
-exactly as configured. The map was measured with fixed steps, up to 15 s
-at 3 km; an adaptive `max_time_step` above that range is left to the
-adaptive clock's own vertical and horizontal CFL limits, which set the
-step a 3 km CONUS run takes (typically 15 to 35 s).
+exactly as configured. The map was measured with fixed steps up to 5 s
+per km of grid spacing (15 s at 3 km), and at 3 km up to 40 s: rows of
+crests up to 4.5 km and slopes up to 0.4 were tried from 40 s down to 20 s
+under 20 to 90 m/s on four and six substeps, and every step that held was
+run again for three hours. Where a longer step stopped, the step that held
+caps an adaptive `max_time_step` and divides a fixed step above it. A
+domain is read against every mapped row as gentle as its ground or
+gentler, at every wind up to its own, and a stop seen on any of them
+counts: 3 km ground steeper than 0.4, itself measured only to 15 s, is
+capped by the stops its gentler rows saw at 20 s, winds above 90 m/s by
+those seen at 90 m/s, and a spacing between 2 and 3 km by its 3 km rows.
+3 km crests above 4.5 km were measured only to 15 s, so a longer step
+seen to stop under the 4.5 km and lower crests, at the same slope and
+wind, caps them too: a 5.5 km crest of slope 0.36 under 30 m/s is capped
+at 15 s as a 3.9 km one is. Only where nothing read saw a longer step
+stop is a longer `max_time_step` left to the adaptive clock's own
+vertical and horizontal CFL limits. A cap only ever shortens the step:
+one at or above the adaptive clock's own longest step (your
+`max_time_step`, or 8 s per km of grid spacing when it is -1, 24 s at
+3 km) is not written. Those stops were seen on fixed steps, so the
+four-substep rows at 2 and 3 km of crests up to 4.5 km and slopes up to
+0.4 (under a 4.5 km crest, to 0.47 at 3 km and 0.48 at 2 km) were also run on the adaptive clock,
+for three hours at `max_time_step` from 15 down to 5 s per km, 20 to 60 m/s.
+Where every row a domain reads held the longest step tried there, and its
+ground is no steeper than the steepest row at its crest, its adaptive clock
+is capped at that step (45 s at 3 km, 30 s at 2 km) instead of the fixed-step
+stop, unless your `target_cfl`, `target_hcfl` or `max_step_increase_pct` is above what was measured (1.4, 0.98 and 5).
+Where a row saw a longer adaptive step stop, the step it held caps the
+clock whatever the fixed rows say, and where a row held none the line
+says the domain may still stop. A fixed step reads only the fixed-step
+rows. On a 3 km CONUS domain (highest ground about 3.9 km, steepest
+slope 0.36), the 24 s `max_time_step` the adaptive clock takes by default
+stands under a crest-level wind of 20 and 30 m/s, since every row read
+held 45 s on the adaptive clock there; at 40 m/s it is capped at 15 s,
+because 20 s steps stopped there. At 50 and 60 m/s the cap
+depends on the configured `time_step`: with 12 s it is 13.5 s, as before;
+with the 15 s the domain wizard writes, the clock now takes at least six
+substeps with the step capped at 15 s, where before it kept the default
+24 s on six. From 70 m/s the cap is 12 s or less with either, as before.
+A fixed 3 km step of 15 s or less (the domain wizard
+writes 15 s) reads as before. Over that CONUS ground a fixed 18 s or 20 s
+runs on six substeps at 30 m/s, and from 40 m/s is halved to 9 s or 10 s.
 
 Each `[[domain]]` may also carry an offset-free `start_time`. It defaults to
 `[experiment].start_time`; d01 must equal that root start. A delayed child is
@@ -248,12 +291,12 @@ consumed `RunConfig` field -- the knob-parity battery
 consuming kernel/module rather than being decorative -- and every one
 is importable from a WRF namelist.
 
-**Which keys a `[[domain]]` table may override.** Exactly these 62,
+**Which keys a `[[domain]]` table may override.** Exactly these 65,
 and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
 
     cu_physics  cudt_minutes  clos_choice  ishallow
     radt  radt_minutes  bldt
-    ra_physics  ra_lw_physics  ra_sw_physics  ra_rrtmg_variant
+    ra_physics  ra_lw_physics  ra_sw_physics  ra_rrtmg_variant  slope_rad  topo_shading
     wrf_rrtmg_compatibility  o3input  use_mp_re  swrad_scat
     diff_6th_factor  diff_6th_opt  epssm  spec_exp  mp_physics  moist
     moist_cq  nest_microphysics_transition
@@ -271,6 +314,7 @@ and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
     starting_time_step  starting_time_step_den
     max_time_step  max_time_step_den  min_time_step  min_time_step_den
     min_time_step_sound
+    mosaic_urban_canopy
 
 `clos_choice` and `ishallow` configure the Grell-Freitas cumulus scheme
 (`cu_physics = 3`): which closure the deep scheme uses (0, the default,
@@ -366,7 +410,8 @@ wrong answer reported as a success. Put them in `[shared]`.
 | `damp_opt` | `damp_opt` | 0 | 0, 3 | Rayleigh implicit w-damping |
 | `zdamp` | `zdamp` | 5000.0 | m | |
 | `dampcoef` | `dampcoef` | 0.2 | | |
-| `w_damping` | `w_damping` | 0 | 0, 1 | the `w_crit_cfl` threshold itself is fixed at WRF's Registry default 1.0 |
+| `w_damping`, `w_crit_cfl` | `w_damping`, `w_crit_cfl` | 0, 1.0 | 0, 1; > 0 | `w_crit_cfl` is where w-damping measures the excess vertical Courant number from, and with `zadvect_implicit = 1` where it starts (WRF suggests 2.0 there); without it damping starts at 1, so a value above 1 is refused there (it would push `w` along its own direction) |
+| `zadvect_implicit` | `zadvect_implicit` | 0 | 0, 1 (a positive WRF value imports as 1) | WRF's implicit-explicit vertical advection on the last RK substep; refused with open boundaries. Matches WRF v4.7.1's routines word for word except two boundary terms of the implicit `w` solve, a declared divergence: WRF builds the lower one from the mass-coupled u/v tendencies, about one column mass too large (a steep-ridge run went NaN in three steps), and leaves the upper one's geopotential change over dt undivided by g. ArWen uses the uncoupled tendencies and divides by g |
 | `base_temp` | `base_temp` | 290.0 | K | base state; init-time only (see fixed table for `iso_temp`/lapse) |
 | `hypsometric_opt` | `hypsometric_opt` | 1 (ArWen legacy) | 1, 2 | WRF Registry default 2 emitted explicitly on import; WRF declares this key in **`&domains`**, as one scalar for the whole run (`Registry.EM_COMMON:2283`) -- a namelist that puts it in `&dynamics` is one `wrf.exe` cannot read, and the importer refuses it there by name |
 | `h_sca_adv_order` | `h_sca_adv_order` | 2 (ArWen legacy) | 2, 5 | **feeds the geopotential equation only**; transported-scalar stencils are fixed 5th/3rd order, so the importer accepts only the Registry default 5 |
@@ -399,6 +444,9 @@ wrong answer reported as a success. Put them in `[shared]`.
 | `usemonalb` | `usemonalb` | false | bool | Noah monthly-climatology albedo |
 | `rdlai2d` | `rdlai2d` | false | bool | Noah read-in LAI |
 | `opt_thcnd` | `opt_thcnd` | 1 | 1, 2 | Noah soil thermal conductivity (Johansen/McCumber-Pielke) |
+| `slope_rad` | `slope_rad` | 0 | 0, 1 | per-domain. WRF v4.7.1's slope-dependent surface shortwave: the land surface receives the flux on the local slope (direct beam by slope and aspect, diffuse part unchanged), and SWNORM is written. Needs a longwave, a shortwave and a land-surface scheme, as in WRF. Refused on moving nests and streamed tiles |
+| `topo_shading` | `topo_shading` | 0 | 0, 1 | per-domain, with `slope_rad = 1`. WRF's terrain shadowing: a column in a neighbour's shadow gets the diffuse part only |
+| `shadlen` | `shadlen` | 25000.0 | > 0, metres | how far the shadow search looks (`[shared]` only) |
 | `num_soil_layers` | `num_soil_layers` | 4 | scheme-defined | ArWen *refuses* a count the scheme does not define where WRF silently overwrites it |
 | `nest_microphysics_transition` | -- | `same-scheme-only` | + `mp8-to-mp18-mass-diagnosed-v1`, `mp-edge-mass-diagnosed-v1` | ArWen-only, one-way nest MP edges. Left at the default, a mixed edge between two ported schemes resolves to the closure that pair takes (`mp8-to-mp18-mass-diagnosed-v1` for Thompson over NSSL-2, the matrix id for every other pair) and the coupler receipt records the requested and the effective policy; naming the pair's own id pins it, and naming the other mixed id is refused. An `mp_physics = 28` child entering from another scheme is seeded with WRF's own non-aerosol-aware droplet number and aerosol floors, named in the receipt |
 
@@ -466,6 +514,16 @@ or `gpuwm go` on a tree; applied to the restored sealed states, then
 the geopotential is rebalanced at the held pressure as WRF's
 `em_quarter_ss` does -- the preparation stays the pure analysis, so a
 bubble-on arm and its control can share one preparation).
+Preparing a domain tree takes the block on every source: GFS, the
+mapped sources (HRRR pressure levels among them), ERA5 and native HRRR
+all leave their arrays unperturbed and record the bubbles in the
+preparation receipt (`proof.json`, or `receipt.json` for a native HRRR
+tree) as an `initial_perturbation` entry with status
+`DEFERRED_TO_FORECAST_INITIALIZATION`, the same document whichever
+source wrote it. The companion stock-WRF file set cannot carry a
+deferred bubble: a tree preparation that asks for it as optional (the
+default) records that export as refused, and one that requires it is
+refused before any source is decoded.
 Refusals (never silent): unknown keys; nonpositive
 `radius_km`/`depth_m`/`amplitude_k`; a center outside the
 coarse domain; an enabled bubble that touches zero cells on a domain
@@ -474,10 +532,13 @@ the radiation's temperature table (355 K under RTE+RRTMGP, which stops
 the forecast at step 1 on such a layer); `rh_preserve` building more
 than 0.09 kg/kg of water vapour (3 km forecasts that built 0.092 kg/kg
 and more went non-finite within six minutes; 0.084 kg/kg ran). Routes
-that do not thread the block (the prepared-cache front doors and the
-single-domain prepared runner) refuse it by name rather than dropping
-it. An `amplitude_k` above 10 K runs with a warning that names it
-beside WRF's 3 K idealized bubble, and the warning is recorded in the
+that do not thread the block refuse it by name rather than dropping
+it: the single-domain prepared runner applies no bubble, so a
+single-domain preparation on any source refuses the block before it
+decodes a source file, as do `gpuwm go`, `gpuwm check` and `run-plan`
+on a single-domain prepared configuration. An `amplitude_k` above
+10 K runs with a warning that names it beside WRF's 3 K idealized
+bubble, and the warning is recorded in the
 receipt. What was actually written
 -- per-domain cells touched, max theta delta, qv adjustment under
 `rh_preserve` -- lands in `initial-perturbation.json` in the run
@@ -684,9 +745,11 @@ pins differ from what WRF assumes for an omitted key.
 | `non_hydrostatic` | .true. | nonhydrostatic-only |
 | `use_theta_m` | 0 | the engine evolves dry theta and has no moist-theta branch; every import door (`import-namelist`, `run --wrfinput` and `run --met-em`) admits a namelist's `use_theta_m = 1` (WRF's omitted default) as a DECLARED DIVERGENCE announced at the terminal and recorded under "Physics substitutions" in the import receipt: the initial and boundary state is recovered exactly (moist wrfbdy THM/QV/MU converted at each forcing time; metgrid TT is physical temperature; native initialization builds dry theta from physical temperature) but the integration is dry theta, so it differs from a `use_theta_m = 1` WRF run |
 | `scalar_adv_opt` | 1 | must match `moist_adv_opt` |
-| `w_crit_cfl` | 1.0 | `#define` in `gpuwm/core/kernels/openbc.cu` (Registry default) |
 | `isfflx` | 1 | surface fluxes on |
-| `sf_urban_physics`, `sf_lake_physics`, `sf_surface_mosaic`, `mosaic_lu/soil` | 0 | not implemented |
+| `sf_lake_physics`, `mosaic_lu/soil` | 0 | not implemented |
+| `sf_urban_physics` | 0 (default) | 1 single-layer urban canopy, 2 BEP, 3 BEP+BEM; requires Noah or Noah-MP; mosaic admits only option 1 |
+| `sf_surface_mosaic`, `mosaic_cat` | 0, 3 | Noah land-use tiles; enabled only at 1, positive tile count; requires LANDUSEF; urban option 1 runs per tile; urban options 2 and 3 are refused as in WRF |
+| `mosaic_urban_canopy` | "dominant" | gpuwm key, per domain: where mosaic runs urban option 1. "dominant" is WRF's rule (only cells whose dominant category is urban); "every_tile" also runs the town tiles of mostly rural cells at their own land-use weights, sharing the URBPARM urban fraction of the largest urban tile's type; needs `sf_surface_mosaic = 1` and `sf_urban_physics = 1` |
 | `swint_opt` | 0 | no SW interpolation between radt calls |
 | `use_mp_re` | 1 | microphysics effective radii reach radiation per WRF's scheme table |
 | `o3input` | 2 | CAM climatological ozone (RRTMG spectra) |
@@ -695,7 +758,6 @@ pins differ from what WRF assumes for an omitted key.
 | `cldovrlp` / `idcor` | 2 / 0 | McICA maximum-random overlap, constant decorrelation |
 | `gwd_opt` | 0 | no gravity-wave drag |
 | `shcu_physics` | 0 | no shallow cumulus |
-| `topo_shading`, `slope_rad` | 0 | no terrain radiation geometry |
 | `cu_rad_feedback` | .false. | KF cloud fraction does not feed radiation |
 | `kf_edrates` | 0 | no KF rate diagnostics |
 | `sst_update`, `sst_skin`, `tmn_update` | 0 | single-analysis case runs |
@@ -721,6 +783,94 @@ the whole real.exe vertical-interpolation policy set
 preprocessing provenance contract. `sfcp_to_sfcp` is the one
 real-init policy that is a knob (`[case_data]`, and `false` is
 fail-loud unimplemented).
+
+## Terrain smoothing (`[[domain]] static`)
+
+WPS smooths `HGT_M` with whatever its `GEOGRID.TBL` names; the stock table
+runs one `smth-desmth_special` pass, and so does ArWen unless a domain asks
+otherwise:
+
+```toml
+[[domain]]
+grid_id = 2
+# ...
+static = { smooth_option = "none" }                       # sampled terrain, unsmoothed
+# static = { smooth_option = "1-2-1", smooth_passes = 3 }  # or any GEOGRID.TBL smoother
+```
+
+`smooth_option` is `smth-desmth_special` (the default), `smth-desmth`,
+`1-2-1` or `none`; `smooth_passes` is a whole number of passes, 1 or more,
+default 1. Each domain chooses its own. The default keeps ArWen's own
+double-precision smoother, within 1.5 mm of WPS on the Alpine domains measured; every
+other setting is WPS's single-precision arithmetic, identical bit for bit
+to `geogrid.exe` given the same unsmoothed terrain.
+
+`smooth_precision = "wps-float32"` is the option that runs the default
+smoother in WPS's single-precision arithmetic as well, so the domain's
+terrain is `geogrid.exe`'s bit for bit; `"float64"`, ArWen's own smoother,
+stays the default. On its own the key keeps the default smoother:
+
+```toml
+static = { smooth_precision = "wps-float32" }   # WPS's default, WPS's arithmetic
+```
+
+Only the default smoother has the choice. Every other smoother has WPS's
+arithmetic alone, so `"float64"` beside one is refused, as is any precision
+beside `none`.
+
+Doors: `gpuwm domain --terrain-smoothing none,1-2-1:3` (one item per
+domain, the last repeating), and `gpuwm import-namelist`, which reads HGT_M's
+setting from `--geogrid-tbl PATH`, else the `opt_geogrid_tbl_path` in
+`namelist.wps`, else `./geogrid/GEOGRID.TBL` beside it, and writes it on
+every domain as WPS applies one table to all.
+
+The WPS-exact default through the doors: `--terrain-smoothing-precision
+wps-float32` on `gpuwm domain` or `gpuwm import-namelist` sets it on every
+domain whose smoother is the default. On import, a `GEOGRID.TBL` whose
+HGT_M entry carries `smooth_precision = wps-float32` selects it too:
+
+```
+name = HGT_M
+        ...
+        smooth_option = smth-desmth_special; smooth_passes=1
+        smooth_precision = wps-float32
+```
+
+That key is ArWen's, not WPS's: `geogrid.exe` logs it as an unrecognized
+option and smooths in single precision as it always does, so one table
+serves both. The flag, when given, wins over the table.
+
+With nests:
+
+* A nest's outer rows are still its parent's terrain. As in WRF's
+  `blend_terrain`, the first `spec_bdy_width` rows (default 5) take the
+  parent's interpolated terrain and the next `blend_width` rows (default 5)
+  ramp to the nest's own, so an unsmoothed nest shows its own valleys from
+  the 11th row in. Keep the valleys that matter at least that far inside.
+* The parent keeps its own terrain under the nest. ArWen's two-way feedback
+  carries the prognostic fields only (WRF also feeds the nest's terrain
+  back), so each domain's setting governs that domain alone.
+* `[experiment] smooth_option` is WRF's `&domains smooth_option`, the
+  two-way feedback smoother, and has nothing to do with this key.
+* WRF's `smooth_cg_topo` (d01's outer rows blended toward the driving
+  model's terrain) is not implemented; `import-namelist` refuses it.
+* A moving domain (a `follow` table or `[relocation]`, and every domain
+  under it) takes `none`, `1-2-1` up to 3 passes, or a smoother-desmoother
+  with 1 pass. More passes carry the smoother past the 3 cells sampled
+  beyond the domain edge, the edge rows then depend on where the domain
+  sits, and the first move would be refused; the configuration is refused
+  at load instead.
+
+Unsmoothed terrain is steeper (a 1 km Alpine domain went from a steepest
+slope of 0.85 to 1.07), and the terrain clock (Clock, above) reads it before
+the forecast starts. Past the slopes its map was measured on, the clock runs
+the configured step and warns that the run may stop: under a 44 m/s crest
+wind that domain's smoothed terrain was held to 3.5 s steps, while the
+unsmoothed terrain ran 8 s steps (and finished its 3 hours). Watch for that
+warning, and set `max_time_step` yourself if the run stops.
+
+Roots built from `WPS_GEOG` on the ERA5, GFS, native HRRR and mapped-source (ICON, ECMWF and the rest) routes carry the setting, and so does every nest.
+A root loaded from a prebuilt static cache that does not record its smoothing refuses a non-default setting before integrating default terrain.
 
 ## Not implemented (refused or dropped with a reason)
 

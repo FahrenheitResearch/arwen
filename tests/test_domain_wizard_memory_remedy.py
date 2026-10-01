@@ -95,9 +95,18 @@ def test_a_named_shallower_ladder_is_the_deepest_one_that_fits(
     them is refused again.
     """
 
+    # The suite is named, with the grid deciding its cumulus as the
+    # unnamed default does, so every ladder of the walk prices one suite:
+    # this is the lever for a suite the user chose.  The unnamed default
+    # is keyed on grid spacing, and its own lever is the test below.
+    from gpuwm.physics_menu import default_profile_for
+
+    suite = ("--physics-profile", default_profile_for("era5"),
+             "--cumulus", "grid")
+
     def _run(ladder: str, vram: str, out) -> tuple[int, str]:
         rc = cli_main(["domain", "--point", "39.1,-94.6", "--ladder", ladder,
-                       "--vram-gib", vram, "--hours", "6",
+                       "--vram-gib", vram, "--hours", "6", *suite,
                        "--cycle", "2026-08-12T00", "--out", str(out)])
         captured = capsys.readouterr()
         return rc, captured.err + captured.out
@@ -232,3 +241,111 @@ def test_remedy_names_fitting_suites_and_only_a_ladder_that_fits(shallower):
 def test_a_named_ladder_is_given_as_the_flags_that_request_it(
         ratios, root_dx_m, flags):
     assert _ladder_request_flags(ratios, root_dx_m) == flags
+
+
+def test_the_unnamed_default_names_the_shallower_ladder_its_own_default_fits(
+        tmp_path, capsys):
+    """Below 1 km the unnamed default is the spacing table's suite.
+
+    Its kernel set alone overflows a 4.6 GiB card, so the 500 m ladder
+    has no layout at all.  A shallower ladder finishes at 1 km or coarser
+    and binds the lighter source default, so it can be a way out: the
+    refusal prices each shallower ladder with the suite it would run and
+    names the deepest one whose minimum layout fits, and that is the
+    deepest the same request then admits, instead of the refusal saying
+    that no ladder can help.
+    """
+
+    def _run(*extra, out) -> tuple[int, str]:
+        rc = cli_main(["domain", "--point", "39.1,-94.6", "--vram-gib", "4.6",
+                       "--hours", "6", "--cycle", "2026-08-12T00", *extra,
+                       "--out", str(out)])
+        captured = capsys.readouterr()
+        return rc, captured.err + captured.out
+
+    rc, message = _run("--ladder", "12-3-1-0.5", out=tmp_path / "deep.toml")
+    assert rc == 2, message
+    assert "has no budget for ladder" in message, message
+    assert "no smaller layout on any ladder can help" not in message
+    named = _named_shallower(message)
+    deepest_admitted = None
+    for ladder in ("12-3-1", "12-3", "12"):
+        follow_rc, _follow = _run("--ladder", ladder,
+                                  out=tmp_path / f"{ladder}.toml")
+        if follow_rc == 0:
+            deepest_admitted = ladder
+            break
+    assert deepest_admitted is not None
+    assert named == deepest_admitted, message
+
+
+def test_the_source_default_is_named_first_when_it_fits():
+    """The refused suite is the door's spacing default; the source's own fits.
+
+    It rides in the fitting list ahead of the rest and is returned alone,
+    and the sentence names it as the source's own default, apart from the
+    lighter suites, so a reader is not left choosing among no-radiation
+    and validation suites when the suite every coarser grid runs fits.
+    """
+
+    source = "gfs"
+    candidates = _admissible_lighter(source)
+    refused = candidates[-1]
+    preferred = candidates[0]
+    prices = {name: (index + 1) * GIB // 4
+              for index, name in enumerate(candidates)}
+    budget = (len(candidates) - 1) * GIB // 4
+    result = _lighter_profiles_than(refused, source, prices.get,
+                                    budget_bytes=budget, preferred=preferred)
+    assert result.preferred == preferred
+    assert result.fitting[0] == preferred and len(result.fitting) == 3
+    # The heaviest that fit follow it, as without a preferred suite.
+    plain = _lighter_profiles_than(refused, source, prices.get,
+                                   budget_bytes=budget)
+    assert plain.preferred is None
+    assert result.fitting[1:] == plain.fitting[:2]
+
+    text = _minimum_layout_memory_remedy(
+        lighter=result, envelope_bytes=int(prices[refused]),
+        free_bytes=budget + EXTERNAL_MARGIN_BYTES, budget_bytes=budget,
+        source=source, shallower=None)
+    assert (f"--source {source}'s own default suite (--physics-profile "
+            f"{preferred}, which fits)") in text
+    assert _advised(text) == list(result.fitting[1:])
+
+    # One that does not fit is not named, as any other suite would not be.
+    over = _lighter_profiles_than(refused, source, prices.get,
+                                  budget_bytes=prices[preferred] - 1,
+                                  preferred=preferred)
+    assert over.preferred is None and preferred not in over.fitting
+
+
+def test_a_small_card_names_the_source_default_and_prints_no_candidate_warnings(
+        tmp_path, capsys):
+    """6 GiB, the 500 m ladder, no suite named.
+
+    The sub-km default does not fit the card at the ladder's minimum
+    layout.  The refusal names the source's own default, which fits, and
+    the same
+    request naming it is admitted; the configurations the refusal priced
+    and did not write say nothing on the screen.
+    """
+
+    from gpuwm.physics_menu import default_profile_for
+
+    request = ["domain", "--point", "39.1,-94.6", "--vram-gib", "6",
+               "--ladder", "12-3-1-0.5", "--source", "gfs", "--hours", "6",
+               "--cycle", "2026-08-12T00"]
+    rc = cli_main([*request, "--out", str(tmp_path / "refused.toml")])
+    captured = capsys.readouterr()
+    message = captured.err + captured.out
+    assert rc == 2, message
+    assert "12-3-1-0.5" in message and "a larger card" in message, message
+    own = default_profile_for("gfs")
+    assert (f"--source gfs's own default suite (--physics-profile {own}, "
+            "which fits)") in message, message
+    assert "warning:" not in captured.err, captured.err
+    out = tmp_path / "own.toml"
+    rc = cli_main([*request, "--physics-profile", own, "--out", str(out)])
+    follow = capsys.readouterr()
+    assert rc == 0 and out.exists(), follow.err + follow.out

@@ -14,7 +14,7 @@ platform wheels, and until 2.7.0 neither appeared in any notice.
 
 Nothing checked any of it.  Before this file, ``grep -rIln 'licenses/' tests/``
 returned one unrelated hit: no test asserted that ``licenses/*`` exists, that
-it reaches a wheel, that the eighteen per-file notice headers survive an edit,
+it reaches a wheel, that the nineteen per-file notice headers survive an edit,
 that the kernel notice's file lists still match the tree, or that the
 binary-form notice's two copies still agree.  In a project whose discipline is
 "pin it or it drifts", the licence layer was the one thing unpinned.
@@ -29,9 +29,9 @@ WHAT THIS FILE ASSERTS
     by which a ``pip install`` user receives any of it.
 3.  The binary-form notice's two copies are byte-identical and the bundle copy
     sits under a directory ``build_bridge_bundle`` actually walks.
-4.  The eighteen files that carry a per-file notice still carry it.
+4.  The nineteen files that carry a per-file notice still carry it.
 5.  The Arm scope list in ``gpuwm/core/kernels/LICENSE-third-party.txt`` is
-    DERIVED FROM THE TREE, not typed: the fourteen files are exactly the ones
+    DERIVED FROM THE TREE, not typed: the fifteen files are exactly the ones
     that reproduce Arm's coefficient tables.  The FDLIBM list is pinned, and a
     kernel that starts defining an FDLIBM routine without joining it fails.
 6.  Every first-party crate carrying a third-party licence marker, and every
@@ -140,6 +140,7 @@ def test_the_notice_names_every_grant_that_conditions_reproduction() -> None:
     notice = _read(NOTICE)
     required = (
         "Arm Limited",                    # MIT
+        "CORE-MATH",                      # MIT
         "Sun Microsystems",               # FDLIBM
         "Atmospheric and Environmental Research",   # AER RRTMG, RTE+RRTMGP
         "UChicago Argonne",               # Py-ART
@@ -236,6 +237,7 @@ def test_the_binary_form_notice_covers_the_first_party_ports() -> None:
 #: transcription joins the list, and a file that loses its header fails.
 NOTICE_CARRIERS: tuple[str, ...] = (
     "gpuwm/core/kernels/glibc_flt32.cuh",
+    "gpuwm/core/kernels/glibc_trig_flt32.cuh",
     "gpuwm/core/kernels/thompson_aerosol_common.cuh",
     "gpuwm/core/milbrandt2_constants.py",
     "gpuwm/core/mynn_pbl.py",
@@ -249,10 +251,16 @@ NOTICE_CARRIERS: tuple[str, ...] = (
     "gpuwm/core/rrtmg_lw.py",
     "gpuwm/core/rrtmg_mcica.py",
     "gpuwm/core/rrtmg_sw.py",
+    # The UW PBL's binary64 libm: Arm exp/log/pow and CORE-MATH cos/acos,
+    # both MIT, notice inline (root NOTICE, "FP64 libm transcriptions").
+    "gpuwm/core/kernels/glibc_flt64.cuh",
     "gpuwm/core/rrtmgp.py",
     "gpuwm/core/ruc.py",
     "gpuwm/core/thompson_aerosol_contract.py",
     "gpuwm/obs/dealias_region.py",
+    # The single-layer UCM's CPU reference embeds WRF v4.7.1's
+    # module_sf_urban.F statement listing and carries WRF's notice.
+    "gpuwm/verify/urban_ucm_ref.py",
 )
 
 
@@ -284,10 +292,10 @@ def test_no_file_carries_a_notice_this_list_does_not_know_about() -> None:
 # ---------------------------------------------------------------------------
 # 4.  the kernel notice's scope lists match the tree
 # ---------------------------------------------------------------------------
-#: Any spelling of Arm's logf / exp2f / powf coefficient tables.  A file that
+#: Any spelling of Arm's logf / exp2f / powf or sinf / cosf tables.  A file that
 #: reproduces one of these reproduces Arm's work and is inside the MIT grant.
 _ARM_TABLE = re.compile(
-    r"exp2f_tab|logf_tab|logf_invc|powf_log2_tab|powf_invc", re.I)
+    r"exp2f_tab|logf_tab|logf_invc|powf_log2_tab|powf_invc|gt_sincos_table", re.I)
 
 
 def _arm_files() -> list[str]:
@@ -299,7 +307,9 @@ def test_the_arm_scope_list_is_derived_from_the_tree() -> None:
     """The NOTICE says this list is machine-derived.  This is the machine."""
     _requires_source_tree()
     derived = _arm_files()
-    assert len(derived) == 14, derived
+    assert len(derived) == 15, derived
+    assert len([name for name in derived if name != "glibc_trig_flt32.cuh"]) == 14, derived
+    assert "glibc_trig_flt32.cuh" in derived
     listed = _read(KERNEL_NOTICE)
     missing = [name for name in derived if name not in listed]
     assert missing == [], (
@@ -322,13 +332,23 @@ FDLIBM_FILES: tuple[str, ...] = (
 )
 
 #: Device routines whose NAME looks like an FDLIBM one but which are not
-#: transcriptions: each is a double-precision libm call rounded once, and each
-#: file says so at the definition.  Listed with the reason so that adding a
+#: FDLIBM transcriptions: these are libm calls rounded once or CORE-MATH,
+#: as identified beside each entry.  Listed with the reason so that adding a
 #: real transcription here is a deliberate act.
 _NOT_FDLIBM = {
+    "glibc_trig_flt32.cuh": ("glibc_atanf",),    # CORE-MATH s_atanf.c, a8066a5, MIT
     "p3.cu": ("p3_log10",),                      # (float)log10((double)x)
     "thompson_aerosol_warm.cu": ("thompson_aa_log10f_cr",),
     "ruc.cu": ("ruc_log10f_rn", "ruc_expm1f_glibc"),
+    # BEP+BEM: ubm_atanf calls glibc_atanf (CORE-MATH); ubm_log10f and its
+    # special-case arm transcribe CORE-MATH log10f.c bc385c2, MIT (NOTICE).
+    "urban_bem.cuh": ("ubm_atanf", "ubm_log10f", "ubm_log10f_special"),
+    "urban_ucm.cu": ("u_atan", "u_log10"),       # (float)atan/log10((double)x)
+    # Noah mosaic: noah_log10 and its special-case arm transcribe CORE-MATH
+    # log10f.c bc385c2, MIT (NOTICE), not FDLIBM.
+    "noah_mosaic.cu": ("noah_log10", "noah_log10_special"),
+    # slope_rad / topo_shading: (float)atan((double)x), (float)atan2((double)y, (double)x)
+    "topo_radiation.cu": ("tr_atan", "tr_atan2"),
 }
 
 _FDLIBM_DEF = re.compile(
@@ -352,7 +372,7 @@ def test_the_fdlibm_scope_list_matches_the_tree() -> None:
     assert unnotified == {}, (
         "these kernels define an FDLIBM-shaped routine and are not on the "
         "FDLIBM notice list; either they transcribe FDLIBM and the notice "
-        "must say so, or they call libm and belong in _NOT_FDLIBM with the "
+        "must say so, or they are not FDLIBM and belong in _NOT_FDLIBM with the "
         f"reason beside them: {unnotified}")
 
 
@@ -432,7 +452,16 @@ _WPS_ONLY = frozenset({
     "rrpr.F", "gribcode.F", "output.F", "rd_grib1.F", "rd_grib2.F",
     "new_storage.F", "process_tile_module.F", "interp_module.F",
     "read_met_module.F90",
+    # geogrid's terrain smoother (WPS geogrid/src/smooth_module.F), which
+    # the static-fields crate transcribes for GEOGRID.TBL smooth_option.
+    "smooth_module.F",
 })
+
+#: WRF sources outside the module_/mp_ naming, cited by a first-party crate,
+#: each NAMED in the NOTICE as well as covered by WRF's declaration.
+#: share/output_wrf.F: the renderer's local import reads SIMULATION_START_DATE
+#: as WRF's history writer defines it (A137, rw-wrfbatch local_import.rs).
+_WRF_OTHER = frozenset({"output_wrf.F"})
 
 _FORTRAN_CITATION = re.compile(r"\b([A-Za-z0-9_]+\.(?:F90|F))\b")
 
@@ -456,7 +485,8 @@ def test_every_upstream_a_first_party_crate_transcribes_is_notified() -> None:
             projects.add("MPAS")
         elif name in _WPS_ONLY:
             projects.add("WPS")
-        elif name.startswith("module_") or name.startswith("mp_"):
+        elif (name.startswith("module_") or name.startswith("mp_")
+              or name in _WRF_OTHER):
             projects.add("WRF")
         else:
             unclassified.append(name)
@@ -466,6 +496,11 @@ def test_every_upstream_a_first_party_crate_transcribes_is_notified() -> None:
         f"upstream a NOTICE entry before adding them here: {unclassified}")
 
     notice = _read(NOTICE)
+    unnamed = sorted(name for name in cited & _WRF_OTHER
+                     if name not in notice)
+    assert unnamed == [], (
+        "a first-party crate cites these WRF sources outside the module_ "
+        f"naming and the NOTICE does not name them: {unnamed}")
     missing = sorted(project for project in projects
                      if UPSTREAM_TOKENS[project] not in notice)
     assert missing == [], (
@@ -608,3 +643,47 @@ def test_the_grell_freitas_gamma_is_never_described_as_glibc_work() -> None:
     assert hits == [], (
         "the Grell-Freitas gamma is this project's own work (ruling of "
         "2026-09-12); shipped text describes it otherwise:\n" + "\n".join(hits))
+
+
+def test_core_math_trig_grant_is_reproduced_and_scoped() -> None:
+    """Pin the new grant's exact text, copyright lines and routine scope."""
+    _requires_source_tree()
+    text = _read(LICENSES / "LICENSE-CORE-MATH-MIT.txt")
+    assert hashlib.sha256(text.encode("utf-8")).hexdigest() == "9700243118309ce16f64fab4680507bf713caed4f77e8aa6bc08a324b4f663c1"
+    header = _read(KERNELS / "glibc_trig_flt32.cuh")
+    notice = _read(NOTICE)
+    adjacent = _read(KERNEL_NOTICE)
+    for line in text.splitlines():
+        if line:
+            assert line in notice
+            assert line in adjacent
+    for token in ("Copyright (c) 2022-2024 Alexei Sibidanov.",
+                  "Copyright (c) 2023-2024 Alexei Sibidanov.",
+                  "LICENSE-CORE-MATH-MIT.txt", "bc385c2", "56dd347",
+                  "a8066a5", "59d21d7"):
+        assert token in header
+        assert token in notice
+        assert token in adjacent
+    for function in ("glibc_tanf", "glibc_asinf", "glibc_acosf", "glibc_atanf"):
+        assert function in header
+        assert function in notice
+        assert function in adjacent
+
+
+def test_core_math_log10f_grant_is_reproduced_and_scoped() -> None:
+    """Pin the Noah mosaic column's CORE-MATH log10f grant and scope."""
+    _requires_source_tree()
+    kernel = _read(KERNELS / "noah_mosaic.cu")
+    notice = _read(NOTICE)
+    adjacent = _read(KERNEL_NOTICE)
+    for token in ("Copyright (c) 2022-2023 Alexei Sibidanov.", "bc385c2",
+                  "Permission is hereby granted, free of charge"):
+        assert token in kernel
+    for token in ("2022-2023 Alexei Sibidanov", "bc385c2",
+                  "LICENSE-CORE-MATH-MIT.txt"):
+        assert token in notice
+        assert token in adjacent
+    for function in ("noah_log10", "noah_log10_special"):
+        assert function in kernel
+        assert function in notice
+        assert function in adjacent

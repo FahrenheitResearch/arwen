@@ -286,13 +286,24 @@ def verify_hrrr_native_static(
 
 
 def verified_static_catalog(
-        wps_namelist: Path, geog_root: Path, domain_ids,
+        wps_namelist: Path, geog_root: Path, domain_ids, *, static_highres=None,
 ) -> tuple[object, dict[str, object]]:
     """Build the child GEOG catalog and bind every selected index file."""
 
     wps_namelist = Path(wps_namelist).resolve()
     geog_root = Path(geog_root).resolve()
+    # A carrier the selection reads (gpuwm.static.terrain_smoothing
+    # .selection_carrier: a non-default terrain smoothing, or a land cover
+    # its [static.highres] block builds, whose geog_data_res token it
+    # admits) rides on the catalog, and a smoothing is attested in the
+    # receipt; any other carrier leaves both exactly as they were.
+    from gpuwm.static.terrain_smoothing import (selection_carrier,
+                                                smoothing_receipt)
+    carrier = selection_carrier(static_highres)
+    smoothing = smoothing_receipt(carrier)
     case = SimpleNamespace(wps_namelist=wps_namelist, geog_root=geog_root)
+    if carrier is not None:
+        case.static_highres = carrier
     files = [SimpleNamespace(role="wps_namelist", path=wps_namelist)]
     index_hashes: dict[str, str] = {}
     selections: dict[str, dict[str, str]] = {}
@@ -323,6 +334,10 @@ def verified_static_catalog(
         "selections": selections,
         "geog_index_sha256": dict(sorted(index_hashes.items())),
     }
+    if carrier is not None:
+        catalog.static_highres = carrier
+    if smoothing:
+        receipt["terrain_smoothing"] = smoothing
     return catalog, receipt
 
 

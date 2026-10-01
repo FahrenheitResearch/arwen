@@ -856,7 +856,12 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
                 # family is invisible to this completeness gate.
                 RunConfig(**_TINY, km_opt=3, bl_pbl_physics=0),
                 RunConfig(**_TINY, km_opt=2, bl_pbl_physics=0,
-                          tke_budget=1)):
+                          tke_budget=1),
+                # The UW moist-turbulence PBL owns its zero plane
+                # (uwpbl_zero); without this arm its call site in
+                # _run_uwpbl is invisible to this completeness gate.
+                RunConfig(**_TINY, moist=True, mp_physics=8,
+                          bl_pbl_physics=9, sf_sfclay_physics=1)):
         known |= set(pf.scratch_slot_registry(cfg, n_lbc_intervals=2))
     exp = load_experiment_case(CONFIG_4DOM)[0]
     for dc in exp.domains:
@@ -2565,17 +2570,18 @@ def test_estimate_uses_experiment_column_chunk(exp4):
         49, 6250, configured.vertical.p_top)
 
 
-def test_rrtmgp_chunk_loops_and_mcica_seed_are_column_local():
+def test_rrtmgp_chunk_loops_and_mcica_seed_are_column_local(monkeypatch):
     """Static pin for A-1's no-chunk-size-arithmetic proof.
 
     Both solver loops may use their absolute ``start`` only to construct the
-    input/output slice.  McICA selects the same column's bottom pressures and
-    never folds a local/global column number or chunk size into its seeds.
+    columns a chunk covers and its width.  McICA selects the same column's
+    bottom pressures and never folds a local/global column number or chunk
+    size into its seeds.
     """
     import inspect
     import textwrap
 
-    from gpuwm.core.rrtmgp import RRTMGPRadiation
+    from gpuwm.core.rrtmgp import RRTMGPRadiation, _rte_gpt_tile
 
     source = textwrap.dedent(inspect.getsource(RRTMGPRadiation.__call__))
     tree = ast.parse(source)
@@ -2584,21 +2590,94 @@ def test_rrtmgp_chunk_loops_and_mcica_seed_are_column_local():
              and isinstance(node.target, ast.Name)
              and node.target.id == "start"]
     assert len(loops) == 2
+    parent = {child: node for node in ast.walk(tree)
+              for child in ast.iter_child_nodes(node)}
+
+    def statement(node):
+        while not isinstance(node, ast.stmt):
+            node = parent[node]
+        return node
+
+    def loads(loop, name):
+        return [node for node in ast.walk(loop)
+                if isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load) and node.id == name]
+
+    def assigned(node):
+        stmt = statement(node)
+        assert isinstance(stmt, ast.Assign) and len(stmt.targets) == 1, (
+            ast.get_source_segment(source, stmt))
+        return stmt.targets[0].id
+
+    # How many reads of ``start`` each loop makes.  LW: two, the start and
+    # stop of its ``sl`` slice.  SW: four since 7f4d1a2b3 (the shortwave
+    # pass skips dark columns) chunks the COMPACTED daylit list, so the
+    # stop becomes its own name and the chunk is either a slice or an
+    # index array: ``stop = min(start + chunk, sw_ncol)``,
+    # ``slice(start, stop)`` when every column is daylit,
+    # ``sw_columns[start:stop]`` when some are dark, and
+    # ``chunk_ncol = stop - start``.  Every read is index construction,
+    # which is what the next check holds rather than the count: ``start``
+    # and ``stop`` are read only by the assignments of ``sl``, ``stop``
+    # and ``chunk_ncol``.
+    starts = {}
     for loop in loops:
-        loaded_start = [node for node in ast.walk(loop)
-                        if isinstance(node, ast.Name)
-                        and isinstance(node.ctx, ast.Load)
-                        and node.id == "start"]
-        assert len(loaded_start) == 2  # slice start and slice stop only
         loop_source = ast.get_source_segment(source, loop)
+        band = "sw" if "sw_chunk = " in loop_source else "lw"
+        starts[band] = len(loads(loop, "start"))
+        for name in ("start", "stop"):
+            for node in loads(loop, name):
+                assert assigned(node) in {"sl", "stop", "chunk_ncol"}
+        # The width sizes the chunk's workspace views and its scatter
+        # buffers and picks a cached scratch shape.  It never meets a
+        # value: its only readers are ``workspace.phase(kind, width)``,
+        # a shape tuple and the full-chunk comparison.
+        for node in loads(loop, "chunk_ncol"):
+            reader = parent[node]
+            if isinstance(reader, ast.Tuple):
+                reader = parent[reader]
+                assert (isinstance(reader, ast.Call)
+                        and ast.unparse(reader.func) == "cp.empty")
+            elif isinstance(reader, ast.Compare):
+                assert (ast.unparse(reader)
+                        == "chunk_ncol == self.column_chunk")
+            else:
+                assert (isinstance(reader, ast.Call)
+                        and ast.unparse(reader.func) == "workspace.phase")
         assert not any(token in loop_source for token in (
             "sum(", "mean(", "cumsum(", "reduce("))
         assert loop_source.count("_prepare_above_model_chunk(") == 1
         assert loop_source.count("columns=sl") == 1
-    assert source.count("_model_flux_interfaces(") == 4
-    assert "lw_up[sl] = _model_flux_interfaces(" in source
-    assert "sw_up[sl] = cp.where" in source
-    assert "sw_dn[sl] = cp.where" in source
+    assert starts == {"lw": 2, "sw": 4}
+    # The compacted list is the daylit columns in ascending model order,
+    # and a dark column's zero is the allocation's own (zeros_like
+    # whenever any column is dark), the +0.0 the full path's where() wrote.
+    assert "sw_columns = cp.flatnonzero(daylight.reshape(-1))" in source
+    assert ("sw_allocate = cp.empty_like if sw_ncol == ncol "
+            "else cp.zeros_like") in source
+    # The flux stores (bda1aa071, one fused kernel per pair): LW and full
+    # SW chunks write their own ``sl`` views, the full SW path with the
+    # daylight merge, and a compacted chunk is scattered back to exactly
+    # the columns it gathered.
+    assert source.count("_store_model_flux_pair(") == 3
+    assert "nz, lw_up[sl], lw_dn[sl], xp=cp)" in source
+    assert "daylight=daylight.reshape(-1)[sl], xp=cp)" in source
+    assert "sw_up[sl] = chunk_up" in source
+    assert "sw_dn[sl] = chunk_dn" in source
+    # The surface direct beam BEP+BEM reads (sw_dir_sfc, sf_urban_physics =
+    # 3), written to its own chunk's columns only: compacted chunks carry
+    # daylit columns alone, full chunks merge daylight like sw_up/sw_dn.
+    assert source.count("_model_flux_interfaces(") == 1
+    assert "sw_dir_sfc[sl] = (direct if sw_columns is not None else" in source
+    # A ragged daylit tail is a chunk width the full path never ran, so the
+    # solver's g-point fold must not depend on the width: it partitions an
+    # unchanged ascending sum at a fixed 32 (SW) or 128 (LW) whatever ncol.
+    for name in ("GPUWM_RTE_TILE_WIDTH", "GPUWM_RTE_LW_TILE_WIDTH",
+                 "GPUWM_RTE_SW_TILE_WIDTH"):
+        monkeypatch.delenv(name, raising=False)
+    for ncol in (1, 3, 255, 4096, 12500):
+        assert _rte_gpt_tile(None, ncol, 224, fold=True) == 32
+        assert _rte_gpt_tile(None, ncol, 256, fold=True, longwave=True) == 128
 
     kernel = (ROOT / "gpuwm" / "core" / "kernels" /
               "rrtmgp_mcica.cu").read_text(encoding="utf-8")
@@ -2617,9 +2696,18 @@ def test_rrtmgp_chunk_loops_and_mcica_seed_are_column_local():
     assert "blockIdx" not in seed and "chunk" not in seed
     # ...and the caller hands it the ABSOLUTE column index, which is the
     # half of column-locality that lives at the call site: it is what
-    # makes a chunked run reproduce an unchunked one bit for bit.
-    assert ("mcica_seed(play, col, nlay, permuteseed, s1, s2, s3, s4);"
-            in kernel)
+    # makes a chunked run reproduce an unchunked one bit for bit.  Since
+    # ad03ddb33 (the subcolumn masks share each column's seed) the kernel
+    # is one block per column, and thread 0 seeds the block's shared state
+    # once from that column's own pressures; every g-point thread of the
+    # block is the same column, so the seed is still per column.
+    flat = " ".join(kernel.split())
+    assert "const int col = blockIdx.x;" in flat
+    assert ("mcica_seed(play, col, nlay, permuteseed, "
+            "seed[0], seed[1], seed[2], seed[3]);") in flat
+    from gpuwm.core.rrtmgp import _mcica_cloud_masks
+    launch = " ".join(inspect.getsource(_mcica_cloud_masks).split())
+    assert "(int(ncol),), (threads,)," in launch
 
 
 def test_workspace_is_the_phase_maximum_simultaneous_set():
@@ -3711,6 +3799,53 @@ def test_headroom_abort_still_reports_and_exits_distinctly(capsys,
     assert not pool.freed
 
 
+def test_check_alloc_measures_on_the_recorded_sources_tables(
+        tmp_path, capsys, monkeypatch):
+    """``gpuwm check --alloc`` asks its measurement for the source's tables.
+
+    The recorded source publishes five hydrometeor masses, so the
+    measurement is asked to build and price the tables that carry them
+    (the measurement itself needs a card and is stood in for, aborting
+    before it measures), and the estimate side the report then prints
+    prices the same tables: its observed envelope is the peak envelope
+    printed beside it.  Red before the A92 follow-up: the measurement was
+    asked for water vapour alone and the abort's estimate priced none.
+    """
+    import sys
+
+    from gpuwm.boundary_fields import source_boundary_species
+    from test_runplan_tiles import moist_specified_config
+
+    stub, _pool = _stub_cupy(free_bytes=64 * GIB, total_bytes=64 * GIB)
+    monkeypatch.setitem(sys.modules, "cupy", stub)
+    asked = []
+
+    def measurement(exp, *, boundary_species=(), **kwargs):
+        asked.append(tuple(boundary_species))
+        raise pf.PreflightHeadroomError(
+            "stand-in", phase="stand-in", free_bytes=64 * GIB,
+            total_bytes=64 * GIB, reserve_bytes=0, remaining_bytes=0)
+
+    monkeypatch.setattr(pf, "run_alloc_preflight", measurement)
+    monkeypatch.setattr(pf, "_warn_unstaged_physics_tables", lambda *_: None)
+    config = moist_specified_config(tmp_path)
+    rc = _run_check(["check", str(config), "--alloc", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 3
+    species = source_boundary_species("hrrr")
+    assert asked == [species] and species
+    exp = pf._load_experiment_any(config)
+    interval, count = pf.config_forcing_schedule(config, exp)
+    lbc = {name: pf.estimate_experiment(
+        exp, forcing_interval_seconds=interval, forcing_intervals=count,
+        boundary_species=tables).domains[0].category_bytes("lbc")
+        for name, tables in (("tables", species), ("vapour", ()))}
+    assert lbc["tables"] > lbc["vapour"]
+    assert payload["domains"]["d01"]["by_category"]["lbc"] == lbc["tables"]
+    assert (payload["observed_peak_envelope_bytes"]
+            == payload["peak_envelope_bytes"])
+
+
 def test_headroom_error_carries_structured_fields():
     stub, _ = _stub_cupy(free_bytes=1 * GIB)
     reserve = pf.ReservePolicy.flat(GIB // 2)
@@ -3993,12 +4128,27 @@ def test_legacy_rrtmg_variant_prices_the_lw_chain_local_frame():
     # with it -- the gate is not being loosened, and the two assertions
     # below (covered is a subset of the unmeasured set, and the legacy
     # module set never intersects it) still hold unchanged.
+    #
+    # "urban_bep_bem" joined 2026-09-30 on the same footing: BEP+BEM's
+    # column kernel needs urban_bem.cuh and the glibc headers that
+    # gpuwm/core/urban_bem.py composes, and its unit is urban_bem_composed.
+    # Two more joined on 2026-09-30, again with the table: the legacy
+    # RRTMG speed lane's rrtmg_lw_chain_coalesced (668fa4c56) and
+    # rrtmg_lw_zbatched (bfc177208) compile only inside the longwave chain
+    # unit.  Each carries its sm_120 reading beside its row in preflight.
+    # The megakernel lane's phy_column (257a5e729) sat here under its
+    # surface_chain unit until A147 took the fragment and the unit out of
+    # the tree together.
+    # "noah_mosaic" joined the same way (2026-09-30): the Noah mosaic column
+    # launches only as gpuwm/core/noah_mosaic.py's own -fmad=false unit,
+    # priced as noah_mosaic_unit.
     covered = frozenset().union(
         *(tu.covers for tu in pf.CHAINED_TRANSLATION_UNIT_FRAMES.values()))
     assert covered == {
         "rrtmg_sw", "rrtmg_lw_chain", "rrtmg_lw_taugb02_10_11_12",
         "rrtmg_lw_taugb03_05", "rrtmg_lw_taugb06_09",
-        "rrtmg_lw_taugb13_16", "p3"}
+        "rrtmg_lw_taugb13_16", "p3", "urban_bep_bem",
+        "rrtmg_lw_chain_coalesced", "rrtmg_lw_zbatched", "noah_mosaic"}
     assert covered <= pf.UNMEASURED_KERNEL_MODULES
     assert not modules & pf.UNMEASURED_KERNEL_MODULES
 
@@ -4833,6 +4983,12 @@ def test_the_recorded_local_frames_match_the_driver():
     observed = {}
     uncompilable = set()
     for path in sorted(kdir.glob("*.cu")):
+        if path.stem == "noah_mosaic":
+            # Both mosaic launchers have dedicated --fmad=false composed
+            # loaders and measured chained rows. The generic C++17 image
+            # compiles, but no driver launches it and it has no frame row.
+            uncompilable.add(path.stem)
+            continue
         try:
             module = load_module(path.stem)
         except Exception:  # noqa: BLE001  -- recorded here, repaired elsewhere
@@ -4992,10 +5148,33 @@ def test_estimate_domain_carries_the_noahmp_transient_items():
              if item.name.startswith("noahmp_lsm/")}
     assert set(names) == {"noahmp_lsm/slab_chunk_transients",
                           "noahmp_lsm/slab_grid_transients",
-                          "noahmp_lsm/staged_leaf_batches"}
-    for item in names.values():
-        assert item.category == "transient"
+                          "noahmp_lsm/staged_leaf_batches",
+                          "noahmp_lsm/slab_caches"}
+    for name, item in names.items():
+        assert item.category == ("physics" if name == "noahmp_lsm/slab_caches"
+                                 else "transient")
         assert item.itemsize == 1
+
+
+def test_noahmp_slab_caches_are_priced_resident_per_grid_column():
+    """The layout and parameter caches outlive a call, so they are priced
+    as resident physics for every column, 522 B each today."""
+    from gpuwm.core.noahmp_column_slab import PARAMETER_INTS, PARAMETER_WIDTHS
+    from gpuwm.core.noahmp_runtime import (
+        SLAB_LAYOUT_CACHE_BYTES_PER_COLUMN, slab_cache_bytes_per_column)
+    from gpuwm.core.preflight import noahmp_lsm_cache_shapes
+
+    per_column = slab_cache_bytes_per_column()
+    assert per_column == SLAB_LAYOUT_CACHE_BYTES_PER_COLUMN + 4 * (
+        sum(PARAMETER_WIDTHS.values()) + len(PARAMETER_INTS)) == 522
+    base = dict(nz=40, dx=1000.0, dy=1000.0, ztop=16000.0, dt=5.0,
+                run_seconds=0.0, time_step_sound=4, moist=True, mp_physics=6,
+                sf_sfclay_physics=1, bl_pbl_physics=1)
+    assert noahmp_lsm_cache_shapes(RunConfig(
+        nx=600, ny=600, sf_surface_physics=4, **base)) == {
+            "noahmp_lsm/slab_caches": (360000, per_column)}
+    assert noahmp_lsm_cache_shapes(RunConfig(
+        nx=600, ny=600, sf_surface_physics=2, **base)) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -5232,8 +5411,13 @@ def test_the_envelope_bounds_every_instrumented_run():
     worst_over = 0.0
     for label, domains, estimate_gib, measured_gib in (
             FLEET_4080_FORECAST_RUNS):
+        # The rows recorded the estimate at the plan's 1.15; A163 prices
+        # the same itemized subtotal at the measured margin, so each row
+        # is re-based onto the margin that ships.
+        subtotal = estimate_gib * GIB / pf.ALLOCATOR_HEADROOM
         envelope = pf.machine_peak_envelope_bytes(
-            alloc_estimate_bytes=int(estimate_gib * GIB),
+            alloc_estimate_bytes=math.ceil(
+                pf.FORECAST_POOL_HEADROOM * subtotal),
             non_pool_bytes=non_pool, domains=domains, family="linux",
             legacy_radiation=FLEET_4080_LEGACY_RADIATION)
         assert envelope >= measured_gib * GIB, label
@@ -5303,10 +5487,14 @@ def test_the_pool_slack_term_is_the_measured_slack_not_the_multiplier():
                   legacy_radiation=True)
     modern = dict(alloc_estimate_bytes=8 * GIB, non_pool_bytes=GIB,
                   legacy_radiation=False)
+    # A163 (2026-09-30) retired the slack term: it was a second margin on
+    # the headroom the estimate's own margin prices, and the measured
+    # margin (FORECAST_POOL_HEADROOM) bounds the legacy lane's battery
+    # rows on its own (tests/test_memory_gate_a163.py).  The two lanes
+    # now price one estimate identically on both driver models.
     for family in ("linux", "windows"):
         assert (pf.machine_peak_envelope_bytes(**legacy, family=family)
-                == pf.machine_peak_envelope_bytes(**modern, family=family)
-                + math.ceil(pf.POOL_SLACK_FRACTION * 8 * GIB))
+                == pf.machine_peak_envelope_bytes(**modern, family=family))
     assert (pf.machine_peak_envelope_bytes(**legacy, family="linux")
             == pf.machine_peak_envelope_bytes(**legacy, family="windows"))
     # The footprint projection no longer moves the envelope at all.
@@ -5795,3 +5983,22 @@ def test_the_host_total_is_the_smallest_limit_on_the_process_cgroup_path(
                              re.MULTILINE).group(1)) * 1024
     expected = memtotal if case["limit"] is None else min(case["limit"], memtotal)
     assert streaming._host_total_bytes() == expected
+
+
+def test_shinhong_workspace_pricing_tracks_the_tile_and_levels():
+    """The workspace must be charged when scheme 11 is selected."""
+    profile = pf.DeviceLocalMemoryProfile(
+        name="workspace-test", multiprocessor_count=2,
+        max_threads_per_multiprocessor=1536)
+    cfg = RunConfig(**dict(_TINY, nx=257, ny=10, nz=50), bl_pbl_physics=11)
+    exp = experiment_from_run_config(cfg, datetime(2000, 1, 1))
+    assert pf.shinhong_column_workspace_bytes(exp, profile=profile) == (
+        2 * 16 * 32 * 50 * 52 * 4)
+    assert pf.column_workspace_bytes(exp, profile=profile) == (
+        pf.gf_column_workspace_bytes(exp, profile=profile)
+        + pf.kf_column_workspace_bytes(exp, profile=profile)
+        + pf.ntiedtke_column_workspace_bytes(exp, profile=profile)
+        + 2 * 16 * 32 * 50 * 52 * 4)
+    exp = experiment_from_run_config(
+        dataclasses.replace(cfg, bl_pbl_physics=1), datetime(2000, 1, 1))
+    assert pf.shinhong_column_workspace_bytes(exp, profile=profile) == 0

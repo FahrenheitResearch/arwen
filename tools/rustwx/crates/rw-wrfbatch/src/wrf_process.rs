@@ -666,6 +666,186 @@ struct WrfSourcePlan {
     path: PathBuf,
     kind: WrfSourceKind,
     records: Vec<crate::local_import::PlannedSourceTime>,
+    /// Where the file's grid sits in its parent (raw wrfouts only): a
+    /// moving nest's frames record different places ([`crate::nest_move`]).
+    placement: Option<crate::nest_move::NestPlacement>,
+    /// The file's grid spacing (`DX`, metres), which scales how closely two
+    /// places' coordinates must agree on shared ground.
+    dx_m: Option<f64>,
+}
+
+/// A series whose frames sit at more than one place of one moving nest: the
+/// place every frame is stored on (the LAST frame's, the one the pictures
+/// are drawn for), its grid, and each source's move onto it.
+struct NestMoves {
+    target: crate::nest_move::NestPlacement,
+    target_path: PathBuf,
+    target_grid: LatLonGrid,
+    tolerance_deg: f64,
+    /// Per plan: the move onto the target, `None` for a source already there.
+    shifts: Vec<Option<crate::nest_move::NestShift>>,
+}
+
+/// Plan how a series that spans a nest's moves lands on one grid, or `None`
+/// when every source sits at one place (the store's ordinary case, left
+/// byte for byte as it was).  Sources that do not all record a placement of
+/// one nest are also left alone: the store then refuses their grids by name,
+/// as it always has.
+fn plan_nest_moves(plans: &[WrfSourcePlan]) -> Result<Option<NestMoves>, String> {
+    use crate::nest_move::{NestShift, coordinate_tolerance_deg};
+
+    if plans.len() < 2 || plans.iter().any(|plan| plan.kind != WrfSourceKind::Raw) {
+        return Ok(None);
+    }
+    let Some(placements) = plans
+        .iter()
+        .map(|plan| plan.placement)
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+    if placements.iter().all(|placement| *placement == placements[0]) {
+        return Ok(None);
+    }
+    let last_valid = |plan: &WrfSourcePlan| plan.records.iter().map(|r| r.valid_unix).max();
+    let target_index = (0..plans.len())
+        .max_by_key(|&index| last_valid(&plans[index]))
+        .ok_or("a series with no source cannot move")?;
+    let target = placements[target_index];
+    let Some(shifts) = placements
+        .iter()
+        .map(|placement| {
+            NestShift::between(*placement, target).map(|shift| (!shift.is_null()).then_some(shift))
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+    let target_plan = &plans[target_index];
+    let record = target_plan
+        .records
+        .last()
+        .ok_or_else(|| format!("{} plans no time", target_plan.path.display()))?;
+    let file = isolate_panics("open WRF file", || {
+        WrfFile::open(&target_plan.path).map_err(|err| err.to_string())
+    })
+    .map_err(|err| format!("Open WRF {} failed: {err}", target_plan.path.display()))?;
+    let shape = GridShape::new(file.nx, file.ny).map_err(|err| err.to_string())?;
+    let lat = file
+        .xlat(record.time_index)
+        .map_err(|err| format!("Read XLAT from {} failed: {err}", target_plan.path.display()))?;
+    let lon = file
+        .xlong(record.time_index)
+        .map_err(|err| format!("Read XLONG from {} failed: {err}", target_plan.path.display()))?;
+    let target_grid = LatLonGrid::new(
+        shape,
+        lat.iter().map(|value| *value as f32).collect(),
+        lon.iter().map(|value| *value as f32).collect(),
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(Some(NestMoves {
+        target,
+        target_path: target_plan.path.clone(),
+        target_grid,
+        tolerance_deg: coordinate_tolerance_deg(target_plan.dx_m.unwrap_or(f64::NAN)),
+        shifts,
+    }))
+}
+
+/// Move one hour's fields from a place the nest has since left onto the
+/// series' target place: every plane shifts by whole cells and holds NaN
+/// on ground the earlier place did not cover.  Checked against the hour's
+/// own coordinates first ([`crate::nest_move::verify_shift`]).
+///
+/// A place the nest has travelled a whole width away from shares no cell
+/// with the target: its recorded move leaves nothing in common and no
+/// whole-cell move lands its coordinates there.  Its frame is stored as
+/// missing everywhere, which is what it holds on the target's ground, and
+/// the series goes on; refusing it refused every product of every later
+/// place of the run (a storm-following nest leaves its first footprint
+/// within a day).  A frame whose recorded move DOES leave shared cells but
+/// whose coordinates disagree is still refused by name.
+fn move_hour_fields(
+    fields: &mut WrfHourFields,
+    moves: &NestMoves,
+    shift: crate::nest_move::NestShift,
+    path: &Path,
+    placement: Option<crate::nest_move::NestPlacement>,
+    label: &str,
+) -> Result<(), String> {
+    use crate::nest_move::{locate_shift, shift_plane, verify_shift};
+
+    let (nx, ny) = (moves.target_grid.shape.nx, moves.target_grid.shape.ny);
+    let (shift, shared, read_from) =
+        match verify_shift(&fields.grid, &moves.target_grid, shift, moves.tolerance_deg) {
+            Ok(shared) => (shift, shared, "its recorded place"),
+            Err(err) => match locate_shift(&fields.grid, &moves.target_grid, moves.tolerance_deg)
+            {
+                Some((located, shared)) => (
+                    located,
+                    shared,
+                    "its coordinates (its recorded place is in a parent that moved too)",
+                ),
+                None if !shift.shares_cell(nx, ny) => (
+                    shift,
+                    0,
+                    "its recorded place, a whole nest width from the series' place",
+                ),
+                None => {
+                    return Err(format!(
+                        "WRF {} ({label}) cannot be moved onto {}'s place: {err}, and no \
+                         whole-cell move lands its coordinates there; storing it there would \
+                         put the values of different ground on this place's cells",
+                        path.display(),
+                        moves.target_path.display()
+                    ));
+                }
+            },
+        };
+    for (_, field) in fields.canonical.iter_mut() {
+        field.values = shift_plane(&field.values, nx, ny, shift);
+        field.grid = moves.target_grid.clone();
+    }
+    for field in fields.derived.iter_mut() {
+        field.values = shift_plane(&field.values, nx, ny, shift);
+    }
+    for volume in fields.volumes.iter_mut() {
+        for (_, plane) in volume.levels.iter_mut() {
+            *plane = shift_plane(plane, nx, ny, shift);
+        }
+    }
+    fields.grid = moves.target_grid.clone();
+    let from = placement
+        .map(|p| format!("({}, {})", p.i_parent_start, p.j_parent_start))
+        .unwrap_or_else(|| "?".to_string());
+    fields.notes.push(format!(
+        "{} ({label}): a moving nest's earlier place {from} in its parent, moved onto the \
+         place ({}, {}) of the series' last frame by ({}, {}) nest cells read from {read_from}; \
+         {} of {} cells are shared ground and the rest are missing for this frame",
+        display_name(path),
+        moves.target.i_parent_start,
+        moves.target.j_parent_start,
+        shift.dx,
+        shift.dy,
+        shared,
+        nx * ny
+    ));
+    Ok(())
+}
+
+/// A model label the metadata row cannot take is said once and dropped:
+/// the plots keep the store identity rather than the import failing over
+/// a name.
+fn unusable_model_label(
+    tx: &Sender<WrfProcessMessage>,
+    path: &Path,
+    reason: &str,
+) -> Option<String> {
+    let _ = tx.send(WrfProcessMessage::Progress(format!(
+        "{}: {reason}; the plots keep the store identity",
+        display_name(path)
+    )));
+    None
 }
 
 fn preflight_wrf_sources(
@@ -677,6 +857,8 @@ fn preflight_wrf_sources(
     let mut expected_shape = None::<(usize, usize)>;
     let mut sources = Vec::with_capacity(files.len());
     let mut kinds = Vec::with_capacity(files.len());
+    let mut places = Vec::with_capacity(files.len());
+    let mut model_labels = Vec::<Option<String>>::with_capacity(files.len());
     for path in files {
         let _ = tx.send(WrfProcessMessage::Progress(format!(
             "Preflighting WRF {}",
@@ -698,7 +880,15 @@ fn preflight_wrf_sources(
                 rustwx_products::shared_context::set_initial_condition_disclosure(
                     crate::local_import::initial_condition_disclosure(&file),
                 );
+                model_labels.push(
+                    crate::local_import::model_label(&file)
+                        .unwrap_or_else(|reason| unusable_model_label(tx, path, &reason)),
+                );
                 let times = crate::local_import::wrf_source_times(&file, path)?;
+                places.push((
+                    crate::nest_move::NestPlacement::of(&file),
+                    file.global_attr_f64("DX").ok(),
+                ));
                 (WrfSourceKind::Raw, times, (file.nx, file.ny))
             }
             Err(_) => {
@@ -708,11 +898,16 @@ fn preflight_wrf_sources(
                 rustwx_products::shared_context::set_initial_condition_disclosure(
                     crate::local_import::netcdf_initial_condition_disclosure(&nc),
                 );
+                model_labels.push(
+                    crate::local_import::netcdf_model_label(&nc)
+                        .unwrap_or_else(|reason| unusable_model_label(tx, path, &reason)),
+                );
                 let times = crate::local_import::netcdf_source_times(&nc, path)
                     .map_err(|err| format!("Read times from {} failed: {err}", path.display()))?;
                 let shape = crate::local_import::netcdf_grid_shape(&nc, path).map_err(|err| {
                     format!("Read grid shape from {} failed: {err}", path.display())
                 })?;
+                places.push((None, None));
                 (WrfSourceKind::Postprocessed, times, shape)
             }
         };
@@ -720,9 +915,17 @@ fn preflight_wrf_sources(
         sources.push((path.clone(), source_times));
         kinds.push(kind);
     }
+    // The model the files name (a mesh or global model's frames import as
+    // `wrf` like any wrfout) is the run's, when every file names the same
+    // one; recorded once, beside the disclosure.
+    rustwx_products::shared_context::set_model_label(
+        rustwx_products::shared_context::agreed_model_label(&model_labels),
+    );
     let timeline = crate::local_import::ForecastHourTimeline::plan_all(&sources)?;
     let mut plans = Vec::with_capacity(sources.len());
-    for (index, ((path, _), kind)) in sources.into_iter().zip(kinds).enumerate() {
+    for (index, (((path, _), kind), (placement, dx_m))) in
+        sources.into_iter().zip(kinds).zip(places).enumerate()
+    {
         let records = timeline
             .records_for_source(index)
             .ok_or_else(|| {
@@ -736,6 +939,8 @@ fn preflight_wrf_sources(
             path,
             kind,
             records,
+            placement,
+            dx_m,
         });
     }
     let run = timeline.run_name(source_identity, processing_profile);
@@ -815,6 +1020,27 @@ fn process_paths_with_target(
     } else {
         discovered_run
     };
+    // The run name keys every byte of the sources and the processing plan, so
+    // a complete run already published under it, by this same binary, is the
+    // import this call would write.  It is answered from the store.
+    if live_target.is_none() {
+        if let Some(record) = published_import_record(store_root, &model, &run, &plans) {
+            let _ = tx.send(WrfProcessMessage::Progress(format!(
+                "{REUSED_IMPORT_PROGRESS} {model}/{run}: this store already holds these \
+                 sources imported under this plan by this build"
+            )));
+            return Ok(WrfProcessSummary {
+                store_root: store_root.to_path_buf(),
+                model,
+                run,
+                files_seen: files.len(),
+                hours_written: record.hours_written,
+                variables: record.variables,
+                notes: record.notes,
+                frame_sources: plan_frame_sources(&plans),
+            });
+        }
+    }
     // Whole selected-file imports publish one complete run directory. A live
     // simulation instead appends one independently validated hour to a stable
     // case run; rw-store's per-run lock, atomic hour writer, grid identity,
@@ -833,8 +1059,18 @@ fn process_paths_with_target(
     let mut written = Vec::<WrittenHour>::new();
     let mut all_vars = Vec::<String>::new();
     let mut all_notes = Vec::<String>::new();
+    // A series that spans a moving nest's moves is stored on its last
+    // frame's place ([`crate::nest_move`]); `None` for every other series.
+    let moves = if live_target.is_none() {
+        plan_nest_moves(&plans)?
+    } else {
+        None
+    };
 
-    for plan in &plans {
+    for (plan_index, plan) in plans.iter().enumerate() {
+        let shift = moves
+            .as_ref()
+            .and_then(|moves| moves.shifts.get(plan_index).copied().flatten());
         let path = &plan.path;
         let _ = tx.send(WrfProcessMessage::Progress(format!(
             "Opening WRF {}",
@@ -1062,7 +1298,7 @@ fn process_paths_with_target(
             let mut progress = |message: String| {
                 let _ = tx.send(WrfProcessMessage::Progress(message));
             };
-            let fields = read_wrf_products(
+            let mut fields = read_wrf_products(
                 &file,
                 path,
                 timeidx,
@@ -1070,6 +1306,16 @@ fn process_paths_with_target(
                 stored_plane_index.as_ref(),
                 &mut progress,
             )?;
+            if let (Some(moves), Some(shift)) = (moves.as_ref(), shift) {
+                move_hour_fields(
+                    &mut fields,
+                    moves,
+                    shift,
+                    path,
+                    plan.placement,
+                    &record.label,
+                )?;
+            }
             if fields.canonical.is_empty() && fields.derived.is_empty() && fields.volumes.is_empty()
             {
                 return Err(format!(
@@ -1140,6 +1386,14 @@ fn process_paths_with_target(
     all_notes.dedup();
     crate::local_import::verify_source_set_unchanged(&source_snapshot)?;
     if let Some(publisher) = publisher {
+        // Inside the staged run, so it is published with the run it
+        // describes or not at all.
+        write_import_record(
+            &publisher.staging_store_root().join(&model).join(&run),
+            written.len(),
+            &all_vars,
+            &all_notes,
+        )?;
         let _ = tx.send(WrfProcessMessage::Progress(format!(
             "Publishing complete WRF run {model}/{run}"
         )));
@@ -1149,14 +1403,7 @@ fn process_paths_with_target(
             "Published live WRF timestep into {model}/{run}"
         )));
     }
-    let frame_sources = plans
-        .iter()
-        .flat_map(|plan| {
-            plan.records
-                .iter()
-                .map(|record| (record.storage_slot, plan.path.clone()))
-        })
-        .collect();
+    let frame_sources = plan_frame_sources(&plans);
     Ok(WrfProcessSummary {
         store_root: store_root.to_path_buf(),
         model,
@@ -1167,6 +1414,153 @@ fn process_paths_with_target(
         notes: all_notes,
         frame_sources,
     })
+}
+
+/// Which input file each stored slot was read from, from the source plans.
+fn plan_frame_sources(plans: &[WrfSourcePlan]) -> Vec<(u16, PathBuf)> {
+    plans
+        .iter()
+        .flat_map(|plan| {
+            plan.records
+                .iter()
+                .map(|record| (record.storage_slot, plan.path.clone()))
+        })
+        .collect()
+}
+
+/// The progress word a reused import is reported with.
+pub const REUSED_IMPORT_PROGRESS: &str = "Reusing the imported WRF run";
+
+/// The file a complete import keeps inside its published run directory.
+///
+/// WHAT BREAKAGE THIS PREVENTS (gate law): `gpuwm render` asks the catalog
+/// what a set of frames can draw (`--list-products`) and then renders them,
+/// two launches into one store, and each launch imported every frame.  Nine
+/// long windows over four 750 m frames cost 219 CPU-s through the door
+/// against 11 CPU-s in the renderer alone (about 20 to 25 min per 36 h run),
+/// and the listing was about 26 of the 34.7 CPU-s of every live frame.  The
+/// run name already keys every byte of the sources and the processing plan;
+/// this record adds what the name cannot key, the binary that executed the
+/// plan and what that import reported, so the second launch answers from
+/// the store and still reports the same notes.
+const IMPORT_RECORD_FILE: &str = "import-record.json";
+const IMPORT_RECORD_SCHEMA: &str = "rw-wrfbatch-import-record-v1";
+/// A record is a few notes and variable names; anything larger is not one.
+const IMPORT_RECORD_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ImportRecord {
+    schema: String,
+    /// The executable that wrote the run.  The run name keys the sources and
+    /// the plan, not the code that executed the plan, so a store kept across
+    /// an upgrade is imported again by the new build instead of being
+    /// answered with the old build's fields.
+    writer: String,
+    hours_written: usize,
+    variables: Vec<String>,
+    notes: Vec<String>,
+}
+
+/// This executable's identity: its build line and the SHA-256 of its bytes,
+/// read once per process.  `None` when the executable cannot be read, which
+/// writes no record and so reuses nothing.
+fn import_writer_identity() -> Option<&'static str> {
+    use sha2::{Digest, Sha256};
+    static IDENTITY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    IDENTITY
+        .get_or_init(|| {
+            use std::io::Read;
+            let exe = std::env::current_exe().ok()?;
+            let mut file = std::fs::File::open(exe).ok()?;
+            let mut hasher = Sha256::new();
+            let mut buffer = vec![0u8; 1 << 20];
+            loop {
+                let read = file.read(&mut buffer).ok()?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+            let digest = hasher.finalize();
+            let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+            Some(format!("{} {hex}", writer_build()))
+        })
+        .as_deref()
+}
+
+fn write_import_record(
+    staged_run_dir: &Path,
+    hours_written: usize,
+    variables: &[String],
+    notes: &[String],
+) -> Result<(), String> {
+    let Some(writer) = import_writer_identity() else {
+        return Ok(());
+    };
+    let record = ImportRecord {
+        schema: IMPORT_RECORD_SCHEMA.to_string(),
+        writer: writer.to_string(),
+        hours_written,
+        variables: variables.to_vec(),
+        notes: notes.to_vec(),
+    };
+    let path = staged_run_dir.join(IMPORT_RECORD_FILE);
+    let bytes = serde_json::to_vec(&record)
+        .map_err(|err| format!("encode import record {}: {err}", path.display()))?;
+    std::fs::write(&path, bytes)
+        .map_err(|err| format!("write import record {}: {err}", path.display()))
+}
+
+/// The record of a complete run this store already holds under `run`,
+/// written by this executable and covering exactly the slots `plans` store,
+/// or `None`, and the sources are imported.  Every doubt is a `None`: an
+/// import is always correct, and a reuse is only a saving.
+fn published_import_record(
+    store_root: &Path,
+    model: &str,
+    run: &str,
+    plans: &[WrfSourcePlan],
+) -> Option<ImportRecord> {
+    let writer = import_writer_identity()?;
+    let run_dir = store_root.join(model).join(run);
+    let real_dir = std::fs::symlink_metadata(&run_dir).ok()?;
+    if real_dir.file_type().is_symlink() || !real_dir.is_dir() {
+        return None;
+    }
+    let record_path = run_dir.join(IMPORT_RECORD_FILE);
+    let metadata = std::fs::symlink_metadata(&record_path).ok()?;
+    if !metadata.is_file() || metadata.len() > IMPORT_RECORD_MAX_BYTES {
+        return None;
+    }
+    let record: ImportRecord = serde_json::from_slice(&std::fs::read(&record_path).ok()?).ok()?;
+    if record.schema != IMPORT_RECORD_SCHEMA || record.writer != writer {
+        return None;
+    }
+    let manifest =
+        rw_store::run::RwsRunManifest::load_for_run(&run_dir.join("run.json"), model, run).ok()?;
+    let planned: std::collections::BTreeSet<u16> = plans
+        .iter()
+        .flat_map(|plan| plan.records.iter().map(|record| record.storage_slot))
+        .collect();
+    let stored: std::collections::BTreeSet<u16> = manifest.hours.keys().copied().collect();
+    if planned != stored || !run_dir.join("grid.rwg").is_file() {
+        return None;
+    }
+    // The checks a publish makes of its staged run, so a store kept across
+    // renders (the desktop importer's) imports a damaged grid or hour file
+    // again instead of answering from it: the grid, and every hour's slot,
+    // identity, grid and time against the manifest.
+    let grid = rw_store::grid::GridFile::open(&run_dir.join("grid.rwg")).ok()?;
+    manifest.validate_grid(&grid.hash, grid.nx, grid.ny).ok()?;
+    for (&slot, entry) in &manifest.hours {
+        let hour_path = run_dir.join(&entry.file);
+        if !hour_path.is_file() {
+            return None;
+        }
+        let reader = rw_store::reader::HourReader::open(&hour_path).ok()?;
+        manifest.validate_hour_meta(slot, reader.meta()).ok()?;
+    }
+    Some(record)
 }
 
 fn read_wrf_products(

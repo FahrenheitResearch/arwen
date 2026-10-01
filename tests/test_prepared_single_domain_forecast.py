@@ -105,6 +105,10 @@ def _declaring_before_first_domain(text: str, block: str) -> str:
 _UNCONDITIONAL_SPREADS = {
     "moisture_floor_proof_entry": "moisture_floors",
     "moisture_floor_receipts": "moisture_floors_by_domain",
+    # The chained tree's head computes the same by-domain receipt from the
+    # same initial states before its seal (and the seal refuses a tree whose
+    # export disagrees with it).
+    "head_moisture_floor_receipts": "moisture_floors_by_domain",
 }
 
 
@@ -120,15 +124,19 @@ def _unconditional_spread_key(value):
     return None
 
 
-def _mapped_proof_literals() -> tuple[dict[str, set[str]],
+def _mapped_proof_literals() -> tuple[dict[str, list[set[str]]],
                                       dict[str, set[str]]]:
     """The top-level keys ``gpuwm/mapped_direct.py`` actually writes.
 
-    Returns ``(required, optional)``, each keyed by schema constant.
+    Returns ``(required, optional)``, each keyed by schema constant:
+    ``required`` holds one key set per ``proof = {...}`` document the
+    writer publishes under that schema (in source order), ``optional``
+    the union of their opted-in keys.
 
-    Read out of the writer's own source with :mod:`ast`, from the two
-    ``proof = {...}`` assignments it publishes -- one direct, one
-    hierarchy, told apart by the schema constant each names.  The one
+    Read out of the writer's own source with :mod:`ast`, from the
+    ``proof = {...}`` assignments it publishes -- the direct one, and the
+    hierarchy's one-shot and chained ones -- told apart by the schema
+    constant each names.  The one
     computed key, ``forcing_key``, is the forcing axis, and it is
     normalized to ``forcing_hours`` because that is the only spelling
     the reader accepts (a sub-hourly mapped preparation is refused
@@ -154,27 +162,37 @@ def _mapped_proof_literals() -> tuple[dict[str, set[str]],
 
     source = (ROOT / "gpuwm" / "mapped_direct.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    found: dict[str, set[str]] = {}
+    found: dict[str, list[set[str]]] = {}
     conditional: dict[str, set[str]] = {}
     # A chained preparation writes its proof in two parts: ``proof_head``,
     # everything the start time knows, and ``proof = {**proof_head, ...}``
-    # at the seal.  The head is read first so the seal's spread of it
-    # contributes the head's keys, schema and opt-ins.
-    heads = [node for node in ast.walk(tree)
-             if isinstance(node, ast.Assign)
-             and isinstance(node.value, ast.Dict)
-             and len(node.targets) == 1
-             and isinstance(node.targets[0], ast.Name)
-             and node.targets[0].id == "proof_head"]
+    # at the seal.  Each function's head is read first so its seal's
+    # spread contributes THAT head's keys, schema and opt-ins: the single
+    # domain and the chained tree each have their own.
+    functions = [node for node in tree.body
+                 if isinstance(node, ast.FunctionDef)]
+    ordered: list = []
+    for function in functions:
+        assigns = [node for node in ast.walk(function)
+                   if isinstance(node, ast.Assign)
+                   and isinstance(node.value, ast.Dict)
+                   and len(node.targets) == 1
+                   and isinstance(node.targets[0], ast.Name)
+                   and node.targets[0].id in {"proof", "proof_head"}]
+        heads = [node for node in assigns
+                 if node.targets[0].id == "proof_head"]
+        if len(heads) > 1:
+            raise AssertionError(
+                f"gpuwm/mapped_direct.py:{function.name} writes more than "
+                "one proof_head; teach this gate which seal spreads which")
+        # None starts a function: its seals spread only its own head.
+        ordered += [None, *heads, *sorted(
+            (node for node in assigns if node not in heads),
+            key=lambda node: node.lineno)]
     head_parts: dict[str, object] = {}
-    for node in heads + [node for node in ast.walk(tree)
-                         if node not in heads]:
-        if not isinstance(node, ast.Assign) or not isinstance(
-                node.value, ast.Dict):
-            continue
-        if not (len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id in {"proof", "proof_head"}):
+    for node in ordered:
+        if node is None:
+            head_parts = {}
             continue
         keys: set[str] = set()
         opted_in: set[str] = set()
@@ -240,11 +258,11 @@ def _mapped_proof_literals() -> tuple[dict[str, set[str]],
                           "schema_name": schema_name}
             continue
         # `proof_content_sha256` is assigned on the next statement, not
-        # inside the literal, and both documents carry it.
+        # inside the literal, and every document carries it.
         keys.add("proof_content_sha256")
         assert schema_name is not None
-        found[schema_name] = keys
-        conditional[schema_name] = opted_in
+        found.setdefault(schema_name, []).append(keys)
+        conditional.setdefault(schema_name, set()).update(opted_in)
     return found, conditional
 
 
@@ -262,14 +280,23 @@ def test_the_reader_and_the_writer_agree_on_the_mapped_proof_inventory():
 
     literals, optional = _mapped_proof_literals()
     assert set(literals) == {"PROOF_SCHEMA", "HIERARCHY_PROOF_SCHEMA"}, (
-        "gpuwm/mapped_direct.py no longer publishes exactly two proof "
-        f"documents; it publishes {sorted(literals)}")
-    assert literals["PROOF_SCHEMA"] == set(runner.MAPPED_DIRECT_PROOF_KEYS), (
+        "gpuwm/mapped_direct.py no longer publishes exactly the direct and "
+        f"hierarchy proof schemas; it publishes {sorted(literals)}")
+    assert {schema: len(documents) for schema, documents in literals.items()} \
+        == {"PROOF_SCHEMA": 1, "HIERARCHY_PROOF_SCHEMA": 2}, (
+        "gpuwm/mapped_direct.py no longer publishes one direct proof and "
+        "two hierarchy proofs (one-shot and chained); teach this gate the "
+        "new document")
+    assert literals["PROOF_SCHEMA"] == [set(runner.MAPPED_DIRECT_PROOF_KEYS)], (
         "the mapped direct proof the writer publishes and the inventory "
         "the forecast runner accepts have drifted apart")
-    assert literals["HIERARCHY_PROOF_SCHEMA"] \
-        == set(runner.MAPPED_HIERARCHY_PROOF_KEYS), (
-        "the mapped hierarchy proof the writer publishes and the "
+    # The chained tree's proof is the runner's whole inventory; the
+    # one-shot tree (chaining off, or a CUDA tree) has no stream to name,
+    # which is the one key the runner accepts absent from a current proof.
+    hierarchy = set(runner.MAPPED_HIERARCHY_PROOF_KEYS)
+    assert sorted(map(sorted, literals["HIERARCHY_PROOF_SCHEMA"])) == sorted(
+        [sorted(hierarchy), sorted(hierarchy - {"boundary_stream"})]), (
+        "the mapped hierarchy proofs the writer publishes and the "
         "inventory the forecast runner accepts have drifted apart")
     # The opted-in half, bound the same way.  A key the writer can add
     # conditionally that the runner does not tolerate is the same dead
@@ -1177,7 +1204,15 @@ def _prepared_fixture(
         physics_profile=runner.PHYSICS_PROFILE,
         twentycr_decoder_roles=frozenset({"gpuwm_mapped_engine"}),
         highres=None, bind_highres=True,
+        preprocessing_extra=None, bind_preprocessing=None,
+        mapping_document: bytes | None = None,
 ):
+    """A synthetic sealed preparation of ``source``, every digest consistent.
+
+    ``mapping_document`` (20crv3 only) is the mapping the preparation
+    bound in place of the packaged one, every digest sealed to it the way a
+    preparation by the release that shipped it seals them (A166).
+    """
     if hierarchy and source not in {"gfs", "20crv3"}:
         raise ValueError("synthetic hierarchy fixture uses GFS-shaped configs")
     prepared = tmp_path / "prepared"
@@ -1217,7 +1252,12 @@ def _prepared_fixture(
         "backend": "cpu",
         "implementation": "test-source-neutral-preprocess",
         "workers": 2,
+        **(preprocessing_extra or {}),
     }
+    # What the cache binds: the whole receipt (every cache written before
+    # A138) unless the test names another binding.
+    bound_preprocessing = (preprocessing if bind_preprocessing is None
+                           else bind_preprocessing(preprocessing))
     bridge_digest = hashlib.sha256(f"{source}-bridge".encode()).hexdigest()
     files = {}
     if source != "20crv3":
@@ -1313,6 +1353,8 @@ def _prepared_fixture(
             authority_root / "rw-wps-20crv3-member-grib2.provenance.json",
             evidence / "provenance-test.json")
         assert _sha256(evidence / "mapping.json") == authorities["mapping"]
+        if mapping_document is not None:
+            (evidence / "mapping.json").write_bytes(mapping_document)
         assert _sha256(evidence / "composition.json") \
             == authorities["composition"]
         assert _sha256(evidence / "provenance-test.json") \
@@ -1341,6 +1383,9 @@ def _prepared_fixture(
     decoder_digests = None
     if source == "20crv3":
         mapped_authorities = dict(runner.twentycrv3_authority_sha256())
+        if mapping_document is not None:
+            mapped_authorities["mapping"] = hashlib.sha256(
+                mapping_document).hexdigest()
         decoder_digests = {
             role: hashlib.sha256(f"20crv3-{role}".encode()).hexdigest()
             for role in twentycr_decoder_roles
@@ -1458,7 +1503,7 @@ def _prepared_fixture(
             "input_manifest_sha256": manifest_digest,
             "composition_receipt_sha256": source_composition[
                 "receipt_content_sha256"],
-            "preprocessing": preprocessing,
+            "preprocessing": bound_preprocessing,
         }
         if hierarchy:
             source_identity.update({
@@ -1477,7 +1522,7 @@ def _prepared_fixture(
                 "sha256": bridge_digest,
                 "implementation": runner._DECODER_IMPLEMENTATION[source],
             },
-            "preprocessing": preprocessing,
+            "preprocessing": bound_preprocessing,
         }
     if source == "gfs":
         source_identity.update({
@@ -1540,7 +1585,7 @@ def _prepared_fixture(
                 "source_adapter": source,
                 "boundary_interval_seconds": (
                     forcing_hours[1] - forcing_hours[0]) * 3600,
-                "preprocessing": preprocessing,
+                "preprocessing": bound_preprocessing,
             })
     elif source == "20crv3":
         user_metadata.update({
@@ -2390,8 +2435,8 @@ def test_unnamed_preflight_recomputes_the_front_door_selection(
     """The profile-agnostic invariant of the route, watched at PREFLIGHT.
 
     The docstring of ``_validate_front_door_physics_proof`` calls the
-    byte equality between the proof's per-domain selection receipt and
-    the runner's recompute THE invariant; until this test nothing
+    equality between the proof's per-domain selection receipt and the
+    runner's recompute THE invariant; until this test nothing
     watched its ``MULTI_DOMAIN_SELECTION_SCHEMA`` branch fire through
     the production entrypoint.  The fixture's proof physics is written
     by the REAL GFS front door, JSON round trip included, and the
@@ -2429,6 +2474,127 @@ def test_unnamed_preflight_recomputes_the_front_door_selection(
             ValueError,
             match="physics selection differs from the hash-bound"):
         _preflight_fixture(fixture, physics_profile=None)
+
+
+#: The physics registry document 2.8.0 shipped (and 2492999cd carried).
+_REGISTRY_DOCUMENT_280 = (
+    "378ade8eaa2e5cb6776141198d551b90daba1b5e987b3a64fbe2d58d9fdf3459")
+
+#: Every shipped suite's named and per-domain receipt as 2492999cd wrote
+#: them (tests/test_registry_physics_identity.py reads the same file).
+_RECEIPTS_280 = (ROOT / "tests" / "data" / "registry_physics"
+                 / "receipts-2492999cd.json")
+
+
+def _as_written_by_280(receipt):
+    """The receipt 2.8.0 wrote for the selection ``receipt`` records.
+
+    A named receipt is the one 2492999cd wrote for that profile, as it
+    wrote it.  The GFS proof configuration's per-domain suite is not one
+    of the shipped suites the fixture holds, so its receipt is this
+    build's carrying only the fields 2.8.0's per-domain receipts carry
+    (no urban component or selector), 2.8.0's document digest and no
+    registry physics.
+    """
+
+    document = json.loads(_RECEIPTS_280.read_text(encoding="utf-8"))
+    assert document["registry_sha256"] == _REGISTRY_DOCUMENT_280
+    rows = document["receipts"]
+    if receipt.get("profile") is not None:
+        return next(row["named"] for row in rows
+                    if row["profile"] == receipt["profile"])
+    shape = rows[0]["unnamed"]
+    legacy = {key: json.loads(json.dumps(receipt[key]))
+              for key in shape if key in receipt}
+    legacy["registry_sha256"] = _REGISTRY_DOCUMENT_280
+    domain_shape = shape["domains"]["1"]
+    for grid_id, domain in legacy["domains"].items():
+        legacy["domains"][grid_id] = {
+            key: ({name: value for name, value in domain[key].items()
+                   if name in domain_shape[key]}
+                  if isinstance(domain_shape[key], dict)
+                  and isinstance(domain[key], dict) else domain[key])
+            for key in domain_shape if key in domain}
+    return legacy
+
+
+def _write_280_receipt(fixture):
+    proof = json.loads(fixture.proof.read_text(encoding="utf-8"))
+    assert proof["export"]["physics"] == proof["physics"]
+    legacy = _as_written_by_280(proof["physics"])
+    assert "registry_physics" not in legacy
+    proof["physics"] = legacy
+    proof["export"]["physics"] = json.loads(json.dumps(legacy))
+    _write_json(fixture.proof, proof)
+    return proof
+
+
+@pytest.mark.parametrize("physics_profile", [runner.PHYSICS_PROFILE, None])
+def test_a_proof_prepared_under_the_280_registry_resolves_at_preflight(
+        tmp_path, monkeypatch, physics_profile):
+    """A153: a preparation 2.8.0 wrote runs here, by the real preflight.
+
+    2.8.0's receipts carry the registry DOCUMENT digest and no
+    ``registry_physics``.  Two citation-only registry commits since moved
+    that digest, and the byte comparison refused every such preparation
+    ("physics selection differs") while the forecast was identical; then
+    the urban component (off at ``none`` in every template), two urban
+    knobs and two radiation knobs implemented off at 0 refused them again
+    by name.  The registry history resolves 2.8.0's document to its
+    physics, and what was added since is off in the configuration this
+    build loads, so the proof is admitted; a document the history does not
+    hold is refused, naming it.
+    """
+
+    fixture = _prepared_fixture(tmp_path, "gfs",
+                                physics_profile=physics_profile)
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+    proof = _write_280_receipt(fixture)
+
+    inputs = _preflight_fixture(fixture, physics_profile=physics_profile)
+    assert inputs.proof["physics"]["registry_sha256"] \
+        == _REGISTRY_DOCUMENT_280
+    assert "urban" not in json.dumps(inputs.proof["physics"])
+
+    for receipt in (proof["physics"], proof["export"]["physics"]):
+        receipt["registry_sha256"] = "e" * 64
+    _write_json(fixture.proof, proof)
+    with pytest.raises(
+            ValueError,
+            match=(r"physics selection differs from the hash-bound "
+                   r"experiment/profile: registry physics: the preparation "
+                   r"names registry document eeeeeeeeeeee")):
+        _preflight_fixture(fixture, physics_profile=physics_profile)
+
+
+@pytest.mark.parametrize("physics_profile", [runner.PHYSICS_PROFILE, None])
+def test_a_280_proof_this_build_no_longer_admits_is_refused_at_preflight(
+        tmp_path, monkeypatch, physics_profile):
+    """A153: admission rules are outside the physics identity because the
+    preflight re-checks them against the prepared configuration.  Against
+    a build whose YSU no longer admits the classic MM5 surface layer, a
+    2.8.0 YSU over classic MM5 preparation is refused, naming the rule.
+    """
+
+    from gpuwm import physics_registry as registry_module
+
+    fixture = _prepared_fixture(tmp_path, "gfs",
+                                physics_profile=physics_profile)
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+    _write_280_receipt(fixture)
+    registry = registry_module.physics_registry()
+    ysu = registry["components"]["pbl"]["options"]["ysu"]
+    assert "classic-mm5" in ysu["constraints"]["requires_components"][
+        "surface_layer"]
+    ysu["constraints"]["requires_components"]["surface_layer"] = [
+        "revised-mm5"]
+    monkeypatch.setattr(registry_module, "_REGISTRY", registry)
+
+    with pytest.raises(
+            ValueError,
+            match=(r"requires surface_layer in \['revised-mm5'\], got "
+                   r"'classic-mm5'")):
+        _preflight_fixture(fixture, physics_profile=physics_profile)
 
 
 # NEEDS CUPY INSTALLED, and opens no device: the door refuses ahead of
@@ -2665,6 +2831,90 @@ def test_preflight_accepts_exact_member_20crv3_mapped_hierarchy_d01(
     runner._verify_inputs_unchanged(inputs)
 
 
+#: What a CUDA preparation's receipt measured (A138): the card's free
+#: bytes as auto read them and as the preparation was priced, and the host
+#: steps' worker count.  The proof keeps them; the cache binds the receipt
+#: without them.
+_MEASURED_SELECTION = {
+    "selection": {
+        "requested": "auto", "backend": "cpu",
+        "reason": "GPU utilization 73% meets the busy threshold of 50%",
+        "device_load": {"free_bytes": 12_345_678_912,
+                        "total_bytes": 17_094_475_776,
+                        "utilization_gpu_percent": 73},
+        "device_fit": {"need_bytes": 3_000_000_000,
+                       "free_bytes": 12_345_678_912,
+                       "total_bytes": 17_094_475_776, "fits": True},
+    },
+    "masked_surface_chain": {"workers": 24, "bridge": None},
+    "host_cpu_count": 24,
+}
+
+_READER_ROUTES = pytest.mark.parametrize(("source", "hierarchy"), [
+    ("gfs", False), ("era5", False), ("20crv3", False), ("20crv3", True)])
+
+
+@_READER_ROUTES
+def test_a_cache_binding_the_receipt_without_its_measurements_restores(
+        tmp_path, monkeypatch, source, hierarchy):
+    """A cache written since A138 binds preprocess_identity(receipt)
+    while its proof keeps the whole receipt; the forecast accepts the
+    pair on every route that binds preprocessing."""
+
+    from gpuwm.ingest.preprocess_backend import preprocess_identity
+
+    fixture = _prepared_fixture(
+        tmp_path, source, hierarchy=hierarchy,
+        preprocessing_extra=_MEASURED_SELECTION,
+        bind_preprocessing=preprocess_identity)
+    identity = json.loads((fixture.domain_bundle / "prepared-cache"
+                           / "header.json").read_text(encoding="utf-8"))[
+                               "identity"]
+    assert identity["source_identity"]["preprocessing"]["selection"] == {
+        "requested": "auto", "backend": "cpu"}
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=hierarchy)
+
+    inputs = _preflight_fixture(fixture)
+
+    assert inputs.cache_reader.verify_all()["status"] == "PASS"
+    runner._verify_inputs_unchanged(inputs)
+
+
+@_READER_ROUTES
+def test_a_cache_written_before_a138_still_restores(
+        tmp_path, monkeypatch, source, hierarchy):
+    """The whole receipt, measurements included, was the binding before
+    A138; such a cache is still exactly its proof's preparation."""
+
+    fixture = _prepared_fixture(
+        tmp_path, source, hierarchy=hierarchy,
+        preprocessing_extra=_MEASURED_SELECTION)
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=hierarchy)
+
+    inputs = _preflight_fixture(fixture)
+
+    assert inputs.cache_reader.verify_all()["status"] == "PASS"
+
+
+@_READER_ROUTES
+def test_a_cache_bound_to_another_preparation_is_refused_by_name(
+        tmp_path, monkeypatch, source, hierarchy):
+    """Dropping the measurements is not leniency: a cache whose bound
+    receipt names another backend than its proof is refused."""
+
+    from gpuwm.ingest.preprocess_backend import preprocess_identity
+
+    fixture = _prepared_fixture(
+        tmp_path, source, hierarchy=hierarchy,
+        preprocessing_extra=_MEASURED_SELECTION,
+        bind_preprocessing=lambda receipt: preprocess_identity(
+            dict(receipt, backend="cuda")))
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=hierarchy)
+
+    with pytest.raises(ValueError, match="preprocessing identity differs"):
+        _preflight_fixture(fixture)
+
+
 def _proof_content_sha(fixture) -> str:
     """The field INSIDE proof.json, which is not the file's digest."""
 
@@ -2888,6 +3138,87 @@ def test_source_20crv3_refuses_a_bundle_prepared_from_a_users_own_mapping(
     with pytest.raises(
         ValueError, match="does not use the packaged 20crv3 authorities"
     ):
+        _preflight_fixture(fixture)
+
+
+def _twentycrv3_mapping_before_multiples(**target_changes) -> bytes:
+    """The packaged 20CRv3 member mapping as 2.8.0 shipped it (A166).
+
+    A159 added ``accept_boundary_interval_multiples`` to it and nothing
+    else, so 2.8.0 bound this document; ``target_changes`` makes one that
+    decodes differently.
+    """
+
+    from gpuwm.source_authorities import (BOUNDARY_MULTIPLES_KEY,
+                                          packaged_authorities)
+
+    document = json.loads(packaged_authorities(
+        "20crv3-member-grib2-v1")["mapping"].read_bytes())
+    del document["target"][BOUNDARY_MULTIPLES_KEY]
+    document["target"].update(target_changes)
+    return json.dumps(document, indent=1).encode("utf-8")
+
+
+def test_a_preparation_from_before_an_admission_only_mapping_key_runs(
+        tmp_path, monkeypatch):
+    """A166: a declaration that admits more moves no frame.
+
+    The preparation bound the mapping its release shipped, sealed it into
+    its manifest, composition receipt and cache identity, and is
+    internally consistent; the packaged pin moved only because A159
+    declared whole multiples.  It was refused as not this source's.
+    """
+
+    fixture = _prepared_fixture(
+        tmp_path, "20crv3", mapping_document=_twentycrv3_mapping_before_multiples())
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+    inputs = _preflight_fixture(fixture)
+    runner._verify_inputs_unchanged(inputs)
+
+    # The forecast is still bound to the namelist it was prepared with: a
+    # boundary interval it was not prepared at is refused.
+    fixture.wps.write_text(fixture.wps.read_text(encoding="utf-8").replace(
+        "interval_seconds = 10800", "interval_seconds = 21600"),
+        encoding="utf-8")
+    with pytest.raises(ValueError, match="WPS namelist"):
+        _preflight_fixture(fixture)
+
+
+def test_an_earlier_preparation_whose_mapping_decodes_differently_is_refused(
+        tmp_path, monkeypatch):
+    fixture = _prepared_fixture(
+        tmp_path, "20crv3", mapping_document=_twentycrv3_mapping_before_multiples(
+            target_vertical_levels=50))
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+    with pytest.raises(ValueError, match=(
+            r"does not use the packaged 20crv3 authorities "
+            r"\(20crv3-member-grib2-v1\): its mapping \([0-9a-f]{64}\) "
+            r"decodes differently from the packaged one")):
+        _preflight_fixture(fixture)
+
+
+def test_an_earlier_preparation_is_held_to_the_packaged_target_s_spacing(
+        tmp_path, monkeypatch):
+    """Resolved by its decode identity, refused at a spacing not taken.
+
+    Here the packaged target is narrowed to a single 6 h spacing; the
+    3 h preparation is refused naming both.
+    """
+
+    import gpuwm.source_authorities as authorities
+
+    fixture = _prepared_fixture(
+        tmp_path, "20crv3", mapping_document=_twentycrv3_mapping_before_multiples())
+    _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
+    narrowed = dict(authorities.packaged_mapping_target(
+        "20crv3-member-grib2-v1"))
+    narrowed.pop(authorities.BOUNDARY_MULTIPLES_KEY)
+    narrowed["boundary_interval_seconds"] = 21600
+    monkeypatch.setattr(authorities, "packaged_mapping_target",
+                        lambda profile_id: narrowed)
+    with pytest.raises(ValueError, match=(
+            "its boundary spacing 10800 seconds differs from target "
+            "contract 21600")):
         _preflight_fixture(fixture)
 
 
@@ -4737,6 +5068,54 @@ def test_a_bundle_that_really_used_the_feature_is_still_refused(tmp_path):
     with pytest.raises(ValueError, match="use_adaptive_time_step"):
         runner._resolve_cache_identity_compatibility(
             source="20crv3", observed=observed, expected=expected)
+
+
+def test_a_bundle_prepared_before_the_history_window_still_loads(tmp_path):
+    """A168: the window joined DomainConfig and this route refused every
+    bundle prepared before it, 2.8.0's included, on two top-level keys
+    preparation never reads.  Absent at the not-in-use value binds;
+    absent with no map, or against a window the run really sets, does
+    not."""
+    from gpuwm.ingest.prepared_cache import undelayed_identity_defaults
+
+    fixture = _prepared_fixture(tmp_path, "20crv3")
+    header = json.loads(
+        (fixture.domain_bundle / "prepared-cache" / "header.json").read_text(
+            encoding="utf-8"))
+    expected = header["identity"]
+    window = ("history_begin_s", "history_end_s")
+    assert all(name in expected["domain_config"] for name in window), (
+        "instrument blind: the fixture header does not carry the window")
+    observed = json.loads(_canonical(expected))
+    for name in window:
+        observed["domain_config"].pop(name)
+    not_in_use = undelayed_identity_defaults(
+        load_experiment(fixture.experiment))
+
+    selected, receipt = runner._resolve_cache_identity_compatibility(
+        source="20crv3", observed=observed, expected=expected,
+        not_in_use=not_in_use)
+
+    assert selected == observed
+    assert receipt["status"] == "COMPATIBLE_LEGACY_DEFAULT"
+    assert {entry["field"] for entry in receipt["compatibility_overrides"]} \
+        == {f"domain_config.{name}" for name in window}
+
+    with pytest.raises(ValueError, match="domain_config.history_begin_s") \
+            as refusal:
+        runner._resolve_cache_identity_compatibility(
+            source="20crv3", observed=observed, expected=expected)
+    # The refusal names what differs and nothing else: the legacy
+    # nest_microphysics_transition allowance is tested by popping the
+    # field, and it was named here although both sides carry it equal.
+    assert "nest_microphysics_transition" not in str(refusal.value)
+
+    windowed = json.loads(_canonical(expected))
+    windowed["domain_config"]["history_begin_s"] = 3600.0
+    with pytest.raises(ValueError, match="domain_config.history_begin_s"):
+        runner._resolve_cache_identity_compatibility(
+            source="20crv3", observed=observed, expected=windowed,
+            not_in_use=not_in_use)
 
 
 @pytest.mark.parametrize("name", ["tke_budget", "sase_flux_diag",
