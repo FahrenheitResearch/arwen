@@ -930,9 +930,11 @@ def implicit_runtime_switches(**selection) -> dict[str, object]:
     may pass their whole suite).  When every shipped profile matching it
     agrees, those are the values -- byte-for-byte the ones
     :func:`single_domain_runtime_switches` hands the root preparer and
-    the domain wizard.  When nothing matches, or matches disagree, the
-    answer is gpuwm's own ``RunConfig`` default, which is what an
-    unstated switch has always resolved to.
+    the domain wizard. All selections enable WRF's moisture pressure
+    correction, including microphysics off with passive vapor. The
+    acoustic driver bypasses states without vapor. Other implicit switches,
+    and ambiguous profile
+    matches, retain ``RunConfig`` defaults.
 
     Returns ``{"moist_cq": ..., "top_lid": ..., "source": ...,
     "profiles": (...)}``: the source string is a receipt line, because a
@@ -968,13 +970,21 @@ def implicit_runtime_switches(**selection) -> dict[str, object]:
         }
     defaults = RunConfig(nx=1, ny=1, nz=1, dx=1.0, dy=1.0, ztop=1.0,
                          dt=1.0, run_seconds=1.0)
+    if not matched:
+        return {
+            "moist_cq": True,
+            "top_lid": defaults.top_lid,
+            "source": (
+                "WRF moisture pressure correction whenever water vapor "
+                "exists, including passive vapor; this suite is not one "
+                "of the shipped single-domain physics profiles; other "
+                "switches use RunConfig defaults"),
+            "profiles": (),
+        }
     return {
         **{name: getattr(defaults, name)
            for name in IMPLICIT_RUNTIME_SWITCHES},
         "source": (
-            "gpuwm's RunConfig defaults: this suite is not one of the "
-            "shipped single-domain physics profiles"
-            if not matched else
             "gpuwm's RunConfig defaults: this suite matches shipped "
             "profiles that disagree about these switches "
             f"({', '.join(sorted(matched))})"),

@@ -82,6 +82,7 @@ from gpuwm.static.sampling_contract import (current_sampling_contract,
 from gpuwm.static.build import (GeogSelection, build_static,
                                 monthly_interp_to_date)
 from gpuwm.static.lambert import grids_from_projection_config
+from gpuwm.static.orographic import with_terrain_drag_statics
 
 
 #: ``mp_physics`` values whose microphysics call stages a scheme-native
@@ -100,7 +101,8 @@ from gpuwm.static.lambert import grids_from_projection_config
 #: excluding 28 here does not disable a diagnostic, it strands a field
 #: that the scheme has already computed and that ``refl.py``'s
 #: consume-once contract then reports as an unconsumed stash.
-REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
+from gpuwm.core.physics_inventory import REFL_10CM_MICROPHYSICS
+from gpuwm.io.history_layout import metadata_history_fields as _metadata_frame
 
 MICROPHYSICS_TRANSITION_RECEIPT_NAME = "microphysics-transitions.json"
 FEEDBACK_PROVENANCE_RECEIPT_NAME = "feedback-provenance.json"
@@ -978,6 +980,7 @@ def _initialize_real_case_physics(
         radiation=radiation,
         radiation_start_time=start_time, radiation_latitude=lat,
         radiation_longitude=lon,
+        terrain_drag_static=static,
         **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
     import cupy as cp
     driver.fields["snoalb"][...] = cp.asarray(
@@ -1119,6 +1122,7 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
             "present; declare exactly one source")
     geog_selection = (GeogSelection.fallback(geog_root)
                       if geog_selection is None else geog_selection)
+    geog_selection = with_terrain_drag_statics(geog_selection, cfg)
     perturbation_applier = None
     if initial_perturbation is not None:
         # Built once, against this (coarse/single) domain's grid, so an
@@ -3844,16 +3848,25 @@ def restart_outer_steps(
 
 
 def history_output_due(outer_step: int, output_outer_steps: int, *,
-                       final_outer_step: int | None = None) -> bool:
+                       final_outer_step: int | None = None,
+                       history_begin_outer_step: int = 0,
+                       history_end_outer_step: int | None = None) -> bool:
     """Keep the cadence and optionally publish the completed terminal state."""
-    return ((outer_step + 1) % output_outer_steps == 0
-            or outer_step + 1 == final_outer_step)
+    completed = outer_step + 1
+    if (completed < history_begin_outer_step
+            or (history_end_outer_step is not None
+                and completed > history_end_outer_step)):
+        return False
+    return ((completed - history_begin_outer_step) % output_outer_steps == 0
+            or completed == final_outer_step)
 
 
 def refl_10cm_due(outer_step: int, substep: int,
                   output_outer_steps: int,
                   dynamics_substeps: int, *,
-                  final_outer_step: int | None = None) -> bool:
+                  final_outer_step: int | None = None,
+                  history_begin_outer_step: int = 0,
+                  history_end_outer_step: int | None = None) -> bool:
     """True only for the microphysics call immediately before an output.
 
     The final internal step owns the outer-step history frame.  Keeping this
@@ -3861,8 +3874,32 @@ def refl_10cm_due(outer_step: int, substep: int,
     future configuration restores more than one dynamics substep.
     """
     return (history_output_due(outer_step, output_outer_steps,
-                               final_outer_step=final_outer_step)
+                               final_outer_step=final_outer_step,
+                               history_begin_outer_step=history_begin_outer_step,
+                               history_end_outer_step=history_end_outer_step)
             and substep + 1 == dynamics_substeps)
+
+
+def single_history_window_steps(cfg, *, history_begin_s=0.0,
+                                history_end_s=None,
+                                grid_id: int | None = None
+                                ) -> tuple[int, int | None]:
+    """Resolve the frozen loop's output window on the shared domain clock.
+
+    ``grid_id`` only labels a refusal of a window that is not a whole
+    number of ticks; the caller that knows which domain it writes passes it.
+    """
+    from fractions import Fraction
+    from types import SimpleNamespace
+    from gpuwm.core.clock import _history_window_ticks
+
+    step = Fraction(str(cfg.dt))
+    begin, end = _history_window_ticks(
+        SimpleNamespace(grid_id=cfg.grid_id if grid_id is None else grid_id,
+                        history_begin_s=history_begin_s,
+                        history_end_s=history_end_s),
+        step.numerator, step.denominator)
+    return begin // step.numerator, None if end is None else end // step.numerator
 
 
 # ---------------------------------------------------------------------------
@@ -3951,26 +3988,10 @@ def _global_wrf_attrs(
     return attrs
 
 
-def _metadata_frame(grid, static: dict) -> dict[str, np.ndarray]:
-    lat, lon = grid.latlon_mass()
-    lat_u, lon_u = grid.latlon_u()
-    lat_v, lon_v = grid.latlon_v()
-    f, e = grid.coriolis_m()
-    sina, cosa = grid.rotation_m()
-    return {
-        "XLAT": lat, "XLONG": lon, "XLAT_U": lat_u, "XLONG_U": lon_u,
-        "XLAT_V": lat_v, "XLONG_V": lon_v,
-        "MAPFAC_M": grid.mapfac_m(), "MAPFAC_U": grid.mapfac_u(),
-        "MAPFAC_V": grid.mapfac_v(), "F": f, "E": e,
-        "SINALPHA": sina, "COSALPHA": cosa, "HGT": static["HGT_M"],
-        "LANDMASK": static["LANDMASK"], "LU_INDEX": static["LU_INDEX"],
-    }
-
-
 def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
                       start_time: datetime, title: str, domain_id: int = 1,
                       expect_refl_10cm: bool = True,
-                      feedback=None) -> Path:
+                      feedback=None, history_selection=None) -> Path:
     from gpuwm.io.wrfout import (WrfoutWriter, state_frame,
                                  wrfout_filename)
 
@@ -3995,19 +4016,22 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
         # Missing or double-consumed handoffs are cadence bugs and fail loud.
         from gpuwm.core.refl import consume_refl_10cm
         frame["REFL_10CM"] = cp.asnumpy(consume_refl_10cm(state))
+    from gpuwm.io.history_selection import resolve
+
+    frame, history_attrs = resolve(history_selection, None).apply(frame)
+    attrs = _global_wrf_attrs(prepared.grid,
+                             start_time,
+                             getattr(prepared, "geog_selection", None),
+                             domain=prepared.cfg,
+                             coord=prepared.initial_result.coord,
+                             feedback=feedback)
+    attrs.update(history_attrs)
     path = output_dir / wrfout_filename(valid_time, domain_id)
     with WrfoutWriter(
             path, nx=prepared.cfg.nx, ny=prepared.cfg.ny, nz=prepared.cfg.nz,
             dx=prepared.cfg.dx, dy=prepared.cfg.dy,
             title=title,
-            global_attrs=_global_wrf_attrs(prepared.grid,
-                                           start_time,
-                                           getattr(prepared,
-                                                   "geog_selection",
-                                                   None),
-                                           domain=prepared.cfg,
-                                           coord=prepared.initial_result.coord,
-                                           feedback=feedback),
+            global_attrs=attrs,
             field_schema=frame,
             # The soil axis is the selected LSM's geometry.  Omitting this
             # took WrfoutWriter's old literal-4 default, so a nine-layer
@@ -4235,7 +4259,10 @@ def integrate_prepared_case(
         domain_id: int = 1, integration_cfg: RunConfig | None = None,
         restart_path=None, run_seconds: float | None = None,
         history_interval_s: float | None = None,
+        history_selection=None, history_begin_s: float = 0.0,
+        history_end_s: float | None = None,
         restart_interval_s: float | None = None, progress_callback=None,
+        auto_epssm=None,
         write_final_output: bool = False,
         preserved_forcing_prefix: bool = False,
         health_debug: bool = False,
@@ -4262,6 +4289,11 @@ def integrate_prepared_case(
     ``run_seconds``/``history_interval_s``/``restart_interval_s`` are the
     experiment/domain timing authority.  Legacy callers omit them and use
     the compatibility copies on ``cfg``.
+
+    ``auto_epssm`` carries the experiment's model-chosen domain labels into
+    resident and streamed checkpoints. A derived child then keeps the label
+    and applies its own terrain floor, rather than refusing an inherited
+    value as explicit. Legacy callers without labels keep unlabelled headers.
 
     ``write_final_output`` publishes the actual terminal state when a
     member leg ends between history times. The final microphysics call
@@ -4308,8 +4340,8 @@ def integrate_prepared_case(
     from gpuwm.core.dycore import step
     from gpuwm.core.streaming import (domain_call_counts, domain_field_max,
                                       is_streaming, stability_observer)
-    from gpuwm.io.restart import (restart_filename, restore_restart,
-                                  write_restart)
+    from gpuwm.io.restart import (auto_epssm_header, restart_filename,
+                                  restore_restart, write_restart)
     from gpuwm.supervisor import validate_manifest_checkpoint
 
     stepper = step if stepper is None else stepper
@@ -4364,6 +4396,9 @@ def integrate_prepared_case(
     outer_steps, output_outer_steps = configured_run_schedule(
         cfg, run_seconds=run_seconds,
         output_interval_s=history_interval_s)
+    history_begin_step, history_end_step = single_history_window_steps(
+        cfg, history_begin_s=history_begin_s, history_end_s=history_end_s,
+        grid_id=domain_id)
     restart_write_steps = restart_outer_steps(
         cfg, restart_interval_s=restart_interval_s)
     output_dir = Path(output_dir)
@@ -4440,14 +4475,15 @@ def integrate_prepared_case(
     swdown_peak_time = start_time
     start_outer_step = 0
     last_checkpoint = None
-    if restart_path is None:
+    if restart_path is None and history_begin_step == 0:
         # No microphysics call precedes the cold-start frame, so there is no
         # WRF-arranged post-call reflectivity field to consume.
         _preparation_progress(progress_callback, "cold-start-wrfout")
         outputs.append(write_case_output(
             prepared, output_dir, start_time, start_time=start_time,
             title=output_title, domain_id=domain_id,
-            expect_refl_10cm=False, feedback=feedback))
+            expect_refl_10cm=False, feedback=feedback,
+            history_selection=history_selection))
         _output_committed(progress_callback, domain_id=domain_id,
                           valid_time=start_time, path=outputs[-1])
         # WRF resets the nwp_diagnostics running maxima each history
@@ -4456,7 +4492,7 @@ def integrate_prepared_case(
         from gpuwm.core.uh_diag import reset_up_heli_max
         reset_up_heli_max(state)
         _reset_streamed_up_heli_max(stepper if streamed else None)
-    else:
+    elif restart_path is not None:
         _preparation_progress(progress_callback, "validate-checkpoint")
         last_checkpoint = validate_manifest_checkpoint(restart_path)
         _preparation_progress(progress_callback, "restore-checkpoint")
@@ -4524,7 +4560,9 @@ def integrate_prepared_case(
             refl_due = (cfg.mp_physics in REFL_10CM_MICROPHYSICS
                         and refl_10cm_due(
                             outer_step, substep, output_outer_steps,
-                            dynamics_substeps, final_outer_step=final_output_step))
+                            dynamics_substeps, final_outer_step=final_output_step,
+                            history_begin_outer_step=history_begin_step,
+                            history_end_outer_step=history_end_step))
             phase = f"outer-{outer_step + 1}.substep-{substep + 1}"
             if health_debug and not phase_hook_supported and health_armed:
                 health.require_healthy(phase=phase + ".pre-step")
@@ -4639,12 +4677,14 @@ def integrate_prepared_case(
             swdown_peak = step_swdown_peak
             swdown_peak_time = forcing_time
         if history_output_due(outer_step, output_outer_steps,
-                              final_outer_step=final_output_step):
+                              final_outer_step=final_output_step,
+                              history_begin_outer_step=history_begin_step,
+                              history_end_outer_step=history_end_step):
             valid = start_time + timedelta(seconds=(outer_step + 1) * cfg.dt)
             outputs.append(write_case_output(
                 prepared, output_dir, valid, start_time=start_time,
                 title=output_title, domain_id=domain_id,
-                feedback=feedback))
+                feedback=feedback, history_selection=history_selection))
             _output_committed(progress_callback, domain_id=domain_id,
                               valid_time=valid, path=outputs[-1])
             # History-interval reset of the UP_HELI_MAX window (the frame
@@ -4673,10 +4713,12 @@ def integrate_prepared_case(
                 # the branch is the difference between a checkpoint and a
                 # forgery that passes every check in the reader.
                 last_checkpoint = stepper.write_restart(
-                    checkpoint_path, cfg, run_trackers=trackers).path
+                    checkpoint_path, cfg, run_trackers=trackers,
+                    tree_header=auto_epssm_header(domain_id, auto_epssm) or None).path
             else:
                 last_checkpoint = write_restart(
                     checkpoint_path, state, cfg, run_trackers=trackers,
+                    tree_header=auto_epssm_header(domain_id, auto_epssm) or None,
                     **({'preserved_forcing_prefix': True} if preserved_forcing_prefix else {}))
             from gpuwm.resume import retire_superseded_checkpoints
             retire_superseded_checkpoints(output_dir)
@@ -4925,6 +4967,7 @@ def write_static(exp: ExperimentConfig, data: CaseDataConfig,
     dc = single_domain(exp)
     grid = experiment_grid(exp, data)
     selection = GeogSelection.from_case_data(data, domain_id=dc.grid_id)
+    selection = with_terrain_drag_statics(selection, dc.run)
     fields = build_static(
         grid, data.geog_root, selection=selection)
     highres = getattr(data, "static_highres", None)
@@ -5121,6 +5164,8 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     policy drawn from the config pair.
     """
     from gpuwm.io.wrfout import quarantine_orphan_wrfouts
+    from gpuwm.core.devices import refuse_unrouted_devices
+    refuse_unrouted_devices(exp, "gpuwm run")
 
     # THE REFUSAL THAT USED TO STAND HERE IS LIFTED.  It said this route
     # "wires no streamed-domain builder", and for two releases that was
@@ -5198,6 +5243,15 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         print(FEEDBACK_EXPERIMENTAL_WARNING)
     _preparation_progress(progress_callback, "quarantine-wrfout")
     quarantine_orphan_wrfouts(outdir)
+    # THE OUTPUT DISK ADMISSION (A190), after the structural refusals above
+    # so they still answer first, and before the terrain read, the
+    # preparation and any device work: a run whose history, checkpoints and
+    # pictures cannot fit stops here instead of partway when the disk fills.
+    from gpuwm.output_disk import require_output_space, renderer_products
+
+    require_output_space(
+        exp, outdir, restart=restart,
+        render_products=renderer_products(observer=progress_callback))
     # Its own phase: reading the terrain for the acoustic substeps and the
     # long step takes seconds on a nested case, and under the phase before
     # it a run page said it was still checking the output folder.
@@ -5359,12 +5413,17 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
                 progress_callback=progress_callback, health_debug=health_debug,
                 prepared_steppers={int(dc.grid_id): single_stepper},
                 prepared_decisions={int(dc.grid_id): single_decision})
+        from gpuwm.io.history_selection import resolve
+
         summary = integrate_prepared_case(
             outdir, prepared, start_time=exp.start_time,
             output_title=data.output_title, domain_id=data.output_domain,
             run_seconds=exp.run_seconds,
             history_interval_s=dc.history_interval_s,
+            history_selection=resolve(exp.output, dc.output),
+            history_begin_s=dc.history_begin_s, history_end_s=dc.history_end_s,
             restart_interval_s=exp.restart_interval_s,
+            auto_epssm=exp.auto_epssm,
             restart_path=restart, progress_callback=progress_callback,
             health_debug=health_debug, feedback=experimental_feedback,
             stepper=single_stepper)

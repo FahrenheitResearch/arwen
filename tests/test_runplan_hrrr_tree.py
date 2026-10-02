@@ -217,6 +217,50 @@ def test_the_source_manifest_digest_is_of_the_file_the_fetch_wrote(
         hashlib.sha256(manifest.read_bytes()).hexdigest()
 
 
+@pytest.mark.parametrize("live", [True, False])
+def test_a_posted_hierarchy_binds_the_root_plan_or_its_completed_document(
+        tmp_path, monkeypatch, live):
+    """An unposted source document is never opened by the hierarchy door."""
+
+    from gpuwm.ingest import boundary_stream
+    from tools.prepare_hrrr_wrf import POSTED_SOURCE_MANIFEST
+
+    prep = tmp_path / "root"
+    manifest = prep / POSTED_SOURCE_MANIFEST
+    placeholder = boundary_stream.as_posted_placeholder("a" * 64)
+    head = {"basis": {
+        "as_posted": {"documents": {"source_manifest": {
+            "path": POSTED_SOURCE_MANIFEST}}},
+        "cache": {"identity": {"source_manifest_sha256": placeholder}}}}
+    if not live:
+        manifest.parent.mkdir(parents=True)
+        manifest.write_bytes(b"sealed source rows\n")
+    monkeypatch.setattr(boundary_stream, "live_chained_head",
+                        lambda root: head if live else None)
+    captured = {}
+
+    def prepare(root, *, arguments, stated, run):
+        captured.update(arguments=arguments, stated=stated)
+        root.mkdir(parents=True)
+        return {}
+
+    monkeypatch.setattr(runplan_module, "_prepare_stage", prepare)
+    inputs = {name: tmp_path / name for name in (
+        "target_domain", "wps_namelist", "namelist_input",
+        "stock_namelist_input")}
+    runplan_module._hrrr_hierarchy_stage(
+        prep_root=prep, inputs=inputs, hints={}, geog_root=tmp_path,
+        manifest=None, cycle="2026-09-30_12:00:00", run_dir=tmp_path,
+        observer=_Observer())
+    args = captured["arguments"]
+    digest = (placeholder if live else
+              hashlib.sha256(manifest.read_bytes()).hexdigest())
+    assert args[args.index("--source-manifest")+1] == str(manifest)
+    assert args[args.index("--source-manifest-sha256")+1] == digest
+    assert captured["stated"]["source_manifest_sha256"] == digest
+    assert manifest.exists() is (not live)
+
+
 def test_the_cycle_is_spelled_the_way_each_tool_takes_it(tmp_path,
                                                          monkeypatch):
     """[fetch] carries YYYY-MM-DDTHH; both native tools take the stamp."""

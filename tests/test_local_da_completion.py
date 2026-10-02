@@ -55,7 +55,8 @@ def _member_with_real_output(tmp_path, monkeypatch, stop):
                                grid=None, static_fields={})
     exp = SimpleNamespace(domains=(SimpleNamespace(run=cfg, history_interval_s=900.),),
                           start_time=datetime(2026, 9, 10, 12), run_seconds=stop,
-                          restart_interval_s=0., spectral_numerics=None)
+                          restart_interval_s=0., spectral_numerics=None,
+                          auto_epssm=())
     checkpoint = tmp_path / 'analysis.npz'
     np.savez(checkpoint, **{'state/thp': np.ones((2, 2, 2)),
                            'meta/elapsed_seconds': np.asarray(900.)})

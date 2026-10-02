@@ -1,0 +1,71 @@
+{
+ "card": "NVIDIA GeForce RTX 5070 Ti",
+ "compared_card": "NVIDIA GeForce RTX 5090",
+ "compared_receipt": "gpu-receipt-sm120.json",
+ "compute_capability": [
+  12,
+  0
+ ],
+ "cuda_runtime": 13020,
+ "cupy": "14.2.0",
+ "driver": "595.91.07",
+ "fixture_manifest_equal": true,
+ "identical": true,
+ "kernels": {
+  "advection": "66e08b7ab87c7d892b5fe8bbf7ffb9198e8ea2953def1781c36545d77e40ade8",
+  "openbc": "5bf7babe4a953b1a12f8ddca403f04d86fa0aed0f7684992b5eabb5d82cbca57",
+  "pd_advection": "7de1823f03619e982064e8b7487121c528886848c23474fd08d73f6f232cdfb7"
+ },
+ "kernels_equal": true,
+ "mutation_rejected": true,
+ "nvrtc_build": "13.4.92",
+ "tree": "971450f2e",
+ "variants": {
+  "mutation": {
+   "arrays": 56,
+   "cases": 8,
+   "differing_words": 0,
+   "levels_identical": 8,
+   "measurements_identical": 8,
+   "word_files_identical": 8,
+   "words": 2867200
+  },
+  "no_fma": {
+   "arrays": 56,
+   "cases": 8,
+   "differing_words": 0,
+   "levels_identical": 8,
+   "measurements_identical": 8,
+   "word_files_identical": 8,
+   "words": 2867200
+  },
+  "production": {
+   "arrays": 56,
+   "cases": 8,
+   "differing_words": 0,
+   "levels_identical": 8,
+   "measurements_identical": 8,
+   "word_files_identical": 8,
+   "words": 2867200
+  },
+  "wrf_flux": {
+   "arrays": 56,
+   "cases": 8,
+   "differing_words": 0,
+   "levels_identical": 8,
+   "measurements_identical": 8,
+   "word_files_identical": 8,
+   "words": 2867200
+  },
+  "wrf_flux_no_fma": {
+   "arrays": 56,
+   "cases": 8,
+   "differing_words": 0,
+   "levels_identical": 8,
+   "measurements_identical": 8,
+   "word_files_identical": 8,
+   "words": 2867200
+  }
+ },
+ "what": "a fresh capture by tools/advect_wrf471_oracle/validate_advect_oracle.py --gpu --controls --mutation on this card, compared with the committed receipt: every measurement record, every level row and every output word (the npz arrays bit for bit; the npz file hashes carry zip timestamps)"
+}

@@ -359,6 +359,20 @@ tests/test_uwpbl_launcher_wrf471_parity.py
 tests/test_uwpbl_driver_seam.py
 tests/test_uwpbl_ftz_wrf471_parity.py
 
+# SHARD 1u: the [devices] split's device legs (lanes 281-multigpu-2card and 282-multigpu).
+# test_multislab_hazards_gpu.py steps two differently seeded states at
+# once on one card and requires each to equal its serial self, the
+# detector for scheme scratch shared between slabs (it failed on the
+# city suite before the per-card and per-stream cache keys); its
+# two-card variants skip on a one-card host.  test_ranked_domain_gpu.py
+# is the resident-ranks lifecycle and identity file.  Both are whole-
+# module GPU, so neither is on stage 1.
+tests/test_multislab_hazards_gpu.py
+tests/test_ranked_domain_gpu.py
+# Both grids and nest-only ranked trees must match every resident carrier
+# and cadence. Stale forcing and omitted restriction controls must diverge.
+tests/test_ranked_nesting_gpu.py
+
 # ---------------------------------------------------------------------------
 # The cumulus reference family occupies shard 2 at the explicit marker.
 # Membership stays separate for reporting; both shards execute on the same
@@ -632,6 +646,13 @@ tests/test_nvrtc_cache_key.py
 # and restart-class rows run on stage 1.
 tests/test_topo_radiation.py
 
+# SHARD 1t: WRF v4.7.1 sub-grid terrain drag (lane 282-terrain-drag).  The
+# topo_wind coefficients and the gwd_opt = 1 and 3 kernels are held bit for
+# bit to WRF's own Fortran (tools/terrain_drag_wrf471_oracle), YSU's topo
+# arm to its pinned distance; those need a card.  The fixture-receipt rows
+# run on stage 1 with the settings file.
+tests/test_terrain_drag_wrf471_parity.py
+
 # SHARD 1r: A158, WRF's implicit-explicit vertical advection
 # (zadvect_implicit, lane 281-zadvect-implicit).  The IEVA kernels held word
 # for word to WRF 4.7.1's compiled routines (tools/ieva_wrf_oracle) and the
@@ -658,6 +679,52 @@ tests/test_mynn_surface_coarse.py
 tests/test_mynn_surface_driver_gpu.py
 tests/test_mynn_surface_gpu.py
 tests/test_mynn_surface_water_gpu.py
+
+# SHARD 1u: the card preparation's device twins (lane 281-gpu-forcing-prep).
+# Each holds a card kernel to the cpu route's bits: the Rust libm crate's
+# float64 exp/log/log1p/pow and glibc's log1pf (portable_libm64.cuh), the
+# WRF-real vertical step against the Rust bridge, the fused horizontal step
+# and ERA5's RH conversion against the bridge and the host, the boundary
+# perimeter cut on the card, initialize_real's column twins and the Thompson
+# cold-start closure.  A miss here is a cuda preparation that no longer
+# publishes the cpu route's arrays.  Their CPU halves run on stage 1.
+tests/test_portable_libm64_gpu.py
+tests/test_wrf_vert_identity_gpu.py
+tests/test_horizontal_exact_gpu.py
+tests/test_era5_rh_exact_gpu.py
+tests/test_host_setup_cuts_gpu.py
+tests/test_real_device_gpu.py
+tests/test_real_nextafter_gpu.py
+tests/test_real_device_math_gpu.py
+tests/test_thompson_cold_start_gpu.py
+
+# Compiled WRF v4.7.1 dycore output-word oracles run on every cut card.
+# CPU fixture and provenance rows remain on stage 1. Bigstep belongs here,
+# outside the weekly frozen-cumulus shard, so its cadence matches dycore.
+tests/test_advect_wrf471_parity.py
+tests/test_smallstep_bookkeeping_wrf471_parity.py
+tests/test_smallstep_horizontal_wrf471_parity.py
+tests/test_smallstep_vertical_wrf471_parity.py
+tests/test_bigstep_coupling_wrf471_parity.py
+tests/test_bigstep_momentum_wrf471_parity.py
+tests/test_bigstep_prep_wrf471_parity.py
+tests/test_bigstep_rk_wrf471_parity.py
+tests/test_diff6_wrf471_parity.py
+tests/test_deformation_wrf471_parity.py
+tests/test_horizontal_diffusion_wrf471_parity.py
+tests/test_vertical_diffusion_wrf471_parity.py
+tests/test_constant_diffusion_wrf471_parity.py
+tests/test_diffusion_drivers_wrf471_parity.py
+# 2.8.2 device rows that shipped without a battery entry (found by the
+# 2.8.2 release-input review): the compiled-WRF diff_opt = 1 oracle's word
+# comparisons; the native cold-start W and SH2O kernels against WRF-order
+# startup mirrors (wrfinput's zero W and SH2O kept as the start); and the
+# dry tendency map-factor composition (rk_addtend_dry's 1/msf over mixing
+# plus diff6, the defect the oracle merges composed into at 2c212f621,
+# where the delivered diff6 tendency ran msf times WRF's on mapped grids).
+tests/test_diff_opt1_wrf471.py
+tests/test_wrfinput_cold_start.py
+tests/test_rk_addtend_dry_map_factors.py
 
 # SHARD-2-BEGIN
 tests/test_gf_deep_cuda.py

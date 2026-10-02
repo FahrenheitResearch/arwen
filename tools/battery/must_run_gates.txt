@@ -145,3 +145,15 @@ tests/test_exfat_volume.py  needs Windows and GPUWM_EXFAT_TEST_DIR naming a fold
 # SHARD 1m.  (The megakernel lane's test_physics_fused_block, the other,
 # left the tree with that lane's revert, A147.)
 tests/test_rrtmg_legacy_device_glue.py  needs a CUDA device: it holds the device-resident legacy RRTMG adapter glue equal to the host packing it replaced, launch by launch; nothing in a fresh clone supplies the card.
+
+# The diffusion fixtures ship; device comparisons run in the GPU pin stage.
+tests/test_diff6_wrf471_parity.py  needs a CUDA device for direct compiled WRF output comparisons; CPU fixture integrity checks run without it.
+tests/test_deformation_wrf471_parity.py  needs a CUDA device for all tensor and coefficient output pins; CPU fixture integrity checks run without it.
+tests/test_horizontal_diffusion_wrf471_parity.py  needs a CUDA device for every horizontal tendency word; CPU fixture integrity checks run without it.
+tests/test_vertical_diffusion_wrf471_parity.py  needs a CUDA device for the vertical and TKE tendency outputs; CPU fixture integrity checks run without it.
+tests/test_constant_diffusion_wrf471_parity.py  needs a CUDA device to reproduce the declared constant-K operator differences; CPU fixture integrity checks run without it.
+tests/test_diffusion_drivers_wrf471_parity.py  needs a CUDA device for complete driver and mutable-argument output word receipts; CPU fixture integrity checks run without it.
+
+# The opt-in strict WRF arithmetic (lane/282-wrf-exact, d707721e3) is selected
+# before import; its compiler witness skips the module in every default process.
+tests/test_wrf_exact_gpu.py  needs GPUWM_WRF_EXACT=1 set before import and a CUDA device: it compiles real NVRTC programs under the opt-in strict compiler hook, which a default process never installs, so no default leg can run it.

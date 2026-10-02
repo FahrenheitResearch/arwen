@@ -63,7 +63,8 @@ def test_a_resume_prices_only_the_frames_and_sets_after_its_checkpoint(
     # every hour after the checkpoint, as the frames are written.
     rows = disk_budget._picture_table()["products"]
     per_frame = rows[EVERY_FRAME][2] + rows[HOURLY_WINDOW][2]
-    remaining = (int(cells * disk_budget.HISTORY_BYTES_PER_CELL * frames)
+    # A190 prices the selected writer shapes, rather than full-volume bytes.
+    remaining = (disk_budget.history_frame_bytes(run) * frames
                  + int(cells * disk_budget.ROOT_CHECKPOINT_BYTES_PER_CELL * sets)
                  + per_frame * frames
                  + projected["preparation_bytes"])

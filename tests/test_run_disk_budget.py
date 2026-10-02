@@ -72,9 +72,11 @@ def test_retention_unset_keeps_everything(tmp_path, monkeypatch):
 
 
 def _exp(hours=12, restart=3600.0):
+    from test_history_disk_layout import priced_run
+
     def dom(gid, nx, interval):
         return SimpleNamespace(grid_id=gid, history_interval_s=interval,
-                               run=SimpleNamespace(nx=nx, ny=nx, nz=49))
+                               run=priced_run(nx, nx, 49))
     return SimpleNamespace(run_seconds=hours * 3600.0, restart_interval_s=restart,
                            domains=(dom(1, 100, 3600.0), dom(2, 200, 900.0)))
 
@@ -120,7 +122,11 @@ def test_a_late_nest_is_charged_the_frames_its_clock_writes(delay, interval):
     assert {row["grid_id"]: row["history_frames"] for row in p["domains"]} == written.histories
     cells = 30 * 30 * 4
     frames = sum(written.histories.values())
-    assert p["history_bytes"] == int(cells * disk_budget.HISTORY_BYTES_PER_CELL * frames)
+    # A190: volume-only scaling ignored the selected writer inventory,
+    # including horizontal faces, surface fields and container headers.
+    assert p["history_bytes"] == sum(
+        disk_budget.history_frame_bytes(domain.run) * written.histories[domain.grid_id]
+        for domain in exp.domains)
     assert p["picture_bytes"] == sum(disk_budget.projected_picture_bytes(
         30, 30, max(0, 600 - (delay if gid == 2 else 0)), interval)
         for gid in written.histories)
@@ -160,9 +166,18 @@ def test_projection_reproduces_the_measured_run():
     record = json.loads((Path(__file__).resolve().parents[1] / "tools" / "wiki_seed" / "runs"
                          / "bytes-per-cell" / "sizes.json").read_text(encoding="utf-8"))
     intervals = {"d01": 3600.0, "d02": 900.0, "d03": 900.0}
+    from gpuwm.config import RunConfig
+
+    # A190 retires the full-history constant. Resolve the physics recorded
+    # for this saved measurement, rather than pricing a dimensions-only grid.
     exp = SimpleNamespace(run_seconds=2 * 3600.0, restart_interval_s=3600.0, domains=tuple(
         SimpleNamespace(grid_id=i + 1, history_interval_s=intervals[name],
-                        run=SimpleNamespace(nx=g["columns"][0], ny=g["columns"][1], nz=g["levels"]))
+                        run=RunConfig(nx=g["columns"][0], ny=g["columns"][1], nz=g["levels"],
+                                      dx=g["dx_km"] * 1000, dy=g["dx_km"] * 1000,
+                                      ztop=20000, dt=15, run_seconds=7200,
+                                      moist=True, mp_physics=10, sf_sfclay_physics=91,
+                                      sf_surface_physics=2, bl_pbl_physics=1,
+                                      ra_lw_physics=4, ra_sw_physics=4, nwp_diagnostics=1))
         for i, (name, g) in enumerate(sorted(record["grids"].items()))))
     # This older sample also drew raw variables, now an explicit request.
     p = disk_budget.projected_run_bytes(exp, keep_checkpoints=None, fetch=None, chain=None,
@@ -182,6 +197,59 @@ def test_refusal_names_both_numbers():
     words = disk_budget.disk_refusal(p, 2 * disk_budget.GIB)
     assert f"{p['total_bytes'] / disk_budget.GIB:.1f} GiB" in words
     assert "2.0 GiB free" in words
+
+
+@pytest.mark.parametrize("begin,end,resume", [(1, 420, None), (61, 481, 180),
+                                              (120, 300, 300), (181, None, 120)])
+def test_history_windows_and_resume_match_the_executed_clock(begin, end, resume):
+    from dataclasses import replace
+    from gpuwm.core.clock import build_schedule, execute_schedule, resolve_clock
+    from test_clock import _chain_experiment, _with_delayed_start
+
+    exp = _with_delayed_start(
+        _chain_experiment((1, 3), run_seconds=600, history_s=60), 2, 120)
+    exp = replace(exp, domains=tuple(replace(domain, history_begin_s=begin,
+                                            history_end_s=end)
+                                     for domain in exp.domains))
+    clock = resolve_clock(exp, lbc_interval_s=60)
+    schedule = build_schedule(exp, clock)
+    options = {}
+    if resume is not None:
+        clocks = clock.clocks()
+        for item in clocks.values():
+            item.ticks = resume * clock.tick_den
+        options = dict(clocks=clocks, start_period=resume * clock.tick_den // schedule.period_ticks,
+                       started_grid_ids={gid for gid, item in clocks.items()
+                                         if item.spec.start_ticks <= item.ticks},
+                       committed_initial_history_grid_ids={gid for gid, item in clocks.items()
+                                                           if item.history_due()})
+    written = execute_schedule(schedule, **options)
+    projection = disk_budget.projected_run_bytes(
+        exp, keep_checkpoints=1, fetch=None, chain=None, render=False,
+        resume_seconds=resume)
+    assert {row["grid_id"]: row["history_frames"] for row in projection["domains"]} == {
+        domain.grid_id: written.histories.get(domain.grid_id, 0) for domain in exp.domains}
+
+
+def test_domain_selection_overrides_tree_without_trimming_checkpoints():
+    from dataclasses import replace
+    from gpuwm.io.history_selection import HistorySelection
+    from test_clock import _chain_experiment
+
+    exp = _chain_experiment((1, 3), run_seconds=600, history_s=60)
+    full = disk_budget.projected_run_bytes(exp, keep_checkpoints=1, fetch=None,
+                                           chain=None, render=False)
+    trimmed = HistorySelection.from_mapping({"history_vars": ["MU"]})
+    exp = replace(exp, output=trimmed, domains=(exp.domains[0],
+                  replace(exp.domains[1], output=HistorySelection())))
+    projected = disk_budget.projected_run_bytes(exp, keep_checkpoints=1, fetch=None,
+                                                chain=None, render=False)
+    assert projected["domains"][0]["history_bytes"] < full["domains"][0]["history_bytes"]
+    assert projected["domains"][1]["history_bytes"] == full["domains"][1]["history_bytes"]
+    assert projected["checkpoint_bytes"] == full["checkpoint_bytes"]
+    free = projected["total_bytes"]
+    assert disk_budget.disk_refusal(projected, free) is None
+    assert "partway when the disk fills" in disk_budget.disk_refusal(full, free)
 
 
 def test_run_option_keep_checkpoints_is_a_whole_number(tmp_path):

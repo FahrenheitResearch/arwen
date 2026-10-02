@@ -128,8 +128,14 @@ _PRE_TIEDTKE_KEY_FINGERPRINT = (
 #: drops the key from the identity payload and recovers the pre-2.6.4
 #: anchor byte for byte, then flips SASE back and recovers the original.
 #: Re-pinned on lane/release-reds-266; the port re-pinned nothing.
-_ANCHOR_FINGERPRINT = (
+_PRE_CQ_DEFAULT_FINGERPRINT = (
     "b288ea01ca75ea49b0c3d0d8c4779d2997fb550b5af8b32bcb6f7236315a3b76")
+
+#: e13fa45c0 / 59f7e280f made moist_cq default-on.  The bound run identity
+#: now carries True; setting only that value back recovers the old anchor.
+#: The test below proves this move independently of all older ledger rows.
+_ANCHOR_FINGERPRINT = (
+    "8724f01da9aa498927c560d9d2a83084b61f3ec5ad6fbd4c014c63f4ca845287")
 
 
 def _stability_anchor_catalog():
@@ -145,8 +151,8 @@ def test_no_overlay_keeps_the_experiment_fingerprint(monkeypatch):
     The overlay lives on [case_data]/prepare kwargs, never
     ExperimentConfig, so the restart identity payload does not see it.
     The hash below therefore moves only when something else that IS bound
-    to run identity changes -- so far exactly twice, for the SASE flip
-    and the unscoped 2.6.4 cumulus key named above, each attributed by
+    to run identity changes: the SASE flip, the unscoped 2.6.4 cumulus
+    key and the moist_cq default flip named above, each attributed by
     reconstruction below.
     """
     from gpuwm.core.model import experiment_fingerprint
@@ -175,6 +181,41 @@ def _without_the_later_eta_key(monkeypatch, exp):
     assert "eta_levels" not in model.RESTART_TOLERATED_RUN_FIELDS
     payload = model.restart_identity_payload(exp)
     assert all("eta_levels" not in domain["run"] for domain in payload["domains"])
+
+
+def _before_the_moist_cq_default_flip(exp):
+    """Restore the sole value moved by e13fa45c0 / 59f7e280f."""
+    from dataclasses import replace
+    from gpuwm.core.model import restart_identity_payload
+
+    assert all(domain.run.moist_cq is True for domain in exp.domains)
+    historical = replace(exp, domains=tuple(
+        replace(domain, run=replace(domain.run, moist_cq=False))
+        for domain in exp.domains))
+    current_payload = restart_identity_payload(exp)
+    historical_payload = restart_identity_payload(historical)
+    for current_domain, historical_domain in zip(
+            current_payload["domains"], historical_payload["domains"]):
+        assert current_domain["run"]["moist_cq"] is True
+        assert historical_domain["run"]["moist_cq"] is False
+        current_domain["run"]["moist_cq"] = False
+    assert current_payload == historical_payload
+    return historical
+
+
+def test_the_anchor_moved_for_the_moist_cq_default_flip_and_nothing_else(
+        monkeypatch):
+    from gpuwm.core.model import experiment_fingerprint
+    from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
+
+    exp = load_scaffold()
+    _without_the_later_eta_key(monkeypatch, exp)
+    historical = _before_the_moist_cq_default_flip(exp)
+    assert experiment_fingerprint(
+        exp, _stability_anchor_catalog()) == _ANCHOR_FINGERPRINT
+    assert _ANCHOR_FINGERPRINT != _PRE_CQ_DEFAULT_FINGERPRINT
+    assert experiment_fingerprint(
+        historical, _stability_anchor_catalog()) == _PRE_CQ_DEFAULT_FINGERPRINT
 
 
 def test_current_fingerprint_still_binds_the_later_eta_ladder():
@@ -219,7 +260,7 @@ def test_the_anchor_moved_for_the_unscoped_cumulus_key_and_nothing_else(
     from gpuwm.core.model import experiment_fingerprint
     from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
 
-    exp = load_scaffold()
+    exp = _before_the_moist_cq_default_flip(load_scaffold())
     assert all(domain.run.cu_physics == 0 for domain in exp.domains), (
         "the anchor scaffold selects no cumulus scheme, which is what makes "
         "an unscoped cumulus knob moving it identity churn rather than a "
@@ -249,7 +290,7 @@ def test_the_anchor_moved_for_the_sase_default_flip_and_nothing_else(
     from gpuwm.core.model import experiment_fingerprint
     from gpuwm.verify.cases.nest_ideal_r1_moist import load_scaffold
 
-    exp = load_scaffold()
+    exp = _before_the_moist_cq_default_flip(load_scaffold())
     assert all(
         domain.run.sase_additive_dissipation for domain in exp.domains), (
         "the additive dissipation channel is default-on since 1a0e8a7f8")

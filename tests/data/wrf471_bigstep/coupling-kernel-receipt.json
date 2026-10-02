@@ -1,0 +1,10 @@
+{
+  "openbc": {
+    "file_sha256": "d1d9c3e462baa0ae1dbb2a00fbae999f70258d5925cf9541693b4e1e4359612d",
+    "compiled_source_sha256": "571bb4fa28df28ab3a632299de9f3303ab796b292f321957c59c3e8ecc02bd77"
+  },
+  "acoustic": {
+    "file_sha256": "1ec408993d5af7c8517a92679155ef8a280fd43d9b1b26e496b36a276b336730",
+    "compiled_source_sha256": "a7054926f305cf60f1ffde3cebeb4212c7fe9f8d793734ad0c5b79afe4359818"
+  }
+}

@@ -285,9 +285,11 @@ def test_auto_ordinary_dispatch_takes_one_admission_before_the_fetch(tmp_path, m
     def price(value, **kwargs):
         assert value is exp
         # The [case_data] arm names no forcing source, so its tables
-        # carry water vapour only.
+        # carry water vapour only.  It runs before any land cover exists,
+        # so it hands the estimate no urban column reading (A176: only a
+        # prepared door has one).
         assert kwargs == {"column_chunk": exp.column_chunk, "profile": None,
-                          "boundary_species": ()}
+                          "boundary_species": (), "urban_columns": None}
         priced.append(kwargs)
         events.append("price")
         return marker

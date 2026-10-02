@@ -458,32 +458,15 @@ def adapt_experiment_acoustics(
         if reading is None:
             domains.append(dc)
             continue
-        run = dc.run
-        configured_epssm = None
-        floor = offcentering_floor(reading.slope)
-        if floor is not None and float(run.epssm) < floor - 1e-12:
-            if int(dc.grid_id) in auto_epssm:
-                configured_epssm = float(run.epssm)
-                run = replace(run, epssm=floor)
-            else:
-                refusals.append(_explicit_epssm_refusal(
-                    reading, float(run.epssm), floor))
-        adaptation = derive_acoustics(dc.grid_id, run, reading)
-        if configured_epssm is not None:
-            adaptation = replace(adaptation,
-                                 configured_epssm=configured_epssm)
+        run, adaptation, refusal = adapt_domain_acoustics(
+            dc.grid_id, dc.run, reading,
+            auto_epssm=int(dc.grid_id) in auto_epssm)
+        if refusal is not None:
+            refusals.append(refusal)
         adaptations.append(adaptation)
-        if adaptation.adapted or adaptation.offcentering_raised:
-            dc = replace(dc, run=adapted_run(
-                run, adaptation.time_step_sound))
-        if adaptation.offcentering_raised and announce is not None:
-            announce(adaptation.offcentering_sentence())
-        # One line per domain: the caution already names the count it runs.
-        if adaptation.beyond_measured:
-            if caution is not None:
-                caution(adaptation.beyond_sentence())
-        elif adaptation.adapted and announce is not None:
-            announce(adaptation.sentence())
+        if run is not dc.run:
+            dc = replace(dc, run=run)
+        _announce(adaptation, announce=announce, caution=caution)
         domains.append(dc)
     if refusals:
         raise ValueError(" ".join(refusals))
@@ -491,6 +474,76 @@ def adapt_experiment_acoustics(
                for adaptation in adaptations):
         return exp, tuple(adaptations)
     return replace(exp, domains=tuple(domains)), tuple(adaptations)
+
+
+def adapt_domain_acoustics(grid_id: int, run, reading: SlopeReading, *,
+                           auto_epssm: bool):
+    """One domain's rule: ``(run, adaptation, refusal)``.
+
+    The off-centering floor first (a model-chosen ``epssm`` below it is
+    raised to it; a chosen one is left as written and ``refusal`` names
+    why it cannot run), then the substep count at the ``epssm`` that runs.
+    ``run`` itself comes back when nothing moves.  Every door applies this
+    one function, so a domain reads the same answer off the same ground
+    whichever door built it: the experiment doors through
+    :func:`adapt_experiment_acoustics`, a downscaled child through
+    :func:`adapt_run_to_terrain`.
+    """
+
+    configured_epssm = None
+    refusal = None
+    floor = offcentering_floor(reading.slope)
+    if floor is not None and float(run.epssm) < floor - 1e-12:
+        if auto_epssm:
+            configured_epssm = float(run.epssm)
+            run = replace(run, epssm=floor)
+        else:
+            refusal = _explicit_epssm_refusal(
+                reading, float(run.epssm), floor)
+    adaptation = derive_acoustics(grid_id, run, reading)
+    if configured_epssm is not None:
+        adaptation = replace(adaptation, configured_epssm=configured_epssm)
+    if adaptation.adapted or adaptation.offcentering_raised:
+        run = adapted_run(run, adaptation.time_step_sound)
+    return run, adaptation, refusal
+
+
+def _announce(adaptation: AcousticAdaptation, *, announce, caution) -> None:
+    """The lines one domain's adaptation prints, in the order they read."""
+
+    if adaptation.offcentering_raised and announce is not None:
+        announce(adaptation.offcentering_sentence())
+    # One line per domain: the caution already names the count it runs.
+    if adaptation.beyond_measured:
+        if caution is not None:
+            caution(adaptation.beyond_sentence())
+    elif adaptation.adapted and announce is not None:
+        announce(adaptation.sentence())
+
+
+def adapt_run_to_terrain(run, reading: SlopeReading, *, grid_id: int,
+                         auto_epssm: bool, say=None):
+    """One standalone domain's ``(run, adaptation)``, in the run's own voice.
+
+    For a door whose domain is a bare run configuration rather than an
+    experiment (``gpuwm downscale``'s child).  The same rule as every
+    experiment door (:func:`adapt_domain_acoustics`); a chosen ``epssm``
+    below the floor is refused with ``ValueError``.  ``say`` receives each
+    line with its ``--explain`` mechanism, ``(sentence, why)``; ``None``
+    prints them through :func:`gpuwm.explain.warn`.
+    """
+
+    if say is None:
+        from gpuwm.explain import warn
+
+        say = warn
+    run, adaptation, refusal = adapt_domain_acoustics(
+        grid_id, run, reading, auto_epssm=auto_epssm)
+    if refusal is not None:
+        raise ValueError(refusal)
+    _announce(adaptation, announce=lambda sentence: say(sentence, _WHY),
+              caution=lambda sentence: say(sentence, _WHY))
+    return run, adaptation
 
 
 def _explicit_epssm_refusal(reading: SlopeReading, epssm: float,

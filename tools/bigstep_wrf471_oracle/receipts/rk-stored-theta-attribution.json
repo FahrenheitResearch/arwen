@@ -1,0 +1,106 @@
+{
+  "production": {
+    "real-specified-rk1": {
+      "max_ulp": 3658240,
+      "differing_words": 5473,
+      "words": 18000,
+      "max_abs": 0.0430755615234375,
+      "actual_sha256": "fe5ce9503decb42e95c77d51bdf78ab07dbe1fd0d6d3147cefc330be1b46dd3e",
+      "reference_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df"
+    },
+    "real-specified-rk2": {
+      "max_ulp": 3658240,
+      "differing_words": 5473,
+      "words": 18000,
+      "max_abs": 0.0430755615234375,
+      "actual_sha256": "fe5ce9503decb42e95c77d51bdf78ab07dbe1fd0d6d3147cefc330be1b46dd3e",
+      "reference_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df"
+    },
+    "southern-rotation": {
+      "max_ulp": 3658240,
+      "differing_words": 5473,
+      "words": 18000,
+      "max_abs": 0.0430755615234375,
+      "actual_sha256": "fe5ce9503decb42e95c77d51bdf78ab07dbe1fd0d6d3147cefc330be1b46dd3e",
+      "reference_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df"
+    }
+  },
+  "no_fma": {
+    "real-specified-rk1": {
+      "max_ulp": 3642368,
+      "differing_words": 5251,
+      "words": 18000,
+      "max_abs": 0.031314849853515625,
+      "actual_sha256": "7e14a1a5531ae0a78cf4191e775e66bf9ba2429b01d684d8e0af00218c5bf0ad",
+      "reference_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df"
+    },
+    "real-specified-rk2": {
+      "max_ulp": 3642368,
+      "differing_words": 5251,
+      "words": 18000,
+      "max_abs": 0.031314849853515625,
+      "actual_sha256": "7e14a1a5531ae0a78cf4191e775e66bf9ba2429b01d684d8e0af00218c5bf0ad",
+      "reference_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df"
+    },
+    "southern-rotation": {
+      "max_ulp": 3642368,
+      "differing_words": 5251,
+      "words": 18000,
+      "max_abs": 0.031314849853515625,
+      "actual_sha256": "7e14a1a5531ae0a78cf4191e775e66bf9ba2429b01d684d8e0af00218c5bf0ad",
+      "reference_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df"
+    }
+  },
+  "wrf_flux_order_no_fma": {
+    "real-specified-rk1": {
+      "max_ulp": 8192,
+      "differing_words": 2466,
+      "words": 18000,
+      "max_abs": 0.0001220703125,
+      "actual_sha256": "0f4385fbb2c1a31883d4eec452d6b5dc4629f9913f38d052efb74e58159d08ee",
+      "reference_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df"
+    },
+    "real-specified-rk2": {
+      "max_ulp": 8192,
+      "differing_words": 2466,
+      "words": 18000,
+      "max_abs": 0.0001220703125,
+      "actual_sha256": "0f4385fbb2c1a31883d4eec452d6b5dc4629f9913f38d052efb74e58159d08ee",
+      "reference_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df"
+    },
+    "southern-rotation": {
+      "max_ulp": 8192,
+      "differing_words": 2466,
+      "words": 18000,
+      "max_abs": 0.0001220703125,
+      "actual_sha256": "0f4385fbb2c1a31883d4eec452d6b5dc4629f9913f38d052efb74e58159d08ee",
+      "reference_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df"
+    }
+  },
+  "wrf_flux_and_accumulation_order_no_fma": {
+    "real-specified-rk1": {
+      "max_ulp": 0,
+      "differing_words": 0,
+      "words": 18000,
+      "max_abs": 0.0,
+      "actual_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df",
+      "reference_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df"
+    },
+    "real-specified-rk2": {
+      "max_ulp": 0,
+      "differing_words": 0,
+      "words": 18000,
+      "max_abs": 0.0,
+      "actual_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df",
+      "reference_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df"
+    },
+    "southern-rotation": {
+      "max_ulp": 0,
+      "differing_words": 0,
+      "words": 18000,
+      "max_abs": 0.0,
+      "actual_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df",
+      "reference_sha256": "d79ce0a656f2090e0a3ac3046e09931b3086477bad3e9dc2d8c884524fb322df"
+    }
+  }
+}

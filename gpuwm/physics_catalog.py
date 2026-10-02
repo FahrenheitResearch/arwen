@@ -1104,13 +1104,12 @@ def route_stated(settings: Mapping[str, Any], source: str | None) -> dict[str, A
 
     The HRRR route runs its namelists, and a WRF namelist has no key for
     ``moist_cq``: the route's importer answers it from
-    :func:`gpuwm.physics_compat.implicit_runtime_switches` for the schemes
-    the namelists select, which for a set no shipped profile matches is
-    gpuwm's RunConfig default, not the value the microphysics row carries.
-    A mix written with the row's value was refused at emission by the
-    route's round trip (:func:`gpuwm.hrrr_route_inputs.verify_round_trip`)
-    after New forecast had started it.  Empty on every route that reads
-    the configuration itself.
+    :func:`gpuwm.physics_compat.implicit_runtime_switches`.  That authority
+    enables WRF's moisture pressure correction for every suite; a dry
+    state bypasses it without a moisture carrier.  A verification opt-out
+    cannot be encoded by this route's namelists, so the round trip checks
+    it before publication.  Empty on every route that reads the
+    configuration itself.
     """
 
     if not source:

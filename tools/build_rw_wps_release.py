@@ -148,6 +148,10 @@ _TOP_LEVEL_EXCLUDES = {
     # run, so it has no run disk to price.
     "disk_budget.py",
     "download_budget.py",
+    # Direct forecast disk admission reads the same excluded pricing,
+    # checkpoint-retention policy and restart reader. No preprocessing
+    # entry point integrates a forecast or writes its history output.
+    "output_disk.py",
     # `gpuwm speedrun` and the capsule module behind it.  A speedrun
     # times the SHIPPED chain end to end by driving `gpuwm go` as a
     # subprocess -- prepare, forecast, render -- and seals a capsule of
@@ -179,6 +183,9 @@ _TOP_LEVEL_EXCLUDES = {
     "stream.py",
     "downscale.py",
     "offline_child.py",
+    # Own-geography preparation belongs to the offline forecast child;
+    # its parent-history readers are excluded with that route.
+    "offline_child_geography.py",
     "offline_child_run.py",
     "offline_child_smoke.py",
     # `gpuwm resume` locates a forecast checkpoint and hands it to the
@@ -294,6 +301,14 @@ _CORE_MODULES = {
     # preparation paths import it.  numpy, ctypes and the stdlib at
     # module scope; the CPU preprocessing library it calls is staged.
     "portable_math.py",
+    # The per-card cache keys the staged noah.py and milbrandt2_constants.py
+    # take for their device tables (lane 281-multigpu-2card): functools and
+    # threading at module scope, CuPy only inside the call.
+    "device_cache.py",
+    # The [devices] options table config.py and experiment.py parse beside
+    # [tiles] (lane 281-multigpu-2card): dataclasses and typing at module
+    # scope; the rank machinery it names is imported only by the forecast.
+    "devices.py",
     "track_boundary.py",  # NumPy-only boundary diagnostic used by storm_tracking.
     # Prepared/wrfinput initialization imports the lazy tile door, and the
     # CPU fit estimator reads the import-free mosaic array inventory.
@@ -604,6 +619,10 @@ _FORBIDDEN_STAGED_FILES = {
 }
 
 _OPTIONAL_STAGED_IMPORTS = {
+    ("gpuwm/config.py", "gpuwm.offline_child_geography"):
+        "the [static] parser runs only when load_config admits child_static, "
+        "which only the excluded offline child route requests; ordinary "
+        "RunConfig loading refuses [static] before reaching this import",
     ("gpuwm/core/streaming.py", "gpuwm.core.preflight"):
         "forecast tree admission and execution estimates; standalone preparation "
         "only reads StreamingOptions and does not call these planners",
@@ -665,6 +684,16 @@ _OPTIONAL_STAGED_IMPORTS = {
         "as it is here without gpuwm.core.preflight and gpuwm.core.model, "
         "so an era5, gfs or mapped preparation publishes at its seal and "
         "neither import runs",
+    ("gpuwm/ingest/boundary_stream.py", "gpuwm.core.urban_state"):
+        "the BEM workspace count reader in prepared_head_urban_columns; "
+        "forecast_installed() is checked before this import, so a "
+        "preparation-only installation reads no forecast workspace count "
+        "and publishes at the seal",
+    ("gpuwm/ingest/boundary_stream.py", "gpuwm.prepared_domain_tree_forecast"):
+        "the prepared tree's land-cover count reader, reused for chained "
+        "head admission after forecast_installed() confirms this package "
+        "can forecast; standalone preparation has no forecast executor "
+        "and returns before importing this reader",
     ("gpuwm/downscale_pricing.py", "gpuwm.core.preflight"):
         "the downscaled child's memory admission (estimate_experiment) "
         "inside price_child, reached only by the downscale door's plan "
@@ -1088,7 +1117,7 @@ keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather"]
 classifiers = ["License :: OSI Approved :: Apache Software License"]
 
 [tool.setuptools]
-license-files = ["LICENSE", "NOTICE"]
+license-files = ["LICENSE", "NOTICE", "licenses/LICENSE-rust-libm.txt", "licenses/LICENSE-FDLIBM-SunPro.txt"]
 
 [project.optional-dependencies]
 # [ctk] and the 14.0 floor for the same measured reason as the parent
@@ -1254,6 +1283,8 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
     _copy_source(REPO / "README.md", destination / "README.md")
     _copy_source(REPO / "LICENSE", destination / "LICENSE")
     _copy_source(REPO / "NOTICE", destination / "NOTICE")
+    for name in ("LICENSE-rust-libm.txt", "LICENSE-FDLIBM-SunPro.txt"):
+        _copy_source(REPO / "licenses" / name, destination / "licenses" / name)
     (destination / "pyproject.toml").write_text(
         _standalone_pyproject(),
         encoding="utf-8",

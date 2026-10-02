@@ -20,6 +20,7 @@ import ast
 from pathlib import Path
 
 import pytest
+from _dycore_oracle_routes import DYCORE_CPU_FILES
 
 from tools.release_exclusions import matches, read_exclusions
 
@@ -64,6 +65,14 @@ def _reasons() -> dict[str, str]:
             reasons[line] = " ".join(part for part in block if part)
             block = []
     return reasons
+
+
+def test_compiled_wrf_dycore_cpu_contracts_remain_on_stage1() -> None:
+    """Omitting a fixture suite leaves changed oracle inputs unchecked."""
+    missing = sorted(DYCORE_CPU_FILES - set(_entries()))
+    assert not missing, (
+        f"{missing} are absent from stage 1; compiled WRF fixture, ABI and "
+        "output-word contracts would run on no CPU battery leg")
 
 
 def test_the_manifest_exists_and_lists_something() -> None:

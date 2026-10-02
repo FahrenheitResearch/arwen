@@ -1,0 +1,137 @@
+{
+ "tool": "tools/kernel_ptx_identity/compare.py",
+ "trees": [
+  "diffusion_tip_83fde6032",
+  "integrate_17dabc53e"
+ ],
+ "nvrtc_version": [
+  13,
+  4
+ ],
+ "assembly": "gpuwm.core.kernels.module_source(name) in a child process per tree; GPUWM_WRF_EXACT* removed, CUDA_VISIBLE_DEVICES empty",
+ "compile": "gpuwm.nvrtc_cache_key.compile_program(source, options + (-arch=<arch>,), target=ptx)",
+ "option_sets": {
+  "load_module": [
+   "-std=c++17"
+  ],
+  "rawmodule": [
+   "-std=c++17",
+   "-ftz=true"
+  ]
+ },
+ "archs": [
+  "compute_89",
+  "compute_90",
+  "compute_120"
+ ],
+ "modules": {
+  "smag2d": {
+   "file_sha256": {
+    "diffusion_tip_83fde6032": "6b584abaaf6f154fc8b0bb06aa045a796eccf53d260c2a0bc66d7d1935c9eeb7",
+    "integrate_17dabc53e": "0aab57887cccc28228bc1b705887603b598c4e3c86fe8b5d4065511a24c276c8"
+   },
+   "assembled_source_sha256": {
+    "diffusion_tip_83fde6032": "381bbd6fa16439b973f9cfdaad6bf932c720282746d3eac227d0e98271ebfeeb",
+    "integrate_17dabc53e": "c9165bb9f27a591051b95143967d0d5cb4f476a2f474965038c01679b01579f3"
+   },
+   "entries": [
+    "smag2d_km",
+    "smag_hd_s",
+    "smag_hd_u",
+    "smag_hd_v",
+    "smag_hd_w",
+    "wrf_calc_n2",
+    "wrf_smag2d_km",
+    "wrf_smag3d_km",
+    "wrf_smag_deform",
+    "wrf_smag_flux_s",
+    "wrf_smag_hd_s",
+    "wrf_smag_hd_u",
+    "wrf_smag_hd_v",
+    "wrf_smag_hd_w",
+    "wrf_smag_km_bc",
+    "wrf_smag_surface_heat_const",
+    "wrf_smag_surface_scalars",
+    "wrf_smag_surface_u",
+    "wrf_smag_surface_u_cd0",
+    "wrf_smag_surface_v",
+    "wrf_smag_surface_v_cd0",
+    "wrf_smag_vd_s",
+    "wrf_smag_vd_u",
+    "wrf_smag_vd_v",
+    "wrf_smag_vd_w",
+    "wrf_tke_km",
+    "wrf_tke_rhs"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "diffusion_tip_83fde6032": "a2375459f52b5186d2caae20966e39a0d0075c7f05e0013166dedbd21719c2d2",
+      "integrate_17dabc53e": "a2375459f52b5186d2caae20966e39a0d0075c7f05e0013166dedbd21719c2d2"
+     },
+     "entry_compared": 27,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "diffusion_tip_83fde6032": "70355b0dfcb6ba7f8f62f3ae91c9ab3d81b7b9b306b9368451e1bb59e5dc5f16",
+      "integrate_17dabc53e": "70355b0dfcb6ba7f8f62f3ae91c9ab3d81b7b9b306b9368451e1bb59e5dc5f16"
+     },
+     "entry_compared": 27,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "diffusion_tip_83fde6032": "c2b7d39aca034f826c39319d9970fbf02118ab937324332aef6393a5bafba7b4",
+      "integrate_17dabc53e": "c2b7d39aca034f826c39319d9970fbf02118ab937324332aef6393a5bafba7b4"
+     },
+     "entry_compared": 27,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "diffusion_tip_83fde6032": "a6e5c6247a47fb8bb24a35440411c9a2fcda18d568bc542cecd0f6b665149572",
+      "integrate_17dabc53e": "a6e5c6247a47fb8bb24a35440411c9a2fcda18d568bc542cecd0f6b665149572"
+     },
+     "entry_compared": 27,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "diffusion_tip_83fde6032": "13edb77f1189920d878accff6095596876b3a168f886474cd902c5bdbbc45d9a",
+      "integrate_17dabc53e": "13edb77f1189920d878accff6095596876b3a168f886474cd902c5bdbbc45d9a"
+     },
+     "entry_compared": 27,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "diffusion_tip_83fde6032": "c6f88b07ab059f8df0eed17c9e65448a144895a2302cac2312d023b710e45049",
+      "integrate_17dabc53e": "c6f88b07ab059f8df0eed17c9e65448a144895a2302cac2312d023b710e45049"
+     },
+     "entry_compared": 27,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  }
+ }
+}

@@ -39,12 +39,24 @@ THE THREE LEGS
            written from OUTSIDE ``dycore.step`` and a streamed parent must
            scatter them back into its store or lose them.
 
-THE NEGATIVE CONTROL, WHICH IS TODAY'S CODE PATH
-------------------------------------------------
-``store_aware=False`` runs leg 2 with ``force()`` reading ``node.state``
-exactly as it does on ``main``.  It MUST differ from leg 1.  If it does not,
-the test cannot see the bug and proves nothing -- which is the whole reason it
-is run first and printed as a control rather than assumed.
+THE NEGATIVE CONTROL: A COUPLER THAT READS THE FROZEN STATE
+-----------------------------------------------------------
+``store_aware=False`` runs leg 2 with ``force()`` reading d01's frozen
+``DomainState`` instead of its store.  It MUST differ from leg 1.  If it does
+not, the test cannot see the bug and proves nothing -- which is the whole
+reason it is run first and printed as a control rather than assumed.
+
+The coupler has two doors to a streamed parent (``gpuwm/core/nest.py``'s
+module docstring), and the control shuts both.  A parent the
+``StreamedDomain`` marks, which is every streamed parent here, is coupled
+through bounded ``NestWindowSource`` operands read straight from its owner's
+store; :func:`stale_parent_reads` serves those from the frozen state.  The
+older published-store seam is disarmed too, by unpublishing
+``_STORE_ATTR``.  While a streamed parent took the published-store seam,
+unpublishing alone was the control; once it took the bounded operands,
+unpublishing changed nothing (d02 0 of 158 carriers, against 91 of 158 on the
+seam, RTX 5090 --quick), which is why each control now shuts both doors.  The write-back control does the same with
+:func:`dropped_parent_writes` beside the ``commit_to_store`` stub.
 
 WHY THE COMPARISON IS AGAINST THE STORE AND NOT AGAINST THE STATE
 -----------------------------------------------------------------
@@ -497,26 +509,143 @@ def _finite_or_raise(arrays, label):
 # one leg
 # --------------------------------------------------------------------------
 
+def _host(value):
+    if type(value).__module__.split(".")[0] == "cupy":
+        import cupy as cp
+
+        return cp.asnumpy(value)
+    return np.asarray(value)
+
+
+def stale_parent_reads(parent_state, fresh_window=None):
+    """``NestWindowSource.array`` for a coupler that reads a STALE parent.
+
+    The live target of the stale-parent controls, the parent-side twin of
+    :func:`tilestream.test_streamed_child.stale_child_reads`.  A parent that
+    ``StreamedDomain`` marked is coupled through :class:`gpuwm.core.
+    nest_operands.NestWindowSource`, which reads its windows straight out of
+    the owner's store: FORCE's SINT donor rectangles and the feedback
+    restriction's parent windows both.  Unpublishing ``_STORE_ATTR``,
+    narrowing ``NEST_FORCE_HALO_PARENT_CELLS`` and stubbing
+    ``streaming.commit_to_store`` reach only the older published-store seam,
+    which a marked parent never takes, so once the bounded operands served
+    every streamed parent those controls changed nothing and the gates
+    reported them dead beside passing identity rows.
+
+    Every carrier the coupler reads from ``parent_state``'s store is served
+    as the attach-time copy the ``DomainState`` still holds, refreshed from
+    the store only inside ``fresh_window`` (``(j0, j1, i0, i1)`` in parent
+    MASS cells, sliced by ``streaming.window_slices``, the rule the
+    published-store seam's footprint pull used).  ``None`` refreshes
+    nothing: a coupler that never consults the store.  The halo-free child
+    footprint is the starved window: fresh under the child, stale in the
+    two-cell SINT halo the donor rectangles reach.  Setup arrays pass
+    through untouched, because geography is input and never goes stale, and
+    so does every source that is not this parent's.
+
+    The served array is a COPY, so a write through it is lost; install this
+    only on legs that write nothing into the parent (``feedback = 0``).
+    """
+    from gpuwm.core.nest_operands import NestWindowSource
+    from gpuwm.core.streaming import window_slices
+
+    live_array = NestWindowSource.array
+
+    def array(self, name):
+        live = live_array(self, name)
+        if self.state is not parent_state or self.store is None:
+            return live
+        if "/" in name or f"state/{name}" not in self.store:
+            return live
+        frozen = getattr(parent_state, name, None)
+        if frozen is None:
+            return live
+        stale = _host(frozen).copy()
+        if fresh_window is not None:
+            cells = window_slices(stale.shape, fresh_window)
+            stale[cells] = _host(live)[cells]
+        return stale
+
+    return array
+
+
+def dropped_parent_writes(parent_state):
+    """``NestWindowSource.write`` that discards every write into the parent.
+
+    The bounded half of the feedback write-back control: a marked parent's
+    restriction, smoothing and re-diagnosis land in its store through this
+    method alone, so dropping them leaves the store as the sweep left it,
+    which is what discarding the parent mutation means on that door.  Every
+    other source writes as before.
+    """
+    from gpuwm.core.nest_operands import NestWindowSource
+
+    live_write = NestWindowSource.write
+
+    def write(self, name, window, value):
+        if self.state is parent_state and self.store is not None:
+            return None
+        return live_write(self, name, window, value)
+
+    return write
+
+
 class _no_feedback_writeback:
     """Disarm ONLY the feedback write-back, leaving the store-aware reads on.
 
     The sharp control for leg 3.  ``store_aware=False`` removes both halves
     at once, so it cannot distinguish "the parent was forced from stale air"
     from "the parent's feedback was thrown away"; this removes exactly the
-    second.  With it in place ``feedback_commit`` still reads the store and
-    still mutates the parent's device arrays -- and the next sweep gathers
-    from the store and overwrites every one of those writes.
+    second, on both doors the coupler can take.  On the published-store seam
+    ``feedback_commit`` still reads the store and still mutates the parent's
+    device arrays, ``commit_to_store`` is stubbed, and the next sweep
+    gathers from the store and overwrites every one of those writes.  On the
+    bounded operands the parent's store receives its writes through
+    ``NestWindowSource.write``, which :func:`dropped_parent_writes` turns
+    into a no-op for this parent.
     """
 
+    def __init__(self, parent_state):
+        self.parent_state = parent_state
+
     def __enter__(self):
+        from gpuwm.core.nest_operands import NestWindowSource
+
         self._real = streaming.commit_to_store
+        self._real_write = NestWindowSource.write
         streaming.commit_to_store = lambda state, attrs, **kwargs: 0
-        # nest.py resolves the symbol per call through a function-local
-        # import, so patching the module attribute is enough.
+        # nest.py resolves both symbols per call (a function-local import
+        # and a class attribute), so patching them here is enough.
+        NestWindowSource.write = dropped_parent_writes(self.parent_state)
         return self
 
     def __exit__(self, *exc):
+        from gpuwm.core.nest_operands import NestWindowSource
+
         streaming.commit_to_store = self._real
+        NestWindowSource.write = self._real_write
+        return False
+
+
+class _stale_parent_operands:
+    """Serve the bounded parent operands from the frozen state for one leg."""
+
+    def __init__(self, parent_state, fresh_window=None):
+        self.parent_state = parent_state
+        self.fresh_window = fresh_window
+
+    def __enter__(self):
+        from gpuwm.core.nest_operands import NestWindowSource
+
+        self._real = NestWindowSource.array
+        NestWindowSource.array = stale_parent_reads(
+            self.parent_state, self.fresh_window)
+        return self
+
+    def __exit__(self, *exc):
+        from gpuwm.core.nest_operands import NestWindowSource
+
+        NestWindowSource.array = self._real
         return False
 
 
@@ -557,6 +686,12 @@ def leg(size, rung, *, stream_d01: bool, feedback: int = 0,
     from gpuwm.core.dycore import step as dycore_step
     from types import SimpleNamespace
 
+    if not store_aware and feedback:
+        # stale_parent_reads serves COPIES of the frozen parent, so a
+        # feedback leg's parent writes would land in a copy and be lost:
+        # the leg would measure a stale read and a discarded write-back at
+        # once, and neither control could be told from the other.
+        raise ValueError("store_aware=False is the feedback = 0 control")
     pcfg = parent_cfg(size, rung)
     ccfg = child_cfg(size, rung)
 
@@ -577,21 +712,25 @@ def leg(size, rung, *, stream_d01: bool, feedback: int = 0,
         state=cstate, clock=cclock, parent=parent)
 
     stepper = dycore_step
+    stale = contextlib.nullcontext()
     if stream_d01:
         stepper = stream_parent(pstate, pcfg, tile=size["tile"],
                                 boundaries=bnd, halo=halo)
         if not store_aware:
-            # THE NEGATIVE CONTROL, and it is today's code path exactly:
-            # unpublish the store so ``force()`` and ``feedback_commit``
-            # fall back to reading and writing d01's frozen DomainState.
-            # Nothing else changes -- same tiling, same halo, same sweep --
-            # so a difference below is attributable to this and only this.
+            # THE NEGATIVE CONTROL: a coupler that reads and writes d01's
+            # frozen DomainState instead of its store, on both doors.  The
+            # published-store seam loses the store (unpublished), and the
+            # bounded operands a marked parent takes are served from the
+            # frozen state (``stale_parent_reads``).  Nothing else changes
+            # -- same tiling, same halo, same sweep -- so a difference below
+            # is attributable to this and only this.
             delattr(pstate, streaming._STORE_ATTR)
+            stale = _stale_parent_operands(pstate)
     coupler = NestCoupler(child, feedback=int(feedback))
 
     t0 = time.perf_counter()
-    with (_no_feedback_writeback() if not writeback
-          else contextlib.nullcontext()):
+    with (_no_feedback_writeback(pstate) if not writeback
+          else contextlib.nullcontext()), stale:
         integrate(parent, child, coupler, parent_stepper=stepper,
                   child_stepper=dycore_step, nsteps=nsteps,
                   feedback=feedback)

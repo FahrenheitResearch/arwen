@@ -81,7 +81,19 @@ def _implementation_tree(backend: str) -> dict[str, object]:
         # than the kernel's top tier runs on the CPU bridge
         # (gpuwm.ingest.vert.WRF_VERT_INTERP_LEVEL_TIERS).
         names.append("gpuwm/core/kernels/vert_interp.cu")
+        names.append("gpuwm/core/kernels/glibc_flt32.cuh")
         names.append("gpuwm/ingest/cpu_backend.py")
+        # The card twins whose bits the cuda preparation publishes: the
+        # fused horizontal step, initialize_real's column work and the
+        # Thompson cold-start closure, with the libm twins they include.
+        names.extend(("gpuwm/core/kernels/horizontal.cu",
+                      "gpuwm/ingest/real_device.py",
+                      "gpuwm/core/kernels/real_init.cu",
+                      "gpuwm/core/kernels/real_init_common.cuh",
+                      "gpuwm/core/kernels/real_init_math.cu",
+                      "gpuwm/ingest/closure_device.py",
+                      "gpuwm/core/kernels/thompson_cold_start.cu",
+                      "gpuwm/core/kernels/portable_libm64.cuh"))
     else:  # pragma: no cover - internal call sites own the finite inventory
         raise ValueError(f"unsupported provenance backend {backend!r}")
     files = {}
@@ -603,8 +615,9 @@ class CudaPreprocessBackend:
         return _cupy()
 
     def float32(self, value):
-        cp = self.array_module
-        return cp.asarray(value, dtype=cp.float32)
+        from gpuwm.ingest.horiz import _float32_gpu
+
+        return _float32_gpu(value)
 
     def bool_array(self, value):
         cp = self.array_module

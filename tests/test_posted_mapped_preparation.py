@@ -244,7 +244,8 @@ def test_the_head_plan_and_the_seal_name_the_batches_contributing_mappings(
         composition=tmp_path / "composition.json",
         primary=(lead,), supplements={}, provenance={}, decoders={},
         contributing=dict(donor), source_format="grib2", leads=(0,),
-        lead_of={lead: 0}, batches=[], frames=None, planned={lead},
+        lead_of={lead: 0}, carried_any=False, batches=[], frames=None,
+        planned={lead},
         posted=SimpleNamespace(route_table_sha256=lambda: "7" * 64),
         through=lambda position: None)
     mapped_direct._posted_input_plan(
@@ -252,6 +253,108 @@ def test_the_head_plan_and_the_seal_name_the_batches_contributing_mappings(
         primary=source.primary, supplements={}, provenance={}, decoders={})
     assert source.finish()[2] == "bundle"
     assert seen == {"plan": donor, "seal": donor}
+
+
+def _composed_marker(lead, roles):
+    """A route marker of ``lead``: one object per role, concatenated into one file."""
+
+    objects = [{"name": f"{role}_PT{0 if role == 'step0' else lead:03d}H.grib2",
+                "role": role, "lead": 0 if role == "step0" else lead,
+                "bytes": 1, "sha256": "a" * 64} for role in roles]
+    return {"objects": objects,
+            "composed": [{"name": f"composed/f{lead:03d}.grib2", "bytes": 1,
+                          "sha256": "b" * 64, "lead": lead,
+                          "parts": [item["name"] for item in objects]}]}
+
+
+def test_a_later_batch_decodes_the_first_lead_again_where_its_file_alone_carries_statics(
+        tmp_path):
+    # A route that concatenates the cycle's step-0 objects into the first
+    # lead's file only (the land and sea-ice fractions of a GDPS window):
+    # a batch without that lead decoded its times without those
+    # cycle-invariant fields and was refused, "mapped frame at 2026-10-01
+    # 03:00:00 lacks required fields ['land_fraction']".
+    from gpuwm.mapped_direct import _PostedMappedSource
+
+    root = tmp_path.resolve()
+    primary = tuple(root / f"composed/f{lead:03d}.grib2" for lead in (0, 3, 6))
+
+    def source(markers):
+        posted = object.__new__(_PostedMappedSource)
+        posted.__dict__.update(
+            fetch_root=root, leads=(0, 3, 6), markers={}, lead_of={},
+            expected={}, role_of={}, parts_of={}, carried_any=False,
+            primary=primary, supplements={}, planned=set(primary))
+        for lead, marker in markers.items():
+            posted._read_marker(lead, marker)
+        return posted
+
+    posted = source({0: _composed_marker(0, ("state", "step0")),
+                     3: _composed_marker(3, ("state",)),
+                     6: _composed_marker(6, ("state",))})
+    assert not posted._needs_first_lead({0})
+    assert not posted._needs_first_lead({0, 3})
+    assert posted._needs_first_lead({3})
+    assert posted._needs_first_lead({3, 6})
+    # What such a batch reads: the first lead's file, then its own.
+    again, _ = posted._batch_inventory({0, 3})
+    assert [path.name for path in again] == ["f000.grib2", "f003.grib2"]
+    # A route whose every lead composes the same roles never needs it.
+    pairs = source({lead: _composed_marker(lead, ("pgrb2a", "pgrb2b"))
+                    for lead in (0, 3, 6)})
+    assert not pairs._needs_first_lead({3})
+
+
+def test_the_first_lead_decoded_again_is_listed_once_in_the_merged_receipt():
+    from dataclasses import dataclass
+
+    from gpuwm.mapped_composition import without_earlier_batch_times
+
+    @dataclass(frozen=True)
+    class Batch:
+        # The two receipt fields of a lead batch's bundle the trim reads.
+        alignment_receipt: dict
+        contributing_sources: tuple = ()
+
+    t00, t03, t06 = ("2026-10-01T00:00:00", "2026-10-01T03:00:00",
+                     "2026-10-01T06:00:00")
+    first = Batch(_terrain([t00], [t00]))
+    batches = [first,
+               without_earlier_batch_times(Batch(_terrain([t00, t03], [t00])),
+                                           first),
+               without_earlier_batch_times(Batch(_terrain([t00, t06], [t00])),
+                                           first)]
+    merged = merge_batch_alignment(
+        [batch.alignment_receipt for batch in batches], label="terrain")
+    assert merged == _terrain([t00, t03, t06], [t00])
+
+
+def test_a_supplement_of_one_primary_role_per_lead_follows_the_batch(tmp_path):
+    # RRFS's surface is its own 2dfld file of each lead: read whole by
+    # every batch, the first batch was refused while later leads' 2dfld
+    # files had not posted.
+    from gpuwm.mapped_direct import _PostedMappedSource
+
+    root = tmp_path.resolve()
+    leads = (0, 1, 2)
+    prslev = [root / f"prslev.f{lead:03d}.grib2" for lead in leads]
+    surface = [root / f"2dfld.f{lead:03d}.grib2" for lead in leads]
+    posted = object.__new__(_PostedMappedSource)
+    posted.__dict__.update(
+        fetch_root=root, leads=leads, markers={}, lead_of={}, expected={},
+        role_of={}, parts_of={}, carried_any=False,
+        primary=tuple(path for pair in zip(prslev, surface) for path in pair),
+        supplements={"surface": tuple(surface)},
+        planned={*prslev, *surface})
+    posted._read_marker(0, {"objects": [
+        {"name": path.name, "role": role, "lead": 0, "bytes": 1,
+         "sha256": "a" * 64}
+        for path, role in ((prslev[0], "prslev"), (surface[0], "2dfld"))]})
+    primary, supplements = posted._batch_inventory({0})
+    assert [path.name for path in primary] == [
+        "prslev.f000.grib2", "2dfld.f000.grib2"]
+    assert [path.name for path in supplements["surface"]] == [
+        "2dfld.f000.grib2"]
 
 
 # ---------------------------------------------------------------------------

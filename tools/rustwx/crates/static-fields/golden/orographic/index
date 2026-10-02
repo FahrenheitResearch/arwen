@@ -1,0 +1,15 @@
+type=continuous
+projection=regular_ll
+dx=1
+dy=1
+known_x=1
+known_y=1
+known_lat=0
+known_lon=0
+wordsize=2
+signed=no
+scale_factor=0.02
+missing_value=65535
+tile_x=2
+tile_y=2
+tile_z=1

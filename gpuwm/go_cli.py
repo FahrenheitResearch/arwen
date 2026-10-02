@@ -232,8 +232,12 @@ def pinned_transport(fetch_table, flag: str | None = None
     """
 
     from gpuwm.fetch import pinned_host, transport_refusal
+    from gpuwm import fetch_endpoints
 
     table = fetch_table if isinstance(fetch_table, dict) else {}
+    if fetch_endpoints.policy_uses_aws(str(table.get("source", ""))):
+        return (fetch_endpoints.policy_transport(str(table["source"])),
+                fetch_endpoints.FETCH_POLICY_ENV)
     if flag is None:
         value = table.get("transport")
         host = None if value is None else pinned_host(str(value))
@@ -492,6 +496,7 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
                      run_stamp: bool = run_stamp_module.DEFAULT_RUN_STAMP,
                      claim: bool = False,
                      transport: str | None = None,
+                     devices: int | None = None,
                      as_posted: bool | None = None,
                      late_after_minutes: float | None = None) -> dict:
     """Everything the five stages need, or a refusal saying why not.
@@ -669,6 +674,20 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     # [tiles] shape this chain genuinely cannot run -- a coupling edge
     # with BOTH ends streamed -- was already refused by load_experiment
     # above, with the core's own sentence, relayed before the fetch.
+    from gpuwm.core.devices import override_device_count, refuse_unrouted_devices
+    from dataclasses import replace
+    experiment = replace(experiment, devices=override_device_count(
+        experiment.devices, devices)) if devices is not None else experiment
+    if len(experiment.domains) != 1:
+        # A split tree runs through the tree runner (--devices relayed by
+        # tree_forecast_command, the table riding the hash-bound config);
+        # what that runner cannot split is refused here by name, before
+        # the download: moving nests, late grids, a split parent over a
+        # resident nest.
+        from gpuwm.core.devices import validate_tree_devices
+        validate_tree_devices(experiment)
+    elif getattr(experiment.relocation, "enabled", False):
+        refuse_unrouted_devices(experiment, "gpuwm go moving nests")
     tiles_plan = None
     tiles_options = getattr(experiment, "tiles", None)
     if tiles_options is not None and tiles_options.enabled:
@@ -780,7 +799,7 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     root = run_stamp_module.resolve(
         case_root, init=fetch_table["cycle"], launch=launch,
         enabled=run_stamp, create=claim)
-    return {
+    plan = {
         "config": config,
         "wps_namelist": base / f"{config.stem}.namelist.wps",
         "source": source,
@@ -869,6 +888,15 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         # sentence out of one place.
         "statics_corridor": config_declares_follow_source(experiment),
     }
+    if getattr(getattr(experiment, "devices", None), "enabled", False) or devices is not None:
+        from gpuwm.core.devices import describe_split
+        options = experiment.devices
+        plan["devices"] = options.to_mapping()
+        plan["devices_sentence"] = describe_split(experiment, options)
+        if devices is not None:
+            plan["devices_count_override"] = devices
+    return plan
+
 
 
 # ---------------------------------------------------------------------------
@@ -1020,6 +1048,11 @@ def fetch_command(plan: dict) -> list[str]:
         command.append("--all-levels")
     if plan.get("transport") is not None:
         command.extend(("--transport", str(plan["transport"])))
+    from gpuwm import fetch_endpoints
+    from gpuwm.fetch import GFS_CONTAINER_SOURCES
+    if (fetch_endpoints.policy_uses_aws(plan["source"])
+            and plan["source"] in GFS_CONTAINER_SOURCES):
+        command.extend(("--mode", "full-file"))
     if plan.get("as_posted") is not None:
         command.append("--as-posted" if plan["as_posted"] else "--whole-cycle")
     if plan.get("late_after_minutes") is not None:
@@ -1231,6 +1264,8 @@ def forecast_command(plan: dict, digests: dict, *,
             str(plan["authority"] / "experiment.toml"),
             "--wps-namelist", str(plan["authority"] / "namelist.wps"),
             *_profile_flags(plan),
+            *(["--devices", str(plan["devices_count_override"])]
+              if "devices_count_override" in plan else []),
             *_PROGRESS_FLAGS,
             # Same output directory the finalize stage renders into, so
             # the early picture and the late one land in one tree under
@@ -1301,6 +1336,10 @@ def tree_forecast_command(plan: dict, *,
             "--experiment-config", str(config),
             "--experiment-config-sha256", config_digest,
             *_profile_flags(plan),
+            # `gpuwm go TREE --devices N`: the count reaches the tree runner
+            # as it reaches the single-domain one (forecast_command).
+            *(["--devices", str(plan["devices_count_override"])]
+              if "devices_count_override" in plan else []),
             *_PROGRESS_FLAGS,
             # The tree draws as it goes too, every grid of it, into the
             # directory the finalize stage renders into: the runner arms
@@ -2659,7 +2698,8 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
                observer=None, door: str = "go",
                env: dict | None = None,
                shown: list[str] | None = None,
-               stopped: Callable[[], bool] | None = None) -> None:
+               stopped: Callable[[], bool] | None = None,
+               secondary_failure: Callable[[], bool] | None = None) -> None:
     """Run one stage; replay everything it said and stop if it failed.
 
     Output is captured so the default is one line per stage, and
@@ -2708,6 +2748,11 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
     prevents: a preparation that failed while the fetch still ran was
     reported as a failed fetch with the fetch's exit 130 (the interrupt
     code), on the terminal and in a hosting run's failure record.
+
+    ``secondary_failure`` says another callback already failed first.
+    The process continues and keeps its actual error and timing, but its
+    later failure closes through ``stage_secondary_end`` rather than
+    announcing that this stage stopped the run.
     """
 
     print(f"  .. {label}", flush=True)
@@ -2805,6 +2850,12 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
         # stage begin and never end: the desktop showed it running.  It
         # is a failed stage, said the way every other one is.
         reason = _start_failure_words(label, command, error)
+        if secondary_failure is not None and secondary_failure():
+            _notify(observer, "stage_secondary_end", label=label,
+                    exit_code=_STAGE_START_FAILED, ok=False, diagnostic=reason,
+                    elapsed_seconds=time.monotonic() - started,
+                    progress=_progress_payload(progress))
+            raise GoStageFailed(_STAGE_START_FAILED, reason)
         print(f"  FAILED  {label} (did not start)")
         print(f"    {reason}")
         print(f"{door}: stopped at {label}; every later stage consumes "
@@ -2827,6 +2878,15 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
               f"{door} because a stage beside it failed)", flush=True)
         raise GoStageStopped(completed.returncode)
     if completed.returncode != 0:
+        diagnostic = ("\n".join(_said_lines(completed.stderr)).strip()
+                      or "\n".join(_said_lines(completed.stdout)).strip())
+        tail_text = _diagnostic_tail(diagnostic)
+        if secondary_failure is not None and secondary_failure():
+            _notify(observer, "stage_secondary_end", label=label,
+                    exit_code=completed.returncode, ok=False, diagnostic=tail_text,
+                    elapsed_seconds=time.monotonic() - started,
+                    progress=_progress_payload(progress))
+            raise GoStageFailed(completed.returncode, tail_text)
         print(f"  FAILED  {label} (exit {completed.returncode})")
         # The stage's own refusal is usually its last few lines; replay
         # a readable tail by default and everything under --explain.
@@ -2849,13 +2909,10 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
               "this one's output, so nothing after it ran.")
         # Carry the same diagnostic into machine-facing failures. Desktop and
         # remote clients cannot rely on a separate terminal's preceding lines.
-        diagnostic = ("\n".join(_said_lines(completed.stderr)).strip()
-                      or "\n".join(_said_lines(completed.stdout)).strip())
         # One tail, three readers: the event stream, the exception a
         # calling door turns into its own refusal, and the terminal
         # above.  Composed once so they cannot disagree about which
         # lines the stage's failure was.
-        tail_text = _diagnostic_tail(diagnostic)
         _notify(observer, "stage_failed", label=label,
                 exit_code=completed.returncode, diagnostic=tail_text)
         _notify(observer, "stage_end", label=label,
@@ -3184,6 +3241,9 @@ class _BesideStage:
         #: it, so its exit is not a failure of its own (``_run_stage``'s
         #: ``stopped``).
         self._stopped = threading.Event()
+        #: A different stage failed first. This suppresses failure
+        #: announcements without canceling the fetch or changing its exit.
+        self._secondary_failure = threading.Event()
         context = contextvars.copy_context()
         self._thread = threading.Thread(
             target=context.run, args=(self._run, explain, observer),
@@ -3195,7 +3255,8 @@ class _BesideStage:
         try:
             _run_stage(self.label, self.command, explain=explain,
                        observer=observer, progress=self.progress,
-                       stopped=self._stopped.is_set)
+                       stopped=self._stopped.is_set,
+                       secondary_failure=self._secondary_failure.is_set)
         except BaseException as failure:  # noqa: BLE001 - see result()
             error = failure
             if not self._stopped.is_set():
@@ -3213,6 +3274,11 @@ class _BesideStage:
 
     def running(self) -> bool:
         return self._thread.is_alive()
+
+    def suppress_failure_publication(self) -> None:
+        """A later fetch failure remains secondary while preparation seals."""
+
+        self._secondary_failure.set()
 
     def failure(self) -> BaseException | None:
         """The stage's own failure, once it has ended with one; else ``None``."""
@@ -3472,6 +3538,9 @@ def memory_refusal_text(gate: dict) -> str:
     number in this refusal read directly off the machine.
     """
 
+    if gate.get("devices") is not None:
+        return ("[devices] memory admission refused before download: prevent "
+                "a card or pinned host allocation failure\n" + gate["verdict"])
     free = gate.get("free_bytes")
     free_words = ("" if free is None else
                   f", and the card has {free / (1024 ** 3):.2f} GiB "
@@ -3505,10 +3574,19 @@ def memory_refusal_text(gate: dict) -> str:
                   "... (bare, it weighs this machine's RAM as well as its "
                   "card) -- or prepare on a machine with more RAM; freeing "
                   "VRAM or a larger card does not move host RAM\n")
+    # A BEP+BEM price here is the every-column-urban bound (A176); the
+    # prepared door reads the land cover, so the refusal says which it is.
+    from gpuwm.core.preflight import (ExperimentMemoryEstimate,
+                                      bem_workspace_bound_note)
+    forecast = getattr(phases, "forecast", None)
+    bem_note = (bem_workspace_bound_note(forecast)
+                if isinstance(forecast, ExperimentMemoryEstimate) else None)
+    bem_words = "" if bem_note is None else f"\n  note: {bem_note}"
     return (
         f"this configuration will not fit: {gate['verdict']}{free_words}."
         "  Refusing here, BEFORE the fetch stage downloads the forcing "
-        f"data, rather than in preprocessing after it.{terms}{streamed_remedy}\n"
+        f"data, rather than in preprocessing after it.{terms}{streamed_remedy}"
+        f"{bem_words}\n"
         f"{remedy}"
         "  # gpuwm go CONFIG --no-memory-gate runs it anyway")
 
@@ -3587,6 +3665,48 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
     config = Path(plan["config"])
     source = config_forcing_source(config, priced_only=False)
     exp = (_load_experiment_any(config) if experiment is None else experiment)
+    if plan.get("devices") is not None:
+        from dataclasses import replace
+        from gpuwm.core.devices import DeviceOptions
+        exp = replace(exp, devices=DeviceOptions.from_mapping(plan["devices"]))
+    if getattr(getattr(exp, "devices", None), "enabled", False):
+        from gpuwm.core.devices import probe_devices, validate_device_count
+        from gpuwm.core.devices_memory import devices_gate, include_preparation
+        from gpuwm.core.preflight import estimate_devices, host_available_bytes
+        measured = probe_devices()
+        if measured is not None:
+            validate_device_count(exp.devices, measured["visible_count"])
+        interval, intervals = config_forcing_schedule(
+            config, exp, fetch_cadence_hours=plan.get("cadence"))
+        profiles = (None if measured is None else
+                    {int(dev): profile_from_device_probe(row)
+                     for dev, row in measured["cards"].items()})
+        if len(exp.domains) > 1:
+            # A split tree: every grid on the cards it runs on, the
+            # pricing the tree runner repeats before its first restore.
+            from gpuwm.core.devices_memory import estimate_devices_tree
+            estimate = estimate_devices_tree(
+                exp, vram_gib=vram_gib, forcing_intervals=intervals,
+                source=source, profiles=profiles,
+                forcing_interval_seconds=interval or DEFAULT_FORCING_INTERVAL_SECONDS)
+        else:
+            estimate = estimate_devices(
+                exp, vram_gib=vram_gib, forcing_intervals=intervals, source=source,
+                profiles=profiles,
+                forcing_interval_seconds=interval or DEFAULT_FORCING_INTERVAL_SECONDS)
+        budgets = ({dev: int(vram_gib * 2**30) for dev in exp.devices.device_ids()}
+                   if vram_gib is not None else None if measured is None else
+                   {int(dev): int(row["free_bytes"])
+                    for dev, row in measured["cards"].items()})
+        gate = devices_gate(estimate, budgets=budgets,
+                            host_budget=host_available_bytes())
+        include_preparation(
+            gate, exp, source=source, budgets=budgets, host_budget=host_available_bytes(),
+            forcing_intervals=intervals, forcing_interval_seconds=interval or
+            DEFAULT_FORCING_INTERVAL_SECONDS, ingest_forcing_interval_seconds=interval,
+            vram_gib=vram_gib)
+        gate["device_probe"] = measured
+        return gate
     # This gate is about THIS machine -- it is the last thing between the
     # user and a download -- so the non-pool terms are priced against the
     # card that is actually here, not against the 170-SM reference the
@@ -3997,6 +4117,8 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
         options["data_dir"] = str(data_dir.resolve())
     elif prepared_root is not None and args.data_dir is not None:
         options["data_dir"] = str(Path(args.data_dir).resolve())
+    if getattr(args, "devices", None) is not None:
+        options["devices"] = args.devices
     for key in ("restart", "prepared_root", "wps_namelist"):
         value = getattr(args, key, None)
         if value is not None:
@@ -4035,7 +4157,16 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
                    if bundle is None else None)
     if pinned_line is not None:
         print(pinned_line)
+    if getattr(getattr(exp, "devices", None), "enabled", False):
+        from gpuwm.core.devices import describe_split
+        print("go: " + describe_split(exp))
     if args.dry_run:
+        if getattr(getattr(exp, "devices", None), "enabled", False):
+            gate = memory_gate({"config": config, "source": source,
+                                "cadence": fetch.get("cadence")}, experiment=exp)
+            print(gate["verdict"])
+            if gate["refuse"]:
+                raise GoRefusal(memory_refusal_text(gate))
         if bundle is not None:
             for warning in resolution["warnings"]:
                 print("warning: " + warning["action"], file=sys.stderr)
@@ -4627,6 +4758,7 @@ def _go_prepared_main(args, *, observer=None) -> int:
                             render_section=section,
                             run_stamp=run_stamp_module.run_stamp_enabled(args),
                             transport=getattr(args, "transport", None),
+                            devices=getattr(args, "devices", None),
                             as_posted=(False if getattr(args, "whole_cycle", False)
                                        else None),
                             late_after_minutes=getattr(
@@ -4649,8 +4781,15 @@ def _go_prepared_main(args, *, observer=None) -> int:
                                 plan.get("transport_table"))
         if pinned is not None:
             print(pinned)
+        if plan.get("devices_sentence"):
+            print(f"go: {plan['devices_sentence']}")
         if plan.get("tiles"):
             print(f"go: {plan['tiles']['sentence']}")
+        if plan.get("devices"):
+            gate = memory_gate(plan)
+            print(gate["verdict"])
+            if gate["refuse"]:
+                raise GoRefusal(memory_refusal_text(gate))
         print("")
         beside = posts_beside_preparation(plan)
         for label, command in (
@@ -4760,6 +4899,8 @@ def _go_prepared_main(args, *, observer=None) -> int:
     # forecast stage prints its own decision line too, but that stage's
     # stdout is captured -- a reader watching this terminal would learn
     # their run streamed only from report.json, after the fact.
+    if plan.get("devices_sentence"):
+        print(f"go: {plan['devices_sentence']}")
     if plan.get("tiles"):
         print(f"go: {plan['tiles']['sentence']}")
 
@@ -4879,15 +5020,23 @@ def _go_prepared_main(args, *, observer=None) -> int:
         # failing) when the preparation or the forecast first failed: then
         # they failed because of it and its failure is the chain's, and
         # otherwise the first of them to fail is (_BesideStage.settle).
-        first_failure: dict[str, bool] = {}
+        first_failure: dict[str, object] = {}
         first_failure_lock = threading.Lock()
 
-        def _failing() -> None:
+        def _failing(label: str, error: BaseException) -> None:
             if beside is None:
                 return
             with first_failure_lock:
-                first_failure.setdefault("fetch_first",
-                                         beside.said_failure())
+                if not first_failure:
+                    first_failure.update(fetch_first=beside.said_failure(),
+                                         stage=label, error=error)
+                    if not first_failure["fetch_first"]:
+                        beside.suppress_failure_publication()
+
+        def preparation_failure_is_secondary() -> bool:
+            with first_failure_lock:
+                return (first_failure.get("stage") == "forecast"
+                        and not first_failure.get("fetch_first", True))
 
         def prepare():
             try:
@@ -4900,9 +5049,10 @@ def _go_prepared_main(args, *, observer=None) -> int:
                            # here, so the writer and this poller cannot
                            # disagree.
                            progress=prepare_progress_path(plan["prepared"]),
-                           observer=observer)
-            except BaseException:
-                _failing()
+                           observer=observer,
+                           secondary_failure=preparation_failure_is_secondary)
+            except BaseException as error:
+                _failing("prepare", error)
                 raise
 
         # `--keep-checkpoints`, or its default of one set when this chain
@@ -4922,29 +5072,33 @@ def _go_prepared_main(args, *, observer=None) -> int:
             # own one digest instead, so it is not asked for here.  A
             # chained head binds by its head digest (head_digests), a
             # tree's as a single domain's.
-            digests = (head_digests(plan["prepared"], head_sha256)
-                       if head_sha256 is not None
-                       else {} if plan.get("domains", 1) > 1
-                       else proof_digests(plan["prepared"]))
-            # The first frame the forecast commits is the analysis, and an
-            # observer that wants it rendered as it lands is told so before
-            # the forecast starts -- with THIS plan, the one the render
-            # stage below runs on.  `_notify` because an observer without
-            # the hook (there is no such thing in tree, but `go` takes any
-            # duck) must not be a reason a chain stops.
-            _notify(observer, "arm_first_products", render_plan=plan)
             try:
+                digests = (head_digests(plan["prepared"], head_sha256)
+                           if head_sha256 is not None
+                           else {} if plan.get("domains", 1) > 1
+                           else proof_digests(plan["prepared"]))
+                # The first frame the forecast commits is the analysis, and an
+                # observer that wants it rendered as it lands is told so before
+                # the forecast starts -- with THIS plan, the one the render
+                # stage below runs on.  `_notify` because an observer without
+                # the hook (there is no such thing in tree, but `go` takes any
+                # duck) must not be a reason a chain stops.
+                _notify(observer, "arm_first_products", render_plan=plan)
                 with _checkpoint_retention(keep):
                     _run_forecast(plan, digests, explain=explain,
                                   observer=observer)
-            except BaseException:
-                _failing()
+            except BaseException as error:
+                _failing("forecast", error)
                 raise
 
         def head_ready(head_sha256):
             print("go: preparation head published; the forecast starts "
                   "while the remaining boundary intervals are prepared",
                   flush=True)
+            if hosted_relay is not None:
+                # The head read every start need: a lead the fetch asks for
+                # again from here is not the run's start wait.
+                hosted_relay.head_ready()
             _notify(observer, "prepare_head_ready", head_sha256=head_sha256)
 
         from gpuwm.ingest.boundary_stream import run_chained
@@ -4975,8 +5129,9 @@ def _go_prepared_main(args, *, observer=None) -> int:
                 # download: the fetch is stopped, said as stopped, and the
                 # stage that failed is the chain's failure.
                 with first_failure_lock:
-                    fetch_first = first_failure.get(
-                        "fetch_first", beside.said_failure())
+                    first = dict(first_failure)
+                    fetch_first = bool(first.get(
+                        "fetch_first", beside.said_failure()))
                 failed = beside.settle(fetch_first=fetch_first)
                 if failed is not None:
                     # The observer may have heard the stage that failed
@@ -4987,6 +5142,33 @@ def _go_prepared_main(args, *, observer=None) -> int:
                             exit_code=getattr(failed, "code", 1),
                             diagnostic=getattr(failed, "diagnostic", ""))
                     raise failed from None
+                if not fetch_first and first:
+                    # A later preparation or fetch stage may have told
+                    # the observer it failed during the seal hold. The
+                    # complete callback's first failure remains primary.
+                    error = first["error"]
+                    code = getattr(error, "code", getattr(
+                        error, "exit_code", 2 if isinstance(error, GoRefusal)
+                        else 1))
+                    _notify(observer, "chain_failed", label=first["stage"],
+                            exit_code=code,
+                            diagnostic=getattr(error, "diagnostic", "")
+                            or str(error))
+                    from gpuwm.ingest.boundary_stream import read_replaced_json
+                    from gpuwm.source_posting import POSTING_FAILED_NAME
+
+                    try:
+                        later = read_replaced_json(
+                            posting_folder(plan) / POSTING_FAILED_NAME)
+                    except (OSError, ValueError):
+                        later = None
+                    if isinstance(later, dict) and later.get("code") == "source_behind":
+                        _notify(observer, "warn", code="secondary_source_behind",
+                                message="After the run failed: " + (
+                                    later.get("message") or
+                                    "a later source lead timed out"),
+                                source_behind=later)
+                    raise first["error"] from None
             raise
         if beside is not None:
             # Every lead's marker was read by the seal, so the fetch has
@@ -5255,6 +5437,8 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--dry-run", action="store_true", dest="dry_run",
                         help="validate the route and show how to launch it; fetch "
                              "and run nothing")
+    parser.add_argument("--devices", type=int, default=None, metavar="N",
+                        help="resident slab count; replaces [devices] count")
     parser.add_argument("--no-memory-gate", action="store_true",
                         dest="no_memory_gate",
                         help="skip the before-launch memory check that "

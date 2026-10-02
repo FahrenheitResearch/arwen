@@ -1,0 +1,272 @@
+"""Tools-only arithmetic interventions for compiled WRF diffusion attribution.
+
+No intervention below is an engine option or an acceptance-pin producer.
+The normal launchers are replayed with native metric inputs and contraction
+disabled, then named rounding stages are restored one group at a time.
+"""
+from __future__ import annotations
+import argparse
+from contextlib import ExitStack
+import hashlib
+import json
+from pathlib import Path
+from unittest.mock import patch
+import numpy as np
+
+
+def record(got,want):
+    from gpuwm.verify.diffusion_oracle import word_comparison
+    from gpuwm.core.fp32_ulp import fp32_ulp_distance
+    out={**word_comparison(got,want),"gpu_sha256":hashlib.sha256(got.tobytes()).hexdigest()}
+    changed=np.flatnonzero(got.view(np.uint32)!=want.view(np.uint32))
+    unequal=got.view(np.uint32)!=want.view(np.uint32)
+    flushed=unequal & (got==0.) & (want!=0.) & (np.abs(want)<np.finfo(np.float32).tiny)
+    sign_zero=unequal & (got==0.) & (want==0.)
+    out['native_subnormal_gpu_zero_words']=int(flushed.sum())
+    out['signed_zero_words']=int(sign_zero.sum())
+    out['other_different_words']=int((unequal & ~flushed & ~sign_zero).sum())
+    if changed.size:
+        distances=fp32_ulp_distance(got,want)
+        indices=sorted({int(changed[0]),int(np.argmax(distances))})
+        out["witnesses"]=[]
+        for flat in indices:
+            ix=np.unravel_index(flat,got.shape)
+            out["witnesses"].append({"index_k_j_i":[int(i) for i in ix],
+                "gpu":float(got[ix]),"wrf":float(want[ix]),"ulp":int(distances[ix]),
+                "gpu_word":f"{got[ix].view(np.uint32):08x}","wrf_word":f"{want[ix].view(np.uint32):08x}"})
+    return out
+
+
+def _kernel_edit(source,name,transform):
+    start=source.index("void "+name+"(")
+    end=source.index("\n}\n",start)+2
+    return source[:start]+transform(source[start:end])+source[end:]
+
+
+def wrf_coefficient_staging(source):
+    """Match WRF left-to-right map divisions and unsquared length products."""
+    def tke(body):
+        body=body.replace("sqrtf(dxm * dym)","sqrtf(dxm * dy / map)")
+        body=body.replace("powf(dxm * dym / rdzw_c, 0.33333333f)",
+                          "powf(dxm * dy / map / rdzw_c, 0.33333333f)")
+        body=body.replace("sqrtf(fabsf(G / theta_c * dthrdn))",
+                          "powf(fabsf(G / theta_c * dthrdn),0.5f)")
+        return body.replace("mix_upper_bound * dxm * dym / dt",
+                            "mix_upper_bound * dx / map * dy / map / dt")
+    source=_kernel_edit(source,"wrf_tke_km",tke)
+    def smag(body):
+        body=body.replace("sqrtf(fmaxf(0.0f, def2 - bn2[IDX3(k, j, i)] / prandtl))",
+                          "powf(fmaxf(0.0f, def2 - bn2[IDX3(k,j,i)] / prandtl),0.5f)")
+        body=body.replace("real mlen_h2 = dxm * dym;",
+                          "real mlen_h=sqrtf(dxm*dy/map); real mlen_h2=mlen_h*mlen_h;")
+        for value in ("c_s * c_s","1.0e-6f","mix_upper_bound"):
+            body=body.replace(value+" * mlen_h2",value+" * mlen_h * mlen_h")
+            body=body.replace(value+" * mlen_v2",value+" * mlen_v * mlen_v")
+            body=body.replace(value+" * deltas2",value+" * deltas * deltas")
+        body=body.replace("powf(dxm * dym / rdzw_c, 0.33333333f)",
+                          "powf(dxm * dy / map / rdzw_c, 0.33333333f)")
+        return body.replace("mix_upper_bound * dxm * dym / dt",
+                            "mix_upper_bound * dx / map * dy / map / dt")
+    return _kernel_edit(source,"wrf_smag3d_km",smag)
+
+
+def glibc_math(source):
+    """Use the already verified scalar host pow/log/exp implementation."""
+    from gpuwm.core.kernels import _KDIR
+    header=(_KDIR/"glibc_flt32.cuh").read_text()
+    for cuda,host in (("powf(","gfk_pow("),("logf(","gfk_log("),("expf(","gfk_exp(")):
+        source=source.replace(cuda,host)
+    return source.replace("// gpuwm/core/kernels/smag2d.cu",header+"\n// gpuwm/core/kernels/smag2d.cu",1)
+
+
+def wrf_tke_staging(source):
+    """Match WRF shear averaging, source order and dissipation power sites."""
+    def transform(body):
+        body=body.replace("t += chm * kmh * 0.25f * (s12a * s12a + s12b * s12b\n                              + s12c * s12c + s12d * s12d);",
+                          "t += chm*kmh*(0.25f*(s12a*s12a+s12b*s12b+s12c*s12c+s12d*s12d));")
+        body=body.replace("t += chm * kmv * 0.25f * (s13a * s13a + s13b * s13b\n                              + s13c * s13c + s13d * s13d);",
+                          "t += chm*kmv*(0.25f*(s13a*s13a+s13b*s13b+s13c*s13c+s13d*s13d));")
+        start=body.index("    real s23a =")
+        end=body.index("    // Budget bookkeeping:",start)
+        body=body[:start]+'''
+    real usum=q.u[I3S(0,j,wrf_iu(q,i),ny,nx+1)]+q.u[I3S(0,j,wrf_iu(q,i+1),ny,nx+1)];
+    real vsum=q.v[I3S(0,wrf_jv(q,j),i,ny+1,nx)]+q.v[I3S(0,wrf_jv(q,j+1),i,ny+1,nx)];
+    real absU=0.5f*sqrtf(usum*usum+vsum*vsum);
+    real Cd=cd0;
+    if(isfflx!=0) {absU+=1.0e-15f; real us=use_ustm?ustm[(size_t)j*nx+i]:0.0f; Cd=(us*us)/(absU*absU);}
+    if(k==0) t+=chm*(usum*0.5f*Cd*absU*(wrf_defor13(q,1,j,i)+wrf_defor13(q,1,j,i+1))*0.5f);
+    real s23a=wrf_defor23(q,k+1,j,i),s23b=wrf_defor23(q,k,j,i);
+    real s23c=wrf_defor23(q,k+1,j+1,i),s23d=wrf_defor23(q,k,j+1,i);
+    t+=chm*kmv*(0.25f*(s23a*s23a+s23b*s23b+s23c*s23c+s23d*s23d));
+    if(k==0) t+=chm*(vsum*0.5f*Cd*absU*(wrf_defor23(q,1,j,i)+wrf_defor23(q,1,j+1,i))*0.5f);
+''' + body[end:]
+        body=body.replace("powf((dx / map) * (dy / map) / rdzw_c, 0.33333333f)",
+                          "powf((dx/map)*dy/map/rdzw_c,0.33333333f)")
+        body=body.replace("chm * coefc * tketmp * sqrtf(tketmp) / l",
+                          "chm*coefc*powf(tketmp,1.5f)/l")
+        body=body.replace("real s_buoy = t - s_shear;","real s_buoy = t - s_shear; real oracle_after_buoy=t;")
+        body=body.replace("real s_diss = t - s_shear - s_buoy;","real s_diss = t - s_shear - s_buoy; real oracle_after_diss=t;")
+        body=body.replace("b_buoy[idx] = s_buoy;","b_buoy[idx] = oracle_after_buoy;")
+        body=body.replace("b_diss[idx] = s_diss;","b_diss[idx] = oracle_after_diss;")
+        return body
+    return _kernel_edit(source,"wrf_tke_rhs",transform)
+
+
+def tke_measure(folder,mode,ieee=False):
+    import cupy as cp
+    import gpuwm.core.kernels as kernels
+    from deformation_arithmetic import reference_tensor_order
+    from horizontal_compare import reference_metric_source
+    from vertical_gpu import tke_gpu
+    from gpuwm.verify.diffusion_oracle import word_comparison
+    source=reference_tensor_order(reference_metric_source(kernels.module_source("smag2d")))
+    if mode in ("staging","glibc"):source=wrf_tke_staging(source)
+    if mode=="glibc":source=glibc_math(source)
+    if ieee:
+        from cupy.cuda import compiler
+        ptx,_mapping=compiler.compile_using_nvrtc(source,("-std=c++17","--fmad=false","--ftz=false"),None,"diffusion_tke_diagnostic.cu")
+        module=cp.cuda.function.Module()
+        module.load(ptx.encode() if isinstance(ptx,str) else ptx)
+    else:
+        module=cp.RawModule(code=source,options=("-std=c++17","--fmad=false"))
+    original=kernels.get_kernel
+    controlled=lambda name,symbol:module.get_function(symbol) if name=="smag2d" else original(name,symbol)
+    manifest=json.loads((Path(folder)/"vertical-fixtures.json").read_text())
+    cases={}
+    with patch.object(kernels,"get_kernel",controlled):
+        for case in manifest["cases"]:
+            with np.load(Path(folder)/case["file"]) as data:
+                metrics=[cp.asarray(data["metric_"+key]) for key in ("rdz","rdzw","rho","zx","zy")]
+                module.get_function("oracle_set_metrics")((1,),(1,),tuple(metrics))
+                arrays={key[3:]:data[key] for key in data.files if key.startswith("in_")}
+                meta=case["metadata"]
+                coef={key:data["coefficient_"+key] for key in ("kmh","kmv","khv")}
+                deform={key:data["deformation_"+key] for key in ("d11","d22","d12")}
+                outputs={}
+                for flux in (0,1,2):
+                    got=tke_gpu(arrays,meta,deform,coef,data["bn2"],isfflx=flux,c_k=meta["c_k"],dt=meta["dt"])
+                    if mode in ("staging","glibc"):
+                        got["tke_buoyancy"]=got["budget_buoyancy"]
+                        got["tke_dissip"]=got["budget_dissipation"]
+                    outputs[f"flux{flux}"]={key:record(got[key],data[f"ref_{key}_flux{flux}"])
+                         for key in ("tke_shear","tke_buoyancy","tke_dissip","tke_rhs")}
+                cases[case["case"]]=outputs
+    return cases
+
+
+def coefficient_measure(folder,mode):
+    import gpuwm.core.kernels as kernels
+    from deformation_compare import port_outputs
+    import deformation_arithmetic
+    k4=deformation_arithmetic.reference_smag2d_coefficient_order
+    original=kernels.module_source
+    def controlled(name):
+        source=original(name)
+        if name=="smag2d":
+            source=k4(source)
+            if mode in ("staging","glibc"):
+                source=wrf_coefficient_staging(source)
+            if mode=="glibc":source=glibc_math(source)
+        return source
+    with patch.object(kernels,"module_source",controlled),patch.object(deformation_arithmetic,"reference_smag2d_coefficient_order",lambda source:source):
+        cases={}
+        for path in sorted(Path(folder).glob("deformation-*.npz")):
+            with np.load(path) as data:
+                arrays={key.removeprefix("input__"):data[key] for key in data.files if key.startswith("input__")}
+                meta=json.loads(str(data["meta_json"]))
+                metrics={key.removeprefix("metric__"):data[key] for key in data.files if key.startswith("metric__")}
+                arms={}
+                for km,iso in ((4,0),(2,0),(2,1),(3,0),(3,1)):
+                    got=port_outputs(arrays,meta,km_opt=km,isotropic=iso,contract=False,metrics=metrics,reference_order=True)
+                    prefix=f"ref__km{km}_iso{iso}__"
+                    arms[f"km{km}_iso{iso}"]={key.removeprefix(prefix):record(got[key.removeprefix(prefix)],data[key])
+                       for key in data.files if key.startswith(prefix)}
+                cases[path.name]=arms
+        return cases
+
+
+def aggregate(cases):
+    values={}
+    for case in cases.values():
+        for arm,fields in case.items():
+            for field,record in fields.items():
+                out=values.setdefault(arm+":"+field,{"cases":0,"words":0,"different_words":0,"max_ulp":0,"max_absolute":0.})
+                out["cases"]+=1
+                out["words"]+=record["words"]
+                out["different_words"]+=record["different_words"]
+                out["max_ulp"]=max(out["max_ulp"],record["max_ulp"])
+                out["max_absolute"]=max(out["max_absolute"],record["max_absolute"])
+    return values
+
+
+def cpu_intermediates(folder,output,build):
+    import ctypes,subprocess
+    from deformation_reference import reference_for_case
+    output=Path(output);output.parent.mkdir(parents=True,exist_ok=True)
+    build=Path(build)
+    source='''subroutine probe(v,o) bind(C)
+use iso_c_binding
+use module_model_constants
+real(c_float),intent(in)::v(7)
+real(c_float),intent(out)::o(10)
+real::tmpdz,dthrdn,tmp,mlen_s,mlen_v,deltas,kmv,khv
+tmpdz=1.0/v(2)+1.0/v(3)
+dthrdn=(v(4)-v(5))/tmpdz
+tmp=sqrt(max(v(6),1.e-6))
+mlen_s=0.76*tmp/(abs(g/v(1)*dthrdn))**0.5
+deltas=1.0/v(7)
+mlen_v=min(deltas,mlen_s)
+kmv=0.15*tmp*mlen_v
+khv=kmv*(1.0+2.0*mlen_v/deltas)
+o=[tmpdz,dthrdn,tmp,g/v(1),g/v(1)*dthrdn,sqrt(abs(g/v(1)*dthrdn)),mlen_s,mlen_v,kmv,khv]
+end subroutine
+'''
+    f90=output.parent/'km-intermediate-probe.F90';f90.write_text(source)
+    library=output.parent/'km-intermediate-probe.so'
+    command=['gfortran','-O0','-ffp-contract=off','-fPIC','-shared','-I'+str(build),str(f90),str(build/'constants.o'),'-o',str(library)]
+    subprocess.run(command,check=True)
+    lib=ctypes.CDLL(str(library));rows=[]
+    for name,indices in [('real_open',[(8,5,14),(8,7,12)]),('steep_open',[(15,7,4),(17,10,12)])]:
+        with np.load(Path(folder)/('deformation-'+name+'.npz')) as data:
+            arrays={key.removeprefix('input__'):data[key] for key in data.files if key.startswith('input__')}
+            meta=json.loads(str(data['meta_json']))
+            ref=reference_for_case(build/'oracle.so',arrays,meta,km_opt=2)
+            for k,j,i in indices:
+                p=lambda key,kk=k:ref[key][i+3,kk,j+3]
+                vals=np.array([p('theta'),p('rdz',k+1),p('rdz'),p('theta',k+1),p('theta',k-1),p('tke'),p('rdzw')],np.float32)
+                got=np.zeros(10,np.float32)
+                lib.probe(ctypes.c_void_p(vals.ctypes.data),ctypes.c_void_p(got.ctypes.data))
+                rows.append({'case':name,'index':[k,j,i],'input_values':vals.tolist(),'output_values':got.tolist(),
+                    'output_words':[f'{x.view(np.uint32):08x}' for x in got],
+                    'wrf_kmv_word':f'{p("kmv").view(np.uint32):08x}',
+                    'wrf_khv_word':f'{p("khv").view(np.uint32):08x}'})
+    receipt={'diagnostic_only':True,'command':command,'source_sha256':hashlib.sha256(f90.read_bytes()).hexdigest(),'rows':rows}
+    output.write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt,indent=2))
+
+
+def main():
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument("folder",type=Path);p.add_argument("output",type=Path)
+    p.add_argument("--mode",choices=("base","staging","glibc"),required=True)
+    p.add_argument("--family",choices=("km","tke","cpu"),default="km")
+    p.add_argument("--fortran-build",type=Path)
+    p.add_argument("--ieee",action="store_true",help="TKE control only: direct NVRTC disables subnormal flushing")
+    args=p.parse_args()
+    if args.family=='cpu':
+        if args.fortran_build is None:p.error('--family cpu requires --fortran-build')
+        cpu_intermediates(args.folder,args.output,args.fortran_build);return
+    cases=coefficient_measure(args.folder,args.mode) if args.family=="km" else tke_measure(args.folder,args.mode,ieee=args.ieee)
+    import cupy as cp
+    from gpuwm.core.kernels import module_source
+    receipt={"diagnostic_only":True,"mode":args.mode,"family":args.family,"ieee_direct_nvrtc":args.ieee,"cases":cases,"aggregate":aggregate(cases),
+             "device":cp.cuda.runtime.getDeviceProperties(0)["name"].decode(),
+             "cupy":cp.__version__,"no_fma":True,"native_wrf_metrics":True,
+             "reference_tensor_order":True,
+             "production_source_sha256":hashlib.sha256(module_source("smag2d").encode()).hexdigest(),
+             "tool_sha256":hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+    args.output.parent.mkdir(parents=True,exist_ok=True)
+    args.output.write_text(json.dumps(receipt,indent=2)+"\n")
+    print(json.dumps(receipt["aggregate"],indent=2),flush=True)
+
+
+if __name__=="__main__":main()

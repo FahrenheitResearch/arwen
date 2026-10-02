@@ -157,15 +157,18 @@ LEVEL_GROUP_SHAPE: dict[str, tuple[int, int]] = {
 DEFAULT_BLOCK = 128
 
 
-def p3_source() -> str:
+def p3_source(*, kernel_dir: Path = _KDIR) -> str:
     """The exact translation unit nvrtc is handed.
 
     Assembled the way ``noahmp_driver_gpu.driver_source`` assembles its
     own: preamble, then the shared libm unit, then this scheme's source.
+    ``kernel_dir`` composes it from another tree's kernel files (the A146
+    census gates the tree it scans, A193).
     """
-    return (_preamble()
-            + _LIBM_SOURCE.read_text(encoding=_ENCODING)
-            + _P3_SOURCE.read_text(encoding=_ENCODING))
+    kdir = Path(kernel_dir)
+    return (_preamble(kdir)
+            + (kdir / _LIBM_SOURCE.name).read_text(encoding=_ENCODING)
+            + (kdir / _P3_SOURCE.name).read_text(encoding=_ENCODING))
 
 
 @lru_cache(maxsize=None)
@@ -235,21 +238,23 @@ def device_tables(runtime=None, root: str | None = None) -> P3DeviceTables:
     if root is None:
         root = p3_table_root()
     key = (int(cp.cuda.Device().id), root)
-    cached = _TABLE_CACHE.get(key)
-    if cached is not None:
-        return cached
-    if runtime is None:
-        runtime = p3_init()
-    arrays = []
-    for name in TABLE_SLOTS:
-        host = np.ascontiguousarray(getattr(runtime, name), dtype=np.float32)
-        arrays.append(cp.asarray(host))
-    ptrs = cp.asarray(np.array([int(a.data.ptr) for a in arrays],
-                               dtype=np.uint64))
-    tables = P3DeviceTables(*arrays, pointers=ptrs,
-                            nbytes=int(sum(a.nbytes for a in arrays)))
-    _TABLE_CACHE[key] = tables
-    return tables
+
+    def upload():
+        source = p3_init() if runtime is None else runtime
+        arrays = []
+        for name in TABLE_SLOTS:
+            host = np.ascontiguousarray(getattr(source, name), dtype=np.float32)
+            arrays.append(cp.asarray(host))
+        ptrs = cp.asarray(np.array([int(a.data.ptr) for a in arrays],
+                                   dtype=np.uint64))
+        return P3DeviceTables(*arrays, pointers=ptrs,
+                              nbytes=int(sum(a.nbytes for a in arrays)))
+
+    # Published with its upload event: every slab on the card reads these
+    # tables from its own stream, and an upload still in flight on the first
+    # slab's stream is not a table the others may read.
+    from gpuwm.core.device_cache import cached_ready
+    return cached_ready(cp, _TABLE_CACHE, key, upload)
 
 
 def _pointer_array(arrays):

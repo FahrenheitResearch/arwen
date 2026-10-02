@@ -1,0 +1,8 @@
+dx f4 0
+dt f4 0
+rublten f4 2 64 40
+rvblten f4 2 64 40
+dtaux3d f4 2 64 40
+dtauy3d f4 2 64 40
+dusfcg f4 1 64
+dvsfcg f4 1 64

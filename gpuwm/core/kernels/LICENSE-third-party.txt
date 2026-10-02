@@ -45,7 +45,7 @@ Scope in this directory: the logf / expf / exp2f / powf cores and their data
 tables (Arm, MIT) appear in glibc_flt32.cuh, mynn_dmp_sibling.cu, mynn_pbl.cu,
 noahmp_bareflux.cu, noahmp_fluxprep.cu, noahmp_leaves.cu, noahmp_radiation.cu,
 noahmp_snow.cu, noahmp_soilwater.cu, noahmp_vegeflux.cu, noahmp_vegprecip.cu,
-noahmp_water.cu, rrtmg_lw.cu and rrtmg_sw.cu.  The expm1f / tanhf / atanf /
+noahmp_water.cu, rrtmg_lw.cu, rrtmg_sw.cu and vert_interp.cu.  The expm1f / tanhf / atanf /
 log10f reductions (FDLIBM, Sun Microsystems) appear in mynn_dmp_sibling.cu,
 mynn_pbl.cu, noahmp_bareflux.cu, noahmp_energy.cu, noahmp_fluxprep.cu,
 noahmp_glacier.cu, noahmp_leaves.cu, noahmp_vegeflux.cu and ruc.cu.

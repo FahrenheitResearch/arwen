@@ -1,0 +1,38 @@
+# Stage 1 files whose CPU rows require compiled native artifacts.
+# Linux runs every Stage 1 entry and builds the native libraries first.
+# Windows runs the remaining Stage 1 entries plus all publication/CI controls;
+# its separate native Rust job tests the declared Cargo packages on Windows.
+# This is a platform partition, not a skip budget. Every row must remain in
+# stage1_files.txt and in the Linux selection. Each row names its dependency.
+
+tests/test_analyzed_scalar_boundaries.py # rw_netcdf decodes analyzed NetCDF fields.
+tests/test_atmospheric_window.py # gpuwm_preprocess_cpu prepares each forcing slot.
+tests/test_companion_domains.py # static-fields edits domains and produces terrain metadata.
+tests/test_downscale_archive_guards.py # rw_netcdf reads archived forecast fields.
+tests/test_downscale_auto_vram.py # rw_netcdf decodes the parent history used for pricing.
+tests/test_downscale_child_levels.py # rw_netcdf reads the parent vertical state.
+tests/test_highres_geog_stack_refusal.py # static-fields must load to test the geography refusal.
+tests/test_horiz.py # gpuwm_preprocess_cpu remaps masked surface fields.
+tests/test_hrrr_single_domain_benchmark.py # gpuwm_preprocess_cpu executes slot preparation.
+tests/test_ingest_preflight.py # rw_netcdf decodes orography before shape/value preflight.
+tests/test_lake_temperature.py # gpuwm_preprocess_cpu remaps lake surface fields.
+tests/test_mapped_atmospheric_writer.py # gpuwm_mapped_engine and gpuwm_preprocess_cpu decode, publish and crop preparation.
+tests/test_metgrid_number_initialization.py # gpuwm_preprocess_cpu initializes metgrid numbers.
+tests/test_mp28_runnable.py # netcdf-writer writes the forecast product tape.
+tests/test_namelist_lcz_import.py # static-fields loads high-resolution geography for LCZ imports.
+tests/test_noah_mosaic_doors.py # rw_netcdf and rw_wrfbatch open parent geometry and verify render admission before the offline-child mosaic refusal.
+tests/test_obs_cross_reader.py # rw_netcdf decodes the cross-reader observation controls.
+tests/test_obs_radar_grid.py # netcdf-writer and rw_netcdf write and read radar-grid observation products.
+tests/test_obs_radar_grid_v2.py # netcdf-writer and rw_netcdf write/read the v2 product and provenance.
+tests/test_offline_child_vertical.py # rw_netcdf reads parent fields for vertical remapping.
+tests/test_progress_log.py # netcdf-writer writes product output during the progress control.
+tests/test_render_rust.py # netcdf-writer and rw_wrfbatch produce and render weather output.
+tests/test_soil_layer_geometry.py # netcdf-writer writes soil-layer state for geometry checks.
+tests/test_spectral_receipt_v2.py # rw_netcdf decodes the spectral receipt's retained output.
+tests/test_urban_geog.py # rw_netcdf and static-fields read and build urban geography controls.
+tests/test_v12_integration.py # netcdf-writer and rw_netcdf execute ensemble output and observation products.
+tests/test_water_overlay.py # rw_netcdf and gpuwm_preprocess_cpu decode and remap overlay fields.
+tests/test_water_temperature.py # gpuwm_preprocess_cpu remaps masked water surface fields.
+tests/test_wif_climatology.py # gpuwm_preprocess_cpu prepares the climatological column inputs.
+tests/test_wrfinput_physics_fields.py # rw_netcdf decodes the initialized physics fields.
+tests/test_wrfout.py # netcdf-writer executes history output round trips.

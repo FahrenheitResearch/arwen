@@ -85,6 +85,8 @@ the device section of ``tests/test_rrtmg_mcica.py``.  Kernels live in
 
 from __future__ import annotations
 
+from gpuwm.core.device_cache import cuda_cache
+
 import numpy as np
 # numpy >= 2 is essential for the FP32 max_ulp-0 discipline in this
 # module: NEP-50 weak promotion keeps float32 op python-scalar in
@@ -466,11 +468,12 @@ _MCICA_SRC_PERCOL = 1
 _MCICA_SRC_BAND = 2
 
 _MCICA_GPU_THREADS = 128
-_MCICA_GPU_MODULE = None
+_MCICA_GPU_MODULE = {}
 _MCICA_GPU_KERNELS = {}
-_MCICA_GPU_PREFLIGHTED = False
+_MCICA_GPU_PREFLIGHTED = set()
 
 
+@cuda_cache(maxsize=None)
 def _mcica_gpu_module():
     """Compile kernels/rrtmg_mcica_wrf.cu via NVRTC directly and load
     the PTX (see the section header for why RawModule is unusable).
@@ -480,8 +483,9 @@ def _mcica_gpu_module():
     the duplicate, so an explicit ``-arch=compute_{arch}`` made this
     module uncompilable on CUDA 13 while compiling fine on CUDA 12.
     """
-    global _MCICA_GPU_MODULE
-    if _MCICA_GPU_MODULE is None:
+    import cupy as cp
+    device = int(cp.cuda.Device().id)
+    if device not in _MCICA_GPU_MODULE:
         import os
         import cupy as cp
         from cupy.cuda import compiler as _cc
@@ -495,22 +499,26 @@ def _mcica_gpu_module():
             None, "rrtmg_mcica_wrf.cu")
         mod = cp.cuda.function.Module()
         mod.load(ptx.encode() if isinstance(ptx, str) else ptx)
-        _MCICA_GPU_MODULE = mod
-    return _MCICA_GPU_MODULE
+        _MCICA_GPU_MODULE[device] = mod
+    return _MCICA_GPU_MODULE[device]
 
 
+@cuda_cache(maxsize=None)
 def _mcica_gpu_kernel(name):
-    if name not in _MCICA_GPU_KERNELS:
-        _MCICA_GPU_KERNELS[name] = _mcica_gpu_module().get_function(name)
-    return _MCICA_GPU_KERNELS[name]
+    import cupy as cp
+    key = (int(cp.cuda.Device().id), name)
+    if key not in _MCICA_GPU_KERNELS:
+        _MCICA_GPU_KERNELS[key] = _mcica_gpu_module().get_function(name)
+    return _MCICA_GPU_KERNELS[key]
 
 
 def mcica_gpu_preflight(force=False):
     """Prove, on the live device, that FP32 subnormals survive our
     compile options and that the seed-derivation + kissvec chain equals
     the certified NumPy port bitwise on a probe column."""
-    global _MCICA_GPU_PREFLIGHTED
-    if _MCICA_GPU_PREFLIGHTED and not force:
+    import cupy as cp
+    device = int(cp.cuda.Device().id)
+    if device in _MCICA_GPU_PREFLIGHTED and not force:
         return
     import cupy as cp
     probe_play = np.array([1013.2478, 991.7534, 962.4989, 927.0031],
@@ -530,7 +538,7 @@ def mcica_gpu_preflight(force=False):
             "rrtmg_mcica GPU preflight failed: got %r want %r "
             "(subnormal flush or seed/kissvec divergence on this "
             "toolchain)" % (got, want))
-    _MCICA_GPU_PREFLIGHTED = True
+    _MCICA_GPU_PREFLIGHTED.add(device)
 
 
 def mcica_gpu_local_frame_bytes():

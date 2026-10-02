@@ -1,0 +1,21 @@
+dx f4 0
+dt f4 0
+rublten f4 2 64 40
+rvblten f4 2 64 40
+rthblten f4 2 64 40
+dtaux3d_ls f4 2 64 40
+dtauy3d_ls f4 2 64 40
+dtaux3d_bl f4 2 64 40
+dtauy3d_bl f4 2 64 40
+dtaux3d_ss f4 2 64 40
+dtauy3d_ss f4 2 64 40
+dtaux3d_fd f4 2 64 40
+dtauy3d_fd f4 2 64 40
+dusfcg_ls f4 1 64
+dvsfcg_ls f4 1 64
+dusfcg_bl f4 1 64
+dvsfcg_bl f4 1 64
+dusfcg_ss f4 1 64
+dvsfcg_ss f4 1 64
+dusfcg_fd f4 1 64
+dvsfcg_fd f4 1 64

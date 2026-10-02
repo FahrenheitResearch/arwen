@@ -642,7 +642,8 @@ def real_relocation_initializer(*, catalog=None, vertical, child_config,
         # base thickness of the geopotential it just moved onto.
         state.set_base_geopotential(fine.phb)
         ht_int, mub_int, phb_int = _capture_parent_blend_fields(
-            new_dc, parent_node, window=window, device_windows=window is not None)
+            new_dc, parent_node, window=window,
+            device_windows=not isinstance(state.thp, np.ndarray))
         ht_int = _as_like(ht_int, state.ht)
         mub_int = _as_like(mub_int, state.mub2d)
         phb_int = _as_like(phb_int, state.phb)

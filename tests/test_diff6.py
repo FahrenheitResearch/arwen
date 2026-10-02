@@ -475,6 +475,13 @@ def test_diff6_slopeopt_matches_mirror(stagger):
     ref = np_diff6(f.astype(np.float64), mut, c1, c2, FACTOR, 2.0, 2,
                    stagger=stagger, phb=phb, msfu=msfu, msfv=msfv,
                    slopeopt=1, thresh=0.10, dx=dx, dy=dy)
+    # The compiled WRF oracle found that tendency maps are independent
+    # of the slope taper. This legacy mirror specializes tendency maps
+    # to identity, so restore the field's own tendency map here.
+    if stagger == "x":
+        ref *= msfu[None]
+    elif stagger == "y":
+        ref *= msfv[None]
     np.testing.assert_allclose(got, ref, rtol=1e-4, atol=1e-7)
     off = _dev_tend(f, mut, c1, c2, FACTOR, 2.0, 2, stagger)
     assert np.abs(got - off).max() > 0.0       # the taper actually bites

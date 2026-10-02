@@ -68,7 +68,10 @@ structure read from the oracle's lw_coeffs.bin instead.
 
 from __future__ import annotations
 
+from gpuwm.core.device_cache import cuda_cache
+
 import struct
+import threading
 
 import numpy as np
 # numpy >= 2 is essential for the FP32 max_ulp-0 discipline in this
@@ -3711,9 +3714,9 @@ GPU_BAND_TABS = {
     16: ["absa", "absb", "selfref", "forref", "fracrefa", "fracrefb"],
 }
 
-_GPU_MODULE = None
+_GPU_MODULE = {}
 _GPU_KERNELS = {}
-_GPU_PREFLIGHTED = False
+_GPU_PREFLIGHTED = set()
 
 
 def _gpu_source():
@@ -3791,6 +3794,7 @@ def _write_coalesced_twin():
         fh.write(header + _lw_coalesced_source(chain))
 
 
+@cuda_cache(maxsize=None)
 def _gpu_module():
     """Compile the translation unit via NVRTC DIRECTLY and load the PTX.
 
@@ -3812,8 +3816,9 @@ def _gpu_module():
     the value the explicit option carried, so nothing about the compile
     target changes.
     """
-    global _GPU_MODULE
-    if _GPU_MODULE is None:
+    import cupy as cp
+    device = int(cp.cuda.Device().id)
+    if device not in _GPU_MODULE:
         import cupy as cp
         from cupy.cuda import compiler as _cc
         ptx, _mapping = _cc.compile_using_nvrtc(
@@ -3822,22 +3827,26 @@ def _gpu_module():
             None, "rrtmg_lw.cu")
         mod = cp.cuda.function.Module()
         mod.load(ptx.encode() if isinstance(ptx, str) else ptx)
-        _GPU_MODULE = mod
-    return _GPU_MODULE
+        _GPU_MODULE[device] = mod
+    return _GPU_MODULE[device]
 
 
+@cuda_cache(maxsize=None)
 def _gpu_kernel(name):
-    if name not in _GPU_KERNELS:
-        _GPU_KERNELS[name] = _gpu_module().get_function(name)
-    return _GPU_KERNELS[name]
+    import cupy as cp
+    key = (int(cp.cuda.Device().id), name)
+    if key not in _GPU_KERNELS:
+        _GPU_KERNELS[key] = _gpu_module().get_function(name)
+    return _GPU_KERNELS[key]
 
 
 def gpu_preflight(force=False):
     """Prove toolchain behaviour on the live device: subnormal survival
     through __fmul_rn under our compile options, and the device libm
     transcriptions equal the host ones bitwise on probe values."""
-    global _GPU_PREFLIGHTED
-    if _GPU_PREFLIGHTED and not force:
+    import cupy as cp
+    device = int(cp.cuda.Device().id)
+    if device in _GPU_PREFLIGHTED and not force:
         return
     import cupy as cp
     x = cp.asarray(np.array(
@@ -3855,7 +3864,7 @@ def gpu_preflight(force=False):
         raise RuntimeError(
             "rrtmg_lw GPU preflight failed: got %r want %r (subnormal "
             "flush or libm divergence on this toolchain)" % (got, want))
-    _GPU_PREFLIGHTED = True
+    _GPU_PREFLIGHTED.add(device)
 
 
 def gpu_pack_taumol_state(st, ncol=1):
@@ -4597,16 +4606,34 @@ class LWBatchScratch:
 
 
 _LW_CONST_CACHE = {}
+#: One upload per card at a time.  Unlocked, the slabs of a split domain
+#: (each on its own stream) each uploaded the constants at their first
+#: legacy-LW call and the last replaced the others, so a slab holding a
+#: replaced copy read memory its stream's pool had already handed back --
+#: the defect measured on RRTMGP's tables (rrtmgp._upload_once).
+_LW_CONST_LOCK = threading.RLock()
+
 
 def _lw_dev_consts(cp, C):
     """Reuse chunk-independent constants for the current object and device.
     Sizes priced by lw_batched_const_bytes -- keep the two in step.
     The current coefficient object is retained per device; replacement
     drops that device cache. Coefficients must remain immutable."""
-    device = int(cp.cuda.runtime.getDevice())
+    with _LW_CONST_LOCK:
+        return _lw_dev_consts_locked(cp, C)
+
+
+def _lw_dev_consts_locked(cp, C):
+    device = int(cp.cuda.Device().id)
+    current = cp.cuda.get_current_stream()
     cached = _LW_CONST_CACHE.get(device)
     if cached is not None and cached[0] is C:
+        if int(current.ptr) != cached[3] and not cached[2].done:
+            current.wait_event(cached[2])
         return cached[1]
+    if cached is not None:
+        # A replaced copy may still be read on another stream of this card.
+        cp.cuda.Device().synchronize()
 
     def up(a, dt=np.float32, forder=False):
         h = np.asarray(a, dtype=dt)
@@ -4644,7 +4671,9 @@ def _lw_dev_consts(cp, C):
     K["avogad"] = np.float32(C["con/avogad"])
     K["fluxfac"] = np.float32(C["con/fluxfac"])
     K["heatfac"] = np.float32(C["con/heatfac"])
-    _LW_CONST_CACHE[device] = (C, K)
+    ready = cp.cuda.Event(disable_timing=True)
+    ready.record()
+    _LW_CONST_CACHE[device] = (C, K, ready, int(current.ptr))
     return K
 
 

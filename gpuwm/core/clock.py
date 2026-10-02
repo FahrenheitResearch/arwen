@@ -70,12 +70,15 @@ tracked for T14 replacement (pinned by the audit test).
 PHYSICS CALENDARS (section C): WRF computes STEPRA = nint(radt*60/dt),
 min 1, per domain (phys/module_physics_init.F); the generalized
 ``gpuwm.core.physics._physics_interval_steps`` divides exactly when
-handed the rational dt, and :func:`resolve_clock` asserts the exact and
+handed the rational dt, and for fixed clocks :func:`resolve_clock` asserts
+the exact and
 WRF-REAL (nint on the chained-FP32 dt) paths agree.  Bundle: STEPRA =
 12/12/12/36 for d01..d04; KF cudt = 5 d01 steps (900 ticks), d01 only;
 bldt = 0 -> every step on each domain's own clock.  history/restart are
 tick calendars validated as exact multiples of the owning domain's
-step_ticks; restart alarms evaluate on the d01 clock ONLY (section B).
+step_ticks on fixed clocks. Adaptive history and physics calendars are
+exact tick deadlines; the root shortens its step to each deadline in the
+tree. Restart alarms evaluate on the d01 clock ONLY (section B).
 
 SCHEDULE (section C): :func:`build_schedule` expands WRF's integration
 recursion into a periodic flat per-d01-step op table; the EXECUTOR
@@ -503,16 +506,21 @@ class DomainClock:
 
 
 def _cadence_ticks(label: str, seconds: Fraction, step_ticks: int,
-                   tick_den: int, grid_id: int) -> int:
-    """Validate one cadence as exact ticks AND an exact multiple of the
-    domain's step (section C: every cadence validated at load)."""
+                   tick_den: int, grid_id: int, *,
+                   require_step_multiple: bool = True) -> int:
+    """Resolve a positive cadence, requiring fixed-step alignment when used.
+
+    Adaptive history alarms are exact tick deadlines. The adaptive driver
+    lands on them by shortening the live step, independently of the
+    nominal step used to build the domain.
+    """
     ticks = seconds * tick_den
     if ticks.denominator != 1:
         raise ValueError(
             f"{label} = {seconds} s on domain grid_id={grid_id} is not a "
             f"whole number of ticks (tick = 1/{tick_den} s).")
     count = int(ticks)
-    if count <= 0 or count % step_ticks != 0:
+    if count <= 0 or (require_step_multiple and count % step_ticks != 0):
         raise ValueError(
             f"{label} = {seconds} s on domain grid_id={grid_id} is not a "
             f"positive whole number of that domain's steps "
@@ -648,7 +656,8 @@ def resolve_clock(exp: ExperimentConfig, *,
             minutes = run.radt if run.radt > 0.0 else run.radt_minutes
             radt_ticks, stepra = _physics_calendar(
                 "radt", minutes, dt_ex, step_ticks, tick_den, dc.grid_id,
-                run.dt, _physics_interval_steps)
+                run.dt, _physics_interval_steps,
+                adaptive=run.use_adaptive_time_step)
         cudt_ticks = stepcu = None
         if run.cu_physics in (1, 3, 16):
             # GF pins cudt_minutes = 0: the calendar records the every-step
@@ -661,19 +670,22 @@ def resolve_clock(exp: ExperimentConfig, *,
             # on a cadence nothing validated.
             cudt_ticks, stepcu = _physics_calendar(
                 "cudt", run.cudt_minutes, dt_ex, step_ticks, tick_den,
-                dc.grid_id, run.dt, _physics_interval_steps)
+                dc.grid_id, run.dt, _physics_interval_steps,
+                adaptive=run.use_adaptive_time_step)
         bldt_ticks = stepbl = None
         if (run.bl_pbl_physics != 0 or run.sf_sfclay_physics != 0
                 or run.sf_surface_physics != 0):
             bldt_ticks, stepbl = _physics_calendar(
                 "bldt", run.bldt, dt_ex, step_ticks, tick_den, dc.grid_id,
-                run.dt, _physics_interval_steps)
+                run.dt, _physics_interval_steps,
+                adaptive=run.use_adaptive_time_step)
 
         history_ticks = _cadence_ticks(
             "history_interval_s", Fraction(dc.history_interval_s),
-            step_ticks, tick_den, dc.grid_id)
+            step_ticks, tick_den, dc.grid_id,
+            require_step_multiple=not run.use_adaptive_time_step)
         history_begin_ticks, history_end_ticks = _history_window_ticks(
-            dc, step_ticks, tick_den)
+            dc, step_ticks, tick_den, adaptive=run.use_adaptive_time_step)
 
         # Restart alarms evaluate on the d01 clock ONLY (section B/C).
         restart_ticks = None
@@ -717,14 +729,17 @@ def resolve_clock(exp: ExperimentConfig, *,
 
 
 def _history_window_ticks(dc, step_ticks: int,
-                          tick_den: int) -> tuple[int, int | None]:
+                          tick_den: int, *,
+                          adaptive: bool = False) -> tuple[int, int | None]:
     """A domain's history begin/end offsets in ticks.
 
-    The begin rounds UP to the domain's step lattice: WRF's alarm rings
+    With fixed steps the begin rounds UP to the domain's step lattice:
+    WRF's alarm rings
     once at the first step whose time is at or after start + begin
     (external/esmf_time_f90/ESMF_Clock.F90, the RingTime test in
     ESMF_ClockAdvance) and then every interval from that step.  The end
-    is a bound, not a ring time, so it is not rounded.
+    is a bound, not a ring time, so it is not rounded. With adaptive
+    steps the driver lands exactly on the requested begin alarm.
     """
     begin = Fraction(str(dc.history_begin_s or 0.0))
     begin_ticks = begin * tick_den
@@ -732,7 +747,9 @@ def _history_window_ticks(dc, step_ticks: int,
         raise ValueError(
             f"history_begin_s = {float(begin):g} on grid_id={dc.grid_id} is "
             f"not a whole number of ticks (tick = 1/{tick_den} s).")
-    begin_ticks = -(-int(begin_ticks) // step_ticks) * step_ticks
+    begin_ticks = int(begin_ticks)
+    if not adaptive:
+        begin_ticks = -(-begin_ticks // step_ticks) * step_ticks
     end = dc.history_end_s
     end_ticks = None
     if end is not None:
@@ -743,11 +760,14 @@ def _history_window_ticks(dc, step_ticks: int,
 
 def _physics_calendar(label: str, minutes: float, dt_ex: Fraction,
                       step_ticks: int, tick_den: int, grid_id: int,
-                      dt_float: float, interval_steps) -> tuple[int, int]:
+                      dt_float: float, interval_steps, *,
+                      adaptive: bool = False) -> tuple[int, int]:
     """One WRF minutes-cadence calendar as (ticks, steps).
 
     ``minutes <= 0`` is WRF's every-step convention (STEPRA/STEPCU/STEPBL
-    = 1).  Otherwise the cadence must divide into whole domain steps; the
+    = 1). Under adaptive stepping a positive cadence is an exact tick
+    deadline and its initial driver count uses WRF rounding. Otherwise
+    the cadence must divide into whole domain steps; the
     generalized ``_physics_interval_steps`` divides the exact rational,
     and the WRF-REAL path (nint on the chained-FP32 dt,
     phys/module_physics_init.F) must agree -- the runtime PhysicsDriver
@@ -757,7 +777,13 @@ def _physics_calendar(label: str, minutes: float, dt_ex: Fraction,
     if minutes <= 0.0:
         return step_ticks, 1
     ticks = _cadence_ticks(label, Fraction(str(minutes)) * 60, step_ticks,
-                           tick_den, grid_id)
+                           tick_den, grid_id,
+                           require_step_multiple=not adaptive)
+    if adaptive:
+        # The integer deadline governs adaptive calls. The initial driver
+        # count retains WRF's nominal-step rounding until the live clock
+        # sets its per-step due override.
+        return ticks, interval_steps(minutes, dt_float)
     steps = ticks // step_ticks
     exact = interval_steps(minutes, dt_ex)
     nint = interval_steps(minutes, dt_float)

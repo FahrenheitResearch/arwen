@@ -11,6 +11,7 @@ STEP_CONTROL_ATTRIBUTES = (
     "stepra", "stepcu", "stepbl",
     "radt_seconds", "cudt_seconds", "bldt_seconds",
     "radiation_due_override", "cumulus_due_override",
+    "surface_pbl_due_override",
 )
 
 

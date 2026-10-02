@@ -242,7 +242,12 @@ publish("schedule.json", {
     "leads": [{"lead": 0, "state": "waiting"},
               {"lead": 1, "state": "scheduled"}]})
 print("fetch gfs: f000 not posted yet", flush=True)
-if mode == "behind":
+if mode == "late-behind":
+    deadline = time.monotonic() + 30.0
+    while not os.path.exists(os.path.join(out, "forecast-failed")):
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+if mode in ("behind", "late-behind"):
     publish("failed.json", {"code": "source_behind", "source": "gfs",
                             "cycle": cycle, "lead": 1,
                             "message": "gfs f001 has not posted by its late time"})
@@ -264,6 +269,7 @@ _PREPARE_STAGE = r"""
 import os, sys, time
 
 prepared, posting, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+fetch_end_marker = sys.argv[4] if len(sys.argv) > 4 else None
 if mode == "fail":
     print("prepare: the decode refused the first lead", file=sys.stderr)
     sys.exit(9)
@@ -277,6 +283,24 @@ stream = os.path.join(prepared, "boundary-stream")
 os.makedirs(stream, exist_ok=True)
 with open(os.path.join(stream, "head.json"), "w", encoding="utf-8") as handle:
     handle.write("{}")
+if mode == "head-fail":
+    deadline = time.monotonic() + 30.0
+    while not os.path.exists(os.path.join(os.path.dirname(posting), "forecast-running")):
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    print("prepare: the later input failed validation", file=sys.stderr)
+    sys.exit(9)
+if mode == "head-behind":
+    deadline = time.monotonic() + 30.0
+    while not os.path.exists(os.path.join(posting, "failed.json")):
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    open(os.path.join(os.path.dirname(posting), "prepare-ended"), "w").close()
+    if fetch_end_marker is not None:
+        while not os.path.exists(fetch_end_marker):
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+    sys.exit(75)
 time.sleep(1.0)
 sys.exit(0)
 """
@@ -296,7 +320,7 @@ class _Host:
 
 
 def _real_stages(monkeypatch, tmp_path, *, fetch_mode, prepare_mode,
-                 fetch_ends_after=0.5):
+                 fetch_ends_after=0.5, fetch_end_marker=None):
     """go's chain with a real fetch and preparation process (authority stubbed)."""
 
     import sys
@@ -316,8 +340,11 @@ def _real_stages(monkeypatch, tmp_path, *, fetch_mode, prepare_mode,
                 str(fetch_ends_after)]
 
     def prepare_command(plan, bridge, **kw):
-        return [sys.executable, str(prepare_script), str(plan["prepared"]),
-                str(kw["as_posted"]), prepare_mode]
+        command = [sys.executable, str(prepare_script), str(plan["prepared"]),
+                   str(kw["as_posted"]), prepare_mode]
+        if fetch_end_marker is not None:
+            command.append(str(fetch_end_marker))
+        return command
 
     def stage(label, command, **kw):
         if label == "authority":
@@ -403,6 +430,128 @@ def test_a_forecast_that_fails_beside_the_fetch_is_the_chains_failure(
     if hosted:
         assert observer.failure["stage"] == "forecast"
         assert observer.failure["exit_code"] == 7
+
+
+@pytest.mark.parametrize("hosted", [False, True], ids=["typed", "run-plan"])
+@pytest.mark.parametrize("failure_kind", ["refusal", "stage"])
+def test_forecast_validation_failure_precedes_a_later_source_timeout(
+        tmp_path, monkeypatch, gfs_config, hosted, failure_kind, capsys):
+    """Head validation is part of the forecast callback, before its runner.
+
+    Preparation waits for the later lead after validation fails. Its fetch
+    times out during that hold, so sampling failure order after the hold
+    would report the source timeout instead of the validation failure.
+    """
+
+    fetch_end_marker = tmp_path / "fetch-stage-ended"
+    _real_stages(monkeypatch, tmp_path, fetch_mode="late-behind",
+                 prepare_mode="head-behind", fetch_ends_after=0.0,
+                 fetch_end_marker=fetch_end_marker)
+    notify = go_cli._notify
+
+    def observed_notify(observer, event, **fields):
+        notify(observer, event, **fields)
+        if (event in {"stage_end", "stage_secondary_end"}
+                and fields.get("label") == "fetch"
+                and fields.get("exit_code") == 75):
+            fetch_end_marker.touch()
+
+    monkeypatch.setattr(go_cli, "_notify", observed_notify)
+    monkeypatch.setattr(
+        boundary_stream, "_fresh_head",
+        lambda root, since: {"head_sha256": "a" * 64,
+                             "decision": {"chained": True}})
+    message = "forecast head validation failed before the later lead"
+    original = (go_cli.GoRefusal(message) if failure_kind == "refusal"
+                else go_cli.GoStageFailed(7, message))
+
+    def head_digests(root, head):
+        raise original
+
+    data = tmp_path / "data"
+    held = threading.Event()
+    hold_for_seal = boundary_stream._hold_for_seal
+
+    def hold(root, worker, observer):
+        held.set()
+        (data / "forecast-failed").touch()
+        return hold_for_seal(root, worker, observer, report_seconds=0.01)
+
+    monkeypatch.setattr(go_cli, "head_digests", head_digests)
+    monkeypatch.setattr(boundary_stream, "_hold_for_seal", hold)
+    args = _args(gfs_config, tmp_path / "go")
+    args.data_dir = data
+    from gpuwm import runplan
+
+    observer = runplan._GoObserver(_Host()) if hosted else None
+    if failure_kind == "refusal":
+        with pytest.raises(go_cli.GoRefusal, match=message) as caught:
+            go_cli.go_main(args, observer=observer)
+        assert caught.value is original
+    else:
+        assert go_cli.go_main(args, observer=observer) == 7
+    assert held.is_set()
+    assert fetch_end_marker.is_file()
+    printed = capsys.readouterr().out
+    assert "FAILED  fetch" not in printed
+    assert "stopped at fetch" not in printed
+    assert "FAILED  prepare" not in printed
+    assert "stopped at prepare" not in printed
+    record = json.loads((data / "posting" / "failed.json").read_text())
+    assert record["code"] == "source_behind"
+    if hosted:
+        assert observer.failure == {
+            "stage": "forecast", "exit_code": 2 if failure_kind == "refusal" else 7,
+            "diagnostic": message}
+        secondary = [fields for said, fields in observer._observer.warnings
+                     if said == "secondary_source_behind"]
+        assert secondary[-1]["source_behind"]["message"] == record["message"]
+        assert not any(fields.get("stage") == "fetch"
+                       for said, fields in observer._observer.warnings
+                       if said == "chain_stage_failed")
+
+
+@pytest.mark.parametrize("hosted", [False, True], ids=["typed", "run-plan"])
+def test_a_preparation_failure_before_its_forecast_consequence_stays_primary(
+        tmp_path, monkeypatch, gfs_config, hosted):
+    """Both callbacks retain the first failure's stage, diagnostic and code."""
+
+    _real_stages(monkeypatch, tmp_path, fetch_mode="wait",
+                 prepare_mode="head-fail")
+    monkeypatch.setattr(
+        boundary_stream, "_fresh_head",
+        lambda root, since: {"head_sha256": "a" * 64,
+                             "decision": {"chained": True}})
+    monkeypatch.setattr(go_cli, "head_digests", lambda root, head: {})
+    failed = threading.Event()
+    mark_failed = boundary_stream._mark_failed_if_unsealed
+
+    def mark(root, error, **kwargs):
+        try:
+            return mark_failed(root, error, **kwargs)
+        finally:
+            # run_chained invokes this after the complete preparation
+            # callback captured and re-raised its first exception.
+            failed.set()
+
+    data = tmp_path / "data"
+
+    def forecast(plan, digests, **kwargs):
+        (data / "forecast-running").touch()
+        assert failed.wait(20), "the preparation did not fail first"
+        raise go_cli.GoStageFailed(7, "forecast stopped after its input failed")
+
+    monkeypatch.setattr(boundary_stream, "_mark_failed_if_unsealed", mark)
+    monkeypatch.setattr(go_cli, "_run_forecast", forecast)
+    args = _args(gfs_config, tmp_path / "go")
+    args.data_dir = data
+    code, observer = _go(args, hosted)
+    assert code == 9
+    if hosted:
+        assert observer.failure["stage"] == "prepare"
+        assert observer.failure["exit_code"] == 9
+        assert "the later input failed validation" in observer.failure["diagnostic"]
+        assert "forecast stopped" not in observer.failure["diagnostic"]
 
 
 @pytest.mark.parametrize("slow", [False, True],
@@ -502,9 +651,10 @@ def test_an_as_posted_head_binds_its_plan_where_a_manifest_digest_goes():
     with pytest.raises(ValueError, match="not the plan its digest"):
         runner._as_posted_head_binding(
             "gfs", {**posted, "input_plan_sha256": "e" * 64}, None)
+    # A mapped head binds its plan too since A136 L10: what its seal writes
+    # is checked by the sealed preflight (it was refused by name before).
     mapped = sorted(runner._MAPPED_SOURCES)[0]
-    with pytest.raises(ValueError, match="bind the sealed preparation"):
-        runner._as_posted_head_binding(mapped, posted, None)
+    assert runner._as_posted_head_binding(mapped, posted, None)         == boundary_stream.as_posted_placeholder(digest)
 
 
 def test_only_the_plans_pending_roles_may_carry_no_digest():
@@ -704,7 +854,9 @@ def test_source_cli_refuses_a_manifest_pair_beside_as_posted(tmp_path):
 
 def test_only_a_runner_that_waits_on_posted_leads_prepares_as_posted():
     assert source_cli.prepares_as_posted("gfs")
-    assert not source_cli.prepares_as_posted("gefs")
+    # The mapped engine waits on posted leads since A136 L3 (ii)
+    # (mapped_direct --as-posted), and its door forwards the flag (L10).
+    assert source_cli.prepares_as_posted("gefs")
     assert not source_cli.prepares_as_posted("hrrr")
     assert not source_cli.prepares_as_posted("no-such-source")
 
@@ -1071,6 +1223,44 @@ def test_a_run_waiting_on_its_start_needs_says_phase_start_source_waits(
     waits = _waits(stream, mark)
     assert [(event, fields["lead"]) for event, fields in waits] == [
         ("source_wait_finished", 1)]
+
+
+
+def test_after_the_head_a_start_need_asked_again_is_not_a_start_wait(
+        tmp_path):
+    """Live on hrrr-prs 2026-10-01T06 (A136 L10): the fetch asked f001 again
+    after the head was published (a transfer that did not verify is asked
+    once more), and the stream said ``source_wait_started`` with ``phase:
+    start`` while the forecast stepped.  The head read every start need, so
+    once it is out the relay says no start wait; the forecast says its own
+    waits at its seams."""
+
+    from gpuwm import chain_events
+
+    stream = _Stream()
+    hosted = chain_events.HostedPostingRelay(stream, data_dir=tmp_path)
+    relay = hosted._relay
+    posting = tmp_path / "posting"
+    _start_schedule(posting,
+                    _lead_row(0, "ready", first_seen_at="2026-09-30T21:31:40Z"),
+                    _lead_row(1, "ready", first_seen_at="2026-09-30T21:32:10Z"),
+                    _lead_row(2, "scheduled"))
+    relay.relay_posting()
+    hosted.head_ready()
+    mark = len(stream.said)
+    _start_schedule(posting,
+                    _lead_row(0, "ready", first_seen_at="2026-09-30T21:31:40Z"),
+                    _lead_row(1, "waiting", first_seen_at="2026-09-30T21:32:10Z"),
+                    _lead_row(2, "scheduled"))
+    relay.relay_posting()
+    relay.relay_posting()
+    assert _waits(stream, mark) == []
+    # The same row before the head is the run's start wait, as before.
+    early = _Stream()
+    before = chain_events.HostedPostingRelay(early, data_dir=tmp_path)._relay
+    before.relay_posting()
+    assert [(event, fields["lead"]) for event, fields in _waits(early)] == [
+        ("source_wait_started", 1)]
 
 
 def test_a_start_need_that_falls_behind_is_not_said_as_arrived(tmp_path):

@@ -7,7 +7,7 @@ Runge-Kutta outer integration wrapping split-explicit acoustic steps
 (forward-backward horizontal, implicit vertical, recoupled to the large step), on a
 hybrid terrain-following dry-mass vertical coordinate, FP32 on CUDA
 [docs/gpuwm-project-history.md:65; README.md:33-34]. The RK stage table is a
-config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:739].
+config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:734].
 
 Advection is WRF's stencils, hardcoded where WRF hardcodes behavior: horizontal
 momentum is the WRF flux5 (5th-order) stencil, vertical momentum and scalars the
@@ -15,13 +15,13 @@ flux3 (3rd-order) stencil (`gpuwm/core/kernels/advection.cu`)
 [docs/public/CONFIGURATION.md:730-731]. Transported-scalar stencils are fixed
 5th/3rd order, so the importer accepts only the Registry default
 `h_sca_adv_order = 5`; the configurable `h_sca_adv_order` (legacy default 2) feeds
-the geopotential equation only [docs/public/CONFIGURATION.md:417]. Moist transport
+the geopotential equation only [docs/public/CONFIGURATION.md:412]. Moist transport
 runs WRF option 1 (positive-definite limiter) with `scalar_adv_opt` required to
-match [docs/public/CONFIGURATION.md:418, 747].
+match [docs/public/CONFIGURATION.md:413, 740].
 
 Lateral boundaries use specified/relaxation zones with Davies-style weighting;
 `spec_bdy_width` defaults to 5 and must be at least `spec_zone + relax_zone`
-[docs/public/CONFIGURATION.md:103]. The damping stack is described in section 1.2.
+[docs/public/CONFIGURATION.md:105]. The damping stack is described in section 1.2.
 
 No symbolic statement of the governing equation set exists in the documentation
 tree; the prose description above and the WRF-ARW technical-note lineage are the
@@ -56,7 +56,7 @@ Eta levels are explicit, not generated: `eta_levels` is required for real runs,
 automatic level generation (`auto_levels_opt`, `max_dz`, `dzbot`,
 `dzstretch_s/u`) is not implemented, and with explicit `eta_levels` those keys
 are inert in WRF too, so they import as dropped. `p_top` defaults on import to
-the Registry's 5000 Pa [docs/public/CONFIGURATION.md:140].
+the Registry's 5000 Pa [docs/public/CONFIGURATION.md:142].
 
 Two hard properties a WRF user must plan around:
 

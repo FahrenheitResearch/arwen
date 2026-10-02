@@ -2961,11 +2961,12 @@ class CudaSW:
         #: Per-chunk device workspace of the batched chain (Section 11):
         #: every slot is allocated once and reused across the chunks of a
         #: call and across calls, and only the slots the kernels read
-        #: before writing are zeroed per chunk.  Used only inside
-        #: rrtmg_sw_batched_device (stream-ordered, so sharing one engine
-        #: between adapters stays sound); release_scratch hands the bytes
-        #: back to the pool between radiation events.
-        self._scratch = SWBatchScratch(cp)
+        #: before writing are zeroed per chunk; release_scratch hands the
+        #: bytes back to the pool between radiation events.  ONE PER
+        #: STREAM (see :attr:`_scratch`): the compiled module and the packed
+        #: tables are read-only and shared by every stream on this card,
+        #: the workspace is written by every call and is not.
+        self._scratch_by_stream = {}
         #: nlayers -> columns per chunk, derived once per layer count
         #: from this device's resident threads and the VRAM free at that
         #: moment (see batch_column_chunk).
@@ -2975,6 +2976,24 @@ class CudaSW:
         return self.module.get_function(name)
 
     # ---- batched-chain workspace and chunk width ----------------------
+
+    @property
+    def _scratch(self):
+        """The CURRENT stream's :class:`SWBatchScratch`.
+
+        Two states stepping at the same time on one card (the slabs of a
+        [devices] split, or a tiled run's buffers on their own streams) run
+        this engine's batched chain concurrently.  One shared workspace was
+        then written by both: MEASURED on the city suite, a slab lost bits
+        in state/al and one threaded 2x2 run stopped on a non-finite
+        rthratensw.  Keyed by the stream the call runs on, so a resident
+        run (one stream) keeps exactly the one workspace it always had.
+        """
+        ptr = int(self.cp.cuda.get_current_stream().ptr)
+        held = self._scratch_by_stream.get(ptr)
+        if held is None:
+            held = self._scratch_by_stream.setdefault(ptr, SWBatchScratch(self.cp))
+        return held
 
     @property
     def scratch(self):

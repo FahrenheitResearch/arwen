@@ -1,0 +1,119 @@
+{
+  "schema": "bigstep-rk-wrf471-v1",
+  "fixture_sha256": "c9405eadfb22c5c4f3d1ce0679f96f08c1cae3c9b25a906d982df86b5d2222c4",
+  "state_sha256": "744d7cffbdf37db5768fa4b620bfc0cbc15971d5bfa792b4adb6de0f6ad2b22e",
+  "cases": [
+    {
+      "kind": "dry",
+      "id": 0,
+      "name": "real-rk1",
+      "step": 1
+    },
+    {
+      "kind": "dry",
+      "id": 1,
+      "name": "real-rk2",
+      "step": 2
+    },
+    {
+      "kind": "dry",
+      "id": 2,
+      "name": "real-rk3",
+      "step": 3
+    },
+    {
+      "kind": "dry",
+      "id": 3,
+      "name": "map-extremes",
+      "step": 1
+    },
+    {
+      "kind": "dry",
+      "id": 4,
+      "name": "zero",
+      "step": 2
+    },
+    {
+      "kind": "scalar",
+      "id": 0,
+      "name": "real-rk1",
+      "step": 1,
+      "specified": false,
+      "nested": false,
+      "periodic_x": true,
+      "spec_zone": 1,
+      "dt": 20.0
+    },
+    {
+      "kind": "scalar",
+      "id": 1,
+      "name": "real-rk2",
+      "step": 2,
+      "specified": false,
+      "nested": false,
+      "periodic_x": true,
+      "spec_zone": 1,
+      "dt": 20.0
+    },
+    {
+      "kind": "scalar",
+      "id": 2,
+      "name": "real-rk3",
+      "step": 3,
+      "specified": false,
+      "nested": false,
+      "periodic_x": true,
+      "spec_zone": 1,
+      "dt": 20.0
+    },
+    {
+      "kind": "scalar",
+      "id": 3,
+      "name": "specified-ring",
+      "step": 2,
+      "specified": true,
+      "nested": false,
+      "periodic_x": false,
+      "spec_zone": 1,
+      "dt": 20.0
+    },
+    {
+      "kind": "scalar",
+      "id": 4,
+      "name": "nested-ring",
+      "step": 2,
+      "specified": false,
+      "nested": true,
+      "periodic_x": false,
+      "spec_zone": 1,
+      "dt": 20.0
+    },
+    {
+      "kind": "scalar",
+      "id": 5,
+      "name": "map-extremes",
+      "step": 2,
+      "specified": false,
+      "nested": false,
+      "periodic_x": true,
+      "spec_zone": 1,
+      "dt": 20.0
+    },
+    {
+      "kind": "scalar",
+      "id": 6,
+      "name": "near-zero",
+      "step": 2,
+      "specified": false,
+      "nested": false,
+      "periodic_x": true,
+      "spec_zone": 1,
+      "dt": 20.0
+    }
+  ],
+  "scope": {
+    "dry": "zero boundary save arrays; physics held PH tendency zero; all memory outputs",
+    "scalar": "six moisture species; tenddec disabled; all memory outputs"
+  },
+  "tendencies": "dry initial state/64, held state/2048, theta heating T/4096; scalar source species/128 and common QVAPOR/256 advection"
+}

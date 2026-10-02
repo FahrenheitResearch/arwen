@@ -2,13 +2,12 @@
 
 A run's disk is the source files it downloads, the files its preparation
 writes from them, its history files, its checkpoints and its rendered
-pictures.  History and checkpoints scale with the grid: every history
-frame and every checkpoint set carries each domain's three-dimensional
-cells.  The pictures scale with the history frames, since each picture
+pictures. History prices the writer's selected variable shapes and each
+domain's output window. Checkpoints price their independent state inventory.
+The pictures scale with the history frames, since each picture
 has a fixed size in pixels, but its compressed size varies with the
-product and horizontal grid. The bytes per cell below were read off the
-files a real run wrote (see :data:`MEASURED`), so the projection is a
-measurement scaled to another grid, not a guess.  The download and the
+product and horizontal grid. Checkpoint bytes per cell were read off the
+files a real run wrote (see :data:`MEASURED`). The download and the
 preparation are priced by :mod:`gpuwm.download_budget` from sizes
 measured on real downloads and preparations: an 18 hour HRRR run
 downloads about 22 GB, more than its history, and an event page layout
@@ -36,14 +35,10 @@ import functools
 import json
 import math
 import shutil
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Mapping
 
-#: Bytes one history frame writes per 3-D cell of its domain, with the
-#: full variable set (``[output] preset = "full"``, the default; a trimmed
-#: preset writes less, so this is an upper bound for it).  Every grid of
-#: the measured run wrote 93.4 per cell after its first frame (89.4 in it).
-HISTORY_BYTES_PER_CELL = 93.5
 #: Bytes one checkpoint writes per 3-D cell of a nest (189.3 measured).
 CHECKPOINT_BYTES_PER_CELL = 190.0
 #: Bytes one checkpoint writes per 3-D cell of the outermost grid, which
@@ -73,6 +68,18 @@ MEASURED = (
 GIB = 1024 ** 3
 
 
+def history_frame_bytes(cfg, selection=None, *, include_reflectivity=True) -> int:
+    """One frame's selected writer inventory, including its container header.
+
+    Selection uses the writer's own predicate. A dropped volume costs no
+    disk, and surface, soil and staggered fields retain their own extents.
+    Checkpoints have an independent inventory and are never trimmed here.
+    """
+    from gpuwm.io.history_layout import history_frame_bytes as frame_bytes
+
+    return frame_bytes(cfg, selection, include_reflectivity=include_reflectivity)
+
+
 def picture_table_path() -> Path:
     return Path(__file__).with_name("data") / "picture-bytes.v1.json"
 
@@ -89,7 +96,7 @@ def projected_picture_bytes(nx: int, ny: int, run_seconds: float,
 
 
 def _picture_projection(nx, ny, run_seconds, interval_s, products, *, history_frames=None,
-                        after_seconds=None):
+                        after_seconds=None, begin_seconds=0.0, end_seconds=None):
     """Price each selected product on the frames that can draw it.
 
     Forecasts and children share this calculation. The renderer's catalog
@@ -111,6 +118,8 @@ def _picture_projection(nx, ny, run_seconds, interval_s, products, *, history_fr
     weight = min(1.0, max(0.0, (int(nx) * int(ny) - lo) / (hi - lo)))
     regular_frames = _frames(run_seconds, interval_s)
     frames = regular_frames if history_frames is None else int(history_frames)
+    if frames <= 0:
+        return 0, per_frame
     total = 0.0
     for name, (kind, first_hour, copies) in sorted(selected.items()):
         fallback = table["generic_bytes"] if kind == "generic" else [table["fallback_bytes"]] * 2
@@ -121,15 +130,30 @@ def _picture_projection(nx, ny, run_seconds, interval_s, products, *, history_fr
                 continue
             # The renderer now uses every sub-hourly baseline, but each
             # window still ends on a whole hour after the initial frame.
-            step = math.lcm(round(interval_s * 1000), 3_600_000) / 1000
-            first = max(3600, first_hour * 3600)
-            count = max(0, math.floor(run_seconds / step + 1e-9)
-                        - math.ceil(first / step) + 1)
-            if after_seconds is not None:
-                count -= max(0, math.floor(after_seconds / step + 1e-9)
-                             - math.ceil(first / step) + 1)
+            cadence = round(interval_s * 1000)
+            begin = round(begin_seconds * 1000)
+            hour = 3_600_000
+            common = math.gcd(cadence, hour)
+            if begin % common:
+                count = 0
+            else:
+                # Solve begin + k*cadence == 0 (mod one hour), so a
+                # phased history window prices only whole-hour frames.
+                modulus = hour // common
+                k = (0 if modulus == 1 else
+                     (-begin // common * pow(cadence // common, -1, modulus)) % modulus)
+                origin = begin + k * cadence
+                step = math.lcm(cadence, hour)
+                lower = max(hour, round(first_hour * hour), begin)
+                if after_seconds is not None:
+                    lower = max(lower, math.floor(after_seconds * 1000) + 1)
+                upper = round(min(run_seconds, end_seconds if end_seconds is not None
+                                  else run_seconds) * 1000)
+                count = max(0, (upper - origin) // step
+                            - max(0, -(-(lower - origin) // step)) + 1)
             # A child also writes its final step off the regular cadence.
-            if frames > regular_frames and run_seconds % 3600 == 0 and run_seconds >= first:
+            if (frames > regular_frames and run_seconds % 3600 == 0
+                    and run_seconds >= max(3600, first_hour * 3600)):
                 count += 1
         total += copies * count * (small + weight * (large - small))
     return math.ceil(total * table["headroom"]), per_frame
@@ -170,17 +194,55 @@ def _frames_after_resume(exp, domain, run_seconds: float,
     frames, its first one included (:func:`_live_seconds`).  A layout
     without per-domain starts starts every domain with the run.
     """
+    return history_frames(exp, domain, run_seconds, after_seconds=resume_seconds)
+
+
+def history_frames(exp, domain, run_seconds: float | None = None, *,
+                   after_seconds: float | None = None) -> int:
+    """Count the writer's domain-local alarms, including begin/end and resume.
+
+    The first alarm rounds onto the same step lattice as DomainClock.
+    Counting the closed interval algebraically avoids materializing a
+    schedule for long runs. A resumed frame at the checkpoint is committed.
+    """
+    stop = Fraction(str(exp.run_seconds if run_seconds is None else run_seconds))
     offset = getattr(exp, "domain_start_offset_exact", None)
-    start = 0.0 if offset is None else float(offset(int(domain.grid_id)))
-    if start > run_seconds:
+    start = Fraction(0) if offset is None else offset(int(domain.grid_id))
+    start = max(Fraction(0), Fraction(start))
+    if start > stop:
         return 0
-    interval = float(domain.history_interval_s)
-    if start > resume_seconds:
-        return _frames(run_seconds - start, interval)
-    if not interval or interval <= 0:
+    begin, window_end = _history_window_seconds(exp, domain)
+    end = stop - start
+    if window_end is not None:
+        end = min(end, window_end)
+    if end < begin:
         return 0
-    return max(0, int(math.floor((run_seconds - start) / interval + 1e-9))
-               - int(math.floor((resume_seconds - start) / interval + 1e-9)))
+    interval = Fraction(str(domain.history_interval_s))
+    if interval <= 0:
+        return int(after_seconds is None or start + begin > Fraction(str(after_seconds)))
+    last = (end - begin) // interval
+    first = 0
+    if after_seconds is not None:
+        first = max(0, (Fraction(str(after_seconds)) - start - begin) // interval + 1)
+    return max(0, int(last - first + 1))
+
+
+def _history_window_seconds(exp, domain):
+    from gpuwm.core.clock import _history_window_ticks
+
+    exact_step = getattr(exp, "dt_exact", None)
+    step = (exact_step(int(domain.grid_id)) if exact_step is not None
+            else Fraction(str(getattr(domain.run, "dt", 1.0))))
+    # Legacy layout-shaped callers do not carry the optional windows.
+    from types import SimpleNamespace
+    window = SimpleNamespace(
+        grid_id=domain.grid_id,
+        history_begin_s=getattr(domain, "history_begin_s", 0.0),
+        history_end_s=getattr(domain, "history_end_s", None))
+    begin_ticks, end_ticks = _history_window_ticks(
+        window, step.numerator, step.denominator)
+    return (Fraction(begin_ticks, step.denominator),
+            None if end_ticks is None else Fraction(end_ticks, step.denominator))
 
 
 def _seconds_before_resume(exp, domain, resume_seconds: float) -> float | None:
@@ -241,7 +303,7 @@ def projected_run_bytes(exp, *, keep_checkpoints: int | None,
     if resumed and restart > 0:
         written = max(0, written - int(math.floor(float(resume_seconds) / restart + 1e-9)))
     held = written if keep_checkpoints is None else min(written, int(keep_checkpoints) + 1)
-    rows, history, checkpoints, pictures = [], 0.0, 0.0, 0.0
+    rows, history, checkpoints, pictures = [], 0, 0.0, 0.0
     root_id = min((int(domain.grid_id) for domain in exp.domains), default=1)
     for domain in exp.domains:
         run = domain.run
@@ -250,26 +312,38 @@ def projected_run_bytes(exp, *, keep_checkpoints: int | None,
         # below stay whole-run, since a set carries a domain that has not
         # started yet as well.
         live = _live_seconds(exp, domain, run_seconds)
-        frames = 0 if live is None else _frames(
-            live, float(domain.history_interval_s))
+        frames = history_frames(exp, domain, run_seconds)
         per_cell = (ROOT_CHECKPOINT_BYTES_PER_CELL if int(domain.grid_id) == root_id
                     else CHECKPOINT_BYTES_PER_CELL)
         drawn_before = None
         if resumed:
             frames = _frames_after_resume(exp, domain, run_seconds, float(resume_seconds))
             drawn_before = _seconds_before_resume(exp, domain, float(resume_seconds))
-        h = cells * HISTORY_BYTES_PER_CELL * frames
+        from gpuwm.io.history_selection import resolve
+        selection = resolve(getattr(exp, "output", None), getattr(domain, "output", None))
+        frame_bytes = history_frame_bytes(run, selection)
+        h = frame_bytes * frames
         c = cells * per_cell * held
+        begin, end = _history_window_seconds(exp, domain)
+        # The activation frame precedes the first physics step and carries
+        # no output-due reflectivity. A delayed first alarm is already mature.
+        start = run_seconds - live if live is not None else run_seconds + 1
+        if frames and begin == 0 and (not resumed or float(resume_seconds) < start):
+            h -= frame_bytes - history_frame_bytes(run, selection, include_reflectivity=False)
         p = (_picture_projection(run.nx, run.ny, live, float(domain.history_interval_s),
                                  render_products,
-                                 history_frames=None if drawn_before is None else frames,
-                                 after_seconds=drawn_before)[0]
+                                 history_frames=frames,
+                                 after_seconds=drawn_before,
+                                 begin_seconds=float(begin),
+                                 end_seconds=None if end is None else float(end))[0]
              if render and live is not None else 0)
         history += h
         checkpoints += c
         pictures += p
         rows.append({"grid_id": int(domain.grid_id), "cells": cells, "history_frames": frames,
-                     "history_bytes": int(h), "checkpoint_bytes": int(c), "picture_bytes": int(p)})
+                     "history_bytes": int(h), "history_frame_bytes": frame_bytes,
+                     "history_selection": selection.spelling(),
+                     "checkpoint_bytes": int(c), "picture_bytes": int(p)})
     download = download_budget.download_estimate(fetch)
     preparation = download_budget.preparation_estimate(
         exp, chain=chain, forcing_times=download.get("leads"))
@@ -297,7 +371,8 @@ def projected_run_bytes(exp, *, keep_checkpoints: int | None,
             "resume_seconds": float(resume_seconds) if resumed else None,
             "download": dict(download, present_bytes=int(download_present_bytes or 0)),
             "preparation": preparation, "compose_scratch": scratch, "unpriced": unpriced,
-            "domains": rows, "basis": MEASURED,
+            "domains": rows, "basis": ("history uses the selected writer inventory and "
+                "CDF-2 header allowance; checkpoints: " + MEASURED),
             "picture_basis": _picture_table()["basis"] if render else None}
 
 
@@ -377,7 +452,7 @@ def _local_run_products(run_hours: float | None):
 
 def projected_child_bytes(cfg, *, history_frames: int, checkpoints_written: int,
                           keep_checkpoints: int | None,
-                          render_products: str | None) -> dict[str, Any]:
+                          render_products: str | None, history_selection=None) -> dict[str, Any]:
     """History, checkpoint and picture bytes one downscaled child will write.
 
     A child is one grid on its own clock, so its counts come from that
@@ -406,7 +481,8 @@ def projected_child_bytes(cfg, *, history_frames: int, checkpoints_written: int,
     held = written if keep_checkpoints is None else min(written, int(keep_checkpoints) + 1)
     cells = int(cfg.nx) * int(cfg.ny) * int(cfg.nz)
     frames = int(history_frames)
-    history = cells * HISTORY_BYTES_PER_CELL * frames
+    frame_bytes = history_frame_bytes(cfg, history_selection)
+    history = frame_bytes * frames
     checkpoints = cells * CHECKPOINT_BYTES_PER_CELL * held
     drawn, count = _picture_projection(
         cfg.nx, cfg.ny, float(cfg.run_seconds), float(cfg.output_interval_s),
@@ -421,9 +497,12 @@ def projected_child_bytes(cfg, *, history_frames: int, checkpoints_written: int,
             "unpriced": [],
             "domains": [{"grid_id": int(cfg.grid_id), "cells": cells,
                          "history_frames": frames, "history_bytes": int(history),
+                         "history_frame_bytes": frame_bytes,
                          "checkpoint_bytes": int(checkpoints),
                          "picture_bytes": int(drawn)}],
-            "basis": MEASURED, "picture_basis": picture_basis}
+            "basis": ("history uses the selected writer inventory and CDF-2 header "
+                      "allowance; checkpoints: " + MEASURED),
+            "picture_basis": picture_basis}
 
 
 def free_bytes(path: Path) -> int | None:
@@ -569,8 +648,8 @@ def disk_warning(projection: dict[str, Any], free: int | None, *,
                                             shares_run_disk=True)
 
 
-__all__ = ["CHECKPOINT_BYTES_PER_CELL", "GIB", "HISTORY_BYTES_PER_CELL", "MEASURED",
+__all__ = ["CHECKPOINT_BYTES_PER_CELL", "GIB", "MEASURED",
            "ROOT_CHECKPOINT_BYTES_PER_CELL", "RUN_DISK_REMEDY", "STORED_VARIABLE_PICTURES",
            "PICTURES_MEASURED", "picture_table_path", "projected_picture_bytes",
            "disk_refusal", "disk_warning", "free_bytes", "pictures_per_frame",
-           "projected_child_bytes", "projected_run_bytes", "same_disk"]
+           "history_frame_bytes", "history_frames", "projected_child_bytes", "projected_run_bytes", "same_disk"]

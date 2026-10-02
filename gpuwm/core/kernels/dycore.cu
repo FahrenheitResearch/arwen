@@ -34,6 +34,35 @@ static __device__ __forceinline__ real rn_div(real a, real b)
     return r;
 }
 
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#else
+// Face coordinates are in [0, extent]. Avoid integer division in the
+// periodic interior while preserving the duplicated face at extent.
+static __device__ __forceinline__
+int periodic_face(int face, int extent)
+{
+    return face == extent ? 0 : face;
+}
+
+static __device__ __forceinline__
+int periodic_previous(int face, int extent)
+{
+    return face == 0 ? extent - 1 : face - 1;
+}
+
+// Centered stencils normally fit in the extent. Keep the original remainder
+// semantics for smaller direct-kernel callers as well.
+static __device__ __forceinline__
+int periodic_offset(int cell, int offset, int extent)
+{
+    if (extent < (offset < 0 ? -offset : offset))
+        return (cell + offset + extent) % extent;
+    int shifted = cell + offset;
+    return shifted < 0 ? shifted + extent
+         : shifted >= extent ? shifted - extent : shifted;
+}
+#endif
+
 static __device__ __forceinline__
 real base_value(const real* __restrict__ field, int k, size_t c,
                 size_t st, int base3d)
@@ -52,8 +81,12 @@ static __device__ __forceinline__
 real pp_value(const real* __restrict__ p, const real* __restrict__ pb,
               int k, size_t c, size_t st, int base3d)
 {
+#if GPUWM_WRF_EXACT_D_DIAGNOSTICS
+    return p[(size_t)k * st + c];
+#else
     return rn_sub(p[(size_t)k * st + c],
                   base_value(pb, k, c, st, base3d));
+#endif
 }
 
 static __device__ __forceinline__
@@ -81,6 +114,54 @@ real dpn_value(const real* __restrict__ p, const real* __restrict__ pb,
     return rn_add(hi, lo);
 }
 
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#else
+// Reuse each pressure perturbation at both adjacent full faces. The
+// interpolation retains the same rounded products and left-to-right sum.
+static __device__ __forceinline__
+void dpn_pair_value(const real* __restrict__ p, const real* __restrict__ pb,
+                    int k, size_t c, size_t st, int nz, int base3d,
+                    const real* __restrict__ fnm,
+                    const real* __restrict__ fnp,
+                    real cf1, real cf2, real cf3,
+                    int top_lid, real cfn, real cfn1, real pp_k,
+                    real& hi, real& lo)
+{
+    if (nz < 3) {
+        hi = dpn_value(p, pb, k + 1, c, st, nz, base3d,
+                       fnm, fnp, cf1, cf2, cf3, top_lid, cfn, cfn1);
+        lo = dpn_value(p, pb, k, c, st, nz, base3d,
+                       fnm, fnp, cf1, cf2, cf3, top_lid, cfn, cfn1);
+        return;
+    }
+    real pp_below = k > 0 ? pp_value(p, pb, k - 1, c, st, base3d) : 0.0f;
+    real pp_above = k + 1 < nz ? pp_value(p, pb, k + 1, c, st, base3d) : 0.0f;
+    if (k + 1 == nz) {
+        if (top_lid) {
+            real top = rn_mul(cfn, pp_k);
+            real below = rn_mul(cfn1, pp_below);
+            hi = rn_add(top, below);
+        } else {
+            hi = 0.0f;
+        }
+    } else {
+        real upper = rn_mul(fnm[k + 1], pp_above);
+        real lower = rn_mul(fnp[k + 1], pp_k);
+        hi = rn_add(upper, lower);
+    }
+    if (k == 0) {
+        real t0 = rn_mul(cf1, pp_k);
+        real t1 = rn_mul(cf2, pp_above);
+        real t2 = rn_mul(cf3, pp_value(p, pb, 2, c, st, base3d));
+        lo = rn_add(rn_add(t0, t1), t2);
+    } else {
+        real upper = rn_mul(fnm[k], pp_k);
+        real lower = rn_mul(fnp[k], pp_below);
+        lo = rn_add(upper, lower);
+    }
+}
+#endif
+
 static __device__ __forceinline__
 real php_half_value(const real* __restrict__ php,
                     const real* __restrict__ phb,
@@ -95,6 +176,32 @@ real php_half_value(const real* __restrict__ php,
     return rn_mul(0.5f, rn_add(base, perturbation));
 }
 
+
+#if GPUWM_WRF_EXACT_C_BIGSTEP
+static __device__ __forceinline__
+real wrf_dpn_face(const real* __restrict__ p, const real* __restrict__ pb,
+                  int kf, size_t ca, size_t cb, size_t st, int nz, int base3d,
+                  const real* __restrict__ fnm, const real* __restrict__ fnp,
+                  real cf1, real cf2, real cf3, int top_lid, real cfn, real cfn1)
+{
+    if (kf == nz && !top_lid) return 0.0f;
+    int k0 = kf == nz ? nz - 1 : kf;
+    real pair0 = rn_add(pp_value(p, pb, k0, cb, st, base3d),
+                        pp_value(p, pb, k0, ca, st, base3d));
+    if (kf == 0) {
+        real pair1 = rn_add(pp_value(p, pb, 1, cb, st, base3d), pp_value(p, pb, 1, ca, st, base3d));
+        real pair2 = rn_add(pp_value(p, pb, 2, cb, st, base3d), pp_value(p, pb, 2, ca, st, base3d));
+        return rn_mul(0.5f, rn_add(rn_add(rn_mul(cf1, pair0), rn_mul(cf2, pair1)), rn_mul(cf3, pair2)));
+    }
+    int k1 = kf == nz ? nz - 2 : kf - 1;
+    real pair1 = rn_add(pp_value(p, pb, k1, cb, st, base3d),
+                        pp_value(p, pb, k1, ca, st, base3d));
+    real high = rn_mul(kf == nz ? cfn : fnm[kf], pair0);
+    real low = rn_mul(kf == nz ? cfn1 : fnp[kf], pair1);
+    return rn_mul(0.5f, rn_add(high, low));
+}
+#endif
+
 static __device__
 real pgf_face(size_t c_a, size_t c_b, int k, size_t st, int nz,
               real rd, real half_rd,
@@ -108,6 +215,7 @@ real pgf_face(size_t c_a, size_t c_b, int k, size_t st, int nz,
               real cf1, real cf2, real cf3, int base3d,
               int top_lid, real cfn, real cfn1)
 {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
     size_t a = (size_t)k * st + c_a;
     size_t b = (size_t)k * st + c_b;
 
@@ -119,7 +227,11 @@ real pgf_face(size_t c_a, size_t c_b, int k, size_t st, int nz,
 
     real dph_hi = rn_sub(php[a + st], php[b + st]);
     real dph_lo = rn_sub(php[a], php[b]);
+    #if GPUWM_WRF_EXACT_C_BIGSTEP
+    real bracket = rn_sub(rn_add(dph_hi, php[a]), php[b]);
+#else
     real bracket = rn_add(dph_hi, dph_lo);
+#endif
 
     real alt_sum = rn_add(alt[a], alt[b]);
     real dpp = rn_sub(pp_value(p, pb, k, c_a, st, base3d),
@@ -134,6 +246,12 @@ real pgf_face(size_t c_a, size_t c_b, int k, size_t st, int nz,
 
     real dphp = rn_sub(php_half_value(php, phb, k, c_a, st, base3d),
                         php_half_value(php, phb, k, c_b, st, base3d));
+#if GPUWM_WRF_EXACT_C_BIGSTEP
+    real dpf_hi = wrf_dpn_face(p, pb, k + 1, c_a, c_b, st, nz, base3d,
+                               fnm, fnp, cf1, cf2, cf3, top_lid, cfn, cfn1);
+    real dpf_lo = wrf_dpn_face(p, pb, k, c_a, c_b, st, nz, base3d,
+                               fnm, fnp, cf1, cf2, cf3, top_lid, cfn, cfn1);
+#else
     real dpf_hi = rn_mul(
         0.5f,
         rn_add(dpn_value(p, pb, k + 1, c_a, st, nz, base3d,
@@ -150,10 +268,58 @@ real pgf_face(size_t c_a, size_t c_b, int k, size_t st, int nz,
                dpn_value(p, pb, k, c_b, st, nz, base3d,
                          fnm, fnp, cf1, cf2, cf3,
                          top_lid, cfn, cfn1)));
+#endif
+    real vertical = rn_mul(rdnw[k], rn_sub(dpf_hi, dpf_lo));
+    #if GPUWM_WRF_EXACT_C_BIGSTEP
+    real perturbation_mass = rn_mul(0.5f, rn_add(rn_mul(c1h[k], mup[c_b]), rn_mul(c1h[k], mup[c_a])));
+    vertical = rn_sub(vertical, perturbation_mass);
+#else
+    vertical = rn_sub(vertical, rn_mul(c1h[k], dmu));
+#endif
+    real right = rn_mul(rn_mul(rd, dphp), vertical);
+    return rn_add(left, right);
+#else
+    size_t a = (size_t)k * st + c_a;
+    size_t b = (size_t)k * st + c_b;
+
+    // muf/dmu retain the old (sum -> multiply by 0.5) temporary boundary.
+    real muf = rn_mul(0.5f, rn_add(mut_value(mub2d, mup, c_a),
+                                   mut_value(mub2d, mup, c_b)));
+    real dmu = rn_mul(0.5f, rn_add(mup[c_a], mup[c_b]));
+    real layer_mass = rn_add(rn_mul(c1h[k], muf), c2h[k]);
+
+    real dph_hi = rn_sub(php[a + st], php[b + st]);
+    real dph_lo = rn_sub(php[a], php[b]);
+    real bracket = rn_add(dph_hi, dph_lo);
+
+    real alt_sum = rn_add(alt[a], alt[b]);
+    real pp_a = pp_value(p, pb, k, c_a, st, base3d);
+    real pp_b = pp_value(p, pb, k, c_b, st, base3d);
+    real dpp = rn_sub(pp_a, pp_b);
+    bracket = rn_add(bracket, rn_mul(alt_sum, dpp));
+
+    real al_sum = rn_add(al[a], al[b]);
+    real dpb = rn_sub(base_value(pb, k, c_a, st, base3d),
+                      base_value(pb, k, c_b, st, base3d));
+    bracket = rn_add(bracket, rn_mul(al_sum, dpb));
+    real left = rn_mul(rn_mul(half_rd, layer_mass), bracket);
+
+    real dphp = rn_sub(php_half_value(php, phb, k, c_a, st, base3d),
+                        php_half_value(php, phb, k, c_b, st, base3d));
+    real dp_a_hi, dp_a_lo, dp_b_hi, dp_b_lo;
+    dpn_pair_value(p, pb, k, c_a, st, nz, base3d,
+                   fnm, fnp, cf1, cf2, cf3,
+                   top_lid, cfn, cfn1, pp_a, dp_a_hi, dp_a_lo);
+    dpn_pair_value(p, pb, k, c_b, st, nz, base3d,
+                   fnm, fnp, cf1, cf2, cf3,
+                   top_lid, cfn, cfn1, pp_b, dp_b_hi, dp_b_lo);
+    real dpf_hi = rn_mul(0.5f, rn_add(dp_a_hi, dp_b_hi));
+    real dpf_lo = rn_mul(0.5f, rn_add(dp_a_lo, dp_b_lo));
     real vertical = rn_mul(rdnw[k], rn_sub(dpf_hi, dpf_lo));
     vertical = rn_sub(vertical, rn_mul(c1h[k], dmu));
     real right = rn_mul(rn_mul(rd, dphp), vertical);
     return rn_add(left, right);
+#endif
 }
 
 extern "C" __global__
@@ -184,7 +350,11 @@ void slow_pgf(real* __restrict__ ru_t, real* __restrict__ rv_t,
 
     if (j < ny && ((!boundary_x && i <= nx)
                    || (boundary_x && i > 0 && i < nx))) {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
         int ia = i % nx, ib = (i - 1 + nx) % nx;
+#else
+        int ia = periodic_face(i, nx), ib = periodic_previous(i, nx);
+#endif
         size_t ca = (size_t)j * nx + ia, cb = (size_t)j * nx + ib;
         real term = pgf_face(ca, cb, k, st, nz, rdx, half_rdx,
                              p, pb, al, alt, php, phb, mup, mub2d,
@@ -197,7 +367,11 @@ void slow_pgf(real* __restrict__ ru_t, real* __restrict__ rv_t,
     }
     if (i < nx && ((!boundary_y && j <= ny)
                    || (boundary_y && j > 0 && j < ny))) {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
         int ja = j % ny, jb = (j - 1 + ny) % ny;
+#else
+        int ja = periodic_face(j, ny), jb = periodic_previous(j, ny);
+#endif
         size_t ca = (size_t)ja * nx + i, cb = (size_t)jb * nx + i;
         real term = pgf_face(ca, cb, k, st, nz, rdy, half_rdy,
                              p, pb, al, alt, php, phb, mup, mub2d,
@@ -333,8 +507,17 @@ real fcx_value(int face, int j, int k, size_t st, int ny, int nx,
                const real* __restrict__ msfu, int has_msf,
                int top, real cfn, real cfn1)
 {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
     int fidx = face % nx;
+#else
+    int fidx = periodic_face(face, nx);
+#endif
     int ia = fidx, ib = (fidx - 1 + nx) % nx;
+#else
+    int fidx = periodic_face(face, nx);
+    int ia = fidx, ib = periodic_previous(fidx, nx);
+#endif
     size_t ca = (size_t)j * nx + ia, cb = (size_t)j * nx + ib;
     real mass = rn_add(rn_mul(c1f[k], avg_mut(mup, mub2d, ca, cb)), c2f[k]);
     size_t f = I3S(k - 1, j, fidx, ny, nx + 1);
@@ -362,8 +545,17 @@ real fcy_value(int row, int i, int k, size_t st, int ny, int nx,
                const real* __restrict__ msfv, int has_msf,
                int top, real cfn, real cfn1)
 {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
     int ridx = row % ny;
+#else
+    int ridx = periodic_face(row, ny);
+#endif
     int ja = ridx, jb = (ridx - 1 + ny) % ny;
+#else
+    int ridx = periodic_face(row, ny);
+    int ja = ridx, jb = periodic_previous(ridx, ny);
+#endif
     size_t ca = (size_t)ja * nx + i, cb = (size_t)jb * nx + i;
     real mass = rn_add(rn_mul(c1f[k], avg_mut(mup, mub2d, ca, cb)), c2f[k]);
     size_t f = I3S(k - 1, ridx, i, ny + 1, nx);
@@ -393,7 +585,11 @@ real supplied_fcx_value(int face, int j, int k, int ny, int nx,
                         const real* __restrict__ msfu, int has_msf,
                         int top, real cfn, real cfn1)
 {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
     int fidx = face % nx;
+#else
+    int fidx = periodic_face(face, nx);
+#endif
     real mass = rn_add(rn_mul(c1f[k], mux[(size_t)j * (nx + 1) + fidx]),
                        c2f[k]);
     size_t f = I3S(k - 1, j, fidx, ny, nx + 1);
@@ -420,7 +616,11 @@ real supplied_fcy_value(int row, int i, int k, int ny, int nx,
                         const real* __restrict__ msfv, int has_msf,
                         int top, real cfn, real cfn1)
 {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
     int ridx = row % ny;
+#else
+    int ridx = periodic_face(row, ny);
+#endif
     real mass = rn_add(rn_mul(c1f[k], muy[(size_t)ridx * nx + i]), c2f[k]);
     size_t f = I3S(k - 1, ridx, i, ny + 1, nx);
     real wind;
@@ -437,13 +637,35 @@ real supplied_fcy_value(int row, int i, int k, int ny, int nx,
     return value;
 }
 
+#if GPUWM_WRF_EXACT_C_BIGSTEP
+static __device__ __forceinline__
+real wrf_phi_field_difference(const real* __restrict__ field, int axis,
+                              int i, int j, int k, int offset,
+                              int ny, int nx, size_t st, int profile)
+{
+    if (profile) return 0.0f;
+    int pos = axis ? i : j;
+    int length = axis ? nx : ny;
+    int pp = (pos + offset + length) % length;
+    int pm = (pos - offset + length) % length;
+    size_t cp = axis ? (size_t)j * nx + pp : (size_t)pp * nx + i;
+    size_t cm = axis ? (size_t)j * nx + pm : (size_t)pm * nx + i;
+    return rn_sub(field[(size_t)k * st + cp], field[(size_t)k * st + cm]);
+}
+#endif
+
 static __device__ __forceinline__
 real x_difference(int i, int offset, int j, int k, size_t st, int nx,
                   const real* __restrict__ php,
                   const real* __restrict__ phb, int base3d)
 {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
     int ip = (i + offset + nx) % nx;
     int im = (i - offset + nx) % nx;
+#else
+    int ip = periodic_offset(i, offset, nx);
+    int im = periodic_offset(i, -offset, nx);
+#endif
     return rn_sub(ph_total(php, phb, k, (size_t)j * nx + ip, st, base3d),
                   ph_total(php, phb, k, (size_t)j * nx + im, st, base3d));
 }
@@ -453,8 +675,13 @@ real y_difference(int j, int offset, int i, int k, size_t st, int ny, int nx,
                   const real* __restrict__ php,
                   const real* __restrict__ phb, int base3d)
 {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
     int jp = (j + offset + ny) % ny;
     int jm = (j - offset + ny) % ny;
+#else
+    int jp = periodic_offset(j, offset, ny);
+    int jm = periodic_offset(j, -offset, ny);
+#endif
     return rn_sub(ph_total(php, phb, k, (size_t)jp * nx + i, st, base3d),
                   ph_total(php, phb, k, (size_t)jm * nx + i, st, base3d));
 }
@@ -533,7 +760,11 @@ void slow_geopotential_vertical(real* __restrict__ rph_t,
     }
 
     real mass = rn_add(rn_mul(c1f[k], mut_value(mub2d, mup, c)), c2f[k]);
+    #if GPUWM_WRF_EXACT_C_BIGSTEP
+    real gw = rn_mul(rn_mul(mass, G), w[ix]);
+#else
     real gw = rn_mul(mass, rn_mul(G, w[ix]));
+#endif
     if (has_msf) gw = rn_div(gw, msft[c]);
     rph_t[ix] = rn_add(tendency, gw);
 }
@@ -562,6 +793,93 @@ void slow_geopotential(real* __restrict__ rph_t,
                        int specified, int order, int add_vertical,
                        int base3d, int nz, int ny, int nx)
 {
+#if GPUWM_WRF_EXACT_C_BIGSTEP
+    size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t st = (size_t)ny * nx;
+    if (tid >= (size_t)nz * st) return;
+    int k = (int)(tid / st) + 1;
+    size_t c = tid - (size_t)(k - 1) * st;
+    int j = (int)(c / nx), i = (int)(c - (size_t)j * nx);
+    size_t ix = (size_t)k * st + c;
+    int top = (k == nz);
+    real tendency = (top && add_vertical) ? 0.0f : rph_t[ix];
+    if (top) {
+        quarter_rdx = rn_mul(2.0f, quarter_rdx);
+        quarter_rdy = rn_mul(2.0f, quarter_rdy);
+    }
+    if (add_vertical) {
+        if (!top) {
+            real ph_km = ph_total(php, phb, k - 1, c, st, base3d);
+            real ph_k = ph_total(php, phb, k, c, st, base3d);
+            real ph_kp = ph_total(php, phb, k + 1, c, st, base3d);
+            real wd_lo = rn_mul(rn_mul(rn_mul(0.5f, rn_add(ww[ix], ww[ix - st])), rdnw[k - 1]), rn_sub(rn_add(rn_sub(php[ix], php[ix - st]), base_value(phb, k, c, st, base3d)), base_value(phb, k - 1, c, st, base3d)));
+            real wd_hi = rn_mul(rn_mul(rn_mul(0.5f, rn_add(ww[ix + st], ww[ix])), rdnw[k]), rn_sub(rn_add(rn_sub(php[ix + st], php[ix]), base_value(phb, k + 1, c, st, base3d)), base_value(phb, k, c, st, base3d)));
+            real omega = rn_add(rn_mul(fnm[k], wd_hi), rn_mul(fnp[k], wd_lo));
+            tendency = rn_sub(tendency, omega);
+        }
+        real mass = rn_add(rn_mul(c1f[k], mut_value(mub2d, mup, c)), c2f[k]);
+        real gw = rn_mul(rn_mul(mass, G), w[ix]);
+        if (has_msf) gw = rn_div(gw, msft[c]);
+        tendency = rn_add(tendency, gw);
+    }
+    // WRF performs the y contribution first, then x. A direction's
+    // map-factor division precedes the face sum and centered stencil.
+    for (int axis = 0; axis < 2; ++axis) {
+        int pos = axis ? i : j;
+        int length = axis ? nx : ny;
+        int boundary = axis ? boundary_x : boundary_y;
+        real quarter_rd = axis ? quarter_rdx : quarter_rdy;
+        real coefficient = has_msf ? rn_div(quarter_rd, msft[c]) : quarter_rd;
+        int stencil = order == 2 ? 2 : 6;
+        if (boundary && (pos == 0 || pos == length - 1)) continue;
+        if (order != 2 && specified && (pos < 3 || pos >= length - 3)) {
+            if (pos == 1 || pos == length - 2) stencil = 2;
+            else if (!axis && (pos == 2 || pos == length - 3)) stencil = 4;
+            else continue;
+        }
+        real face0 = axis ? fcx_value(i, j, k, st, ny, nx, u, mup, mub2d, c1f, c2f, msfu, has_msf, top, cfn, cfn1)
+                          : fcy_value(j, i, k, st, ny, nx, v, mup, mub2d, c1f, c2f, msfv, has_msf, top, cfn, cfn1);
+        real face1 = axis ? fcx_value(i + 1, j, k, st, ny, nx, u, mup, mub2d, c1f, c2f, msfu, has_msf, top, cfn, cfn1)
+                          : fcy_value(j + 1, i, k, st, ny, nx, v, mup, mub2d, c1f, c2f, msfv, has_msf, top, cfn, cfn1);
+        real contribution;
+        if (stencil == 2) {
+            int pm = (pos - 1 + length) % length;
+            int pp = (pos + 1) % length;
+            size_t cm = axis ? (size_t)j * nx + pm : (size_t)pm * nx + i;
+            size_t cp = axis ? (size_t)j * nx + pp : (size_t)pp * nx + i;
+            real d0 = rn_sub(rn_add(rn_sub(base_value(phb, k, c, st, base3d), base_value(phb, k, cm, st, base3d)), php[(size_t)k * st + c]), php[(size_t)k * st + cm]);
+            real d1 = rn_sub(rn_add(rn_sub(base_value(phb, k, cp, st, base3d), base_value(phb, k, c, st, base3d)), php[(size_t)k * st + cp]), php[(size_t)k * st + c]);
+            real sum = rn_add(rn_mul(face1, d1), rn_mul(face0, d0));
+            contribution = rn_mul(coefficient, sum);
+        } else {
+            real p1 = wrf_phi_field_difference(php, axis, i, j, k, 1, ny, nx, st, 0);
+            real p2 = wrf_phi_field_difference(php, axis, i, j, k, 2, ny, nx, st, 0);
+            real b1 = wrf_phi_field_difference(phb, axis, i, j, k, 1, ny, nx, st, !base3d);
+            real b2 = wrf_phi_field_difference(phb, axis, i, j, k, 2, ny, nx, st, !base3d);
+            real raw;
+            real reciprocal;
+            if (stencil == 4) {
+                raw = rn_sub(rn_mul(8.0f, p1), p2);
+                raw = rn_sub(rn_add(raw, rn_mul(8.0f, b1)), b2);
+                reciprocal = __fdiv_rn(1.0f, 12.0f);
+            } else {
+                real p3 = wrf_phi_field_difference(php, axis, i, j, k, 3, ny, nx, st, 0);
+                real b3 = wrf_phi_field_difference(phb, axis, i, j, k, 3, ny, nx, st, !base3d);
+                raw = rn_add(rn_sub(rn_mul(45.0f, p1), rn_mul(9.0f, p2)), p3);
+                raw = rn_add(raw, rn_mul(45.0f, b1));
+                raw = rn_add(rn_sub(raw, rn_mul(9.0f, b2)), b3);
+                reciprocal = __fdiv_rn(1.0f, 60.0f);
+            }
+            // WRF: (0.25*rd/msft) * ( (face1 + face0) * (1./60.) * (stencil) ),
+            // evaluated left to right inside the parentheses.
+            real weighted_faces = rn_mul(rn_add(face1, face0), reciprocal);
+            contribution = rn_mul(coefficient, rn_mul(weighted_faces, raw));
+        }
+        tendency = rn_sub(tendency, contribution);
+    }
+    rph_t[ix] = tendency;
+
+#else
     size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     size_t st = (size_t)ny * nx;
     if (tid >= (size_t)nz * st) return;
@@ -605,7 +923,15 @@ void slow_geopotential(real* __restrict__ rph_t,
         if (boundary_x && i == 0) {
             dphx = 0.0f;
         } else {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
             int im = (i - 1 + nx) % nx;
+#else
+            int im = periodic_previous(i, nx);
+#endif
+#else
+            int im = periodic_previous(i, nx);
+#endif
             dphx = rn_sub(ph_total(php, phb, k, c, st, base3d),
                           ph_total(php, phb, k,
                                    (size_t)j * nx + im, st, base3d));
@@ -617,7 +943,15 @@ void slow_geopotential(real* __restrict__ rph_t,
             fx = rn_mul(fx, msfu[(size_t)j * (nx + 1) + i]);
         real fxp;
         if (!(boundary_x && i == nx - 1)) {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
             int ip = (i + 1) % nx;
+#else
+            int ip = periodic_face(i + 1, nx);
+#endif
+#else
+            int ip = periodic_face(i + 1, nx);
+#endif
             real dph = rn_sub(ph_total(php, phb, k,
                                        (size_t)j * nx + ip, st, base3d),
                               ph_total(php, phb, k, c, st, base3d));
@@ -626,19 +960,38 @@ void slow_geopotential(real* __restrict__ rph_t,
                                    top, cfn, cfn1), dph);
             if (has_msf)
                 fxp = rn_mul(fxp, msfu[(size_t)j * (nx + 1)
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
                                        + ((i + 1) % nx)]);
+#else
+                                       + periodic_face(i + 1, nx)]);
+#endif
+#else
+                                       + periodic_face(i + 1, nx)]);
+#endif
         } else {
             fxp = 0.0f;
         }
         real hx = rn_mul(quarter_rdx, rn_add(fxp, fx));
         if (has_msf) hx = rn_div(hx, msft[c]);
+        // WRF rhs_ph excludes the entire normal-direction contribution
+        // on the outer open/specified row, including its interior face.
+        if (boundary_x && (i == 0 || i == nx - 1)) hx = 0.0f;
         tendency = rn_sub(tendency, hx);
 
         real dphy;
         if (boundary_y && j == 0) {
             dphy = 0.0f;
         } else {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
             int jm = (j - 1 + ny) % ny;
+#else
+            int jm = periodic_previous(j, ny);
+#endif
+#else
+            int jm = periodic_previous(j, ny);
+#endif
             dphy = rn_sub(ph_total(php, phb, k, c, st, base3d),
                           ph_total(php, phb, k,
                                    (size_t)jm * nx + i, st, base3d));
@@ -650,7 +1003,15 @@ void slow_geopotential(real* __restrict__ rph_t,
             fy = rn_mul(fy, msfv[(size_t)j * nx + i]);
         real fyp;
         if (!(boundary_y && j == ny - 1)) {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
             int jp = (j + 1) % ny;
+#else
+            int jp = periodic_face(j + 1, ny);
+#endif
+#else
+            int jp = periodic_face(j + 1, ny);
+#endif
             real dph = rn_sub(ph_total(php, phb, k,
                                        (size_t)jp * nx + i, st, base3d),
                               ph_total(php, phb, k, c, st, base3d));
@@ -658,18 +1019,35 @@ void slow_geopotential(real* __restrict__ rph_t,
                                    c1f, c2f, msfv, 0,
                                    top, cfn, cfn1), dph);
             if (has_msf)
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
                 fyp = rn_mul(fyp, msfv[(size_t)((j + 1) % ny) * nx + i]);
+#else
+                fyp = rn_mul(fyp, msfv[(size_t)periodic_face(j + 1, ny) * nx + i]);
+#endif
+#else
+                fyp = rn_mul(fyp, msfv[(size_t)periodic_face(j + 1, ny) * nx + i]);
+#endif
         } else {
             fyp = 0.0f;
         }
         real hy = rn_mul(quarter_rdy, rn_add(fyp, fy));
         if (has_msf) hy = rn_div(hy, msft[c]);
+        if (boundary_y && (j == 0 || j == ny - 1)) hy = 0.0f;
         tendency = rn_sub(tendency, hy);
     } else {
         real hx;
         if (specified && (i < 3 || i >= nx - 3)) {
             if (i == 1 || i == nx - 2) {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
                 int im = (i - 1 + nx) % nx, ip = (i + 1) % nx;
+#else
+                int im = periodic_previous(i, nx), ip = periodic_face(i + 1, nx);
+#endif
+#else
+                int im = periodic_previous(i, nx), ip = periodic_face(i + 1, nx);
+#endif
                 real d0 = rn_sub(ph_total(php, phb, k, c, st, base3d),
                                  ph_total(php, phb, k,
                                           (size_t)j * nx + im, st, base3d));
@@ -701,7 +1079,15 @@ void slow_geopotential(real* __restrict__ rph_t,
         real hy;
         if (specified && (j < 3 || j >= ny - 3)) {
             if (j == 1 || j == ny - 2) {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
                 int jm = (j - 1 + ny) % ny, jp = (j + 1) % ny;
+#else
+                int jm = periodic_previous(j, ny), jp = periodic_face(j + 1, ny);
+#endif
+#else
+                int jm = periodic_previous(j, ny), jp = periodic_face(j + 1, ny);
+#endif
                 real d0 = rn_sub(ph_total(php, phb, k, c, st, base3d),
                                  ph_total(php, phb, k,
                                           (size_t)jm * nx + i, st, base3d));
@@ -747,6 +1133,8 @@ void slow_geopotential(real* __restrict__ rph_t,
         tendency = rn_sub(tendency, rn_add(hx, hy));
     }
     rph_t[ix] = tendency;
+
+#endif
 }
 
 extern "C" __global__
@@ -787,7 +1175,15 @@ void slow_geopotential_faces(real* __restrict__ rph_t,
         if (boundary_x && i == 0) {
             dphx = 0.0f;
         } else {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
             int im = (i - 1 + nx) % nx;
+#else
+            int im = periodic_previous(i, nx);
+#endif
+#else
+            int im = periodic_previous(i, nx);
+#endif
             dphx = rn_sub(ph_total(php, phb, k, c, st, base3d),
                           ph_total(php, phb, k,
                                    (size_t)j * nx + im, st, base3d));
@@ -799,7 +1195,15 @@ void slow_geopotential_faces(real* __restrict__ rph_t,
             fx = rn_mul(fx, msfu[(size_t)j * (nx + 1) + i]);
         real fxp;
         if (!(boundary_x && i == nx - 1)) {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
             int ip = (i + 1) % nx;
+#else
+            int ip = periodic_face(i + 1, nx);
+#endif
+#else
+            int ip = periodic_face(i + 1, nx);
+#endif
             real dph = rn_sub(ph_total(php, phb, k,
                                        (size_t)j * nx + ip, st, base3d),
                               ph_total(php, phb, k, c, st, base3d));
@@ -808,19 +1212,36 @@ void slow_geopotential_faces(real* __restrict__ rph_t,
                                             top, cfn, cfn1), dph);
             if (has_msf)
                 fxp = rn_mul(fxp, msfu[(size_t)j * (nx + 1)
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
                                        + ((i + 1) % nx)]);
+#else
+                                       + periodic_face(i + 1, nx)]);
+#endif
+#else
+                                       + periodic_face(i + 1, nx)]);
+#endif
         } else {
             fxp = 0.0f;
         }
         real hx = rn_mul(quarter_rdx, rn_add(fxp, fx));
         if (has_msf) hx = rn_div(hx, msft[c]);
+        if (boundary_x && (i == 0 || i == nx - 1)) hx = 0.0f;
         tendency = rn_sub(tendency, hx);
 
         real dphy;
         if (boundary_y && j == 0) {
             dphy = 0.0f;
         } else {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
             int jm = (j - 1 + ny) % ny;
+#else
+            int jm = periodic_previous(j, ny);
+#endif
+#else
+            int jm = periodic_previous(j, ny);
+#endif
             dphy = rn_sub(ph_total(php, phb, k, c, st, base3d),
                           ph_total(php, phb, k,
                                    (size_t)jm * nx + i, st, base3d));
@@ -832,7 +1253,15 @@ void slow_geopotential_faces(real* __restrict__ rph_t,
             fy = rn_mul(fy, msfv[(size_t)j * nx + i]);
         real fyp;
         if (!(boundary_y && j == ny - 1)) {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
             int jp = (j + 1) % ny;
+#else
+            int jp = periodic_face(j + 1, ny);
+#endif
+#else
+            int jp = periodic_face(j + 1, ny);
+#endif
             real dph = rn_sub(ph_total(php, phb, k,
                                        (size_t)jp * nx + i, st, base3d),
                               ph_total(php, phb, k, c, st, base3d));
@@ -840,18 +1269,35 @@ void slow_geopotential_faces(real* __restrict__ rph_t,
                                             c1f, c2f, msfv, 0,
                                             top, cfn, cfn1), dph);
             if (has_msf)
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
                 fyp = rn_mul(fyp, msfv[(size_t)((j + 1) % ny) * nx + i]);
+#else
+                fyp = rn_mul(fyp, msfv[(size_t)periodic_face(j + 1, ny) * nx + i]);
+#endif
+#else
+                fyp = rn_mul(fyp, msfv[(size_t)periodic_face(j + 1, ny) * nx + i]);
+#endif
         } else {
             fyp = 0.0f;
         }
         real hy = rn_mul(quarter_rdy, rn_add(fyp, fy));
         if (has_msf) hy = rn_div(hy, msft[c]);
+        if (boundary_y && (j == 0 || j == ny - 1)) hy = 0.0f;
         tendency = rn_sub(tendency, hy);
     } else {
         real hx;
         if (specified && (i < 3 || i >= nx - 3)) {
             if (i == 1 || i == nx - 2) {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
                 int im = (i - 1 + nx) % nx, ip = (i + 1) % nx;
+#else
+                int im = periodic_previous(i, nx), ip = periodic_face(i + 1, nx);
+#endif
+#else
+                int im = periodic_previous(i, nx), ip = periodic_face(i + 1, nx);
+#endif
                 real d0 = rn_sub(ph_total(php, phb, k, c, st, base3d),
                                  ph_total(php, phb, k,
                                           (size_t)j * nx + im, st, base3d));
@@ -886,7 +1332,15 @@ void slow_geopotential_faces(real* __restrict__ rph_t,
         real hy;
         if (specified && (j < 3 || j >= ny - 3)) {
             if (j == 1 || j == ny - 2) {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
                 int jm = (j - 1 + ny) % ny, jp = (j + 1) % ny;
+#else
+                int jm = periodic_previous(j, ny), jp = periodic_face(j + 1, ny);
+#endif
+#else
+                int jm = periodic_previous(j, ny), jp = periodic_face(j + 1, ny);
+#endif
                 real d0 = rn_sub(ph_total(php, phb, k, c, st, base3d),
                                  ph_total(php, phb, k,
                                           (size_t)jm * nx + i, st, base3d));
@@ -1004,7 +1458,11 @@ void small_step_init_uv(real* __restrict__ u_pp,
                         const real* __restrict__ msfu,
                         const real* __restrict__ msfv,
                         int has_msf, int boundary_x, int boundary_y,
-                        int nz, int ny, int nx)
+                        int nz, int ny, int nx
+#if GPUWM_WRF_EXACT
+                        , int rk_step
+#endif
+                        )
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     int nyf = ny + 1, nxf = nx + 1;
@@ -1025,6 +1483,12 @@ void small_step_init_uv(real* __restrict__ u_pp,
         real ms_b = rn_add(mub2d[cb], mup[cb]);
         real mtf = rn_mul(0.5f, rn_add(mt_a, mt_b));
         real msf = rn_mul(0.5f, rn_add(ms_a, ms_b));
+#if GPUWM_WRF_EXACT
+        msf = rn_mul(0.5f, rn_add(rn_add(rn_add(mup[ca], mup[cb]),
+                                              mub2d[ca]), mub2d[cb]));
+        mtf = rk_step == 1 ? msf : rn_mul(0.5f,
+            rn_add(rn_add(rn_add(mub2d[ca], mup0[ca]), mub2d[cb]), mup0[cb]));
+#endif
         real ct = rn_add(rn_mul(c1h[k], mtf), c2h[k]);
         real cs = rn_add(rn_mul(c1h[k], msf), c2h[k]);
         size_t ix = I3S(k, j, i, ny, nxf);
@@ -1043,11 +1507,23 @@ void small_step_init_uv(real* __restrict__ u_pp,
         real ms_b = rn_add(mub2d[cb], mup[cb]);
         real mtf = rn_mul(0.5f, rn_add(mt_a, mt_b));
         real msf = rn_mul(0.5f, rn_add(ms_a, ms_b));
+#if GPUWM_WRF_EXACT
+        msf = rn_mul(0.5f, rn_add(rn_add(rn_add(mup[ca], mup[cb]),
+                                              mub2d[ca]), mub2d[cb]));
+        mtf = rk_step == 1 ? msf : rn_mul(0.5f,
+            rn_add(rn_add(rn_add(mub2d[ca], mup0[ca]), mub2d[cb]), mup0[cb]));
+#endif
         real ct = rn_add(rn_mul(c1h[k], mtf), c2h[k]);
         real cs = rn_add(rn_mul(c1h[k], msf), c2h[k]);
         size_t ix = I3S(k, j, i, nyf, nx);
         real value = rn_sub(rn_mul(ct, v0[ix]), rn_mul(cs, v[ix]));
+#if GPUWM_WRF_EXACT
+        if (has_msf) {
+            value = rn_mul(value, rn_div(1.0f, msfv[(size_t)j * nx + i]));
+        }
+#else
         if (has_msf) value = rn_div(value, msfv[(size_t)j * nx + i]);
+#endif
         v_pp[ix] = value;
     }
 }
@@ -1108,6 +1584,10 @@ void small_step_init_column(real* __restrict__ w_pp,
         real chs = rn_add(rn_mul(c1h[k], mus), c2h[k]);
         real tht = rn_add(thb[b], thp0[h]);
         real ths = rn_add(thb[b], thp[h]);
+#if GPUWM_WRF_EXACT
+        tht = thp0[h];
+        ths = thp[h];
+#endif
         real thpp = rn_sub(rn_mul(cht, tht), rn_mul(chs, ths));
         th_pp[h] = thpp;
 
@@ -1117,6 +1597,9 @@ void small_step_init_column(real* __restrict__ w_pp,
         real dph = rn_sub(ph_pp[h + st], ph_pp[h]);
         real al2 = rn_mul(rdnw[k], dph);
         real al = rn_div(-rn_add(al1, al2), cht);
+#if GPUWM_WRF_EXACT
+        al = rn_mul(rn_div(-1.0f, cht), rn_add(al1, al2));
+#endif
         al_pp[h] = al;
 
         real p0 = rn_mul(c1h[k], mupp);
@@ -1124,6 +1607,9 @@ void small_step_init_column(real* __restrict__ w_pp,
         real p2 = rn_sub(thpp, p1);
         real p3 = rn_mul(alt[h], p2);
         real p4 = rn_mul(cht, ths);
+#if GPUWM_WRF_EXACT
+        p4 = rn_mul(cht, rn_add(300.0f, ths));
+#endif
         real p5 = rn_div(p3, p4);
         real p6 = rn_sub(p5, al);
         real pnew = rn_mul(c2a, p6);
@@ -1166,6 +1652,12 @@ void small_step_finish_uv(real* __restrict__ u,
         real mnb = rn_add(msb, mu_pp[cb]);
         real msf = rn_mul(0.5f, rn_add(msa, msb));
         real mnf = rn_mul(0.5f, rn_add(mna, mnb));
+#if GPUWM_WRF_EXACT
+        msf = rn_mul(0.5f, rn_add(rn_add(rn_add(mup[ca], mup[cb]),
+                                              mub2d[ca]), mub2d[cb]));
+        mnf = rn_mul(0.5f, rn_add(rn_add(rn_add(rn_add(mup[ca], mu_pp[ca]),
+                        rn_add(mup[cb], mu_pp[cb])), mub2d[ca]), mub2d[cb]));
+#endif
         real cs = rn_add(rn_mul(c1h[k], msf), c2h[k]);
         real cn = rn_add(rn_mul(c1h[k], mnf), c2h[k]);
         size_t ix = I3S(k, j, i, ny, nxf);
@@ -1184,6 +1676,12 @@ void small_step_finish_uv(real* __restrict__ u,
         real mnb = rn_add(msb, mu_pp[cb]);
         real msf = rn_mul(0.5f, rn_add(msa, msb));
         real mnf = rn_mul(0.5f, rn_add(mna, mnb));
+#if GPUWM_WRF_EXACT
+        msf = rn_mul(0.5f, rn_add(rn_add(rn_add(mup[ca], mup[cb]),
+                                              mub2d[ca]), mub2d[cb]));
+        mnf = rn_mul(0.5f, rn_add(rn_add(rn_add(rn_add(mup[ca], mu_pp[ca]),
+                        rn_add(mup[cb], mu_pp[cb])), mub2d[ca]), mub2d[cb]));
+#endif
         real cs = rn_add(rn_mul(c1h[k], msf), c2h[k]);
         real cn = rn_add(rn_mul(c1h[k], mnf), c2h[k]);
         size_t ix = I3S(k, j, i, nyf, nx);
@@ -1238,12 +1736,26 @@ void small_step_finish_column(real* __restrict__ w,
         real cs = rn_add(rn_mul(c1h[k], mus), c2h[k]);
         real theta = rn_add(thb[b], thp[h]);
         real numerator = rn_add(rn_mul(cs, theta), th_pp[h]);
+#if GPUWM_WRF_EXACT
+        theta = thp[h];
+        numerator = th_pp[h];
         if (remove_hdiab) {
             real removal = rn_mul(rn_mul(hdiab_dt, cs), h_diabatic[h]);
             numerator = rn_sub(numerator, removal);
         }
+        numerator = rn_add(numerator, rn_mul(theta, cs));
+#else
+        if (remove_hdiab) {
+            real removal = rn_mul(rn_mul(hdiab_dt, cs), h_diabatic[h]);
+            numerator = rn_sub(numerator, removal);
+        }
+#endif
         real cn = rn_add(rn_mul(c1h[k], mun), c2h[k]);
+#if GPUWM_WRF_EXACT
+        thp[h] = rn_div(numerator, cn);
+#else
         thp[h] = rn_sub(rn_div(numerator, cn), thb[b]);
+#endif
     }
     mup[c] = rn_add(mup[c], mu_pp[c]);
 }

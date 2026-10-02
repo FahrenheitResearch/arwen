@@ -597,9 +597,16 @@ def nested_experiment(exp: ExperimentConfig,
             f"nested free-forecast legs attach ONE child to a single-domain "
             f"parent; this experiment already carries {len(exp.domains)} "
             "domains")
+    # The child's epssm is the model's choice exactly when its parent's
+    # was (A181): the label rides down with the configuration, so the
+    # off-centering floor raises it on the child's ground
+    # (:func:`nest_acoustics`) rather than refusing it as written.
+    auto_epssm = tuple(getattr(exp, "auto_epssm", ()) or ())
+    if int(exp.root.grid_id) in auto_epssm:
+        auto_epssm = tuple(sorted({*auto_epssm, int(child_dc.grid_id)}))
     nested = dataclasses.replace(
         exp, feedback=0, smooth_option=0,
-        domains=(exp.root, child_dc))
+        domains=(exp.root, child_dc), auto_epssm=auto_epssm)
     # A DA free-forecast leg attaches its child itself and integrates the
     # tree directly; nothing here reserves a dormant nest's VRAM or
     # evaluates its trigger, so a spawn declaration arriving on the child
@@ -618,6 +625,69 @@ def nested_experiment(exp: ExperimentConfig,
         raise NestedForecastRefusal(
             "child dx disagrees with ExperimentConfig.dx_exact")
     return nested
+
+
+def nest_terrain(exp: ExperimentConfig, child_dc: DomainConfig,
+                 parent_terrain) -> np.ndarray:
+    """The terrain the nest integrates: its parent's, carried down by SINT.
+
+    :data:`TERRAIN_POLICY`: ``parent_only_init`` builds the child's base
+    state on the parent's terrain through the mass-point SINT
+    (``gpuwm.ingest.nest_init._parent_only_base``), so the same operator on
+    the parent's static ``HGT_M`` is the child's ground, read on the host
+    before any model is built.
+    """
+    if int(child_dc.run.terrain_opt) == 0:
+        return np.zeros((child_dc.run.ny, child_dc.run.nx), dtype=np.float32)
+    parent_run = exp.root.run
+    registration = register_nest(
+        nri=child_dc.parent_grid_ratio, nrj=child_dc.parent_grid_ratio,
+        i_parent_start=child_dc.i_parent_start,
+        j_parent_start=child_dc.j_parent_start,
+        child_nx=child_dc.run.nx, child_ny=child_dc.run.ny,
+        parent_nx=parent_run.nx, parent_ny=parent_run.ny,
+        stagger="", wrapper="interp")
+    from gpuwm.core.nest_interp import sint
+
+    host = np.asarray(parent_terrain.get() if hasattr(parent_terrain, "get")
+                      else parent_terrain, dtype=np.float32)
+    return sint(np.ascontiguousarray(host), registration)
+
+
+def nest_acoustics(exp: ExperimentConfig, child_dc: DomainConfig, *,
+                   parent_terrain, parent_grid=None):
+    """The nest with the acoustic rule its own ground needs (A181).
+
+    ``(child_dc, adaptations)``: the off-centering floor and the substep
+    count every prepared door applies to each of its domains
+    (:func:`gpuwm.acoustic_adaptation.adapt_experiment_to_terrain`), read
+    off the terrain the nest integrates (:func:`nest_terrain`) on its own
+    map factors when ``parent_grid`` is given, the way the prepared tree
+    door reads a nest's static ``HGT_M``.
+
+    A nest of a parent whose ``epssm`` was the model's choice is the
+    model's choice too (:func:`nested_experiment`). It retains its
+    inherited value and takes a higher floor where its own ground needs
+    one. A parent that wrote its ``epssm`` hands
+    it down as written, and below the floor that is refused, remedy first.
+    """
+    from gpuwm.acoustic_adaptation import (adapt_experiment_to_terrain,
+                                          readings_from_static)
+    nested = nested_experiment(exp, child_dc)
+    gid = int(child_dc.grid_id)
+    grids = {}
+    if parent_grid is not None:
+        grids[gid] = parent_grid.nest(
+            child_dc.i_parent_start, child_dc.j_parent_start,
+            child_dc.parent_grid_ratio, child_dc.run.nx + 1,
+            child_dc.run.ny + 1, resolved_dx=child_dc.run.dx,
+            resolved_dy=child_dc.run.dy)
+    readings = readings_from_static(
+        nested, {gid: {"HGT_M": nest_terrain(exp, child_dc,
+                                              parent_terrain)}},
+        grids_by_grid_id=grids)
+    adapted, adaptations = adapt_experiment_to_terrain(nested, readings)
+    return adapted.domains[-1], adaptations
 
 
 # ---------------------------------------------------------------------------

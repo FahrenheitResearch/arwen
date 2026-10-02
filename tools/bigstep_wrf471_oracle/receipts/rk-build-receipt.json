@@ -1,0 +1,71 @@
+{
+  "wrf_tag": "v4.7.1",
+  "wrf_commit": "f52c197ed39d12e087d02c50f412d90d418f6186",
+  "sources": {
+    "module_em.F": "11105cbf8255f30ca6a44cd7429a92cedce1fb91db6ce90fd7217002a72fb7fa",
+    "module_model_constants.F": "5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062"
+  },
+  "commands": [
+    [
+      "gfortran",
+      "-c",
+      "-O0",
+      "-fPIC",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-ffp-contract=off",
+      "-fno-tree-vectorize",
+      "-fcheck=bounds",
+      "-cpp",
+      "$WRF_SOURCE/module_model_constants.F"
+    ],
+    [
+      "gfortran",
+      "-c",
+      "-O0",
+      "-fPIC",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-ffp-contract=off",
+      "-fno-tree-vectorize",
+      "-fcheck=bounds",
+      "rk_reference.F90"
+    ],
+    [
+      "gfortran",
+      "-c",
+      "-O0",
+      "-fPIC",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-ffp-contract=off",
+      "-fno-tree-vectorize",
+      "-fcheck=bounds",
+      "$HARNESS_DIR/rk_harness.F90"
+    ],
+    [
+      "gfortran",
+      "-shared",
+      "-o",
+      "rk_oracle.so",
+      "rk_harness.o",
+      "rk_reference.o",
+      "module_model_constants.o"
+    ]
+  ],
+  "extracts": {
+    "rk_addtend_dry": {
+      "sha256": "08e28f19b1799c7281f2446b134d124a521dad653a57db5fb77a0f9756c48bf1",
+      "first_line": 959,
+      "last_line": 1093
+    },
+    "rk_update_scalar": {
+      "sha256": "124eb6c5cb22ccbdb2d471a226cda6fe55a399c67ae43720b08c34919eac0ecb",
+      "first_line": 1587,
+      "last_line": 1800
+    }
+  },
+  "configure_module_sha256": "56bf062baf8abb4e54e9a37d43e93aaf4fd26506c67504c51eaf126e0e11a3ce",
+  "compiler": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0\nCopyright (C) 2025 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+  "undefined_symbols": "                 U free\n                 U _gfortran_runtime_error_at\n                 U malloc\n"
+}

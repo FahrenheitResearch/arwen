@@ -1093,3 +1093,38 @@ def test_battery_shape_projections_are_arithmetic_over_the_anchors():
         wrf_rate * 1440.0 / 3600.0, abs=5e-4)
     assert entry["wall_hours_per_case_control_plus_twin"] == pytest.approx(
         2.0 * wrf_rate * 1440.0 / 3600.0, abs=1e-3)
+
+
+def test_the_stock_namelist_carries_each_domains_diffusion_selectors():
+    """``diff_opt`` and ``mix_full_fields`` are written per domain from config.
+
+    The breakage this prevents: the writer spelled ``diff_opt = 2`` and
+    ``mix_full_fields = .true.`` as literals, so a ``diff_opt = 1`` run, or
+    one with ``mix_full_fields = false``, was refused by its own
+    config-versus-namelist round trip with a mismatch that named neither
+    key's real cause, and a mirrored WRF arm would have run the other
+    operator.
+    """
+    import dataclasses
+
+    from gpuwm.experiment import load_experiment
+    from gpuwm.hrrr_route_inputs import render_namelist_input
+
+    def column(text, key):
+        match = re.search(rf"^ {key}\s*=\s*(.*)$", text, flags=re.M)
+        assert match, key
+        return [v.strip() for v in match.group(1).split(",") if v.strip()]
+
+    exp = load_experiment(FAITHFUL_ARM)
+    count = len(exp.domains)
+    text = render_namelist_input(exp)
+    assert column(text, "diff_opt") == ["2"] * count
+    assert column(text, "mix_full_fields") == [".true."] * count
+
+    coordinate = dataclasses.replace(exp, domains=type(exp.domains)(
+        dataclasses.replace(domain, run=dataclasses.replace(
+            domain.run, diff_opt=1, mix_full_fields=False))
+        for domain in exp.domains))
+    text = render_namelist_input(coordinate)
+    assert column(text, "diff_opt") == ["1"] * count
+    assert column(text, "mix_full_fields") == [".false."] * count

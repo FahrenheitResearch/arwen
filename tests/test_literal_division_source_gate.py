@@ -19,20 +19,43 @@ is tests/test_literal_division_gate.py on the GPU shard.
 from __future__ import annotations
 
 import textwrap
+from pathlib import Path
 
 from tools.literal_division_scan import (
+    FTZ_FALSE_SOURCES,
     inline_kernel_offenders,
     inline_kernel_strings,
     kernel_file_offenders,
     literal_divisions,
 )
 
+#: The tree under test: the scan reads every source from it (A193), never
+#: from wherever gpuwm happens to be imported.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_terrain_drag_divisions_use_the_direct_non_ftz_production_route():
+    """Its source exception requires the loader that preserves IEEE division."""
+    from gpuwm.core import terrain_drag
+    from tools.ftz_receipt import route_inventory
+
+    source = (REPO_ROOT / "gpuwm" / "core" / "terrain_drag.py").read_text(
+        encoding="utf-8")
+    sites = route_inventory.scan_source("gpuwm/core/terrain_drag.py", source)
+    assert len(sites) == 1
+    assert sites[0]["constructor_kind"] == (
+        "cupy.cuda.compiler.compile_using_nvrtc")
+    assert sites[0]["options_expression"] == "MODULE_OPTIONS"
+    assert terrain_drag.MODULE_OPTIONS == (
+        "-std=c++17", "-fmad=false", "--ftz=false")
+    assert "terrain_drag.cu" in FTZ_FALSE_SOURCES
+
 
 def test_kernel_sources_divide_by_float_constants_only_through_fdiv_rn():
     """A146: every -ftz=true kernel source spells a constant divisor as
     ``__fdiv_rn(x, C)``; a plain ``x / C`` is rounded one ULP off on
     Blackwell cards for a large share of inputs."""
-    offenders = kernel_file_offenders()
+    offenders = kernel_file_offenders(REPO_ROOT)
     assert not offenders, (
         "A146: NVRTC compiles a float division by a compile-time constant "
         "as a multiply by the rounded reciprocal on compute_100/120 under "
@@ -44,7 +67,7 @@ def test_inline_python_kernels_divide_by_float_constants_only_through_fdiv_rn():
     """A146: the same rule for CUDA source held in gpuwm's Python modules
     (RawKernel/RawModule strings and ElementwiseKernel operations), which
     CuPy compiles with the same appended -ftz=true."""
-    offenders = inline_kernel_offenders()
+    offenders = inline_kernel_offenders(REPO_ROOT)
     assert not offenders, (
         "A146: spell these constant divisions as __fdiv_rn(x, C):\n  "
         + "\n  ".join(offenders))

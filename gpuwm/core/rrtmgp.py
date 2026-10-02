@@ -35,7 +35,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from functools import lru_cache
+from gpuwm.core.device_cache import cuda_cache, cached_ready
 import os
+import threading
 from pathlib import Path
 from typing import Mapping, NamedTuple
 
@@ -692,10 +694,8 @@ def _solar_source_device(sw_tables):
     import cupy as cp
 
     key = (id(sw_tables), _cache_device_key())
-    held = _SOLAR_SOURCE.get(key)
-    if held is None:
-        held = (sw_tables, cp.asarray(sw_tables.solar_source, dtype=DTYPE))
-        _SOLAR_SOURCE[key] = held
+    held = cached_ready(cp, _SOLAR_SOURCE, key,
+                        lambda: (sw_tables, cp.asarray(sw_tables.solar_source, dtype=DTYPE)))
     return held[1]
 
 
@@ -706,10 +706,13 @@ def _solar_source_device(sw_tables):
 _TRACE_VMR_DEVICE: dict = {}
 
 
-def _trace_vmr_device(trace, *, xp):
+def _trace_vmr_device(trace, *, xp, _uncached=False):
     """Device ``(slot_indices, values)`` for the well-mixed trace gases."""
     key = (_cache_device_key(xp), trace)
-    cached = _TRACE_VMR_DEVICE.get(key)
+    if hasattr(xp, "cuda") and not _uncached:
+        return cached_ready(xp, _TRACE_VMR_DEVICE, key,
+                            lambda: _trace_vmr_device(trace, xp=xp, _uncached=True))
+    cached = None if _uncached else _TRACE_VMR_DEVICE.get(key)
     if cached is None:
         cached = (
             xp.asarray(np.asarray([slot for slot, _ in trace],
@@ -717,18 +720,23 @@ def _trace_vmr_device(trace, *, xp):
             xp.asarray(np.asarray([value for _, value in trace],
                                   dtype=np.float32)),
         )
-        _TRACE_VMR_DEVICE[key] = cached
+        if not _uncached:
+            _TRACE_VMR_DEVICE[key] = cached
     return cached
 
 
-def _lw_climatology(xp):
+def _lw_climatology(xp, _uncached=False):
     key = _cache_device_key(xp)
-    cached = _LW_CLIMATOLOGY.get(key)
+    if hasattr(xp, "cuda") and not _uncached:
+        return cached_ready(xp, _LW_CLIMATOLOGY, key,
+                            lambda: _lw_climatology(xp, _uncached=True))
+    cached = None if _uncached else _LW_CLIMATOLOGY.get(key)
     if cached is None:
         order = np.argsort(_WRF_LW_PPROF_HPA)
         cached = (xp.asarray(_WRF_LW_PPROF_HPA[order], dtype=DTYPE),
                   xp.asarray(_WRF_LW_TPROF_K[order], dtype=DTYPE))
-        _LW_CLIMATOLOGY[key] = cached
+        if not _uncached:
+            _LW_CLIMATOLOGY[key] = cached
     return cached
 
 
@@ -795,7 +803,7 @@ def _validate_model_top_interface(plev, p_top: float, *, xp=None) -> None:
 _ABOVE_MODEL_ROWS: dict = {}
 
 
-def _above_model_rows(kind, upper_nlay, p_top, pressure_floor, *, xp):
+def _above_model_rows(kind, upper_nlay, p_top, pressure_floor, *, xp, _uncached=False):
     """``(plev_row, play_row, climo_top, climo_row)`` for a uniform cap.
 
     Shaped (1, upper_nlay) so the caller broadcasts against its own
@@ -805,7 +813,10 @@ def _above_model_rows(kind, upper_nlay, p_top, pressure_floor, *, xp):
     """
     key = (_cache_device_key(xp), kind, int(upper_nlay),
            float(p_top), float(pressure_floor))
-    cached = _ABOVE_MODEL_ROWS.get(key)
+    if hasattr(xp, "cuda") and not _uncached:
+        return cached_ready(xp, _ABOVE_MODEL_ROWS, key,
+                            lambda: _above_model_rows(kind, upper_nlay, p_top, pressure_floor, xp=xp, _uncached=True))
+    cached = None if _uncached else _ABOVE_MODEL_ROWS.get(key)
     if cached is not None:
         return cached
     top_pressure = xp.full((1, 1), DTYPE(p_top), dtype=DTYPE)
@@ -827,7 +838,8 @@ def _above_model_rows(kind, upper_nlay, p_top, pressure_floor, *, xp):
             plev_row.ravel() * DTYPE(0.01), pprof, tprof).reshape(
                 1, upper_nlay)
     cached = (plev_row, play_row, climo_top, climo_row)
-    _ABOVE_MODEL_ROWS[key] = cached
+    if not _uncached:
+        _ABOVE_MODEL_ROWS[key] = cached
     return cached
 
 
@@ -1079,7 +1091,7 @@ def _prepare_sw_inputs(albedo, solar, mu, nlay, *, out=None, xp=None):
 #: Named per-chunk scratch buffers.  `_prepare_above_model_chunk` runs 2364
 #: times an hour and allocated ~15 fresh arrays each time; the profile puts
 #: it at 2.78 s of HOST against 0.98 s of device, the worst ratio in
-#: radiation.  Each entry is keyed by a call-site NAME as well as shape and
+#: radiation. Each entry is keyed by device and stream, then NAME, shape and
 #: dtype, which is what makes reuse safe: two temporaries that are live at
 #: the same moment ask under different names and can never be handed the
 #: same bytes.  Bounded by construction -- fifteen names times the handful
@@ -1097,7 +1109,9 @@ def _chunk_scratch(name: str, shape, *, xp, dtype=DTYPE):
     the clear-layer tail in :func:`_append_clear_upper_layers`.
     """
     shape = tuple(int(extent) for extent in shape)
-    key = (_cache_device_key(xp), name, shape, np.dtype(dtype).str)
+    key = (_cache_device_key(xp),
+           xp.cuda.get_current_stream().ptr if hasattr(xp, "cuda") else None,
+           name, shape, np.dtype(dtype).str)
     buffer = _CHUNK_SCRATCH.get(key)
     if buffer is None:
         buffer = xp.empty(shape, dtype=dtype)
@@ -1231,6 +1245,50 @@ def _minor_gas_indices(gas_names: tuple[str, ...], gas_minor,
 def _scaling_gas_indices(gas_names: tuple[str, ...], names) -> np.ndarray:
     gas_map = {name: i + 1 for i, name in enumerate(gas_names)}
     return _array([gas_map.get(name, -1) for name in names], np.int32)
+
+
+#: One upload of a table set per card, ever.  ``GasTables.to_device`` and
+#: ``CloudTables.to_device`` used to test ``dev not in self._device`` and
+#: upload outside any lock, so slabs of one domain stepping on their own
+#: streams at once each uploaded a copy at the first radiation call and the
+#: last one to finish replaced the others in the cache.  A slab that had
+#: picked up a replaced copy kept launching kernels that read it while the
+#: copy's last reference died: its blocks went back to the memory pool of
+#: the stream that allocated them, which handed them to that stream's next
+#: allocation while the other slab's kernels were still reading.  MEASURED
+#: (one RTX 4090 split into 2x2 slabs, the default suite): 4 of 5 runs
+#: wrote frames differing from the unsplit
+#: run, first in the shortwave heating of the first radiation call; with
+#: every radiation call serialized across slabs, 3 of 3 were identical, and
+#: with this lock alone 5 of 5 (6 of 6 beside the Thompson, legacy-LW and
+#: RUC uploads made the same way).
+_TABLE_UPLOAD_LOCK = threading.RLock()
+
+
+def _upload_once(owner, upload):
+    """``owner._device[dev]``, uploaded once under the lock, ordered on use.
+
+    The upload's event orders a caller on another stream after the bytes
+    land (the ``device_cache.cached_ready`` contract); the lock makes the
+    first upload the only one, so no published copy is ever replaced or
+    freed while a slab still reads it.
+    """
+    import cupy as cp
+
+    dev = cp.cuda.runtime.getDevice()
+    with _TABLE_UPLOAD_LOCK:
+        cached = owner._device.get(dev)
+        if cached is None:
+            values = upload(cp)
+            ready = cp.cuda.Event()
+            ready.record()
+            values["_upload_ready"] = ready
+            values["_upload_stream"] = cp.cuda.get_current_stream().ptr
+            cached = owner._device[dev] = DeviceTables(values)
+    current = cp.cuda.get_current_stream()
+    if current.ptr != cached._upload_stream and not cached._upload_ready.done:
+        current.wait_event(cached._upload_ready)
+    return cached
 
 
 @dataclass
@@ -1667,11 +1725,9 @@ class GasTables:
                 if isinstance(value, np.ndarray)}
 
     def to_device(self) -> DeviceTables:
-        """The k-distribution on the CURRENT device, uploaded once per card."""
-        import cupy as cp
-
-        dev = cp.cuda.runtime.getDevice()
-        if dev not in self._device:
+        """The k-distribution on the CURRENT device, uploaded once per card
+        (:func:`_upload_once`)."""
+        def upload(cp):
             values: dict[str, object] = {}
             for name, value in vars(self).items():
                 if isinstance(value, np.ndarray):
@@ -1684,8 +1740,8 @@ class GasTables:
                                                                    dtype=dtype))
                 elif not name.startswith("_"):
                     values[name] = value
-            self._device[dev] = DeviceTables(values)
-        return self._device[dev]
+            return values
+        return _upload_once(self, upload)
 
 
 @dataclass
@@ -1717,18 +1773,15 @@ class CloudTables:
         return (self.diamice_upr - self.diamice_lwr) / (self.nsize_ice - 1)
 
     def to_device(self) -> DeviceTables:
-        """The cloud optics tables on the CURRENT device, once per card."""
-        import cupy as cp
-
-        dev = cp.cuda.runtime.getDevice()
-        if dev not in self._device:
-            values = {name: (cp.ascontiguousarray(cp.asarray(value,
-                                                               dtype=cp.float32))
-                             if isinstance(value, np.ndarray) else value)
-                      for name, value in vars(self).items()
-                      if not name.startswith("_")}
-            self._device[dev] = DeviceTables(values)
-        return self._device[dev]
+        """The cloud optics tables on the CURRENT device, once per card
+        (:func:`_upload_once`)."""
+        def upload(cp):
+            return {name: (cp.ascontiguousarray(cp.asarray(value,
+                                                             dtype=cp.float32))
+                           if isinstance(value, np.ndarray) else value)
+                    for name, value in vars(self).items()
+                    if not name.startswith("_")}
+        return _upload_once(self, upload)
 
 
 @lru_cache(maxsize=2)
@@ -2541,7 +2594,7 @@ def _mcica_gf2_apply(mat, v: int) -> int:
     return out
 
 
-@lru_cache(maxsize=8)
+@cuda_cache(maxsize=8, ready=True)
 def _mcica_jump_tables(nlay: int, ngpt: int):
     """One composed advance operator per subcolumn ``g``.
 
@@ -3744,11 +3797,9 @@ class RRTMGPRadiation:
         # Solar_step block (module_radiation_driver.F:1206-1208, 'jararias
         # 2013/08/10') while declination/EOT stay at the call-time julian
         # (:3514-3541); that coszen is what RRTMG SW consumes (driver:2636).
-        from gpuwm.core.physics import (
-            _model_clock_dt, _physics_interval_seconds)
+        from gpuwm.core.physics import _physics_period_seconds
         radt_minutes = cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes
-        radt_seconds = _physics_interval_seconds(
-            radt_minutes, _model_clock_dt(cfg))
+        radt_seconds = _physics_period_seconds(radt_minutes, cfg)
         mu_raw = self._cosine_zenith(
             valid_time, hour_offset_seconds=0.5 * radt_seconds)
         daylight = mu_raw > DTYPE(0.0)
@@ -4221,9 +4272,12 @@ def _gas_optics(tables: GasTables, play, plev, tlay, vmr, *, metadata,
     # Four warp-local cells share a block without sharing their values.
     threads = 128
     blocks = (int(ncol) * int(nlay) + 3) // 4
-    shared = 16 * (max(int(tables.minor_limits_gpt_lower.shape[0]),
-                       int(tables.minor_limits_gpt_upper.shape[0]))
-                   + 8 * int(tables.nflav))
+    # Each flavor weight is one aligned 16-byte shared vector. Round the
+    # minor-scaling prefix to four floats so every warp's vector rows stay
+    # aligned, including bands whose minor-entry count is not divisible by 4.
+    minor_slots = (max(int(tables.minor_limits_gpt_lower.shape[0]),
+                       int(tables.minor_limits_gpt_upper.shape[0])) + 3) & ~3
+    shared = 16 * (minor_slots + 8 * int(tables.nflav))
     kernel = get_kernel("rrtmgp_gas", "rrtmgp_gas_optics")
     kernel((blocks,), (threads,), (
         play, plev, tlay, vmr, metadata.iatm, metadata.jt, metadata.jp,
@@ -4420,7 +4474,7 @@ def _rte_kernel(func: str, nlay: int):
         "rrtmgp_rte", func, (("RRTMGP_MAX_LAYERS", int(nlay)),))
 
 
-@lru_cache(maxsize=1)
+@cuda_cache(maxsize=None)
 def _rte_sm_count() -> int:
     import cupy as cp
     return int(cp.cuda.Device().attributes["MultiProcessorCount"])

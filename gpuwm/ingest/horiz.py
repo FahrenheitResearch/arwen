@@ -662,7 +662,7 @@ WPS_PARABOLIC_NEGATIVE_WEIGHT = 9.0 / 32.0
 _WPS_PARABOLIC_ENVELOPE_SLACK = 1.0e-5
 
 
-def parabolic_undershoot_floor(field):
+def parabolic_undershoot_floor(field, *, _device=False):
     """The most negative value ``sixteen_pt`` can make from ``field``.
 
     ``field`` is the SOURCE array about to be mapped.  The weights of
@@ -715,8 +715,26 @@ def parabolic_undershoot_floor(field):
     # every support the plan builds is a crop of it, and a crop can only
     # lift this envelope.
     values = getattr(field, "values", field)
-    minimum = float(values.min())
-    maximum = float(values.max())
+    if _device and type(values).__module__.startswith("cupy") and values.dtype == np.float32 and values.size:
+        import struct
+        cp = _cupy()
+        from gpuwm.core.kernels import get_kernel
+        # Integer ordering retains subnormals in the source range reduction.
+        # Three scalar words replace the old reduction scalar temporaries.
+        bounds = cp.asarray([0xffffffff, 0, 0], dtype=cp.uint32)
+        get_kernel("horizontal", "horizontal_envelope")(
+            (min(1024, (values.size + 255) // 256),), (256,),
+            (cp.ascontiguousarray(values), bounds, np.int64(values.size)))
+        lower, upper, invalid = map(int, bounds.get())
+        if invalid:
+            return None
+        def unpack(ordered):
+            bits = ordered ^ 0x80000000 if ordered >> 31 else (~ordered & 0xffffffff)
+            return struct.unpack("<f", struct.pack("<I", bits))[0]
+        minimum, maximum = unpack(lower), unpack(upper)
+    else:
+        minimum = float(values.min())
+        maximum = float(values.max())
     if not (np.isfinite(minimum) and np.isfinite(maximum)):
         return None
     envelope = ((1.0 + WPS_PARABOLIC_NEGATIVE_WEIGHT) * min(minimum, 0.0)
@@ -724,6 +742,37 @@ def parabolic_undershoot_floor(field):
     if envelope >= 0.0:
         return 0.0
     return envelope * (1.0 + _WPS_PARABOLIC_ENVELOPE_SLACK)
+
+
+def _float32_gpu(value):
+    """Round device binary64 values without flushing binary32 subnormals."""
+    cp = _cupy()
+    if isinstance(value, np.ndarray) or not isinstance(value, cp.ndarray):
+        return cp.asarray(value, dtype=cp.float32)
+    if value.dtype != cp.float64:
+        return value.astype(cp.float32, copy=False)
+    from gpuwm.core.kernels import get_kernel
+    shape = value.shape
+    value = cp.ascontiguousarray(value)
+    result = cp.empty(shape, dtype=cp.float32)
+    if value.size:
+        get_kernel("horizontal", "horizontal_cast")(
+            ((value.size + 255) // 256,), (256,),
+            (value, result, np.int64(value.size)))
+    return result
+
+
+def _divide_float32_gpu(value, divisor):
+    cp = _cupy()
+    from gpuwm.core.kernels import get_kernel
+    value = _float32_gpu(value)
+    result = cp.empty_like(value)
+    value = cp.ascontiguousarray(value)
+    if value.size:
+        get_kernel("horizontal", "horizontal_divide")(
+            ((value.size + 255) // 256,), (256,),
+            (value, result, np.int64(value.size), np.float32(divisor)))
+    return result
 
 
 def _wps_oned_gpu(x, a, b, c, d):
@@ -780,49 +829,22 @@ class _RegularGpuPlan:
             field = self._source_support.crop(field, self.source_shape)
             shape = self._source_support.shape
             y, x = self._support_coordinates
-        field = cp.asarray(field, dtype=cp.float32)
+        field = _float32_gpu(field)
         if field.ndim < 2 or field.shape[-2:] != shape:
             raise ValueError("field trailing dimensions do not match source axes")
-        lead = (slice(None),) * (field.ndim - 2)
-        expand = (None,) * (field.ndim - 2)
-        ny, nx = shape
-        if method == "nearest":
-            iy = cp.rint(y).astype(cp.int32)
-            ix = cp.rint(x).astype(cp.int32)
-            return field[lead + (iy, ix)]
-        if method == "bilinear":
-            one = cp.float32(1.0)
-            iy = cp.minimum(cp.floor(y).astype(cp.int32), ny - 2)
-            ix = cp.minimum(cp.floor(x).astype(cp.int32), nx - 2)
-            fy = (y - iy)[expand]
-            fx = (x - ix)[expand]
-            lower = ((one - fx) * field[lead + (iy, ix)]
-                     + fx * field[lead + (iy, ix + 1)])
-            upper = ((one - fx) * field[lead + (iy + 1, ix)]
-                     + fx * field[lead + (iy + 1, ix + 1)])
-            return ((one - fy) * lower + fy * upper).astype(
-                cp.float32, copy=False)
-        if method != "parabolic":
+        methods = {"nearest": 0, "bilinear": 1, "parabolic": 2}
+        if method not in methods:
             raise ValueError("method must be 'nearest', 'bilinear', or 'parabolic'")
-
-        iy = cp.floor(y).astype(cp.int32)
-        ix = cp.floor(x).astype(cp.int32)
-        fy = (y - iy)[expand]
-        fx = (x - ix)[expand]
-        xindices = [cp.clip(ix + offset, 0, nx - 1)
-                    for offset in (-1, 0, 1, 2)]
-        yindices = [cp.clip(iy + offset, 0, ny - 1)
-                    for offset in (-1, 0, 1, 2)]
-        rows = []
-        for jy in yindices:
-            tiny = cp.float32(1.0e-20)
-            values = [cp.where(field[lead + (jy, jx)] == cp.float32(0.0),
-                               tiny, field[lead + (jy, jx)])
-                      for jx in xindices]
-            rows.append(_wps_oned_gpu(fx, *values))
-        result = _wps_oned_gpu(fy, *rows)
-        return cp.where(result == tiny, cp.float32(0.0), result).astype(
-            cp.float32, copy=False)
+        leading_shape = field.shape[:-2]
+        field = field.reshape((-1, *shape))
+        result = cp.empty((*leading_shape, *self.target_shape), dtype=cp.float32)
+        from gpuwm.core.kernels import get_kernel
+        kernel = get_kernel("horizontal", "horizontal_regular")
+        kernel(((result.size + 255) // 256,), (256,), (
+            field, y, x, result, np.int64(result.size), np.int32(y.size),
+            np.int32(shape[0]), np.int32(shape[1]), np.int32(methods[method]),
+            *(np.int64(stride // field.itemsize) for stride in field.strides)))
+        return result
 
 
 def interpolate_regular_gpu(field, latitude, longitude, target_lat, target_lon,
@@ -981,7 +1003,7 @@ def masked_nearest_gpu(field, latitude, longitude, target_lat, target_lon,
     """Nearest finite 2-D value on a requested land/water surface, on GPU."""
     cp = _cupy()
     y_np, x_np = _regular_coordinates(latitude, longitude, target_lat, target_lon)
-    field = cp.asarray(field, dtype=cp.float32)
+    field = _float32_gpu(field)
     source_landmask = cp.asarray(source_landmask, dtype=cp.bool_)
     target_landmask = cp.asarray(target_landmask, dtype=cp.bool_)
     source_shape = (len(latitude), len(longitude))
@@ -989,43 +1011,26 @@ def masked_nearest_gpu(field, latitude, longitude, target_lat, target_lon,
         raise ValueError("field/source_landmask shape does not match source axes")
     if target_landmask.shape != y_np.shape:
         raise ValueError("target_landmask shape does not match target coordinates")
-    if surface == "match":
-        active = cp.ones_like(target_landmask)
-        desired_land = target_landmask
-    elif surface == "land":
-        active = target_landmask
-        desired_land = cp.ones_like(target_landmask)
-    elif surface == "water":
-        active = ~target_landmask
-        desired_land = cp.zeros_like(target_landmask)
-    else:
+    if isinstance(search_radius, (bool, np.bool_)) or not isinstance(
+            search_radius, (int, np.integer)) or int(search_radius) < 0:
+        raise ValueError("search_radius must be a non-negative integer")
+    surfaces = {"match": 0, "land": 1, "water": 2}
+    if surface not in surfaces:
         raise ValueError("surface must be 'match', 'land', or 'water'")
-
+    from gpuwm.core.kernels import get_kernel
     y = cp.asarray(y_np, dtype=cp.float32)
     x = cp.asarray(x_np, dtype=cp.float32)
-    center_y = cp.rint(y).astype(cp.int32)
-    center_x = cp.rint(x).astype(cp.int32)
-    best_distance = cp.full(y.shape, cp.inf, dtype=cp.float32)
-    best_value = cp.full(y.shape, cp.float32(fill_value), dtype=cp.float32)
-    ny, nx = source_shape
-    for dj in range(-search_radius, search_radius + 1):
-        jy = center_y + dj
-        in_y = (jy >= 0) & (jy < ny)
-        jy_safe = cp.clip(jy, 0, ny - 1)
-        for di in range(-search_radius, search_radius + 1):
-            ix = center_x + di
-            inside = in_y & (ix >= 0) & (ix < nx)
-            ix_safe = cp.clip(ix, 0, nx - 1)
-            value = field[jy_safe, ix_safe]
-            valid = (active & inside & cp.isfinite(value)
-                     & (source_landmask[jy_safe, ix_safe] == desired_land))
-            distance = (y - jy_safe) ** 2 + (x - ix_safe) ** 2
-            take = valid & (distance < best_distance)
-            best_distance = cp.where(take, distance, best_distance)
-            best_value = cp.where(take, value, best_value)
-    if strict and bool(cp.any(active & ~cp.isfinite(best_distance)).item()):
+    result = cp.empty(y.shape, dtype=cp.float32)
+    missing = cp.zeros(1, dtype=cp.uint32)
+    get_kernel("horizontal", "horizontal_nearest")(
+        ((y.size + 255) // 256,), (256,), (
+            cp.ascontiguousarray(field), cp.ascontiguousarray(source_landmask),
+            y, x, cp.ascontiguousarray(target_landmask), result, missing,
+            np.int32(y.size), np.int32(source_shape[0]), np.int32(source_shape[1]),
+            np.int32(surfaces[surface]), np.int32(search_radius), np.float64(fill_value)))
+    if strict and int(missing.item()):
         raise ValueError("no matching source surface within search_radius")
-    return best_value
+    return result
 
 
 _WPS_FULL_CHAIN = (
@@ -1254,28 +1259,48 @@ def wps_masked_field_interpolate(field, latitude, longitude, target_lat,
     return values[0].reshape(yy.shape)
 
 
+def _rotate_gpu_fused(u, v, sina, cosa, *, inverse):
+    cp = _cupy()
+    from gpuwm.core.kernels import get_kernel
+    sina, cosa = cp.broadcast_arrays(sina, cosa)
+    # The rotation geometry repeats over the field's leading dimensions.
+    shape = cp.broadcast_shapes(u.shape, sina.shape)
+    u = cp.ascontiguousarray(cp.broadcast_to(u, shape))
+    v = cp.ascontiguousarray(cp.broadcast_to(v, shape))
+    geometry_shape = shape[-sina.ndim:] if sina.ndim else ()
+    sina = cp.ascontiguousarray(cp.broadcast_to(sina, geometry_shape))
+    cosa = cp.ascontiguousarray(cp.broadcast_to(cosa, geometry_shape))
+    ou = cp.empty(shape, dtype=cp.float32)
+    ov = cp.empty(shape, dtype=cp.float32)
+    get_kernel("horizontal", "horizontal_rotate")(
+        ((u.size + 255) // 256,), (256,), (
+            u, v, sina, cosa, ou, ov, np.int64(u.size),
+            np.int32(sina.size), np.int32(inverse)))
+    return ou, ov
+
+
 def rotate_earth_to_grid_gpu(u_earth, v_earth, sinalpha, cosalpha):
     """Rotate co-located earth-relative winds to grid-relative FP32 winds."""
     cp = _cupy()
-    u = cp.asarray(u_earth, dtype=cp.float32)
-    v = cp.asarray(v_earth, dtype=cp.float32)
-    sina = cp.asarray(sinalpha, dtype=cp.float32)
-    cosa = cp.asarray(cosalpha, dtype=cp.float32)
+    u = _float32_gpu(u_earth)
+    v = _float32_gpu(v_earth)
+    sina = _float32_gpu(sinalpha)
+    cosa = _float32_gpu(cosalpha)
     if u.shape != v.shape:
         raise ValueError("u_earth and v_earth shapes differ")
-    return u * cosa + v * sina, v * cosa - u * sina
+    return _rotate_gpu_fused(u, v, sina, cosa, inverse=False)
 
 
 def rotate_grid_to_earth_gpu(u_grid, v_grid, sinalpha, cosalpha):
     """Inverse of :func:`rotate_earth_to_grid_gpu`."""
     cp = _cupy()
-    u = cp.asarray(u_grid, dtype=cp.float32)
-    v = cp.asarray(v_grid, dtype=cp.float32)
-    sina = cp.asarray(sinalpha, dtype=cp.float32)
-    cosa = cp.asarray(cosalpha, dtype=cp.float32)
+    u = _float32_gpu(u_grid)
+    v = _float32_gpu(v_grid)
+    sina = _float32_gpu(sinalpha)
+    cosa = _float32_gpu(cosalpha)
     if u.shape != v.shape:
         raise ValueError("u_grid and v_grid shapes differ")
-    return u * cosa - v * sina, v * cosa + u * sina
+    return _rotate_gpu_fused(u, v, sina, cosa, inverse=True)
 
 
 def lambert_rotation(grid: ProjectedGrid, stagger="mass"):
@@ -1312,14 +1337,17 @@ def _era5_rh_to_water_gpu(relative_humidity, temperature):
     t = cp.asarray(temperature, dtype=cp.float64)
     if rh.shape != t.shape:
         raise ValueError("relative_humidity and temperature shapes differ")
-    eis = 0.01 * cp.exp(9.550426 - 5723.265 / t + 3.53068 * cp.log(t)
-                        - 0.00728332 * t)
-    ews = 6.112 * cp.exp(17.67 * (t - 273.15) / ((t - 273.15) + 243.5))
-    frac = (273.15 - t) / 20.0
-    blended = frac * eis + (1.0 - frac) * ews
-    r = cp.where(t > 253.15, blended, eis)
-    converted = cp.where(t <= 273.15, rh * (r / ews), rh)
-    return converted.astype(cp.float32)
+    from gpuwm.core.kernels import get_kernel
+
+    shape = rh.shape
+    rh = cp.ascontiguousarray(rh)
+    t = cp.ascontiguousarray(t)
+    out = cp.empty(shape, dtype=cp.float32)
+    if out.size:
+        get_kernel("horizontal", "horizontal_rh_water")(
+            ((out.size + 255) // 256,), (256,),
+            (rh, t, out, np.int64(out.size), np.float64(20.0)))
+    return out
 
 
 _RENAMES = {
@@ -1726,6 +1754,66 @@ def _announce_masked_repairs(repairs, *, shape, valid_time, operators):
         file=sys.stderr)
 
 
+def _horizontal_domain_setup(snapshot, targets, engine):
+    from gpuwm.ingest.preparation_setup import array_key, current_setup
+    import json
+
+    owner = current_setup()
+    projection = declared_source_projection(snapshot)
+    xp = getattr(engine, "array_module", np)
+    device = None if xp is np else int(xp.cuda.runtime.getDevice())
+    key = (id(engine), device, array_key(snapshot.latitude), array_key(snapshot.longitude),
+           json.dumps(projection, sort_keys=True, separators=(',', ':'), default=dict),
+           tuple(array_key(value) for value in targets)) if owner is not None else None
+
+    def build():
+        mass_lat, mass_lon, u_lat, u_lon, v_lat, v_lon = targets
+        transform, _projected_source = source_coordinate_transform(snapshot)
+        mass_ty, mass_tx = transform(mass_lat, mass_lon)
+        u_ty, u_tx = transform(u_lat, u_lon)
+        v_ty, v_tx = transform(v_lat, v_lon)
+        if owner is not None:
+            # Geographic transforms may return the grid's mutable arrays.
+            # The cached setup retains a private byte-identical snapshot.
+            mass_ty, mass_tx, u_ty, u_tx, v_ty, v_tx = (
+                np.array(value, copy=True, order="K") for value in
+                (mass_ty, mass_tx, u_ty, u_tx, v_ty, v_tx))
+        # The coverage refusal itself fires several frames down, inside
+        # whichever backend builds the plan, where neither the plane's name
+        # nor the domain's own degrees are in scope -- and a backend takes
+        # bare axes by design, since it interpolates for the mapped route,
+        # the packaged profiles and the native one alike.  The plane is known
+        # HERE, at the one pairing boundary, so the same check runs here
+        # first and the user reads the refusal in the plane it happened in.
+        # Geographic sources take no extra pass: there is nothing to name.
+        _refuse_uncovered_in_source_plane(
+            snapshot,
+            ((mass_lat, mass_lon, mass_ty, mass_tx),
+             (u_lat, u_lon, u_ty, u_tx),
+             (v_lat, v_lon, v_ty, v_tx)))
+        mass_plan = engine.regular_plan(
+            snapshot.latitude, snapshot.longitude, mass_ty, mass_tx)
+        u_plan = engine.regular_plan(
+            snapshot.latitude, snapshot.longitude, u_ty, u_tx)
+        v_plan = engine.regular_plan(
+            snapshot.latitude, snapshot.longitude, v_ty, v_tx)
+
+        return (mass_ty, mass_tx, u_ty, u_tx, v_ty, v_tx,
+                mass_plan, u_plan, v_plan, {})
+
+    if owner is None:
+        return build()
+    with owner.lock:
+        if owner.closed:
+            return build()
+        if key not in owner.horizontal:
+            owner.horizontal.clear()
+            owner.backends.clear()
+            owner.backends[id(engine)] = engine
+            owner.horizontal[key] = build()
+        return owner.horizontal[key]
+
+
 def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                                 target_landmask=None,
                                 water_temperature_statics=None,
@@ -1786,37 +1874,21 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
     # together with target coordinates uses the transformed pair; uses of
     # the target's geographic coordinates alone (rotation angles, shapes,
     # receipts) stay geographic.
-    transform, _projected_source = source_coordinate_transform(snapshot)
-    mass_ty, mass_tx = transform(mass_lat, mass_lon)
-    u_ty, u_tx = transform(u_lat, u_lon)
-    v_ty, v_tx = transform(v_lat, v_lon)
-    # The coverage refusal itself fires several frames down, inside
-    # whichever backend builds the plan, where neither the plane's name
-    # nor the domain's own degrees are in scope -- and a backend takes
-    # bare axes by design, since it interpolates for the mapped route,
-    # the packaged profiles and the native one alike.  The plane is known
-    # HERE, at the one pairing boundary, so the same check runs here
-    # first and the user reads the refusal in the plane it happened in.
-    # Geographic sources take no extra pass: there is nothing to name.
-    _refuse_uncovered_in_source_plane(
-        snapshot,
-        ((mass_lat, mass_lon, mass_ty, mass_tx),
-         (u_lat, u_lon, u_ty, u_tx),
-         (v_lat, v_lon, v_ty, v_tx)))
-    mass_plan = engine.regular_plan(
-        snapshot.latitude, snapshot.longitude, mass_ty, mass_tx)
-    u_plan = engine.regular_plan(
-        snapshot.latitude, snapshot.longitude, u_ty, u_tx)
-    v_plan = engine.regular_plan(
-        snapshot.latitude, snapshot.longitude, v_ty, v_tx)
+    (mass_ty, mass_tx, u_ty, u_tx, v_ty, v_tx,
+     mass_plan, u_plan, v_plan, window_checks) = _horizontal_domain_setup(
+        snapshot, (mass_lat, mass_lon, u_lat, u_lon, v_lat, v_lon), engine)
 
     from gpuwm.ingest.atmospheric_window import WindowedAtmosphericSnapshot
     if isinstance(snapshot, WindowedAtmosphericSnapshot):
         from gpuwm.ingest.interpolation_support import regular_source_support
-        supported = all(snapshot.window.contains(regular_source_support(
-            snapshot.window.source_shape, *_regular_coordinates(
-                snapshot.latitude, snapshot.longitude, ty, tx)))
-            for ty, tx in ((mass_ty, mass_tx), (u_ty, u_tx), (v_ty, v_tx)))
+        window_key = snapshot.window
+        if window_key not in window_checks:
+            supported = all(snapshot.window.contains(regular_source_support(
+                snapshot.window.source_shape, *_regular_coordinates(
+                    snapshot.latitude, snapshot.longitude, ty, tx)))
+                for ty, tx in ((mass_ty, mass_tx), (u_ty, u_tx), (v_ty, v_tx)))
+            window_checks[window_key] = supported
+        supported = window_checks[window_key]
         if not supported:
             return interpolate_era5_to_lambert(
                 snapshot.full_snapshot(), grid, target_landmask=target_landmask,
@@ -2116,11 +2188,15 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                 # of which only lift the envelope, so the one recorded
                 # from the whole array stays a valid bound for it.
                 specific_humidity_undershoot_floor = (
-                    parabolic_undershoot_floor(mapped_from))
+                    parabolic_undershoot_floor(
+                        mapped_from, _device=getattr(engine, "name", None) == "cuda"))
             out[output_name] = mass_plan.apply(
                 mapped_from, method=method, source_support=True)
             if name == "Z":
-                out[output_name] = out[output_name] / xp.float32(9.81)
+                out[output_name] = (
+                    _divide_float32_gpu(out[output_name], 9.81)
+                    if getattr(engine, "name", None) == "cuda" else
+                    out[output_name] / xp.float32(9.81))
         handled.add(name)
 
     if fractional_recovery:

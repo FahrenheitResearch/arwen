@@ -1,0 +1,91 @@
+{
+  "wrf_commit": "f52c197ed39d12e087d02c50f412d90d418f6186",
+  "extracts": {
+    "rk_step_prep": {
+      "sha256": "943fa5e75f68d58e73f9f157bb726cafda57006d5e2180c564a03788fe48a1dd",
+      "first_line": 37,
+      "last_line": 187
+    },
+    "rk_tendency": {
+      "sha256": "8c6a9eae6d3bd280f0ad197ee354b11a0d892a7511aa7a3ae047f688f259a640",
+      "first_line": 190,
+      "last_line": 956
+    }
+  },
+  "libraries": {
+    "libwrflib.a": "41d3a8015a2c7539401aa48529ac3c45f2916bd03fd62d5b7714117ae99bcee7",
+    "librsl_lite.a": "16553ea8f45df2ef2ec5ff165d03369b7ca733f5c72c4c33f266108b73e915b3",
+    "libesmf_time.a": "526bf142c4840e98113c484473a7f8f6a13eb97c811b01afb7e9a7617ef523da",
+    "libfftpack.a": "047fe9288ff64c28e300561c5e4e574e91ad89fab81069d9843d3b332d2d5f81",
+    "libio_grib1.a": "bee7a536f475ae5a29f569c157a1fffc0d8b60f4fd78f3a9a267b414d804a420",
+    "libio_grib_share.a": "ed631bcb3682e38be23590c47f5bbd9dc69fccef70ab812fb08bced075da1670",
+    "libwrfio_int.a": "ad2754e764412f0241778b3a3ec29e120e3c10392afe667a7208b8ddb1d80ff5",
+    "libwrfio_nf.a": "b6e9b795bbd04e7945a37e68bca4d24b3f220a043f5dec1dceb7e64841d9eaa6",
+    "pack_utils.o": "96f17a41b51c73bf09b7c5a66d7a31ae7f68c4856e5469a5ccf70fecbcac212f",
+    "module_internal_header_util.o": "97b9260fbf32257443d750135e8d1469f01770f179432a2616992c570214c9b4"
+  },
+  "dependency_build": "native WRF O2 build; rk_tendency itself O0, contraction off, bounds checked",
+  "commands": [
+    [
+      "gfortran",
+      "-c",
+      "-O0",
+      "-fPIC",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-ffp-contract=off",
+      "-fcheck=bounds",
+      "-I",
+      "$BUILD_DIR/modules",
+      "rk_full_reference.F90"
+    ],
+    [
+      "gfortran",
+      "-c",
+      "-O0",
+      "-fPIC",
+      "-ffree-form",
+      "-ffree-line-length-none",
+      "-ffp-contract=off",
+      "-fcheck=bounds",
+      "-I",
+      "$BUILD_DIR/modules",
+      "-I",
+      "$BUILD_DIR",
+      "$HARNESS_DIR/rk_tendency_harness.F90"
+    ],
+    [
+      "gfortran",
+      "-no-pie",
+      "-fopenmp",
+      "-o",
+      "rk_tendency_harness",
+      "rk_tendency_harness.o",
+      "rk_full_reference.o",
+      "$BUILD_DIR/pack_utils.o",
+      "$BUILD_DIR/module_internal_header_util.o",
+      "-Wl,--start-group",
+      "$BUILD_DIR/libwrflib.a",
+      "$BUILD_DIR/librsl_lite.a",
+      "$BUILD_DIR/libesmf_time.a",
+      "$BUILD_DIR/libfftpack.a",
+      "$BUILD_DIR/libio_grib1.a",
+      "$BUILD_DIR/libio_grib_share.a",
+      "$BUILD_DIR/libwrfio_int.a",
+      "$BUILD_DIR/libwrfio_nf.a",
+      "-Wl,--end-group",
+      "-lnetcdff",
+      "-lnetcdf",
+      "-l:libmpi_mpifh.so.40",
+      "-l:libmpi.so.40"
+    ]
+  ],
+  "native_child_sources": {
+    "dyn_em/module_advect_em.F": "58253bdbeb188dd47ed0579fcd2891086be1889b75c0c7d3696c9ad1d213559d",
+    "dyn_em/module_big_step_utilities_em.F": "bd177b6b5ba7949cf9e694d7ad654fd9ae2f07d39d85802f0716c5318889a815",
+    "dyn_em/module_ieva_em.F": "407164f39b91199867a13e5fac6b380d0b21a62ce7ef65605cb4c6069ea98799",
+    "dyn_em/module_damping_em.F": "933628eae4ef09513d338317529d252933ef602c8659972b99ad67d70583c98f"
+  },
+  "native_fcoptim": "FCOPTIM         =       -O2 -fno-fast-math -ffp-contract=off",
+  "symbols": "                 U acosf@GLIBC_2.43\n                 U acos@GLIBC_2.2.5\n                 U asinf@GLIBC_2.43\n                 U asin@GLIBC_2.2.5\n                 U atan2f@GLIBC_2.43\n                 U atan2@GLIBC_2.2.5\n                 U atanf@GLIBC_2.2.5\n                 U atan@GLIBC_2.2.5\n                 U cabsf@GLIBC_2.2.5\n                 U cabs@GLIBC_2.2.5\n                 U calloc@GLIBC_2.2.5\n                 U ceilf@GLIBC_2.2.5\n                 U ceil@GLIBC_2.2.5\n                 U cexpf@GLIBC_2.2.5\n                 U clog@GLIBC_2.2.5\n                 U close@GLIBC_2.2.5\n                 U cosf@GLIBC_2.2.5\n                 U cos@GLIBC_2.2.5\n                 U coshf@GLIBC_2.43\n                 U cosh@GLIBC_2.2.5\n                 U csqrtf@GLIBC_2.2.5\n                 U csqrt@GLIBC_2.2.5\n                 U __ctype_b_loc@GLIBC_2.3\n                 U dup2@GLIBC_2.2.5\n                 U erff@GLIBC_2.2.5\n                 U erf@GLIBC_2.2.5\n                 U exit@GLIBC_2.2.5\n                 U expf@GLIBC_2.27\n                 U exp@GLIBC_2.29\n                 U fclose@GLIBC_2.2.5\n                 U fdopen@GLIBC_2.2.5\n                 U fgets@GLIBC_2.2.5\n                 U fileno@GLIBC_2.2.5\n                 U floorf@GLIBC_2.2.5\n                 U floor@GLIBC_2.2.5\n                 U fmod@GLIBC_2.38\n                 U fopen@GLIBC_2.2.5\n                 U __fprintf_chk@GLIBC_2.3.4\n                 U fputc@GLIBC_2.2.5\n                 U fread@GLIBC_2.2.5\n                 U free@GLIBC_2.2.5\n                 U fseek@GLIBC_2.2.5\n                 U fsync@GLIBC_2.2.5\n                 U fwrite@GLIBC_2.2.5\n                 U gethostid@GLIBC_2.2.5\n                 U gethostname@GLIBC_2.2.5\n                 U gettimeofday@GLIBC_2.2.5\n                 U _gfortran_abort@GFORTRAN_8\n                 U _gfortran_adjustl@GFORTRAN_8\n                 U _gfortran_all_l4@GFORTRAN_8\n                 U _gfortran_arandom_r4@GFORTRAN_8\n                 U _gfortran_arandom_r8@GFORTRAN_8\n                 U _gfortran_compare_string@GFORTRAN_8\n                 U _gfortran_concat_string@GFORTRAN_8\n                 U _gfortran_get_command_argument_i4@GFORTRAN_8\n                 U _gfortran_get_environment_variable_i4@GFORTRAN_8\n                 U _gfortran_ieee_procedure_entry@GFORTRAN_8\n                 U _gfortran_ieee_procedure_exit@GFORTRAN_8\n                 U _gfortran_internal_pack@GFORTRAN_8\n                 U _gfortran_internal_unpack@GFORTRAN_8\n                 U _gfortran_maxval_r8@GFORTRAN_8\n                 U _gfortran_os_error_at@GFORTRAN_10\n                 U _gfortran_pack@GFORTRAN_8\n                 U _gfortran_pause_string@GFORTRAN_8\n                 U _gfortran_pow_i4_i4@GFORTRAN_8\n                 U _gfortran_random_r4@GFORTRAN_8\n                 U _gfortran_random_seed_i4@GFORTRAN_8\n                 U _gfortran_reshape_4@GFORTRAN_8\n                 U _gfortran_reshape_r4@GFORTRAN_8\n                 U _gfortran_runtime_error_at@GFORTRAN_8\n                 U _gfortran_runtime_error@GFORTRAN_8\n                 U _gfortran_select_string@GFORTRAN_8\n                 U _gfortran_set_args@GFORTRAN_8\n                 U _gfortran_set_options@GFORTRAN_8\n                 U _gfortran_spread@GFORTRAN_8\n                 U _gfortran_spread_scalar@GFORTRAN_8\n                 U _gfortran_st_backspace@GFORTRAN_8\n                 U _gfortran_st_close@GFORTRAN_8\n                 U _gfortran_st_flush@GFORTRAN_8\n                 U _gfortran_st_inquire@GFORTRAN_8\n                 U _gfortran_st_iolength_done@GFORTRAN_8\n                 U _gfortran_st_iolength@GFORTRAN_8\n                 U _gfortran_st_open@GFORTRAN_8\n                 U _gfortran_stop_numeric@GFORTRAN_8\n                 U _gfortran_stop_string@GFORTRAN_8\n                 U _gfortran_st_read_done@GFORTRAN_8\n                 U _gfortran_st_read@GFORTRAN_8\n                 U _gfortran_st_rewind@GFORTRAN_8\n                 U _gfortran_string_index@GFORTRAN_8\n                 U _gfortran_string_len_trim@GFORTRAN_8\n                 U _gfortran_string_scan@GFORTRAN_8\n                 U _gfortran_string_trim@GFORTRAN_8\n                 U _gfortran_st_set_nml_var_dim@GFORTRAN_8\n                 U _gfortran_st_set_nml_var@GFORTRAN_8\n                 U _gfortran_st_write_done@GFORTRAN_8\n                 U _gfortran_st_write@GFORTRAN_8\n                 U _gfortran_system_clock_4@GFORTRAN_8\n                 U _gfortran_transfer_array@GFORTRAN_8\n                 U _gfortran_transfer_array_write@GFORTRAN_8\n                 U _gfortran_transfer_character@GFORTRAN_8\n                 U _gfortran_transfer_character_write@GFORTRAN_8\n                 U _gfortran_transfer_complex@GFORTRAN_8\n                 U _gfortran_transfer_integer@GFORTRAN_8\n                 U _gfortran_transfer_integer_write@GFORTRAN_8\n                 U _gfortran_transfer_logical@GFORTRAN_8\n                 U _gfortran_transfer_logical_write@GFORTRAN_8\n                 U _gfortran_transfer_real@GFORTRAN_8\n                 U _gfortran_transfer_real_write@GFORTRAN_8\n                 U _gfortran_unpack0@GFORTRAN_8\n                 w __gmon_start__\n                 U __isoc23_sscanf@GLIBC_2.38\n                 U __isoc23_strtol@GLIBC_2.38\n                 U __libc_start_main@GLIBC_2.34\n                 U localtime_r@GLIBC_2.2.5\n                 U log10f@GLIBC_2.43\n                 U log10@GLIBC_2.2.5\n                 U logf@GLIBC_2.27\n                 U log@GLIBC_2.29\n                 U lrint@GLIBC_2.2.5\n                 U lroundf@GLIBC_2.2.5\n                 U lround@GLIBC_2.2.5\n                 U lseek@GLIBC_2.2.5\n                 U mallinfo@GLIBC_2.2.5\n                 U malloc@GLIBC_2.2.5\n                 U memchr@GLIBC_2.2.5\n                 U memcmp@GLIBC_2.2.5\n                 U __memcpy_chk@GLIBC_2.3.4\n                 U memcpy@GLIBC_2.14\n                 U memmove@GLIBC_2.2.5\n                 U __memset_chk@GLIBC_2.3.4\n                 U memset@GLIBC_2.2.5\n                 U mktime@GLIBC_2.2.5\n                 U mpi_abort_\n                 U MPI_Abort\n                 U mpi_allgather_\n                 U mpi_allgatherv_\n                 U mpi_allreduce_\n                 U MPI_Alltoall\n                 U mpi_alltoallv_\n                 U MPI_Alltoallv\n                 U mpi_barrier_\n                 U mpi_bcast_\n                 U MPI_Bcast\n                 U mpi_cart_coords_\n                 U MPI_Cart_coords\n                 U mpi_cart_create_\n                 U MPI_Cart_shift\n                 U MPI_Comm_create_errhandler\n                 U mpi_comm_dup_\n                 U MPI_Comm_f2c\n                 U MPI_Comm_get_errhandler\n                 U mpi_comm_rank_\n                 U MPI_Comm_rank\n                 U MPI_Comm_set_errhandler\n                 U mpi_comm_size_\n                 U MPI_Comm_size\n                 U mpi_comm_split_\n                 U MPI_Errhandler_free\n                 U mpi_finalize_\n                 U mpi_gather_\n                 U MPI_Gather\n                 U mpi_gatherv_\n                 U MPI_Gatherv\n                 U mpi_init_\n                 U mpi_initialized_\n                 U MPI_Irecv\n                 U MPI_Isend\n                 U mpi_recv_\n                 U mpi_reduce_\n                 U mpi_scatterv_\n                 U MPI_Scatterv\n                 U mpi_send_\n                 U mpi_ssend_\n                 U MPI_Type_match_size\n                 U mpi_type_size_\n                 U MPI_Wait\n                 U nf_close_\n                 U nf_create_\n                 U nf_def_dim_\n                 U nf_def_var_\n                 U nf_def_var_chunking_\n                 U nf_def_var_deflate_\n                 U nf_enddef_\n                 U nf_get_att_double_\n                 U nf_get_att_int_\n                 U nf_get_att_real_\n                 U nf_get_att_text_\n                 U nf_get_vara_double_\n                 U nf_get_vara_int_\n                 U nf_get_vara_real_\n                 U nf_get_vara_text_\n                 U nf_get_var_double_\n                 U nf_get_var_int_\n                 U nf_get_var_text_\n                 U nf_inq_att_\n                 U nf_inq_dimid_\n                 U nf_inq_dimlen_\n                 U nf_inq_dimname_\n                 U nf_inq_nvars_\n                 U nf_inq_var_\n                 U nf_inq_vardimid_\n                 U nf_inq_varid_\n                 U nf_inq_varname_\n                 U nf_inq_vartype_\n                 U nf_open_\n                 U nf_put_att_double_\n                 U nf_put_att_int_\n                 U nf_put_att_real_\n                 U nf_put_att_text_\n                 U nf_put_vara_double_\n                 U nf_put_vara_int_\n                 U nf_put_vara_real_\n                 U nf_put_vara_text_\n                 U nf_redef_\n                 U nf_set_chunk_cache_\n                 U nf_set_fill_\n                 U nf_strerror_\n                 U nf_sync_\n                 U open@GLIBC_2.2.5\n                 U perror@GLIBC_2.2.5\n                 U powf@GLIBC_2.27\n                 U pow@GLIBC_2.29\n                 U __powidf2@GCC_4.0.0\n                 U __powisf2@GCC_4.0.0\n                 U putenv@GLIBC_2.2.5\n                 U read@GLIBC_2.2.5\n                 U realloc@GLIBC_2.2.5\n                 U sincosf@GLIBC_2.2.5\n                 U sincos@GLIBC_2.2.5\n                 U sinf@GLIBC_2.2.5\n                 U sin@GLIBC_2.2.5\n                 U sinhf@GLIBC_2.43\n                 U sinh@GLIBC_2.2.5\n                 U sleep@GLIBC_2.2.5\n                 U __sprintf_chk@GLIBC_2.3.4\n                 U __stack_chk_fail@GLIBC_2.4\n                 U __stpcpy_chk@GLIBC_2.3.4\n                 U strcmp@GLIBC_2.2.5\n                 U __strcpy_chk@GLIBC_2.3.4\n                 U strcpy@GLIBC_2.2.5\n                 U strftime@GLIBC_2.2.5\n                 U strlen@GLIBC_2.2.5\n                 U strncmp@GLIBC_2.2.5\n                 U __strncpy_chk@GLIBC_2.3.4\n                 U strncpy@GLIBC_2.2.5\n                 U system@GLIBC_2.2.5\n                 U tanf@GLIBC_2.2.5\n                 U tan@GLIBC_2.2.5\n                 U tanhf@GLIBC_2.2.5\n                 U tanh@GLIBC_2.2.5\n                 U tgammaf@GLIBC_2.43\n                 U time@GLIBC_2.2.5\n                 U tzset@GLIBC_2.2.5\n                 U write@GLIBC_2.2.5\n                 U _ZGVbN2v_acos@GLIBC_2.35\n                 U _ZGVbN2v_cos@GLIBC_2.22\n                 U _ZGVbN2v_erf@GLIBC_2.35\n                 U _ZGVbN2v_exp@GLIBC_2.22\n                 U _ZGVbN2v_log10@GLIBC_2.35\n                 U _ZGVbN2v_log@GLIBC_2.22\n                 U _ZGVbN2v_sin@GLIBC_2.22\n                 U _ZGVbN2vv_atan2@GLIBC_2.35\n                 U _ZGVbN2vv_pow@GLIBC_2.22\n                 U _ZGVbN4v_acosf@GLIBC_2.35\n                 U _ZGVbN4v_asinf@GLIBC_2.35\n                 U _ZGVbN4v_atanf@GLIBC_2.35\n                 U _ZGVbN4v_cosf@GLIBC_2.22\n                 U _ZGVbN4v_coshf@GLIBC_2.35\n                 U _ZGVbN4v_expf@GLIBC_2.22\n                 U _ZGVbN4v_log10f@GLIBC_2.35\n                 U _ZGVbN4v_logf@GLIBC_2.22\n                 U _ZGVbN4v_sinf@GLIBC_2.22\n                 U _ZGVbN4v_sinhf@GLIBC_2.35\n                 U _ZGVbN4v_tanf@GLIBC_2.35\n                 U _ZGVbN4v_tanhf@GLIBC_2.35\n                 U _ZGVbN4vv_atan2f@GLIBC_2.35\n                 U _ZGVbN4vv_powf@GLIBC_2.22\n"
+}

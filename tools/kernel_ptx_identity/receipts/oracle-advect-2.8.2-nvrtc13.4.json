@@ -1,0 +1,307 @@
+{
+ "tool": "tools/kernel_ptx_identity/compare.py",
+ "trees": [
+  "advect_tip_5ff790c0f",
+  "integrate_17dabc53e"
+ ],
+ "nvrtc_version": [
+  13,
+  4
+ ],
+ "assembly": "gpuwm.core.kernels.module_source(name) in a child process per tree; GPUWM_WRF_EXACT* removed, CUDA_VISIBLE_DEVICES empty",
+ "compile": "gpuwm.nvrtc_cache_key.compile_program(source, options + (-arch=<arch>,), target=ptx)",
+ "option_sets": {
+  "load_module": [
+   "-std=c++17"
+  ],
+  "rawmodule": [
+   "-std=c++17",
+   "-ftz=true"
+  ]
+ },
+ "archs": [
+  "compute_89",
+  "compute_90",
+  "compute_120"
+ ],
+ "modules": {
+  "advection": {
+   "file_sha256": {
+    "advect_tip_5ff790c0f": "963e5870800eead07edbdaff8821b904fa13dd7199a2deab04d6104ca263ada9",
+    "integrate_17dabc53e": "6facc4f85b4ba06393172637738069790a0c0b0c451aaf9caa4ed82350c749db"
+   },
+   "assembled_source_sha256": {
+    "advect_tip_5ff790c0f": "50cc068e3c36c2e9e3359df91f86b69872d17923bd0d24478b456b4df775be3b",
+    "integrate_17dabc53e": "66e08b7ab87c7d892b5fe8bbf7ffb9198e8ea2953def1781c36545d77e40ade8"
+   },
+   "entries": [
+    "flux_div_scalar",
+    "flux_div_u",
+    "flux_div_v",
+    "flux_div_w"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "227c05982c4d40d14e2db99d50b4506d7f3fda2039338f3fbbbece3c920d1d00",
+      "integrate_17dabc53e": "227c05982c4d40d14e2db99d50b4506d7f3fda2039338f3fbbbece3c920d1d00"
+     },
+     "entry_compared": 4,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "58ecf98a1ece2907517d73b53f60af26ac8011c4da459ffd2a0d570caeffda89",
+      "integrate_17dabc53e": "58ecf98a1ece2907517d73b53f60af26ac8011c4da459ffd2a0d570caeffda89"
+     },
+     "entry_compared": 4,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "1e734ba218104fc797ada1ecf34a904f584650bf0fd2210611c880f72ec5d044",
+      "integrate_17dabc53e": "1e734ba218104fc797ada1ecf34a904f584650bf0fd2210611c880f72ec5d044"
+     },
+     "entry_compared": 4,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "9c5f12e2806ffc22e3be911a265d599a8f13a2b6884f4ec732d27b70dbb074f9",
+      "integrate_17dabc53e": "9c5f12e2806ffc22e3be911a265d599a8f13a2b6884f4ec732d27b70dbb074f9"
+     },
+     "entry_compared": 4,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "e0a068b6b488483baf9c44dc306d3a616667304176ac335442169de61362f762",
+      "integrate_17dabc53e": "e0a068b6b488483baf9c44dc306d3a616667304176ac335442169de61362f762"
+     },
+     "entry_compared": 4,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "cda691f316d1e1dc1ea48e75df8d9afd0dd641d78b84dda78ba14787cac81a41",
+      "integrate_17dabc53e": "cda691f316d1e1dc1ea48e75df8d9afd0dd641d78b84dda78ba14787cac81a41"
+     },
+     "entry_compared": 4,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  },
+  "pd_advection": {
+   "file_sha256": {
+    "advect_tip_5ff790c0f": "5347b9a3170e69a980e4a1883659a42b493cd5262f9c88e4a7b29fa1a20e003d",
+    "integrate_17dabc53e": "8284e1975ec25fdeb923d113a3ade028b9bcccc4fd33cc51572d23400aef762b"
+   },
+   "assembled_source_sha256": {
+    "advect_tip_5ff790c0f": "9cdc25d04bd11268a5b0d43c207beaf9377144cfd1faace54f2d45c9987488e0",
+    "integrate_17dabc53e": "7de1823f03619e982064e8b7487121c528886848c23474fd08d73f6f232cdfb7"
+   },
+   "entries": [
+    "pd_fluxes",
+    "pd_renorm_apply"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "742da43f3158a369ba09e602dd04f4bfd94d8cb591202f0c7c0eb52cd4c1c541",
+      "integrate_17dabc53e": "742da43f3158a369ba09e602dd04f4bfd94d8cb591202f0c7c0eb52cd4c1c541"
+     },
+     "entry_compared": 2,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "1f1e571822180348bd496c16326ee13964eb18ff51121638dc1eeaddca50bb6d",
+      "integrate_17dabc53e": "1f1e571822180348bd496c16326ee13964eb18ff51121638dc1eeaddca50bb6d"
+     },
+     "entry_compared": 2,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "74bb43f07555a141e2094f2622b5642a34f785128779fd75c5137e347b1fc76e",
+      "integrate_17dabc53e": "74bb43f07555a141e2094f2622b5642a34f785128779fd75c5137e347b1fc76e"
+     },
+     "entry_compared": 2,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "7d1b233e7cb166c6ad7682ee25fba50e7328eae96f2bd4c02e5510f48591e3a0",
+      "integrate_17dabc53e": "7d1b233e7cb166c6ad7682ee25fba50e7328eae96f2bd4c02e5510f48591e3a0"
+     },
+     "entry_compared": 2,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "597538ed74e7ba2222a9e235416ec85c1f67ac80de71f1776248d6255e935d5d",
+      "integrate_17dabc53e": "597538ed74e7ba2222a9e235416ec85c1f67ac80de71f1776248d6255e935d5d"
+     },
+     "entry_compared": 2,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "74d2337456d3d2a2bc97a06fcbb5ae6a1cadca5db524cc1a3deb8f1850fd66d3",
+      "integrate_17dabc53e": "74d2337456d3d2a2bc97a06fcbb5ae6a1cadca5db524cc1a3deb8f1850fd66d3"
+     },
+     "entry_compared": 2,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  },
+  "openbc": {
+   "file_sha256": {
+    "advect_tip_5ff790c0f": "fe8b3b602e4a2efd51e765887d78aeda87b070a2deff972ae412ed90d16d5f71",
+    "integrate_17dabc53e": "fd3ba041744821bd4e2b01db3ae53a1189cbc088e17b710e60848988d2203bf2"
+   },
+   "assembled_source_sha256": {
+    "advect_tip_5ff790c0f": "4916f05f37d650658446a11011ff25052374806bcb340bfbeafb97cc405b7261",
+    "integrate_17dabc53e": "5bf7babe4a953b1a12f8ddca403f04d86fa0aed0f7684992b5eabb5d82cbca57"
+   },
+   "entries": [
+    "open_u_radiative",
+    "open_v_radiative",
+    "w_cfl_stat",
+    "w_cfl_stat_window",
+    "w_damp"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "7611366c859a504634cb260cc2ee762f7ebbfe332165954f0a677d32196eff1e",
+      "integrate_17dabc53e": "7199cc9f03bc07643d5b8d50142871a4f77a50bc90342d19836045fe14276392"
+     },
+     "entry_compared": 5,
+     "entry_different": [
+      "w_cfl_stat",
+      "w_cfl_stat_window",
+      "w_damp"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "687e407acb0c72b2ba838542031d4c9031c8004bdb9ca6e7e0d24ad5c9b8193e",
+      "integrate_17dabc53e": "db840caf71afc1f0eab00446bc3b9562b78f603f820278665c97a27392dee143"
+     },
+     "entry_compared": 5,
+     "entry_different": [
+      "w_cfl_stat",
+      "w_cfl_stat_window",
+      "w_damp"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "2255a7ecac28a703a2b92d9c3030e303b9de9264312ff0452b84d65982708142",
+      "integrate_17dabc53e": "da253091633c2366f400169f448f169c56b5f576ef6131cffc7a459f159dd8f2"
+     },
+     "entry_compared": 5,
+     "entry_different": [
+      "w_cfl_stat",
+      "w_cfl_stat_window",
+      "w_damp"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "01bd4f6591ab888d655d26d2ce16b549e4fd4256be330ba8d55b88fd9db53c13",
+      "integrate_17dabc53e": "e164219df846ca7ddd2648215f2201265147b1968f2dce02355bd977e7101ddb"
+     },
+     "entry_compared": 5,
+     "entry_different": [
+      "w_cfl_stat",
+      "w_cfl_stat_window",
+      "w_damp"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "c63522ee1af6fc74c910984239aaf0fed4882f40548a931d1bb282953b89713c",
+      "integrate_17dabc53e": "68322b4b635902ebe9cea572773f7d6b5c3b3562a8d79a66947df9acc065aec2"
+     },
+     "entry_compared": 5,
+     "entry_different": [
+      "w_cfl_stat",
+      "w_cfl_stat_window",
+      "w_damp"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "12e52740a88397d8e529f5a9e1ee944a5191041346d539cd79228a598b352c59",
+      "integrate_17dabc53e": "6408123a41942f13b7cf6a7e3a4ed54ee5f267aa3b13966fdf4bff6775f752eb"
+     },
+     "entry_compared": 5,
+     "entry_different": [
+      "w_cfl_stat",
+      "w_cfl_stat_window",
+      "w_damp"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  }
+ }
+}

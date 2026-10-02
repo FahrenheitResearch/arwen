@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -67,14 +68,28 @@ WIDE_CASES = (
 # linked.  BR, WSPD, TH2, T2, Q2, GZ1OZ0, CPM and ZNT are bitwise everywhere.
 #
 # These are CPU-reference numbers, so they are the elementwise maximum over
-# THREE NumPy builds, and the only elements in this file carrying any slack at
-# all are the 300 of 5150 -- 88 here, 212 in ``test_mynn_surface_coarse.py`` --
-# where those three disagree:
+# FOUR measured NumPy profiles. The fourth stays within the unchanged limits
+# established by the original three. Their original comparison found 300 of
+# 5150 elements -- 88 here, 212 in ``test_mynn_surface_coarse.py`` -- where the
+# first three disagreed:
 #
 #   * Windows NumPy 2.2.6 / CPython 3.13.7, which runs pytest on this box;
 #   * WSL Ubuntu-24.04 NumPy 2.4.3 / CPython 3.12.3, which
 #     ``tools/mynn_wrf461_oracle/build*.sh`` runs its validators under;
 #   * Ubuntu-22.04 NumPy 2.5.1 / CPython 3.12.13 on the second RTX 5090 host.
+#   * Ubuntu 26.04 (glibc 2.43) NumPy 2.4.6 / CPython 3.11, the CPU test nodes.
+#
+# The historical comparisons below concern the original three profiles. The
+# fourth combines their already recorded scalar arctan and platform powf
+# answers; its surface, coarse and water oracle checks keep every numeric
+# limit unchanged.
+#
+# The public CI's hosted ubuntu-24.04 runner (glibc 2.39) adds no row.  With
+# its pinned NumPy 2.4.6 / CPython 3.11 under glibc 2.39, a host without
+# AVX-512 gives the 2.5.1 row's answers and an AVX-512 host gives the WSL
+# row's; the surface, coarse and water checks hold every limit both ways.
+# NumPy 2.4.6 names that dispatch target X86_V4: NPY_DISABLE_CPU_FEATURES
+# switches it only when X86_V4 is named, not by the AVX512F..AVX512_SPR names.
 #
 # The disagreement has exactly two roots, both established against the glibc
 # 2.39 functions gfortran linked when it built the oracle -- reached directly
@@ -309,7 +324,7 @@ ISFFLX0_ZEROED = (
 #: whole finding: NumPy 2.5.1 *is* glibc there and the older two builds are
 #: not, so the four ``+2.5.1`` entries above were raised by the *more* faithful
 #: build, not by a regression.  Reading down ``log``/``exp`` is the other half:
-#: all three NumPy builds agree with each other and none agrees with glibc, so
+#: all four NumPy profiles agree with each other and none agrees with glibc, so
 #: those two are a constant term in every number above rather than a platform
 #: axis.
 GLIBC = "glibc"
@@ -333,6 +348,15 @@ FP32_FINGERPRINTS = {
         "arctan": "628753a5a564c404", "log": "511300744c384c9a",
         "exp": "6d216c097c764b80", "pow2": "6293278d9ba62405",
         "pow0.33": "1ee31ffeb21a6f67",
+    },
+    # The CPU test nodes' profile: glibc 2.43's atanf, without AVX-512
+    # dispatch, gives the recorded Windows arctan, and powf is glibc's. All
+    # surface, coarse and water per-column limits are unchanged.
+    # Evidence: tools/mynn_wrf461_oracle/receipts/numpy-2.4.6-linux-python3.11.json
+    "NumPy 2.4.6 / CPython 3.11 / Ubuntu 26.04 glibc 2.43 (CPU test nodes)": {
+        "arctan": "628753a5a564c404", "log": "511300744c384c9a",
+        "exp": "6d216c097c764b80", "pow2": "a95cf0d901f059b5",
+        "pow0.33": "5d14a0a8bd99ffd2",
     },
 }
 
@@ -628,7 +652,7 @@ def test_every_table_row_is_the_right_width_and_carries_a_measurement():
 
 
 def _fp32_fingerprint():
-    """This build's answer for the four inexact float32 primitives."""
+    """This build's answer for the five inexact float32 primitives."""
 
     probe = (
         np.arange(1, 4001, dtype=np.float32) * np.float32(0.001)
@@ -657,14 +681,14 @@ def test_the_ulp_tables_name_the_float32_builds_they_were_measured_on():
     1. ``log`` and ``exp`` are identical on every NumPy build recorded and
        none of them is glibc, so they contribute a *constant* to every number
        in these tables and are not what makes the tables a union.
-    2. ``arctan`` is different on all three, and NumPy 2.5.1's is glibc's
+    2. ``arctan`` has three recorded answers, and NumPy 2.5.1's is glibc's
        ``atanf`` exactly -- which is why 2.5.1 raised four entries: at those
        elements the older builds' ``atanf`` error cancelled downstream.
        ``**`` splits Linux from Windows the same way, via the platform
        ``powf``.
-    3. The build running this test is one of the three the union covers.  A
-       fourth is not a bug, but these budgets were never measured against it,
-       and a passing gate would not mean they hold.
+    3. The build running this test is one of the four measured profiles. The
+       CPU test nodes' profile adds a primitive combination, without widening
+       any per-column budget. An unmeasured profile cannot qualify these limits.
     """
 
     glibc = FP32_FINGERPRINTS[
@@ -674,7 +698,7 @@ def test_the_ulp_tables_name_the_float32_builds_they_were_measured_on():
         name: row for name, row in FP32_FINGERPRINTS.items()
         if not name.startswith(GLIBC)
     }
-    assert len(numpy_rows) == 3, sorted(numpy_rows)
+    assert len(numpy_rows) == 4, sorted(numpy_rows)
 
     # (1) log/exp: one NumPy answer, and it is not glibc's.
     for name in ("log", "exp"):
@@ -694,8 +718,8 @@ def test_the_ulp_tables_name_the_float32_builds_they_were_measured_on():
     # is glibc's; two distinct pows, split Linux/Windows.
     seen = {row["arctan"] for row in numpy_rows.values()}
     assert len(seen) == 3, (
-        "float32 arctan is meant to be what separates all three recorded"
-        f" builds, and now takes only {len(seen)} values"
+        "the four measured profiles must retain the three recorded float32"
+        f" arctan answers, got {len(seen)} values"
     )
     on_glibc_atan = [
         name for name, row in numpy_rows.items()
@@ -712,10 +736,10 @@ def test_the_ulp_tables_name_the_float32_builds_they_were_measured_on():
         if (row["pow2"], row["pow0.33"])
         == (glibc["pow2"], glibc["pow0.33"])
     )
-    assert len(on_glibc_pow) == 2 and all(
+    assert len(on_glibc_pow) == 3 and all(
         "Windows" not in name for name in on_glibc_pow
     ), (
-        "float32 ** is the platform powf: glibc's on the two Linux builds and"
+        "float32 ** is the platform powf: glibc's on the three Linux profiles and"
         f" the MSVC runtime's on Windows; got {on_glibc_pow}"
     )
 
@@ -723,7 +747,7 @@ def test_the_ulp_tables_name_the_float32_builds_they_were_measured_on():
     here = _fp32_fingerprint()
     matches = [name for name, row in numpy_rows.items() if row == here]
     assert len(matches) == 1, (
-        "this NumPy's float32 primitives are a fourth build: "
+        "this NumPy's float32 primitive combination is unmeasured: "
         + ", ".join(
             f"{key}={here[key]}"
             for key in sorted(here)
@@ -735,6 +759,34 @@ def test_the_ulp_tables_name_the_float32_builds_they_were_measured_on():
         " before trusting a green run, and extend both tables and this"
         " fingerprint together."
     )
+
+
+def test_the_test_node_profile_retains_its_measurement_and_unchanged_tables():
+    receipt = json.loads((Path(__file__).parents[1] / "tools/mynn_wrf461_oracle/receipts/"
+                          "numpy-2.4.6-linux-python3.11.json").read_text(encoding="utf-8"))
+    assert receipt["schema"] == "arwen.mynn-reference-profile-measurement.v1"
+    assert receipt["source_revision"] == "3a7832a96911d5d38c47fb4b784e5905f8c41e29"
+    assert receipt["fingerprint"] == FP32_FINGERPRINTS[
+        "NumPy 2.4.6 / CPython 3.11 / Ubuntu 26.04 glibc 2.43 (CPU test nodes)"]
+    assert receipt["process_exit"] == receipt["over_budget_total"] == 0
+    assert receipt["test_outcomes"] == {"passed": 83, "deselected": 18, "failed": 0}
+    assert receipt["output_comparisons"] == sum(row["output_comparisons"] for row in receipt["suites"]) == 1007
+    assert receipt["compared_slots"] == sum(row["compared_slots"] for row in receipt["suites"]) == 10521
+    assert all(row["over_budget"] == 0 for row in receipt["suites"])
+    table_count = 0
+    for filename, evidence in receipt["table_hashes"].items():
+        if filename == Path(__file__).name:
+            tables = globals()
+        else:
+            spec = importlib.util.spec_from_file_location("_measured_" + filename[:-3], Path(__file__).with_name(filename))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            tables = vars(module)
+        assert evidence["equal"] is True and evidence["before"] == evidence["after"]
+        for name, digest in evidence["before"].items():
+            assert hashlib.sha256(repr(tables[name]).encode()).hexdigest() == digest, (filename, name)
+            table_count += 1
+    assert table_count == 6
 
 
 def _wide_validator():

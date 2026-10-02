@@ -255,7 +255,8 @@ def transfer_parent_ozone(node, registration):
     parent_driver = getattr(parent, "physics", None)
     source = getattr(parent_driver, "o3rad", None)
     streamed_child = getattr(node.state, "_streamed_domain", None)
-    if streamed_child is not None:
+    streamed_parent = getattr(parent, "_streamed_domain", None)
+    if streamed_child is not None or streamed_parent is not None:
         from gpuwm.core.nest_operands import NestWindowSource, streamed_chunk_shape
         from gpuwm.core.nest_interp import window_registration
 
@@ -263,22 +264,29 @@ def transfer_parent_ozone(node, registration):
         fine = NestWindowSource(node.state)
         if coarse.store is not None:
             source = coarse.store.get(CARRIER_KEY)
-        if source is None or CARRIER_KEY not in fine.store:
+        if source is None or (fine.store is not None and CARRIER_KEY not in fine.store):
             raise RuntimeError("streamed CAM ozone carrier is missing from the canonical store")
+        target = getattr(driver, "o3rad", None)
+        if fine.store is None and target is None:
+            raise RuntimeError("child CAM ozone FORCE has no retained ozone field to receive its parent")
         parent_counts = domain_call_counts(getattr(parent, "_streamed_domain", None), parent)
         if parent_counts.get("cam_ozone", 0) == 0:
             raise RuntimeError("child CAM ozone FORCE preceded its parent's first ozone producer")
-        sy, sx = streamed_chunk_shape(node.state)
+        sy, sx = streamed_chunk_shape(node.state if streamed_child is not None else parent)
         for j in range(0, registration.nyc, sy):
             for i in range(0, registration.nxc, sx):
                 window = (slice(j, min(j+sy, registration.nyc)),
                           slice(i, min(i+sx, registration.nxc)))
                 cropped, donor = window_registration(registration, window)
                 result = sint(coarse.device_array(source, donor), cropped)
-                fine.write(CARRIER_KEY, window, result)
+                if fine.store is not None:
+                    fine.write(CARRIER_KEY, window, result)
+                else:
+                    target[(...,) + window] = result
         count = domain_call_counts(streamed_child, node.state).get("cam_ozone", 0) + 1
         driver.call_counts["cam_ozone"] = count
-        streamed_child.scalars["call_counts"]["cam_ozone"] = count
+        if streamed_child is not None:
+            streamed_child.scalars["call_counts"]["cam_ozone"] = count
         return coarse.host_to_device_bytes + fine.device_to_host_bytes
     for state in (parent, node.state):
         store = domain_store(state)

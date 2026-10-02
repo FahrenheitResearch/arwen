@@ -53,3 +53,73 @@ def test_coupler_scratch_is_explicit_and_cached():
     assert len(calls) == 1
     with pytest.raises(CanonicalStateRefused, match="shape/dtype mismatch"):
         state.scratch((4, 33), "rolling", dtype=np.float32)
+
+
+def _canonical_projection_owner():
+    from gpuwm.core.streaming import StreamedDomain
+
+    slab = np.zeros((4, 2, 8), np.float32)
+    full = np.full((4, 24, 8), 7.0, np.float32)
+    plane = np.full((24, 8), 3.0, np.float32)
+    template = SimpleNamespace(thp=slab)
+    store = {"state/thp": full, "scratch/uh_follow_window": plane}
+    state = CanonicalStoreState(
+        template, SimpleNamespace(nx=8, ny=24, nz=4), store=store,
+        geography={}, scalars={}, inventory={"state/thp": slab},
+        geography_inventory={})
+    owner = object.__new__(StreamedDomain)
+    owner._state = state
+    owner._run = SimpleNamespace(store=store)
+    owner.host_store = True
+    return owner, state, template, store
+
+
+def test_canonical_parent_projection_borrows_live_arrays_without_device_copy(
+        monkeypatch):
+    import cupy as cp
+
+    owner, state, template, store = _canonical_projection_owner()
+
+    def no_device_copy(*_args, **_kwargs):
+        pytest.fail("a canonical parent projected its full host domain to the device")
+
+    monkeypatch.setattr(cp, "asarray", no_device_copy)
+    monkeypatch.setattr(cp, "asnumpy", no_device_copy)
+    store["state/thp"] += 11.0
+    assert owner.sync_to_state() == 0
+    assert state.thp is store["state/thp"]
+    assert np.all(state.thp == 18.0)
+    assert np.all(template.thp == 0.0)
+    state.existing_scratch("uh_follow_window").fill(0.0)
+    assert owner.sync_from_state(("scratch/uh_follow_window",)) == 0
+    assert np.all(store["scratch/uh_follow_window"] == 0.0)
+    assert owner.sync_to_state(("state/thp",), window=(2, 5, 1, 4)) == 0
+
+
+@pytest.mark.parametrize("direction", ["to", "from"])
+def test_canonical_projection_refuses_a_replaced_store_instead_of_reading_stale(
+        direction):
+    from gpuwm.core.streaming import StreamingRefused
+
+    owner, _, _, store = _canonical_projection_owner()
+    owner._run.store = {key: value.copy() for key, value in store.items()}
+    with pytest.raises(StreamingRefused, match="does not alias.*stale domain"):
+        if direction == "to":
+            owner.sync_to_state(("state/thp",))
+        else:
+            owner.sync_from_state(("state/thp",))
+
+
+def test_canonical_proxy_metadata_is_precise_infrastructure_not_a_cache_exemption():
+    from gpuwm.io import restart
+
+    owner, state, _, _ = _canonical_projection_owner()
+    for name in ("_template_metadata", "_canonical_arrays", "_view_cache",
+                 "_canonical_store", "_canonical_geography", "_canonical_scalars",
+                 "_scratch_allocator", "cfg", "nx", "ny", "nz"):
+        assert restart.classify_state_attr(name) == "infra"
+    state._canonical_new_carrier = np.ones((24, 8), np.float32)
+    with pytest.raises(restart.RestartManifestError, match="_canonical_new_carrier"):
+        owner.sync_to_state()
+    with pytest.raises(restart.RestartManifestError, match="_canonical_new_carrier"):
+        restart.state_manifest(state)

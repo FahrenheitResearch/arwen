@@ -1,0 +1,96 @@
+{
+  "wrf_release": "4.7.1",
+  "cases": [
+    {
+      "file": "deformation-real_open.npz",
+      "sha256": "1d3604bb4eeed33ed2210e8a79ccfd02f666a4f54cc9dc671615806df2b8c537",
+      "name": "real_open",
+      "words": 304261
+    },
+    {
+      "file": "deformation-real_periodic.npz",
+      "sha256": "f21685ff1ae14100727ce0178ca23668a094691a6ed00078dbce0eaf3e8a7c43",
+      "name": "real_periodic",
+      "words": 304261
+    },
+    {
+      "file": "deformation-steep_open.npz",
+      "sha256": "68c5cc95daf3a2716f3afc637c5b9204ca6ebecc76f01181d0dc5a0d14e5cff1",
+      "name": "steep_open",
+      "words": 304261
+    },
+    {
+      "file": "deformation-map_extremes.npz",
+      "sha256": "83c43a53cd9665b3cbc6396c99f7dfbd1ac6aa743ffac1e16fa358731692a756",
+      "name": "map_extremes",
+      "words": 304261
+    },
+    {
+      "file": "deformation-zero_flow.npz",
+      "sha256": "45701b924e2c423dcf08b1bd5402f06f92191f8eddb18b726f839b8135f383bd",
+      "name": "zero_flow",
+      "words": 304261
+    },
+    {
+      "file": "deformation-near_zero_flow.npz",
+      "sha256": "d3ed4db92cfabd517d79c1aeeb02f9684f6c1936dd87db5a213e241717c63330",
+      "name": "near_zero_flow",
+      "words": 304261
+    },
+    {
+      "file": "deformation-southern_open.npz",
+      "sha256": "6ef2276ac195edfda19431f9fb45167d762039d89223da4a1f7bf61f785716e0",
+      "name": "southern_open",
+      "words": 304261
+    },
+    {
+      "file": "deformation-evolved_real_open.npz",
+      "sha256": "0c6955e60971157baeb64c9b142024b64535e35a358e0aa4c0e1fba02876ec8a",
+      "name": "evolved_real_open",
+      "words": 304261
+    },
+    {
+      "file": "deformation-evolved_real_periodic.npz",
+      "sha256": "3766984a2de574f45dbb340b71e98fc65f72990236ee723e65267b8f887ee020",
+      "name": "evolved_real_periodic",
+      "words": 304261
+    },
+    {
+      "file": "deformation-evolved_steep_open.npz",
+      "sha256": "b45fb0daa04eab6aaf33abcd0990d752fd1224f6ef423dbf6e867007396f6c97",
+      "name": "evolved_steep_open",
+      "words": 304261
+    },
+    {
+      "file": "deformation-evolved_map_extremes.npz",
+      "sha256": "38cd2198cab5174f44adee2400af6cefefc4d898e813de9578609b3a097a87d5",
+      "name": "evolved_map_extremes",
+      "words": 304261
+    },
+    {
+      "file": "deformation-evolved_zero_flow.npz",
+      "sha256": "7038ffb196dfd142a6efcf80f1175e78aa7ab788e61a49c4ff0323cfbdb1e1df",
+      "name": "evolved_zero_flow",
+      "words": 304261
+    },
+    {
+      "file": "deformation-evolved_near_zero_flow.npz",
+      "sha256": "4b0c3c946f9d12e402a6455312625cedf6249c84139521b09fb19c01fb5a5b45",
+      "name": "evolved_near_zero_flow",
+      "words": 304261
+    },
+    {
+      "file": "deformation-evolved_southern_open.npz",
+      "sha256": "3af48c5761e4a0ed9f0eca5e819df9c5440e8e5aecedebafaec0da99ce3b89d2",
+      "name": "evolved_southern_open",
+      "words": 304261
+    }
+  ],
+  "raw_state": {
+    "source_sha256": "29f54e83c7bfed342da29e46b8d520376778aae5560be657e7b2fa519d658d16",
+    "reader_sha256": "535df0315211e87e67a404eb6aae7367d4cf472217f5c4927cdaabd8749d0145",
+    "dx": 3000.0,
+    "dy": 3000.0,
+    "p_top": 5000.0
+  }
+}

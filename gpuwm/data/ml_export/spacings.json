@@ -1,0 +1,5 @@
+{
+  "schema": "ml-export.spacings/v1",
+  "note": "Lattice spacings (degrees) --grid latlon chooses from when no spacing is given: the row nearest in log to the run's grid spacing over 111.32 km per degree. Every row divides 1 degree or is 1, so lattices of different runs share points, and the rows that divide 0.25 land on ERA5's own points.",
+  "degrees": [0.01, 0.0125, 0.02, 0.025, 0.03125, 0.04, 0.05, 0.0625, 0.1, 0.125, 0.25, 0.5, 1.0]
+}

@@ -223,6 +223,10 @@ def _door(tmp_path, *, ratio, child_nx=24, extra=()):
         "--parent-namelist", str(namelist),
         "--child-config", str(child_toml), "--ratio", str(ratio),
         "--i-parent-start", "4", "--j-parent-start", "4",
+        # The fixture archive's coordinates are no real projection and no
+        # WPS_GEOG tree is staged: a child of it runs on its parent's
+        # terrain, the route this door test is about.
+        "--parent-terrain",
         "--accept-parent-cadence",
         "--out", str(tmp_path / "child-run"), "--dry-run", *extra]
 

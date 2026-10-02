@@ -312,6 +312,14 @@ def test_grid_relative_winds_rotate_through_earth_basis(monkeypatch):
     # this compact constant-vector test.
     monkeypatch.setattr(hrrr, "_cupy", lambda: np)
     monkeypatch.setattr(horiz, "_cupy", lambda: np)
+    # The CUDA backend uses the NumPy stand-in above.  Its runtime-presence
+    # preflight must read the same estate rather than the host installation.
+    monkeypatch.setattr(
+        "gpuwm.ingest.preprocess_backend._gpu_runtime_installed", lambda: True)
+    # This fixture supplies host arrays; stub the device launch at that seam.
+    monkeypatch.setattr(horiz, "_rotate_gpu_fused", lambda u, v, sina, cosa, inverse:
+                        (u * cosa - v * sina, v * cosa + u * sina) if inverse else
+                        (u * cosa + v * sina, v * cosa - u * sina))
     monkeypatch.setattr(np, "asnumpy", np.asarray, raising=False)
     # The preparation receipt reads the CUDA runtime version through the
     # array module; the NumPy stand-in answers it as no runtime.

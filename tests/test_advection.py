@@ -131,8 +131,8 @@ def test_w_flux_div_matches_reference():
                       cp.asarray(rw), tend, vc, 100.0, 100.0)
     got = cp.asnumpy(tend)
     np.testing.assert_allclose(got, ref, rtol=5e-4, atol=5e-4)
-    # boundary w-levels get no advective tendency
-    assert np.all(got[0] == 0.0) and np.all(got[nz] == 0.0)
+    # The surface has no tendency; the top carries WRF's one-sided flux.
+    assert np.all(got[0] == 0.0)
 
 
 @pytest.mark.gpu

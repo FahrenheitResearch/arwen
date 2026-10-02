@@ -111,6 +111,29 @@ RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST = {
         "float dtype compiled on first use; they run in the data-assimilation "
         "analysis, not a forecast step, record nothing and are not a "
         "translation unit the manifest freezes"),
+    "gpuwm/core/noah_mosaic.py": (
+        "the Noah mosaic tile loop's two compile sites (with and without the "
+        "urban canopy, --fmad=false); each records through record_module in "
+        "the same function under its own key, as the P3 composed unit above "
+        "does"),
+    # The compiled WRF v4.7.1 oracle harnesses (2.8.2, lane/282-oracle-*).
+    "gpuwm/verify/advect_oracle.py": (
+        "the compiled WRF advection oracle's harness: it compiles control "
+        "variants of advection.cu to compare output words with WRF Fortran "
+        "under tests/test_advect_wrf471_parity.py, never in a forecast"),
+    "gpuwm/verify/smallstep_bookkeeping_oracle.py": (
+        "the small-step bookkeeping oracle's harness: it compiles an "
+        "instrumented acoustic source to compare words with compiled WRF "
+        "under tests/test_smallstep_bookkeeping_wrf471_parity.py, never in a "
+        "forecast"),
+    "gpuwm/verify/smallstep_horizontal_oracle.py": (
+        "the small-step horizontal oracle's harness: it compiles a probe of "
+        "the acoustic kernels to compare words with compiled WRF under "
+        "tests/test_smallstep_horizontal_wrf471_parity.py, never in a forecast"),
+    "gpuwm/verify/smallstep_vertical_oracle.py": (
+        "the small-step vertical oracle's harness: it compiles the acoustic "
+        "vertical solve to compare words with compiled WRF under "
+        "tests/test_smallstep_vertical_wrf471_parity.py, never in a forecast"),
 }
 
 #: ``compile_using_nvrtc`` sites among :data:`SITE_FILES`: rrtmg_sw only.

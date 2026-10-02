@@ -1,0 +1,44 @@
+dt f4 0
+ux f4 2 40 120
+vx f4 2 40 120
+tx f4 2 40 120
+qvx f4 2 40 120
+qcx f4 2 40 120
+qix f4 2 40 120
+p2d f4 2 40 120
+pi2d f4 2 40 120
+p2di f4 2 41 120
+dz8w f4 2 40 120
+rthraten f4 2 40 120
+psfcpa f4 1 120
+znt f4 1 120
+ust f4 1 120
+hfx f4 1 120
+qfx f4 1 120
+wspd f4 1 120
+br f4 1 120
+psim f4 1 120
+psih f4 1 120
+xland f4 1 120
+u10_in f4 1 120
+v10_in f4 1 120
+ctopo f4 1 120
+ctopo2 f4 1 120
+topdown i4 1 120
+case i4 1 120
+utnp f4 2 40 120
+vtnp f4 2 40 120
+ttnp f4 2 40 120
+qvtnp f4 2 40 120
+qctnp f4 2 40 120
+qitnp f4 2 40 120
+exch_hx f4 2 40 120
+exch_mx f4 2 40 120
+utnp_noctopo f4 2 40 120
+vtnp_noctopo f4 2 40 120
+u10 f4 1 120
+v10 f4 1 120
+hpbl f4 1 120
+wstar f4 1 120
+delta f4 1 120
+kpbl i4 1 120

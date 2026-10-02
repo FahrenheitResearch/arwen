@@ -7,6 +7,7 @@ each device before first use. McICA retains its existing synchronizations.
 """
 
 from functools import lru_cache
+from gpuwm.core.device_cache import cuda_cache
 from inspect import signature
 from pathlib import Path
 
@@ -77,8 +78,14 @@ def gpu_local_frame_bytes():
             for name in ("rp_prep", "rp_scon", "rp_probe", "rp_day")}
 
 
-@lru_cache(maxsize=16)
+@cuda_cache(maxsize=16, ready=True)
 def _tables(device):
+    """The legacy RRTMG reference tables on ``device`` (the current card).
+
+    Published with their upload event: every slab on the card reads the
+    same copy from its own stream, and an upload still in flight on the
+    first slab's stream is not a table the others may read.
+    """
     import cupy as cp
     with cp.cuda.Device(device):
         return tuple(cp.asarray(a) for a in (

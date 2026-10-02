@@ -1,0 +1,14 @@
+# WRF v4.7.1, github.com/wrf-model/WRF tag v4.7.1 (commit f52c197ed39d12e087d02c50f412d90d418f6186). sha256 of each
+# file as fetched from raw.githubusercontent.com/wrf-model/WRF/v4.7.1/<path>. build.sh compiles the two routines it
+# cuts from dyn_em/module_initialize_real.F (rebalance, lines 4982-5266) and dyn_em/nest_init_utils.F
+# (blend_terrain, lines 712-785), and share/module_model_constants.F whole. The other files are pinned because the
+# port cites them line by line: main/ndown_em.F (the order: interpolate, vertical_interp, blend once, rebalance every
+# frame), share/interp_fcn.F (interp_mask_field), share/module_soil_pre.F (adjust_soil_temp_new) and
+# Registry/Registry.EM_COMMON (blend_width default 5; the auxinput2 fields ndown reads from the fine grid's file).
+5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062  share/module_model_constants.F
+f79b37ec3e15c3d179873089bb92d2d2f6b804efc86032f0b4e47bdb14e12d9e  dyn_em/module_initialize_real.F
+07db287108ab031f89e8bb80d830871daf8ba962f60d394e1ff31c845c1b4a14  dyn_em/nest_init_utils.F
+5601ebf8ef1caf634ef5fa68d8d1ea54f1f9e25db0510c44b8c570eec048dacd  main/ndown_em.F
+680881db48904396f38856ca1dd2578a84e8eb0a9cdd05d49f4c63cd8ce9bdaa  share/interp_fcn.F
+f981a2cce2cd1a8ca5b8ced100bf2d34eb2725d1d0bc7c42daf05fd05aa2c074  share/module_soil_pre.F
+6f3ee02175b76487c5c6c046ff2fb4c5d41980b86c0f06eb2e09e34dacc9623a  Registry/Registry.EM_COMMON

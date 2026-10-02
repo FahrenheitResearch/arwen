@@ -1,5 +1,6 @@
 from __future__ import annotations
 from functools import lru_cache
+from gpuwm.core.device_cache import cuda_cache
 from pathlib import Path
 from types import MappingProxyType
 
@@ -37,6 +38,13 @@ _ENCODING = "utf-8"
 # This table must stay a literal name -> filenames mapping.  Do not give it
 # filesystem probing, globbing, or any implicit fallback.
 _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
+    # Reuse the existing FRH2O device function for cold-start soil water.
+    # The forecast's noah module remains unlisted and byte-identical.
+    "noah_init": ("noah.cu",),
+    "horizontal": ("portable_libm64.cuh",),
+    "portable_libm64_grade": ("portable_libm64.cuh",),
+    "vert_interp": ("glibc_flt32.cuh",),
+    "thompson_cold_start": ("glibc_flt32.cuh", "portable_libm64.cuh"),
     "thompson_aerosol_probe": ("thompson_aerosol_common.cuh",),
     "thompson_aerosol_state": ("thompson_aerosol_common.cuh",),
     "thompson_aerosol_sat": ("thompson_aerosol_common.cuh",),
@@ -77,6 +85,11 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     # MYJ under BEP (module_bl_myjurb.F), graded against gfortran/glibc:
     # EXP and REAL powers are glibc's expf/powf.
     "myjurb": ("glibc_flt32.cuh",),
+    # topo_wind arm (ysu_column_topo): glibc powf for the paj TKE profile
+    # and the Beljaars convective velocity, as bl_ysu.F90 evaluates them,
+    # and the arm's own pieces (get_pblh, the 10 m blend), kept out of
+    # ysu.cu so its cited line numbers stand.
+    "ysu": ("glibc_flt32.cuh", "ysu_topo.cuh"),
     # The UW moist-turbulence PBL (bl_pbl_physics=9) computes in binary64
     # like the CAM code it transcribes: glibc's own binary64 exp/log/pow,
     # the rounding-pinned R8 vocabulary, then the CAM modules in call order
@@ -86,35 +99,49 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     "uwpbl": ("glibc_flt64.cuh", "uwpbl_common.cuh", "uwpbl_wvsat.cuh",
               "uwpbl_vdiff.cuh", "uwpbl_zisocl.cuh", "uwpbl_caleddy.cuh",
               "uwpbl_eddy.cuh", "uwpbl_driver.cuh"),
+    "real_init": ("real_init_common.cuh",),
+    # REAL's float64 thermodynamics use the CPU portable library's bits.
+    "real_init_math": ("real_init_common.cuh", "portable_libm64.cuh"),
 }
 
 #: Read-only view for tests and freeze receipts.
 EXTRA_HEADERS = MappingProxyType(_EXTRA_HEADERS)
 
 
-def _preamble() -> str:
+def _preamble(kernel_dir: Path = _KDIR) -> str:
     lines = [f"#define {k} {float(v)!r}f" for k, v in CUDA_DEFINES.items()]
-    lines.append((_KDIR / "common.cuh").read_text(encoding=_ENCODING))
+    lines.append((Path(kernel_dir) / "common.cuh").read_text(encoding=_ENCODING))
     return "\n".join(lines) + "\n"
 
 
-def _extra_header_text(name: str) -> str:
+def _extra_header_text(name: str, kernel_dir: Path = _KDIR) -> str:
     """Return the allow-listed headers for ``name``, or ``''`` for any other.
 
     The empty-string return for an unlisted module is the whole point: it
     makes the assembled source byte-identical to the pre-hook string.
     """
-    return "".join((_KDIR / header).read_text(encoding=_ENCODING)
-                   for header in _EXTRA_HEADERS.get(name, ()))
+    headers = _EXTRA_HEADERS.get(name, ())
+    from gpuwm.wrf_exact import ENABLED, DIAGNOSTICS_ENABLED
+    if ENABLED and name == "acoustic":
+        headers += ("glibc_trig_flt32.cuh",)
+    if DIAGNOSTICS_ENABLED and name == "diagnostics":
+        headers += ("glibc_flt32.cuh",)
+    return "".join((Path(kernel_dir) / header).read_text(encoding=_ENCODING)
+                   for header in headers)
 
 
-def module_source(name: str) -> str:
-    """The exact source string :func:`load_module` hands to nvrtc."""
-    return (_preamble() + _extra_header_text(name)
-            + (_KDIR / f"{name}.cu").read_text(encoding=_ENCODING))
+def module_source(name: str, *, kernel_dir: Path = _KDIR) -> str:
+    """The exact source string :func:`load_module` hands to nvrtc.
+
+    ``kernel_dir`` composes the same unit from another tree's kernel files:
+    tools/literal_division_census.py gates the tree it scans, which need not
+    be the imported package (A193).
+    """
+    return (_preamble(kernel_dir) + _extra_header_text(name, kernel_dir)
+            + (Path(kernel_dir) / f"{name}.cu").read_text(encoding=_ENCODING))
 
 
-@lru_cache(maxsize=None)
+@cuda_cache(maxsize=None)
 def load_module(name: str):
     import cupy as cp
     if name.startswith("noahmp_"):
@@ -142,7 +169,7 @@ def load_module(name: str):
     return mod
 
 
-@lru_cache(maxsize=None)
+@cuda_cache(maxsize=None)
 def load_module_int_defines(
         name: str, defines: tuple[tuple[str, int], ...]):
     """Compile one kernel source with a small, identity-bound integer tier.
@@ -182,7 +209,7 @@ MODULE_KEY_ROOT = "gpuwm.core.kernels"
 
 def module_source_int_defines(
         name: str, defines: tuple[tuple[str, int], ...],
-        *, prefix: str | None = None) -> str:
+        *, prefix: str | None = None, kernel_dir: Path = _KDIR) -> str:
     """The exact source :func:`load_module_int_defines` hands to nvrtc.
 
     The allow-listed header, when present, goes immediately after the
@@ -192,17 +219,18 @@ def module_source_int_defines(
     """
     if prefix is None:
         prefix = "\n".join(f"#define {key} {value}" for key, value in defines)
-    return (_preamble() + _extra_header_text(name) + prefix + "\n"
-            + (_KDIR / f"{name}.cu").read_text(encoding=_ENCODING))
+    return (_preamble(kernel_dir) + _extra_header_text(name, kernel_dir)
+            + prefix + "\n"
+            + (Path(kernel_dir) / f"{name}.cu").read_text(encoding=_ENCODING))
 
 
-@lru_cache(maxsize=None)
+@cuda_cache(maxsize=None)
 def get_kernel(name: str, func: str):
     """Return one stable CuPy function wrapper per raw-kernel symbol."""
     return load_module(name).get_function(func)
 
 
-@lru_cache(maxsize=None)
+@cuda_cache(maxsize=None)
 def get_kernel_int_defines(
         name: str, func: str, defines: tuple[tuple[str, int], ...]):
     """Return a cached kernel compiled with validated integer definitions."""

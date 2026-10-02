@@ -46,8 +46,13 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from pathlib import Path
 
 import pytest
+
+#: The tree under test: the census reads every source from it (A193), never
+#: from wherever gpuwm happens to be imported.
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _nvrtc():
@@ -68,7 +73,7 @@ def test_no_production_unit_divides_by_a_compile_time_constant():
     _nvrtc()
     from tools.literal_division_census import census_unit, production_units
     offenders, compiled = [], 0
-    for unit in production_units():
+    for unit in production_units(REPO_ROOT):
         try:
             row = census_unit(unit)
         except Exception:
@@ -115,7 +120,7 @@ def test_no_production_line_becomes_a_reciprocal_multiply_on_compute_120():
     _nvrtc()
     from tools.literal_division_census import production_units, rewrite_sites
     offenders, compiled = [], 0
-    for unit in production_units():
+    for unit in production_units(REPO_ROOT):
         try:
             row = rewrite_sites(unit)
         except Exception:
@@ -338,7 +343,7 @@ def test_compute_120_still_rewrites_and_fdiv_rn_still_holds():
     # unit with (p3_device's -fmad=false among them), since each unit's
     # reference is built with that unit's own options.
     from tools.literal_division_census import production_units
-    option_sets = {tuple(u.options) for u in production_units()}
+    option_sets = {tuple(u.options) for u in production_units(REPO_ROOT)}
     assert ("-std=c++17",) in option_sets, option_sets
     for options in sorted(option_sets):
         ref = compile_ptx(src, options + ("-ftz=false", "-arch=compute_120"))

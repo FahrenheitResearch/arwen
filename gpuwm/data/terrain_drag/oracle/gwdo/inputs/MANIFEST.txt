@@ -1,0 +1,29 @@
+u3d f4 2 64 40
+v3d f4 2 64 40
+t3d f4 2 64 40
+qv3d f4 2 64 40
+p3d f4 2 64 40
+p3di f4 2 64 41
+pi3d f4 2 64 40
+z f4 2 64 40
+dz f4 2 64 40
+rublten0 f4 2 64 40
+rvblten0 f4 2 64 40
+rthblten0 f4 2 64 40
+znu f4 1 40
+znw f4 1 41
+var2d f4 1 64
+oc12d f4 1 64
+oa f4 2 64 4
+ol f4 2 64 4
+var2dss f4 1 64
+oc12dss f4 1 64
+oass f4 2 64 4
+olss f4 2 64 4
+sina f4 1 64
+cosa f4 1 64
+xland f4 1 64
+br f4 1 64
+pblh f4 1 64
+kpbl i4 1 64
+p_top f4 0

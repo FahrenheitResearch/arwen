@@ -372,6 +372,22 @@ def _installed_shaped_tree(destination: Path) -> Path:
             _link_directory(entry, package / entry.name)
         else:
             shutil.copy2(entry, package / entry.name)
+    # The installed engine also carries this sibling package.  Omitting
+    # it makes host-memory sizing fail before the companion-data door is
+    # reached, so the fixture would test an incomplete engine instead.
+    for sibling in ("tilestream", "tools"):
+        _link_directory(REPO_ROOT / sibling, destination / sibling)
+    # Bind the copied package to its own wheel metadata, including the
+    # exact companion requirement.  Borrowed checkout metadata does not
+    # own these files and cannot supply the installed package's remedy.
+    project = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]
+    version = project["version"]
+    info = destination / f"gpuwm-{version}.dist-info"
+    info.mkdir()
+    lines = ["Metadata-Version: 2.1", "Name: gpuwm", f"Version: {version}"]
+    lines += [f"Requires-Dist: {dep}" for dep in project["dependencies"]]
+    (info / "METADATA").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (info / "RECORD").write_text("gpuwm/__init__.py,,\n", encoding="utf-8")
     (destination / "sitecustomize.py").write_text(
         _HIDE_COMPANION, encoding="utf-8", newline="\n")
     return destination

@@ -100,8 +100,8 @@ class ComposedRadiation:
     def __call__(self, *, atmosphere, fields, state, cfg):
         import cupy as cp
         from datetime import timedelta
-        from gpuwm.core.physics import (RadiationResult, _model_clock_dt,
-                                        _physics_interval_seconds)
+        from gpuwm.core.physics import (RadiationResult,
+                                        _physics_period_seconds)
         arguments = dict(atmosphere=atmosphere, fields=fields, state=state, cfg=cfg)
         lw = (self.longwave_adapter(**arguments)
               if self.longwave_adapter is not None else None)
@@ -114,7 +114,7 @@ class ComposedRadiation:
             from gpuwm.core.dudhia import wrf_solar_geometry
             valid_time = self.start_time + timedelta(seconds=float(state.elapsed_seconds))
             minutes = cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes
-            interval = _physics_interval_seconds(minutes, _model_clock_dt(cfg))
+            interval = _physics_period_seconds(minutes, cfg)
             coszen, _ = wrf_solar_geometry(valid_time, self.latitude_deg,
                 self.longitude_deg, hour_offset_seconds=0.5 * interval)
             swdown = cp.zeros_like(fields["glw"])

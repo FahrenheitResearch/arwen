@@ -484,6 +484,7 @@ class StreamingDecision:
     #: resident decision and on one built by hand.
     ntiles: int | None = None
     redundancy: float | None = None
+    road: str = "tiles"
 
     def tiling_text(self) -> str:
         """``tile 6x6 + halo 18, 1,190 tiles at 49.95x redundancy``."""
@@ -505,6 +506,11 @@ class StreamingDecision:
         ruling that renamed the table covers the text a user of the table
         reads.
         """
+        if self.road == "ranks":
+            devices = self.detail["devices"]["ids"]
+            gy, gx = self.detail["grid"]
+            return (f"[devices] ON ({self.ntiles} slabs on cards {devices}, "
+                    f"grid {gy}x{gx}, halo {self.halo})")
         if not self.stream:
             return f"[tiles] OFF: {self.reason}"
         shape = ("" if self.ntiles is None else
@@ -577,6 +583,7 @@ def cold_admission_machine(planning_machine=None, *, options=None):
 
 def admit_resident_road(exp, decision=None, *, machine=None, estimate=None,
                         forcing_intervals=None, source=None,
+                        urban_columns=None,
                         what="this forecast, held resident on the card"):
     """``off`` means resident: admitted, or refused by name, before the build.
 
@@ -603,7 +610,10 @@ def admit_resident_road(exp, decision=None, *, machine=None, estimate=None,
     HRRR-forced forecast admitted without them was priced short by those
     tables.  A prepared door passes the masses the cache it is about to
     restore carries instead.  ``machine`` is the door's cold card
-    (:func:`cold_admission_machine`); ``None`` admits.
+    (:func:`cold_admission_machine`); ``None`` admits.  ``urban_columns``
+    (grid id to urban columns) is a prepared door's reading of the land
+    cover it restores, which prices BEP+BEM's column workspace at the plan
+    the run builds (A176).
 
     The figure is the peak ENVELOPE, the measured upper bound of the peak
     and not bytes about to be allocated, so ``--no-memory-gate`` at the
@@ -623,13 +633,15 @@ def admit_resident_road(exp, decision=None, *, machine=None, estimate=None,
     if estimate is None:
         from gpuwm.boundary_fields import source_boundary_species
         estimate = (preflight.admission_estimate(exp, machine=machine,
-                                                 source=source)
+                                                 source=source,
+                                                 urban_columns=urban_columns)
                     if forcing_intervals is None else
                     preflight.estimate_experiment(
                         exp, column_chunk=exp.column_chunk,
                         forcing_intervals=max(1, int(forcing_intervals)),
                         profile=getattr(machine, "device_profile", None),
-                        boundary_species=source_boundary_species(source)))
+                        boundary_species=source_boundary_species(source),
+                        urban_columns=urban_columns))
     return admit(what, resident_forecast_terms(estimate),
                  free_bytes=int(machine.vram_bytes),
                  stage="while building the domain state or attaching its "
@@ -637,7 +649,7 @@ def admit_resident_road(exp, decision=None, *, machine=None, estimate=None,
 
 
 def cold_tree_streaming_decision(exp, nodes, *, machine=None, decisions=None,
-                                 source=None):
+                                 source=None, urban_columns=None):
     """THE ``[tiles]`` admission a RUN DOOR takes, as one callable question.
 
     Every run door asks it here: the prepared domain-tree forecast
@@ -669,6 +681,8 @@ def cold_tree_streaming_decision(exp, nodes, *, machine=None, decisions=None,
     before.  ``source`` is the run's forcing source, whose published
     hydrometeors the root's tables carry
     (:func:`gpuwm.core.preflight.admission_estimate`).
+    ``urban_columns`` is the prepared door's reading of the land cover;
+    configuration callers leave it unknown and retain the upper bound.
     """
     from gpuwm.core.preflight import admission_estimate
     from types import SimpleNamespace
@@ -677,10 +691,12 @@ def cold_tree_streaming_decision(exp, nodes, *, machine=None, decisions=None,
         return None
     from gpuwm.core.streamed_relocation import mark_reconstruction_nodes
     mark_reconstruction_nodes(nodes, exp)
+    pricing = {"machine": machine, "source": source}
+    if urban_columns is not None:
+        pricing["urban_columns"] = urban_columns
     return decide_tree(
         nodes, exp.tiles, machine=machine, decisions=decisions,
-        resident_estimate=admission_estimate(exp, machine=machine,
-                                             source=source),
+        resident_estimate=admission_estimate(exp, **pricing),
         source=source)
 
 
@@ -777,7 +793,7 @@ def cold_tree_admission_nodes(exp):
 
 
 def cold_single_domain_admission(exp, *, machine=None, options=None,
-                                 source=None):
+                                 source=None, urban_columns=None):
     """THE estimate a SINGLE-domain ``[tiles]`` admission is judged from.
 
     The one-domain sibling of the tree's
@@ -806,16 +822,23 @@ def cold_single_domain_admission(exp, *, machine=None, options=None,
     ``source`` is the run's forcing source, whose published hydrometeors
     the domain's tables carry
     (:func:`gpuwm.core.preflight.admission_estimate`).
+    ``urban_columns`` prices a prepared domain's BEP+BEM workspace from
+    its land cover before automatic road selection.  Configuration
+    callers leave it unknown and retain the upper bound.
     """
     if options is not None and (options.mode == "off"
                                 or options.tile_nx is not None):
         return None
     from gpuwm.core.preflight import admission_estimate
-    return admission_estimate(exp, machine=machine, source=source)
+    pricing = {"machine": machine, "source": source}
+    if urban_columns is not None:
+        pricing["urban_columns"] = urban_columns
+    return admission_estimate(exp, **pricing)
 
 
 def cold_single_domain_decision(exp, *, machine=None, cfg=None, options=None,
-                                estimate=None, source=None):
+                                estimate=None, source=None,
+                                urban_columns=None):
     """THE ``[tiles]`` admission for an experiment of ONE domain.
 
     Every surface that asks whether a single domain may stay resident
@@ -848,6 +871,8 @@ def cold_single_domain_decision(exp, *, machine=None, cfg=None, options=None,
     streamed walk afterwards; it is the same estimate this function
     would take, and passing it spares the second call rather than
     changing the answer.
+    ``urban_columns`` supplies the prepared land-cover reading when the
+    caller has not already taken that estimate.
     """
     domain = (getattr(exp, "domains", ()) or (None,))[0]
     if cfg is None:
@@ -857,7 +882,8 @@ def cold_single_domain_decision(exp, *, machine=None, cfg=None, options=None,
     if estimate is None:
         estimate = cold_single_domain_admission(exp, machine=machine,
                                                 options=options,
-                                                source=source)
+                                                source=source,
+                                                urban_columns=urban_columns)
     return decide(cfg, options, machine=machine, resident_estimate=estimate)
 
 
@@ -2033,7 +2059,7 @@ class StreamedDomain:
                 f"{self._run.cfg.nx}x{self._run.cfg.ny}x{self._run.cfg.nz} "
                 f"and is being stepped at {cfg.nx}x{cfg.ny}x{cfg.nz}")
         due = bool(step_kwargs.get("refl_10cm_due", False))
-        if due and REFL_STORE_KEY not in self._run.store:
+        if due and REFL_STORE_KEY not in self._store_keys():
             raise StreamingRefused(
                 f"refl_10cm_due=True but the store carries no "
                 f"{REFL_STORE_KEY!r}, so each tile would compute its own "
@@ -2120,13 +2146,16 @@ class StreamedDomain:
         if self._frame is None:
             from tilestream import output as _output
 
+            # Keys, shapes and dtypes only: on the ranked road the values
+            # come later, by the frame's own download (_ranked_frame).
+            planning = self._planning_store()
             if self._state is not None and self._template is None:
                 plan = _output.frame_plan(
-                    self._state, extra_available=self._run.store.keys())
+                    self._state, extra_available=planning.keys())
             elif self._template is not None:
                 plan = _output.store_frame_plan(
-                    self._template, self._run.store, self._run.cfg,
-                    extra_available=self._run.store.keys())
+                    self._template, planning, self._run.cfg,
+                    extra_available=planning.keys())
             else:
                 raise StreamingRefused(
                     "this streamed domain was attached with neither a "
@@ -2140,9 +2169,11 @@ class StreamedDomain:
                     "which carriers exist, not which of them the writer "
                     "wants under which name.  Pass attach(template=...) the "
                     "slab the store was built through.")
-            self._frame = _output.StoreFrame(plan, self._run.store,
+            self._frame = _output.StoreFrame(plan, planning,
                                              self.output_setup(),
                                              self._run.cfg)
+        if self._ranked_road():
+            return self._ranked_frame()
         # The frame's non-derived rows are zero-copy VIEWS of the pinned
         # store, so under the deferred sweep seam the previous step's
         # scatter tail must land before they are read.  Idempotent and a
@@ -2151,6 +2182,50 @@ class StreamedDomain:
         if drain is not None:
             drain()
         return self._frame.fields()
+
+    # -- the ranked road's output ------------------------------------------
+    #
+    # On the [devices] road the slabs are resident and the host store is a
+    # mirror: no sweep reads or writes it.  Reaching it through ``.store``
+    # DRAINS it -- every carrier of every slab copied to the host, and the
+    # whole store copied back to the slabs before the next step -- and an
+    # output step used to do that twice (the reflectivity membership test
+    # before the sweep, the reflectivity stash after it) and the UH reset a
+    # third time.  MEASURED on two RTX PRO 6000s, 3 km CONUS: 2.66 s of
+    # stepping lost per frame against 0.25 s on one card.  A frame needs a
+    # few dozen members; the road downloads those, on a stream of its own,
+    # and the writer thread assembles the frame once they land.
+
+    def _ranked_road(self) -> bool:
+        return bool(getattr(self._run, "ranked", False)) and hasattr(
+            self._run, "download")
+
+    def _store_keys(self):
+        keys = getattr(self._run, "store_keys", None)
+        return keys() if callable(keys) else self._run.store.keys()
+
+    def _planning_store(self):
+        """The store as an object to plan against (keys, shapes, dtypes)."""
+        if self._ranked_road():
+            return self._run.raw_store
+        return self._run.store
+
+    def _frame_keys(self) -> tuple[str, ...]:
+        keys = list(self._frame.store_keys())
+        if REFL_STORE_KEY in self._store_keys():
+            keys.append(REFL_STORE_KEY)
+        return tuple(dict.fromkeys(keys))
+
+    def _ranked_frame(self):
+        from tilestream import output as _output
+
+        run = self._run
+        run.download(self._frame_keys())
+        # This frame's own downloads (its reflectivity's and its members'),
+        # captured now: the writer thread waits for exactly these.
+        downloads = run.pending_downloads()
+        return _output.DeferredStoreFrame(
+            self._frame, lambda: run.wait_downloads(downloads))
 
     def _stash_domain_refl(self, state) -> None:
         """Hand the assembled domain REFL_10CM to the resident consumer.
@@ -2173,6 +2248,13 @@ class StreamedDomain:
         from gpuwm.core.refl import stash_refl_10cm
 
         if getattr(state, "physics", None) is None:
+            return
+        if self._ranked_road():
+            # The member starts for the host now, behind the step that
+            # produced it; the writer reads this view only after the frame's
+            # downloads land (_ranked_frame waits for every one in flight).
+            self._run.download((REFL_STORE_KEY,))
+            stash_refl_10cm(state, np.asarray(self._run.raw_store[REFL_STORE_KEY]))
             return
         stash_refl_10cm(state, np.asarray(self._run.store[REFL_STORE_KEY]))
 
@@ -2575,7 +2657,8 @@ class StreamedDomain:
         and its final digest would otherwise claim model second zero for a run
         that integrated.
         """
-        from gpuwm.state_digest import canonical_store_digest
+        from gpuwm.state_digest import (
+            _canonical_extra_manifest, canonical_store_digest)
 
         if self.scalars is None:
             raise StreamingRefused(
@@ -2584,8 +2667,53 @@ class StreamedDomain:
                 "call counts of nothing -- attach(scalars=None) is the "
                 "gate's CARRY NOTHING control and must not be digested as a "
                 "forecast")
-        return canonical_store_digest(self.store, self.scalars, clock,
+        arrays = dict(self._run.canonical_store()
+                      if getattr(self, "ranked", False) else self.store)
+        if self._state is not None:
+            # The nest coupler rebuilds rolling and SINT tables on the domain
+            # facade, outside the transported forecast carrier store. Hash
+            # those live owners too, exactly as the resident digest does.
+            # The facade's full horizontal forecast arrays remain untrusted.
+            for name, value in _canonical_extra_manifest(self._state).items():
+                # Joined carriers and rank-derived forcing weights already
+                # name their live owner; a facade cannot overwrite them.
+                arrays.setdefault(name, value)
+        return canonical_store_digest(arrays, self.scalars, clock,
                                       scope=scope, before_hash=before_hash)
+
+    def add_store_guard(self, guard) -> None:
+        """Hand the run a callable to wait on before it writes the store.
+
+        The ranked road's writer keeps the frame's store views past the next
+        sweep (no sweep writes that store); a run without that road has no
+        such ordering to offer, so the guard is honoured at once.
+        """
+        add = getattr(self._run, "add_store_guard", None)
+        if add is None:
+            guard()
+        else:
+            add(guard)
+
+    def zero_scratch(self, slot: str) -> bool:
+        """Zero a whole-domain scratch slot where the domain keeps it.
+
+        Only the ranked road answers ``True`` here: its slabs are the domain,
+        so the reset goes to every slab on its own compute stream (behind any
+        frame download of the same step) instead of through a drain of the
+        whole store and a full copy back.  Every other road answers
+        ``False`` and the caller zeroes the views :func:`live_scratch`
+        returns, as it always has.
+        """
+        if not self._ranked_road():
+            return False
+        key = "scratch/" + slot
+        if key in self._store_keys():
+            # A slot the domain does not carry (nwp_diagnostics off has no
+            # UP_HELI_MAX) has nothing on the slabs to zero, as live_scratch
+            # returns no store view for it; the caller still zeroes the
+            # state's own copy if one exists.
+            self._run.zero_scratch(key)
+        return True
 
     def impose_clock(self, seconds: float) -> None:
         """Set the DOMAIN clock the next sweep imposes on every tile.
@@ -2617,6 +2745,8 @@ class StreamedDomain:
                 "to impose -- attach(scalars=None) is the gate's CARRY "
                 "NOTHING control and must not be driven by the model loop")
         self.scalars["elapsed_seconds"] = float(seconds)
+        if getattr(self, "ranked", False):
+            self._run.impose_domain_clock(seconds)
 
     # -- the store, projected onto the state --------------------------------
     #
@@ -2644,11 +2774,30 @@ class StreamedDomain:
 
     def _state_arrays(self, names=None) -> dict:
         from tilestream.physics_inventory import carrier_inventory
+        from gpuwm.core.streamed_state import CanonicalStoreState
 
         if self._state is None:
             raise StreamingRefused(
                 "this streamed domain was attached without a state, so "
                 "there is nothing to project the store onto")
+        if isinstance(self._state, CanonicalStoreState):
+            from gpuwm.io.restart import classify_state_attr
+
+            # The facade already borrows the authoritative full host arrays.
+            # Keep the unknown-attribute guard, without walking its slab
+            # metadata as a resident domain's carrier inventory.
+            for name in vars(self._state):
+                classify_state_attr(name)
+            live = self._state._canonical_store
+            selected = live if names is None else {
+                key: live[key] for key in names if key in live}
+            for key, array in selected.items():
+                if self.store.get(key) is not array:
+                    raise StreamingRefused(
+                        f"canonical host carrier {key} does not alias the "
+                        "live streamed store, so a model consumer would "
+                        "read a stale domain after its store was replaced")
+            return selected
         live = carrier_inventory(self._state)
         if names is None:
             return live
@@ -2666,6 +2815,10 @@ class StreamedDomain:
         caller never has to ask which store it has.
         """
         if not self.host_store:
+            return 0
+        from gpuwm.core.streamed_state import CanonicalStoreState
+        if isinstance(self._state, CanonicalStoreState):
+            self._state_arrays(names)
             return 0
         import cupy as cp
 
@@ -2694,6 +2847,10 @@ class StreamedDomain:
         push-back would overwrite the sweep's own result with a stale copy.
         """
         if not self.host_store:
+            return 0
+        from gpuwm.core.streamed_state import CanonicalStoreState
+        if isinstance(self._state, CanonicalStoreState):
+            self._state_arrays(names)
             return 0
         import cupy as cp
 
@@ -2971,12 +3128,27 @@ class StreamedStability:
         #: :meth:`__call__`.
         self.sweeps_begun = 0
         self._seen: set[int] = set()
-        self._partial = cp.zeros(
-            (self.ntiles * self.blocks_per_tile, 9), dtype=cp.float32)
-        self._result = cp.zeros((8,), dtype=cp.float32)
+        from contextlib import nullcontext
+        scope = cp.cuda.Device(run.devices[0]) if getattr(run, "ranked", False) else nullcontext()
+        with scope:
+            self._partial = cp.zeros(
+                (self.ntiles * self.blocks_per_tile, 9), dtype=cp.float32)
+            self._result = cp.zeros((8,), dtype=cp.float32)
         self._report: dict | None = None
         self._nz = int(cfg.nz)
         self._dny, self._dnx = int(cfg.ny), int(cfg.nx)
+        self._rank_partial = None
+        if getattr(run, "ranked", False):
+            self._rank_partial = {}
+            # Rows retain global rank offsets on each card. Only owned rows
+            # are copied to the final fold, so discarded halos never enter it.
+            for dev in dict.fromkeys(run.devices):
+                if dev == int(self._partial.device.id):
+                    self._rank_partial[dev] = self._partial
+                else:
+                    with cp.cuda.Device(dev):
+                        self._rank_partial[dev] = cp.zeros(
+                            (self.ntiles * self.blocks_per_tile, 9), dtype=cp.float32)
 
     def begin_sweep(self) -> None:
         """Forget the previous step's records, so a short sweep is caught.
@@ -3036,7 +3208,8 @@ class StreamedStability:
         with stream:
             kernel((self.blocks_per_tile,), (256,),
                    (tile_state.u, tile_state.w, tile_state.thp, php, phb,
-                    self._partial,
+                    (self._partial if self._rank_partial is None else
+                     self._rank_partial[int(tile_state.u.device.id)]),
                     np.int32(int(itile) * self.blocks_per_tile),
                     np.int32(bny), np.int32(bnx),
                     np.int32(jb), np.int32(ib),
@@ -3091,6 +3264,12 @@ class StreamedStability:
                 with owner.allocation_scope():
                     self.begin_sweep()
                     try:
+                        if self._rank_partial is not None:
+                            for index, window in enumerate(self._run.specs):
+                                with cp.cuda.Device(self._run.devices[index]):
+                                    self.observe(self._run.tiles[index], window, index,
+                                                 self._run.compute_streams[index])
+                            return self(state, cfg, boundary_width=boundary_width)
                         tile = self._run.tiles[0]
                         for index, window in enumerate(self._run.specs):
                             gather.gather_tile(owner.store, tile, window,
@@ -3150,11 +3329,23 @@ class StreamedStability:
             sync = getattr(self._run, "sync_compute", None)
             if sync is not None:
                 sync()
-            kernel = get_kernel("health", "health_final")
-            kernel((1,), (256,),
-                   (self._partial, self._result,
-                    np.int32(self.ntiles * self.blocks_per_tile)))
-            host = cp.asnumpy(self._result)
+            if self._rank_partial is not None:
+                for rank, dev in enumerate(self._run.devices):
+                    if dev == int(self._partial.device.id):
+                        continue
+                    rows = slice(rank*self.blocks_per_tile, (rank+1)*self.blocks_per_tile)
+                    with cp.cuda.Device(dev):
+                        host_rows = cp.asnumpy(self._rank_partial[dev][rows])
+                    with cp.cuda.Device(self._partial.device.id):
+                        self._partial[rows].set(host_rows)
+            from contextlib import nullcontext
+            scope = cp.cuda.Device(self._partial.device.id) if self._rank_partial is not None else nullcontext()
+            with scope:
+                kernel = get_kernel("health", "health_final")
+                kernel((1,), (256,),
+                       (self._partial, self._result,
+                        np.int32(self.ntiles * self.blocks_per_tile)))
+                host = cp.asnumpy(self._result)
             self._report = decode_stability_record(
                 host, self.cfg if cfg is None else cfg,
                 boundary_width=width)
@@ -3858,6 +4049,7 @@ def prime_lazy_carriers(state, cfg) -> tuple:
     report what it did rather than assume.
     """
     primed = []
+    primed.extend(prime_coordinate_reference(state, cfg))
     if prime_refl_10cm(state, cfg):
         primed.append(REFL_STORE_KEY)
     primed.extend(prime_hmix_k_diag(state, cfg))
@@ -3868,6 +4060,24 @@ def prime_lazy_carriers(state, cfg) -> tuple:
         ensure(state)
         primed.append("cumulus/w0avg")
     return tuple(primed)
+
+
+def prime_coordinate_reference(state, cfg) -> tuple:
+    """Put WRF's immutable thermal reference in the store before tiling.
+
+    The resident state, prepared-cache slabs, and tile buffers all pass
+    through this priming seam before their carrier inventory is taken.
+    A reference created inside the first tile step has no full-domain
+    store member to gather, so a reused buffer would retain the preceding
+    tile's reference. A restored reference must remain unchanged.
+    """
+    if int(getattr(cfg, "diff_opt", 2)) != 1 or state is None:
+        return ()
+    from gpuwm.core.dycore import initialize_coordinate_reference
+
+    existing = state.existing_scratch("diff1_theta_initial")
+    initialize_coordinate_reference(state, cfg)
+    return () if existing is not None else ("scratch/diff1_theta_initial",)
 
 
 def prime_hmix_k_diag(state, cfg) -> tuple:
@@ -4858,7 +5068,8 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
     buffer that has never stepped is missing arrays the store holds and the
     inventory comparison refuses it.
     """
-    from gpuwm.ingest.lateral_bc import attach_lateral_boundaries
+    from gpuwm.ingest.lateral_bc import (attach_lateral_boundaries,
+                                         attach_streaming_lateral_boundaries)
     from tilestream import harness as _harness
 
     driver = getattr(state, "physics", None)
@@ -4909,7 +5120,13 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
         # the domain's real lateral forcing.
         make.primed = prime_lazy_carriers(tile, tile_cfg)
         if tables0 is not None:
-            attach_lateral_boundaries(tile, tables0)
+            # An unsealed preparation declares a schedule before its later
+            # intervals exist. Eager attachment would read those intervals
+            # while building the first buffer, before any model step runs.
+            if getattr(tables0.intervals, "bounds", None) is not None:
+                attach_streaming_lateral_boundaries(tile, tables0)
+            else:
+                attach_lateral_boundaries(tile, tables0)
         if warmup:
             _harness.run_steps(tile, tile_cfg, int(warmup))
         return tile
@@ -5203,6 +5420,101 @@ def store_domain_builder(bundle, *, clock=DERIVE_CLOCK, node=None, seam: str = "
                                       else clock),
                       inventory_fn=streamed_store_inventory())
 
+    return build
+
+
+def ranked_halo(cfg, *, max_map_factor=1.0) -> int:
+    """Dependency reach at the adaptive acoustic ceiling plus forcing reach."""
+    from dataclasses import replace
+    from gpuwm.core.adaptive_clock import acoustic_step_ceiling
+    from tilestream.harness import halo_radius
+    from tilestream.realcase import boundary_width
+    padded = replace(cfg, time_step_sound=acoustic_step_ceiling(cfg, max_map_factor))
+    # A nest's boundary application writes the same perimeter frame as a
+    # specified domain's (from its parent's rolling tables), so it pays the
+    # same frame width on a seam.
+    forced = bool(cfg.specified) or bool(getattr(cfg, "nested", False))
+    return int(halo_radius(padded)) + (boundary_width(cfg) if forced else 0)
+
+
+def ranked_specs(cfg, options, *, halo):
+    from tilestream.multigpu import plan_split
+    gy, gx = options.resolved_grid(cfg.nx, cfg.ny)
+    px, py = _periodic_axes(cfg)
+    return plan_split(cfg.nx, cfg.ny, halo, gx=gx, gy=gy,
+                      periodic_x=px, periodic_y=py)
+
+
+def ranked_decision(cfg, options, *, max_map_factor=1.0):
+    from gpuwm.core.devices import validate_ranked_physics
+    validate_ranked_physics(cfg)
+    halo = ranked_halo(cfg, max_map_factor=max_map_factor)
+    specs = ranked_specs(cfg, options, halo=halo)
+    return StreamingDecision(
+        stream=True, reason="resident ranks", store="host", road="ranks",
+        halo=halo, nbuffers=options.count, ntiles=options.count,
+        tile_nx=max(s.interior_nx for s in specs),
+        tile_ny=max(s.interior_ny for s in specs),
+        redundancy=sum(s.cnx*s.cny for s in specs)/(int(cfg.nx)*int(cfg.ny)),
+        detail={"devices": options.to_json(),
+                "grid": list(options.resolved_grid(cfg.nx, cfg.ny)),
+                "rank_shapes": [[s.cny, s.cnx] for s in specs]})
+
+
+def ranked_domain_builder(bundle, *, clock=DERIVE_CLOCK, options, seam="zeros",
+                          check_geography=True, step_mode="threads", node=None):
+    """Build resident slabs directly from a pinned prepared store.
+
+    ``node`` is the tree's :class:`gpuwm.core.model.DomainNode` for this
+    domain.  A NEST (a node with a parent) takes its forcing from the parent
+    each parent step through the nest coupler's rolling tables on
+    ``node.state``; every slab windows them the way a [tiles] buffer does
+    (:func:`gpuwm.core.nest_stream.make_nest_tile_hook`).
+    """
+    def build(state, cfg, decision):
+        from tilestream.ranks import RankedRun
+        from gpuwm.ingest.lateral_bc import LateralBoundaries
+        nested = node is not None and getattr(node, "parent", None) is not None
+        if not nested and (getattr(cfg, "nested", False)
+                           or getattr(state, "parent", None) is not None):
+            raise StreamingRefused(
+                "a nested domain on the ranked road needs node= so its slabs "
+                "can window the forcing its parent's coupler attaches; without "
+                "it the slabs would run on no lateral forcing at all")
+        nest_hook = None
+        if nested:
+            if bundle.boundaries is not None:
+                raise StreamingRefused("a ranked nest cannot also carry tabulated "
+                                       "lateral forcing")
+            from gpuwm.core.nest_stream import make_nest_tile_hook
+            nest_hook = make_nest_tile_hook(node)
+        if bundle.boundaries is not None:
+            if not isinstance(bundle.boundaries, LateralBoundaries):
+                raise StreamingRefused("ranked forcing must be tabulated LateralBoundaries "
+                                       "so every rank consumes its own boundary window")
+            if clock is DERIVE_CLOCK:
+                raise StreamingRefused("ranked_domain_builder needs clock= with tabulated "
+                    "forcing; no resident domain exists to derive the clock and forcing "
+                    "would otherwise run ONE TIMESTEP LATE")
+        run = RankedRun(bundle.store, cfg, options=options, scalars=bundle.scalars,
+            geography=bundle.geography, template=bundle.template,
+            boundaries=bundle.boundaries, clock=None if clock is DERIVE_CLOCK else clock,
+            seam=seam, check_geography=check_geography, step_mode=step_mode,
+            nest_hook=nest_hook)
+        try:
+            stability = StreamedStability(run, cfg,
+                boundary_width=int(getattr(cfg, "spec_bdy_width", 0) or 0) or None)
+            run.observer = stability.observe
+            streamed = StreamedDomain(run, decision, state=None, scalars=bundle.scalars,
+                host_store=True, stability=stability, geography=bundle.geography,
+                boundaries=bundle.boundaries, template=bundle.template,
+                inventory_fn=streamed_store_inventory())
+            streamed.ranked = True
+            streamed.devices_report = run.devices_report
+            return streamed
+        except BaseException:
+            run.close()
+            raise
     return build
 
 

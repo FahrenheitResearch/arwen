@@ -1,0 +1,202 @@
+{
+  "schema": "wrf471.surface-q2-final-cap.real-words/v1",
+  "scope": "20 actual columns from native first-call SFCDIAGS and the final unchanged WRF history, no constructed expected values",
+  "dtype": "IEEE754 binary32, eight-digit hexadecimal stored words",
+  "units": "Q2 and QV1 kg kg-1; XLAND WRF classification",
+  "source": "WRF 4.7.1 module_surface_driver.F:4443-4457",
+  "predicate": "XLAND < 1.5; water retains Q2",
+  "native_build_flags": "-O2 -fno-fast-math -ffp-contract=off",
+  "native_history_observer_control": "time-zero and first12s history files byte-identical between original and read-only observer executables",
+  "wrf_final_history_sha256": "e9001809c3a79ad7f611d0dcfdeac4fe5e6af1758fa751ab3c715e4bda667df6",
+  "observer_executable_sha256": "02c6a5c3753f0392658649880b47520d2e61f459674c9df25a3d9b8bf3d557bf",
+  "observer_source_sha256": "7599fccae60c2047269cde852bfb0429fa89df197efde3629ba401c8fd8dcbff",
+  "native_sfcd_q2_sha256": "2495419fe47661b8e213c763267b49a05ae20b6a693f9624e77cb00fc31aed4b",
+  "native_qv1_sha256": "9eece892bd3d1baeecb98867e67c6e81f34b75ea44783fd9a41e2a2e46c77ab4",
+  "all_native_classification_values": [
+    1.0,
+    2.0
+  ],
+  "threshold_coverage_note": "This actual grid contains XLAND 1 and 2. An exact 1.5 synthetic branch-boundary check is separate from these native rows.",
+  "rows": [
+    {
+      "scenario": "capped_land",
+      "j_zero_based": 149,
+      "i_zero_based": 2,
+      "q2_after_sfcd_bits": "3bedbc78",
+      "qv1_bits": "3be23561",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3bed84d8"
+    },
+    {
+      "scenario": "capped_land",
+      "j_zero_based": 146,
+      "i_zero_based": 109,
+      "q2_after_sfcd_bits": "3c402858",
+      "qv1_bits": "3c294bed",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3c31c2ec"
+    },
+    {
+      "scenario": "capped_land",
+      "j_zero_based": 76,
+      "i_zero_based": 63,
+      "q2_after_sfcd_bits": "3c5ce4d3",
+      "qv1_bits": "3c4f29b0",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3c59855f"
+    },
+    {
+      "scenario": "capped_land",
+      "j_zero_based": 44,
+      "i_zero_based": 69,
+      "q2_after_sfcd_bits": "3c80b6f0",
+      "qv1_bits": "3c6eeb87",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3c7addb3"
+    },
+    {
+      "scenario": "capped_land",
+      "j_zero_based": 54,
+      "i_zero_based": 143,
+      "q2_after_sfcd_bits": "3c933c55",
+      "qv1_bits": "3c830104",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3c898ddd"
+    },
+    {
+      "scenario": "capped_land",
+      "j_zero_based": 26,
+      "i_zero_based": 78,
+      "q2_after_sfcd_bits": "3c975437",
+      "qv1_bits": "3c8996ad",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3c9077cf"
+    },
+    {
+      "scenario": "capped_land",
+      "j_zero_based": 43,
+      "i_zero_based": 108,
+      "q2_after_sfcd_bits": "3c9e7158",
+      "qv1_bits": "3c900cb7",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3c97408c"
+    },
+    {
+      "scenario": "capped_land",
+      "j_zero_based": 0,
+      "i_zero_based": 61,
+      "q2_after_sfcd_bits": "3cb06d07",
+      "qv1_bits": "3ca66def",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3caec03a"
+    },
+    {
+      "scenario": "uncapped_land",
+      "j_zero_based": 148,
+      "i_zero_based": 2,
+      "q2_after_sfcd_bits": "3be1a4c1",
+      "qv1_bits": "3be1a4c2",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3be1a4c1"
+    },
+    {
+      "scenario": "uncapped_land",
+      "j_zero_based": 103,
+      "i_zero_based": 2,
+      "q2_after_sfcd_bits": "3bfe1e49",
+      "qv1_bits": "3bf908ea",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3bfe1e49"
+    },
+    {
+      "scenario": "uncapped_land",
+      "j_zero_based": 130,
+      "i_zero_based": 37,
+      "q2_after_sfcd_bits": "3c1497c5",
+      "qv1_bits": "3c0decad",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3c1497c5"
+    },
+    {
+      "scenario": "uncapped_land",
+      "j_zero_based": 59,
+      "i_zero_based": 29,
+      "q2_after_sfcd_bits": "3c249443",
+      "qv1_bits": "3c2250e7",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3c249443"
+    },
+    {
+      "scenario": "uncapped_land",
+      "j_zero_based": 60,
+      "i_zero_based": 50,
+      "q2_after_sfcd_bits": "3c3fa4bb",
+      "qv1_bits": "3c39b8d0",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3c3fa4bb"
+    },
+    {
+      "scenario": "uncapped_land",
+      "j_zero_based": 88,
+      "i_zero_based": 68,
+      "q2_after_sfcd_bits": "3c61d001",
+      "qv1_bits": "3c58b603",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3c61d001"
+    },
+    {
+      "scenario": "uncapped_land",
+      "j_zero_based": 18,
+      "i_zero_based": 8,
+      "q2_after_sfcd_bits": "3c875edb",
+      "qv1_bits": "3c840cda",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3c875edb"
+    },
+    {
+      "scenario": "uncapped_land",
+      "j_zero_based": 0,
+      "i_zero_based": 60,
+      "q2_after_sfcd_bits": "3caeae84",
+      "qv1_bits": "3ca68de6",
+      "xland_bits": "3f800000",
+      "wrf_final_q2_bits": "3caeae84"
+    },
+    {
+      "scenario": "water",
+      "j_zero_based": 7,
+      "i_zero_based": 137,
+      "q2_after_sfcd_bits": "3c9f27ea",
+      "qv1_bits": "3c981c06",
+      "xland_bits": "40000000",
+      "wrf_final_q2_bits": "3c9f27ea"
+    },
+    {
+      "scenario": "water",
+      "j_zero_based": 81,
+      "i_zero_based": 109,
+      "q2_after_sfcd_bits": "3c91e311",
+      "qv1_bits": "3c87d942",
+      "xland_bits": "40000000",
+      "wrf_final_q2_bits": "3c91e311"
+    },
+    {
+      "scenario": "water",
+      "j_zero_based": 51,
+      "i_zero_based": 79,
+      "q2_after_sfcd_bits": "3c87ba34",
+      "qv1_bits": "3c788a1d",
+      "xland_bits": "40000000",
+      "wrf_final_q2_bits": "3c87ba34"
+    },
+    {
+      "scenario": "water",
+      "j_zero_based": 80,
+      "i_zero_based": 41,
+      "q2_after_sfcd_bits": "3c42bda1",
+      "qv1_bits": "3c0c1753",
+      "xland_bits": "40000000",
+      "wrf_final_q2_bits": "3c42bda1"
+    }
+  ]
+}

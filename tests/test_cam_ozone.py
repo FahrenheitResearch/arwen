@@ -28,6 +28,43 @@ def _tree(root_pair=(0, 0), middle=False):
     return replace(exp, domains=(exp.root, child))
 
 
+def test_parent_only_host_ozone_force_uses_bounded_canonical_source(monkeypatch):
+    import sys
+    from gpuwm.core import cam_ozone, nest_interp, streaming
+    monkeypatch.setitem(sys.modules, 'cupy', SimpleNamespace(
+        ndarray=np.ndarray, asarray=np.asarray, ascontiguousarray=np.ascontiguousarray))
+    exp = _tree()
+    canonical = np.full((12, 28, 28), 7., np.float32)
+    parent = SimpleNamespace(physics=SimpleNamespace(
+        o3rad=np.full_like(canonical, -99.), call_counts={'cam_ozone': 4}))
+    owner = SimpleNamespace(store={cam_ozone.CARRIER_KEY: canonical}, _geography={},
+        template_state=parent, decision=SimpleNamespace(tile_ny=7, tile_nx=8),
+        scalars={'call_counts': {'cam_ozone': 4}})
+    parent._streamed_domain = owner
+    target = np.zeros((12, 16, 16), np.float32)
+    driver = SimpleNamespace(o3rad=target, call_counts={'cam_ozone': 0},
+                             cam_ozone=SimpleNamespace(mode=cam_ozone.ROUTING_PARENT_INTERPOLATED))
+    child = SimpleNamespace(physics=driver)
+    node = SimpleNamespace(state=child, cfg=exp.domains[1], parent=SimpleNamespace(state=parent))
+    reg = nest_interp.register_nest(nri=3, nrj=3, i_parent_start=8, j_parent_start=8,
+        child_nx=16, child_ny=16, parent_nx=28, parent_ny=28, wrapper='interp')
+    seen = []
+    def interpolate(source, cropped):
+        assert np.all(source == 7.)
+        assert source.shape[-2] < 28 and source.shape[-1] < 28
+        assert cropped.nyc <= 7 and cropped.nxc <= 8
+        seen.append((cropped.nyc, cropped.nxc))
+        return np.full((12, cropped.nyc, cropped.nxc), 7., np.float32)
+    monkeypatch.setattr(nest_interp, 'sint', interpolate)
+    monkeypatch.setattr(streaming, 'refresh_from_store',
+                        lambda *args, **kwargs: pytest.fail('host parent used resident refresh'))
+    moved = cam_ozone.transfer_parent_ozone(node, reg)
+    assert len(seen) == 6 and moved > 0
+    assert np.all(target == 7.) and np.all(parent.physics.o3rad == -99.)
+    assert driver.call_counts['cam_ozone'] == 1
+    assert owner.scalars['call_counts']['cam_ozone'] == 4
+
+
 @pytest.mark.parametrize("pair", [(0, 0), (1, 1), (4, 4), (90, 1)])
 def test_only_ancestors_of_actual_nested_cam_consumer_are_carried(pair):
     exp = _tree(pair, middle=True)
@@ -250,8 +287,14 @@ def test_auxiliary_cam_drives_the_existing_adaptive_observer():
     controller._radiation_seen = {}
     carriers = CarrierContract()
     physics = SimpleNamespace(carriers=carriers, stepra=4, radt_seconds=12.)
+    # A clock with no resolved radiation calendar (radt_ticks None), the
+    # case the time-based policy observed here serves.  Every DomainClock
+    # carries a spec, and lane/282-namelist-tolerance (e292dbcf5) lets a
+    # resolved calendar's exact tick deadline decide before that policy.
     node = SimpleNamespace(state=SimpleNamespace(physics=physics),
-                           clock=SimpleNamespace(elapsed_seconds=10.),
+                           clock=SimpleNamespace(
+                               elapsed_seconds=10.,
+                               spec=SimpleNamespace(radt_ticks=None)),
                            cfg=SimpleNamespace(run=SimpleNamespace(dt=2.)))
     carriers.declare("o3rad", source="cam_ozone", model_time=0.)
     assert controller._observe_radiation(1, node) is None

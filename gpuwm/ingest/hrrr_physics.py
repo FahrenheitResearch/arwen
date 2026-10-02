@@ -216,6 +216,9 @@ def initialize_prepared_physics(
         radiation_start_time=radiation_origin, radiation_latitude=lat,
         radiation_longitude=lon,
         landuse_dataset=str(landuse_attrs["MMINLU"]),
+        # The prepared statics carry the sub-grid orographic statistics when
+        # the preparation ran with topo_wind / gwd_opt on; read only then.
+        terrain_drag_static=static,
         **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
     driver.fields["snoalb"][...] = cp.asarray(
         noah_initial_snow_albedo(

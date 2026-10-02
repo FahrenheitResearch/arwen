@@ -46,10 +46,12 @@ from gpuwm.offline_child import (
     PARENT_SCHEME_CONTRACT,
     OfflineChildContractError,
     OfflineChildPlacement,
+    adapt_child_acoustics,
     bind_parent_physics_from_gpuwm_restart,
     bind_parent_physics_from_wrf_namelist,
     build_offline_child_domain_state,
     build_offline_lateral_boundaries,
+    child_epssm_is_auto,
     child_mosaic_refusal,
     child_surface_requirement,
     derive_child_surface_from_parent,
@@ -106,7 +108,13 @@ _CAPABILITIES = {
     # integration loop is unchanged.  p_top/hybrid_opt/etac stay shared with
     # the parent -- that is what gives the two ladders coincident endpoints.
     "vertical_remapping": "conservative-offline-prepare",
-    "terrain_policy": "sint-parent-inherited",
+    # A child builds and runs on its OWN static geography by default
+    # (gpuwm/offline_child_geography.py: WRF ndown's blend_terrain and
+    # rebalance, every frame); --parent-terrain keeps the parent's
+    # interpolated terrain, which is what every child ran before.
+    "terrain_policy": "child-own-static-geography",
+    "terrain_policies": ["child-own-static-geography",
+                         "sint-parent-inherited"],
     "forecast_backend": "cuda",
     "preprocess_backends": ["cuda", "cpu"],
     "output_ownership": "create-only",
@@ -1287,7 +1295,7 @@ def child_disk_remedy(projection: dict) -> str:
 
 def child_disk_projection(cfg, cadence: ChildCadence, *,
                           keep_checkpoints: int | None, render_products,
-                          outdir: Path) -> dict:
+                          outdir: Path, history_selection=None) -> dict:
     """What this child will write, against the free space where it will write it.
 
     ONE function for the plan review and the run, as :func:`child_cadence`
@@ -1305,7 +1313,7 @@ def child_disk_projection(cfg, cadence: ChildCadence, *,
         cfg, history_frames=child_history_frames(cadence),
         checkpoints_written=len(cadence.checkpoint_due),
         keep_checkpoints=keep_checkpoints,
-        render_products=render_products)
+        render_products=render_products, history_selection=history_selection)
     free = disk_budget.free_bytes(Path(outdir))
     refusal = disk_budget.disk_refusal(
         projection, free, subject="this child", remedy=child_disk_remedy(projection))
@@ -1371,7 +1379,8 @@ def _child_boundary_clock(cfg, *, lbc_interval_seconds: float, steps: int,
     return DomainClock(spec, tick_den, int(steps) * step_ticks)
 
 
-def _initialize_child_physics(child, cfg, initial, surface, start_time):
+def _initialize_child_physics(child, cfg, initial, surface, start_time, *,
+                              terrain_drag_static=None):
     """Attach the child physics driver with an accurate warm start.
 
     mp-only children keep the established default initialization.  A
@@ -1382,6 +1391,19 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
     are never fabricated from scalar defaults on a real-data child.
     """
     from gpuwm.core.physics import initialize_physics
+    from gpuwm.static.orographic import required_static_fields
+
+    drag_fields = required_static_fields(getattr(cfg, "topo_wind", 0),
+                                        getattr(cfg, "gwd_opt", 0))
+    drag_kwargs = {}
+    if drag_fields:
+        missing = [name for name in drag_fields
+                   if terrain_drag_static is None or name not in terrain_drag_static]
+        if missing:
+            raise OfflineChildContractError(
+                f"the downscaled child's terrain drag needs static fields {missing}; "
+                "build its own geography with the terrain-drag options set.")
+        drag_kwargs["terrain_drag_static"] = terrain_drag_static
 
     needs_surface = bool(cfg.sf_surface_physics or cfg.sf_sfclay_physics
                          or cfg.bl_pbl_physics)
@@ -1393,7 +1415,7 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
         # early refusal and this late guard cannot drift apart.
         raise OfflineChildContractError(child_surface_requirement(cfg))
     if surface is None and not radiation_active:
-        return initialize_physics(child, cfg)
+        return initialize_physics(child, cfg, **drag_kwargs)
 
     if surface is not None and "XLAT" in surface.fields:
         lat = np.asarray(surface.fields["XLAT"], dtype=np.float64)
@@ -1445,7 +1467,7 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
         return initialize_physics(
             child, cfg, radiation=radiation,
             radiation_start_time=start_time,
-            radiation_latitude=lat, radiation_longitude=lon)
+            radiation_latitude=lat, radiation_longitude=lon, **drag_kwargs)
 
     from gpuwm.core.landuse import initialize_landuse
     fields = surface.fields
@@ -1466,6 +1488,7 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
         soil_temperature=fields["TSLB"], sst=fields.get("SST"))
     driver = initialize_physics(
         child, cfg, landuse=landuse, tsk=fields["TSK"],
+        landuse_dataset=str(identity["MMINLU"]),
         soil_temperature=fields["TSLB"], soil_moisture=fields["SMOIS"],
         liquid_moisture=fields.get("SH2O"),
         ivgtyp=fields["LU_INDEX"], isltyp=fields["ISLTYP"],
@@ -1474,11 +1497,32 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time):
         snow_depth=fields.get("SNOWH", np.zeros_like(fields["SNOW"])),
         pblh=fields.get("PBLH", 0.0),
         radiation=radiation, radiation_start_time=start_time,
-        radiation_latitude=lat, radiation_longitude=lon)
+        radiation_latitude=lat, radiation_longitude=lon, **drag_kwargs)
     # Seed time-zero surface diagnostics from the child-grid source; the
     # first model step replaces them through SFCLAY/LSM/PBL in WRF
     # ordering (same convention as the experiment path's warm seed).
     import cupy as cp
+    # A child on its OWN geography carries the land-model fields a
+    # standalone run of its grid initializes from its static build (leaf
+    # area on the start date, the greenness range, the snow albedo), the
+    # way gpuwm.ingest.hrrr_physics seeds them; a surface that carries
+    # none (a child-grid file, the parent-interpolated surface) leaves the
+    # driver's own initialization, as before.
+    for source_name, field_name in (("LAI", "lai"), ("SHDMIN", "shdmin"),
+                                    ("SHDMAX", "shdmax")):
+        value = fields.get(source_name)
+        if value is not None and field_name in driver.fields:
+            driver.fields[field_name][...] = cp.asarray(
+                value, dtype=cp.float32)
+    noah_params = getattr(driver, "noah_params", None)
+    if (fields.get("SNOALB") is not None and noah_params is not None
+            and "snoalb" in driver.fields):
+        from gpuwm.core.noah import noah_initial_snow_albedo
+        driver.fields["snoalb"][...] = cp.asarray(
+            noah_initial_snow_albedo(
+                fields["SNOALB"], np.rint(fields["LU_INDEX"]).astype(np.int64),
+                noah_params, rdmaxalb=cfg.rdmaxalb),
+            dtype=cp.float32)
     for source_name, field_name in (
             ("PSFC", "psfc"), ("T2", "t2"), ("Q2", "q2"), ("TH2", "th2"),
             ("U10", "u10"), ("V10", "v10"), ("UST", "ust")):
@@ -2934,7 +2978,8 @@ def _run(args: argparse.Namespace,
         lateral_boundary_reload_count,
         lateral_boundary_resident_bytes,
     )
-    from gpuwm.io.restart import write_restart
+    from gpuwm.acoustic_adaptation import acoustic_receipt
+    from gpuwm.io.restart import auto_epssm_header, write_restart
     from gpuwm.io.wrfout import wrfout_filename
 
     started = time.perf_counter()
@@ -2982,6 +3027,23 @@ def _run(args: argparse.Namespace,
     history_selection.warn_lost_products(
         HISTORY_VOCABULARY, where=f"child d{cfg.grid_id:02d}")
     require_offline_child_root_forcing(cfg)
+    # WHICH GEOGRAPHY the child is built on, resolved at admission through
+    # the one function plan review resolved it with, so the two doors
+    # cannot answer differently; an own-geography child whose WPS_GEOG
+    # tree is not there is refused HERE, before a parent frame is opened.
+    from gpuwm.offline_child_geography import (
+        ChildGeographyError, build_child_geography,
+        load_child_static_policy, require_geog_tree,
+        surface_on_child_geography)
+
+    try:
+        static_policy = load_child_static_policy(
+            args.child_config, cfg,
+            terrain=getattr(args, "child_terrain", None),
+            geog_root=getattr(args, "geog_root", None))
+        require_geog_tree(static_policy, cfg=cfg)
+    except (ChildGeographyError, ValueError) as error:
+        raise OfflineChildContractError(str(error)) from error
     # The same radiation ladder rule plan review asks, asked again here on
     # the direct runner door, which no plan review stands in front of --
     # and asked BEFORE the archive is opened for interpolation rather than
@@ -3041,6 +3103,16 @@ def _run(args: argparse.Namespace,
     if not np.isclose(cfg.dy, expected_dy, rtol=2e-7, atol=1e-6):
         raise OfflineChildContractError(
             f"child dy={cfg.dy} != parent DY/ratio={expected_dy}")
+    # THE ACOUSTIC RULE the child's own ground needs (A181), read off the
+    # terrain it integrates before a frame is interpolated: the
+    # off-centering floor and the substep count every prepared door
+    # applies.  The same function plan review called, so a chosen epssm
+    # below the floor is refused here on the runner door too, and every
+    # step below runs on the adapted config.
+    cfg, acoustic = adapt_child_acoustics(
+        cfg, child_config_path=args.child_config,
+        frame_path=contract.frames[0].path, placement=placement)
+    _log("child_acoustics", **acoustic.receipt())
     # The child's clock, checked by the same function the plan review
     # checked it with (child_cadence), so a cadence that is not a whole
     # number of steps was refused when the child was reviewed and cannot
@@ -3066,7 +3138,8 @@ def _run(args: argparse.Namespace,
     # frame and can stop other work on that disk.
     disk = child_disk_projection(
         cfg, cadence, keep_checkpoints=keep_checkpoints,
-        render_products=render_products, outdir=outdir)
+        render_products=render_products, outdir=outdir,
+        history_selection=history_selection)
     if disk["refusal"] is not None:
         from gpuwm.explain import layered
 
@@ -3086,11 +3159,30 @@ def _run(args: argparse.Namespace,
     health_steps = cadence.health_steps
     checkpoint_due = cadence.checkpoint_due
     surface = None
+    geography = None
+    if static_policy.own:
+        # THE CHILD'S OWN STATIC GEOGRAPHY, built before the parent archive
+        # is interpolated, so a footprint the static sources cannot cover
+        # refuses before the minutes of preparation are spent.
+        try:
+            geography = build_child_geography(
+                contract.frames[0].path, placement, cfg, static_policy,
+                valid_time=contract.start_time)
+        except ChildGeographyError as error:
+            raise OfflineChildContractError(str(error)) from error
+        _log("child_geography", **_jsonable(dict(geography.receipt)))
     surface_from = getattr(args, "child_surface_from", None)
     if surface_from is not None:
         surface = read_child_surface_state(
             surface_from, child_ny=int(cfg.ny), child_nx=int(cfg.nx),
             num_soil_layers=soil_layer_count(cfg))
+    elif child_surface_requirement(cfg) is not None and geography is not None:
+        # The child's land identity is its own static build and its land
+        # state the parent's, put on that land after the initial state
+        # gives the blended terrain and the rebalanced surface pressure
+        # (below).  The parent frame's surface inventory is asked for
+        # there, before any boundary frame is interpolated.
+        pass
     elif child_surface_requirement(cfg) is not None:
         # RESOLVED HERE, before interpolate_parent_initial_state and
         # build_offline_lateral_boundaries spend minutes on the parent
@@ -3230,7 +3322,20 @@ def _run(args: argparse.Namespace,
         contract.frames[0].path, placement,
         physics_binding=binding, target_mp_physics=cfg.mp_physics,
         backend=preprocess_backend,
-        child_eta_levels=cfg.eta_levels, child_cfg=cfg)
+        child_eta_levels=cfg.eta_levels, child_cfg=cfg,
+        geography=geography)
+    if geography is not None:
+        _log("child_terrain", **_jsonable(dict(initial.receipt["terrain"])))
+        if (surface is None
+                and child_surface_requirement(cfg) is not None):
+            surface = surface_on_child_geography(
+                contract.frames[0].path, placement=placement,
+                geography=geography,
+                num_soil_layers=soil_layer_count(cfg),
+                valid_time=contract.start_time,
+                terrain_child=initial.fields["HGT"],
+                psfc=initial.fields["PSFC"])
+            surface_file_receipts = [_file_receipt(surface.path)]
     conversion = initial.receipt.get("conversion")
     if conversion is not None:
         _log("microphysics_conversion",
@@ -3246,7 +3351,8 @@ def _run(args: argparse.Namespace,
         backend=preprocess_backend,
         child_eta_levels=cfg.eta_levels, child_cfg=cfg,
         spec_bdy_width=cfg.spec_bdy_width,
-        spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
+        spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone,
+        geography=geography)
     # A float32 SINT of a number moment can round across zero.  When it
     # does, say so with the numbers: the cells touched, the tolerance and
     # the most negative value are what tell a reader whether they watched
@@ -3267,7 +3373,10 @@ def _run(args: argparse.Namespace,
         steps=steps, output_steps=output_steps)
     bind_lateral_boundary_clock(child, clock)
     driver = _initialize_child_physics(child, cfg, initial, surface,
-                                       initial.valid_time)
+                                       initial.valid_time,
+                                       **({"terrain_drag_static": geography.fields}
+                                          if geography is not None and
+                                          (cfg.topo_wind or cfg.gwd_opt) else {}))
     ozone_routing = _child_ozone_routing(driver)
     cp.cuda.runtime.deviceSynchronize()
     # ``[tiles]``, wired exactly the way the prepared front doors wire it
@@ -3338,16 +3447,23 @@ def _run(args: argparse.Namespace,
     # naming, the one gpuwm.resume.discover_checkpoint_sets recognises), so
     # this run can be the parent of the next downscale, and only the
     # newest ``keep_checkpoints`` of them stay on disk.
+    # The scheme conversion this child was born through, source and target
+    # named, so a record built from this restart carries both ends of the
+    # seam; absent for a same-scheme child.  And whether its epssm was the
+    # model's choice, so a grandchild derived from it inherits that label
+    # (A181); absent for a written one.  A header with neither is what it
+    # always was.
+    restart_header = {
+        **({} if conversion is None else {
+            "offline_microphysics_conversion": _jsonable(conversion)}),
+        **auto_epssm_header(
+            int(cfg.grid_id),
+            (int(cfg.grid_id),) if child_epssm_is_auto(args.child_config)
+            else ())}
     checkpoints = ChildCheckpoints(
         outdir, grid_id=cfg.grid_id, keep=keep_checkpoints,
         write=lambda path: write_restart(
-            path, child, cfg,
-            # The scheme conversion this child was born through, source
-            # and target named, so a record built from this restart
-            # carries both ends of the seam; absent for a same-scheme
-            # child, whose header is what it always was.
-            tree_header=(None if conversion is None else {
-                "offline_microphysics_conversion": _jsonable(conversion)})))
+            path, child, cfg, tree_header=restart_header or None))
     carriers_refreshed = 0
 
     def emit_checkpoint() -> None:
@@ -3494,6 +3610,10 @@ def _run(args: argparse.Namespace,
             None if cfg.eta_levels is None
             else [float(value) for value in cfg.eta_levels]),
         "target_mp_physics": int(cfg.mp_physics),
+        # The acoustic rule read off the child's own ground (A181): the
+        # epssm and substep count it ran, and why, as the prepared doors
+        # record theirs.
+        "acoustic_substeps": acoustic_receipt([acoustic]),
         "placement": {
             "parent_grid_ratio": placement.parent_grid_ratio,
             "i_parent_start": placement.i_parent_start,
@@ -3531,6 +3651,15 @@ def _run(args: argparse.Namespace,
         "child_ozone_routing": ozone_routing,
         "child_surface_source": (
             None if surface is None else dict(surface.receipt)),
+        # WHICH TERRAIN the child ran on: its own static geography (the
+        # default) or its parent's, with the static build and the blend
+        # and rebalance receipts when it was its own.
+        "child_terrain": {
+            "policy": dict(static_policy.receipt()),
+            "geography": (None if geography is None
+                          else _jsonable(dict(geography.receipt))),
+            "initial": _jsonable(initial.receipt.get("terrain")),
+        },
         "child_surface_file_receipts": surface_file_receipts,
         # The online nest edge's own contract receipt for a child of a
         # different scheme (species actions, closure constants, source and
@@ -3632,6 +3761,16 @@ def _parser() -> argparse.ArgumentParser:
                              "(required for surface-physics children)")
     parser.add_argument("--preprocess-backend", choices=("cuda", "cpu", "auto"),
                         default="auto")
+    parser.add_argument("--parent-terrain", action="store_const",
+                        const="parent", default=None, dest="child_terrain",
+                        help="run the child on its parent's interpolated "
+                             "terrain, land use and soil instead of its own "
+                             "static geography (the default)")
+    parser.add_argument("--geog-root", type=Path, default=None,
+                        help="the WPS_GEOG tree the child's own static "
+                             "geography is built from (default: the child "
+                             "config's [static] geog_root, else the staged "
+                             "tree)")
     parser.add_argument("--health-interval-seconds", type=float, default=60.0)
     parser.add_argument("--render-products", default=None, metavar="LIST",
                         dest="render_products",

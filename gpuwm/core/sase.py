@@ -45,6 +45,7 @@ import numpy as np
 import cupy as cp
 
 from gpuwm.core.kernels import get_kernel_int_defines
+from gpuwm.core.sase_limits import THREADS_PER_BLOCK
 from gpuwm.core.state import DTYPE
 from gpuwm.verify.sase_ref import (BL89_MIX_EXP, BLACKADAR_LAMBDA, C_E,
                                    MAX_COLUMN_LEVELS,
@@ -84,7 +85,7 @@ from gpuwm.verify.sase_ref import (BL89_MIX_EXP, BLACKADAR_LAMBDA, C_E,
 #: which silently drop lanes on a non-power-of-two block.
 _INT_DEFINES: tuple[tuple[str, int], ...] = (
     ("SASE_KMAX", MAX_COLUMN_LEVELS),
-    ("SASE_TPB", 128),
+    ("SASE_TPB", THREADS_PER_BLOCK),
 )
 assert all(v > 0 and (v & (v - 1)) == 0 for _, v in _INT_DEFINES), (
     "SASE integer defines must be positive powers of two "

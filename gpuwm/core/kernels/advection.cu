@@ -39,8 +39,9 @@
 // zero-gradient rom ghost) for u unless open_y is also set (the Fortran's
 // commented-out open_x bounds + active open_ys/ye bounds), and dropped
 // for v whenever open_y is set -- both asymmetries transcribed verbatim.
-// The periodic path (open_x = open_y = 0) is the original code,
-// bitwise unchanged (tests/data/advection_periodic_regression.npz).
+// Periodic tendencies below the model lid retain the original arithmetic
+// (tests/data/advection_periodic_regression.npz). The w lid row includes
+// the native WRF flux contribution, checked by the compiled Fortran oracle.
 //
 // Specified boundaries (Phase 4 transport FIX-D; WRF's `specified`
 // logical): with spec != 0 (dycore sets it from cfg.specified, always
@@ -74,19 +75,44 @@
 // tests/data/phase2_step_regression.npz) regardless of FMA contraction
 // choices.
 
+#if !GPUWM_WRF_EXACT_C_ADVECTION
+// Equivalent periodic indices without the second signed remainder.
+__device__ __forceinline__ int adv_periodic(int i, int n)
+{
+    int r = i % n;
+    return r < 0 ? r + n : r;
+}
+
+#endif
+
 __device__ __forceinline__
 real flux5(real qm3, real qm2, real qm1, real q0, real qp1, real qp2, real vel)
 {
+#if GPUWM_WRF_EXACT_C_ADVECTION
+    real center = __fdiv_rn(37.0f * (q0 + qm1)
+                    - 8.0f * (qp1 + qm2) + (qp2 + qm3), 60.0f);
+    real dissipation = __fdiv_rn(copysignf(1.0f, vel)
+        * ((qp2 - qm3) - 5.0f * (qp1 - qm2) + 10.0f * (q0 - qm1)), 60.0f);
+    return vel * (center - dissipation);
+#else
     return __fdiv_rn((vel * (37.0f * (q0 + qm1) - 8.0f * (qp1 + qm2) + (qp2 + qm3))
             - fabsf(vel) * (10.0f * (q0 - qm1) - 5.0f * (qp1 - qm2)
                             + (qp2 - qm3))), 60.0f);
+#endif
 }
 
 __device__ __forceinline__
 real flux3(real qm2, real qm1, real q0, real qp1, real vel)
 {
+#if GPUWM_WRF_EXACT_C_ADVECTION
+    real center = __fdiv_rn(7.0f * (q0 + qm1) - (qp1 + qm2), 12.0f);
+    real dissipation = __fdiv_rn(copysignf(1.0f, vel)
+        * ((qp1 - qm2) - 3.0f * (q0 - qm1)), 12.0f);
+    return vel * (center - dissipation);
+#else
     return __fdiv_rn((vel * (7.0f * (q0 + qm1) - (qp1 + qm2))
             + fabsf(vel) * (3.0f * (q0 - qm1) - (qp1 - qm2))), 12.0f);
+#endif
 }
 
 // Horizontal 3rd-order face flux (WRF flux3 with the flux5 upwinding
@@ -95,8 +121,15 @@ real flux3(real qm2, real qm1, real q0, real qp1, real vel)
 __device__ __forceinline__
 real flux3h(real qm2, real qm1, real q0, real qp1, real vel)
 {
+#if GPUWM_WRF_EXACT_C_ADVECTION
+    real center = __fdiv_rn(7.0f * (q0 + qm1) - (qp1 + qm2), 12.0f);
+    real dissipation = __fdiv_rn(copysignf(1.0f, vel)
+        * ((qp1 - qm2) - 3.0f * (q0 - qm1)), 12.0f);
+    return vel * (center + dissipation);
+#else
     return __fdiv_rn((vel * (7.0f * (q0 + qm1) - (qp1 + qm2))
             - fabsf(vel) * (3.0f * (q0 - qm1) - (qp1 - qm2))), 12.0f);
+#endif
 }
 
 __device__ __forceinline__
@@ -217,6 +250,126 @@ void flux_div_scalar(const real* __restrict__ q,
                      int nz, int ny, int nx,
                      int open_x, int open_y, int has_msf, int spec)
 {
+#if GPUWM_WRF_EXACT_C_ADVECTION
+
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || k >= nz) return;
+    real mscale=has_msf?msf[(size_t)j*nx+i]:1.0f;
+
+
+
+    if (open_x || open_y) {                            // WRF advect_scalar
+        real th = 0.0f; real tx=0.0f,ty=0.0f; bool applyx=false,applyy=false;                                // open path with msf
+        real tb = 0.0f;                                // (FIX-A): weighted
+                                                       // flux divergences /
+                                                       // plain non-cb terms
+        if (open_x && (i == 0 || i == nx - 1)) {       // non-cb open term
+            if (spec) {
+                // WRF specified: no x tendency at boundary cells
+                // (F:4037-4038); non-cb terms are open-only (F:4115).
+            } else if (i == 0) {                       // (plain rdx, WRF
+                real ru0 = ru[I3(k, j, 0, ny, nx + 1)];        // F:4119)
+                real ru1 = ru[I3(k, j, 1, ny, nx + 1)];
+                real ub = fminf(0.5f * (ru0 + ru1), 0.0f);
+                tx = dx_inv * (ub * (q[IDX3(k, j, 1)] - q[IDX3(k, j, 0)])
+                                 + q[IDX3(k, j, 0)] * (ru1 - ru0)); applyx=true;
+            } else {
+                real ru0 = ru[I3(k, j, nx - 1, ny, nx + 1)];
+                real ru1 = ru[I3(k, j, nx, ny, nx + 1)];
+                real ub = fmaxf(0.5f * (ru0 + ru1), 0.0f);
+                tx = dx_inv * (ub * (q[IDX3(k, j, nx - 1)]
+                                       - q[IDX3(k, j, nx - 2)])
+                                 + q[IDX3(k, j, nx - 1)] * (ru1 - ru0)); applyx=true;
+            }
+        } else {
+            real fx0, fx1;
+            real v0 = ru[I3(k, j, i, ny, nx + 1)];
+            real v1 = ru[I3(k, j, i + 1, ny, nx + 1)];
+            if (open_x) {
+                fx0 = xface_cell_open(q, v0, k, j, i, nx, ny, nx);
+                fx1 = xface_cell_open(q, v1, k, j, i + 1, nx, ny, nx);
+            } else {
+                fx0 = xface_cell_per(q, v0, k, j, i, nx, ny, nx);
+                fx1 = xface_cell_per(q, v1, k, j, i + 1, nx, ny, nx);
+            }
+            tx=(mscale*dx_inv)*(fx1-fx0); applyx=true;
+        }
+        if (open_y && (j == 0 || j == ny - 1)) {
+            if (spec) {
+                // WRF specified: no y tendency at boundary cells
+                // (F:4056-4057 scalar / F:5607-5608 w); non-cb terms are
+                // open-only (F:4147/:5775).
+            } else if (j == 0) {
+                real rv0 = rv[I3(k, 0, i, ny + 1, nx)];
+                real rv1 = rv[I3(k, 1, i, ny + 1, nx)];
+                real vb = fminf(0.5f * (rv0 + rv1), 0.0f);
+                ty = dy_inv * (vb * (q[IDX3(k, 1, i)] - q[IDX3(k, 0, i)])
+                                 + q[IDX3(k, 0, i)] * (rv1 - rv0)); applyy=true;
+            } else {
+                real rv0 = rv[I3(k, ny - 1, i, ny + 1, nx)];
+                real rv1 = rv[I3(k, ny, i, ny + 1, nx)];
+                real vb = fmaxf(0.5f * (rv0 + rv1), 0.0f);
+                ty = dy_inv * (vb * (q[IDX3(k, ny - 1, i)]
+                                       - q[IDX3(k, ny - 2, i)])
+                                 + q[IDX3(k, ny - 1, i)] * (rv1 - rv0)); applyy=true;
+            }
+        } else {
+            real fy0, fy1;
+            real v0 = rv[I3(k, j, i, ny + 1, nx)];
+            real v1 = rv[I3(k, j + 1, i, ny + 1, nx)];
+            if (open_y) {
+                fy0 = yface_cell_open(q, v0, k, j, i, ny, ny, nx);
+                fy1 = yface_cell_open(q, v1, k, j + 1, i, ny, ny, nx);
+            } else {
+                fy0 = yface_cell_per(q, v0, k, j, i, ny, ny, nx);
+                fy1 = yface_cell_per(q, v1, k, j + 1, i, ny, ny, nx);
+            }
+            ty=(mscale*dy_inv)*(fy1-fy0); applyy=true;
+        }
+        real fzo[2];
+        for (int s = 0; s < 2; ++s) {
+            int kf = k + s;
+            fzo[s] = zface_half(q, rw[I3(kf, j, i, ny, nx)], kf, j, i,
+                                nz, ny, nx, fnm, fnp);
+        }
+        real t = tend_out[IDX3(k,j,i)];
+        if(applyy)t=t-ty;
+        if(applyx)t=t-tx;    // WRF mrdx/mrdy
+        tend_out[IDX3(k,j,i)] = t - rdnw[k]*(fzo[1]-fzo[0]);
+        return;
+    }
+
+    real fx[2], fy[2], fz[2];
+    for (int s = 0; s < 2; ++s) {
+        int f = i + s;                                 // u-face index 0..nx
+        fx[s] = flux5(q[IDX3(k, j, PERIODIC(f - 3, nx))],
+                      q[IDX3(k, j, PERIODIC(f - 2, nx))],
+                      q[IDX3(k, j, PERIODIC(f - 1, nx))],
+                      q[IDX3(k, j, PERIODIC(f,     nx))],
+                      q[IDX3(k, j, PERIODIC(f + 1, nx))],
+                      q[IDX3(k, j, PERIODIC(f + 2, nx))],
+                      ru[I3(k, j, f, ny, nx + 1)]);
+        int g = j + s;                                 // v-face index 0..ny
+        fy[s] = flux5(q[IDX3(k, PERIODIC(g - 3, ny), i)],
+                      q[IDX3(k, PERIODIC(g - 2, ny), i)],
+                      q[IDX3(k, PERIODIC(g - 1, ny), i)],
+                      q[IDX3(k, PERIODIC(g,     ny), i)],
+                      q[IDX3(k, PERIODIC(g + 1, ny), i)],
+                      q[IDX3(k, PERIODIC(g + 2, ny), i)],
+                      rv[I3(k, g, i, ny + 1, nx)]);
+        int kf = k + s;                                // w-face index 0..nz
+        real vel = rw[I3(kf, j, i, ny, nx)];
+        fz[s] = zface_half(q, vel, kf, j, i, nz, ny, nx, fnm, fnp);
+    }
+    real result=tend_out[IDX3(k,j,i)];
+    result=result-(mscale*dy_inv)*(fy[1]-fy[0]);
+    result=result-(mscale*dx_inv)*(fx[1]-fx[0]);
+    result=result-rdnw[k]*(fz[1]-fz[0]);
+    tend_out[IDX3(k,j,i)]=result;
+#else
+
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     int k = blockIdx.z * blockDim.z + threadIdx.z;
@@ -384,20 +537,20 @@ void flux_div_scalar(const real* __restrict__ q,
     real fx[2], fy[2], fz[2];
     for (int s = 0; s < 2; ++s) {
         int f = i + s;                                 // u-face index 0..nx
-        fx[s] = flux5(q[IDX3(k, j, PERIODIC(f - 3, nx))],
-                      q[IDX3(k, j, PERIODIC(f - 2, nx))],
-                      q[IDX3(k, j, PERIODIC(f - 1, nx))],
-                      q[IDX3(k, j, PERIODIC(f,     nx))],
-                      q[IDX3(k, j, PERIODIC(f + 1, nx))],
-                      q[IDX3(k, j, PERIODIC(f + 2, nx))],
+        fx[s] = flux5(q[IDX3(k, j, adv_periodic(f - 3, nx))],
+                      q[IDX3(k, j, adv_periodic(f - 2, nx))],
+                      q[IDX3(k, j, adv_periodic(f - 1, nx))],
+                      q[IDX3(k, j, adv_periodic(f,     nx))],
+                      q[IDX3(k, j, adv_periodic(f + 1, nx))],
+                      q[IDX3(k, j, adv_periodic(f + 2, nx))],
                       ru[I3(k, j, f, ny, nx + 1)]);
         int g = j + s;                                 // v-face index 0..ny
-        fy[s] = flux5(q[IDX3(k, PERIODIC(g - 3, ny), i)],
-                      q[IDX3(k, PERIODIC(g - 2, ny), i)],
-                      q[IDX3(k, PERIODIC(g - 1, ny), i)],
-                      q[IDX3(k, PERIODIC(g,     ny), i)],
-                      q[IDX3(k, PERIODIC(g + 1, ny), i)],
-                      q[IDX3(k, PERIODIC(g + 2, ny), i)],
+        fy[s] = flux5(q[IDX3(k, adv_periodic(g - 3, ny), i)],
+                      q[IDX3(k, adv_periodic(g - 2, ny), i)],
+                      q[IDX3(k, adv_periodic(g - 1, ny), i)],
+                      q[IDX3(k, adv_periodic(g,     ny), i)],
+                      q[IDX3(k, adv_periodic(g + 1, ny), i)],
+                      q[IDX3(k, adv_periodic(g + 2, ny), i)],
                       rv[I3(k, g, i, ny + 1, nx)]);
         int kf = k + s;                                // w-face index 0..nz
         real vel = rw[I3(kf, j, i, ny, nx)];
@@ -413,6 +566,7 @@ void flux_div_scalar(const real* __restrict__ q,
                                    - (fy[1] - fy[0]) * dy_inv
                                    - (fz[1] - fz[0]) * rdnw[k];
     }
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -435,6 +589,181 @@ void flux_div_u(const real* __restrict__ u,            // (nz, ny, nx+1)
                 int nz, int ny, int nx,
                 int open_x, int open_y, int has_msf, int spec)
 {
+#if GPUWM_WRF_EXACT_C_ADVECTION
+
+    int i = blockIdx.x * blockDim.x + threadIdx.x;     // u-point 0..nx
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx + 1 || j >= ny || k >= nz) return;
+    real mscale=has_msf?msf[(size_t)j*(nx+1)+i]:1.0f;
+
+    if (open_x || open_y) {                            // WRF advect_u
+        int nxs = nx + 1;                              // open-BC path
+        bool xedge = open_x && (i == 0 || i == nx);    // boundary-normal face
+        int cl = open_x ? max(i - 1, 0) : PERIODIC(i - 1, nx);
+        int cr = open_x ? min(i, nx - 1) : PERIODIC(i, nx);
+        int iu = open_x ? i : cr;                      // u read column: the
+        real th = 0.0f; real tx=0.0f,ty=0.0f; bool applyx=false,applyy=false;                                // periodic duplicate
+                                                       // face nx reads col 0
+
+        if (!xedge) {                                  // x advection
+            real fx2[2];
+            for (int s = 0; s < 2; ++s) {
+                int m = (s == 0) ? cl : cr;            // mass-center face
+                real velx = 0.5f * (ru[I3(k, j, m, ny, nxs)]
+                                    + ru[I3(k, j, m + 1, ny, nxs)]);
+                if (open_x) {
+                    int d = min(m, nx - 1 - m);
+                    if (d == 0) {
+                        // WRF "specified uses upstream normal wind at
+                        // boundaries" (advect_u F:690-723): fqx(ids+1)
+                        // takes ub = u(ids+1) when u(ids+1) < 0, fqx(ide)
+                        // takes ub = u(ide-1) when u(ide-1) > 0.
+                        real qa = u[I3(k, j, m, ny, nxs)];
+                        real qb = u[I3(k, j, m + 1, ny, nxs)];
+                        if (spec) {
+                            if (m == 0)      { if (qb < 0.0f) qa = qb; }
+                            else             { if (qa > 0.0f) qb = qa; }
+                        }
+                        fx2[s] = flux2(qa, qb, velx);
+                    }
+                    else if (d == 1)
+                        fx2[s] = flux3h(u[I3(k, j, m - 1, ny, nxs)],
+                                        u[I3(k, j, m, ny, nxs)],
+                                        u[I3(k, j, m + 1, ny, nxs)],
+                                        u[I3(k, j, m + 2, ny, nxs)], velx);
+                    else
+                        fx2[s] = flux5(u[I3(k, j, m - 2, ny, nxs)],
+                                       u[I3(k, j, m - 1, ny, nxs)],
+                                       u[I3(k, j, m, ny, nxs)],
+                                       u[I3(k, j, m + 1, ny, nxs)],
+                                       u[I3(k, j, m + 2, ny, nxs)],
+                                       u[I3(k, j, m + 3, ny, nxs)], velx);
+                } else {
+                    fx2[s] = flux5(u[I3(k, j, PERIODIC(m - 2, nx), ny, nxs)],
+                                   u[I3(k, j, PERIODIC(m - 1, nx), ny, nxs)],
+                                   u[I3(k, j, PERIODIC(m, nx), ny, nxs)],
+                                   u[I3(k, j, PERIODIC(m + 1, nx), ny, nxs)],
+                                   u[I3(k, j, PERIODIC(m + 2, nx), ny, nxs)],
+                                   u[I3(k, j, PERIODIC(m + 3, nx), ny, nxs)],
+                                   velx);
+                }
+            }
+            tx = mscale*dx_inv*(fx2[1]-fx2[0]); applyx=true;
+        }
+
+        if (!xedge) {                                  // y advection
+            if (open_y && (j == 0 || j == ny - 1)) {   // non-cb open y-term
+                if (spec) {
+                    // WRF specified: u rows jds/jde-1 get no y tendency
+                    // (degrade bounds j_start=jds+1, j_end=jde-2); the
+                    // non-cb y-terms are open-only (F:1292/:1314).
+                } else if (j == 0) {                   // (msf-weighted with
+                    real vw = 0.5f * (rv[I3(k, 0, cl, ny + 1, nx)]   // th:
+                                      + rv[I3(k, 0, cr, ny + 1, nx)]);
+                    real vb = fminf(vw, 0.0f);         // WRF mrdy, F:1296)
+                    real dsum = (rv[I3(k, 1, cl, ny + 1, nx)]
+                                 - rv[I3(k, 0, cl, ny + 1, nx)])
+                              + (rv[I3(k, 1, cr, ny + 1, nx)]
+                                 - rv[I3(k, 0, cr, ny + 1, nx)]);
+                    ty = mscale*dy_inv * (vb * (u[I3(k, 1, iu, ny, nxs)]
+                                           - u[I3(k, 0, iu, ny, nxs)])
+                                     + 0.5f * u[I3(k, 0, iu, ny, nxs)] * dsum); applyy=true;
+                } else {
+                    real vw = 0.5f * (rv[I3(k, ny, cl, ny + 1, nx)]
+                                      + rv[I3(k, ny, cr, ny + 1, nx)]);
+                    real vb = fmaxf(vw, 0.0f);
+                    real dsum = (rv[I3(k, ny, cl, ny + 1, nx)]
+                                 - rv[I3(k, ny - 1, cl, ny + 1, nx)])
+                              + (rv[I3(k, ny, cr, ny + 1, nx)]
+                                 - rv[I3(k, ny - 1, cr, ny + 1, nx)]);
+                    ty = mscale*dy_inv * (vb * (u[I3(k, ny - 1, iu, ny, nxs)]
+                                           - u[I3(k, ny - 2, iu, ny, nxs)])
+                                     + 0.5f * u[I3(k, ny - 1, iu, ny, nxs)]
+                                       * dsum); applyy=true;
+                }
+            } else {
+                real fy2[2];
+                for (int s = 0; s < 2; ++s) {
+                    int g = j + s;                     // corner row 0..ny
+                    real vely = 0.5f * (rv[I3(k, g, cl, ny + 1, nx)]
+                                        + rv[I3(k, g, cr, ny + 1, nx)]);
+                    fy2[s] = open_y
+                        ? yface_cell_open(u, vely, k, g, iu, ny, ny, nxs)
+                        : yface_cell_per(u, vely, k, g, iu, ny, ny, nxs);
+                }
+                ty = mscale*dy_inv*(fy2[1]-fy2[0]); applyy=true;
+            }
+        }
+
+        // WRF advect_u weights every horizontal term (flux divergences AND
+        // the non-cb open y-term) by msfux at the u point (mrdx F:740,
+        // mrdy F:633/1296); the vertical term below stays unweighted.
+        real t = tend_out[I3(k,j,i,ny,nx+1)];
+        if(applyy)t=t-ty;
+        if(applyx)t=t-tx;
+
+        // z advection: retained at the boundary-normal faces with the
+        // boundary cell's Omega unless open_y (Fortran advect_u vertical
+        // bounds: open_x exclusions commented out, open_ys/ye + specified
+        // active).
+        if (!(xedge && open_y)) {
+            real fz2[2];
+            for (int s = 0; s < 2; ++s) {
+                int kf = k + s;
+                real velz;
+                if (open_x && i == 0)
+                    velz = rw[I3(kf, j, 0, ny, nx)];
+                else if (open_x && i == nx)
+                    velz = rw[I3(kf, j, nx - 1, ny, nx)];
+                else
+                    velz = 0.5f * (rw[I3(kf, j, cl, ny, nx)]
+                                   + rw[I3(kf, j, cr, ny, nx)]);
+                fz2[s] = zface_half(u, velz, kf, j, iu, nz, ny, nxs, fnm, fnp);
+            }
+            t = t - rdnw[k]*(fz2[1]-fz2[0]);
+        }
+        tend_out[I3(k,j,i,ny,nx+1)] = t;
+        return;
+    }
+
+    int ic   = PERIODIC(i, nx);                        // right mass column
+    int im1c = PERIODIC(i - 1, nx);                    // left mass column
+
+    real fx[2], fy[2], fz[2];
+    for (int s = 0; s < 2; ++s) {
+        int m = (s == 0) ? im1c : ic;                  // mass-center face
+        real velx = 0.5f * (ru[I3(k, j, m,     ny, nx + 1)]
+                          + ru[I3(k, j, m + 1, ny, nx + 1)]);
+        fx[s] = flux5(u[I3(k, j, PERIODIC(m - 2, nx), ny, nx + 1)],
+                      u[I3(k, j, PERIODIC(m - 1, nx), ny, nx + 1)],
+                      u[I3(k, j, PERIODIC(m,     nx), ny, nx + 1)],
+                      u[I3(k, j, PERIODIC(m + 1, nx), ny, nx + 1)],
+                      u[I3(k, j, PERIODIC(m + 2, nx), ny, nx + 1)],
+                      u[I3(k, j, PERIODIC(m + 3, nx), ny, nx + 1)],
+                      velx);
+        int g = j + s;                                 // corner row 0..ny
+        real vely = 0.5f * (rv[I3(k, g, im1c, ny + 1, nx)]
+                          + rv[I3(k, g, ic,   ny + 1, nx)]);
+        fy[s] = flux5(u[I3(k, PERIODIC(g - 3, ny), ic, ny, nx + 1)],
+                      u[I3(k, PERIODIC(g - 2, ny), ic, ny, nx + 1)],
+                      u[I3(k, PERIODIC(g - 1, ny), ic, ny, nx + 1)],
+                      u[I3(k, PERIODIC(g,     ny), ic, ny, nx + 1)],
+                      u[I3(k, PERIODIC(g + 1, ny), ic, ny, nx + 1)],
+                      u[I3(k, PERIODIC(g + 2, ny), ic, ny, nx + 1)],
+                      vely);
+        int kf = k + s;
+        real velz = 0.5f * (rw[I3(kf, j, im1c, ny, nx)]
+                          + rw[I3(kf, j, ic,   ny, nx)]);
+        fz[s] = zface_half(u, velz, kf, j, ic, nz, ny, nx + 1, fnm, fnp);
+    }
+    real result=tend_out[I3(k,j,i,ny,nx+1)];
+    result=result-(mscale*dy_inv)*(fy[1]-fy[0]);
+    result=result-(mscale*dx_inv)*(fx[1]-fx[0]);
+    result=result-rdnw[k]*(fz[1]-fz[0]);
+    tend_out[I3(k,j,i,ny,nx+1)]=result;
+#else
+
     int i = blockIdx.x * blockDim.x + threadIdx.x;     // u-point 0..nx
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     int k = blockIdx.z * blockDim.z + threadIdx.z;
@@ -608,6 +937,7 @@ void flux_div_u(const real* __restrict__ u,            // (nz, ny, nx+1)
                                              - (fy[1] - fy[0]) * dy_inv
                                              - (fz[1] - fz[0]) * rdnw[k];
     }
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -627,10 +957,13 @@ void flux_div_v(const real* __restrict__ v,            // (nz, ny+1, nx)
                 int nz, int ny, int nx,
                 int open_x, int open_y, int has_msf, int spec)
 {
+#if GPUWM_WRF_EXACT_C_ADVECTION
+
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;     // v-point 0..ny
     int k = blockIdx.z * blockDim.z + threadIdx.z;
     if (i >= nx || j >= ny + 1 || k >= nz) return;
+    real mscale=has_msf?msf[(size_t)j*nx+i]:1.0f;
 
     if (open_x || open_y) {                            // WRF advect_v
         int nys = ny + 1;                              // open-BC path
@@ -638,7 +971,7 @@ void flux_div_v(const real* __restrict__ v,            // (nz, ny+1, nx)
         int rs = open_y ? max(j - 1, 0) : PERIODIC(j - 1, ny);
         int rn = open_y ? min(j, ny - 1) : PERIODIC(j, ny);
         int jv = open_y ? j : rn;                      // v read row: the
-        real th = 0.0f;                                // periodic duplicate
+        real th = 0.0f; real tx=0.0f,ty=0.0f; bool applyx=false,applyy=false;                                // periodic duplicate
                                                        // face ny reads row 0
 
         if (!yedge) {                                  // y advection
@@ -681,6 +1014,169 @@ void flux_div_v(const real* __restrict__ v,            // (nz, ny+1, nx)
                                    v[I3(k, PERIODIC(m + 1, ny), i, nys, nx)],
                                    v[I3(k, PERIODIC(m + 2, ny), i, nys, nx)],
                                    v[I3(k, PERIODIC(m + 3, ny), i, nys, nx)],
+                                   vely);
+                }
+            }
+            ty = mscale*dy_inv*(fy2[1]-fy2[0]); applyy=true;
+        }
+
+        if (!yedge) {                                  // x advection
+            if (open_x && (i == 0 || i == nx - 1)) {   // non-cb open x-term:
+                // corner-averaged ru AT the boundary face (WRF advect_v
+                // open_xs/xe, module_advect_em.F:2763/2785).
+                if (spec) {
+                    // WRF specified: v columns ids/ide-1 get no x tendency
+                    // (F:2660-2661); the non-cb x-terms are open-only
+                    // (F:2763/:2785).
+                } else if (i == 0) {
+                    real uw0 = 0.5f * (ru[I3(k, rs, 0, ny, nx + 1)]
+                                       + ru[I3(k, rn, 0, ny, nx + 1)]);
+                    real uw1 = 0.5f * (ru[I3(k, rs, 1, ny, nx + 1)]
+                                       + ru[I3(k, rn, 1, ny, nx + 1)]);
+                    real ub = fminf(uw0, 0.0f);
+                    tx = mscale*dx_inv * (ub * (v[I3(k, jv, 1, nys, nx)]
+                                           - v[I3(k, jv, 0, nys, nx)])
+                                     + v[I3(k, jv, 0, nys, nx)] * (uw1 - uw0)); applyx=true;
+                } else {
+                    real uw0 = 0.5f * (ru[I3(k, rs, nx - 1, ny, nx + 1)]
+                                       + ru[I3(k, rn, nx - 1, ny, nx + 1)]);
+                    real uw1 = 0.5f * (ru[I3(k, rs, nx, ny, nx + 1)]
+                                       + ru[I3(k, rn, nx, ny, nx + 1)]);
+                    real ub = fmaxf(uw1, 0.0f);
+                    tx = mscale*dx_inv * (ub * (v[I3(k, jv, nx - 1, nys, nx)]
+                                           - v[I3(k, jv, nx - 2, nys, nx)])
+                                     + v[I3(k, jv, nx - 1, nys, nx)]
+                                       * (uw1 - uw0)); applyx=true;
+                }
+            } else {
+                real fx2[2];
+                for (int s = 0; s < 2; ++s) {
+                    int f = i + s;                     // corner column 0..nx
+                    real velx = 0.5f * (ru[I3(k, rs, f, ny, nx + 1)]
+                                        + ru[I3(k, rn, f, ny, nx + 1)]);
+                    fx2[s] = open_x
+                        ? xface_cell_open(v, velx, k, jv, f, nx, nys, nx)
+                        : xface_cell_per(v, velx, k, jv, f, nx, nys, nx);
+                }
+                tx = mscale*dx_inv*(fx2[1]-fx2[0]); applyx=true;
+            }
+        }
+
+        // WRF advect_v weights every horizontal term (flux divergences AND
+        // the non-cb open x-term) by msfvy at the v point (mrdy F:2050,
+        // mrdx F:2676/2766); the vertical term below stays unweighted.
+        real t = tend_out[I3(k,j,i,ny+1,nx)];
+        if(applyy)t=t-ty;
+        if(applyx)t=t-tx;
+
+        // z advection: excluded at the boundary-normal faces whenever
+        // open_y or specified (Fortran advect_v vertical open_ys/ye
+        // j-bounds).
+        if (!yedge) {
+            real fz2[2];
+            for (int s = 0; s < 2; ++s) {
+                int kf = k + s;
+                real velz = 0.5f * (rw[I3(kf, rs, i, ny, nx)]
+                                    + rw[I3(kf, rn, i, ny, nx)]);
+                fz2[s] = zface_half(v, velz, kf, jv, i, nz, nys, nx, fnm, fnp);
+            }
+            t = t - rdnw[k]*(fz2[1]-fz2[0]);
+        }
+        tend_out[I3(k,j,i,ny+1,nx)] = t;
+        return;
+    }
+
+    int jc   = PERIODIC(j, ny);                        // north mass row
+    int jm1c = PERIODIC(j - 1, ny);                    // south mass row
+
+    real fx[2], fy[2], fz[2];
+    for (int s = 0; s < 2; ++s) {
+        int f = i + s;                                 // corner column 0..nx
+        real velx = 0.5f * (ru[I3(k, jm1c, f, ny, nx + 1)]
+                          + ru[I3(k, jc,   f, ny, nx + 1)]);
+        fx[s] = flux5(v[I3(k, jc, PERIODIC(f - 3, nx), ny + 1, nx)],
+                      v[I3(k, jc, PERIODIC(f - 2, nx), ny + 1, nx)],
+                      v[I3(k, jc, PERIODIC(f - 1, nx), ny + 1, nx)],
+                      v[I3(k, jc, PERIODIC(f,     nx), ny + 1, nx)],
+                      v[I3(k, jc, PERIODIC(f + 1, nx), ny + 1, nx)],
+                      v[I3(k, jc, PERIODIC(f + 2, nx), ny + 1, nx)],
+                      velx);
+        int m = (s == 0) ? jm1c : jc;                  // mass-center face
+        real vely = 0.5f * (rv[I3(k, m,     i, ny + 1, nx)]
+                          + rv[I3(k, m + 1, i, ny + 1, nx)]);
+        fy[s] = flux5(v[I3(k, PERIODIC(m - 2, ny), i, ny + 1, nx)],
+                      v[I3(k, PERIODIC(m - 1, ny), i, ny + 1, nx)],
+                      v[I3(k, PERIODIC(m,     ny), i, ny + 1, nx)],
+                      v[I3(k, PERIODIC(m + 1, ny), i, ny + 1, nx)],
+                      v[I3(k, PERIODIC(m + 2, ny), i, ny + 1, nx)],
+                      v[I3(k, PERIODIC(m + 3, ny), i, ny + 1, nx)],
+                      vely);
+        int kf = k + s;
+        real velz = 0.5f * (rw[I3(kf, jm1c, i, ny, nx)]
+                          + rw[I3(kf, jc,   i, ny, nx)]);
+        fz[s] = zface_half(v, velz, kf, jc, i, nz, ny + 1, nx, fnm, fnp);
+    }
+    real result=tend_out[I3(k,j,i,ny+1,nx)];
+    result=result-(mscale*dy_inv)*(fy[1]-fy[0]);
+    result=result-(mscale*dx_inv)*(fx[1]-fx[0]);
+    result=result-rdnw[k]*(fz[1]-fz[0]);
+    tend_out[I3(k,j,i,ny+1,nx)]=result;
+#else
+
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;     // v-point 0..ny
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny + 1 || k >= nz) return;
+
+    if (open_x || open_y) {                            // WRF advect_v
+        int nys = ny + 1;                              // open-BC path
+        bool yedge = open_y && (j == 0 || j == ny);    // boundary-normal face
+        int rs = open_y ? max(j - 1, 0) : adv_periodic(j - 1, ny);
+        int rn = open_y ? min(j, ny - 1) : adv_periodic(j, ny);
+        int jv = open_y ? j : rn;                      // v read row: the
+        real th = 0.0f;                                // periodic duplicate
+                                                       // face ny reads row 0
+
+        if (!yedge) {                                  // y advection
+            real fy2[2];
+            for (int s = 0; s < 2; ++s) {
+                int m = (s == 0) ? rs : rn;            // mass-center face
+                real vely = 0.5f * (rv[I3(k, m, i, nys, nx)]
+                                    + rv[I3(k, m + 1, i, nys, nx)]);
+                if (open_y) {
+                    int d = min(m, ny - 1 - m);
+                    if (d == 0) {
+                        // WRF "specified uses upstream normal wind at
+                        // boundaries" (advect_v F:1978-2013): fqy(jds+1)
+                        // takes vb = v(jds+1) when v(jds+1) < 0, fqy(jde)
+                        // takes vb = v(jde-1) when v(jde-1) > 0.
+                        real qa = v[I3(k, m, i, nys, nx)];
+                        real qb = v[I3(k, m + 1, i, nys, nx)];
+                        if (spec) {
+                            if (m == 0)      { if (qb < 0.0f) qa = qb; }
+                            else             { if (qa > 0.0f) qb = qa; }
+                        }
+                        fy2[s] = flux2(qa, qb, vely);
+                    }
+                    else if (d == 1)
+                        fy2[s] = flux3h(v[I3(k, m - 1, i, nys, nx)],
+                                        v[I3(k, m, i, nys, nx)],
+                                        v[I3(k, m + 1, i, nys, nx)],
+                                        v[I3(k, m + 2, i, nys, nx)], vely);
+                    else
+                        fy2[s] = flux5(v[I3(k, m - 2, i, nys, nx)],
+                                       v[I3(k, m - 1, i, nys, nx)],
+                                       v[I3(k, m, i, nys, nx)],
+                                       v[I3(k, m + 1, i, nys, nx)],
+                                       v[I3(k, m + 2, i, nys, nx)],
+                                       v[I3(k, m + 3, i, nys, nx)], vely);
+                } else {
+                    fy2[s] = flux5(v[I3(k, adv_periodic(m - 2, ny), i, nys, nx)],
+                                   v[I3(k, adv_periodic(m - 1, ny), i, nys, nx)],
+                                   v[I3(k, adv_periodic(m, ny), i, nys, nx)],
+                                   v[I3(k, adv_periodic(m + 1, ny), i, nys, nx)],
+                                   v[I3(k, adv_periodic(m + 2, ny), i, nys, nx)],
+                                   v[I3(k, adv_periodic(m + 3, ny), i, nys, nx)],
                                    vely);
                 }
             }
@@ -751,30 +1247,30 @@ void flux_div_v(const real* __restrict__ v,            // (nz, ny+1, nx)
         return;
     }
 
-    int jc   = PERIODIC(j, ny);                        // north mass row
-    int jm1c = PERIODIC(j - 1, ny);                    // south mass row
+    int jc   = adv_periodic(j, ny);                        // north mass row
+    int jm1c = adv_periodic(j - 1, ny);                    // south mass row
 
     real fx[2], fy[2], fz[2];
     for (int s = 0; s < 2; ++s) {
         int f = i + s;                                 // corner column 0..nx
         real velx = 0.5f * (ru[I3(k, jm1c, f, ny, nx + 1)]
                           + ru[I3(k, jc,   f, ny, nx + 1)]);
-        fx[s] = flux5(v[I3(k, jc, PERIODIC(f - 3, nx), ny + 1, nx)],
-                      v[I3(k, jc, PERIODIC(f - 2, nx), ny + 1, nx)],
-                      v[I3(k, jc, PERIODIC(f - 1, nx), ny + 1, nx)],
-                      v[I3(k, jc, PERIODIC(f,     nx), ny + 1, nx)],
-                      v[I3(k, jc, PERIODIC(f + 1, nx), ny + 1, nx)],
-                      v[I3(k, jc, PERIODIC(f + 2, nx), ny + 1, nx)],
+        fx[s] = flux5(v[I3(k, jc, adv_periodic(f - 3, nx), ny + 1, nx)],
+                      v[I3(k, jc, adv_periodic(f - 2, nx), ny + 1, nx)],
+                      v[I3(k, jc, adv_periodic(f - 1, nx), ny + 1, nx)],
+                      v[I3(k, jc, adv_periodic(f,     nx), ny + 1, nx)],
+                      v[I3(k, jc, adv_periodic(f + 1, nx), ny + 1, nx)],
+                      v[I3(k, jc, adv_periodic(f + 2, nx), ny + 1, nx)],
                       velx);
         int m = (s == 0) ? jm1c : jc;                  // mass-center face
         real vely = 0.5f * (rv[I3(k, m,     i, ny + 1, nx)]
                           + rv[I3(k, m + 1, i, ny + 1, nx)]);
-        fy[s] = flux5(v[I3(k, PERIODIC(m - 2, ny), i, ny + 1, nx)],
-                      v[I3(k, PERIODIC(m - 1, ny), i, ny + 1, nx)],
-                      v[I3(k, PERIODIC(m,     ny), i, ny + 1, nx)],
-                      v[I3(k, PERIODIC(m + 1, ny), i, ny + 1, nx)],
-                      v[I3(k, PERIODIC(m + 2, ny), i, ny + 1, nx)],
-                      v[I3(k, PERIODIC(m + 3, ny), i, ny + 1, nx)],
+        fy[s] = flux5(v[I3(k, adv_periodic(m - 2, ny), i, ny + 1, nx)],
+                      v[I3(k, adv_periodic(m - 1, ny), i, ny + 1, nx)],
+                      v[I3(k, adv_periodic(m,     ny), i, ny + 1, nx)],
+                      v[I3(k, adv_periodic(m + 1, ny), i, ny + 1, nx)],
+                      v[I3(k, adv_periodic(m + 2, ny), i, ny + 1, nx)],
+                      v[I3(k, adv_periodic(m + 3, ny), i, ny + 1, nx)],
                       vely);
         int kf = k + s;
         real velz = 0.5f * (rw[I3(kf, jm1c, i, ny, nx)]
@@ -791,15 +1287,25 @@ void flux_div_v(const real* __restrict__ v,            // (nz, ny+1, nx)
                                              - (fy[1] - fy[0]) * dy_inv
                                              - (fz[1] - fz[0]) * rdnw[k];
     }
+#endif
 }
 
 // ---------------------------------------------------------------------------
 // w momentum at w-points (nz+1, ny, nx).  Horizontal advecting fluxes are
 // ru/rv averaged across the two half levels straddling the w-level; the
 // vertical flux of w lives at mass (half) levels m with advecting flux
-// 0.5*(rw[m]+rw[m+1]).  Tendencies are computed only for interior w-levels
-// k = 1..nz-1 (boundary w is set by the rigid-lid/flat-bottom BCs).
+// 0.5*(rw[m]+rw[m+1]). The surface has no tendency. The top carries WRF's
+// extrapolated horizontal advection and one-sided vertical flux contribution;
+// the acoustic solver separately enforces a rigid lid when configured.
 // ---------------------------------------------------------------------------
+__device__ __forceinline__
+real w_lid_velocity(const real* flux, int j, int i, int nz, int nys, int nxs,
+                    const real* fnm, const real* fnp)
+{
+    return (2.0f - fnm[nz - 1]) * flux[I3S(nz - 1, j, i, nys, nxs)]
+           - fnp[nz - 1] * flux[I3S(nz - 2, j, i, nys, nxs)];
+}
+
 extern "C" __global__
 void flux_div_w(const real* __restrict__ w,            // (nz+1, ny, nx)
                 const real* __restrict__ ru,           // (nz, ny, nx+1)
@@ -814,11 +1320,264 @@ void flux_div_w(const real* __restrict__ w,            // (nz+1, ny, nx)
                 int nz, int ny, int nx,
                 int open_x, int open_y, int has_msf, int spec)
 {
+#if GPUWM_WRF_EXACT_C_ADVECTION
+
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     int k = blockIdx.z * blockDim.z + threadIdx.z;     // w-level 0..nz
     if (i >= nx || j >= ny || k > nz) return;
-    if (k == 0 || k == nz) return;                     // BC levels: no tendency
+    real mscale=has_msf?msf[(size_t)j*nx+i]:1.0f;
+    if (k == 0 || (k == nz && nz<2)) return;                     // BC levels: no tendency
+
+    if (k == nz) {
+        // WRF v4.7.1 advect_w: lid face winds use (2-fzm)*RU - fzp*RUbelow.
+        // Its vertical lid contribution is 2*rdzu(ktf)*vflux(ktf+1).
+        real th=0.0f; real tx=0.0f,ty=0.0f; bool applyx=false,applyy=false;
+        real tb = 0.0f;
+        if (open_x && (i == 0 || i == nx - 1)) {
+            if (!spec) {
+                int f0 = i == 0 ? 0 : nx - 1;
+                real r0 = w_lid_velocity(ru, j, f0, nz, ny, nx + 1, fnm, fnp);
+                real r1 = w_lid_velocity(ru, j, f0 + 1, nz, ny, nx + 1, fnm, fnp);
+                real ub = i == 0 ? fminf(0.5f * (r0 + r1), 0.0f)
+                                : fmaxf(0.5f * (r0 + r1), 0.0f);
+                real dq = i == 0 ? w[IDX3(k, j, 1)] - w[IDX3(k, j, 0)]
+                                : w[IDX3(k, j, nx - 1)] - w[IDX3(k, j, nx - 2)];
+                tx = dx_inv * (ub * dq + w[IDX3(k, j, i)] * (r1 - r0));
+            }
+        } else {
+            real r0 = w_lid_velocity(ru, j, i, nz, ny, nx + 1, fnm, fnp);
+            real r1 = w_lid_velocity(ru, j, i + 1, nz, ny, nx + 1, fnm, fnp);
+            real f0 = open_x ? xface_cell_open(w, r0, k, j, i, nx, ny, nx)
+                             : xface_cell_per(w, r0, k, j, i, nx, ny, nx);
+            real f1 = open_x ? xface_cell_open(w, r1, k, j, i + 1, nx, ny, nx)
+                             : xface_cell_per(w, r1, k, j, i + 1, nx, ny, nx);
+            tx=(mscale*dx_inv)*(f1-f0); applyx=true;
+        }
+        if (open_y && (j == 0 || j == ny - 1)) {
+            if (!spec) {
+                int g0 = j == 0 ? 0 : ny - 1;
+                real r0 = w_lid_velocity(rv, g0, i, nz, ny + 1, nx, fnm, fnp);
+                real r1 = w_lid_velocity(rv, g0 + 1, i, nz, ny + 1, nx, fnm, fnp);
+                real vb = j == 0 ? fminf(0.5f * (r0 + r1), 0.0f)
+                                : fmaxf(0.5f * (r0 + r1), 0.0f);
+                real dq = j == 0 ? w[IDX3(k, 1, i)] - w[IDX3(k, 0, i)]
+                                : w[IDX3(k, ny - 1, i)] - w[IDX3(k, ny - 2, i)];
+                ty = dy_inv * (vb * dq + w[IDX3(k, j, i)] * (r1 - r0));
+            }
+        } else {
+            real r0 = w_lid_velocity(rv, j, i, nz, ny + 1, nx, fnm, fnp);
+            real r1 = w_lid_velocity(rv, j + 1, i, nz, ny + 1, nx, fnm, fnp);
+            real f0 = open_y ? yface_cell_open(w, r0, k, j, i, ny, ny, nx)
+                             : yface_cell_per(w, r0, k, j, i, ny, ny, nx);
+            real f1 = open_y ? yface_cell_open(w, r1, k, j + 1, i, ny, ny, nx)
+                             : yface_cell_per(w, r1, k, j + 1, i, ny, ny, nx);
+            ty=(mscale*dy_inv)*(f1-f0); applyy=true;
+        }
+        real horizontal=tend_out[IDX3(k,j,i)];
+        if(applyy)horizontal-=ty;
+        if(applyx)horizontal-=tx;
+        real top_flux = 0.25f * (rw[IDX3(k, j, i)] + rw[IDX3(k - 1, j, i)])
+                             * (w[IDX3(k, j, i)] + w[IDX3(k - 1, j, i)]);
+        tend_out[IDX3(k, j, i)] = horizontal + 2.0f * rdn[k - 1] * top_flux;
+        return;
+    }
+
+
+
+    if (open_x || open_y) {                            // WRF advect_w with
+        real th = 0.0f; real tx=0.0f,ty=0.0f; bool applyx=false,applyy=false;                                // msf (FIX-A):
+                                                       // weighted flux
+        real tb = 0.0f;                                // divergences / plain
+                                                       // non-cb open terms
+        // horizontal advecting fluxes interpolated to the w level with
+        // WRF's fnm/fnp weights (advect_w F:5004/:4531)
+        if (open_x && (i == 0 || i == nx - 1)) {       // non-cb open term
+            if (spec) {
+                // WRF specified: the boundary cells get NO advective
+                // tendency along the specified axis (bounds ids+1..ide-2,
+                // F:4037-4038 scalar / F:5570-5571 w); the non-cb terms
+                // are gated on open_xs/xe only (F:4115/:5695).
+            } else if (i == 0) {
+                real ruw0 = fnm[k] * ru[I3(k, j, 0, ny, nx + 1)]
+                          + fnp[k] * ru[I3(k - 1, j, 0, ny, nx + 1)];
+                real ruw1 = fnm[k] * ru[I3(k, j, 1, ny, nx + 1)]
+                          + fnp[k] * ru[I3(k - 1, j, 1, ny, nx + 1)];
+                real ub = fminf(0.5f * (ruw0 + ruw1), 0.0f);
+                tx = dx_inv * (ub * (w[IDX3(k, j, 1)] - w[IDX3(k, j, 0)])
+                                 + w[IDX3(k, j, 0)] * (ruw1 - ruw0)); applyx=true;
+            } else {
+                real ruw0 = fnm[k] * ru[I3(k, j, nx - 1, ny, nx + 1)]
+                          + fnp[k] * ru[I3(k - 1, j, nx - 1, ny, nx + 1)];
+                real ruw1 = fnm[k] * ru[I3(k, j, nx, ny, nx + 1)]
+                          + fnp[k] * ru[I3(k - 1, j, nx, ny, nx + 1)];
+                real ub = fmaxf(0.5f * (ruw0 + ruw1), 0.0f);
+                tx = dx_inv * (ub * (w[IDX3(k, j, nx - 1)]
+                                       - w[IDX3(k, j, nx - 2)])
+                                 + w[IDX3(k, j, nx - 1)] * (ruw1 - ruw0)); applyx=true;
+            }
+        } else {
+            real fx2[2];
+            for (int s = 0; s < 2; ++s) {
+                int f = i + s;
+                real velx = fnm[k] * ru[I3(k, j, f, ny, nx + 1)]
+                          + fnp[k] * ru[I3(k - 1, j, f, ny, nx + 1)];
+                fx2[s] = open_x
+                    ? xface_cell_open(w, velx, k, j, f, nx, ny, nx)
+                    : xface_cell_per(w, velx, k, j, f, nx, ny, nx);
+            }
+            tx = mscale*dx_inv*(fx2[1]-fx2[0]); applyx=true;
+        }
+        if (open_y && (j == 0 || j == ny - 1)) {
+            if (spec) {
+                // WRF specified: no y tendency at boundary cells
+                // (F:4056-4057 scalar / F:5607-5608 w); non-cb terms are
+                // open-only (F:4147/:5775).
+            } else if (j == 0) {
+                real rvw0 = fnm[k] * rv[I3(k, 0, i, ny + 1, nx)]
+                          + fnp[k] * rv[I3(k - 1, 0, i, ny + 1, nx)];
+                real rvw1 = fnm[k] * rv[I3(k, 1, i, ny + 1, nx)]
+                          + fnp[k] * rv[I3(k - 1, 1, i, ny + 1, nx)];
+                real vb = fminf(0.5f * (rvw0 + rvw1), 0.0f);
+                ty = dy_inv * (vb * (w[IDX3(k, 1, i)] - w[IDX3(k, 0, i)])
+                                 + w[IDX3(k, 0, i)] * (rvw1 - rvw0)); applyy=true;
+            } else {
+                real rvw0 = fnm[k] * rv[I3(k, ny - 1, i, ny + 1, nx)]
+                          + fnp[k] * rv[I3(k - 1, ny - 1, i, ny + 1, nx)];
+                real rvw1 = fnm[k] * rv[I3(k, ny, i, ny + 1, nx)]
+                          + fnp[k] * rv[I3(k - 1, ny, i, ny + 1, nx)];
+                real vb = fmaxf(0.5f * (rvw0 + rvw1), 0.0f);
+                ty = dy_inv * (vb * (w[IDX3(k, ny - 1, i)]
+                                       - w[IDX3(k, ny - 2, i)])
+                                 + w[IDX3(k, ny - 1, i)] * (rvw1 - rvw0)); applyy=true;
+            }
+        } else {
+            real fy2[2];
+            for (int s = 0; s < 2; ++s) {
+                int g = j + s;
+                real vely = fnm[k] * rv[I3(k, g, i, ny + 1, nx)]
+                          + fnp[k] * rv[I3(k - 1, g, i, ny + 1, nx)];
+                fy2[s] = open_y
+                    ? yface_cell_open(w, vely, k, g, i, ny, ny, nx)
+                    : yface_cell_per(w, vely, k, g, i, ny, ny, nx);
+            }
+            ty = mscale*dy_inv*(fy2[1]-fy2[0]); applyy=true;
+        }
+        real fz2[2];
+        for (int s = 0; s < 2; ++s) {
+            int m = k - 1 + s;                         // mass-level face
+            real velz = 0.5f * (rw[IDX3(m, j, i)] + rw[IDX3(m + 1, j, i)]);
+            if (m == 0 || m == nz - 1)
+                fz2[s] = flux2(w[IDX3(m, j, i)], w[IDX3(m + 1, j, i)], velz);
+            else
+                fz2[s] = flux3(w[IDX3(m - 1, j, i)], w[IDX3(m, j, i)],
+                               w[IDX3(m + 1, j, i)], w[IDX3(m + 2, j, i)],
+                               velz);
+        }
+        // WRF advect_w mrdx/mrdy = msftx*rdx/rdy (F:5096); the non-cb open
+        // terms carry plain rdx/rdy (F:5695).
+        real t = tend_out[IDX3(k,j,i)];
+        if(applyy)t=t-ty;
+        if(applyx)t=t-tx;
+        tend_out[IDX3(k,j,i)] = t - rdn[k]*(fz2[1]-fz2[0]);
+        return;
+    }
+
+    real fx[2], fy[2], fz[2];
+    for (int s = 0; s < 2; ++s) {
+        int f = i + s;                                 // u-face column 0..nx
+        real velx = fnm[k] * ru[I3(k,     j, f, ny, nx + 1)]
+                  + fnp[k] * ru[I3(k - 1, j, f, ny, nx + 1)];
+        fx[s] = flux5(w[IDX3(k, j, PERIODIC(f - 3, nx))],
+                      w[IDX3(k, j, PERIODIC(f - 2, nx))],
+                      w[IDX3(k, j, PERIODIC(f - 1, nx))],
+                      w[IDX3(k, j, PERIODIC(f,     nx))],
+                      w[IDX3(k, j, PERIODIC(f + 1, nx))],
+                      w[IDX3(k, j, PERIODIC(f + 2, nx))],
+                      velx);
+        int g = j + s;                                 // v-face row 0..ny
+        real vely = fnm[k] * rv[I3(k,     g, i, ny + 1, nx)]
+                  + fnp[k] * rv[I3(k - 1, g, i, ny + 1, nx)];
+        fy[s] = flux5(w[IDX3(k, PERIODIC(g - 3, ny), i)],
+                      w[IDX3(k, PERIODIC(g - 2, ny), i)],
+                      w[IDX3(k, PERIODIC(g - 1, ny), i)],
+                      w[IDX3(k, PERIODIC(g,     ny), i)],
+                      w[IDX3(k, PERIODIC(g + 1, ny), i)],
+                      w[IDX3(k, PERIODIC(g + 2, ny), i)],
+                      vely);
+        int m = k - 1 + s;                             // mass-level face 0..nz-1
+        real velz = 0.5f * (rw[IDX3(m, j, i)] + rw[IDX3(m + 1, j, i)]);
+        if (m == 0 || m == nz - 1)
+            fz[s] = flux2(w[IDX3(m, j, i)], w[IDX3(m + 1, j, i)], velz);
+        else
+            fz[s] = flux3(w[IDX3(m - 1, j, i)], w[IDX3(m, j, i)],
+                          w[IDX3(m + 1, j, i)], w[IDX3(m + 2, j, i)], velz);
+    }
+    real result=tend_out[IDX3(k,j,i)];
+    result=result-(mscale*dy_inv)*(fy[1]-fy[0]);
+    result=result-(mscale*dx_inv)*(fx[1]-fx[0]);
+    result=result-rdn[k]*(fz[1]-fz[0]);
+    tend_out[IDX3(k,j,i)]=result;
+#else
+
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;     // w-level 0..nz
+    if (i >= nx || j >= ny || k > nz) return;
+    // A one-level primitive has no second mass level for lid extrapolation.
+    if (k == 0 || (k == nz && nz < 2)) return;
+
+    if (k == nz) {
+        // WRF v4.7.1 advect_w: lid face winds use (2-fzm)*RU - fzp*RUbelow.
+        // Its vertical lid contribution is 2*rdzu(ktf)*vflux(ktf+1).
+        real th = 0.0f;
+        real tb = 0.0f;
+        if (open_x && (i == 0 || i == nx - 1)) {
+            if (!spec) {
+                int f0 = i == 0 ? 0 : nx - 1;
+                real r0 = w_lid_velocity(ru, j, f0, nz, ny, nx + 1, fnm, fnp);
+                real r1 = w_lid_velocity(ru, j, f0 + 1, nz, ny, nx + 1, fnm, fnp);
+                real ub = i == 0 ? fminf(0.5f * (r0 + r1), 0.0f)
+                                : fmaxf(0.5f * (r0 + r1), 0.0f);
+                real dq = i == 0 ? w[IDX3(k, j, 1)] - w[IDX3(k, j, 0)]
+                                : w[IDX3(k, j, nx - 1)] - w[IDX3(k, j, nx - 2)];
+                tb += -dx_inv * (ub * dq + w[IDX3(k, j, i)] * (r1 - r0));
+            }
+        } else {
+            real r0 = w_lid_velocity(ru, j, i, nz, ny, nx + 1, fnm, fnp);
+            real r1 = w_lid_velocity(ru, j, i + 1, nz, ny, nx + 1, fnm, fnp);
+            real f0 = open_x ? xface_cell_open(w, r0, k, j, i, nx, ny, nx)
+                             : xface_cell_per(w, r0, k, j, i, nx, ny, nx);
+            real f1 = open_x ? xface_cell_open(w, r1, k, j, i + 1, nx, ny, nx)
+                             : xface_cell_per(w, r1, k, j, i + 1, nx, ny, nx);
+            th += -(f1 - f0) * dx_inv;
+        }
+        if (open_y && (j == 0 || j == ny - 1)) {
+            if (!spec) {
+                int g0 = j == 0 ? 0 : ny - 1;
+                real r0 = w_lid_velocity(rv, g0, i, nz, ny + 1, nx, fnm, fnp);
+                real r1 = w_lid_velocity(rv, g0 + 1, i, nz, ny + 1, nx, fnm, fnp);
+                real vb = j == 0 ? fminf(0.5f * (r0 + r1), 0.0f)
+                                : fmaxf(0.5f * (r0 + r1), 0.0f);
+                real dq = j == 0 ? w[IDX3(k, 1, i)] - w[IDX3(k, 0, i)]
+                                : w[IDX3(k, ny - 1, i)] - w[IDX3(k, ny - 2, i)];
+                tb += -dy_inv * (vb * dq + w[IDX3(k, j, i)] * (r1 - r0));
+            }
+        } else {
+            real r0 = w_lid_velocity(rv, j, i, nz, ny + 1, nx, fnm, fnp);
+            real r1 = w_lid_velocity(rv, j + 1, i, nz, ny + 1, nx, fnm, fnp);
+            real f0 = open_y ? yface_cell_open(w, r0, k, j, i, ny, ny, nx)
+                             : yface_cell_per(w, r0, k, j, i, ny, ny, nx);
+            real f1 = open_y ? yface_cell_open(w, r1, k, j + 1, i, ny, ny, nx)
+                             : yface_cell_per(w, r1, k, j + 1, i, ny, ny, nx);
+            th += -(f1 - f0) * dy_inv;
+        }
+        real horizontal = has_msf ? msf[(size_t)j * nx + i] * th + tb : th + tb;
+        real top_flux = 0.25f * (rw[IDX3(k, j, i)] + rw[IDX3(k - 1, j, i)])
+                             * (w[IDX3(k, j, i)] + w[IDX3(k - 1, j, i)]);
+        tend_out[IDX3(k, j, i)] += horizontal + 2.0f * rdn[k - 1] * top_flux;
+        return;
+    }
 
     if ((open_x || open_y) && !has_msf) {              // WRF advect_w
         real t = 0.0f;                                 // ORIGINAL Task-11
@@ -1048,4 +1807,5 @@ void flux_div_w(const real* __restrict__ w,            // (nz+1, ny, nx)
                                    - (fy[1] - fy[0]) * dy_inv
                                    - (fz[1] - fz[0]) * rdn[k];
     }
+#endif
 }

@@ -234,6 +234,10 @@ WARNING_CODES = {
     "chain_stage_failed":
         "one stage of a chained run failed; the chain's own reader is "
         "told which stage before the run's terminal event",
+    "secondary_source_behind":
+        "a source lead timed out after preparation or forecast already "
+        "failed; the first failure remains the run's cause, and the "
+        "source_behind field records the later lead",
     "compose_scratch_may_not_fit":
         "said before the download: the decoded frame stream a regional "
         "source's preparation stages may not fit the disk that holds its "
@@ -834,10 +838,12 @@ def build_plan(raw: Mapping[str, Any], *, source: str,
     options = raw.get("run_options", {})
     if not isinstance(options, dict):
         raise PlanError("run plan 'run_options' must be an object")
-    known_options = ROUTES[route].run_options
+    known_options = ROUTES[route].run_options | {"devices"}
     _reject_unknown(options, known_options, "run plan 'run_options'")
     resolved_options: dict[str, Any] = {}
     for key in sorted(known_options):
+        if key == "devices" and key not in options:
+            continue
         if key in options:
             resolved_options[key] = _run_option(key, options[key], base)
             continue
@@ -1211,6 +1217,10 @@ _RUN_OPTION_DEFAULTS: dict[str, Any] = {
 
 def _run_option(key: str, value: object, base: Path) -> Any:
     label = f"run plan 'run_options.{key}'"
+    if key == "devices":
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise PlanError(f"{label} must be a positive integer slab count")
+        return value
     if key == "supplement":
         from gpuwm.launch_supplements import bindings
         try:
@@ -1628,6 +1638,20 @@ def streaming_decision(exp, *, chain: str) -> dict[str, Any] | None:
     """
     from gpuwm.core import streaming
 
+    from gpuwm.core.devices import refuse_unrouted_devices, validate_tree_devices
+    try:
+        if chain not in {"prepared:go", "prepared:hrrr", "prepared:staged",
+                         "prepared:existing"}:
+            refuse_unrouted_devices(exp, f"run-plan {chain}")
+        elif len(exp.domains) != 1:
+            # The prepared chains hand a tree to the tree runner, which
+            # splits it (gpuwm sim relays the table); what it cannot split
+            # is refused here by name, before any stage runs.
+            validate_tree_devices(exp)
+        elif getattr(getattr(exp, "relocation", None), "enabled", False):
+            refuse_unrouted_devices(exp, f"run-plan {chain} moving nests")
+    except ValueError as error:
+        raise PlanError(str(error)) from error
     options = getattr(exp, "tiles", None) or streaming.OFF
     if not options.enabled:
         return None
@@ -2385,6 +2409,7 @@ class RunObserver:
     #: Set by :meth:`source_behind`: the run ends with ``source_behind``
     #: then ``failed`` (``SourceBehind``, exit 75).
     source_behind_record: dict[str, Any] | None = None
+    secondary_source_behind_record: dict[str, Any] | None = None
 
     def source_behind(self, details: Mapping[str, Any]) -> None:
         """The late lead that ended the forecast; said with ``failed``."""
@@ -2723,6 +2748,9 @@ def _schema_default_resolutions(raw: Mapping[str, Any]) -> list[dict[str, Any]]:
     spelled |= {name for name in raw if name != "experiment"}
     resolutions = []
     for field in dataclasses.fields(ExperimentConfig):
+        if field.name == "devices":
+            # OFF contributes no new schema row to an existing plan.
+            continue
         if field.default is dataclasses.MISSING:
             continue
         if field.name in spelled:
@@ -3046,6 +3074,10 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
         if scratch is not None:
             scratch.cleanup()
 
+    if plan.run_options.get("devices") is not None:
+        from dataclasses import replace
+        from gpuwm.core.devices import override_device_count
+        exp = replace(exp, devices=override_device_count(exp.devices, plan.run_options["devices"]))
     source = config_source
     inputs = [] if data is None else declared_inputs(data)
     resolutions.extend(_schema_default_resolutions(raw))
@@ -3906,6 +3938,21 @@ class _GoObserver:
                 "the previous one's output",
                 stage=label, exit_code=exit_code)
 
+    def stage_secondary_end(self, *, label: str, exit_code: int, ok: bool,
+                            elapsed_seconds: float, progress,
+                            diagnostic: str) -> None:
+        """Record the later stage's exit without replacing the run's failure."""
+
+        events = getattr(self._observer, "events", None)
+        emit = getattr(events, "emit", None)
+        if callable(emit):
+            # This stage ran beside the foreground. Closing the observer's
+            # current stage here would close the primary forecast instead.
+            emit("stage_finished", stage=_GO_STAGES[label], phase=label,
+                 wall_seconds=round(float(elapsed_seconds), 6), phases=[label],
+                 secondary=True, ok=bool(ok), exit_code=int(exit_code),
+                 diagnostic=diagnostic)
+
     # -- the runner's progress protocol, for the hosted forecast ------
 
     def __call__(self, **event) -> None:
@@ -4045,6 +4092,11 @@ def _fetch_arguments_from_hints(hints: Mapping[str, Any],
                 arguments.append("--" + key.replace("_", "-"))
             continue
         arguments += ["--" + key.replace("_", "-"), str(value)]
+    from gpuwm import fetch_endpoints
+    from gpuwm.fetch import GFS_CONTAINER_SOURCES
+    if (fetch_endpoints.policy_uses_aws(str(hints.get("source", "")))
+            and hints.get("source") in GFS_CONTAINER_SOURCES):
+        arguments += ["--mode", "full-file"]
     return arguments + ["--out", str(out)]
 
 
@@ -4322,6 +4374,8 @@ def _existing_prepared_forecast(plan: RunPlan, *, config_path: Path,
         wps_namelist=None if wps is None else Path(wps),
         outdir=forecast_dir, physics_profile=plan.run_options.get("physics_profile"),
         progress_format="jsonl", restart=None if restart is None else Path(restart),
+        **({"devices": plan.run_options["devices"]}
+           if plan.run_options.get("devices") is not None else {}),
         health_debug=bool(plan.run_options.get("health_debug")))
     observer.arm_first_products(_chain_render_plan(
         plan, forecast_dir=forecast_dir, run_dir=run_dir))
@@ -4452,20 +4506,43 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     forecast_dir = run_dir / "chain" / "run"
 
     # -- fetch ---------------------------------------------------------
-    observer.enter_stage("fetch", phase="fetch")
-    fetch_report = _run_fetch(
-        _fetch_arguments_from_hints(hints, out=data_dir), run_dir,
-        events=getattr(observer, "events", None), posting_relay=True)
-    manifest = data_dir / "SHA256SUMS"
-    if not manifest.is_file():
-        raise PlanError(
-            f"the HRRR fetch wrote no {manifest}, so the preparation "
-            "stage has nothing to bind against")
-    from gpuwm.launch_supplements import hrrr_source_manifest
-    manifest = hrrr_source_manifest(
-        plan.run_options.get("supplement", ()), source_root=data_dir,
-        fetched_manifest=manifest, output=run_dir / "chain" / "hrrr-source-SHA256SUMS")
-    observer.finish_stage(fetch=fetch_report)
+    # AS POSTED (A136 L7c (b)): the native route's fetch runs beside
+    # its preparation, which starts once the fetch has scheduled the window,
+    # decodes each lead as its marker appears, publishes its head on the
+    # first two leads and writes the source manifest at its seal.  The
+    # fetch beside is ``None`` otherwise, and the window is fetched first.
+    beside = _native_fetch_beside(plan, hints, exp, data_dir=data_dir,
+                                  run_dir=run_dir, observer=observer,
+                                  prepare_only=prepare_only)
+    posting = None if beside is None else beside.posting
+    if posting is None:
+        if beside is None:
+            observer.enter_stage("fetch", phase="fetch")
+            fetch_report = _run_fetch(
+                _fetch_arguments_from_hints(hints, out=data_dir), run_dir,
+                events=getattr(observer, "events", None), posting_relay=True)
+        else:
+            # The fetch scheduled nothing (or ended first): its window is
+            # here whole, and the preparation binds it as before.
+            try:
+                fetch_report = beside.result()
+            finally:
+                beside.close()
+        manifest = data_dir / "SHA256SUMS"
+        if not manifest.is_file():
+            raise PlanError(
+                f"the HRRR fetch wrote no {manifest}, so the preparation "
+                "stage has nothing to bind against")
+        from gpuwm.launch_supplements import hrrr_source_manifest
+        manifest = hrrr_source_manifest(
+            plan.run_options.get("supplement", ()), source_root=data_dir,
+            fetched_manifest=manifest, output=run_dir / "chain" / "hrrr-source-SHA256SUMS")
+        observer.finish_stage(fetch=fetch_report)
+    else:
+        manifest = None
+        observer.finish_stage(fetch={"arguments": beside.arguments,
+                                     "as_posted": True,
+                                     "posting": str(posting)})
 
     # -- prepare -------------------------------------------------------
     observer.enter_stage("prepare", phase="prepare")
@@ -4482,8 +4559,11 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     prepare = [
         sys.executable, "-m", "tools.prepare_hrrr_wrf",
         "--source-root", str(data_dir),
-        "--source-manifest", str(manifest),
-        "--source-manifest-sha256", sha256_file(manifest),
+        # As posted the seal writes the source manifest from the leads'
+        # markers; otherwise the preparation binds the fetch's.
+        *(("--as-posted", str(posting)) if manifest is None else (
+            "--source-manifest", str(manifest),
+            "--source-manifest-sha256", sha256_file(manifest))),
         "--experiment-config", str(config_path),
         "--domain-spec", str(inputs["target_domain"]),
         "--namelist-input", str(inputs["namelist_input"]),
@@ -4515,7 +4595,10 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     def preparation(built=None):
         return _prepare_stage(
             prep_root, arguments=prepare,
-            stated={"source_manifest_sha256": sha256_file(manifest),
+            # As posted there is no source manifest before the seal; the
+            # arguments name the posting folder of this run's fetch.
+            stated={**({} if manifest is None else
+                       {"source_manifest_sha256": sha256_file(manifest)}),
                     "namelist_sha256": sha256_file(inputs["namelist_input"])},
             run=lambda: run_stage("prepare", prepare, explain=False,
                                   progress=prep_root / "progress.json",
@@ -4555,9 +4638,15 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
         # interval per hour after it, so the forecast starts on the head
         # while the later hours are built.  ``None`` is a bundle published
         # at its seal or reused whole, which runs below exactly as before.
-        prepared, chained = _hrrr_single_chain(
-            prep_root=prep_root, preparation=preparation,
-            forecast_dir=forecast_dir, exp=exp, observer=observer)
+        # As posted, the fetch beside it is the chain's: a stage that fails
+        # while it runs stops it, and its own failure is the chain's when
+        # it came first (a lead later than its budget is exit 75).
+        with _beside_settled(beside):
+            prepared, chained = _hrrr_single_chain(
+                prep_root=prep_root, preparation=preparation,
+                forecast_dir=forecast_dir, exp=exp, observer=observer)
+            if beside is not None:
+                beside.result()
         if chained is not None:
             return _chain_render(plan, forecast_dir=forecast_dir,
                                  run_dir=run_dir, observer=observer)
@@ -4569,12 +4658,15 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
         # ``None`` is a tree published at its seal or reused whole, which
         # runs below as before.
         tree_root = run_dir / "chain" / "hrrr-hierarchy"
-        prepared, chained = _hrrr_tree_chain(
-            prep_root=prep_root, tree_root=tree_root,
-            preparation=preparation,
-            hierarchy=lambda: hierarchy(observe_stage=False),
-            config_path=config_path, forecast_dir=forecast_dir,
-            observer=observer)
+        with _beside_settled(beside):
+            prepared, chained = _hrrr_tree_chain(
+                prep_root=prep_root, tree_root=tree_root,
+                preparation=preparation,
+                hierarchy=lambda: hierarchy(observe_stage=False),
+                config_path=config_path, forecast_dir=forecast_dir,
+                observer=observer, devices=plan.run_options.get("devices"))
+            if beside is not None:
+                beside.result()
         if chained is not None:
             return _chain_render(plan, forecast_dir=forecast_dir,
                                  run_dir=run_dir, observer=observer)
@@ -4582,7 +4674,8 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
                               prepared=prepared)
         _hrrr_tree_forecast(
             tree_root=tree_root, config_path=config_path,
-            forecast_dir=forecast_dir, observer=observer)
+            forecast_dir=forecast_dir, observer=observer,
+            devices=plan.run_options.get("devices"))
         return _chain_render(plan, forecast_dir=forecast_dir,
                             run_dir=run_dir, observer=observer)
     else:
@@ -4594,7 +4687,8 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
             return _prepared_chain_result(tree_root, config_path, None)
         _hrrr_tree_forecast(
             tree_root=tree_root, config_path=config_path,
-            forecast_dir=forecast_dir, observer=observer)
+            forecast_dir=forecast_dir, observer=observer,
+            devices=plan.run_options.get("devices"))
         return _chain_render(plan, forecast_dir=forecast_dir,
                             run_dir=run_dir, observer=observer)
 
@@ -4690,6 +4784,9 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     if exp.tiles.enabled:
         from gpuwm.stage_cli import streaming_flags
         argv += streaming_flags("single", tiles=exp.tiles)
+    if getattr(getattr(exp, "devices", None), "enabled", False):
+        from gpuwm.stage_cli import devices_flags
+        argv += devices_flags("single", options=exp.devices)
     observer.enter_stage("forecast", phase="forecast")
     from gpuwm import prepared_single_domain_forecast as runner
 
@@ -4705,6 +4802,206 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     # agree.
     return _chain_render(plan, forecast_dir=forecast_dir, run_dir=run_dir,
                         observer=observer)
+
+
+class _NativeFetchBeside:
+    """A native HRRR chain's as-posted fetch, run beside its preparation.
+
+    The fetch stage this chain has always run (:func:`_run_fetch`, in this
+    process, its per-file transfer events on the run's stream), on a thread
+    of its own so the preparation can start once the fetch has scheduled the
+    window (``posting``).  When it ends without a marker for every lead it
+    says so in ``posting/failed.json`` (:func:`gpuwm.go_cli._record_fetch_end`),
+    so a preparation waiting on a lead ends by name; the posting folder is
+    also relayed onto the run's stream (``posting_schedule``, ``lead_posted``,
+    ``lead_ready`` and the start waits).  A fetch in this process cannot be
+    stopped from outside: when the chain fails first, it ends with the
+    process, as the fetch stage did before.
+    """
+
+    def __init__(self, arguments, *, run_dir: Path, fetch_plan, events):
+        import contextvars
+
+        from gpuwm import go_cli
+
+        self.arguments = list(arguments)
+        self.fetch_plan = dict(fetch_plan)
+        self.folder = go_cli.posting_folder(self.fetch_plan)
+        self.launched = time.time()
+        self.posting: Path | None = None
+        self.report: dict | None = None
+        self._error: BaseException | None = None
+        self.relay = None
+        if events is not None:
+            from gpuwm import chain_events
+
+            self.relay = chain_events.HostedPostingRelay(
+                events, data_dir=self.fetch_plan["data"])
+            self.relay.start(since_unix_ms=int(self.launched * 1000))
+        context = contextvars.copy_context()
+        self._thread = threading.Thread(
+            target=context.run, args=(self._run, run_dir, events),
+            name="hrrr-fetch-beside", daemon=True)
+        self._thread.start()
+
+    def _run(self, run_dir, events) -> None:
+        from gpuwm import go_cli
+
+        try:
+            self.report = _run_fetch(self.arguments, run_dir, events=events)
+        except BaseException as failure:  # noqa: BLE001 - raised by result()
+            self._error = failure
+        finally:
+            go_cli._record_fetch_end(self.folder, self.fetch_plan,
+                                     since=self.launched, error=self._error)
+
+    def await_schedule(self) -> Path | None:
+        """The posting folder once this fetch has scheduled its window.
+
+        ``None`` when the fetch ended first (its window was here whole, or
+        it failed: :meth:`result` raises that).
+        """
+
+        from gpuwm import go_cli
+
+        while True:
+            if go_cli._fresh_schedule(self.folder, self.fetch_plan,
+                                      since=self.launched):
+                self.posting = self.folder
+                return self.posting
+            if not self._thread.is_alive():
+                if go_cli._fresh_schedule(self.folder, self.fetch_plan,
+                                          since=self.launched):
+                    self.posting = self.folder
+                return self.posting
+            time.sleep(0.25)
+
+    def said_failure(self) -> bool:
+        """Whether the fetch failed, or wrote that it is failing (``failed.json``)."""
+
+        from gpuwm.source_posting import POSTING_FAILED_NAME
+
+        return (self._error is not None
+                or (self.folder / POSTING_FAILED_NAME).is_file())
+
+    def result(self, timeout: float | None = None) -> dict | None:
+        """Wait for the fetch; raise its failure if it failed."""
+
+        self._thread.join(timeout)
+        if self._error is not None:
+            raise self._error
+        return self.report
+
+    def close(self) -> None:
+        if self.relay is not None:
+            self.relay.stop()
+            self.relay = None
+
+
+def native_whole_window_reason(*, domains: int, donors: bool) -> str | None:
+    """Why a native HRRR run fetches its whole window before it prepares.
+
+    ``None`` for a run without a PMSL donor, which prepares as its
+    leads post.  Each reason names what reads every lead before the start.
+    """
+
+    if donors:
+        return ("a native HRRR run with a PMSL donor fetches its whole window "
+                "before it prepares: the donor is bound into the source "
+                "manifest before any hour is decoded")
+    return None
+
+
+def _native_fetch_beside(plan: RunPlan, hints, exp, *, data_dir: Path,
+                         run_dir: Path, observer: RunObserver,
+                         prepare_only: bool):
+    """Start the native chain's fetch beside its preparation, or ``None``.
+
+    As posted unless the run said ``--whole-cycle`` (``as_posted`` false),
+    for a run to a forecast. A PMSL donor is said by
+    :func:`native_whole_window_reason`; a preparation-only door stays sealed.
+    """
+
+    if hints.get("as_posted") is False or prepare_only:
+        return None
+    reason = native_whole_window_reason(
+        domains=len(exp.domains),
+        donors=bool(plan.run_options.get("supplement")))
+    if reason is not None:
+        # The shape and the reason, said once: this run still chains on
+        # its root's head, after the whole window is fetched.
+        print(f"run: {reason}", flush=True)
+        return None
+    from gpuwm.fetch import parse_cycle
+
+    fetch_plan = {"source": "hrrr", "data": data_dir,
+                  "cycle": parse_cycle(str(hints["cycle"]), "hrrr").strftime(
+                      "%Y-%m-%dT%H")}
+    observer.enter_stage("fetch", phase="fetch")
+    beside = _NativeFetchBeside(
+        _fetch_arguments_from_hints(hints, out=data_dir), run_dir=run_dir,
+        fetch_plan=fetch_plan, events=getattr(observer, "events", None))
+    try:
+        posting = beside.await_schedule()
+    except BaseException:
+        beside.close()
+        raise
+    if posting is not None:
+        print("run: the HRRR fetch runs beside the preparation, which "
+              "starts on the window's first leads and waits for each later "
+              "one as it posts", flush=True)
+    return beside
+
+
+#: How long a fetch that failed, or said it was failing, before the stage
+#: beside it failed is given to end, so its own failure is the chain's
+#: (``gpuwm.go_cli._SAID_FAILURE_GRACE_SECONDS``, the same allowance).
+_FETCH_SAID_FAILURE_GRACE_SECONDS = 30.0
+
+
+@contextlib.contextmanager
+def _beside_settled(beside):
+    """The chain's failure while an as-posted fetch runs beside it.
+
+    When the fetch had failed, or said it was failing
+    (``posting/failed.json``), before the preparation or forecast failed,
+    they failed because of it and its failure is the chain's: a lead later
+    than its budget ends the run as
+    :class:`gpuwm.ingest.boundary_stream.SourceBehind` (exit 75, the lead
+    named).  Otherwise the stage that failed first is the chain's failure.
+    """
+
+    if beside is None or beside.posting is None:
+        # No fetch beside the chain: it ended before the preparation began.
+        yield
+        return
+    try:
+        yield
+    except BaseException as error:
+        fetch_first = beside.said_failure()
+        beside.close()
+        if not fetch_first:
+            raise
+        from gpuwm.ingest.boundary_stream import (
+            POSTING_FAILED_NAME, SOURCE_BEHIND_CODE, SourceBehind,
+            read_replaced_json,
+        )
+
+        try:
+            record = read_replaced_json(beside.posting / POSTING_FAILED_NAME)
+        except (OSError, ValueError):
+            record = None
+        if (isinstance(record, dict)
+                and record.get("code") == SOURCE_BEHIND_CODE
+                and not isinstance(error, SourceBehind)):
+            raise SourceBehind(record) from error
+        try:
+            beside.result(timeout=_FETCH_SAID_FAILURE_GRACE_SECONDS)
+        except BaseException as failed:  # noqa: BLE001 - the chain's failure
+            raise failed from error
+        raise
+    finally:
+        beside.close()
 
 
 def _hrrr_single_chain(*, prep_root: Path, preparation, forecast_dir: Path,
@@ -4745,12 +5042,16 @@ def _hrrr_single_chain(*, prep_root: Path, preparation, forecast_dir: Path,
             EXPERIMENT_CONFIG_NAME, WPS_NAMELIST_NAME)
 
         # The published authorities the head's proof binds by name and
-        # digest, as the sealed arm relays them from the handoff.
+        # digest, as the sealed arm relays them from the handoff.  An
+        # as-posted head names no source manifest (its seal writes it), and
+        # the runner binds its input plan instead.
+        manifest_sha256 = bundle["source_manifest_sha256"]
         argv = [
             "--source", "hrrr",
             "--prepared-root", str(prep_root),
             "--prepared-head-sha256", head_sha256,
-            "--source-manifest-sha256", str(bundle["source_manifest_sha256"]),
+            *(() if manifest_sha256 is None else (
+                "--source-manifest-sha256", str(manifest_sha256))),
             "--experiment-config", str(prep_root / EXPERIMENT_CONFIG_NAME),
             "--wps-namelist", str(prep_root / WPS_NAMELIST_NAME),
             "--io-mode", "history", "--outdir", str(forecast_dir),
@@ -4771,7 +5072,7 @@ def _hrrr_single_chain(*, prep_root: Path, preparation, forecast_dir: Path,
 
 def _hrrr_tree_chain(*, prep_root: Path, tree_root: Path, preparation,
                      hierarchy, config_path: Path, forecast_dir: Path,
-                     observer: RunObserver):
+                     observer: RunObserver, devices: int | None = None):
     """Run the native HRRR root preparation and hierarchy beside a forecast.
 
     ``preparation`` runs the root preparation to its seal and
@@ -4836,10 +5137,12 @@ def _hrrr_tree_chain(*, prep_root: Path, tree_root: Path, preparation,
             tree = hierarchy()
         except BaseException as error:
             if (stream_dir(tree_root) / STOP_NAME).exists() \
-                    or not isinstance(error, Exception):
+                    or _is_interrupt(error) or not isinstance(error, Exception):
                 request_stop(prep_root, "the tree's forecast ended: "
                                         f"{type(error).__name__}: {error}")
             worker.join()
+            if "error" in box and not _is_interrupt(error):
+                raise box["error"] from error
             raise
         worker.join()
         if "error" in box:
@@ -4865,7 +5168,7 @@ def _hrrr_tree_chain(*, prep_root: Path, tree_root: Path, preparation,
             emit_sealed_once()
         _hrrr_tree_forecast(tree_root=tree_root, config_path=config_path,
                             forecast_dir=forecast_dir, observer=observer,
-                            head_sha256=head_sha256)
+                            head_sha256=head_sha256, devices=devices)
         return head_sha256
 
     return run_chained(prepared_root=tree_root, prepare=tree_preparation,
@@ -4874,7 +5177,7 @@ def _hrrr_tree_chain(*, prep_root: Path, tree_root: Path, preparation,
 
 def _hrrr_hierarchy_stage(*, prep_root: Path, inputs: Mapping[str, Path],
                           hints: Mapping[str, Any], geog_root,
-                          manifest: Path, cycle: str, run_dir: Path,
+                          manifest: Path | None, cycle: str, run_dir: Path,
                           observer: RunObserver,
                           statics_corridor: bool = False,
                           acknowledgements: Sequence[str] = (),
@@ -4906,6 +5209,28 @@ def _hrrr_hierarchy_stage(*, prep_root: Path, inputs: Mapping[str, Path],
     from gpuwm.fetch import sha256_file
     from gpuwm.go_cli import run_stage
 
+    if manifest is None:
+        # The root head binds the posting plan and the admitted start
+        # leads. Its seal writes both documents; the hierarchy reads the
+        # same head and completes their identities at its own seal.
+        from gpuwm.ingest.boundary_stream import live_chained_head
+        from tools.prepare_hrrr_wrf import POSTED_SOURCE_MANIFEST
+
+        root_head = live_chained_head(prep_root)
+        manifest = prep_root / POSTED_SOURCE_MANIFEST
+        if root_head is None:
+            manifest_sha = sha256_file(manifest)
+        else:
+            posted = root_head["basis"].get("as_posted")
+            if not posted:
+                raise PlanError("the native as-posted hierarchy has no root "
+                                "input plan to bind its source manifest")
+            manifest = prep_root / posted["documents"]["source_manifest"]["path"]
+            manifest_sha = root_head["basis"]["cache"]["identity"][
+                "source_manifest_sha256"]
+    else:
+        manifest_sha = sha256_file(manifest)
+
     tree_root = run_dir / "chain" / "hrrr-hierarchy"
     command = [
         sys.executable, "-m", "gpuwm.hrrr_hierarchy_direct",
@@ -4917,7 +5242,7 @@ def _hrrr_hierarchy_stage(*, prep_root: Path, inputs: Mapping[str, Path],
         "--stock-wrf-namelist-input", str(inputs["stock_namelist_input"]),
         "--geog-root", str(geog_root),
         "--source-manifest", str(manifest),
-        "--source-manifest-sha256", sha256_file(manifest),
+        "--source-manifest-sha256", manifest_sha,
         "--cycle", cycle,
         "--output-root", str(tree_root),
     ]
@@ -4949,12 +5274,24 @@ def _hrrr_hierarchy_stage(*, prep_root: Path, inputs: Mapping[str, Path],
     # Reuse is a whole-hierarchy decision: the canonical domain manifest,
     # every cache payload, static/corridor/export artifact, and the prepared
     # root input must still match the completed stage's binding.
+    stated = {"source_manifest_sha256": manifest_sha}
+
+    def run_hierarchy():
+        run_stage("hierarchy", command, explain=False,
+                  progress=tree_root / "progress.json",
+                  observer=_GoObserver(observer))
+        # Recovery compares the sealed documents, so record the digest
+        # the finished hierarchy consumed rather than its head placeholder.
+        from gpuwm.ingest.boundary_stream import is_as_posted_placeholder
+
+        if is_as_posted_placeholder(manifest_sha):
+            sealed_sha = sha256_file(manifest)
+            command[command.index("--source-manifest-sha256") + 1] = sealed_sha
+            stated["source_manifest_sha256"] = sealed_sha
+
     prepared = _prepare_stage(
         tree_root, arguments=command,
-        stated={"source_manifest_sha256": sha256_file(manifest)},
-        run=lambda: run_stage("hierarchy", command, explain=False,
-                              progress=tree_root / "progress.json",
-                              observer=_GoObserver(observer)))
+        stated=stated, run=run_hierarchy)
     if not tree_root.is_dir():
         raise PlanError(
             f"the HRRR hierarchy stage wrote no {tree_root}; its own "
@@ -4968,7 +5305,8 @@ def _hrrr_hierarchy_stage(*, prep_root: Path, inputs: Mapping[str, Path],
 def _hrrr_tree_forecast(*, tree_root: Path, config_path: Path,
                         forecast_dir: Path,
                         observer: RunObserver,
-                        head_sha256: str | None = None) -> None:
+                        head_sha256: str | None = None,
+                        devices: int | None = None) -> None:
     """The same tree runner the GFS tree route drives.
 
     The relay is the same shape too -- one preparation-receipt digest
@@ -5012,6 +5350,10 @@ def _hrrr_tree_forecast(*, tree_root: Path, config_path: Path,
         *binding,
         "--experiment-config", str(config_path),
         "--experiment-config-sha256", sha256_file(config_path),
+        # `--devices N` is a COUNT override of the [devices] table the
+        # user's config already carries to the runner (the reason [tiles]
+        # needs no flag above), so it is relayed as the count alone.
+        *([] if devices is None else ["--devices", str(int(devices))]),
         "--io-mode", "history", "--outdir", str(forecast_dir),
     ]
     observer.enter_stage("forecast", phase="forecast")
@@ -5118,6 +5460,346 @@ def _run_prep(arguments: Sequence[str]) -> None:
         raise StageExitError("prepare", code)
 
 
+# ---------------------------------------------------------------------------
+# The staged chain as posted (DESIGN A136 2.5): the fetch beside the preparation
+# ---------------------------------------------------------------------------
+
+#: How much earlier than the fetch's launch a file it writes may be dated
+#: and still be this fetch's (a filesystem keeping two-second times).
+_POSTED_FRESH_SLACK_SECONDS = 2.0
+#: How often the staged chain looks for the as-posted fetch's files.
+_POSTED_POLL_SECONDS = 0.2
+#: How often a start wait is said again on the heartbeat while it lasts.
+_POSTED_WAIT_SAY_SECONDS = 5.0
+
+
+def _staged_beside_refusal(hints: Mapping[str, Any], exp) -> str | None:
+    """Why the staged chain fetches this window whole before preparing, or ``None``.
+
+    ``None``: the fetch runs beside the preparation, which starts on the
+    window's start needs and waits for each later lead's marker
+    (``mapped_direct --as-posted``), and the forecast binds its head.  Each
+    reason names what reads the whole window first:
+
+    * the run asked for the whole cycle (``as_posted = false``);
+    * the source's preparation reads a whole fetched window, or normalizes
+      every input file before its decode
+      (:func:`gpuwm.source_cli.as_posted_refusal`);
+    * a domain tree: the as-posted mapped preparation prepares one domain,
+      because every child binds the input manifest at the tree's head;
+    * an ensemble member: its member is verified over every input file
+      before the preparation (:func:`gpuwm.forcing_member.verify_handoff`).
+    """
+
+    if hints.get("as_posted") is False:
+        return "the run asked for the whole cycle"
+    from gpuwm.source_cli import as_posted_refusal
+
+    refusal = as_posted_refusal(str(hints.get("source")))
+    if refusal is not None:
+        return refusal
+    if len(exp.domains) > 1:
+        return ("a mapped domain tree prepares from the whole window: every "
+                "child binds the input manifest at the tree's head")
+    from gpuwm.forcing_member import member_contract
+
+    try:
+        member = member_contract(str(hints["source"]), hints.get("member"))
+    except (KeyError, ValueError):
+        member = None
+    if member is not None:
+        return ("its ensemble member is verified over every input file "
+                "before the preparation")
+    return None
+
+
+def _posted_manifest_path(data_dir: Path, prep_root: Path) -> Path:
+    """Where an as-posted staged preparation seals its input manifest.
+
+    Beside the fetched files, because the seal holds each manifest row to
+    the lead marker that names the same file from the fetch folder
+    (``mapped_direct._PostedMappedSource``), under a name of this run's
+    own, so the standalone ``prep-command.txt`` manifest in the shared
+    download and another run's are left as they are.
+    """
+
+    digest = hashlib.sha256(
+        str(Path(prep_root).resolve()).encode("utf-8")).hexdigest()[:12]
+    return Path(data_dir) / f"inputs-{digest}.json"
+
+
+class _FetchBesideEvents:
+    """The run's stream, as the fetch beside the preparation relays onto it.
+
+    The fetch's transfer sink is ambient to this process
+    (:func:`gpuwm.progress.event_sink`), and the preparation runs in it at
+    the same time, so its step records reach the fetch's relay too.  They
+    are on the stream already (:func:`_preparation_relay`); said twice they
+    would read as two preparations.
+    """
+
+    def __init__(self, events):
+        self._events = events
+
+    def emit(self, event: str, **fields: Any):
+        if event == "warning" and fields.get("code") == "preparation_progress":
+            return None
+        return self._events.emit(event, **fields)
+
+
+class _PostedFetch:
+    """The as-posted fetch, run in this process on its own thread.
+
+    The staged chain runs its stages in this process (``gpuwm fetch``'s own
+    handler through :func:`_run_fetch`, ``gpuwm prep`` through
+    :func:`_run_prep`), so its as-posted fetch does too: the same call, on a
+    thread, beside the preparation that waits on its lead markers.  While
+    the run waits for its start needs, a start-need lead the fetch waits
+    for is the run's ``waiting:source`` heartbeat record, by the rule
+    ``gpuwm go``'s hosted chain uses (:meth:`_GoObserver._start_wait`).
+
+    A chain that fails stops it (:meth:`stop`): the fetch ends at its next
+    wait (:func:`gpuwm.fetch_as_posted.stop_event`), and a fetch that ends
+    with a lead unmarked says so in ``posting/failed.json``
+    (:func:`gpuwm.go_cli._record_fetch_end`), so a preparation still
+    waiting on a marker ends by name.
+    """
+
+    def __init__(self, arguments: Sequence[str], run_dir: Path, *,
+                 data_dir: Path, hints: Mapping[str, Any],
+                 observer: RunObserver):
+        import contextvars
+
+        from gpuwm import fetch_as_posted
+        from gpuwm.source_posting import POSTING_DIRNAME
+
+        self.data_dir = Path(data_dir)
+        self.folder = self.data_dir / POSTING_DIRNAME
+        cycle = str(hints.get("cycle") or "")
+        #: What :func:`gpuwm.go_cli._record_fetch_end` matches the
+        #: schedule against; ``latest`` takes the schedule's own cycle.
+        self.plan = {"data": str(self.data_dir), "source": str(hints["source"]),
+                     "cycle": None if cycle == "latest" else cycle[:13]}
+        self.view = _GoObserver(observer)
+        self.launched = time.time()
+        self.stop_event = fetch_as_posted.stop_event(self.data_dir)
+        self._box: dict[str, Any] = {}
+        self._said_wait = 0.0
+        context = contextvars.copy_context()
+        self._thread = threading.Thread(
+            target=context.run,
+            args=(self._run, list(arguments), run_dir,
+                  getattr(observer, "events", None)),
+            name="run-plan-posted-fetch", daemon=True)
+        self._thread.start()
+
+    def _run(self, arguments, run_dir, events) -> None:
+        from gpuwm import fetch_as_posted
+        from gpuwm.go_cli import _record_fetch_end
+
+        error = None
+        try:
+            self._box["report"] = _run_fetch(
+                arguments, run_dir,
+                events=None if events is None else _FetchBesideEvents(events))
+        except BaseException as failure:  # noqa: BLE001 - see result()
+            error = failure
+            if not self.stop_event.is_set():
+                self._box["error"] = failure
+        finally:
+            _record_fetch_end(self.folder, self.plan, since=self.launched,
+                              error=error, stopped=self.stop_event.is_set())
+            fetch_as_posted.release_stop(self.data_dir)
+
+    def running(self) -> bool:
+        return self._thread.is_alive()
+
+    def failure(self) -> BaseException | None:
+        return self._box.get("error")
+
+    def said_failure(self) -> bool:
+        """Whether the fetch failed, or said it is failing (its ``failed.json``)."""
+
+        from gpuwm.source_posting import POSTING_FAILED_NAME
+
+        return ("error" in self._box
+                or (self.folder / POSTING_FAILED_NAME).is_file())
+
+    def result(self) -> dict[str, Any]:
+        """Wait for the fetch to end; its report, or its failure raised."""
+
+        self._thread.join()
+        if "error" in self._box:
+            raise self._box["error"]
+        return dict(self._box.get("report") or {})
+
+    def stop(self, *, grace: float = 30.0) -> None:
+        """End the fetch at its next wait: the run it fetched for has failed."""
+
+        self.stop_event.set()
+        self._thread.join(grace)
+
+    def settle(self, *, fetch_first: bool,
+               grace: float = 30.0) -> BaseException | None:
+        """After the chain failed: the chain's failure, if it is the fetch's.
+
+        ``fetch_first``: the fetch had failed, or said it was failing,
+        before the preparation or forecast did, which then failed because
+        of it; its failure is the chain's once it ends.  Otherwise the run
+        is over and so is its download: the fetch is stopped.
+        """
+
+        if fetch_first:
+            self._thread.join(grace)
+            failed = self.failure()
+            if failed is not None:
+                return failed
+        self.stop(grace=grace)
+        return None
+
+    # -- the files it publishes -------------------------------------------
+
+    def _fresh(self, path: Path) -> dict[str, Any] | None:
+        try:
+            if Path(path).stat().st_mtime \
+                    < self.launched - _POSTED_FRESH_SLACK_SECONDS:
+                return None
+        except OSError:
+            return None
+        from gpuwm.ingest.boundary_stream import read_replaced_json
+
+        try:
+            payload = read_replaced_json(Path(path))
+        except (OSError, ValueError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def schedule(self) -> dict[str, Any] | None:
+        """This fetch's posting schedule of this window, once it has one."""
+
+        from gpuwm.source_posting import POSTING_SCHEDULE_NAME
+
+        schedule = self._fresh(self.folder / POSTING_SCHEDULE_NAME)
+        if schedule is None or schedule.get("source") != self.plan["source"]:
+            return None
+        cycle = str(schedule.get("cycle") or "")[:13]
+        if self.plan["cycle"] is None:
+            self.plan["cycle"] = cycle
+        return schedule if cycle == self.plan["cycle"] else None
+
+    def handoff(self) -> dict[str, Any] | None:
+        """The ``prep-arguments.json`` this fetch wrote as posted, once written."""
+
+        from gpuwm import fetch_routes
+
+        document = self._fresh(self.data_dir / fetch_routes.PREP_ARGUMENTS_NAME)
+        if (document is None
+                or document.get("schema") != fetch_routes.PREP_ARGUMENTS_SCHEMA
+                or not document.get("as_posted")):
+            return None
+        return document
+
+    def start_wait(self, schedule: Mapping[str, Any]) -> None:
+        """The run's start wait from the schedule, said every few seconds."""
+
+        now = time.monotonic()
+        if now - self._said_wait >= _POSTED_WAIT_SAY_SECONDS:
+            self._said_wait = now
+            self.view._start_wait(schedule)
+
+    def forecast_begins(self) -> None:
+        """From here the forecast says its own waits (its seams)."""
+
+        self.view._forecast_begun = True
+        self.view._end_start_wait()
+
+    def await_handoff(self) -> tuple[Path | None, dict[str, Any] | None]:
+        """The posting folder and the handoff the preparation starts from.
+
+        ``(None, None)`` when the fetch ended without scheduling a wait (its
+        window was already here whole, or its source is not waited on): the
+        window is fetched, and the chain prepares it whole.  The handoff is
+        the one this fetch writes once the start needs and donors are in,
+        before its later leads move (DESIGN A136 2.3 step 2).  A fetch that
+        fails first raises its failure.
+        """
+
+        schedule = None
+        while True:
+            schedule = self.schedule() or schedule
+            if schedule is not None:
+                document = self.handoff()
+                if document is not None:
+                    self.view._end_start_wait()
+                    return self.folder, document
+                self.start_wait(schedule)
+            if not self.running():
+                schedule = self.schedule() or schedule
+                document = self.handoff() if schedule is not None else None
+                self.view._end_start_wait()
+                self.result()
+                return ((self.folder, document) if document is not None
+                        else (None, None))
+            time.sleep(_POSTED_POLL_SECONDS)
+
+
+def _say_posted_source_behind(observer, folder: Path, *, primary: bool = True) -> None:
+    """A late lead: the run's cause, or a timeout after its first failure.
+
+    The fetch writes ``posting/failed.json`` with ``code: source_behind``
+    and the lead's times before it exits 75; the preparation then ends on
+    that record in its own process, so this run sees two exit codes and no
+    lead.  Said to the observer here, unless the forecast already said it
+    at a seam with its model time, so the run emits ``source_behind`` and
+    exits 75 as DESIGN A136 3.6 asks, naming the lead.
+    """
+
+    if getattr(observer, "source_behind_record", None) is not None:
+        return
+    from gpuwm.source_posting import POSTING_FAILED_NAME
+
+    record = _read_json_object(Path(folder) / POSTING_FAILED_NAME)
+    if record.get("code") != "source_behind":
+        return
+    if not primary:
+        # A forecast can fail before a later lead times out while its
+        # preparation continues to the seal. Keep that timeout as the
+        # second fact, without replacing the failure that ended the run.
+        observer.secondary_source_behind_record = dict(record)
+        observer.warn("secondary_source_behind", "After the run failed: " +
+                      (record.get("message") or "a later source lead timed out"),
+                      source_behind=source_behind_fields(record))
+        return
+    hook = getattr(observer, "source_behind", None)
+    if hook is not None:
+        hook({**record, "model_elapsed_seconds": None,
+              "model_valid_time": None, "frames_kept": None,
+              "checkpoint": None})
+
+
+def _settle_posted_fetch(fetch: _PostedFetch, stopped: BaseException, *,
+                         fetch_first: bool) -> None:
+    """After the chain beside the as-posted fetch failed: stop it, or raise its failure.
+
+    The fetch's failure is the chain's when it failed, or said it was
+    failing (``posting/failed.json``), before the preparation or forecast
+    did, which then failed because of it; a lead past its budget is said by
+    the preparation's own ``SourceBehind``, which stands.  Otherwise the
+    fetch is stopped.  Not on an interrupt: the interrupt contract kills
+    no child, and a stop reaches this process's fetch with the rest of it.
+    ``fetch_first`` was sampled at the first callback exception, before
+    waiting for the preparation's seal could let a later fetch failure in.
+    """
+
+    if isinstance(stopped, (KeyboardInterrupt, ChainInterrupted)):
+        return
+    from gpuwm.ingest.boundary_stream import SourceBehind
+
+    failed = fetch.settle(fetch_first=fetch_first)
+    if failed is not None and not isinstance(stopped, SourceBehind):
+        raise failed from None
+
+
 def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
                   observer: RunObserver, run_dir: Path,
                   prepare_only: bool = False, reviewed_inputs=None) -> Mapping[str, Any]:
@@ -5171,6 +5853,11 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
             "emission; this config was not emitted with one")
     prep_root = _staged_prep_root(run_dir)
     forecast_dir = run_dir / "chain" / "run"
+    #: The as-posted fetch running beside the preparation (_PostedFetch),
+    #: its posting folder, its handoff and the relay of its posting files
+    #: onto the run's stream; ``None`` when the window is fetched (or
+    #: found) whole first.
+    beside = posting = posted_handoff = posting_relay = None
 
     # -- fetch ---------------------------------------------------------
     observer.enter_stage("fetch", phase="fetch")
@@ -5220,164 +5907,293 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
         # verified member list, including cache roots beyond MAX_PATH.
         from gpuwm.filesystem_paths import io_path
         data_dir = io_path(data_dir)
-        fetch_report = _run_fetch(
-            _fetch_arguments_from_hints(hints, out=data_dir), run_dir,
-            events=getattr(observer, "events", None), posting_relay=True)
-        handoff_path = data_dir / fetch_routes.PREP_ARGUMENTS_NAME
-    handoff = _read_json_object(handoff_path)
-    if handoff.get("schema") != fetch_routes.PREP_ARGUMENTS_SCHEMA:
-        raise PlanError(
-            f"the fetch left no readable {fetch_routes.PREP_ARGUMENTS_NAME} "
-            f"in {data_dir}, so the preparation stage has no bound "
-            "argument handoff to compose from; the table routes write "
-            "one beside every verified fetch")
-    supplements = plan.run_options.get("supplement", ())
-    supplied_roles = {binding.split("=", 1)[0] for binding in supplements}
-    unfetched = set(handoff.get("unbound_supplement_roles") or []) - supplied_roles
-    if unfetched:
-        raise PlanError(
-            f"the fetch handoff {handoff_path} leaves the supplement "
-            f"role(s) {sorted(unfetched)} unbound. Supply each with "
-            "gpuwm go CONFIG --supplement ROLE=PATH; the fetch route's notes in "
-            f"{fetch_routes.PREP_COMMAND_NAME} say what each one needs")
-    from gpuwm.prep_handoff import preparation_arguments
-    from gpuwm.forcing_member import verify_handoff, prepare_verified
-    arguments = preparation_arguments(handoff)
-    # Member staging can change the input tree. Bind the receipt to the
-    # selected tree the preparer will consume, never to the prior upstream list.
-    bound_handoff = dict(handoff, argv=arguments)
-    member_receipt = verify_handoff(hints, bound_handoff, out=data_dir)
-    observer.finish_stage(fetch=fetch_report, member_verification=member_receipt)
+        fetch_arguments = _fetch_arguments_from_hints(hints, out=data_dir)
+        if _staged_beside_refusal(hints, exp) is None:
+            # AS POSTED (DESIGN A136 2.5): the fetch runs beside the
+            # preparation, which starts on the window's start needs and
+            # waits for each later lead's marker; its seal writes the input
+            # manifest, and the forecast starts at its head.
+            beside = _PostedFetch(fetch_arguments, run_dir,
+                                  data_dir=data_dir, hints=hints,
+                                  observer=observer)
+            events = getattr(observer, "events", None)
+            if events is not None:
+                from gpuwm.chain_events import HostedPostingRelay
 
-    # -- prepare -------------------------------------------------------
-    observer.enter_stage("prepare", phase="prepare")
-    if member_receipt is not None:
-        arguments[arguments.index("--input-list") + 1] = member_receipt["input_list"]
-    if "--author-input-manifest" in arguments:
-        # The standalone prep command owns the fetch folder's manifest.
-        # Member staging changes the input paths, so author this chain's
-        # manifest beside its preparation instead of overwriting that binding.
-        arguments[arguments.index("--author-input-manifest") + 1] = str(
-            run_dir / "chain" / "inputs.json")
-    arguments += [token for binding in supplements
-                  for token in ("--supplement", binding)]
-    arguments += [
-        # The four paths the handoff declares are the caller's.
-        "--wps-namelist", str(namelist),
-        "--experiment-config", str(config_path),
-        "--geog-root", str(geog_root),
-        "--output-root", str(prep_root),
-    ]
-    from gpuwm.source_cli import preparation_statics
-    from gpuwm.static.corridor import config_declares_follow_source
-
-    if config_declares_follow_source(exp):
-        # Bind this requirement before reuse is decided. A sealed stationary
-        # bundle cannot satisfy the newly requested moving corridor.
-        arguments.append(preparation_statics("prepared:staged", source=hints["source"])["option"])
-    # Same recovery seam as the HRRR chain, and the same function: this
-    # route's preparer is create-only too, so a re-run into the same
-    # output_root has to decide before calling it whether the bundle
-    # already there is this run's.  The route contributes only what it
-    # can state exactly -- the fetch handoff it composed the argv from
-    # -- because a member a chain cannot compute must not become a
-    # silent pass.
-    def verify_local():
-        if local_snapshot is not None:
-            from gpuwm.local_preparation import verify_local_snapshot
-            listing = (Path(arguments[arguments.index("--input-list") + 1])
-                       if "--input-list" in arguments else None)
-            verify_local_snapshot(local_snapshot, input_list=listing)
-
-    def run_preparation():
-        result = _run_prep(arguments)
-        # Verify before the stage writes its completion/reuse binding.
-        verify_local()
-        return result
-
-    verify_local()
-
-    member_notes: dict[str, Any] = {}
-
-    def preparation(built=None):
-        return prepare_verified(member_receipt, prep_root, lambda: _prepare_stage(
-            prep_root, arguments=arguments,
-            stated={}, run=run_preparation,
-            built=(None if built is None
-                   else lambda receipt: built({**receipt, **member_notes}))),
-            notes=member_notes)
-
-    from gpuwm import stage_cli
-
-    # ``prepare_sealed`` is emitted when the preparation seals, from the
-    # preparation's own thread, not when the forecast returns: emitted
-    # after the forecast it put the seal at the end of the run, so the
-    # events of a chained run could not say when its preparation ended.
-    seal = _ChainSeal(observer, prep_root)
-
-    def chained_preparation():
-        result = preparation(built=seal.sealed)
-        seal.sealed(result)
-        return result
-
-    def chained_forecast(head_sha256):
-        # CHAINED PREPARATION: the forecast starts at the prepared head and
-        # the preparation builds the later boundary intervals beside it
-        # (gpuwm.ingest.boundary_stream).  ``None`` is a tree published
-        # sealed, which runs below exactly as before.
-        if head_sha256 is None:
-            return None
-        observer.finish_stage(prepared_root=str(prep_root),
-                              prepared={"chained": True,
-                                        "head_sha256": head_sha256},
-                              member_verification=member_receipt)
-        events = getattr(observer, "events", None)
-        if events is not None:
-            events.emit("prepare_head_ready", head_sha256=head_sha256)
-        seal.head_bound()
-        head_bundle = stage_cli.resolve_head_bundle(prep_root, head_sha256)
-        _staged_forecast_stage(head_bundle)
-        return head_bundle
-
-    def _staged_forecast_stage(bundle):
-        # A retry owns another generation of the forecast path; the render
-        # below reads the one this forecast used.
-        nonlocal forecast_dir
-        target = forecast_dir = _clear_forecast_output(
-            forecast_dir, observer=observer)
-        profile = _asserted_profile(plan, config_path=config_path)
-        command = stage_cli.sim_command(
-            bundle, experiment_config=config_path,
-            wps_namelist=namelist if bundle["layout"] == "single" else None,
-            outdir=target,
-            physics_profile=None if profile is None else str(profile),
-            progress_format="jsonl",
-            tiles=(exp.tiles if exp.tiles.enabled
-                   and bundle["layout"] == "single" else None))
-        observer.arm_first_products(
-            _chain_render_plan(plan, forecast_dir=target, run_dir=run_dir))
-        observer.enter_stage("forecast", phase="forecast")
-        _staged_forecast(command[3:], layout=str(bundle["layout"]),
-                         observer=observer)
-
-    chained = None
-    # `gpuwm prep` runs in this process (_run_prep), so its step events reach
-    # the run's stream through one listener around it.
-    with _preparation_relay(observer):
-        if not prepare_only:
-            from gpuwm.ingest.boundary_stream import run_chained
-
-            # One domain or a tree: the forecast starts at the head a
-            # chained preparation publishes.  A mapped or GFS-series tree
-            # chains on either backend, CPU or card, and the tree runner
-            # starts its forecast on that head, a storm-following tree
-            # included (its statics corridor is built into the head); a
-            # tree published at its seal (native HRRR) runs below.
-            prepared, chained = run_chained(
-                prepared_root=prep_root, prepare=chained_preparation,
-                forecast=chained_forecast, observer=observer)
+                # The fetch's schedule and leads on the run's stream
+                # (posting_schedule, lead_posted, lead_ready), and its
+                # start wait (source_wait_* with phase start).
+                posting_relay = HostedPostingRelay(events, data_dir=data_dir)
+                posting_relay.start(
+                    since_unix_ms=int(beside.launched * 1000))
+            try:
+                posting, posted_handoff = beside.await_handoff()
+                if posting is not None and "--author-input-manifest" not in (
+                        posted_handoff.get("argv") or ()):
+                    # Breakage it prevents: without --as-posted the
+                    # preparation would read the fetch folder as a whole
+                    # window while its later leads are still posting; the
+                    # route handoff always names where the manifest goes,
+                    # so one without it is not a route's.  The fetch is
+                    # stopped below, not left downloading for a refused run.
+                    raise PlanError(
+                        f"the as-posted fetch's "
+                        f"{fetch_routes.PREP_ARGUMENTS_NAME} names no "
+                        "--author-input-manifest, so the preparation beside "
+                        "it has nowhere its seal writes the window's "
+                        "manifest; run with --whole-cycle, or repair the "
+                        "handoff")
+            except BaseException:
+                fetch_first = beside.said_failure()
+                if posting_relay is not None:
+                    posting_relay.stop()
+                if beside.running():
+                    beside.stop()
+                _say_posted_source_behind(observer, beside.folder,
+                                          primary=fetch_first)
+                raise
+            if posting is None:
+                # The window was here whole (or its source is not waited
+                # on): the fetch has ended, and the chain prepares it whole.
+                fetch_report = beside.result()
+                beside = None
+                if posting_relay is not None:
+                    posting_relay.stop()
+                    posting_relay = None
+            else:
+                fetch_report = {"source": hints["source"], "as_posted": True,
+                                "posting": str(posting),
+                                "arguments": list(fetch_arguments)}
         else:
-            prepared = preparation()
+            fetch_report = _run_fetch(
+                fetch_arguments, run_dir,
+                events=getattr(observer, "events", None), posting_relay=True)
+        handoff_path = data_dir / fetch_routes.PREP_ARGUMENTS_NAME
+    # Sample at the first complete callback's exception, before run_chained
+    # waits for a failed forecast's preparation to seal. A later fetch
+    # timeout during that hold cannot become the run's primary failure.
+    first_failure: dict[str, Any] = {}
+    first_failure_lock = threading.Lock()
+
+    def failing(error: BaseException) -> None:
+        if beside is not None:
+            with first_failure_lock:
+                if "fetch_first" not in first_failure:
+                    first_failure["fetch_first"] = beside.said_failure()
+                    first_failure["error"] = error
+
+    try:
+        handoff = (posted_handoff if posting is not None
+                   else _read_json_object(handoff_path))
+        if handoff.get("schema") != fetch_routes.PREP_ARGUMENTS_SCHEMA:
+            raise PlanError(
+                f"the fetch left no readable {fetch_routes.PREP_ARGUMENTS_NAME} "
+                f"in {data_dir}, so the preparation stage has no bound "
+                "argument handoff to compose from; the table routes write "
+                "one beside every verified fetch")
+        supplements = plan.run_options.get("supplement", ())
+        supplied_roles = {binding.split("=", 1)[0] for binding in supplements}
+        unfetched = set(handoff.get("unbound_supplement_roles") or []) - supplied_roles
+        if unfetched:
+            raise PlanError(
+                f"the fetch handoff {handoff_path} leaves the supplement "
+                f"role(s) {sorted(unfetched)} unbound. Supply each with "
+                "gpuwm go CONFIG --supplement ROLE=PATH; the fetch route's notes in "
+                f"{fetch_routes.PREP_COMMAND_NAME} say what each one needs")
+        from gpuwm.prep_handoff import preparation_arguments
+        from gpuwm.forcing_member import verify_handoff, prepare_verified
+        arguments = preparation_arguments(handoff)
+        # Member staging can change the input tree. Bind the receipt to the
+        # selected tree the preparer will consume, never to the prior upstream list.
+        bound_handoff = dict(handoff, argv=arguments)
+        member_receipt = verify_handoff(hints, bound_handoff, out=data_dir)
+        observer.finish_stage(fetch=fetch_report, member_verification=member_receipt)
+
+        # -- prepare -------------------------------------------------------
+        observer.enter_stage("prepare", phase="prepare")
+        if member_receipt is not None:
+            arguments[arguments.index("--input-list") + 1] = member_receipt["input_list"]
+        if posting is not None:
+            # As posted, the seal writes the manifest beside the fetched files
+            # (where the lead markers name them), under this run's own name.
+            arguments[arguments.index("--author-input-manifest") + 1] = str(
+                _posted_manifest_path(data_dir, prep_root))
+            arguments += ["--as-posted", str(posting)]
+        elif "--author-input-manifest" in arguments:
+            # The standalone prep command owns the fetch folder's manifest.
+            # Member staging changes the input paths, so author this chain's
+            # manifest beside its preparation instead of overwriting that binding.
+            arguments[arguments.index("--author-input-manifest") + 1] = str(
+                run_dir / "chain" / "inputs.json")
+        arguments += [token for binding in supplements
+                      for token in ("--supplement", binding)]
+        arguments += [
+            # The four paths the handoff declares are the caller's.
+            "--wps-namelist", str(namelist),
+            "--experiment-config", str(config_path),
+            "--geog-root", str(geog_root),
+            "--output-root", str(prep_root),
+        ]
+        from gpuwm.source_cli import preparation_statics
+        from gpuwm.static.corridor import config_declares_follow_source
+
+        if config_declares_follow_source(exp):
+            # Bind this requirement before reuse is decided. A sealed stationary
+            # bundle cannot satisfy the newly requested moving corridor.
+            arguments.append(preparation_statics("prepared:staged", source=hints["source"])["option"])
+        # Same recovery seam as the HRRR chain, and the same function: this
+        # route's preparer is create-only too, so a re-run into the same
+        # output_root has to decide before calling it whether the bundle
+        # already there is this run's.  The route contributes only what it
+        # can state exactly -- the fetch handoff it composed the argv from
+        # -- because a member a chain cannot compute must not become a
+        # silent pass.
+        def verify_local():
+            if local_snapshot is not None:
+                from gpuwm.local_preparation import verify_local_snapshot
+                listing = (Path(arguments[arguments.index("--input-list") + 1])
+                           if "--input-list" in arguments else None)
+                verify_local_snapshot(local_snapshot, input_list=listing)
+
+        def run_preparation():
+            result = _run_prep(arguments)
+            # Verify before the stage writes its completion/reuse binding.
+            verify_local()
+            return result
+
+        verify_local()
+
+        member_notes: dict[str, Any] = {}
+
+        def preparation(built=None):
+            return prepare_verified(member_receipt, prep_root, lambda: _prepare_stage(
+                prep_root, arguments=arguments,
+                stated={}, run=run_preparation,
+                built=(None if built is None
+                       else lambda receipt: built({**receipt, **member_notes}))),
+                notes=member_notes)
+
+        from gpuwm import stage_cli
+
+        # ``prepare_sealed`` is emitted when the preparation seals, from the
+        # preparation's own thread, not when the forecast returns: emitted
+        # after the forecast it put the seal at the end of the run, so the
+        # events of a chained run could not say when its preparation ended.
+        seal = _ChainSeal(observer, prep_root)
+
+        def chained_preparation():
+            try:
+                result = preparation(built=seal.sealed)
+                seal.sealed(result)
+                return result
+            except BaseException as error:
+                failing(error)
+                raise
+
+        def chained_forecast(head_sha256):
+            try:
+                return forecast_at_head(head_sha256)
+            except BaseException as error:
+                failing(error)
+                raise
+
+        def forecast_at_head(head_sha256):
+            # CHAINED PREPARATION: the forecast starts at the prepared head and
+            # the preparation builds the later boundary intervals beside it
+            # (gpuwm.ingest.boundary_stream).  ``None`` is a tree published
+            # sealed, which runs below exactly as before.
+            if head_sha256 is None:
+                return None
+            observer.finish_stage(prepared_root=str(prep_root),
+                                  prepared={"chained": True,
+                                            "head_sha256": head_sha256},
+                                  member_verification=member_receipt)
+            events = getattr(observer, "events", None)
+            if events is not None:
+                events.emit("prepare_head_ready", head_sha256=head_sha256)
+            if posting_relay is not None:
+                # The head read every start need: a lead the fetch asks for
+                # again from here is not the run's start wait.
+                posting_relay.head_ready()
+            seal.head_bound()
+            head_bundle = stage_cli.resolve_head_bundle(prep_root, head_sha256)
+            _staged_forecast_stage(head_bundle)
+            return head_bundle
+
+        def _staged_forecast_stage(bundle):
+            # A retry owns another generation of the forecast path; the render
+            # below reads the one this forecast used.
+            nonlocal forecast_dir
+            target = forecast_dir = _clear_forecast_output(
+                forecast_dir, observer=observer)
+            profile = _asserted_profile(plan, config_path=config_path)
+            command = stage_cli.sim_command(
+                bundle, experiment_config=config_path,
+                wps_namelist=namelist if bundle["layout"] == "single" else None,
+                outdir=target,
+                physics_profile=None if profile is None else str(profile),
+                progress_format="jsonl",
+                **({"devices": plan.run_options["devices"]}
+                   if plan.run_options.get("devices") is not None else {}),
+                devices_options=(exp.devices if getattr(
+                    getattr(exp, "devices", None), "enabled", False) else None),
+                tiles=(exp.tiles if exp.tiles.enabled
+                       and bundle["layout"] == "single" else None))
+            observer.arm_first_products(
+                _chain_render_plan(plan, forecast_dir=target, run_dir=run_dir))
+            if beside is not None:
+                beside.forecast_begins()
+            observer.enter_stage("forecast", phase="forecast")
+            _staged_forecast(command[3:], layout=str(bundle["layout"]),
+                             observer=observer)
+
+        chained = None
+        # `gpuwm prep` runs in this process (_run_prep), so its step events reach
+        # the run's stream through one listener around it.
+        with _preparation_relay(observer):
+            if not prepare_only:
+                from gpuwm.ingest.boundary_stream import run_chained
+
+                # One domain or a tree: the forecast starts at the head a
+                # chained preparation publishes.  A mapped or GFS-series
+                # tree chains on either backend, CPU or card, and the tree
+                # runner starts its forecast on that head, a storm-following
+                # tree included (its statics corridor is built into the
+                # head); a tree published at its seal (native HRRR) runs
+                # below.
+                prepared, chained = run_chained(
+                    prepared_root=prep_root, prepare=chained_preparation,
+                    forecast=chained_forecast, observer=observer)
+            else:
+                prepared = preparation()
+    except BaseException as stopped:
+        with first_failure_lock:
+            first = dict(first_failure)
+            fetch_first = (first_failure["fetch_first"]
+                           if "fetch_first" in first_failure
+                           else beside is not None and beside.said_failure())
+        if posting_relay is not None:
+            # What the fetch published before the chain stopped reaches the
+            # run's stream, and nothing after it does.
+            posting_relay.stop()
+            posting_relay = None
+        if beside is not None:
+            _say_posted_source_behind(observer, beside.folder,
+                                      primary=fetch_first)
+            _settle_posted_fetch(beside, stopped, fetch_first=fetch_first)
+            if not fetch_first and first and not _is_interrupt(stopped):
+                raise first["error"]
+        raise
+    if beside is not None:
+        # The seal read every lead's marker, so the fetch has published its
+        # whole window; it ends here, and a failure it met after that is
+        # still the chain's.
+        try:
+            beside.result()
+        finally:
+            if posting_relay is not None:
+                posting_relay.stop()
+                posting_relay = None
     verify_local()
     if chained is not None:
         return _chain_render(plan, forecast_dir=forecast_dir,
@@ -5681,6 +6497,8 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
 
     tokens = ["go", str(config_path), "--outdir",
               str(run_dir / "chain")]
+    if plan.run_options.get("devices") is not None:
+        tokens += ["--devices", str(plan.run_options["devices"])]
     # Every intent key whose delivery is a `gpuwm go` flag, forwarded.
     # Driven off _INTENT_DELIVERY rather than written out here, so a key
     # that gains a flag is carried by declaring it in one table instead
@@ -5737,7 +6555,8 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
     if code:
         if chain_observer.failure is not None:
             failure = chain_observer.failure
-            detail = ((relay.failure or {}).get("message") or failure.get("diagnostic"))
+            detail = (failure.get("diagnostic") or
+                      (relay.failure or {}).get("message"))
             raise RuntimeError(
                 f"The {failure['stage']} stage failed (exit {failure['exit_code']}). "
                 "No later stage ran." + (f"\n{detail}" if detail else ""))
@@ -6414,6 +7233,10 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
             interrupted=interrupted,
             remedy=_remedy(error),
             receipts=_receipts(run_dir),
+            **({"secondary_source_behind":
+                dict(observer.secondary_source_behind_record)}
+               if observer is not None and
+               observer.secondary_source_behind_record is not None else {}),
             **({"folders": folders} if folders else {}))
         if interrupted:
             return INTERRUPT_EXIT_CODE
@@ -7371,14 +8194,16 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
     # already refused inside resolve_plan, above.
     corridor = corridor_estimate(exp, resolution["moving_nest"])
     frames = []
+    output_rows = {int(row["grid_id"]): row for row in projection["domains"]}
     for domain in exp.domains:
         interval = float(domain.history_interval_s)
-        count = (0 if interval <= 0.0
-                 else int(exp.run_seconds // interval) + 1)
+        output_row = output_rows[int(domain.grid_id)]
         frames.append({
             "domain": domain.grid_id,
             "history_interval_s": interval,
-            "frames": count,
+            "frames": output_row["history_frames"],
+            "history_frame_bytes": output_row["history_frame_bytes"],
+            "history_selection": output_row["history_selection"],
             "nx": domain.run.nx, "ny": domain.run.ny, "nz": domain.run.nz,
         })
     return {
@@ -7426,11 +8251,13 @@ def estimate_plan(plan: RunPlan) -> dict[str, Any]:
             "compose_scratch_bytes": projection["compose_scratch_bytes"],
             "checkpoint_sets_held": projection["checkpoint_sets_held"],
             "unpriced": projection["unpriced"],
-            "basis": "frame counts are exact from run_seconds and each "
-                     "domain's history_interval_s; the bytes are the "
+            "basis": "frame counts use the writer's domain start, cadence, "
+                     "history window and resume clock; history bytes use "
+                     "the selected writer variables and their grid shapes; "
+                     "other bytes are the "
                      "download, the preparation and the frame stream it "
                      "stages (gpuwm/download_budget.py) "
-                     "and the history, checkpoints and pictures "
+                     "and the checkpoints and pictures "
                      f"(gpuwm/disk_budget.py: {projection['basis']})"
                      + ("; not priced: " + ", ".join(projection["unpriced"])
                         if projection["unpriced"] else ""),

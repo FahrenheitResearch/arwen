@@ -171,7 +171,8 @@ def test_full_horizontal_cpu_path_is_parallel_byte_stable():
         np.testing.assert_array_equal(parallel.fields[name], serial.fields[name])
 
 
-def test_backend_selector_is_explicit_and_rejects_cpu_options_on_cuda():
+def test_backend_selector_is_explicit_and_rejects_cpu_options_on_cuda(
+        monkeypatch):
     native = _backend()
     cpu = resolve_preprocess_backend("cpu", workers=3)
     assert cpu.name == "cpu"
@@ -180,6 +181,10 @@ def test_backend_selector_is_explicit_and_rejects_cpu_options_on_cuda():
     assert receipt["bridge"]["name"] == native.path.name
     assert receipt["bridge"]["sha256"] == hashlib.sha256(
         native.path.read_bytes()).hexdigest()
+    # Backend selection needs no device work.  Exercise both module-presence
+    # answers explicitly so this contract holds on installs without CuPy too.
+    monkeypatch.setattr(
+        "gpuwm.ingest.preprocess_backend._gpu_runtime_installed", lambda: True)
     assert resolve_preprocess_backend(None).name == "cuda"
     # workers reaches the CUDA backend's host steps (the masked surface
     # fields run in the Rust library under CUDA too); cpu_bridge stays the
@@ -189,6 +194,10 @@ def test_backend_selector_is_explicit_and_rejects_cpu_options_on_cuda():
         resolve_preprocess_backend("cuda", cpu_bridge=native.path)
     with pytest.raises(ValueError, match="cuda.*cpu.*auto"):
         resolve_preprocess_backend("silent-substitution")
+    monkeypatch.setattr(
+        "gpuwm.ingest.preprocess_backend._gpu_runtime_installed", lambda: False)
+    with pytest.raises(ValueError, match="cannot import cupy"):
+        resolve_preprocess_backend(None)
 
 
 @pytest.mark.parametrize(

@@ -129,6 +129,14 @@ def prepared_domain_config_identity(domain_config) -> dict[str, object]:
     start_time = document.get("start_time")
     if isinstance(start_time, datetime):
         document["start_time"] = start_time.isoformat()
+    run = document.get("run", {})
+    if int(run.get("topo_wind", 0) or 0) or int(run.get("gwd_opt", 0) or 0):
+        from gpuwm.static.rust_bridge import OROGRAPHIC_MARKER
+
+        # Earlier orographic statics chose some source stencils in f64 and
+        # scaled source words before interpolation. Those arrays remain
+        # internally hash-consistent but produce different terrain drag.
+        document["orographic_sampling_contract"] = OROGRAPHIC_MARKER
     return _json_copy(document)
 
 
@@ -239,6 +247,13 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # urban run against an older header carries a non-default value and
     # is still refused, as it must be: that tree has no urban legend.
     "run.sf_urban_physics", "run.use_wudapt_lcz", "run.num_urban_hi",
+    # WRF's topo_wind and gwd_opt (lane/282-terrain-drag), on the urban
+    # keys' argument: preparation reads them only to add the sub-grid
+    # orographic statistics to the static build (gpuwm.static.orographic);
+    # at 0 it builds exactly the statics every older tree carries.  A
+    # non-default value against an older header is refused, as it must be:
+    # that tree has no orographic statistics.
+    "run.topo_wind", "run.gwd_opt",
     # ---------------------------------------------------------------
     # The 80 other RunConfig fields that joined after the identity
     # header (1c6290410, 2026-07-19, which bound asdict(DomainConfig)
@@ -378,6 +393,17 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # are built -- the tables always carry w.  Registered in the commit
     # that added them, so no tree prepared before them is refused.
     "run.relax_timescale_s", "run.relax_w",
+    # WRF's horizontal diffusion form and its full-field logical
+    # (lane/282-namelist-tolerance, 679a5f5fe), on argument (c): only the
+    # FORECAST reads them (gpuwm/core/dycore.py's mixing branch, the
+    # diff_opt = 1 thermal reference it captures at the first step, and
+    # the restart that carries it); nothing under gpuwm/ingest, the
+    # static builders or DomainState's allocation names either.  Their
+    # defaults, 2 and true, are the metric full-field mixing every build
+    # before the fields ran, so a header written before them describes
+    # exactly the default.  A tree prepared for coordinate-surface
+    # diffusion carries diff_opt = 1 and is compared strictly.
+    "run.diff_opt", "run.mix_full_fields",
 })
 
 #: RunConfig fields that joined after the identity header and for which

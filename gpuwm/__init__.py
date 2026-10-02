@@ -246,6 +246,21 @@ from gpuwm import cupy_windows_warning as _cupy_windows_warning  # noqa: E402
 
 _cupy_windows_warning.quiet_false_cuda_path_warning()
 
+# Verification is selected before importing any kernel module, by the
+# GPUWM_WRF_EXACT* environment: gpuwm/wrf_exact.py reads the values, and its
+# install() returns unless they select it, so the default branch imports no
+# compiler and preserves every existing compile route.  A process carrying
+# none of those variables, which is every default run, does not import the
+# module here at all, so a bare ``import gpuwm`` still runs only this file
+# and cupy_windows_warning.py: the closure tests/test_provenance_gate.py and
+# tests/test_provenance.py copy into a stranger checkout.
+import os as _os  # noqa: E402
+
+if any(_name.startswith("GPUWM_WRF_EXACT") for _name in _os.environ):
+    from gpuwm import wrf_exact as _wrf_exact
+
+    _wrf_exact.install()
+
 __all__ = ["DISTRIBUTION_NAME", "DISTRIBUTION_NAMES", "LAUNCH_MONOTONIC",
            "LAUNCH_UNIX_MS", "PACKAGE_INIT", "__version__",
            "candidate_distributions", "editable_source_root",

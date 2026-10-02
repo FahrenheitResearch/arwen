@@ -1,9 +1,10 @@
 // gpuwm/core/kernels/diff6.cu
 //
-// WRF 6th-order horizontal numerical diffusion, transcribed from v4.6.1
+// WRF 6th-order horizontal numerical diffusion, checked against v4.7.1
 // dyn_em/module_big_step_utilities_em.F SUBROUTINE sixth_order_diffusion
 // (Knievel; references Xue MWR 2000, Durran 1999 sec. 2.4.3), specialized
-// to gpuwm's storage: map factors 1 on the tendency, periodic x/y.  The
+// to gpuwm's storage, periodic x/y. The directional tendency map factors
+// use each field's own staggering, including when slopeopt is zero. The
 // Fortran's non-periodic loop trimming is applied host-side AFTER this
 // kernel (gpuwm.core.dycore._zero_open_strips, width 3), and the
 // outermost boundary-normal staggered face (WRF's u ide-3 / v jde-3,
@@ -11,9 +12,9 @@
 // true boundary datum, which the wrapped FX/FY stencil below would
 // corrupt with the OPPOSITE boundary's value) is replaced by the honest
 // recomputation in kernels/diff6_seam.cu (dycore._launch_diff6_seam).
-// This file must stay byte-stable outside comments: the seam fix is
-// pinned bit-neutral off the seam faces against a capture of this
-// kernel's 4d2ce99 binary (tests/test_diff6_boundary_face.py).
+// Explicit rounded multiplies preserve the compiled WRF REAL operation
+// order, including hybrid coupling before face averaging. The compiled
+// Fortran fixture is pinned in tests/test_diff6_wrf471_parity.py.
 //
 // diff6 ADDS the coupled tendency for ONE field into tend:
 //
@@ -64,6 +65,7 @@ void diff6(const real* __restrict__ f,      // (nlev, nys, nxs)
            const real* __restrict__ phb,    // (>=nlev, ny, nx) base geopot.
            const real* __restrict__ msfu,   // (ny, nx+1) u-face msf
            const real* __restrict__ msfv,   // (ny+1, nx) v-face msf
+           const real* __restrict__ msft,   // (ny, nx) mass-point msf
            real coef, int mono, int slopeopt,
            real dzthr_x, real dzthr_y,
            int nlev, int ny, int nys, int nx, int nxs,
@@ -81,15 +83,16 @@ void diff6(const real* __restrict__ f,      // (nlev, nys, nxs)
 #define FX(m) f[I3S(k, jc, PERIODIC(ic + (m), nx), nys, nxs)]
 #define FY(m) f[I3S(k, PERIODIC(jc + (m), ny), ic, nys, nxs)]
 #define MU(jj, ii) mut[(size_t)PERIODIC(jj, ny) * nx + PERIODIC(ii, nx)]
+#define CM(jj, ii) (__fmul_rn(c1[k], MU(jj, ii)) + c2[k])
 #define PHB(jj, ii) phb[I3(k, PERIODIC(jj, ny), PERIODIC(ii, nx), ny, nx)]
 #define MSFX(jj, ii) msfu[(size_t)PERIODIC(jj, ny) * (nx + 1) \
                           + PERIODIC(ii, nx)]
 #define MSFY(jj, ii) msfv[(size_t)PERIODIC(jj, ny) * nx + PERIODIC(ii, nx)]
 
     // ---- diffusion in x (Fortran "Diffusion in x (i index)") ----
-    real dflux_x_p0 = 10.0f * (FX(0) - FX(-1)) - 5.0f * (FX(1) - FX(-2))
+    real dflux_x_p0 = __fmul_rn(10.0f, (FX(0) - FX(-1))) - __fmul_rn(5.0f, (FX(1) - FX(-2)))
                       + (FX(2) - FX(-3));
-    real dflux_x_p1 = 10.0f * (FX(1) - FX(0)) - 5.0f * (FX(2) - FX(-1))
+    real dflux_x_p1 = __fmul_rn(10.0f, (FX(1) - FX(0))) - __fmul_rn(5.0f, (FX(2) - FX(-1)))
                       + (FX(3) - FX(-2));
     if (mono == 2) {                       // prohibit up-gradient diffusion
         if (dflux_x_p0 * (FX(0) - FX(-1)) <= 0.0f) dflux_x_p0 = 0.0f;
@@ -97,16 +100,16 @@ void diff6(const real* __restrict__ f,      // (nlev, nys, nxs)
     }
     real mu_x_p0, mu_x_p1;
     if (variant == 1) {                    // u: fluxes at mass centers
-        mu_x_p0 = MU(jc, ic - 1);
-        mu_x_p1 = MU(jc, ic);
+        mu_x_p0 = CM(jc, ic - 1);
+        mu_x_p1 = CM(jc, ic);
     } else if (variant == 2) {             // v: fluxes at corners
-        mu_x_p0 = 0.25f * (MU(jc - 1, ic - 1) + MU(jc - 1, ic)
-                           + MU(jc, ic - 1) + MU(jc, ic));
-        mu_x_p1 = 0.25f * (MU(jc - 1, ic) + MU(jc - 1, ic + 1)
-                           + MU(jc, ic) + MU(jc, ic + 1));
+        mu_x_p0 = 0.25f * (CM(jc - 1, ic - 1) + CM(jc - 1, ic)
+                           + CM(jc, ic - 1) + CM(jc, ic));
+        mu_x_p1 = 0.25f * (CM(jc - 1, ic) + CM(jc - 1, ic + 1)
+                           + CM(jc, ic) + CM(jc, ic + 1));
     } else {                               // mass/w points: fluxes at faces
-        mu_x_p0 = 0.5f * (MU(jc, ic - 1) + MU(jc, ic));
-        mu_x_p1 = 0.5f * (MU(jc, ic) + MU(jc, ic + 1));
+        mu_x_p0 = 0.5f * (CM(jc, ic - 1) + CM(jc, ic));
+        mu_x_p1 = 0.5f * (CM(jc, ic) + CM(jc, ic + 1));
     }
     real sdx_p0 = 1.0f, sdx_p1 = 1.0f;     // slopeopt taper (Fortran
     if (slopeopt >= 1) {                   // :6487-6501)
@@ -123,17 +126,20 @@ void diff6(const real* __restrict__ f,      // (nlev, nys, nxs)
             dz1 = fmaxf(a1, fabsf(PHB(jc - 1, ic + 1) - PHB(jc - 1, ic))
                             * MSFX(jc - 1, ic + 1));
         }
-        sdx_p0 = fmaxf(1.0f - dz0 / dzthr_x, 0.0f);
-        sdx_p1 = fmaxf(1.0f - dz1 / dzthr_x, 0.0f);
+        sdx_p0 = fmaxf(1.0f - __fdiv_rn(dz0, dzthr_x), 0.0f);
+        sdx_p1 = fmaxf(1.0f - __fdiv_rn(dz1, dzthr_x), 0.0f);
     }
-    real tendency_x = coef
-        * (sdx_p1 * (c1[k] * mu_x_p1 + c2[k]) * dflux_x_p1
-           - sdx_p0 * (c1[k] * mu_x_p0 + c2[k]) * dflux_x_p0);
+    real map = variant == 1 ? msfu[(size_t)j * (nx + 1) + i]
+             : variant == 2 ? msfv[(size_t)j * nx + i]
+             : msft[(size_t)jc * nx + ic];
+    real tendency_x = __fmul_rn(__fmul_rn(coef, map),
+        (__fmul_rn(__fmul_rn(sdx_p1, mu_x_p1), dflux_x_p1)
+           - __fmul_rn(__fmul_rn(sdx_p0, mu_x_p0), dflux_x_p0)));
 
     // ---- diffusion in y (Fortran "Diffusion in y (j index)") ----
-    real dflux_y_p0 = 10.0f * (FY(0) - FY(-1)) - 5.0f * (FY(1) - FY(-2))
+    real dflux_y_p0 = __fmul_rn(10.0f, (FY(0) - FY(-1))) - __fmul_rn(5.0f, (FY(1) - FY(-2)))
                       + (FY(2) - FY(-3));
-    real dflux_y_p1 = 10.0f * (FY(1) - FY(0)) - 5.0f * (FY(2) - FY(-1))
+    real dflux_y_p1 = __fmul_rn(10.0f, (FY(1) - FY(0))) - __fmul_rn(5.0f, (FY(2) - FY(-1)))
                       + (FY(3) - FY(-2));
     if (mono == 2) {
         if (dflux_y_p0 * (FY(0) - FY(-1)) <= 0.0f) dflux_y_p0 = 0.0f;
@@ -141,16 +147,16 @@ void diff6(const real* __restrict__ f,      // (nlev, nys, nxs)
     }
     real mu_y_p0, mu_y_p1;
     if (variant == 1) {                    // u: fluxes at corners
-        mu_y_p0 = 0.25f * (MU(jc - 1, ic - 1) + MU(jc - 1, ic)
-                           + MU(jc, ic - 1) + MU(jc, ic));
-        mu_y_p1 = 0.25f * (MU(jc, ic - 1) + MU(jc, ic)
-                           + MU(jc + 1, ic - 1) + MU(jc + 1, ic));
+        mu_y_p0 = 0.25f * (CM(jc - 1, ic - 1) + CM(jc - 1, ic)
+                           + CM(jc, ic - 1) + CM(jc, ic));
+        mu_y_p1 = 0.25f * (CM(jc, ic - 1) + CM(jc, ic)
+                           + CM(jc + 1, ic - 1) + CM(jc + 1, ic));
     } else if (variant == 2) {             // v: fluxes at mass centers
-        mu_y_p0 = MU(jc - 1, ic);
-        mu_y_p1 = MU(jc, ic);
+        mu_y_p0 = CM(jc - 1, ic);
+        mu_y_p1 = CM(jc, ic);
     } else {                               // mass/w points: fluxes at faces
-        mu_y_p0 = 0.5f * (MU(jc - 1, ic) + MU(jc, ic));
-        mu_y_p1 = 0.5f * (MU(jc, ic) + MU(jc + 1, ic));
+        mu_y_p0 = 0.5f * (CM(jc - 1, ic) + CM(jc, ic));
+        mu_y_p1 = 0.5f * (CM(jc, ic) + CM(jc + 1, ic));
     }
     real sdy_p0 = 1.0f, sdy_p1 = 1.0f;     // slopeopt taper (Fortran
     if (slopeopt >= 1) {                   // :6569-6583)
@@ -167,18 +173,19 @@ void diff6(const real* __restrict__ f,      // (nlev, nys, nxs)
                             * MSFY(jc - 1, ic));
             dz1 = fmaxf(b1, b0);
         }
-        sdy_p0 = fmaxf(1.0f - dz0 / dzthr_y, 0.0f);
-        sdy_p1 = fmaxf(1.0f - dz1 / dzthr_y, 0.0f);
+        sdy_p0 = fmaxf(1.0f - __fdiv_rn(dz0, dzthr_y), 0.0f);
+        sdy_p1 = fmaxf(1.0f - __fdiv_rn(dz1, dzthr_y), 0.0f);
     }
-    real tendency_y = coef
-        * (sdy_p1 * (c1[k] * mu_y_p1 + c2[k]) * dflux_y_p1
-           - sdy_p0 * (c1[k] * mu_y_p0 + c2[k]) * dflux_y_p0);
+    real tendency_y = __fmul_rn(__fmul_rn(coef, map),
+        (__fmul_rn(__fmul_rn(sdy_p1, mu_y_p1), dflux_y_p1)
+           - __fmul_rn(__fmul_rn(sdy_p0, mu_y_p0), dflux_y_p0)));
 
-    tend[I3S(k, j, i, nys, nxs)] += tendency_x + tendency_y;
+    tend[I3S(k, j, i, nys, nxs)] = (tend[I3S(k, j, i, nys, nxs)] + tendency_x) + tendency_y;
 
 #undef FX
 #undef FY
 #undef MU
+#undef CM
 #undef PHB
 #undef MSFX
 #undef MSFY

@@ -1,0 +1,35 @@
+{
+  "captured_receipt_sha256": "c6ab21bc00947a18b80028bacc50b8a7ed77c823147020cf99f492b546a95b55",
+  "command": "python -m pytest -q -n 0 -p no:cacheprovider tests/test_advect_wrf471_parity.py --junitxml=pin-stage.xml",
+  "environment": {
+    "compile_platform": {
+      "cuda_driver_version": "12080",
+      "cupy_version": "14.2.0",
+      "device_compute_capability": "90",
+      "numpy_version": "2.3.3",
+      "nvrtc_build": "12.6.85",
+      "nvrtc_build_id": "CL-35059454",
+      "nvrtc_library_sha256": "a1f1e7d6b5db02754145b77e8b2b5ddb56f5a47c69d7a112239cb850dbbfac58"
+    },
+    "cuda_driver_api": 12080,
+    "cuda_runtime": 12090,
+    "cupy": "14.2.0",
+    "driver": "570.172.08",
+    "nvrtc_version": [
+      12,
+      6
+    ],
+    "python": "3.12.11 (main, Sep 18 2025, 19:47:19) [Clang 20.1.4 ]"
+  },
+  "errors": 0,
+  "failures": 0,
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "junit_sha256": "548aa9a90fa87ef50401075ce2458eb754167870a7bb3c80f48af96c6b5bc0b0",
+  "log_sha256": "77e623b262e89c3ab1b73bd12a3e6ad6ee569aeacfcb6e3f81d072934c278ee8",
+  "scope": "Advect subset of tests/gpu_pin_set.txt",
+  "skipped": 0,
+  "source_commit": "1a5783feadfad6b4fa928062d6a5dac8c8223df0",
+  "tests": 19,
+  "verdict": "PASS",
+  "wall_seconds": 6.248
+}

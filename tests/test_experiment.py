@@ -150,6 +150,15 @@ def test_experiment_acknowledgements_refuse_non_list_or_non_ids(
         ))
 
 
+@pytest.mark.parametrize("mp", [0, 1, 6])
+def test_omitted_moist_cq_keeps_the_wrf_correction_for_moist_states(
+        tmp_path, mp):
+    experiment = load_experiment(_write(
+        tmp_path, shared=f"moist = true\nmp_physics = {mp}"))
+    assert all(domain.run.moist and domain.run.moist_cq
+               for domain in experiment.domains)
+
+
 def test_loads_explicit_mp8_to_mp18_domain_transition(tmp_path, monkeypatch):
     monkeypatch.setenv("GPUWM_EXPERIMENTAL_THOMPSON_MP8", "1")
     monkeypatch.setenv("GPUWM_THOMPSON_TABLE_ROOT", str(tmp_path))

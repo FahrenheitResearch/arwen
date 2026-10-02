@@ -4,11 +4,13 @@
 # (`nearest`, `cell_average`), the bounded neighbour search that used to
 # be scipy.spatial.cKDTree, and the validity remap.
 #
-# The parity contract is bit-identical float64 against the scipy/numpy
-# reference on real observation and model grids, with exactly one
-# documented divergence: nearest-neighbour tie-breaking, which scipy
-# leaves to traversal order and this crate defines (lowest flat index
-# wins).  See src/kdtree.rs for the measurements.
+# Remapped values, indices and masks are bit-identical against the
+# scipy/numpy reference on real observation and model grids.  The distance
+# diagnostic is bitwise where platform unit vectors match the reference;
+# otherwise tests/parity.rs propagates the permitted scalar-trig error.
+# The mapping divergence is nearest-neighbour tie-breaking, which scipy
+# leaves to traversal order and this crate defines (lowest flat index wins).
+# See src/kdtree.rs for the measurements.
 #
 # Dependency posture: none.  The k-d tree is 200 lines and the
 # alternative was a crates.io neighbour search whose tie-breaking is

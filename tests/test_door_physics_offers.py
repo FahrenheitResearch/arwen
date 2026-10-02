@@ -107,7 +107,7 @@ def _emit(profile: str, out: Path) -> int:
 
 @pytest.mark.parametrize("profile", list(shipped_profiles()))
 def test_an_offered_suite_emits_a_set_that_reads_back_as_itself(
-        profile, tmp_path, capsys):
+        profile, tmp_path, capsys, monkeypatch):
     """Emit, import, compare -- over every suite the doors offer.
 
     This is the check the route already runs at emission
@@ -116,6 +116,13 @@ def test_an_offered_suite_emits_a_set_that_reads_back_as_itself(
     turbulence row, the importer's two unmapped selectors and the
     unstated RRTMG lineage were all hiding.
     """
+    from gpuwm import capabilities
+
+    # Configuration emission launches no kernels.  The capability-refusal
+    # tests own missing module presence; this test owns the round trip.
+    installed = capabilities.is_installed
+    monkeypatch.setattr(capabilities, "is_installed",
+                        lambda module: module == "cupy" or installed(module))
 
     out = tmp_path / "offer.toml"
     rc = _emit(profile, out)
@@ -130,7 +137,7 @@ def test_an_offered_suite_emits_a_set_that_reads_back_as_itself(
 
 @pytest.mark.parametrize("profile", list(shipped_profiles()))
 def test_the_namelist_route_reads_the_named_suites_own_declaration(
-        profile, tmp_path, capsys):
+        profile, tmp_path, capsys, monkeypatch):
     """The route that reads the namelist resolves what the TOML route does.
 
     A shortwave-only suite states, of itself, that its land surface
@@ -145,6 +152,11 @@ def test_the_namelist_route_reads_the_named_suites_own_declaration(
     from gpuwm.hrrr_configuration import resolve_root_experiment
     from gpuwm.ingest.hrrr_target import load_hrrr_target_domain
     from gpuwm.vertical_contract import explicit_vertical_from_wrf_namelist
+    from gpuwm import capabilities
+
+    installed = capabilities.is_installed
+    monkeypatch.setattr(capabilities, "is_installed",
+                        lambda module: module == "cupy" or installed(module))
 
     out = tmp_path / "offer.toml"
     rc = _emit(profile, out)

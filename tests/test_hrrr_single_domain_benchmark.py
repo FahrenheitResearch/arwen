@@ -1122,8 +1122,42 @@ def test_native_hrrr_noahmp_warns_without_registry_acknowledgement(tmp_path, cap
     assert "noahmp-host-column-throughput-v1" in capsys.readouterr().err
 
 
+@pytest.fixture
+def isolated_thompson_launch_tables(tmp_path, monkeypatch):
+    """A complete table authority independent of installed or staged assets.
+
+    These tests exercise the benchmark's additional launch contract after
+    route-level staging. Tiny fixture assets still pass the real size and
+    SHA-256 validator before the environment guard is reached.
+    """
+    import hashlib
+
+    from gpuwm import physics_compat
+    from gpuwm.core import thompson_contract
+
+    root = tmp_path / "staged-tables"
+    root.mkdir()
+    data = b"launch guard fixture\n"
+    assets = tuple(dataclasses.replace(
+        asset, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+        for asset in thompson_contract.CLASSIC_TABLE_ASSETS)
+    for asset in assets:
+        (root / asset.filename).write_bytes(data)
+    validate_table_assets = thompson_contract.validate_table_assets
+    monkeypatch.setattr(thompson_contract, "CLASSIC_TABLE_ASSETS", assets)
+    monkeypatch.setattr(thompson_contract, "validate_table_assets",
+                        lambda path: validate_table_assets(path, assets))
+    monkeypatch.setattr(physics_compat, "packaged_thompson_table_root",
+                        lambda: root)
+    monkeypatch.setattr(physics_compat, "user_thompson_table_root",
+                        lambda: root)
+    monkeypatch.delenv(physics_compat.EXPERIMENTAL_THOMPSON_ENV, raising=False)
+    monkeypatch.delenv(physics_compat.THOMPSON_TABLE_ROOT_ENV, raising=False)
+    return root
+
+
 def test_native_hrrr_thompson_profile_is_guarded_and_table_bound(
-        tmp_path, monkeypatch, pinned_thompson_tables):
+        tmp_path, monkeypatch, isolated_thompson_launch_tables):
     path = tmp_path / "namelist.input"
     _write_native_physics_namelist(path, mp_physics=8)
     with pytest.raises(RuntimeError, match="GPUWM_EXPERIMENTAL_THOMPSON_MP8=1"):
@@ -1162,7 +1196,7 @@ def test_native_hrrr_thompson_profile_is_guarded_and_table_bound(
 
 
 def test_the_guarded_mp8_refusal_names_both_variables_with_values(
-        tmp_path, monkeypatch, pinned_thompson_tables):
+        tmp_path, monkeypatch, isolated_thompson_launch_tables):
     """One refusal carries the whole launch contract, not half of it.
 
     A field run of the shipped 1.5.0 wheel set the first variable, was

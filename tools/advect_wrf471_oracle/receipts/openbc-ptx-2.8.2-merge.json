@@ -1,0 +1,139 @@
+{
+ "tool": "tools/kernel_ptx_identity/compare.py",
+ "trees": [
+  "advect_tip_5ff790c0f",
+  "merged_dd4908a0f"
+ ],
+ "nvrtc_version": [
+  13,
+  4
+ ],
+ "assembly": "gpuwm.core.kernels.module_source(name) in a child process per tree; GPUWM_WRF_EXACT* removed, CUDA_VISIBLE_DEVICES empty",
+ "compile": "gpuwm.nvrtc_cache_key.compile_program(source, options + (-arch=<arch>,), target=ptx)",
+ "option_sets": {
+  "load_module": [
+   "-std=c++17"
+  ],
+  "rawmodule": [
+   "-std=c++17",
+   "-ftz=true"
+  ]
+ },
+ "archs": [
+  "compute_89",
+  "compute_90",
+  "compute_120"
+ ],
+ "modules": {
+  "openbc": {
+   "file_sha256": {
+    "advect_tip_5ff790c0f": "fe8b3b602e4a2efd51e765887d78aeda87b070a2deff972ae412ed90d16d5f71",
+    "merged_dd4908a0f": "fd3ba041744821bd4e2b01db3ae53a1189cbc088e17b710e60848988d2203bf2"
+   },
+   "assembled_source_sha256": {
+    "advect_tip_5ff790c0f": "4916f05f37d650658446a11011ff25052374806bcb340bfbeafb97cc405b7261",
+    "merged_dd4908a0f": "5bf7babe4a953b1a12f8ddca403f04d86fa0aed0f7684992b5eabb5d82cbca57"
+   },
+   "entries": [
+    "open_u_radiative",
+    "open_v_radiative",
+    "w_cfl_stat",
+    "w_cfl_stat_window",
+    "w_damp"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "7611366c859a504634cb260cc2ee762f7ebbfe332165954f0a677d32196eff1e",
+      "merged_dd4908a0f": "7199cc9f03bc07643d5b8d50142871a4f77a50bc90342d19836045fe14276392"
+     },
+     "entry_compared": 5,
+     "entry_different": [
+      "w_cfl_stat",
+      "w_cfl_stat_window",
+      "w_damp"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "687e407acb0c72b2ba838542031d4c9031c8004bdb9ca6e7e0d24ad5c9b8193e",
+      "merged_dd4908a0f": "db840caf71afc1f0eab00446bc3b9562b78f603f820278665c97a27392dee143"
+     },
+     "entry_compared": 5,
+     "entry_different": [
+      "w_cfl_stat",
+      "w_cfl_stat_window",
+      "w_damp"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "2255a7ecac28a703a2b92d9c3030e303b9de9264312ff0452b84d65982708142",
+      "merged_dd4908a0f": "da253091633c2366f400169f448f169c56b5f576ef6131cffc7a459f159dd8f2"
+     },
+     "entry_compared": 5,
+     "entry_different": [
+      "w_cfl_stat",
+      "w_cfl_stat_window",
+      "w_damp"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "01bd4f6591ab888d655d26d2ce16b549e4fd4256be330ba8d55b88fd9db53c13",
+      "merged_dd4908a0f": "e164219df846ca7ddd2648215f2201265147b1968f2dce02355bd977e7101ddb"
+     },
+     "entry_compared": 5,
+     "entry_different": [
+      "w_cfl_stat",
+      "w_cfl_stat_window",
+      "w_damp"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "c63522ee1af6fc74c910984239aaf0fed4882f40548a931d1bb282953b89713c",
+      "merged_dd4908a0f": "68322b4b635902ebe9cea572773f7d6b5c3b3562a8d79a66947df9acc065aec2"
+     },
+     "entry_compared": 5,
+     "entry_different": [
+      "w_cfl_stat",
+      "w_cfl_stat_window",
+      "w_damp"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "advect_tip_5ff790c0f": "12e52740a88397d8e529f5a9e1ee944a5191041346d539cd79228a598b352c59",
+      "merged_dd4908a0f": "6408123a41942f13b7cf6a7e3a4ed54ee5f267aa3b13966fdf4bff6775f752eb"
+     },
+     "entry_compared": 5,
+     "entry_different": [
+      "w_cfl_stat",
+      "w_cfl_stat_window",
+      "w_damp"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  }
+ }
+}

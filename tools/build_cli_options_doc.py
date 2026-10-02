@@ -37,7 +37,10 @@ NOTES: dict[str, str] = {
         "downscaled.  `--tiles {on,auto}` and `--child-size` are the "
         "only way to stream a `--point`-derived child, because this "
         "command authors the child TOML itself and a `[tiles]` table "
-        "you wrote by hand would be overwritten."),
+        "you wrote by hand would be overwritten.  A child builds its own "
+        "terrain, land use and soil at its own spacing by default; "
+        "`--parent-terrain` keeps its parent's, interpolated, and "
+        "`--geog-root` names the WPS_GEOG tree the child is built from."),
     "gpuwm go": (
         "`--no-memory-gate` is the only escape from the pre-fetch memory "
         "gate.  The gate runs before the chain downloads anything, and "

@@ -6,6 +6,7 @@ The callable controller is exercised with synthetic proofs and local byte files.
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib.util
 import json
@@ -300,3 +301,153 @@ def test_complete_index_retry_does_not_upload_again(publication, controller_case
     publication.stage_missing(args)
     assert list(args.out.iterdir()) == []
     assert case.events[-1] == ("outputs", {"upload_required": "false", "missing_count": "0"})
+
+
+# --------------------------------------------------------------------------
+# publication waits for ci on the commit it publishes
+# --------------------------------------------------------------------------
+#
+# ci failed on the public repository for 2.7.6, 2.7.7 and 2.8.0 while this
+# workflow succeeded on all three: nothing here read ci.
+
+
+def test_publication_depends_on_ci_passing_on_the_published_commit(workflow):
+    jobs = workflow["jobs"]
+    gate = jobs["ci"]
+    assert needs(gate) == {"test", "release_authority"}
+    assert gate["permissions"] == {"actions": "read"}
+    run = scripts(gate)
+    assert re.search(r"promote_prepared_release\.py ci-passed .*--commit \"\$PUBLICATION_COMMIT\"", run), run
+    assert "GH_TOKEN" in json.dumps(gate["steps"])
+    # Every job that verifies, qualifies, promotes or uploads waits for it.
+    for name in jobs:
+        if name not in {"test", "release_authority", "ci"}:
+            assert "ci" in ancestors(jobs, name), name
+
+
+def _run(sha, status="completed", conclusion="success", run_id=1, branch="main", event="push"):
+    timestamp = (datetime(2026, 10, 1, tzinfo=timezone.utc)
+                 + timedelta(seconds=run_id if type(run_id) is int else 0)).isoformat()
+    return {"id": run_id, "head_sha": sha, "status": status, "conclusion": conclusion,
+            "event": event, "head_branch": branch, "run_attempt": 1,
+            "created_at": timestamp, "run_started_at": timestamp, "updated_at": timestamp}
+
+
+def test_ci_verdicts_read_only_this_commit_and_fail_closed(publication):
+    judge = publication.judge_ci_runs
+    other = "c" * 40
+    assert judge([], COMMIT)[0] == "pending"
+    assert judge([_run(other)], COMMIT)[0] == "pending"
+    assert judge([_run(COMMIT, status="in_progress", conclusion=None)], COMMIT)[0] == "pending"
+    assert judge([_run(COMMIT), _run(COMMIT, "queued", None, 2)], COMMIT)[0] == "pending"
+    assert judge([_run(COMMIT)], COMMIT)[0] == "passed"
+    assert judge([_run(COMMIT), _run(COMMIT, conclusion="cancelled", run_id=2)], COMMIT)[0] == "refused"
+    verdict, why = judge([_run(COMMIT), _run(COMMIT, conclusion="failure", run_id=7)], COMMIT)
+    assert verdict == "refused" and "7=failure" in why
+    assert judge([_run(COMMIT, conclusion="cancelled")], COMMIT)[0] == "refused"
+    assert judge([_run(COMMIT, conclusion="timed_out")], COMMIT)[0] == "refused"
+    assert judge([_run(other, conclusion="failure"), _run(COMMIT)], COMMIT)[0] == "passed"
+
+
+def test_a_successful_retry_supersedes_an_older_failure_but_a_new_failure_is_fatal(publication):
+    judge = publication.judge_ci_runs
+    failed = _run(COMMIT, conclusion="failure", run_id=1)
+    retry = _run(COMMIT, run_id=2, event="workflow_dispatch")
+    assert judge([failed, retry], COMMIT)[0] == "passed"
+    assert judge([retry, failed], COMMIT)[0] == "passed"
+    assert judge([retry, failed, _run(COMMIT, conclusion="failure", run_id=3)], COMMIT)[0] == "refused"
+    assert judge([retry, failed, _run(COMMIT, "in_progress", None, run_id=3)], COMMIT)[0] == "pending"
+
+
+def test_a_later_attempt_of_an_older_run_id_supersedes_historical_failure(publication):
+    earlier_id = dict(_run(COMMIT, run_id=1), run_attempt=2,
+                      run_started_at="2026-10-01T01:00:00Z", updated_at="2026-10-01T01:01:00Z")
+    newer_id = _run(COMMIT, conclusion="failure", run_id=2)
+    assert publication.judge_ci_runs([newer_id, earlier_id], COMMIT)[0] == "passed"
+    assert publication.judge_ci_runs([newer_id, dict(earlier_id, conclusion="failure")], COMMIT)[0] == "refused"
+
+
+@pytest.mark.parametrize("status", ["queued", "requested", "waiting", "pending"])
+def test_a_queued_retry_waits_even_when_its_old_started_timestamp_precedes_a_pass(publication, status):
+    retry = dict(_run(COMMIT, status=status, conclusion=None, run_id=1), run_attempt=2,
+                 updated_at="2026-10-01T01:00:00Z")
+    assert publication.judge_ci_runs([_run(COMMIT, run_id=2), retry], COMMIT)[0] == "pending"
+
+
+def test_an_unorderable_attempt_cannot_qualify_a_commit(publication):
+    with pytest.raises(publication.PublicationError, match="timestamp"):
+        publication.judge_ci_runs([dict(_run(COMMIT), run_started_at="invalid")], COMMIT)
+
+
+def test_a_pr_merge_check_cannot_qualify_the_release_commit(publication):
+    judge = publication.judge_ci_runs
+    pr = _run(COMMIT, run_id=10, event="pull_request")
+    assert judge([pr], COMMIT)[0] == "pending"
+    assert judge([pr, _run(COMMIT, conclusion="failure")], COMMIT)[0] == "refused"
+    assert judge([_run(COMMIT), dict(pr, conclusion="failure")], COMMIT)[0] == "passed"
+
+
+@pytest.mark.parametrize("conclusion", [None, "neutral", "skipped", "unknown", "cancelled", "failure"])
+def test_only_an_explicit_success_can_pass_the_latest_check(publication, conclusion):
+    assert publication.judge_ci_runs([_run(COMMIT, conclusion=conclusion)], COMMIT)[0] == "refused"
+
+
+def test_an_invalid_run_id_cannot_forge_check_order(publication):
+    with pytest.raises(publication.PublicationError, match="positive run id"):
+        publication.judge_ci_runs([_run(COMMIT, run_id=None)], COMMIT)
+
+
+def test_ci_inventory_follows_pagination_before_judging_a_commit(publication):
+    seen = []
+    rows = [_run(COMMIT, run_id=i + 2, event="pull_request") for i in range(100)]
+
+    class FakeGitHub:
+        def json(self, suffix):
+            seen.append(suffix)
+            return {"workflow_runs": rows if suffix.endswith("&page=1") else [_run(COMMIT)], "total_count": 101}
+
+    runs = publication._ci_workflow_runs(FakeGitHub(), COMMIT)
+    assert len(seen) == 2 and "page=2" in seen[1]
+    assert publication.judge_ci_runs(runs, COMMIT)[0] == "passed"
+
+
+def _ci_gate(publication, monkeypatch, tmp_path, pages):
+    seen = []
+
+    class FakeGitHub:
+        def __init__(self, repository):
+            self.repository = repository
+
+        def json(self, suffix, *, data=None):
+            assert data is None, "the ci gate never writes"
+            seen.append(suffix)
+            return {"workflow_runs": pages[min(len(seen), len(pages)) - 1]}
+
+    monkeypatch.setattr(publication, "GitHub", FakeGitHub)
+    now = [0.0]
+    args = SimpleNamespace(repository="owner/repo", commit=COMMIT, timeout=300.0, interval=60.0,
+                           out=tmp_path / "CI-PASSED.json")
+    run = lambda: publication.ci_passed(args, sleep=lambda s: now.__setitem__(0, now[0] + s),
+                                        clock=lambda: now[0])
+    return run, seen, args
+
+
+def test_the_ci_gate_waits_for_running_ci_then_records_the_pass(publication, monkeypatch, tmp_path):
+    pages = [[_run(COMMIT, "in_progress", None)], [_run(COMMIT, "in_progress", None)], [_run(COMMIT)]]
+    run, seen, args = _ci_gate(publication, monkeypatch, tmp_path, pages)
+    run()
+    assert len(seen) == 3
+    assert all(f"head_sha={COMMIT}" in suffix and "/actions/workflows/ci.yml/runs" in suffix for suffix in seen)
+    record = json.loads(args.out.read_text(encoding="utf-8"))
+    assert record["status"] == "PASS" and record["commit"] == COMMIT
+
+
+def test_the_ci_gate_refuses_a_failed_run_and_gives_up_on_one_that_never_ends(publication, monkeypatch, tmp_path):
+    run, _seen, args = _ci_gate(publication, monkeypatch, tmp_path, [[_run(COMMIT, conclusion="failure")]])
+    with pytest.raises(publication.PublicationError, match="did not pass"):
+        run()
+    assert not args.out.exists()
+    run, seen, args = _ci_gate(publication, monkeypatch, tmp_path, [[_run(COMMIT, "in_progress", None)]])
+    with pytest.raises(publication.PublicationError, match="gave up"):
+        run()
+    assert len(seen) == 6 and not args.out.exists()

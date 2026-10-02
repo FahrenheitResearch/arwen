@@ -96,3 +96,9 @@ tools/urban_wrf471_oracle/couple_noahdrv_1679_1776.inc -whitespace
 tools/urban_wrf471_oracle/couple_noahmpdrv_3363_3372_3689_3776.inc -whitespace
 tools/uwpbl_wrf471_oracle/libm64/*.objdump.txt -whitespace
 tools/uwpbl_wrf471_oracle/libm64/upstream/*.c -whitespace
+
+# YSU's topo_wind arm (lane/282-terrain-drag), byte-pinned by
+# tests/test_kernel_source_freeze_per_module.py PINNED_HEADERS and graded with
+# ysu.cu by tests/test_terrain_drag_wrf471_parity.py: the 2.8.2 cut battery's
+# `git diff --check` refused its trailing blank line, which the pins record.
+gpuwm/core/kernels/ysu_topo.cuh -whitespace

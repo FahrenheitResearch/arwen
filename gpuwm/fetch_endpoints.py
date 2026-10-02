@@ -60,6 +60,7 @@ import errno
 import functools
 from http.client import IncompleteRead
 import json
+import os
 from pathlib import Path
 import re
 import socket
@@ -71,6 +72,62 @@ from urllib.parse import urlsplit
 #: The packaged acquisition authority.  One document: a source's cycle
 #: and lead grammar, its file keys, and -- here -- its endpoints.
 TABLE_NAME = "rw-wps-fetch-routes.v1.json"
+
+#: Hosted workers opt into this policy; ordinary installs keep their defaults.
+FETCH_POLICY_ENV = "GPUWM_FETCH_POLICY"
+#: Requires strict AWS pins while preserving the default streaming contract.
+FETCH_POLICY_CONTRACT = "aws-streaming-v1"
+
+
+def aws_fetch_policy() -> bool:
+    """Whether this process requires AWS copies wherever the table has one."""
+
+    return os.environ.get(FETCH_POLICY_ENV) == "aws"
+
+
+def aws_transport_for_source(source_id: str) -> str | None:
+    """The AWS endpoint's own transport name, or None when none is declared."""
+
+    for endpoint in ladder(source_id):
+        host = urlsplit(endpoint.base).hostname or ""
+        if host == "amazonaws.com" or host.endswith(".amazonaws.com"):
+            return endpoint.name
+    return None
+
+
+def policy_transport(source_id: str, requested: str | None = None) -> str | None:
+    """The hosted policy's AWS pin, otherwise the caller's existing choice."""
+
+    if aws_fetch_policy():
+        return aws_transport_for_source(source_id) or requested
+    return requested
+
+
+def policy_uses_aws(source_id: str) -> bool:
+    """Whether the hosted policy selects an AWS rung for this source."""
+
+    return aws_fetch_policy() and aws_transport_for_source(source_id) is not None
+
+
+def policy_posting_delay_minutes(source_id: str, lead: int) -> float:
+    """The selected mirror's measured planning allowance, otherwise zero.
+
+    Host rows carry lead-ranged allowances.  These metadata estimates shift
+    the deadline, never postpone a positive availability probe.
+    """
+
+    if not policy_uses_aws(source_id):
+        return 0.0
+    selected = aws_transport_for_source(source_id)
+    for endpoint in _rows(source_id):
+        if endpoint["name"] != selected:
+            continue
+        for rule in endpoint.get("posting_delay_minutes", ()):
+            first = int(rule.get("from_lead", 0))
+            through = rule.get("through_lead")
+            if int(lead) >= first and (through is None or int(lead) <= int(through)):
+                return float(rule["minutes"])
+    return 0.0
 
 #: What an availability probe identifies itself as.  Its own string, so
 #: a provider reading their logs can tell a HEAD that moved nothing
@@ -242,6 +299,7 @@ def serving_ladder(source_id: str, *, cycle: datetime,
     retention is an optimisation, never a bar).
     """
 
+    pinned = policy_transport(source_id, pinned)
     rungs = ladder(source_id)
     if not rungs:
         return ()
@@ -409,6 +467,35 @@ def missing_path_statuses(host: str) -> frozenset[int]:
     return statuses
 
 
+#: The bytes a GET asks for when it confirms a refused HEAD: the first
+#: one, and nothing past the status is read even from a host that
+#: ignores the range and answers the whole object.
+CONFIRM_RANGE = "bytes=0-0"
+#: Statuses that ask this client to slow down.  A HEAD answered with one
+#: is not asked again at once by GET, which would ignore the host.
+_SLOW_DOWN_STATUSES = frozenset({429, 503})
+
+
+def _confirms_by_get(host: str, status: int) -> bool:
+    """Whether a HEAD that ``host`` answered with ``status`` is asked again by GET.
+
+    The breakage this prevents: a mirror or cache that refuses HEAD (405
+    or 501, or any status that says nothing about the object) but serves
+    GET read as "not posted", so a native HRRR as-posted fetch waited out
+    its whole posting budget and exited 75 on files a GET serves.  Not
+    asked again: 404 and 410 (the host said the object is missing), a
+    status the host's ``missing_path`` row already reads, and a status
+    asking this client to slow down (its ``throttle`` row, 429, 503).
+    """
+
+    if status in (404, 410) or status in _SLOW_DOWN_STATUSES:
+        return False
+    if status in missing_path_statuses(host):
+        return False
+    policy = throttle_policy(host)
+    return policy is None or status not in policy.statuses
+
+
 def object_answer(url: str, *, timeout: float, max_wait_s: float | None = None,
                   opener=None, missing_path: bool = False) -> bool | str | None:
     """:func:`object_available`'s question with a third answer: no answer.
@@ -422,33 +509,47 @@ def object_answer(url: str, *, timeout: float, max_wait_s: float | None = None,
     a start, can then say "not checked" instead of "not published".
     With ``missing_path``, a status the host's ``missing_path`` row
     names answers :data:`ABSENT_OR_REFUSED` instead of None.
+
+    A HEAD the host refused with any other status (:func:`_confirms_by_get`)
+    is asked once more as a GET of the first byte (:data:`CONFIRM_RANGE`),
+    and that answer is read the same way.  A timeout or refused
+    connection is not: it stays None, and the caller's transfer, whose
+    own checks decide, is let try the object (GS-05).
     """
 
     from urllib.error import HTTPError
     from urllib.request import Request
     from gpuwm.nomads_governor import PaceBudgetExceeded, paced_urlopen
 
-    request = Request(url, method="HEAD",
-                      headers={"User-Agent": PROBE_USER_AGENT})
-    try:
-        with paced_urlopen(
-                request, timeout=timeout, max_wait_s=max_wait_s,
-                **({"opener": opener} if opener is not None else {})
-        ) as response:
-            return 200 <= int(response.status) < 300
-    except (KeyboardInterrupt, SystemExit, MemoryError):
-        raise
-    except PaceBudgetExceeded:
-        return None
-    except HTTPError as error:
-        if int(error.code) in (404, 410):
-            return False
-        if missing_path and int(error.code) in missing_path_statuses(
-                urlsplit(url).netloc):
-            return ABSENT_OR_REFUSED
-        return None
-    except BaseException:                     # noqa: BLE001 - see docstring
-        return None
+    host = urlsplit(url).netloc
+    asks = [Request(url, method="HEAD",
+                    headers={"User-Agent": PROBE_USER_AGENT})]
+    while asks:
+        request = asks.pop()
+        try:
+            with paced_urlopen(
+                    request, timeout=timeout, max_wait_s=max_wait_s,
+                    **({"opener": opener} if opener is not None else {})
+            ) as response:
+                return 200 <= int(response.status) < 300
+        except (KeyboardInterrupt, SystemExit, MemoryError):
+            raise
+        except PaceBudgetExceeded:
+            return None
+        except HTTPError as error:
+            status = int(error.code)
+            if status in (404, 410):
+                return False
+            if missing_path and status in missing_path_statuses(host):
+                return ABSENT_OR_REFUSED
+            if request.get_method() == "HEAD" and _confirms_by_get(host, status):
+                asks.append(Request(url, headers={
+                    "User-Agent": PROBE_USER_AGENT, "Range": CONFIRM_RANGE}))
+                continue
+            return None
+        except BaseException:                 # noqa: BLE001 - see docstring
+            return None
+    return None
 
 
 #: Pauses before each further ask of an object a publication check had
@@ -619,6 +720,8 @@ def throttled(endpoint: Endpoint, error: BaseException) -> Throttle | None:
 def host_worker_cap(host: str, workers: int) -> int:
     """How many of ``workers`` may target ``host`` at once."""
 
+    if aws_fetch_policy() and host.lower() == "nomads.ncep.noaa.gov":
+        return min(1, workers)
     cap = host_caps().get(host.lower())
     if cap is None:
         return workers
@@ -948,6 +1051,8 @@ def ask_along_ladder(ladder: Sequence[Endpoint], transfer, *, label: str,
 
 
 __all__ = [
+    "FETCH_POLICY_ENV", "FETCH_POLICY_CONTRACT", "aws_fetch_policy", "aws_transport_for_source",
+    "policy_transport", "policy_uses_aws", "policy_posting_delay_minutes",
     "ABSENT_OR_REFUSED", "missing_path_statuses",
     "Endpoint", "FALLTHROUGH_STATUSES", "PROBE_USER_AGENT", "TABLE_NAME",
     "cycle_age_hours", "document", "endpoint_named", "fault_reason",

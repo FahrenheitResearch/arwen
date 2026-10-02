@@ -165,7 +165,10 @@ def capture_compiled_source(name: str) -> tuple[str, str]:
     kernels.load_module.cache_clear()
     try:
         with _patched(cp, "RawModule", _RecordingRawModule):
-            kernels.load_module(name)
+            # Capture the real assembly factory without querying a device
+            # merely to key its cache during this source-only inspection.
+            factory = getattr(kernels.load_module, "__wrapped__", kernels.load_module)
+            factory(name)
     finally:
         kernels.load_module.cache_clear()                # never cache the fake
     return captured["code"], "loader-capture"

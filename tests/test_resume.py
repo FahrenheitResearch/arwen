@@ -200,6 +200,11 @@ def _parse(argv):
 def test_cli_resume_resolves_then_dispatches_as_run(tmp_path, monkeypatch,
                                                     capsys):
     """End-to-end through cli.main up to the (stubbed) run dispatch."""
+    from gpuwm import capabilities
+
+    installed = capabilities.is_installed
+    monkeypatch.setattr(capabilities, "is_installed",
+                        lambda module: module == "cupy" or installed(module))
     _single(tmp_path, "1974-04-03_13_00_00")
     tree = _tree(tmp_path, "1974-04-03_15_00_00", "abc123",
                  written_mode={"mode": "resident", "shape": [2, 3]})
@@ -938,6 +943,11 @@ def test_the_refusal_names_why_a_child_cannot_be_continued(tmp_path):
 def test_cli_resume_loads_the_config_the_run_recorded(tmp_path, monkeypatch,
                                                       capsys):
     """THE REPORTED INVOCATION, end to end, to the (stubbed) run dispatch."""
+    from gpuwm import capabilities
+
+    installed = capabilities.is_installed
+    monkeypatch.setattr(capabilities, "is_installed",
+                        lambda module: module == "cupy" or installed(module))
     _single(tmp_path, "1974-04-03_13_00_00")
     install = tmp_path / "install"
     install.mkdir()
@@ -975,6 +985,11 @@ def test_cli_resume_loads_the_config_the_run_recorded(tmp_path, monkeypatch,
 def test_cli_resume_refuses_a_child_run_directory(tmp_path, monkeypatch,
                                                   capsys):
     """And the run directory is asked before the argument is judged."""
+    from gpuwm import capabilities
+
+    installed = capabilities.is_installed
+    monkeypatch.setattr(capabilities, "is_installed",
+                        lambda module: module == "cupy" or installed(module))
     outdir = _child_run(tmp_path / "child-run", finished=True, frames=3)
     _single(outdir, "1974-04-03_13_00_00")
 

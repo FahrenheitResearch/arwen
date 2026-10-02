@@ -304,18 +304,24 @@ impl WrfFile {
     fn probe_dims_pure(
         hdf5: &crate::pure_reader::PureRustFile,
     ) -> WrfResult<(usize, usize, usize, usize)> {
-        let shape = hdf5.dataset_shape("T").map_err(|_| {
-            WrfError::VarNotFound(
-                "Cannot determine grid dimensions: variable 'T' not found".to_string(),
-            )
-        })?;
-        if shape.len() < 4 {
-            return Err(WrfError::DimMismatch(format!(
-                "T has {}-D shape, expected 4-D [Time, nz, ny, nx]",
-                shape.len()
-            )));
+        for name in ["T", "P", "PB", "QVAPOR"] {
+            if let Ok(shape) = hdf5.dataset_shape(name) {
+                if shape.len() == 4 {
+                    return Ok((shape[3], shape[2], shape[1], shape[0]));
+                }
+            }
         }
-        Ok((shape[3], shape[2], shape[1], shape[0]))
+        // A selected surface-only history can omit every mass-level
+        // volume. Its latitude plane still defines the horizontal grid;
+        // no vertical data is synthesized by opening that file.
+        if let Ok(shape) = hdf5.dataset_shape("XLAT") {
+            if shape.len() == 3 {
+                let nz = hdf5.global_attr_i32("BOTTOM-TOP_GRID_DIMENSION")
+                    .ok().filter(|&v| v > 1).map(|v| v as usize - 1).unwrap_or(1);
+                return Ok((shape[2], shape[1], nz, shape[0]));
+            }
+        }
+        Err(WrfError::DimMismatch("Cannot determine grid dimensions: no 4-D mass field or 3-D XLAT plane".to_string()))
     }
 
     /// Read a raw variable for a single time step.

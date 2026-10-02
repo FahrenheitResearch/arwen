@@ -43,6 +43,49 @@ from gpuwm.offline_child_run import _child_boundary_clock
 from test_offline_child import _history
 
 
+@pytest.mark.parametrize("dataset,iswater,islake,isice", [
+    ("MODIFIED_IGBP_MODIS_NOAH", 17, 21, 15),
+    ("USGS", 16, -1, 24),
+])
+def test_child_land_physics_uses_the_surface_category_table(
+        monkeypatch, dataset, iswater, islake, isice):
+    """A USGS category must select USGS land and urban parameters."""
+    import sys
+    from types import SimpleNamespace
+
+    from gpuwm.config import RunConfig
+    from gpuwm.core import physics
+    from gpuwm.offline_child_run import _initialize_child_physics
+
+    cfg = RunConfig(nx=4, ny=4, nz=2, dx=1000.0, dy=1000.0,
+                    ztop=1000.0, dt=1.0, run_seconds=30.0,
+                    ra_lw_physics=0, ra_sw_physics=0)
+    grid = np.ones((4, 4), dtype=np.float32)
+    fields = {
+        "LU_INDEX": grid, "LANDMASK": grid, "ISLTYP": grid,
+        "SNOW": grid * 0, "TSK": grid * 290,
+        "TSLB": np.full((4, 4, 4), 290.0, dtype=np.float32),
+        "SMOIS": np.full((4, 4, 4), 0.25, dtype=np.float32),
+        "VEGFRA": grid * 50, "TMN": grid * 288,
+    }
+    identity = dict(MMINLU=dataset, ISWATER=iswater, ISLAKE=islake,
+                    ISICE=isice, ISOILWATER=14)
+    surface = SimpleNamespace(fields=fields, identity=identity)
+    initial = SimpleNamespace(fields={"XLAT": grid * 35,
+                                      "XLONG": grid * -97})
+    seen = {}
+
+    def attach(child, config, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(fields={})
+
+    monkeypatch.setattr(physics, "initialize_physics", attach)
+    monkeypatch.setitem(sys.modules, "cupy", SimpleNamespace())
+    _initialize_child_physics(None, cfg, initial, surface,
+                              datetime(1974, 4, 3, 12))
+    assert seen["landuse_dataset"] == dataset
+
+
 #: What every test in this deck runs on: a computer that CAN draw.
 #:
 #: `gpuwm downscale` draws by default, so a box with no staged renderer
@@ -238,6 +281,10 @@ def test_downscale_cli_dry_run_child_config_mode(tmp_path, capsys):
         "--parent-namelist", str(namelist),
         "--child-config", str(child_toml), "--ratio", "1",
         "--i-parent-start", "4", "--j-parent-start", "4",
+        # The fixture archive's coordinates are no real projection and no
+        # WPS_GEOG tree is staged: a child of it runs on its parent's
+        # terrain, the route this door test is about.
+        "--parent-terrain",
         "--out", str(tmp_path / "child-run"), "--dry-run"]
     # A child's 300-second output interval is not a ceiling on its hourly
     # parent's boundary data. The old research guide conflated these.
@@ -307,6 +354,10 @@ def _dry_run_plan(tmp_path, capsys, cadence_args):
         "--parent-namelist", str(namelist),
         "--child-config", str(child_toml), "--ratio", "1",
         "--i-parent-start", "4", "--j-parent-start", "4",
+        # The fixture archive's coordinates are no real projection and no
+        # WPS_GEOG tree is staged: a child of it runs on its parent's
+        # terrain, the route this door test is about.
+        "--parent-terrain",
         "--out", str(tmp_path / "child-run"), "--dry-run",
         *cadence_args]) == 0
     printed = capsys.readouterr().out
@@ -355,6 +406,10 @@ def test_runner_namespace_threads_the_acceptance_provenance(
         "--parent-namelist", str(namelist),
         "--child-config", str(child_toml), "--ratio", "1",
         "--i-parent-start", "4", "--j-parent-start", "4",
+        # The fixture archive's coordinates are no real projection and no
+        # WPS_GEOG tree is staged: a child of it runs on its parent's
+        # terrain, the route this door test is about.
+        "--parent-terrain",
         "--accept-parent-cadence",
         "--out", str(tmp_path / "child-run")]) == 0
     capsys.readouterr()
@@ -521,6 +576,10 @@ def _surface_child_args(tmp_path):
         "--parent-namelist", str(namelist),
         "--child-config", str(child_toml), "--ratio", "1",
         "--i-parent-start", "4", "--j-parent-start", "4",
+        # The fixture archive's coordinates are no real projection and no
+        # WPS_GEOG tree is staged: a child of it runs on its parent's
+        # terrain, the route this door test is about.
+        "--parent-terrain",
         "--out", str(tmp_path / "child-run")]
 
 
@@ -851,6 +910,9 @@ def _point_args(tmp_path, *, ny=18, nx=20):
         # requires at least four and declares its own remapping ladder.
         "--child-levels", "4,2.5",
         "--hours", "0.25", "--output-interval-seconds", "900",
+        # No WPS_GEOG tree is staged for the fixture: the child runs on its
+        # parent's terrain, the route the reservation tests are about.
+        "--parent-terrain",
         "--out", str(tmp_path / "child-run")]
 
 
@@ -1330,7 +1392,7 @@ def test_a_downscaled_run_is_accepted_as_a_parent(tmp_path, capsys):
         child_run / "gpuwmrst_d02_1974-04-03_14_00_00.npz")
     assert plan["physics_binding"]["domain_id"] == 2
     assert plan["child_grid_id"] == 3
-    grandchild = read_config(plan["child_config"])
+    grandchild = read_config(plan["child_config"], child_static=True)
     assert grandchild.grid_id == 3
     # a 15-minute child reads the first two of the three hourly frames
     assert [Path(frame).name[:10] for frame in plan["parent_frames"]] == [
@@ -1418,6 +1480,10 @@ def test_the_review_refuses_a_child_clock_that_is_not_whole_steps(
             "--parent-namelist", str(namelist),
             "--child-config", str(child_toml), "--ratio", "1",
             "--i-parent-start", "4", "--j-parent-start", "4",
+        # The fixture archive's coordinates are no real projection and no
+        # WPS_GEOG tree is staged: a child of it runs on its parent's
+        # terrain, the route this door test is about.
+        "--parent-terrain",
             "--accept-parent-cadence",
             "--out", str(tmp_path / out), "--dry-run"])
 
@@ -1576,7 +1642,8 @@ def test_the_parents_restart_is_the_member_of_the_domain_the_frames_come_from(
     assert plan["parent_domain"] == 2
     assert plan["physics_binding"]["domain_id"] == 2
     assert plan["child_grid_id"] == 3
-    assert read_config(plan["child_config"]).grid_id == 3
+    assert read_config(plan["child_config"],
+                       child_static=True).grid_id == 3
 
     # Frames of a domain the set never wrote: refused at the door, with
     # the members present and both ways out.
@@ -1674,6 +1741,10 @@ def _downscale_with_receipts(tmp_path, monkeypatch, *, extra=(),
         "--parent-namelist", str(namelist),
         "--child-config", str(child_toml), "--ratio", "1",
         "--i-parent-start", "4", "--j-parent-start", "4",
+        # The fixture archive's coordinates are no real projection and no
+        # WPS_GEOG tree is staged: a child of it runs on its parent's
+        # terrain, the route this door test is about.
+        "--parent-terrain",
         "--accept-parent-cadence", "--out", str(out), *extra])
     events = [
         _json.loads(line) for line
@@ -1764,6 +1835,10 @@ def test_the_door_hands_the_runner_the_spec_it_resolved(
         "--parent-namelist", str(namelist),
         "--child-config", str(child_toml), "--ratio", "1",
         "--i-parent-start", "4", "--j-parent-start", "4",
+        # The fixture archive's coordinates are no real projection and no
+        # WPS_GEOG tree is staged: a child of it runs on its parent's
+        # terrain, the route this door test is about.
+        "--parent-terrain",
         "--accept-parent-cadence"]
     assert cli_main(door + ["--out", str(tmp_path / "a")]) == 0
     assert captured["namespace"].render_products == "all"
@@ -1849,6 +1924,10 @@ def _child_door(tmp_path):
         "--parent-namelist", str(namelist),
         "--child-config", str(child_toml), "--ratio", "1",
         "--i-parent-start", "4", "--j-parent-start", "4",
+        # The fixture archive's coordinates are no real projection and no
+        # WPS_GEOG tree is staged: a child of it runs on its parent's
+        # terrain, the route this door test is about.
+        "--parent-terrain",
         "--accept-parent-cadence", "--out", str(tmp_path / "child-run")]
 
 

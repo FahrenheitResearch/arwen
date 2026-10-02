@@ -1,0 +1,83 @@
+{
+  "schema": "bigstep-rk-tendency-wrf471-v1",
+  "cases": [
+    {
+      "id": 0,
+      "name": "real-specified-rk1",
+      "step": 1,
+      "hemisphere": 1
+    },
+    {
+      "id": 1,
+      "name": "real-specified-rk2",
+      "step": 2,
+      "hemisphere": 1
+    },
+    {
+      "id": 2,
+      "name": "southern-rotation",
+      "step": 2,
+      "hemisphere": -1
+    }
+  ],
+  "fixture_sha256": "6e66271741bf0b69426b8f37aad202803bfe22727664f0d8099e8539e54ad984",
+  "state_sha256": "744d7cffbdf37db5768fa4b620bfc0cbc15971d5bfa792b4adb6de0f6ad2b22e",
+  "fields3": [
+    "U",
+    "V",
+    "W",
+    "T",
+    "PH",
+    "PHB",
+    "PB",
+    "P",
+    "AL",
+    "ALB",
+    "T_INIT"
+  ],
+  "fields2": [
+    "MU",
+    "MUB",
+    "MAPFAC_MX",
+    "MAPFAC_MY",
+    "MAPFAC_UX",
+    "MAPFAC_UY",
+    "MAPFAC_VX",
+    "MF_VX_INV",
+    "MAPFAC_VY",
+    "XLAT",
+    "F",
+    "E",
+    "SINALPHA",
+    "COSALPHA",
+    "HGT"
+  ],
+  "fields1": [
+    "C1H",
+    "C2H",
+    "C1F",
+    "C2F",
+    "FNM",
+    "FNP",
+    "DNW",
+    "RDN",
+    "RDNW",
+    "U_BASE",
+    "V_BASE",
+    "T_BASE",
+    "QV_BASE",
+    "Z_BASE"
+  ],
+  "scope": "specified boundaries; order5 horizontal/order3 vertical advection; explicit vertical; no optional damping or diffusion; native rk_step_prep inputs",
+  "compiler": "rk_step_prep and rk_tendency O0; actual native WRF O2 child-routine library",
+  "pressure_adapter": {
+    "expression": "(WRF_P + WRF_PB) - WRF_PB, each operation float32",
+    "changed_words": 0,
+    "words": 5880,
+    "max_abs_pa": 0.0,
+    "original_reference": "rk-tendency-original-pressure.npz",
+    "original_pressure_sha256": "db7da9974cb84cf1ced25b2be5a1bc3ad4be70b8df5cfe93d63905274c094c06",
+    "canonical_pressure_sha256": "db7da9974cb84cf1ced25b2be5a1bc3ad4be70b8df5cfe93d63905274c094c06"
+  },
+  "theta_representation": "literal WRF theta-minus-300 words, matched at the common transport-kernel input"
+}

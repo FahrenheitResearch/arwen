@@ -1985,6 +1985,13 @@ def _check_command(args) -> int:
     args.host_available_at_entry = (
         None if getattr(args, "_target_hardware_supplied", False)
         else host_available_bytes())
+    if getattr(args, "prepared_root", None) is not None:
+        from gpuwm.core.preflight import _prepared_check_inputs
+
+        _prepared_check_inputs(args)
+        print("input preflight: prepared forecast inputs verified; "
+              "continuing to the prepared memory price", file=stream)
+        return 0
     # A legacy RunConfig-shaped TOML has no [case_data] declared-input
     # table, so there is nothing for the input preflight to check.
     # Returning success lets the composed ``gpuwm check`` advance to the

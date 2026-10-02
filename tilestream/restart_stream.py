@@ -746,6 +746,16 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
     elapsed = restart._admissible_elapsed_seconds(
         scalars["elapsed_seconds"], "streamed restart write")
     with domain_header_view(setup, template_state, arrays, elapsed) as view:
+        # Hash only prepared intervals before the seal. Hashing the complete
+        # schedule would stop the forecast at its first hourly checkpoint.
+        # The resident writer uses this same preserved-prefix contract.
+        stream = restart._pre_seal_intervals(view)
+        setup_view = (view if stream is None
+                      else restart._ReadyPrefixState(view, stream))
+        if stream is not None:
+            with _as_refusal("this forcing prefix cannot be checkpointed"):
+                restart._require_preservable_forcing_prefix(
+                    setup_view, cfg, path=path, elapsed=elapsed)
         # gpuwm's own pre-write refusals, run against the DOMAIN's carriers.
         # They refuse a checkpoint that would resume with an aerosol-inert
         # Thompson column (mp28) or a non-canonical MP18 precipitation set --
@@ -761,8 +771,8 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
             "created": _utcnow(),
             "producer": restart.producer_identity(),
             "elapsed_seconds": elapsed,
-            "config": dataclasses.asdict(cfg),
-            "setup_fingerprint": restart.setup_fingerprint(view),
+            "config": restart.configuration_echo(cfg),
+            "setup_fingerprint": restart.setup_fingerprint(setup_view),
             "physics_setup": physics_setup,
             "physics_setup_fingerprint": restart._json_sha256(physics_setup),
             "driver": driver_restart_header(scalars),
@@ -770,6 +780,14 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
                              else dict(run_trackers)),
             "array_manifest": {},
         }
+        if stream is not None:
+            header.update({
+                "forcing_extension_mode": restart.PRESERVED_FORCING_PREFIX_MODE,
+                "setup_core_fingerprint": restart.setup_core_fingerprint(setup_view),
+                "lateral_boundary_prefix": restart.lateral_boundary_prefix_identity(setup_view),
+                restart.BOUNDARY_STREAM_HEADER_KEY: {
+                    "head_sha256": str(stream.head_sha256)},
+            })
         clock = restart.root_external_lbc_clock_identity(view, cfg)
     if clock is not None:
         header["root_external_lbc_clock"] = clock
@@ -881,7 +899,25 @@ def validate_streamed_restart(path, store, cfg, *, setup, template_state,
     whole_store = _store_arrays(store)
     arrays = _checkpoint_carriers(whole_store, extra_scratch_slots)
     with domain_header_view(setup, template_state, arrays, elapsed) as view:
-        live_setup = restart.setup_fingerprint(view)
+        stream_header = header.get(restart.BOUNDARY_STREAM_HEADER_KEY)
+        preserved_prefix = isinstance(stream_header, dict)
+        if preserved_prefix:
+            live_head = getattr(getattr(view.lateral_boundaries, "intervals", None),
+                                "head_sha256", None)
+            if live_head is not None and live_head != stream_header.get("head_sha256"):
+                raise RestartRefused(
+                    f"restart file {path} was written against the prepared head "
+                    f"{stream_header.get('head_sha256')}, and this run streams "
+                    f"from the prepared head {live_head}")
+            with _as_refusal(f"restart file {path} changed its forcing prefix"):
+                # A streaming resume compares the recorded intervals without
+                # waiting for future ones; a sealed twin checks its complete
+                # series against the same preserved-prefix contract.
+                restart._require_preserved_forcing_prefix(
+                    header, restart._stored_prefix_view(header, view, path=path),
+                    cfg, path=path, elapsed=elapsed)
+        else:
+            live_setup = restart.setup_fingerprint(view)
         live_phys = restart._json_sha256(
             restart.physics_setup_identity(view, cfg))
         live_clock = restart.root_external_lbc_clock_identity(view, cfg)
@@ -914,7 +950,7 @@ def validate_streamed_restart(path, store, cfg, *, setup, template_state,
         # Same check gpuwm's reader makes: the stored clock must land inside
         # a forcing interval this preparation actually has.
         setup.lateral_boundaries.interval_at(elapsed)
-    if header["setup_fingerprint"] != live_setup:
+    if not preserved_prefix and header["setup_fingerprint"] != live_setup:
         raise RestartRefused(
             f"restart file {path} was written on a different model setup "
             f"({header['setup_fingerprint'][:16]} vs {live_setup[:16]}): "

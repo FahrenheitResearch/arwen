@@ -455,21 +455,14 @@ def test_geometry_only_opens_native_domains_without_any_gpu_sizing(tmp_path, mon
     else:
         source = proposal_zip(tmp_path, document=worldwide_proposal_document())
         case_id, options = "synthetic-import", {"source_option": kind}
-    if kind == "hrrr":
-        # This proposal's regional suite is not one of the shipped
-        # single-domain physics profiles, and the namelists that route
-        # reads have no key for moist_cq: the route derives it from the
-        # suite, so a configuration stating the other value is refused
-        # at publication rather than run as something it does not say.
-        # Stated here, at the value that route derives, which is what
-        # the refusal in the case below names.
-        options["native_overrides"] = {"shared": {"moist_cq": False}}
     out = tmp_path / "opened.toml"
     receipt = catalog.create_case(source, case_id, out=out, tier="lower", now=NOW,
                                   geometry_only=True, **options)
     from gpuwm.experiment import load_experiment
     experiment = load_experiment(out)
     assert experiment.domains
+    if kind == "hrrr":
+        assert all(domain.run.moist_cq for domain in experiment.domains)
     assert receipt["admission"]["status"] == "geometry-validated"
     assert receipt["admission"]["memory_admission"] == "deferred-to-review"
     assert receipt["admission"]["forecast_started"] is False
@@ -615,6 +608,40 @@ def test_unsupported_imported_selector_is_visible_and_blocks_creation(tmp_path):
     assert not (tmp_path / "blocked.toml").exists()
 
 
+def test_imported_model_coordinate_diffusion_is_preserved(tmp_path):
+    document = proposal_document()
+    for preset in document["cases"][0]["presets"].values():
+        for domain in preset["domains"]:
+            domain["selectors"].update(diff_opt=1, mix_full_fields=False)
+    loaded = catalog.load_catalog(proposal_zip(tmp_path, document=document))
+    preview = catalog.preview_case(loaded, "synthetic-import", tier="lower", now=NOW)
+    assert not preview["import_issues"]
+    assert preview["native_overrides"]["shared"]["diff_opt"] == 1
+    assert preview["native_overrides"]["shared"]["mix_full_fields"] is False
+
+
+def test_imported_model_coordinate_diffusion_can_be_per_domain(tmp_path):
+    document = proposal_document()
+    domain = document["cases"][0]["presets"]["minimum"]["domains"][1]
+    domain["selectors"].update(diff_opt=1, mix_full_fields=False)
+    loaded = catalog.load_catalog(proposal_zip(tmp_path, document=document))
+    preview = catalog.preview_case(loaded, "synthetic-import", tier="lower", now=NOW)
+    assert not preview["import_issues"]
+    overrides = preview["native_overrides"]["domains"]
+    assert any(row["grid_id"] == 2 and row["settings"]["diff_opt"] == 1
+               and row["settings"]["mix_full_fields"] is False for row in overrides)
+
+
+@pytest.mark.parametrize("value", [False, 0, 3])
+def test_imported_diffusion_requires_a_supported_selector(tmp_path, value):
+    document = proposal_document()
+    domain = document["cases"][0]["presets"]["minimum"]["domains"][0]
+    domain["selectors"]["diff_opt"] = value
+    loaded = catalog.load_catalog(proposal_zip(tmp_path, document=document))
+    preview = catalog.preview_case(loaded, "synthetic-import", tier="lower", now=NOW)
+    assert any("diff_opt" in issue for issue in preview["import_issues"])
+
+
 def test_imported_native_creation_honors_hourly_cadence_and_unique_vtables(tmp_path):
     path = proposal_zip(tmp_path)
     for name in ("one", "two"):
@@ -729,17 +756,15 @@ def test_worldwide_source_geometry_and_cadence_reach_native_creation(tmp_path, s
     assert preview["provenance"]["catalog"]["provenance"][0]["source_schema"] == "arwen.case-catalog/v2"
     assert preview["source_availability"]["hours"] == (12 if source == "era5" else 6)
     output = tmp_path / f"{source}.toml"
-    # The regional route derives moist_cq from the physics suite and its
-    # namelists cannot state it; this proposal's suite is not one of the
-    # shipped profiles, so the value that route will run is stated here.
-    overrides = ({"shared": {"moist_cq": False}} if source == "hrrr" else None)
     receipt = catalog.create_case(loaded, "synthetic-import", out=output, tier="lower",
-                                  source_option=source, vram_gib=32, now=NOW,
-                                  native_overrides=overrides)
+                                  source_option=source, vram_gib=32, now=NOW)
     raw = tomllib.loads(output.read_text(encoding="utf-8"))
     from gpuwm.experiment import load_experiment
     from gpuwm.hrrr_route_inputs import route_input_paths
-    assert [row.run.dx / 1000 for row in load_experiment(output).domains] == spacing
+    experiment = load_experiment(output)
+    assert [row.run.dx / 1000 for row in experiment.domains] == spacing
+    if source == "hrrr":
+        assert all(domain.run.moist_cq for domain in experiment.domains)
     # A created case carries every file its own input route reads.
     for role, companion in route_input_paths(output).items():
         assert companion.is_file() == (source == "hrrr" or role == "wps_namelist"), role
@@ -752,13 +777,11 @@ def test_worldwide_source_geometry_and_cadence_reach_native_creation(tmp_path, s
 def test_a_regional_case_the_route_cannot_state_is_refused_whole(tmp_path):
     """The route reads namelists, and they have no key for this one.
 
-    A physics suite outside the shipped single-domain profiles leaves
-    ``moist_cq`` to be derived from the suite by whoever reads the
-    namelists, so a configuration that states the other value would be
-    integrated as something it does not say.  Publication refuses,
-    naming the field and its two values, and creates nothing: before
-    2.7.6 the same case was created and then refused at the prepare
-    stage for the route files it did not carry.
+    WRF always applies the moisture pressure correction when moisture
+    exists, and its namelist cannot encode an explicit verification
+    opt-out.  A configuration requesting false would therefore run a
+    different model after the route re-imported its namelists.
+    Publication refuses the mismatch and creates nothing.
     """
     from gpuwm.hrrr_route_inputs import HrrrRouteInputError
 
@@ -766,7 +789,8 @@ def test_a_regional_case_the_route_cannot_state_is_refused_whole(tmp_path):
     output = tmp_path / "unstateable.toml"
     with pytest.raises(HrrrRouteInputError, match="moist_cq"):
         catalog.create_case(loaded, "synthetic-import", out=output, tier="lower",
-                            source_option="hrrr", vram_gib=32, now=NOW)
+                            source_option="hrrr", vram_gib=32, now=NOW,
+                            native_overrides={"shared": {"moist_cq": False}})
     assert not output.exists()
     assert not list(tmp_path.glob("unstateable*"))
 

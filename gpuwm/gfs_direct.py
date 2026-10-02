@@ -64,6 +64,7 @@ from gpuwm.ingest.boundary_stream import (
     input_plan,
     input_plan_sha256,
     domain_tree_head_fields,
+    prepared_head_urban_columns,
     producer_device_bytes,
     remove_unfinished_tree,
 )
@@ -2647,7 +2648,8 @@ def prepare_gfs_wrf(
             # producer only when both fit (boundary_stream.chained_admission).
             writer.admit(
                 experiment=exp, backend=str(preprocess_receipt["backend"]),
-                device_bytes=producer_device_bytes(str(preprocess_receipt["backend"])))
+                device_bytes=producer_device_bytes(str(preprocess_receipt["backend"])),
+                urban_columns=prepared_head_urban_columns(exp, static))
             progress.enter("write_prepared_cache")
             cache_started = time.perf_counter()
             writer.write_head(
@@ -2979,7 +2981,9 @@ def _prepare_chained_gfs_tree(c) -> dict[str, object]:
         # producer only when both fit (boundary_stream.chained_admission).
         writer.admit(
             experiment=exp, backend=backend,
-            device_bytes=producer_device_bytes(backend))
+            device_bytes=producer_device_bytes(backend),
+            urban_columns=prepared_head_urban_columns(
+                exp, c.static, child_results=tree_head.child_results))
         head_started = time.perf_counter()
         writer.write_head(
             initial_result=c.initial_result, met=c.initial_met,

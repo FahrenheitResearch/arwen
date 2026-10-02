@@ -1,0 +1,117 @@
+"""A193: the literal-division gate reads sources only from the tree it scans.
+
+The breakage this prevents: on the 2.8.1 B200 bench gpuwm was installed
+from a wheel beside a source tests tree, and the compiler census
+(tools/literal_division_census.py) took p3_device's sources from the
+imported package, outside the tree it scanned, and stopped on a ValueError
+before compiling a unit: three test_literal_division_gate failures that
+were no division defect.  A census or scan reading the imported package
+instead of the scanned tree gates sources other than the ones under test.
+
+Here the scanned tree is a copy of this tree's kernels, outside the
+imported gpuwm, with a marker appended to every kernel source.  Every unit
+the census builds and every offender the scans report must come from that
+copy, and no file outside it may be opened.  CPU only; nothing compiles.
+"""
+from __future__ import annotations
+
+import builtins
+import os
+import pathlib
+import shutil
+from pathlib import Path
+
+import pytest
+
+from tools import literal_division_census as census
+from tools import literal_division_scan as scan
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+MARKER = "// A193 scanned-tree marker"
+
+
+@pytest.fixture
+def scanned_tree(tmp_path):
+    """A kernel tree outside the imported package, every source marked."""
+    root = tmp_path / "scanned"
+    kernels = scan.kernel_dir(root)
+    shutil.copytree(scan.kernel_dir(REPO_ROOT), kernels,
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    for path in list(kernels.glob("*.cu")) + list(kernels.glob("*.cuh")):
+        text = path.read_text(encoding="utf-8")
+        path.write_text(text + "\n" + MARKER + "\n", encoding="utf-8")
+    return root.resolve()
+
+
+def _record_reads(monkeypatch) -> list[Path]:
+    """Every file opened for reading from here on, by Path or open()."""
+    opened: list[Path] = []
+    path_open, plain_open = pathlib.Path.open, builtins.open
+
+    def recorded_path_open(self, mode="r", *args, **kwargs):
+        if "r" in mode or "+" in mode:
+            opened.append(Path(os.path.realpath(self)))
+        return path_open(self, mode, *args, **kwargs)
+
+    def recorded_open(file, mode="r", *args, **kwargs):
+        if isinstance(file, (str, os.PathLike)) and (
+                "r" in mode or "+" in mode):
+            opened.append(Path(os.path.realpath(file)))
+        return plain_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "open", recorded_path_open)
+    monkeypatch.setattr(builtins, "open", recorded_open)
+    return opened
+
+
+def _outside(opened, root) -> list[str]:
+    return sorted({str(path) for path in opened
+                   if not path.is_relative_to(root)})
+
+
+def test_the_census_builds_every_unit_from_the_scanned_tree(
+        monkeypatch, scanned_tree):
+    reference = {unit.key: unit for unit in census.production_units(REPO_ROOT)}
+    assert not any(MARKER in unit.source for unit in reference.values())
+    opened = _record_reads(monkeypatch)
+    units = census.production_units(scanned_tree)
+    assert opened, "the census opened no source"
+    assert not _outside(opened, scanned_tree), _outside(opened, scanned_tree)
+    assert [unit.key for unit in units] == list(reference)
+    for unit in units:
+        assert MARKER in unit.source, unit.key
+        assert unit.options == reference[unit.key].options, unit.key
+    # p3_device is labelled by this tree's paths, the label the B200 bench
+    # could not form from an installed package.
+    (p3,) = [unit for unit in units if unit.key == "p3_device"]
+    labels = {label for _start, label, _first in p3.segments}
+    assert {"gpuwm/core/kernels/noahmp_leaves.cu",
+            "gpuwm/core/kernels/p3.cu"} <= labels
+
+
+def test_the_scans_report_and_read_only_the_scanned_tree(
+        monkeypatch, scanned_tree):
+    kernels = scan.kernel_dir(scanned_tree)
+    (kernels / "planted_a193.cu").write_text(
+        'extern "C" __global__ void k(float* y)\n'
+        "{ y[0] = y[1] / 3.0f; }\n", encoding="utf-8")
+    (scanned_tree / "gpuwm" / "planted_a193.py").write_text(
+        'BODY = r"""\nextern "C" __global__ void k(float* y)\n'
+        '{ y[0] = y[1] / 7.0f; }\n"""\n', encoding="utf-8")
+    opened = _record_reads(monkeypatch)
+    assert scan.kernel_file_offenders(scanned_tree) == [
+        "gpuwm/core/kernels/planted_a193.cu:2 divides by 3.0f"]
+    assert scan.inline_kernel_offenders(scanned_tree) == [
+        "gpuwm/planted_a193.py:1 (string line 3) divides by 7.0f"]
+    assert not _outside(opened, scanned_tree), _outside(opened, scanned_tree)
+    assert scan.kernel_dir(scanned_tree) / "common.cuh" in opened
+
+
+def test_a_root_without_kernel_sources_is_refused_not_passed(tmp_path):
+    """An empty scan would pass the gate on no sources at all."""
+    with pytest.raises(FileNotFoundError):
+        scan.kernel_file_offenders(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        scan.inline_kernel_offenders(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        census.production_units(tmp_path)

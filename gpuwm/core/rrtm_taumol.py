@@ -69,11 +69,28 @@ def _array_namespace(*values):
 
 
 def _device_tables(tables, xp):
-    """Move the combined tables onto ``xp`` once per process."""
+    """Move the combined tables onto ``xp`` once per process (per card).
+
+    On the device the copy is keyed by card and published with its upload
+    event (``device_cache.cached_ready``): the tables a card-0 upload made
+    are not card 1's, and a slab on another stream must not read them
+    before they land.
+    """
+    if xp is not np:
+        from gpuwm.core.device_cache import cached_ready
+        key = (id(tables), xp.__name__, int(xp.cuda.Device().id))
+        return cached_ready(xp, _DEVICE_CACHE, key,
+                            lambda: _move_tables(tables, xp))[0]
     key = (id(tables), xp.__name__)
     cached = _DEVICE_CACHE.get(key)
     if cached is not None:
         return cached
+    moved = _move_tables(tables, xp)[0]
+    _DEVICE_CACHE[key] = moved
+    return moved
+
+
+def _move_tables(tables, xp):
     moved = {
         "absa": {b: xp.asarray(v) for b, v in tables.absa.items()},
         "absb": {b: xp.asarray(v) for b, v in tables.absb.items()},
@@ -83,8 +100,9 @@ def _device_tables(tables, xp):
         "corr1": xp.asarray(tables.corr1),
         "corr2": xp.asarray(tables.corr2),
     }
-    _DEVICE_CACHE[key] = moved
-    return moved
+    # cached_ready keeps the tables object alive with the copy, so the id
+    # in the key cannot be reused by another tables object.
+    return moved, tables
 
 
 def _gather(xp, table, index):

@@ -529,6 +529,7 @@ def test_scratch_registry_classifiable_by_restart_manifest(d01_cfg):
     for cfg in (d01_cfg,
                 RunConfig(**_TINY, moist=True, mp_physics=1, open_x=True,
                           open_y=True, khdif=1.0, kvdif=1.0, emdiv=0.01),
+                RunConfig(**_TINY, km_opt=4, diff_opt=1),
                 RunConfig(**_TINY, sf_sfclay_physics=1)):
         union |= set(pf.scratch_slot_registry(cfg, n_lbc_intervals=2))
     for slot in union:
@@ -546,6 +547,7 @@ def test_scratch_lifetime_audit_covers_registry_and_manifest(d01_cfg, exp4):
     configs = [dc.run for dc in exp4.domains]
     configs += [
         d01_cfg,
+        RunConfig(**_TINY, km_opt=4, diff_opt=1),
         RunConfig(**_TINY, moist=True, mp_physics=1, open_x=True,
                   open_y=True, khdif=1.0, kvdif=1.0, emdiv=0.01),
         RunConfig(**_TINY, sf_sfclay_physics=1),
@@ -595,8 +597,8 @@ def test_shared_scratch_arena_aliases_views_and_default_does_not(monkeypatch):
     import gpuwm.core.state as state_mod
 
     monkeypatch.setattr(state_mod, "cp", np)
-    # CQ arena registration is opt-in under the stable default; enable it
-    # explicitly because this test exercises the CQ-to-advection aliases.
+    # CQ is enabled by default; state it explicitly because this test
+    # exercises the CQ-to-advection aliases.
     cfg_small = RunConfig(**_TINY, moist=True, moist_cq=True, mp_physics=1)
     cfg_large = RunConfig(**{**_TINY, "nx": 11, "ny": 7, "nz": 5},
                           moist=True, moist_cq=True, mp_physics=1)
@@ -636,6 +638,48 @@ def test_shared_scratch_arena_aliases_views_and_default_does_not(monkeypatch):
     b = default_b.scratch((2, 3), "unit_default")
     assert not np.shares_memory(a, b)
     assert np.count_nonzero(a) == np.count_nonzero(b) == 0
+
+
+@pytest.mark.parametrize('parent_shape', [(12, 10), (6, 4)])
+def test_streamed_root_resident_child_arena_shapes_aliases_and_bytes_agree(
+        monkeypatch, parent_shape):
+    """A resident child's force buffers retain its streamed parent's size."""
+    from types import SimpleNamespace
+    import gpuwm.core.state as state_mod
+
+    monkeypatch.setattr(state_mod, 'cp', np)
+    root_cfg = RunConfig(**{**_TINY, 'nx': parent_shape[0], 'ny': parent_shape[1]})
+    child_cfg = RunConfig(**_TINY, nested=True)
+    root = SimpleNamespace(grid_id=1, parent_id=0, run=root_cfg)
+    child = SimpleNamespace(grid_id=2, parent_id=1, run=child_cfg)
+    whole = (root, child)
+    resident = (child,)
+    shapes = pf.shared_scratch_arena_shapes(resident, whole)
+    aliases = pf.shared_scratch_arena_aliases(resident, tree_domains=whole)
+    assert shapes['nest_parent_field'] == pf._full_field_capacity(root_cfg)
+    assert shapes['nest_child_field'] == pf._full_field_capacity(child_cfg)
+    assert all(math.prod(shapes[slot]) <= math.prod(shapes[target])
+               for slot, target in aliases.items())
+
+    arena = state_mod.build_shared_scratch_arena(resident, whole)
+    assert arena.slot_shapes == shapes
+    assert arena.nbytes == pf.shared_scratch_arena_bytes(resident, whole)
+    for slot, target in aliases.items():
+        assert np.shares_memory(arena.view(shapes[slot], slot),
+                                arena.view(shapes[target], target))
+    parent = arena.view(shapes['nest_parent_field'], 'nest_parent_field')
+    child = arena.view(shapes['nest_child_field'], 'nest_child_field')
+    assert not np.shares_memory(parent, child)
+    parent.fill(np.float32(7.))
+    child.fill(np.float32(13.))
+    assert np.all(parent == 7.) and np.all(child == 13.)
+
+    # Supplying the full tree preserves the ordinary all-resident arena.
+    ordinary = state_mod.build_shared_scratch_arena(whole)
+    explicit = state_mod.build_shared_scratch_arena(whole, whole)
+    assert ordinary.slot_shapes == explicit.slot_shapes
+    assert ordinary.nbytes == explicit.nbytes == pf.shared_scratch_arena_bytes(whole)
+    assert pf.shared_scratch_arena_aliases(whole) == pf.shared_scratch_arena_aliases(whole, whole)
 
 
 def test_diff6_tendencies_alias_lifetime_safe_backings(monkeypatch):
@@ -857,6 +901,7 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
                 RunConfig(**_TINY, km_opt=3, bl_pbl_physics=0),
                 RunConfig(**_TINY, km_opt=2, bl_pbl_physics=0,
                           tke_budget=1),
+                RunConfig(**_TINY, km_opt=4, diff_opt=1),
                 # The UW moist-turbulence PBL owns its zero plane
                 # (uwpbl_zero); without this arm its call site in
                 # _run_uwpbl is invisible to this completeness gate.
@@ -2866,7 +2911,7 @@ def test_estimate_domain_itemization_pins(exp1):
     assert est.dycore_state_workspace_bytes == est.dycore_state_saved_bytes == 0
     by_cat = {c: d01.category_bytes(c) for c in
               ("state", "physics", "scratch", "lbc", "nest", "transient")}
-    # Stable moist_cq=False omits the three float32 CQ faces:
+    # Default-on CQ adds the three float32 faces for this moist domain:
     # 4 * (49*200*251 + 49*201*250 + 50*200*250) = 29,688,200 B.
     # Ring-guard note: the spec-zone microphysics exclusion adds its
     # mp_ring_save_* snapshot family to a specified mp=10 domain --
@@ -2892,14 +2937,14 @@ def test_estimate_domain_itemization_pins(exp1):
         # each of the 256 `integration_health_partial` blocks and in the
         # single `health_final` block, 4 * (256 + 1) = 1,028 B.  Batched YSU
         # validation adds one four-byte scratch status word.
-        "scratch": 567286380,
+        "scratch": 596974580,
         "lbc": 67091504,
         "nest": 0,
         "transient": 441262500,
     }
     assert d01.resident_bytes == sum(
         v for c, v in by_cat.items() if c != "transient")
-    assert d01.resident_bytes == 1483842792
+    assert d01.resident_bytes == 1513530992
     assert est.resident_bytes == d01.resident_bytes + est.k_tables_bytes
     assert d01.transient_bytes == 441262500
 
@@ -3044,10 +3089,11 @@ def test_d01_calibration_bounds_measured_fixture(exp1):
     # Enforced bound: measured <= estimate.
     assert est.alloc_estimate_bytes >= measured
     # Current residency includes the EOS residual/coefficient arrays and
-    # USTM: 1,483,842,792 B, about 94% of the historical 1.47-GiB peak.
+    # USTM and the three default-on CQ faces: 1,513,530,992 B, about 96%
+    # of the historical 1.47-GiB peak.
     # This comparison does not turn that old run into a new measurement.
     ratio = est.domains[0].resident_bytes / measured
-    assert 0.94 <= ratio <= 0.95
+    assert 0.95 <= ratio <= 0.96
 
 
 def test_calibration_constants_pin_the_measurement_record():
@@ -3722,8 +3768,9 @@ def test_check_cli_legacy_config_wraps(capsys):
     # The 1024-descriptor health capacity adds 24,576 B and the ring-guard
     # saves 3,010,560 B to the pre-assembly pin, the OLR publication buffer
     # a further 200,000 B, and the EOS base-thickness correction plus the
-    # coefficient drops 9,800,392 B (itemization-pin derivation).
-    assert payload["domains"]["d01"]["resident_bytes"] == 1483842792
+    # coefficient drops 9,800,392 B (itemization-pin derivation). The
+    # default-on CQ faces add 29,688,200 B.
+    assert payload["domains"]["d01"]["resident_bytes"] == 1513530992
 
 
 def test_check_cli_fails_closed_when_nothing_is_evaluable(capsys,
@@ -4148,6 +4195,7 @@ def test_legacy_rrtmg_variant_prices_the_lw_chain_local_frame():
         "rrtmg_sw", "rrtmg_lw_chain", "rrtmg_lw_taugb02_10_11_12",
         "rrtmg_lw_taugb03_05", "rrtmg_lw_taugb06_09",
         "rrtmg_lw_taugb13_16", "p3", "urban_bep_bem",
+        "terrain_drag",
         "rrtmg_lw_chain_coalesced", "rrtmg_lw_zbatched", "noah_mosaic"}
     assert covered <= pf.UNMEASURED_KERNEL_MODULES
     assert not modules & pf.UNMEASURED_KERNEL_MODULES
@@ -4664,6 +4712,25 @@ def test_physics_kernel_modules_fails_closed_on_an_unpriced_selector():
     with pytest.raises(ValueError,
                        match="no kernel-module row for mp_physics=55"):
         pf.physics_kernel_modules(broken)
+
+
+@pytest.mark.parametrize("diff_opt", [1, 2])
+def test_coordinate_diffusion_module_uses_its_measured_frame(diff_opt):
+    """The selected coordinate path is visible in pricing and module reports."""
+    cfg = RunConfig(**_TINY, diff_opt=diff_opt, km_opt=4, mp_physics=0,
+                    bl_pbl_physics=0, sf_sfclay_physics=0,
+                    sf_surface_physics=0, ra_physics=0)
+    exp = experiment_from_run_config(cfg, datetime(1974, 4, 3, 12))
+    modules = pf.physics_kernel_modules(exp)
+    frames = pf.kernel_local_frame_bytes(
+        exp, profile=pf.MEASURED_LOCAL_MEMORY_PROFILE)
+    assert ("diff_opt1" in modules) == (diff_opt == 1)
+    assert ("diff_opt1" in frames) == (diff_opt == 1)
+    if diff_opt == 1:
+        assert frames["diff_opt1"] == 0
+        assert "diff_opt1" not in pf.assumed_bound_modules(modules)
+    assert "bandwidth_glue" in modules
+    assert frames["bandwidth_glue"] == 0
 
 
 def test_noahmp_on_an_unread_card_is_priced_from_the_ceiling_and_says_so(monkeypatch):

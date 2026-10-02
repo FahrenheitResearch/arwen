@@ -6,7 +6,8 @@ import pytest
 
 from gpuwm.config import RunConfig, validate_run_config
 from gpuwm.core.adaptive_clock import AdaptiveClockDriver
-from gpuwm.io.restart import _configuration_digest_values, _require_config_match
+from gpuwm.io.restart import (
+    _configuration_digest_values, _require_config_match, configuration_echo)
 from test_adaptive_clock_driver import (
     FakeRun, FakeCfg, FakeNode, FakeClock, FakeSpec, FakeModel)
 
@@ -107,6 +108,22 @@ def test_restart_mode_flip_refuses_and_old_default_is_compatible():
                               "checkpoint")
     assert _configuration_digest_values(stored) == _configuration_digest_values(
         dataclasses.asdict(cfg))
+
+
+def test_restart_echo_omits_only_compatible_defaults():
+    cfg = RunConfig(12, 12, 8, 1000., 1000., 10000., 6., 60.,
+                    use_adaptive_time_step=True)
+    echo = configuration_echo(cfg)
+    assert not {"adaptive_nest_lattice", "zadvect_implicit", "w_crit_cfl"} & echo.keys()
+    changed = replace(cfg, adaptive_nest_lattice=True, zadvect_implicit=1,
+                      w_crit_cfl=0.5)
+    changed_echo = configuration_echo(changed)
+    assert changed_echo["adaptive_nest_lattice"] is True
+    assert changed_echo["zadvect_implicit"] == 1
+    assert changed_echo["w_crit_cfl"] == 0.5
+    _require_config_match(echo, cfg, "checkpoint")
+    with pytest.raises(ValueError, match="adaptive_nest_lattice"):
+        _require_config_match(echo, changed, "checkpoint")
 
 
 def test_mode_requires_adaptive_clock():

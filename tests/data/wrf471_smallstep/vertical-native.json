@@ -1,0 +1,1344 @@
+{
+  "arrays_sha256": "1df27b8ead3dfd65b6c6a3059eba5ef27bf669b86d20656ad1762408f89189ad",
+  "cases": {
+    "dry_loading": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 5,
+          "max_abs": 2.9802322387695312e-08,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 184,
+          "max_abs": 9.5367431640625e-07,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 518,
+          "max_abs": 2.9103830456733704e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 1391,
+          "max_abs": 0.001953125,
+          "max_ulp": 4126,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 606,
+          "max_abs": 5.7220458984375e-06,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 829,
+          "max_abs": 1.1920928955078125e-07,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 1057,
+          "max_abs": 2.384185791015625e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 630,
+          "max_abs": 5.820766091346741e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 67,
+          "max_abs": 4.76837158203125e-07,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 453,
+          "max_abs": 1.430511474609375e-06,
+          "max_ulp": 1424,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "flat_unity_map": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 5,
+          "max_abs": 2.9802322387695312e-08,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 185,
+          "max_abs": 9.5367431640625e-07,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 518,
+          "max_abs": 2.9103830456733704e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 1369,
+          "max_abs": 0.0029296875,
+          "max_ulp": 4087,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 599,
+          "max_abs": 3.814697265625e-06,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 847,
+          "max_abs": 1.1920928955078125e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 1030,
+          "max_abs": 2.384185791015625e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 630,
+          "max_abs": 5.820766091346741e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 67,
+          "max_abs": 4.76837158203125e-07,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 453,
+          "max_abs": 1.430511474609375e-06,
+          "max_ulp": 1424,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "implicit_damper": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 5,
+          "max_abs": 2.9802322387695312e-08,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 182,
+          "max_abs": 9.5367431640625e-07,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 518,
+          "max_abs": 2.9103830456733704e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 1373,
+          "max_abs": 0.001953125,
+          "max_ulp": 3817,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 599,
+          "max_abs": 3.814697265625e-06,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 847,
+          "max_abs": 1.1920928955078125e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 1030,
+          "max_abs": 2.384185791015625e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 630,
+          "max_abs": 5.820766091346741e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 67,
+          "max_abs": 4.76837158203125e-07,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 453,
+          "max_abs": 1.430511474609375e-06,
+          "max_ulp": 1424,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "map_extremes": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 5,
+          "max_abs": 2.9802322387695312e-08,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 187,
+          "max_abs": 9.5367431640625e-07,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 518,
+          "max_abs": 2.9103830456733704e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 1380,
+          "max_abs": 0.0029296875,
+          "max_ulp": 4514,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 599,
+          "max_abs": 3.814697265625e-06,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 847,
+          "max_abs": 1.1920928955078125e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 1030,
+          "max_abs": 2.384185791015625e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 630,
+          "max_abs": 5.820766091346741e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 67,
+          "max_abs": 4.76837158203125e-07,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 453,
+          "max_abs": 1.430511474609375e-06,
+          "max_ulp": 1424,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "periodic_rows": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 11,
+          "max_abs": 2.9802322387695312e-08,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 56
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 56
+        },
+        "ph": {
+          "differing_words": 344,
+          "max_abs": 9.5367431640625e-07,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 999,
+          "max_abs": 2.9103830456733704e-11,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 2579,
+          "max_abs": 0.00390625,
+          "max_ulp": 4100,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 599,
+          "max_abs": 3.814697265625e-06,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 847,
+          "max_abs": 1.1920928955078125e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 1030,
+          "max_abs": 2.384185791015625e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 1201,
+          "max_abs": 5.820766091346741e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 104,
+          "max_abs": 4.76837158203125e-07,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 853,
+          "max_abs": 1.430511474609375e-06,
+          "max_ulp": 5693,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "real_evolved": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 6,
+          "max_abs": 1.4901161193847656e-08,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 168,
+          "max_abs": 9.5367431640625e-07,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 537,
+          "max_abs": 2.9103830456733704e-11,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 1384,
+          "max_abs": 0.0029296875,
+          "max_ulp": 2336,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 617,
+          "max_abs": 3.814697265625e-06,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 809,
+          "max_abs": 1.1920928955078125e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 1021,
+          "max_abs": 1.7881393432617188e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 609,
+          "max_abs": 5.820766091346741e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 53,
+          "max_abs": 4.76837158203125e-07,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 437,
+          "max_abs": 1.9073486328125e-06,
+          "max_ulp": 89,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "real_initial": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 5,
+          "max_abs": 2.9802322387695312e-08,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 188,
+          "max_abs": 9.5367431640625e-07,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 518,
+          "max_abs": 2.9103830456733704e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 1379,
+          "max_abs": 0.0029296875,
+          "max_ulp": 4100,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 599,
+          "max_abs": 3.814697265625e-06,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 847,
+          "max_abs": 1.1920928955078125e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 1030,
+          "max_abs": 2.384185791015625e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 630,
+          "max_abs": 5.820766091346741e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 67,
+          "max_abs": 4.76837158203125e-07,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 453,
+          "max_abs": 1.430511474609375e-06,
+          "max_ulp": 1424,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "rigid_lid": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 5,
+          "max_abs": 2.9802322387695312e-08,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 198,
+          "max_abs": 9.5367431640625e-07,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 518,
+          "max_abs": 2.9103830456733704e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 1355,
+          "max_abs": 0.00390625,
+          "max_ulp": 32808,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 655,
+          "max_abs": 3.814697265625e-06,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 843,
+          "max_abs": 1.1920928955078125e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 1030,
+          "max_abs": 2.384185791015625e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 630,
+          "max_abs": 5.820766091346741e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 67,
+          "max_abs": 4.76837158203125e-07,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 453,
+          "max_abs": 1.430511474609375e-06,
+          "max_ulp": 1424,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "southern_hemisphere": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 5,
+          "max_abs": 2.9802322387695312e-08,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 188,
+          "max_abs": 9.5367431640625e-07,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 518,
+          "max_abs": 2.9103830456733704e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 1383,
+          "max_abs": 0.0029296875,
+          "max_ulp": 4100,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 599,
+          "max_abs": 3.814697265625e-06,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 847,
+          "max_abs": 1.1920928955078125e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 1030,
+          "max_abs": 2.384185791015625e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 630,
+          "max_abs": 5.820766091346741e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 67,
+          "max_abs": 4.76837158203125e-07,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 453,
+          "max_abs": 1.430511474609375e-06,
+          "max_ulp": 1424,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "steep_terrain": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 5,
+          "max_abs": 2.9802322387695312e-08,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 188,
+          "max_abs": 9.5367431640625e-07,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 518,
+          "max_abs": 2.9103830456733704e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 1380,
+          "max_abs": 0.0029296875,
+          "max_ulp": 4100,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 599,
+          "max_abs": 3.814697265625e-06,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 847,
+          "max_abs": 1.1920928955078125e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 1030,
+          "max_abs": 2.384185791015625e-07,
+          "max_ulp": 5,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 630,
+          "max_abs": 5.820766091346741e-11,
+          "max_ulp": 3,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 67,
+          "max_abs": 4.76837158203125e-07,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 453,
+          "max_abs": 1.430511474609375e-06,
+          "max_ulp": 1424,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "zero_near_zero": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 6,
+          "max_abs": 9.183549615799121e-41,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 948,
+          "max_abs": 3.00551864986181e-35,
+          "max_ulp": 327272,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 297,
+          "max_abs": 1.1713479086663504e-38,
+          "max_ulp": 8359018,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 1116,
+          "max_abs": 2.5281441638728197e-31,
+          "max_ulp": 116440,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 607,
+          "max_abs": 5.7220458984375e-06,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 1011,
+          "max_abs": 1.1920928955078125e-07,
+          "max_ulp": 4,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 1199,
+          "max_abs": 2.384185791015625e-07,
+          "max_ulp": 7,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 336,
+          "max_abs": 1.1149997355979994e-38,
+          "max_ulp": 7956904,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 41,
+          "max_abs": 4.70197740328915e-38,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 222,
+          "max_abs": 1.6266553274816202e-33,
+          "max_ulp": 151462690,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    }
+  },
+  "correct_pi": false,
+  "environment": {
+    "compute_capability": [
+      12,
+      0
+    ],
+    "cupy": "14.2.0",
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "runtime_version": 13020
+  },
+  "format_version": 1,
+  "kernel_source_sha256": "2356c7c8950b95056b0205da6f787a8f74fa01d4b2ae5e03d43621b2037a4141",
+  "library_sha256": "5a26272a63f17b93fb752226a1db9ff5d461c193dc7d574bc75b05fccf95a086",
+  "no_fma": false,
+  "preserve_subnormals": false,
+  "theta_offset": 300.0,
+  "wrf_phi_order": false,
+  "wrf_top_order": false,
+  "wrf_update_order": false
+}

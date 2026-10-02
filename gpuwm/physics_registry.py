@@ -529,7 +529,10 @@ REGISTRY_CONSTRAINTS_KEPT_IN_PHYSICS_IDENTITY: Mapping[str, str] = {
         "validate_physics_capabilities does not evaluate it"),
     "refused_when": (
         "a rule with a sources clause fires only at plan review and the "
-        "preparation door, never in the preflight's recomputation"),
+        "preparation door, never in the preflight's recomputation, so those "
+        "rules stay bound; a rule without one is evaluated by "
+        "validate_physics_capabilities like the admission kinds above and "
+        "leaves the part with them (_admission_conditional_refusal)"),
 }
 
 
@@ -539,10 +542,53 @@ def _is_prose(value: object) -> bool:
         and all(isinstance(item, str) for item in value))
 
 
+def _admission_conditional_refusal(rule: object) -> bool:
+    """Is this ``refused_when`` rule one the preflight's recomputation
+    re-checks, and so admission rather than physics?
+
+    ``gpuwm.physics_compat.validate_physics_capabilities`` evaluates every
+    well-formed rule (:func:`_conditional_refusals`) against the prepared
+    configuration, and a rule that no longer admits it refuses there by
+    name, exactly as the kinds in :data:`REGISTRY_ADMISSION_CONSTRAINTS`
+    do.  The exception is a rule with a ``sources`` clause: a RunConfig
+    carries no source id, so :func:`_conditional_refusal_fires` never
+    fires it there, and such a rule stays bound.  A malformed rule fires
+    nowhere and stays bound, so an edit that repairs it is still seen.
+
+    Bound per kind, a rule of this kind refused every 2.8.0 and 2.8.1
+    preparation of the 1.5-order TKE closure on the 2.8.2 integration
+    line, once lane/282-namelist-tolerance moved the closure's PBL-off
+    requirement out of ``required_settings`` into a ``diff_opt = 2``
+    rule: the closure computes what it did, and the preflight still
+    refuses every configuration the rule refuses.
+    """
+
+    return (isinstance(rule, Mapping)
+            and bool(_conditional_refusals({"refused_when": [rule]}))
+            and not isinstance(rule.get("sources"), list))
+
+
+def _physics_constraints(constraints: Mapping[str, object]) -> dict:
+    """An option's ``constraints`` as its physics part binds them."""
+
+    kept: dict[str, object] = {}
+    for name, rule in constraints.items():
+        if name in REGISTRY_ADMISSION_CONSTRAINTS:
+            continue
+        if name == "refused_when" and isinstance(rule, list):
+            rule = [item for item in rule
+                    if not _admission_conditional_refusal(item)]
+            if not rule:
+                continue
+        kept[name] = rule
+    return kept
+
+
 def strip_registry_documentation(node: object) -> object:
     """``node`` with every documentation field of the tables above removed,
-    and every admission constraint (:data:`REGISTRY_ADMISSION_CONSTRAINTS`)
-    removed from a ``constraints`` object."""
+    and every admission constraint (:data:`REGISTRY_ADMISSION_CONSTRAINTS`,
+    and each ``refused_when`` rule the preflight re-checks) removed from a
+    ``constraints`` object."""
 
     if isinstance(node, Mapping):
         kept: dict[str, object] = {}
@@ -551,8 +597,7 @@ def strip_registry_documentation(node: object) -> object:
                     and isinstance(value, Mapping)):
                 continue
             if key == "constraints" and isinstance(value, Mapping):
-                value = {name: rule for name, rule in value.items()
-                         if name not in REGISTRY_ADMISSION_CONSTRAINTS}
+                value = _physics_constraints(value)
             if key in REGISTRY_DOCUMENTATION_FIELDS and _is_prose(value):
                 continue
             if (key in REGISTRY_DOCUMENTATION_VALUE_MAPS

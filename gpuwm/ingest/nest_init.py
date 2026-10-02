@@ -626,9 +626,11 @@ def _registration(child_dc: DomainConfig, parent_node: DomainNode,
 
 def _reconstruction_sint(source, reg, *, window=None, device_windows=False):
     """Upload only exact host donors when reconstructing a device window."""
-    if window is not None and device_windows and isinstance(source, np.ndarray):
+    if device_windows and isinstance(source, np.ndarray):
         import cupy as cp
         from gpuwm.core.nest_interp import window_registration
+        if window is None:
+            window = (slice(0, reg.nyc), slice(0, reg.nxc))
         cropped, donor = window_registration(reg, window)
         payload = cp.asarray(np.ascontiguousarray(source[(...,)+donor]))
         return sint(payload, cropped)
@@ -1754,9 +1756,17 @@ def parent_only_init(child_dc: DomainConfig,
     if array_module is not None:
         state_kwargs["array_module"] = array_module
     child = DomainState(cfg, **state_kwargs)
+    interpolation_window = window
+    if (interpolation_window is None and not isinstance(child.thp, np.ndarray)
+            and isinstance(parent.thp, np.ndarray)):
+        # A device child reconstructed from a canonical host parent uses the
+        # same GPU SINT as a resident parent. The full destination is still
+        # bounded by the child's footprint; its config and grid stay original.
+        interpolation_window = (slice(0, cfg.ny), slice(0, cfg.nx))
     child.load_base(
         coord, _parent_only_base(parent, mass_reg, bool(cfg.terrain_opt),
-                                 window=window, device_windows=not isinstance(child.thp, np.ndarray)))
+                                 window=interpolation_window,
+                                 device_windows=not isinstance(child.thp, np.ndarray)))
 
     registrations = {
         "": mass_reg,
@@ -1768,15 +1778,15 @@ def parent_only_init(child_dc: DomainConfig,
     transition_parent = parent
     transition_reg = mass_reg
     if transition.mixed:
-        if window is not None:
+        if interpolation_window is not None:
             from gpuwm.core.nest_interp import window_registration
             from gpuwm.core.microphysics_transition import transition_parent_window
-            transition_reg, donor = window_registration(mass_reg, window)
+            transition_reg, donor = window_registration(mass_reg, interpolation_window)
             transition_parent = transition_parent_window(parent, donor)
         parent_run = parent_node.cfg.run
         pnz, pny, pnx = (
             int(parent_run.nz), int(parent_run.ny), int(parent_run.nx))
-        if window is not None:
+        if interpolation_window is not None:
             pny, pnx = transition_reg.nyp, transition_reg.nxp
         # Exact F16 full-field capacity without importing the forecast-only
         # preflight module into the standalone RW-WPS preparation wheel.
@@ -1861,9 +1871,9 @@ def parent_only_init(child_dc: DomainConfig,
             sint(backing, transition_reg, out=target)
         elif source is not None and not (
                 transition.mixed and name == "h_diabatic"):
-            field_window = (None if window is None else (
-                slice(window[0].start, window[0].stop + (stagger == "y")),
-                slice(window[1].start, window[1].stop + (stagger == "x"))))
+            field_window = (None if interpolation_window is None else (
+                slice(interpolation_window[0].start, interpolation_window[0].stop + (stagger == "y")),
+                slice(interpolation_window[1].start, interpolation_window[1].stop + (stagger == "x"))))
             target[...] = _reconstruction_sint(
                 source, registrations[stagger], window=field_window,
                 device_windows=not isinstance(target, np.ndarray))

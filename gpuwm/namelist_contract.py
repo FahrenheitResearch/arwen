@@ -278,6 +278,13 @@ def _value_rules() -> dict[tuple[str, str], dict]:
                                      f"({why}).")
     for key, (value, why) in ni.DYNAMICS_REQUIRED_VALUES.items():
         rule("dynamics", key, [value], why)
+    rule("dynamics", "diff_opt", [1, 2],
+         "1 selects model-coordinate diffusion for km_opt=2/4; "
+         "2 selects the metric stress/scalar form.")
+    rule("dynamics", "mix_full_fields", [False, True],
+         "must contain Fortran logicals; False imports with a declared "
+         "full-field mixing substitution under diff_opt=2: "
+         + ni.MIX_FULL_FIELDS_SUBSTITUTION)
     for key, (allowed, why) in ni.PHYSICS_CHOICES.items():
         rule("physics", key, allowed, why, scalar=True)
     for key, (ok, why) in ni.NEST_GUARDS.items():
@@ -286,6 +293,16 @@ def _value_rules() -> dict[tuple[str, str], dict]:
         rule("physics", key, [0, 1],
              "must be 0 or 1 on every domain (WRF Registry.EM_COMMON: 1 "
              "turns it on).")
+    # WRF's sub-grid terrain drag (gpuwm.core.terrain_drag): gwd_opt is read
+    # from &dynamics (WRF v4) or &physics (its v3 placement).
+    from gpuwm.config import GWD_OPT_VALUES, TOPO_WIND_VALUES
+    rule("physics", "topo_wind", list(TOPO_WIND_VALUES),
+         "must be 0, 1 or 2 on every domain (WRF v4.7.1: 1 Jimenez-Dudhia, "
+         "2 the VAR form).")
+    for section in ("dynamics", "physics"):
+        rule(section, "gwd_opt", list(GWD_OPT_VALUES),
+             "must be 0, 1 or 3 on every domain (WRF v4.7.1: 1 the KIM drag, "
+             "3 the GSL drag suite; 2 is not ported).")
     for key, admitted in MYNN_PBL_OPTION_IDENTITY.items():
         rule("physics", key, [admitted],
              f"gpuwm implements {key} = {admitted!r} only (MYNN option "
@@ -345,10 +362,12 @@ def _kind(values: list) -> str:
 
 
 def _outside(values: list):
-    """A value the rule does not admit, of the rule's own kind."""
+    """A value the rule does not admit, or an invalid type when both
+    possible logical values are admitted."""
     kind = _kind(values)
     if kind == "bool":
-        return not values[0]
+        opposite = not values[0]
+        return opposite if opposite not in values else 0
     if kind == "str":
         return "unsupported_" + str(values[0]).lower()
     numbers = [float(v) for v in values]
@@ -500,6 +519,13 @@ def _measure_required() -> set[tuple[str, str]]:
     """
     from gpuwm import namelist_import as ni
 
+    # Removing a key from one concrete baseline can make its Registry
+    # default disagree with another key (a date or WPS grid extent).
+    # That is a pair-dependent refusal, not an unconditional requirement.
+    defaulted = {(section, key)
+                 for (_, section), defaults in ni._NAMELIST_DEFAULTS.items()
+                 for key in defaults}
+    defaulted.update({("geogrid", "parent_id"), ("geogrid", "truelat2")})
     base = _base_pair()
     pairs = []
     for label, variant in BASELINES:
@@ -509,7 +535,8 @@ def _measure_required() -> set[tuple[str, str]]:
             pairs.append(((wps, inp), options))
     candidates = sorted(
         {(section, key) for document in base
-         for section, entries in document.items() for key in entries})
+         for section, entries in document.items() for key in entries}
+        - defaulted)
     required = set()
     for section, key in candidates:
         refused_everywhere = True

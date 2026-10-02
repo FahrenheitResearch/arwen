@@ -85,10 +85,17 @@ def cached(key: str, fn):
 # ------------------------------------------------------------------ engine doors
 
 def _measured_key():
-    """What a cached answer's disk figures depend on: the per-cell constants and the download table."""
+    """The selected writer schema, checkpoint measurements and disk tables."""
     import hashlib
     from gpuwm import disk_budget, download_budget
-    return [disk_budget.HISTORY_BYTES_PER_CELL, disk_budget.CHECKPOINT_BYTES_PER_CELL,
+    history_modules = ("disk_budget.py", "config.py", "core/clock.py",
+                       "io/history_layout.py", "io/history_selection.py",
+                       "io/wrf_output_schema.py", "core/device_inventory.py",
+                       "core/physics_inventory.py", "core/preflight.py")
+    package = Path(disk_budget.__file__).parent
+    history_key = hashlib.sha256(b"".join(
+        (package / name).read_bytes() for name in history_modules)).hexdigest()[:16]
+    return [history_key, disk_budget.CHECKPOINT_BYTES_PER_CELL,
             disk_budget.ROOT_CHECKPOINT_BYTES_PER_CELL,
             hashlib.sha256(disk_budget.picture_table_path().read_bytes()).hexdigest()[:16],
             hashlib.sha256(download_budget.table_path().read_bytes()).hexdigest()[:16]]
@@ -568,11 +575,53 @@ TC_INTERVALS = ((3600, 3600), (10800, 3600), (3600, 7200), (10800, 7200), (10800
 KEEP_CHECKPOINTS = 1
 
 
+def fit_profile(fit) -> str:
+    """The physics suite a fit runs: cyclone-setup names it, and run-plan's emitted config opens its
+    "# PHYSICS:" line with it (a shipped row keeps it as physics.profile)."""
+    physics = fit.get("physics")
+    if isinstance(physics, dict):
+        physics = physics.get("profile")
+    profile = str(physics or "").split(":")[0].strip()
+    if not profile:
+        # Without the suite there is no writer inventory to price: a grid size alone priced a moist run's
+        # history as a dry one, under half of what it writes, and picked output intervals that overrun the
+        # card's disk budget.
+        raise ValueError("a recipe fit names no physics suite, so its history cannot be priced")
+    return profile
+
+
+def domain_run(fit, d, run_seconds):
+    """The run settings the engine's emitted config gives one grid of a fit, which its history is priced from.
+
+    The suite's [shared] block (gpuwm.domain_wizard.shared_physics, the one the engine emits for both doors)
+    with the grid's own cumulus switch as the fit read it back. The step is a placeholder: it changes neither
+    the history inventory nor the frame count of a run that writes from its start to its end.
+    """
+    from dataclasses import fields
+    from gpuwm.config import RunConfig
+    from gpuwm.domain_wizard import shared_physics
+    shared = shared_physics(fit_profile(fit))
+    names = {row.name for row in fields(RunConfig)}
+    settings = {key: value for key, value in shared.items() if key in names}
+    dx = float(d.get("dx_km") or 3.0) * 1000.0
+    if d.get("cu_physics") is not None:
+        settings["cu_physics"] = int(d["cu_physics"])
+    nz = int(d.get("nz") or settings.get("nz") or 49)
+    if settings.get("eta_levels") is not None and len(settings["eta_levels"]) != nz + 1:
+        # The emitted ladder belongs to the suite's own level count; a grid with another
+        # count carries its own, and the ladder does not change the history inventory.
+        settings.pop("eta_levels")
+    settings.update(nx=int(d["nx"]), ny=int(d["ny"]), nz=nz,
+                    dx=dx, dy=dx, dt=max(1.0, 6.0 * dx / 1000.0), run_seconds=float(run_seconds))
+    return RunConfig(**settings)
+
+
 def projection(fit, run_seconds, root_s, nest_s) -> dict:
     """The engine's own projection (gpuwm.disk_budget) for a fit's grids at these output intervals.
 
     The download and the preparation are counted from the fit's own [fetch] request and chain, as the
-    engine counts them; they do not change with the output intervals. The pictures are counted too: the
+    engine counts them; they do not change with the output intervals. The history is the writer's
+    inventory for each grid's own run settings (:func:`domain_run`). The pictures are counted too: the
     page starts every recipe with the standard picture set (an intent plan draws it by default, and the
     storm-following layout's plan names it), so every recipe run draws them.
     """
@@ -582,7 +631,7 @@ def projection(fit, run_seconds, root_s, nest_s) -> dict:
     exp = SimpleNamespace(run_seconds=float(run_seconds), restart_interval_s=float(fit.get("restart_interval_s") or 0),
                           domains=[
         SimpleNamespace(grid_id=i + 1, history_interval_s=float(root_s if i == 0 else nest_s),
-                        run=SimpleNamespace(nx=d["nx"], ny=d["ny"], nz=d["nz"] or 49))
+                        run=domain_run(fit, d, run_seconds))
         for i, d in enumerate(domains)])
     return disk_budget.projected_run_bytes(exp, keep_checkpoints=KEEP_CHECKPOINTS, fetch=fit.get("fetch"),
                                            chain=fit.get("chain"), render=True)

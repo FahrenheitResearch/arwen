@@ -32,7 +32,15 @@ the spelling the tree already uses, so there is ONE copy of each table and
 ``gpuwm.io.restart.MICROPHYSICS_ALGORITHM_IDENTITIES`` is that copy.
 """
 
+
 from __future__ import annotations
+
+
+def drop_default_diffusion_selectors(values: dict) -> None:
+    """Preserve pre-selector identity bytes for the unchanged metric form."""
+    if values.get("diff_opt", 2) == 2 and values.get("mix_full_fields", True) is True:
+        values.pop("diff_opt", None)
+        values.pop("mix_full_fields", None)
 
 #: THE table of output-only RunConfig switches: each one decides what a
 #: forecast WRITES, never what it integrates, so it may differ between

@@ -718,7 +718,7 @@ def physics_components():
     registry option's couplings.
     """
     from gpuwm.case_catalog import _native_contract
-    from gpuwm.physics_registry import _conditional_refusals
+    from gpuwm.physics_registry import _conditional_refusals, _same_value
     registry, shared, domains = _native_contract()
     allowed = shared | domains
     result = []
@@ -729,6 +729,24 @@ def physics_components():
                 continue
             settings = dict(option.get("parameters", {}))
             settings.update(option.get("constraints", {}).get("required_settings", {}))
+            # A conditional rule whose settings clause holds at the
+            # registry's own defaults asks, of the option as offered, what
+            # a required setting asks: lane/282-namelist-tolerance moved the
+            # 1.5-order TKE closure's bl_pbl_physics = 0 out of
+            # required_settings into a diff_opt = 2 rule, and without this
+            # the option stopped carrying it, so choosing TKE on a PBL
+            # domain greyed the cell instead of switching the PBL off with
+            # it.  The rule's own remedy is the companion edit.  A rule
+            # scoped to a source, or with no settings clause, is left to
+            # the repair flow.
+            for rule in _conditional_refusals(option.get("constraints", {})):
+                clause, remedy = rule.get("settings"), rule.get("remedy_settings")
+                if (isinstance(clause, dict) and clause and isinstance(remedy, dict)
+                        and not isinstance(rule.get("sources"), list)
+                        and all(isinstance(values, list) and any(
+                            _same_value(registry["parameters"].get(name, {}).get("default"), value)
+                            for value in values) for name, values in clause.items())):
+                    settings.update(remedy)
             settings.update(option.get("selectors", {}))
             settings = {k: v for k, v in settings.items() if k in allowed and isinstance(v, (str, bool, int, float))}
             if not all(k in settings for k in option.get("selectors", {})):

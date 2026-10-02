@@ -75,7 +75,7 @@ void vertical_interpolate_logp(const real* __restrict__ field,
 // lies above the source top (WRF-fatal), so the in-kernel NaN writes are
 // unreachable guards.
 //
-// WRF_VI_MAX_LEVELS sizes the three per-thread column arrays below: the
+// WRF_VI_MAX_LEVELS sizes the two per-thread column arrays below: the
 // source levels plus the surface pseudo-level.  64 is the default binary
 // every source up to 63 levels runs on; gpuwm/ingest/vert.py compiles the
 // deeper tiers (WRF_VERT_INTERP_LEVEL_TIERS) by defining it ahead of this
@@ -87,20 +87,91 @@ void vertical_interpolate_logp(const real* __restrict__ field,
 #define WRF_VI_MAX_LEVELS 64
 #endif
 
-__device__ static real wrf_vi_lagrange(const real* x, const real* y,
-                                       int order, real target_x)
+// Match the bridge's host float64-to-float32 field conversion, including tiny values.
+extern "C" __global__
+void wrf_vertical_field_float32(const double* __restrict__ input,
+                                 float* __restrict__ output, int total,
+                                 int ny, int nx, long long sk,
+                                 long long sj, long long si)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total) return;
+    int k = tid / (ny * nx);
+    int j = (tid / nx) % ny;
+    int i = tid % nx;
+    output[tid] = gfk_d2f_rn(input[(long long)k * sk + (long long)j * sj + (long long)i * si]);
+}
+
+// Same glibc tables and polynomial; fused library-internal double ops.
+// Exhaustively equal to host logf on every positive normal float on both cards.
+__device__ float wrf_vi_pressure_log(float x)
+{
+    unsigned int ix = __float_as_uint(x);
+    if (ix == 0x3f800000u) return 0.0f;
+    if (ix - 0x00800000u >= 0x7f800000u - 0x00800000u)
+        // Production arguments are pressures, normal by construction.
+        return gfk_log(x);
+    unsigned int tmp = ix - 0x3f330000u;
+    int i = (int)((tmp >> 19) & 15u);
+    int k = (int)tmp >> 23;
+    unsigned int iz = ix - (tmp & 0xff800000u);
+    double z = (double)__uint_as_float(iz);
+    double r = __fma_rn(z, GFK_LOGF_INVC[i], -1.0);
+    double y0 = __fma_rn((double)k, GFK_LOGF_LN2, GFK_LOGF_LOGC[i]);
+    double r2 = __dmul_rn(r, r);
+    double y = __fma_rn(GFK_LOGF_A1, r, GFK_LOGF_A2);
+    y = __fma_rn(GFK_LOGF_A0, r2, y);
+    y = __fma_rn(y, r2, __dadd_rn(y0, r));
+    return __double2float_rn(y);
+}
+
+// Field products can be tiny. Intrinsics acquire the loader's flush flag;
+// explicit RN PTX keeps their bits and prevents contraction on both cards.
+__device__ static float wrf_vi_mul(float a, float b)
+{
+    float result;
+    asm("mul.rn.f32 %0, %1, %2;" : "=f"(result) : "f"(a), "f"(b));
+    return result;
+}
+
+__device__ static float wrf_vi_div(float a, float b)
+{
+    float result = __fdiv_rn(a, b);
+    unsigned int aa = __float_as_uint(a) & 0x7fffffffu;
+    unsigned int ab = __float_as_uint(b) & 0x7fffffffu;
+    unsigned int ar = __float_as_uint(result) & 0x7fffffffu;
+    // Keep the fast intrinsic where inputs and output survive its flag.
+    if ((aa != 0u && aa < 0x00800000u) ||
+        (ab != 0u && ab < 0x00800000u) || (ar == 0u && aa != 0u))
+        asm("div.rn.f32 %0, %1, %2;" : "=f"(result) : "f"(a), "f"(b));
+    return result;
+}
+
+__device__ static float wrf_vi_add(float a, float b)
+{
+    float result;
+    asm("add.rn.f32 %0, %1, %2;" : "=f"(result) : "f"(a), "f"(b));
+    return result;
+}
+
+template<int order>
+__device__ __forceinline__ static real wrf_vi_lagrange(const real* x, const real* y,
+                                                     real target_x)
 {
     // WRF lagrange_interp: full Lagrange polynomial through order+1 points.
     real px = 0.0f;
+    #pragma unroll
     for (int term = 0; term <= order; ++term) {
         real numer = 1.0f;
         real denom = 1.0f;
+        #pragma unroll
         for (int k = 0; k <= order; ++k) {
             if (k == term) continue;
-            numer *= target_x - x[k];
-            denom *= x[term] - x[k];
+            numer = wrf_vi_mul(numer, __fsub_rn(target_x, x[k]));
+            denom = wrf_vi_mul(denom, __fsub_rn(x[term], x[k]));
         }
-        if (denom != 0.0f) px += y[term] * numer / denom;
+        if ((__float_as_uint(denom) & 0x7fffffffu) != 0u)
+            px = wrf_vi_add(px, wrf_vi_div(wrf_vi_mul(y[term], numer), denom));
     }
     return px;
 }
@@ -115,7 +186,8 @@ void wrf_real_vertical_interpolate(const real* __restrict__ field,
                                    int nsource, int ntarget, int ncolumn,
                                    int interp_in_logp, int extrap_temperature,
                                    int force_sfc, real zap_close_levels,
-                                   int vboundb)
+                                   int vboundb, real rust_p0, real rust_rcp, real hpa,
+                                   real crc_product, real crc_exponent)
 {
     int c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= ncolumn) return;
@@ -131,7 +203,7 @@ void wrf_real_vertical_interpolate(const real* __restrict__ field,
     }
     if (m_above < 0) {
         for (int kt = 0; kt < ntarget; ++kt)
-            output[(size_t)kt * ncolumn + c] = 0.0f / 0.0f;
+            output[(size_t)kt * ncolumn + c] = __int_as_float(0x7fc00000);
         return;
     }
 
@@ -144,7 +216,7 @@ void wrf_real_vertical_interpolate(const real* __restrict__ field,
             oy[count] = field[(size_t)m * ncolumn + c];
             ++count;
         }
-        if (ox[count - 1] - psfc < zap_close_levels) --count;
+        if (__fsub_rn(ox[count - 1], psfc) < zap_close_levels) --count;
         ox[count] = psfc;
         oy[count] = sfc_field[c];
         ++count;
@@ -159,7 +231,7 @@ void wrf_real_vertical_interpolate(const real* __restrict__ field,
             }
         }
         int kst = knext;
-        if (ox[count - 1] - source_p[(size_t)knext * ncolumn + c]
+        if (__fsub_rn(ox[count - 1], source_p[(size_t)knext * ncolumn + c])
                 < zap_close_levels)
             kst = knext + 1;
         for (int m = kst; m < nsource; ++m) {
@@ -185,7 +257,7 @@ void wrf_real_vertical_interpolate(const real* __restrict__ field,
         }
         for (int m = knext; m < nsource; ++m) {
             real pm = source_p[(size_t)m * ncolumn + c];
-            if (ox[count - 1] - pm < zap_close_levels && m < nsource - 1)
+            if (__fsub_rn(ox[count - 1], pm) < zap_close_levels && m < nsource - 1)
                 continue;
             ox[count] = pm;
             oy[count] = field[(size_t)m * ncolumn + c];
@@ -193,52 +265,67 @@ void wrf_real_vertical_interpolate(const real* __restrict__ field,
         }
     }
 
-    real x[WRF_VI_MAX_LEVELS];
+    // Once assembled, pressure coordinates can hold their own logarithms.
+    // Only the bottom pressure is still needed by the extrapolation branch.
+    real bottom_pressure = ox[0];
+    real* x = ox;
     for (int m = 0; m < count; ++m)
-        x[m] = interp_in_logp ? logf(ox[m]) : ox[m];
+        // Production log arguments are pressures, normal by construction.
+        x[m] = interp_in_logp ? wrf_vi_pressure_log(ox[m]) : ox[m];
 
+    int previous_window = 0;
+    real previous_target = __int_as_float(0x7f800000);
     for (int kt = 0; kt < ntarget; ++kt) {
         real pt = target_p[(size_t)kt * ncolumn + c];
-        real xt = interp_in_logp ? logf(pt) : pt;
+        real xt = interp_in_logp ? wrf_vi_pressure_log(pt) : pt;
         int found = -1;
-        for (int loop = 0; loop < count - 1; ++loop) {
-            real a = xt - x[loop];
-            real b = xt - x[loop + 1];
-            if (a * b <= 0.0f) { found = loop; break; }
+        // Descending targets cannot return to an earlier bracket. Reset
+        // for an increasing target so arbitrary target order stays valid.
+        int first_window = xt <= previous_target ? previous_window : 0;
+        previous_target = xt;
+        for (int loop = first_window; loop < count - 1; ++loop) {
+            real a = __fsub_rn(xt, x[loop]);
+            real b = __fsub_rn(xt, x[loop + 1]);
+            if (__fmul_rn(a, b) <= 0.0f) { found = loop; break; }
         }
+        previous_window = found < 0 ? 0 : found;
         real result;
         if (found < 0) {
-            if (pt > ox[0]) {
+            if (pt > bottom_pressure) {
                 if (extrap_temperature) {
                     // lagrange_setup t_extrap_type=2 CRC branch.
-                    real t1 = oy[0] * powf(__fdiv_rn(ox[0], P0), RCP);
-                    real pavg = 0.5f * (pt + ox[0]);
-                    real dhdp = 11880.516f * 0.1902632f
-                              * powf(__fdiv_rn(pavg, 100.0f), 0.1902632f - 1.0f);
-                    real dt = dhdp * (__fdiv_rn((pt - ox[0]), 100.0f)) * 0.0065f;
-                    result = (t1 + dt) * powf(P0 / pt, RCP);
+                    real t1 = wrf_vi_mul(oy[0], gfk_pow(__fdiv_rn(bottom_pressure, rust_p0), rust_rcp));
+                    real pavg = __fmul_rn(0.5f, __fadd_rn(pt, bottom_pressure));
+                    real dhdp = __fmul_rn(crc_product,
+                        gfk_pow(__fdiv_rn(pavg, hpa), crc_exponent));
+                    real dt = __fmul_rn(__fmul_rn(dhdp,
+                        __fdiv_rn(__fsub_rn(pt, bottom_pressure), hpa)), 0.0065f);
+                    result = wrf_vi_mul(wrf_vi_add(t1, dt),
+                        gfk_pow(__fdiv_rn(rust_p0, pt), rust_rcp));
                 } else {
                     result = oy[0];
                 }
             } else {
-                result = 0.0f / 0.0f;  // launcher rejects targets above top.
+                result = __int_as_float(0x7fc00000);  // launcher rejects targets above top.
             }
-        } else if (kt + 1 >= 1 + vboundb) {
+        // Rust uses usize. Unsigned arithmetic also preserves its wrap at -1
+        // and its linear band for every other admitted negative int32 option.
+        } else if ((unsigned int)(kt + 1) >= 1u + (unsigned int)vboundb) {
             bool fits_upper = found + 2 <= count - 1;
             bool fits_lower = found - 1 >= 0;
             if (fits_upper && fits_lower) {
-                result = 0.5f * (wrf_vi_lagrange(&x[found], &oy[found], 2, xt)
-                                 + wrf_vi_lagrange(&x[found - 1],
-                                                   &oy[found - 1], 2, xt));
+                result = wrf_vi_mul(0.5f, wrf_vi_add(
+                    wrf_vi_lagrange<2>(&x[found], &oy[found], xt),
+                    wrf_vi_lagrange<2>(&x[found - 1], &oy[found - 1], xt)));
             } else if (fits_upper) {
-                result = wrf_vi_lagrange(&x[found], &oy[found], 2, xt);
+                result = wrf_vi_lagrange<2>(&x[found], &oy[found], xt);
             } else if (fits_lower) {
-                result = wrf_vi_lagrange(&x[found - 1], &oy[found - 1], 2, xt);
+                result = wrf_vi_lagrange<2>(&x[found - 1], &oy[found - 1], xt);
             } else {
-                result = 0.0f / 0.0f;  // all_dim >= 3 makes this unreachable.
+                result = __int_as_float(0x7fc00000);  // all_dim >= 3 makes this unreachable.
             }
         } else {
-            result = wrf_vi_lagrange(&x[found], &oy[found], 1, xt);
+            result = wrf_vi_lagrange<1>(&x[found], &oy[found], xt);
         }
         output[(size_t)kt * ncolumn + c] = result;
     }

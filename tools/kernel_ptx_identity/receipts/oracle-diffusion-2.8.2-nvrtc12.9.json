@@ -1,0 +1,137 @@
+{
+ "tool": "tools/kernel_ptx_identity/compare.py",
+ "trees": [
+  "diffusion_tip_83fde6032",
+  "integrate_17dabc53e"
+ ],
+ "nvrtc_version": [
+  12,
+  9
+ ],
+ "assembly": "gpuwm.core.kernels.module_source(name) in a child process per tree; GPUWM_WRF_EXACT* removed, CUDA_VISIBLE_DEVICES empty",
+ "compile": "gpuwm.nvrtc_cache_key.compile_program(source, options + (-arch=<arch>,), target=ptx)",
+ "option_sets": {
+  "load_module": [
+   "-std=c++17"
+  ],
+  "rawmodule": [
+   "-std=c++17",
+   "-ftz=true"
+  ]
+ },
+ "archs": [
+  "compute_89",
+  "compute_90",
+  "compute_120"
+ ],
+ "modules": {
+  "smag2d": {
+   "file_sha256": {
+    "diffusion_tip_83fde6032": "6b584abaaf6f154fc8b0bb06aa045a796eccf53d260c2a0bc66d7d1935c9eeb7",
+    "integrate_17dabc53e": "0aab57887cccc28228bc1b705887603b598c4e3c86fe8b5d4065511a24c276c8"
+   },
+   "assembled_source_sha256": {
+    "diffusion_tip_83fde6032": "381bbd6fa16439b973f9cfdaad6bf932c720282746d3eac227d0e98271ebfeeb",
+    "integrate_17dabc53e": "c9165bb9f27a591051b95143967d0d5cb4f476a2f474965038c01679b01579f3"
+   },
+   "entries": [
+    "smag2d_km",
+    "smag_hd_s",
+    "smag_hd_u",
+    "smag_hd_v",
+    "smag_hd_w",
+    "wrf_calc_n2",
+    "wrf_smag2d_km",
+    "wrf_smag3d_km",
+    "wrf_smag_deform",
+    "wrf_smag_flux_s",
+    "wrf_smag_hd_s",
+    "wrf_smag_hd_u",
+    "wrf_smag_hd_v",
+    "wrf_smag_hd_w",
+    "wrf_smag_km_bc",
+    "wrf_smag_surface_heat_const",
+    "wrf_smag_surface_scalars",
+    "wrf_smag_surface_u",
+    "wrf_smag_surface_u_cd0",
+    "wrf_smag_surface_v",
+    "wrf_smag_surface_v_cd0",
+    "wrf_smag_vd_s",
+    "wrf_smag_vd_u",
+    "wrf_smag_vd_v",
+    "wrf_smag_vd_w",
+    "wrf_tke_km",
+    "wrf_tke_rhs"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "diffusion_tip_83fde6032": "b2ceb7b11aa53fded488eaf57ae230e223a8a2152c18f5189d235805138201fd",
+      "integrate_17dabc53e": "b2ceb7b11aa53fded488eaf57ae230e223a8a2152c18f5189d235805138201fd"
+     },
+     "entry_compared": 27,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "diffusion_tip_83fde6032": "1543e114f7a5d076417b99b8aacd0f11abb70d2f6d8a5cab1cbcc8ba7865ba73",
+      "integrate_17dabc53e": "1543e114f7a5d076417b99b8aacd0f11abb70d2f6d8a5cab1cbcc8ba7865ba73"
+     },
+     "entry_compared": 27,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "diffusion_tip_83fde6032": "4a0c3d6514bea3ef9b8ec7cbc2a6a5ddaa413f8b96deeb21f2add7627c79ff63",
+      "integrate_17dabc53e": "4a0c3d6514bea3ef9b8ec7cbc2a6a5ddaa413f8b96deeb21f2add7627c79ff63"
+     },
+     "entry_compared": 27,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "diffusion_tip_83fde6032": "4d49387ee565593bfd24716ef79c9d2e596c7f327f66e0c02d670072511a5a0e",
+      "integrate_17dabc53e": "4d49387ee565593bfd24716ef79c9d2e596c7f327f66e0c02d670072511a5a0e"
+     },
+     "entry_compared": 27,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "diffusion_tip_83fde6032": "1a0df11fd4f8d2a13f281cc66ef13f0266ba1fefa62b6f7609946b2afc30b533",
+      "integrate_17dabc53e": "1a0df11fd4f8d2a13f281cc66ef13f0266ba1fefa62b6f7609946b2afc30b533"
+     },
+     "entry_compared": 27,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "diffusion_tip_83fde6032": "3504a06a77ab69dd39302c3fa8bb1e21b2b7548dc9068cb26fb1572a0ffe9abf",
+      "integrate_17dabc53e": "3504a06a77ab69dd39302c3fa8bb1e21b2b7548dc9068cb26fb1572a0ffe9abf"
+     },
+     "entry_compared": 27,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  }
+ }
+}

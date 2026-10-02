@@ -105,7 +105,7 @@ Takes no options of its own.
 | `--outdir OUT` | the NEW run's output directory; it must be empty and must not be inside the source run |
 | `--prep-timeout SECONDS` | optional preparation heartbeat timeout; default is no timeout until integration begins |
 | `--prepare-only` | write the branch run directory, its config and its receipts, then stop without integrating -- the price-it-first step a what-if screen shows before committing a card |
-| `--set KEY=VALUE` | a setting to change in the branched run, repeatable. Changeable from a checkpoint: run_seconds, restart_interval_s, acknowledgements, relocation.*, tiles.*, output.*, domain.<grid_id>.history_interval_s, domain.<grid_id>.history_begin_s, domain.<grid_id>.history_end_s, domain.<grid_id>.tiles.*, domain.<grid_id>.output.*. Everything else is refused by name, because the restart identity binds it |
+| `--set KEY=VALUE` | a setting to change in the branched run, repeatable. Changeable from a checkpoint: run_seconds, restart_interval_s, acknowledgements, relocation.*, tiles.*, devices.*, output.*, domain.<grid_id>.history_interval_s, domain.<grid_id>.history_begin_s, domain.<grid_id>.history_end_s, domain.<grid_id>.tiles.*, domain.<grid_id>.output.*. Everything else is refused by name, because the restart identity binds it |
 | `--supervisor-max-restarts N` | fresh-process recovery attempts (default 3) |
 
 ## `gpuwm case-catalog`
@@ -291,14 +291,17 @@ Takes no options of its own.
 | `--alloc` | construct every persistent allocation on the device, zero steps, report measured vs estimate (N0; GPU required) |
 | `--budget-gib GIB` | declared allocation budget (free VRAM minus allocation reserve); estimate only |
 | `--column-chunk COLS` | Radiation column-cap override (the first over-budget lever) |
+| `--devices N` | price the run split into N resident slabs, one per card (or as [devices] ids places them): replaces [devices] count the way `gpuwm go --devices N` does, and reports the memory envelope of every card and of the pinned host store |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--forcing-interval-s S` | override the configured or measured forcing cadence for memory sizing (otherwise defaults to ERA5 6-hourly) |
 | `--free-gib GIB` | declared free VRAM before reserves, as used by the domain wizard; estimate only |
 | `--json` | machine-readable report |
 | `--no-host-memory-gate` | report the HOST RAM of the forcing decode, the CPU preparation and a streamed forecast but do not refuse on it. The counterpart of `gpuwm go --no-memory-gate` for the other budget: MemAvailable is a reading of this second, and a busy box can be momentarily short of RAM a run would have had |
+| `--prepared-root DIR` | verify prepared forecast inputs and price their land cover and retained boundary tables; bind a finished bundle or its live prepared head |
 | `--rail-mib MIB` | whole-machine device residency ceiling: the budget is additionally capped at RAIL minus what every other process on the card already holds (read from NVML before this process touches CUDA). A property of the host, so there is no default |
 | `--reserve-gib GIB` | override the calibrated reserve policy with a flat reserve |
 | `--vram-gib GIB` | physical VRAM total of the card being sized for. A CEILING on the free figure, never a source of one: a declared --budget-gib plus the reserve can otherwise synthesise more free VRAM than the card physically has |
+| `--wps-namelist FILE` | WPS namelist bound by a single-domain prepared bundle (otherwise the config's sibling namelist) |
 
 ## `gpuwm companion-domains`
 
@@ -521,7 +524,7 @@ Takes no options of its own.
 
 ## `gpuwm downscale`
 
-`--parent-namelist` (with `--parent-namelist-domain`) is the entire stock-WRF-parent route this command's own summary advertises: without it, only a gpuwm parent run can be downscaled.  `--tiles {on,auto}` and `--child-size` are the only way to stream a `--point`-derived child, because this command authors the child TOML itself and a `[tiles]` table you wrote by hand would be overwritten.
+`--parent-namelist` (with `--parent-namelist-domain`) is the entire stock-WRF-parent route this command's own summary advertises: without it, only a gpuwm parent run can be downscaled.  `--tiles {on,auto}` and `--child-size` are the only way to stream a `--point`-derived child, because this command authors the child TOML itself and a `[tiles]` table you wrote by hand would be overwritten.  A child builds its own terrain, land use and soil at its own spacing by default; `--parent-terrain` keeps its parent's, interpolated, and `--geog-root` names the WPS_GEOG tree the child is built from.
 
 | argument | what it does |
 |---|---|
@@ -539,6 +542,7 @@ Takes no options of its own.
 | `--child-surface-from` | child-grid wrfinput/history file with land identity + soil warm start (required for surface-physics children) |
 | `--dry-run` | validate contracts, derive/print the plan, write the derived TOML, run nothing |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--geog-root` | the WPS_GEOG tree the child's own static geography is built from (default: the child config's [static] geog_root, else the staged tree `gpuwm fetch-geog` installs) |
 | `--health-interval-seconds` | model seconds between child health lines (CFL, w_max, NaN check; default 60) |
 | `--hours` | --point run window in hours (default: the full parent archive window) |
 | `--i-parent-start` | 1-based west-east parent index of the child's southwest corner (required with --child-config; --point derives it) |
@@ -552,6 +556,7 @@ Takes no options of its own.
 | `--parent-namelist` | stock-WRF namelist.input of the parent run |
 | `--parent-namelist-domain` | domain column of --parent-namelist (default 1) |
 | `--parent-restart PATH\|latest` | gpuwm restart of the parent run (authoritative physics evidence); 'latest' discovers the newest complete checkpoint set in the parent's own run directory |
+| `--parent-terrain` | run the child on its parent's interpolated terrain, land use and soil. By default a child builds its own static geography at its own spacing (terrain, land use, soil; Copernicus 30 m terrain at 1 km or finer) and the parent's state is blended and rebalanced onto it as WRF's ndown does |
 | `--point LAT,LON` | derive the child around this point instead of --child-config (gpuwm parents only) |
 | `--preprocess-backend {cuda,cpu,auto}` | where the parent-to-child interpolation runs (default auto: on the card when its priced interpolation fits the card's free memory, else on the CPU; cuda refuses rather than move it; cpu runs it off-GPU) |
 | `--ratio` | refinement ratio (child-config placement: required; --point default 3) |
@@ -692,6 +697,7 @@ Takes no options of its own.
 |---|---|
 | `--cycle YYYY-MM-DDTHH\|latest` | download routes only: run the config at this cycle; wins over the config's [fetch] cycle the way --transport does. The config is re-timed (start time, delayed nests, namelists) into <outdir>/cycles/<cycle>/; latest is resolved once, under the run's posting rule (as posted: the newest cycle whose start needs are posted) |
 | `--data-dir DIR` | download routes only: use this existing download instead of the automatically managed request cache |
+| `--devices N` | resident slab count; replaces [devices] count |
 | `--dry-run` | validate the route and show how to launch it; fetch and run nothing |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--geog-root DIR` | override the geography tree (default: [case_data].geog_root for declared inputs, otherwise the staged WPS_GEOG tree) |
@@ -908,6 +914,36 @@ Takes no options of its own.
 | `--triangulation {rebuild,incremental}` | how the Delaunay is kept between relaxation sweeps. rebuild (the default) rebuilds it every sweep and is the arm every registered mesh was generated with -- the only one that reproduces a pinned SHA-256. incremental keeps the facets and repairs them by Lawson flips: the same triangulation, much faster, and a DIFFERENT FILE, because each cell keeps the ring rotation a rebuild re-rolls. For a mesh that has never existed |
 | `--vram-gib X` | device budget in GiB, instead of the named card's total memory (for a card that is shared with something else); needs --card, because the fixed term is per card |
 
+## `gpuwm ml-export`
+
+| argument | what it does |
+|---|---|
+| `[INPUT ...]` | history files, folders holding them, .gz history files, or ZIPs |
+
+| option | what it does |
+|---|---|
+| `--append` | add these frames to the export in --out (one frame at a time) |
+| `--config TOML` | the run's configuration; its SHA-256 is recorded |
+| `--domains LIST` | e.g. d01,d02 |
+| `--end TIME` | last valid time kept |
+| `--every HOURS` | keep frames on multiples of HOURS from the run's start |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--finalize` | close the export in --out after --append calls |
+| `--grid GRID` | native (default), latlon, or latlon:DEG |
+| `--json` | with --list: the options document; otherwise: progress as JSON lines |
+| `--layout {analysis,forecast}` | analysis: time is valid time; forecast: WeatherBench 2's time + prediction_timedelta |
+| `--levels SET` | wb13 (default), era5-37, model, model:LIST, or hPa list |
+| `--list` | print the level sets, variables and naming schemes |
+| `--names SCHEME` | wb2 (default, WeatherBench 2 long names) or era5 (short names) |
+| `--out DIR` | the export folder (one dNN.zarr per domain, README.txt, receipt) |
+| `--overwrite` | replace an earlier export in --out |
+| `--regrid {bilinear,area-mean}` | latlon method (default bilinear) |
+| `--skip-unavailable` | write the variables the files can make and record the rest |
+| `--start TIME` | first valid time kept |
+| `--threads N` | worker threads (default: every core) |
+| `--variables LIST` | default, all, +NAME,... or NAME,... (table ids or names) |
+| `--zip` | also write <out>-ml.zip (stored entries, opens in place) |
+
 ## `gpuwm multi-run`
 
 `--preflight {estimate,alloc,off}` is the only override of the plan's own preflight mode.
@@ -1048,7 +1084,7 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--ack` | registry-owned expert physics acknowledgement id; repeatable |
-| `--as-posted POSTING_DIR` | prepare as an as-posted fetch publishes the window's leads: POSTING_DIR is that fetch's posting/ folder; the preparation starts on the first leads and its seal writes the input manifest, so no --source-manifest pair is given |
+| `--as-posted POSTING_DIR` | prepare as an as-posted fetch publishes the window's leads: POSTING_DIR is that fetch's posting/ folder; the preparation starts on the first leads and its seal writes the input manifest, so no --source-manifest pair is given (a mapped source names where with --author-input-manifest, beside the fetched files) |
 | `--author-input-manifest` | create an exact mapped or 20CRv3 input manifest; conflicts with an existing --source-manifest/--source-manifest-sha256 pair |
 | `--author-mapping` | create-only path for a mapping compiled from --descriptor; the adjacent *.authoring.json receipt binds descriptor/Vtable bytes |
 | `--author-only` | author the requested create-only mapped contract or 20CRv3 member manifest and exit; requires --author-input-manifest and does not need run geometry |
@@ -1595,6 +1631,8 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
+| `--devices N` | resident slab count; replaces [devices] count (on a tree, for every grid [devices] domains names) |
+| `--devices-table JSON` | [devices] table as JSON (count, grid, ids, transport, and on a tree domains); validated by the runner, without modifying the prepared configuration or its digests |
 | `--experiment-config TOML` | the experiment TOML this preparation was bound to (the tree runner binds its digest; the single-domain runner binds it through the proof) |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--health-debug` | write per-step health diagnostics with the prepared hierarchy runner |
@@ -1976,6 +2014,8 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--ack` | registry-owned expert acknowledgement id; repeat as needed. The hash-bound experiment's acknowledgements array delivers the same consent |
+| `--devices N` | resident slab count; replaces [devices] count |
+| `--devices-table JSON` | _(accepted, but not listed by --help)_ |
 | `--domain-bundle` | explicit hierarchy d01 bundle; if omitted it is derived from the hash-bound domain-artifacts manifest |
 | `--experiment-config` | _(the parser declares no help text for this option)_ |
 | `--frame-markers` | publish OUTDIR/ready/<frame>.json after each history frame is fsynced, self-validated and renamed into place (the default). A marker that exists names a frame that is complete and readable, which is the signal to poll for instead of racing the writer with a size check |
@@ -2023,6 +2063,8 @@ Takes no options of its own.
 
 | option | what it does |
 |---|---|
+| `--devices N` | split every grid the tree's [devices] domains names (default every grid) into N resident slabs; replaces [devices] count |
+| `--devices-table JSON` | the tree's [devices] table as JSON (count, grid, ids, transport, domains); validated here, without modifying the prepared configuration or its digests |
 | `--experiment-config` | _(the parser declares no help text for this option)_ |
 | `--experiment-config-sha256` | _(the parser declares no help text for this option)_ |
 | `--frame-markers` | publish OUTDIR/ready/<frame>.json after each history frame is fsynced, self-validated and renamed into place (the default). A marker that exists names a frame that is complete and readable, which is the signal to poll for instead of racing the writer with a size check |
@@ -2061,7 +2103,7 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--ack` | registry-owned expert physics acknowledgement id; repeatable |
-| `--as-posted POSTING_DIR` | prepare as an as-posted fetch publishes the window's leads: POSTING_DIR is that fetch's posting/ folder; the preparation starts on the first leads and its seal writes the input manifest, so no --source-manifest pair is given |
+| `--as-posted POSTING_DIR` | prepare as an as-posted fetch publishes the window's leads: POSTING_DIR is that fetch's posting/ folder; the preparation starts on the first leads and its seal writes the input manifest, so no --source-manifest pair is given (a mapped source names where with --author-input-manifest, beside the fetched files) |
 | `--author-input-manifest` | create an exact mapped or 20CRv3 input manifest; conflicts with an existing --source-manifest/--source-manifest-sha256 pair |
 | `--author-mapping` | create-only path for a mapping compiled from --descriptor; the adjacent *.authoring.json receipt binds descriptor/Vtable bytes |
 | `--author-only` | author the requested create-only mapped contract or 20CRv3 member manifest and exit; requires --author-input-manifest and does not need run geometry |

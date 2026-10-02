@@ -108,22 +108,27 @@ _RUC_AS_DEVICE_CLOSE = (
     "#define __global__ __location__(global)\n")
 
 
-def ruc_fused_source(nzs: int) -> str:
+def ruc_fused_source(nzs: int, *, kernel_dir=None) -> str:
     """The exact string NVRTC receives for the fused RUC unit.  CPU-only.
 
     The preamble, then the tier define exactly where
     :func:`gpuwm.core.kernels.module_source_int_defines` places it for
     ``ruc.cu`` (before its text, so the ladder sees it), then ``ruc.cu``
     with ``__global__`` read as ``__device__``, then the fused sources.
+    ``kernel_dir`` composes it from another tree's kernel files (the A146
+    census gates the tree it scans, A193).
     """
+    from pathlib import Path
+
     from gpuwm.core.kernels import _ENCODING, _KDIR, _preamble
 
+    kdir = _KDIR if kernel_dir is None else Path(kernel_dir)
     defines = ruc_module_defines(nzs)
     prefix = "".join(f"#define {key} {value}\n" for key, value in defines)
-    parts = [_preamble(), prefix, _RUC_AS_DEVICE_OPEN,
-             (_KDIR / f"{RUC_MODULE}.cu").read_text(encoding=_ENCODING),
+    parts = [_preamble(kdir), prefix, _RUC_AS_DEVICE_OPEN,
+             (kdir / f"{RUC_MODULE}.cu").read_text(encoding=_ENCODING),
              _RUC_AS_DEVICE_CLOSE]
-    parts += [(_KDIR / name).read_text(encoding=_ENCODING)
+    parts += [(kdir / name).read_text(encoding=_ENCODING)
               for name in RUC_FUSED_SOURCES]
     return "".join(parts)
 
@@ -138,7 +143,7 @@ def _ruc_fused_module_key(nzs: int) -> str:
     return key
 
 
-_RUC_FUSED_MODULES: dict[int, object] = {}
+_RUC_FUSED_MODULES: dict[tuple[int, int], object] = {}
 
 
 def ruc_fused_kernel(func: str, nzs: int):
@@ -147,8 +152,11 @@ def ruc_fused_kernel(func: str, nzs: int):
     One compile per geometry per process, recorded in the kernel manifest
     under its own key like every other translation unit.
     """
+    import cupy as cp
+
     nzs = int(nzs)
-    module = _RUC_FUSED_MODULES.get(nzs)
+    owner = (int(cp.cuda.Device().id), nzs)
+    module = _RUC_FUSED_MODULES.get(owner)
     if module is None:
         import cupy as cp
 
@@ -162,5 +170,5 @@ def ruc_fused_kernel(func: str, nzs: int):
         _compile_observed(module, key)
         record_module(key, source=source, options=("-std=c++17",),
                       module=module)
-        _RUC_FUSED_MODULES[nzs] = module
+        _RUC_FUSED_MODULES[owner] = module
     return module.get_function(func)

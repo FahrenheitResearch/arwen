@@ -1,0 +1,84 @@
+{
+    "schema":  "arwen.mynn-reference-profile-measurement.v1",
+    "source_revision":  "3a7832a96911d5d38c47fb4b784e5905f8c41e29",
+    "scope":  "CPU surface, coarse and water oracle checks under unchanged per-column limits; no CUDA comparisons",
+    "python":  "3.11.16",
+    "numpy":  "2.4.6",
+    "platform":  "linux",
+    "fingerprint":  {
+                        "arctan":  "628753a5a564c404",
+                        "log":  "511300744c384c9a",
+                        "exp":  "6d216c097c764b80",
+                        "pow2":  "a95cf0d901f059b5",
+                        "pow0.33":  "5d14a0a8bd99ffd2"
+                    },
+    "process_exit":  0,
+    "test_outcomes":  {
+                          "passed":  83,
+                          "deselected":  18,
+                          "failed":  0
+                      },
+    "output_comparisons":  1007,
+    "compared_slots":  10521,
+    "over_budget_total":  0,
+    "table_hashes":  {
+                         "test_mynn_surface.py":  {
+                                                      "before":  {
+                                                                     "NARROW_ULP":  "5c07078b1e927220f1039e02017a7f895b3c5a411dff09febd6f1c932c900131",
+                                                                     "WIDE_ULP":  "dea2c1895bfa29725ce1e44241a02a2593df4fc649bf4a336b85406d2f1ab6aa",
+                                                                     "WRAPPER_ULP":  "017988624ecff123901bfe7b1b5ad6810d84bacb43fd124e8d25d972790c2445"
+                                                                 },
+                                                      "after":  {
+                                                                    "NARROW_ULP":  "5c07078b1e927220f1039e02017a7f895b3c5a411dff09febd6f1c932c900131",
+                                                                    "WIDE_ULP":  "dea2c1895bfa29725ce1e44241a02a2593df4fc649bf4a336b85406d2f1ab6aa",
+                                                                    "WRAPPER_ULP":  "017988624ecff123901bfe7b1b5ad6810d84bacb43fd124e8d25d972790c2445"
+                                                                },
+                                                      "equal":  true
+                                                  },
+                         "test_mynn_surface_coarse.py":  {
+                                                             "before":  {
+                                                                            "CPU_ULP":  "b3d90e9fb4ad43607df5121c1f4a6cea30148d0db6d5f3ba6549a985e73542dc",
+                                                                            "GPU_ULP":  "b547462765fe35d1d800799414a68d269e95dddc2af75147accd276d9519259c"
+                                                                        },
+                                                             "after":  {
+                                                                           "CPU_ULP":  "b3d90e9fb4ad43607df5121c1f4a6cea30148d0db6d5f3ba6549a985e73542dc",
+                                                                           "GPU_ULP":  "b547462765fe35d1d800799414a68d269e95dddc2af75147accd276d9519259c"
+                                                                       },
+                                                             "equal":  true
+                                                         },
+                         "test_mynn_surface_water.py":  {
+                                                            "before":  {
+                                                                           "WATER_ULP":  "43757baad0edc6353d239fc8dbd6eb67e6ee05091799e48c27bc99347604f3cb"
+                                                                       },
+                                                            "after":  {
+                                                                          "WATER_ULP":  "43757baad0edc6353d239fc8dbd6eb67e6ee05091799e48c27bc99347604f3cb"
+                                                                      },
+                                                            "equal":  true
+                                                        }
+                     },
+    "suites":  [
+                   {
+                       "path":  "tests/test_mynn_surface.py",
+                       "output_comparisons":  201,
+                       "compared_slots":  1869,
+                       "max_observed_ulp":  10,
+                       "over_budget":  0
+                   },
+                   {
+                       "path":  "tests/test_mynn_surface_coarse.py",
+                       "output_comparisons":  510,
+                       "compared_slots":  5100,
+                       "max_observed_ulp":  11,
+                       "over_budget":  0
+                   },
+                   {
+                       "path":  "tests/test_mynn_surface_water.py",
+                       "output_comparisons":  296,
+                       "compared_slots":  3552,
+                       "max_observed_ulp":  9,
+                       "over_budget":  0
+                   }
+               ],
+    "retained_measurement_sha256":  "bcfeda9e06f391dd68cfa638195e6e18addbe7f7583bb6544512ba7476457343",
+    "reproduction":  "GPUWM_NO_LOCAL_GPU=1 CUDA_VISIBLE_DEVICES= python tools/mynn_wrf461_oracle/measure_profile.py --out mynn-profile.json"
+}

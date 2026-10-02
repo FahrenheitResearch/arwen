@@ -56,6 +56,7 @@ from gpuwm.ingest.prepared_cache import (
 from gpuwm.ingest.boundary_stream import (
     SEALED_REASONS,
     PreparedTreeWriter,
+    prepared_head_urban_columns,
     producer_device_bytes,
     remove_unfinished_tree,
 )
@@ -1133,7 +1134,8 @@ def prepare_era5_wrf(
         # producer only when both fit (boundary_stream.chained_admission).
         writer.admit(
             experiment=exp, backend=str(preprocess_receipt["backend"]),
-            device_bytes=producer_device_bytes(str(preprocess_receipt["backend"])))
+            device_bytes=producer_device_bytes(str(preprocess_receipt["backend"])),
+            urban_columns=prepared_head_urban_columns(exp, static))
         cache_started = time.perf_counter()
         writer.write_head(
             initial_result=initial_result, met=initial_met,

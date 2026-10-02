@@ -36,7 +36,7 @@ from pathlib import Path
 
 import pytest
 
-from gpuwm.config import (EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT,
+from gpuwm.config import (EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT, RunConfig,
                           UNRESOLVED_ANISOTROPIC_DEPTH_MARK,
                           anisotropic_w_mixing_advice)
 from gpuwm.experiment import (anisotropic_w_mixing_exposure,
@@ -304,6 +304,69 @@ def test_the_shipped_les_trees_are_the_ones_this_was_written_for():
         les = [d for d in experiment.domains if d.run.km_opt in (2, 3)]
         assert les, f"{name} has no km_opt 2/3 domain left to check"
         assert all(d.run.mix_isotropic == 1 for d in les), name
+
+
+def test_active_moist_configs_keep_cq_and_frozen_records_keep_their_pins():
+    """Live low-order suites use CQ; recorded trajectories keep their bytes."""
+    import tomllib
+
+    keys = ("moist", "mp_physics", "moist_cq")
+    defaults = {key: RunConfig.__dataclass_fields__[key].default
+                for key in keys}
+    checked: set[str] = set()
+    frozen: set[str] = set()
+    for path in sorted(CONFIGS.rglob("*.toml")):
+        rel = path.relative_to(REPO).as_posix()
+        record = FROZEN_RECORDS.get(rel)
+        if record is not None:
+            assert _sha256(path) == record[0], rel
+            experiment = _resolve(path)
+            assert experiment is not None, rel
+            assert all(domain.run.moist_cq is False
+                       for domain in experiment.domains), rel
+            frozen.add(rel)
+            continue
+        if is_experiment_toml(path):
+            experiment = _resolve(path)
+            if experiment is None:
+                # CQ is a physics policy. Resolve it without a case-data
+                # path whose environment variable may be absent here.
+                from gpuwm.experiment import build_experiment
+                physics_document = tomllib.loads(path.read_text(encoding="utf-8"))
+                for companion in ("case_data", "fetch", "static"):
+                    physics_document.pop(companion, None)
+                experiment = build_experiment(physics_document, source=str(path))
+            runs = [(domain.grid_id,
+                     {key: getattr(domain.run, key) for key in keys})
+                    for domain in experiment.domains]
+        else:
+            # Legacy files put RunConfig values in separate tables. Only
+            # these three settings matter to the CQ policy check.
+            raw = tomllib.loads(path.read_text(encoding="utf-8"))
+            selected = {**defaults,
+                        **{key: raw[key] for key in keys if key in raw}}
+            for table in raw.values():
+                if isinstance(table, dict):
+                    selected.update({key: table[key]
+                                     for key in keys if key in table})
+            runs = [(1, selected)]
+        for grid_id, run in runs:
+            if run["moist"] and run["mp_physics"] in (0, 1, 6):
+                checked.add(rel)
+                assert run["moist_cq"] is True, (
+                    f"{rel} d{grid_id:02d} disables WRF's moisture pressure "
+                    "correction; set moist_cq = true in the live config")
+    assert frozen == set(FROZEN_RECORDS)
+    assert {
+        "configs/initdemo_bubble_off.toml",
+        "configs/initdemo_bubble_on.toml",
+        "configs/les_nest_250m_grayzone.toml",
+        "configs/les_nest_250m_km3.toml",
+        "configs/les_tornado_100m_dodgecity_20160524.toml",
+        "configs/les_tornado_100m_mayfield_20211210.toml",
+        "configs/les_tornado_100m_mayfield_20211210_attempt3.toml",
+        "configs/les_tornado_100m_mayfield_20211210_attempt3_fine30s.toml",
+    } <= checked
 
 
 def test_every_frozen_record_still_hashes_to_its_pin():

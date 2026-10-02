@@ -20,7 +20,9 @@ declares and :mod:`gpuwm.chain_events` relays):
                    first ask, so the time only bounds its posting),
                    ``fetched_at``, ``endpoint`` and
                    ``state`` (``scheduled``, ``waiting``, ``posted``,
-                   ``ready``, ``late``), the start needs and
+                   ``ready``, ``late``), once asked its ``last_answer``
+                   (``posted``, ``not_posted``, ``not_heard``,
+                   ``failed_verification``), the start needs and
                    ``expected_ready_at``.
 ``fNNN.json``      ``gpuwm.posted-lead.v1``, one per verified lead: its
                    fetched ``objects`` and, for a route that composes a
@@ -41,6 +43,7 @@ import time
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from gpuwm import fetch_endpoints
 from gpuwm import fetch_pool
 from gpuwm import source_posting as rows
 from gpuwm import source_readiness as readiness
@@ -64,6 +67,43 @@ class SourceBehind(RuntimeError):
         self.record = dict(record)
 
 
+class FetchStopped(RuntimeError):
+    """The run this fetch fetched for ended, so the fetch ended too."""
+
+
+#: A stop per fetch folder, registered by a chain that runs this fetch in
+#: its own process beside the preparation (run-plan's staged chain).  The
+#: fetch's waits are minutes long and run on its transfer workers' threads
+#: as well as its own, so the stop is keyed by the folder, not carried by
+#: the calling context.
+_STOPS: dict[str, threading.Event] = {}
+_STOPS_LOCK = threading.Lock()
+
+
+def _stop_key(out) -> str:
+    return str(Path(out).resolve())
+
+
+def stop_event(out) -> threading.Event:
+    """The event that ends the as-posted fetch into ``out`` at its next wait.
+
+    The breakage it prevents: a chain that failed beside its fetch (the
+    preparation or the forecast) returned while the fetch, in the same
+    process, went on waiting for later leads for as long as their budget
+    allows, downloading for a run that had ended.
+    """
+
+    with _STOPS_LOCK:
+        return _STOPS.setdefault(_stop_key(out), threading.Event())
+
+
+def release_stop(out) -> None:
+    """Forget ``out``'s stop once its fetch has ended."""
+
+    with _STOPS_LOCK:
+        _STOPS.pop(_stop_key(out), None)
+
+
 def now_utc() -> datetime:
     """The loop's clock (naive UTC); a replay test puts its own here."""
 
@@ -85,6 +125,11 @@ WATCH_WAKE_SECONDS = 5.0
 #: a host that cannot be heard, asked again after it, ends on its own and
 #: writes nothing (the watch is stopped).
 WATCH_CLOSE_SECONDS = 60.0
+#: How often (real seconds) a transfer worker's posting wait under a
+#: chain's stop looks whether another file failed the request
+#: (:meth:`PostingLoop._pause`): the two stops are separate events, and a
+#: wait can block on only one of them.
+STOP_WAKE_SECONDS = 0.25
 
 
 def _clock(moment: datetime | None) -> str:
@@ -171,6 +216,9 @@ class PostingLoop:
         self.label = f"fetch {window.source} {window.cycle:%Y-%m-%dT%H}"
         if window.member:
             self.label += f" {window.member}"
+        with _STOPS_LOCK:
+            #: The stop a chain registered for this folder (:func:`stop_event`).
+            self._stop_signal = _STOPS.get(_stop_key(self.out))
 
     # ------------------------------------------------------------------
     # files
@@ -283,10 +331,57 @@ class PostingLoop:
             self._mark(lead_value, state="late")
         raise SourceBehind(said, record)
 
+    def check_stop(self) -> None:
+        """Raise :class:`FetchStopped` once the run fetched for has ended."""
+
+        if self._stop_signal is not None and self._stop_signal.is_set():
+            raise FetchStopped(
+                f"{self.label}: stopped, because the run it fetched for "
+                "ended")
+
     def _pause(self, seconds: float) -> None:
-        fetch_pool.sleep_unless_stopped(
-            max(0.0, seconds),
-            sleep=self.sleep if self.sleep is not None else pause)
+        """Wait ``seconds`` between asks, or less once either stop fires.
+
+        Two stops end the wait.  The chain's (:func:`stop_event`, c3b4f47a2):
+        the run this fetch fetched for has ended, so :class:`FetchStopped`.
+        And, on a transfer worker (the gate :meth:`__call__` and
+        :meth:`refetch` run inside the pool's jobs), the request's: another
+        file failed it, so :class:`gpuwm.fetch_pool.TransferCancelled`
+        (:func:`gpuwm.fetch_pool.sleep_unless_stopped`, e4224502f).
+
+        The breakage it prevents: under a chain's stop the wait blocked on
+        that stop alone, so a worker waiting for a later lead to post slept
+        its wait out after another file had failed the request.  The pool
+        waits for its jobs to wind down before it raises, so the fetch's
+        failure, its ``failed.json`` and the preparation waiting on the
+        failed lead all waited for leads not yet posted, while the other
+        workers went on downloading.
+        """
+
+        self.check_stop()
+        seconds = max(0.0, seconds)
+        if (self._stop_signal is not None and self.sleep is None
+                and pause is time.sleep):
+            job = fetch_pool.current_job()
+            if job is None:
+                # The fetch's own thread (its start wait): only the
+                # chain's stop can end it.
+                self._stop_signal.wait(seconds)
+            else:
+                # The two stops are separate events: wait on the chain's
+                # in short slices, looking at the request's between them.
+                end = time.monotonic() + seconds
+                while True:
+                    job.raise_if_stopped()
+                    left = end - time.monotonic()
+                    if left <= 0 or self._stop_signal.wait(
+                            min(left, STOP_WAKE_SECONDS)):
+                        break
+                job.raise_if_stopped()
+        else:
+            fetch_pool.sleep_unless_stopped(
+                seconds, sleep=self.sleep if self.sleep is not None else pause)
+        self.check_stop()
 
     def _await(self, lead: int | None, ask, *, expected: datetime | None,
                late: datetime | None, need: readiness.Need | None = None
@@ -299,7 +394,12 @@ class PostingLoop:
             now = self.now()
             if self.deadline is not None and now >= self.deadline:
                 self._stop(lead, last, cap=True, need=need)
-            ask_from = None if expected is None else expected - readiness.ASK_AHEAD
+            # An AWS mirror can finish before its planning allowance.  Its
+            # positive answer, rather than the predicted time, opens the gate.
+            aws = fetch_endpoints.policy_uses_aws(
+                self.window.source if need is None else need.source)
+            ask_from = (None if expected is None or aws
+                        else expected - readiness.ASK_AHEAD)
             if ask_from is not None and now < ask_from:
                 if not announced:
                     self._announce(lead, expected, late, need)
@@ -307,6 +407,7 @@ class PostingLoop:
                 self._pause(self._bounded(ask_from - now, now))
                 continue
             answer = ask()
+            self._answered(lead, need, answer["answer"])
             self._heard_absent(lead, need, answer["answer"])
             if answer["answer"] in (readiness.POSTED, readiness.NOT_HEARD):
                 # Posted, or the host could not be heard: a host not heard
@@ -324,6 +425,50 @@ class PostingLoop:
             if late is not None:
                 wait = min(wait, max(late - now, timedelta(seconds=1)))
             self._pause(self._bounded(wait, now))
+
+    def _own(self, lead: int | None, need: readiness.Need | None) -> bool:
+        """Whether a wait on ``need`` is the wait of this window's ``lead``.
+
+        A start need on the window's own source and lead (the analysis, the
+        first boundary, a whole cycle's final lead) is that lead's own
+        wait; a donor or an invariant object is not a lead of this window
+        and leaves the rows alone.
+        """
+
+        return lead is not None and (
+            need is None or (need.source == self.window.source
+                             and need.lead is not None
+                             and int(need.lead) == int(lead)))
+
+    def _answered(self, lead: int | None, need: readiness.Need | None,
+                  answer: str | None) -> None:
+        """Record the host's last answer about ``lead`` on its schedule row.
+
+        The breakage it prevents: a start-need lead whose host could not be
+        heard left its row ``scheduled`` (the fetch lets the transfer try
+        such a lead, GS-05), so the run's start wait read "not fetched yet"
+        or "not posted yet" for a lead nothing could see, and something the
+        engine could not see is never reported as the publisher being late
+        (DESIGN A136 3.6).  A start need not heard is the run's wait, so its
+        row is ``waiting`` with that answer.  Written only when the answer
+        changes, so a poll does not rewrite the schedule.
+        """
+
+        if answer is None or not self._own(lead, need):
+            return
+        lead = int(lead)
+        with self._lock:
+            row = self._rows.get(lead)
+            if row is None:
+                return
+            fields = {}
+            if row.get("last_answer") != answer:
+                fields["last_answer"] = answer
+            if (answer == readiness.NOT_HEARD and need is not None
+                    and row.get("state") in (None, "scheduled")):
+                fields["state"] = "waiting"
+            if fields:
+                self._mark(lead, **fields)
 
     def _bounded(self, wait: timedelta, now: datetime) -> float:
         if self.deadline is not None:
@@ -351,14 +496,9 @@ class PostingLoop:
         self.progress(f"{self.label}: {what} not posted yet; the schedule "
                       f"says from about {_clock(expected)}"
                       + (f"; waiting until {_clock(late)}" if late else ""))
-        # A start need on the window's own source and lead (the analysis,
-        # the first boundary, a whole cycle's final lead) is that lead's
-        # own wait, so its row says so too; a donor or an invariant object
-        # is not a lead of this window and leaves the rows alone.
-        own = need is None or (need.source == self.window.source
-                               and need.lead is not None
-                               and int(need.lead) == int(lead))
-        if lead is not None and own:
+        # A start need on the window's own source and lead is that lead's
+        # own wait, so its row says so too (:meth:`_own`).
+        if self._own(lead, need):
             self._mark(lead, state="waiting")
 
     def wait_start(self) -> None:
@@ -466,7 +606,9 @@ class PostingLoop:
             now = self.now()
             expected = readiness.parse_instant(row.get("expected_at"))
             late = readiness.parse_instant(row.get("late_at"))
-            if expected is not None and now < expected - readiness.ASK_AHEAD:
+            if (not fetch_endpoints.policy_uses_aws(self.window.source)
+                    and expected is not None
+                    and now < expected - readiness.ASK_AHEAD):
                 return False
             if late is not None and now >= late:
                 # Past its late time it is the gate's to say late.
@@ -484,6 +626,9 @@ class PostingLoop:
                 self._watch_asked[lead] = now
                 answer = readiness.lead_answer(self.window, lead,
                                                probe=self.probe, now=now)
+                if self._watch_stop.is_set():
+                    return True
+                self._answered(lead, None, answer["answer"])
                 self._heard_absent(lead, None, answer["answer"])
                 if (answer["answer"] != readiness.POSTED
                         or self._watch_stop.is_set()):
@@ -512,6 +657,8 @@ class PostingLoop:
 
     def __call__(self, lead: int) -> str | None:
         lead = int(lead)
+        # No later lead starts moving for a run that has ended.
+        self.check_stop()
         with self._lock:
             if lead in self._seen:
                 return self._seen[lead]
@@ -549,10 +696,13 @@ class PostingLoop:
         expected = readiness.parse_instant(row.get("expected_at"))
         if int(lead) in self._seen:
             return True
-        if expected is not None and self.now() < expected - readiness.ASK_AHEAD:
+        if (not fetch_endpoints.policy_uses_aws(self.window.source)
+                and expected is not None
+                and self.now() < expected - readiness.ASK_AHEAD):
             return False
         answer = readiness.lead_answer(self.window, int(lead),
                                        probe=self.probe, now=self.now())
+        self._answered(int(lead), None, answer["answer"])
         self._heard_absent(int(lead), None, answer["answer"])
         if answer["answer"] == readiness.POSTED:
             self._posted(int(lead), answer)
@@ -583,6 +733,10 @@ class PostingLoop:
             answer = (self._tried[unheard] if unheard is not None
                       else "failed_verification")
         named = unheard if unheard is not None else leads[0]
+        for lead in leads:
+            with self._lock:
+                said = self._tried.get(lead, "failed_verification")
+            self._answered(lead, None, said)
         if self.deadline is not None and now >= self.deadline:
             self._stop(named, answer, cap=True, error=error)
         lates = [readiness.parse_instant(self._rows[lead].get("late_at"))
@@ -740,7 +894,8 @@ LEGACY_TRANSFER_FAULTS = (ValueError, RuntimeError, OSError)
 
 def fetch_legacy_as_posted(loop: PostingLoop,
                            fetch_prefix: Callable[[tuple[int, ...]], Path], *,
-                           fresh: bool = False) -> Path:
+                           fresh: bool = False,
+                           publish_lead=None) -> Path:
     """A legacy transport's window as it posts, one verified prefix at a time.
 
     The transport is called for the leads posted so far and reuses what
@@ -751,30 +906,33 @@ def fetch_legacy_as_posted(loop: PostingLoop,
     whose own checks decide; if that transfer fails it is asked again
     each round until the lead's late time, then the run stops with 75.
     ``fresh`` is a forced refetch: see :meth:`PostingLoop.start`.
+    ``publish_lead`` lets an incremental transfer keep a marker already
+    published before its batch returned, without rewriting its timestamps.
     """
 
     loop.start(fresh=fresh)
     try:
-        return _legacy_prefixes(loop, fetch_prefix)
+        return _legacy_prefixes(loop, fetch_prefix, publish_lead=publish_lead)
     finally:
         loop.close()
 
 
 def _legacy_prefixes(loop: PostingLoop,
-                     fetch_prefix: Callable[[tuple[int, ...]], Path]) -> Path:
+                     fetch_prefix: Callable[[tuple[int, ...]], Path], *,
+                     publish_lead=None) -> Path:
     loop.wait_start()
+    publish = loop.publish if publish_lead is None else publish_lead
     leads = loop.window.leads
     index = 0
     manifest_path = None
     while index < len(leads):
-        if loop.posted_now(leads[-1]):
-            through = len(leads) - 1
-        else:
-            loop(leads[index])
-            through = index
-            while through + 1 < len(leads) - 1 and loop.posted_now(
-                    leads[through + 1]):
-                through += 1
+        loop(leads[index])
+        through = index
+        # Objects can reach a mirror out of lead order. Its final object
+        # is no authority to download a missing intermediate lead.
+        while through + 1 < len(leads) and loop.posted_now(
+                leads[through + 1]):
+            through += 1
         batch = leads[index:through + 1]
         try:
             manifest_path = fetch_prefix(tuple(leads[:through + 1]))
@@ -785,7 +943,7 @@ def _legacy_prefixes(loop: PostingLoop,
             continue
         manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
         for lead in leads[index:through + 1]:
-            loop.publish(lead, legacy_objects(manifest, lead))
+            publish(lead, legacy_objects(manifest, lead))
         index = through + 1
     return Path(manifest_path)
 

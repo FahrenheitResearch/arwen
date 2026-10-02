@@ -52,8 +52,14 @@ def _shipped_rows():
 
 
 def _fit(row, restart_interval_s=0.0):
-    """The part of a designer fit that the projection reads, rebuilt from a shipped row."""
-    return {"domains": [{"nx": d["nx"], "ny": d["ny"], "nz": d["nz"]} for d in row["domains"]],
+    """The part of a designer fit that the projection reads, rebuilt from a shipped row.
+
+    The history is the writer's inventory for each grid's run settings (A190), so the
+    fit carries the row's physics suite and each grid's spacing and cumulus switch.
+    """
+    return {"domains": [{"nx": d["nx"], "ny": d["ny"], "nz": d["nz"], "dx_km": d["dx_km"],
+                         "cu_physics": d["cu_physics"]} for d in row["domains"]],
+            "physics": row["physics"]["profile"],
             "restart_interval_s": restart_interval_s, "fetch": None, "chain": None}
 
 
@@ -98,20 +104,38 @@ def test_the_designer_and_the_engine_charge_the_same_pictures(design, tmp_path, 
     plan = _page_plan(route, tmp_path)
     plan.run_options["keep_checkpoints"] = design.KEEP_CHECKPOINTS
     # The chain comes from the engine's resolve answer, as fit_domain reads it.
-    fit = {"domains": [{"nx": 170, "ny": 170, "nz": 49}, {"nx": 336, "ny": 336, "nz": 49}],
+    fit = {"domains": [{"nx": 170, "ny": 170, "nz": 49, "dx_km": 3.0, "cu_physics": 0},
+                       {"nx": 336, "ny": 336, "nz": 49, "dx_km": 1.0, "cu_physics": 0}],
+           "physics": "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1",
            "restart_interval_s": 3600.0, "fetch": None,
            "chain": runplan._preparation_chain(plan, {})}
     run_seconds, root_s, nest_s = 6 * 3600.0, 3600.0, 900.0
     designed = design.projection(fit, run_seconds, root_s, nest_s)
     exp = SimpleNamespace(run_seconds=run_seconds, restart_interval_s=3600.0, domains=[
         SimpleNamespace(grid_id=i + 1, history_interval_s=root_s if i == 0 else nest_s,
-                        run=SimpleNamespace(**d))
+                        run=design.domain_run(fit, d, run_seconds))
         for i, d in enumerate(fit["domains"])])
     engine = runplan._disk_projection(plan, exp, raw={}, data=None, fetch_arguments=None)
     assert designed["picture_bytes"] == engine["picture_bytes"] == sum(
         disk_budget.projected_picture_bytes(d.run.nx, d.run.ny, run_seconds,
                                            d.history_interval_s) for d in exp.domains)
     assert designed["total_bytes"] == engine["total_bytes"]
+
+
+def test_the_designer_prices_each_grid_s_physics_and_refuses_a_bare_grid(design):
+    """A190: a grid size alone priced a moist run's history as a dry one, under half of what it
+    writes, so the designer fitted output intervals that overran the card's disk budget."""
+    grid = {"nx": 552, "ny": 552, "nz": 49, "dx_km": 0.25, "cu_physics": 0}
+    with pytest.raises(ValueError, match="names no physics suite"):
+        design.projection({"domains": [grid], "restart_interval_s": 0.0, "fetch": None,
+                           "chain": None}, 3600.0, 3600.0, 3600.0)
+    run = design.domain_run({"physics": "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1"}, grid, 3600.0)
+    assert run.moist and run.mp_physics == 8 and run.cu_physics == 0
+    with pytest.raises(TypeError, match="resolved RunConfig"):
+        disk_budget.history_frame_bytes(SimpleNamespace(nx=552, ny=552, nz=49))
+    # The measured 250 m child of tests/test_downscale_checkpoint_disk.py wrote 1.2 GB a frame
+    # on this grid; the dry pricing said 0.50 GB.
+    assert 1.15e9 < disk_budget.history_frame_bytes(run) < 1.3e9
 
 
 def _calls_without_render(path: Path):

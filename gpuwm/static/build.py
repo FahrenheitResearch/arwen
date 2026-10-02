@@ -92,11 +92,22 @@ _FIVE_MINUTE_GEOG_DIRS = {
     "snow_albedo": "maxsnowalb_modis",
     "soil_temperature": "soiltemp_1deg",
 }
-# Recognized selectors are the names actually represented by this builder's
-# declared GEOG inventory.  Directory/resolution-looking aliases such as
-# ``30s`` and ``modis_30s`` are not WPS selectors for that inventory and are
-# rejected instead of being silently treated as ``default``.
-_SUPPORTED_GEOG_TOKENS = frozenset({"5m", "default", "modis_lai"})
+# WPS 4.6 GEOGRID.TBL.ARW names the bare ``30s`` selector for SOILCTOP
+# and SOILCBOT. Other mandatory fields have no bare ``30s`` entry and
+# use their WPS default, including GMTED2010 terrain and MODIS land use
+# at 30 arc-seconds. This is a field-specific selector, not an alias
+# promising every climatology has 30 arc-second resolution.
+_THIRTY_SECOND_GEOG_DIRS = {
+    "soil_top": "soiltype_top_30s",
+    "soil_bottom": "soiltype_bot_30s",
+}
+_GEOG_TOKEN_DIRECTORIES = {
+    "default": _DEFAULT_GEOG_DIRS,
+    "30s": _THIRTY_SECOND_GEOG_DIRS,
+    "5m": _FIVE_MINUTE_GEOG_DIRS,
+    "modis_lai": {"lai": "lai_modis_30s"},
+}
+_SUPPORTED_GEOG_TOKENS = frozenset(_GEOG_TOKEN_DIRECTORIES)
 
 
 @dataclass(frozen=True)
@@ -106,7 +117,9 @@ class GeogSelection:
     ``resolution_tokens`` preserves the ordered ``geog_data_res`` value
     declared by the WPS namelist path in :class:`CaseDataConfig`.  Dataset
     paths are always relative directories beneath that config's GEOG root.
-    The recognized set is ``default``, ``5m``, and ``modis_lai``.  ``5m``
+    The recognized set is ``default``, ``30s``, ``5m``, and ``modis_lai``.
+    ``30s`` selects the 30 arc-second soil datasets and falls through to
+    WPS's default dataset for fields with no ``30s`` table entry. ``5m``
     selects NCAR's complete global low-resolution mandatory inventory;
     ``modis_lai`` is the available higher-resolution LAI override; and
     ``default`` selects the established Phase-3 inventory.  A land-cover
@@ -131,6 +144,18 @@ class GeogSelection:
     snow_albedo: str
     soil_temperature: str
     terrain_smoothing: TerrainSmoothing = WPS_DEFAULT
+    #: WRF's sub-grid orographic statistics this domain's terrain-drag
+    #: options read (:mod:`gpuwm.static.orographic`), by geo_em name.  Empty
+    #: -- every domain without topo_wind or gwd_opt -- builds exactly the
+    #: field set it always built.
+    orographic: tuple[str, ...] = ()
+
+    def with_orographic(self, names) -> "GeogSelection":
+        """This selection, also building the named orographic fields."""
+        from dataclasses import replace
+
+        from .orographic import orographic_request
+        return replace(self, orographic=orographic_request(names))
 
     @classmethod
     def fallback(cls, geog_root) -> "GeogSelection":
@@ -197,11 +222,7 @@ class GeogSelection:
         # field.  Resolve against the inventories this builder understands,
         # retaining the historical default when no earlier token supplies a
         # field.
-        token_directories = {
-            "default": _DEFAULT_GEOG_DIRS,
-            "5m": _FIVE_MINUTE_GEOG_DIRS,
-            "modis_lai": {"lai": "lai_modis_30s"},
-        }
+        token_directories = _GEOG_TOKEN_DIRECTORIES
         directories = {}
         # A [static.highres] land-cover token names no GEOG directory.
         geog_tokens = [token for token in normalized
@@ -1504,6 +1525,13 @@ def build_static(
         fields = _build_static_routed(
             grid, geog_root, halo, selection=selection,
             source_coverage_report=source_coverage_report)
+        if selection is not None and selection.orographic:
+            from .orographic import build_orographic_fields
+            fields.update(build_orographic_fields(
+                grid, geog_root, selection.orographic,
+                landuse_path=selection.path("landuse"),
+                tokens=selection.resolution_tokens, halo=halo,
+                coverage_report=source_coverage_report))
     if timing_report is not None:
         timing_report["seconds"] = time.perf_counter() - started
         timing_report["cells"] = int(grid.e_we) * int(grid.e_sn)

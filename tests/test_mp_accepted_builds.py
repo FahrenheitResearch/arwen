@@ -135,9 +135,8 @@ def test_accepted_mp_is_covered_by_the_cfg_keyed_route_tables(
     monkeypatch.setattr(state_mod, "cp", np)
     monkeypatch.setattr(acoustic, "get_kernel",
                         lambda *_a, **_k: lambda *_launch: None)
-    # moist_cq is the production real-case setting (RunConfig defaults it
-    # off for the frozen idealized trajectories); the cq dispatch is only
-    # reachable with it on.
+    # CQ is enabled by default. State it explicitly here because this
+    # test exercises the CQ dispatch for every accepted scheme.
     cfg = dataclasses.replace(_cfg(mp), moist_cq=True)
     state = state_mod.DomainState(cfg)
     transported = SPECIES + extra_moist_species(state)

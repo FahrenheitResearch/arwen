@@ -140,20 +140,61 @@ def _copy_owned_sides(specs, source) -> int:
     """
     fields = source.intervals[0].fields
     copied = 0
-    for field_name, side_name, sl, value_view, tendency_view in specs:
-        side = getattr(fields[field_name], side_name)
-        src_value = side.value[sl]
-        src_tendency = side.tendency[sl]
-        if tuple(src_value.shape) != tuple(value_view.shape):
-            raise RuntimeError(
-                f"nest tile table {field_name}/{side_name} windows to "
-                f"{tuple(src_value.shape)} but the packed slot holds "
-                f"{tuple(value_view.shape)}; the rolling table layout "
-                "moved under the buffer")
-        value_view[...] = src_value
-        tendency_view[...] = src_tendency
-        copied += 1
+    staged = []
+    try:
+        for field_name, side_name, sl, value_view, tendency_view in specs:
+            side = getattr(fields[field_name], side_name)
+            src_value = side.value[sl]
+            src_tendency = side.tendency[sl]
+            if tuple(src_value.shape) != tuple(value_view.shape):
+                raise RuntimeError(
+                    f"nest tile table {field_name}/{side_name} windows to "
+                    f"{tuple(src_value.shape)} but the packed slot holds "
+                    f"{tuple(value_view.shape)}; the rolling table layout "
+                    "moved under the buffer")
+            if _on_another_card(value_view, src_value):
+                # A kernel assignment needs peer access. The driver can
+                # stage a device memcpy when peer access is unavailable.
+                staged.append(_copy_across_cards(value_view, src_value))
+                staged.append(_copy_across_cards(tendency_view, src_tendency))
+            else:
+                value_view[...] = src_value
+                tendency_view[...] = src_tendency
+            copied += 1
+    finally:
+        if staged:
+            import cupy as cp
+            # Every staging allocation belongs to this reload until its
+            # copies finish, including when a later table has a bad shape.
+            # A capped global list can free a source while its copy is queued
+            # and lets one rank retire another rank's pending allocations.
+            cp.cuda.get_current_stream().synchronize()
     return copied
+
+
+def _on_another_card(dst, src) -> bool:
+    # A CuPy device carries an ``id``; NumPy 2's ``.device`` is the string
+    # "cpu" (the CPU stand-ins the tests drive this with), never another card.
+    device = getattr(getattr(dst, "device", None), "id", None)
+    other = getattr(getattr(src, "device", None), "id", None)
+    return (device is not None and other is not None
+            and int(device) != int(other))
+
+
+def _copy_across_cards(dst, src):
+    """``dst[...] = src`` for a contiguous ``dst`` on another card than ``src``."""
+    import cupy as cp
+    with cp.cuda.Device(src.device.id):
+        staged = cp.ascontiguousarray(src)
+        ready = cp.cuda.Event(disable_timing=True)
+        ready.record(cp.cuda.get_current_stream())
+    stream = cp.cuda.get_current_stream()
+    stream.wait_event(ready)
+    if not dst.flags.c_contiguous:
+        raise RuntimeError("a packed nest table slot is not contiguous; the "
+                           "cross-card copy writes it as one block")
+    dst.data.copy_from_device_async(staged.data, int(staged.nbytes), stream)
+    return staged
 
 
 def attach_streaming_nest_boundaries(tile_state, domain_state, tspec,

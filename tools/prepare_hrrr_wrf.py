@@ -1502,8 +1502,19 @@ def _sealed_extension(args, *, valid_time: datetime,
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, required=True)
-    parser.add_argument("--source-manifest", type=Path, required=True)
-    parser.add_argument("--source-manifest-sha256", required=True)
+    parser.add_argument(
+        "--source-manifest", type=Path,
+        help="the fetch's SHA256SUMS (required unless --as-posted)")
+    parser.add_argument(
+        "--source-manifest-sha256",
+        help="its sha256 (required unless --as-posted)")
+    parser.add_argument(
+        "--as-posted", type=Path, dest="as_posted",
+        help=("the as-posted fetch's posting/ folder in --source-root "
+              "(A136): each lead is decoded once its posted marker is "
+              "there, the head is published on the first two leads, and "
+              "the seal writes the source manifest from the leads' markers, "
+              "so --source-manifest and its digest are not given"))
     parser.add_argument("--supplement", action="append", default=[],
                         help="PMSL=GRIB donor, bound by the source manifest; repeat for multiple files")
     static = parser.add_mutually_exclusive_group(required=True)
@@ -1684,8 +1695,45 @@ def _verified_chained_handoff(handoff, output: Path) -> dict:
     return dict(handoff)
 
 
+#: Where an as-posted bundle's seal writes the source manifest it authors
+#: (tools/hrrr_single_domain_benchmark.py POSTED_SOURCE_MANIFEST).
+POSTED_SOURCE_MANIFEST = "native/posted-source/SHA256SUMS"
+
+
+def _as_posted_refusal(args) -> str | None:
+    """Why this preparation cannot read its leads as they post, or ``None``.
+
+    Each names the breakage it prevents.
+    """
+
+    if (args.source_manifest is None) != (args.source_manifest_sha256 is None):
+        return ("--source-manifest and --source-manifest-sha256 are given "
+                "together")
+    if args.as_posted is None:
+        if args.source_manifest is None:
+            return ("--source-manifest and --source-manifest-sha256 are "
+                    "required unless --as-posted")
+        return None
+    if args.source_manifest is not None:
+        return ("--as-posted writes the source manifest at its seal from the "
+                "leads' markers; a --source-manifest given beside it would "
+                "bind a second, different manifest")
+    if args.supplement:
+        return ("--as-posted reads the fetch's own leads; a PMSL donor is "
+                "bound into the source manifest before anything is decoded, "
+                "so a donor run fetches the whole window first")
+    if args.sealed_prepared_cache or args.extend_root_preparation is not None:
+        return ("--as-posted and a prefix-sealed cache are mutually "
+                "exclusive: the sealed prefix binds its source manifest "
+                "before it decodes")
+    return None
+
+
 def _prepare_from_argv(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    refusal = _as_posted_refusal(args)
+    if refusal is not None:
+        raise ValueError(refusal)
     from gpuwm.ingest.native_supplements import supplement_bindings
     for _, path in supplement_bindings(args.supplement):
         if not path.is_file():
@@ -1754,15 +1802,26 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
             "sealed prepared-cache orchestration requires forecast start 0")
     # --pipeline-workers is validated by its argparse type, at parse
     # time, against the decode pipeline's own ceiling.
-    if len(args.source_manifest_sha256) != 64:
-        raise ValueError("source-manifest-sha256 must contain 64 hexadecimal digits")
-    int(args.source_manifest_sha256, 16)
+    as_posted = args.as_posted is not None
+    if not as_posted:
+        if len(args.source_manifest_sha256) != 64:
+            raise ValueError(
+                "source-manifest-sha256 must contain 64 hexadecimal digits")
+        int(args.source_manifest_sha256, 16)
     source_root = args.source_root.resolve()
-    source_manifest = args.source_manifest.resolve()
     namelist_input = args.namelist_input.resolve()
-    for path in (source_root, source_manifest, namelist_input):
+    # As posted, the seal writes the source manifest inside the bundle.
+    source_manifest = (args.output_root.resolve() / POSTED_SOURCE_MANIFEST
+                       if as_posted else args.source_manifest.resolve())
+    for path in ((source_root, namelist_input) if as_posted
+                 else (source_root, source_manifest, namelist_input)):
         if not path.exists():
             raise FileNotFoundError(path)
+    if as_posted and (args.as_posted.resolve().parent != source_root
+                      or not args.as_posted.is_dir()):
+        raise ValueError(
+            f"--as-posted names {args.as_posted}, not the posting folder of "
+            f"--source-root {source_root}, whose leads this preparation reads")
     namelist_invariant = (
         namelist_extension_invariant(
             namelist_input, cycle=valid_time, run_seconds=args.run_seconds)
@@ -1914,7 +1973,8 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
             f"hrrr.t{valid_time:%H}z.wrfnatf{hour:02d}.grib2")
         soil = source_root / f"hrrr.t{valid_time:%H}z.soilf{hour:02d}.grib2"
         for path in (atmosphere, soil):
-            if not path.is_file():
+            # As posted, a later lead's files arrive with its marker.
+            if not as_posted and not path.is_file():
                 raise FileNotFoundError(path)
         from gpuwm.ingest.native_supplements import series_supplement_suffix
         suffix = series_supplement_suffix(getattr(args, "supplement", ()))
@@ -1935,7 +1995,8 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
         "--pipeline-workers", str(args.pipeline_workers),
         "--source-root", str(source_root),
         "--source-manifest", str(source_manifest),
-        "--source-manifest-sha256", args.source_manifest_sha256.lower(),
+        *(("--as-posted", str(args.as_posted.resolve())) if as_posted else
+          ("--source-manifest-sha256", args.source_manifest_sha256.lower())),
         "--static-cache", str(static_cache),
         "--static-receipt", str(static_receipt),
         "--namelist-input", str(namelist_input),

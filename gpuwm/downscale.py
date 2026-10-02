@@ -48,11 +48,13 @@ import numpy as np
 
 from gpuwm import downscale_pricing
 
+from gpuwm.acoustic_adaptation import acoustic_receipt
 from gpuwm.explain import layered, warn
 from gpuwm.offline_child import (
     DERIVED_CHILD_SURFACE_CAVEAT,
     OfflineChildContractError,
     OfflineChildPlacement,
+    adapt_child_acoustics,
     child_inherits_parent_levels,
     les_child_regime,
     bind_parent_physics_from_gpuwm_restart,
@@ -807,6 +809,29 @@ def _derive_child_run_config(parent_config: dict, *, parent, ratio: int,
     return merged
 
 
+def _with_parent_epssm_label(merged: dict, parent_header) -> dict:
+    """The derived child's config with its parent's ``epssm`` provenance.
+
+    A parent whose ``epssm`` was the model's choice says so on its
+    checkpoint (:data:`gpuwm.io.restart.AUTO_EPSSM_HEADER_KEY`), and its
+    child is then the model's choice too, retaining the inherited value
+    in ``epssm = { auto = VALUE }`` and taking the off-centering floor
+    its OWN ground needs (A181), as a nest of the prepared tree door does.
+    The parent's value was read off the parent's ground, and carried down
+    as a written number it made the child explicit: refused over ground
+    steeper than the parent's instead of raised.  A parent that wrote its
+    ``epssm`` hands it down as written, and so does a checkpoint written
+    before the label existed.
+    """
+
+    from gpuwm.config import EPSSM_AUTO
+    from gpuwm.io.restart import AUTO_EPSSM_HEADER_KEY
+
+    if not (parent_header or {}).get(AUTO_EPSSM_HEADER_KEY):
+        return merged
+    return {**merged, "epssm": {EPSSM_AUTO: merged["epssm"]}}
+
+
 #: What a derived child config is called inside the run directory it
 #: describes.
 DERIVED_CHILD_CONFIG_NAME = "child.toml"
@@ -1205,6 +1230,8 @@ def _render_child_toml(config: dict, *, tiles_mode: str | None = None) -> str:
             # this ladder and INTEGRATED on the one read back, and a rounded
             # interface would put the two on different grids.
             return "[" + ", ".join(value(entry) for entry in item) + "]"
+        if isinstance(item, dict) and set(item) == {"auto"}:
+            return "{ auto = " + value(item["auto"]) + " }"
         raise ValueError(f"cannot render config value {item!r}")
 
     grid_keys = ("nx", "ny", "nz", "dx", "dy", "ztop")
@@ -1634,6 +1661,14 @@ def _admit_render_products(render_products, *, dry_run: bool) -> str:
 def _downscale_main(args, reservation: _OutputReservation,
                     warnings: list[dict]) -> int:
     from gpuwm.go_cli import DEFAULT_RENDER_PRODUCTS
+    supplied_child = getattr(args, "child_config", None)
+    if supplied_child is not None and Path(supplied_child).is_file():
+        from types import SimpleNamespace
+        from gpuwm.config import load_device_options
+        from gpuwm.core.devices import refuse_unrouted_devices
+        refuse_unrouted_devices(
+            SimpleNamespace(devices=load_device_options(supplied_child)),
+            "gpuwm downscale")
 
     # The parser refuses a ratio below 1 as it reads --ratio.  A caller
     # that hands this command a namespace of its own skips the parser,
@@ -1791,8 +1826,8 @@ def _downscale_main(args, reservation: _OutputReservation,
                 "parent's gpuwm restart evidence; stock-WRF parents need "
                 "an explicit --child-config")
         from gpuwm.io.restart import read_restart_header
-        parent_config = dict(read_restart_header(
-            Path(args.parent_restart))["config"])
+        parent_header = read_restart_header(Path(args.parent_restart))
+        parent_config = dict(parent_header["config"])
         parent = _parent_geometry(frames[0])
         lat, lon = _parse_point(args.point)
         j0, i0 = _nearest_parent_index(
@@ -1866,8 +1901,14 @@ def _downscale_main(args, reservation: _OutputReservation,
             outdir_reserved = True
         else:
             child_config.parent.mkdir(parents=True, exist_ok=True)
+        # The geography the child is built on travels in its own config,
+        # so the config in the run folder says which terrain it ran on and
+        # the runner door reads the same answer.
         child_config.write_text(
-            _render_child_toml(merged, tiles_mode=args.tiles),
+            _render_child_toml(
+                _with_parent_epssm_label(merged, parent_header),
+                tiles_mode=args.tiles)
+            + _derived_static_table(args),
             encoding="utf-8", newline="\n")
         i_start, j_start = placement.i_parent_start, placement.j_parent_start
         print(f"gpuwm downscale: derived child {child_nx}x{child_ny} at "
@@ -1964,9 +2005,47 @@ def _downscale_main(args, reservation: _OutputReservation,
         child_nx=int(cfg.nx), child_ny=int(cfg.ny),
         parent_grid_ratio=int(ratio), i_parent_start=int(i_start),
         j_parent_start=int(j_start))
+    # THE ACOUSTIC RULE the child's own ground needs (A181): the
+    # off-centering floor and the substep count the prepared doors apply,
+    # read off the terrain this child integrates.  At review, so a chosen
+    # epssm below the floor is refused before anything is spent, and the
+    # plan below prices and records the config that will run.
+    cfg, acoustic = adapt_child_acoustics(
+        cfg, child_config_path=child_config, frame_path=frames[0],
+        placement=placement)
     surface_requirement = child_surface_requirement(cfg)
     surface_source = None
     surface_placement = None
+    # WHICH GEOGRAPHY the child is built on, resolved through the function
+    # the runner admits with, and asked whether it can be built at all
+    # before anything is reserved or run: the child's grid must sit on a
+    # projection the parent's own coordinates confirm, and the WPS_GEOG
+    # tree it is built from must be there.
+    static_policy = _resolve_static_policy(args, child_config, cfg)
+    geography_problem = None
+    if static_policy.own:
+        geography_problem = _own_geography_problem(
+            static_policy, frames[0], placement, cfg=cfg)
+        if geography_problem is not None:
+            if not args.dry_run:
+                raise OfflineChildContractError(geography_problem)
+            warn(geography_problem,
+                 why="--dry-run continues so the plan can be read; the run "
+                     "itself refuses until the child's own geography can "
+                     "be built.")
+        print("gpuwm downscale: child terrain: its own static geography "
+              f"at {float(cfg.dx):g} m, built from {static_policy.geog_root}"
+              + (f" with {static_policy.highres.terrain_source} terrain"
+                 if static_policy.highres is not None
+                 and static_policy.highres.enabled
+                 and float(cfg.dx) <= float(
+                     static_policy.highres.max_dx_m or float("inf")) + 1e-3
+                 else "")
+              + ", blended into the parent's across the boundary zone "
+                "(--parent-terrain keeps the parent's)")
+    else:
+        print("gpuwm downscale: child terrain: the parent's, interpolated "
+              f"({static_policy.source})")
     if args.child_surface_from is not None:
         surface = read_child_surface_state(
             args.child_surface_from, child_ny=cfg.ny, child_nx=cfg.nx,
@@ -1977,6 +2056,14 @@ def _downscale_main(args, reservation: _OutputReservation,
         print(f"gpuwm downscale: child surface source "
               f"{surface.path} ({len(surface.fields)} fields, "
               f"{surface.identity['MMINLU']})")
+    elif surface_requirement is not None and static_policy.own:
+        # The child's land identity is its own static build, and its land
+        # state the parent's, put on that land by WRF's masked
+        # interpolator (gpuwm.offline_child_geography.
+        # surface_on_child_geography) once the run has the blended terrain.
+        surface_source = "child-own-geography"
+        print("gpuwm downscale: child surface: its own land use and soil, "
+              "with the parent's land state on them")
     elif surface_requirement is not None:
         # THE CLOSED LOOP, OPENED (defect #275).  This used to refuse
         # outright -- and the file it demanded could not be produced for
@@ -2057,6 +2144,9 @@ def _downscale_main(args, reservation: _OutputReservation,
         "effective_nz": int(cfg.nz),
         "effective_eta_levels": (None if cfg.eta_levels is None
                                  else [float(v) for v in cfg.eta_levels]),
+        # The epssm and substep count the child runs on its own ground,
+        # and why (gpuwm.acoustic_adaptation.acoustic_receipt).
+        "acoustic_substeps": acoustic_receipt([acoustic]),
         "placement": {"ratio": ratio, "i_parent_start": i_start,
                       "j_parent_start": j_start},
         "child_surface_from": (None if args.child_surface_from is None
@@ -2068,6 +2158,8 @@ def _downscale_main(args, reservation: _OutputReservation,
         # reader to find out at integration time what that meant.
         "child_surface_source": surface_source,
         "child_surface_placement": surface_placement,
+        "child_terrain": dict(static_policy.receipt()),
+        "child_terrain_problem": geography_problem,
         "outdir": str(args.out),
     }
     if sizing_receipt is not None:
@@ -2138,9 +2230,11 @@ def _downscale_main(args, reservation: _OutputReservation,
     # 11 hour 250 m child wrote 28.5 GB of checkpoints with nothing saying
     # so before it started.
     from gpuwm.offline_child_run import child_disk_projection
+    from gpuwm.config import load_history_selection
     disk = child_disk_projection(
         cfg, child_clock, keep_checkpoints=keep_checkpoints,
-        render_products=render_products, outdir=Path(args.out))
+        render_products=render_products, outdir=Path(args.out),
+        history_selection=load_history_selection(child_config))
     plan["disk"] = disk
     print("gpuwm downscale: " + _disk_line(disk, Path(args.out)))
     if disk["refusal"] is not None:
@@ -2206,6 +2300,9 @@ def _downscale_main(args, reservation: _OutputReservation,
         accepted_parent_cadence=bool(cadence_is_parents),
         child_surface_from=(None if args.child_surface_from is None
                             else Path(args.child_surface_from)),
+        child_terrain=static_policy.terrain,
+        geog_root=(None if getattr(args, "geog_root", None) is None
+                   else Path(args.geog_root)),
         preprocess_backend=args.preprocess_backend,
         health_interval_seconds=float(args.health_interval_seconds),
         render_products=render_products,
@@ -2238,6 +2335,60 @@ def _downscale_main(args, reservation: _OutputReservation,
     with memory_gate_override(getattr(args, "no_memory_gate", False)):
         report = offline_child_run.run(namespace)
     return 0 if report["result"] == "PASS" else 1
+
+
+def _flag_terrain(args):
+    """The terrain the door's flags ask for, or ``None`` for the file's."""
+    from gpuwm.offline_child_geography import CHILD_TERRAIN_PARENT
+
+    return CHILD_TERRAIN_PARENT if getattr(args, "parent_terrain", False) \
+        else None
+
+
+def _derived_static_table(args) -> str:
+    """The ``[static]`` table a ``--point`` child config is written with."""
+    from gpuwm.offline_child_geography import (CHILD_TERRAIN_OWN,
+                                               ChildStaticPolicy,
+                                               static_table_text)
+
+    flag = _flag_terrain(args)
+    root = getattr(args, "geog_root", None)
+    return static_table_text(ChildStaticPolicy(
+        terrain=flag or CHILD_TERRAIN_OWN,
+        geog_root=None if root is None else Path(root).resolve(),
+        source="door flag" if root is not None else "engine default"))
+
+
+def _resolve_static_policy(args, child_config, cfg):
+    """The child's static policy: its config's ``[static]``, then the flags."""
+    from gpuwm.offline_child_geography import load_child_static_policy
+
+    try:
+        return load_child_static_policy(
+            child_config, cfg, terrain=_flag_terrain(args),
+            geog_root=getattr(args, "geog_root", None))
+    except ValueError as error:
+        raise OfflineChildContractError(str(error)) from error
+
+
+def _own_geography_problem(policy, parent_frame, placement, *, cfg=None) -> str | None:
+    """Why this child's own geography cannot be built, or ``None``.
+
+    The two things the run would otherwise discover only at its first step:
+    a parent whose coordinates contradict its projection, and a missing
+    WPS_GEOG tree.  Both are asked of metadata and directory listings only,
+    so plan review stays fast.
+    """
+    from gpuwm.offline_child_geography import (ChildGeographyError,
+                                               child_projected_grid,
+                                               require_geog_tree)
+
+    try:
+        grid, _ = child_projected_grid(parent_frame, placement)
+        require_geog_tree(policy, grid, cfg=cfg)
+    except (ChildGeographyError, ValueError, OSError) as error:
+        return str(error)
+    return None
 
 
 def _refinement_ratio(raw: str) -> int:
@@ -2386,6 +2537,20 @@ def register_cli(subparsers) -> None:
                               "ceiling (prints the 15-min guidance when "
                               "coarser); mutually exclusive with "
                               "--max-boundary-interval-seconds")
+    parser.add_argument("--parent-terrain", action="store_true",
+                        dest="parent_terrain",
+                        help="run the child on its parent's interpolated "
+                             "terrain, land use and soil.  By default a "
+                             "child builds its own static geography at its "
+                             "own spacing (terrain, land use, soil; "
+                             "Copernicus 30 m terrain at 1 km or finer) and "
+                             "the parent's state is blended and rebalanced "
+                             "onto it as WRF's ndown does")
+    parser.add_argument("--geog-root", type=Path, default=None,
+                        help="the WPS_GEOG tree the child's own static "
+                             "geography is built from (default: the child "
+                             "config's [static] geog_root, else the staged "
+                             "tree `gpuwm fetch-geog` installs)")
     parser.add_argument("--child-surface-from", type=Path, default=None,
                         help="child-grid wrfinput/history file with land "
                              "identity + soil warm start (required for "

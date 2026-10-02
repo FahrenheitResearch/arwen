@@ -28,15 +28,21 @@ env:
   PYTHONUTF8: "1"
 
 jobs:
+  # Compiled by the oldest Python the package declares (requires-python), read
+  # from pyproject.toml rather than written here, so a moved floor moves this
+  # job with it.
   syntax:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - id: floor
+        name: the oldest Python the package declares
+        run: python3 tools/battery/python_floor.py >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.11"
+          python-version: ${{ steps.floor.outputs.version }}
       - name: every python file in the tree compiles
         run: python -m compileall -q -j 0 gpuwm tilestream tools tests conftest.py
 
@@ -65,6 +71,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-2025]
+        include:
+          - os: ubuntu-24.04
+            workers: 2
+            numpy: "2.4.6"
+            platform: linux
+          - os: windows-2025
+            workers: 4
+            numpy: "2.2.6"
+            platform: windows
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     steps:
@@ -77,17 +92,30 @@ jobs:
         with:
           python-version: "3.11"
       - name: install matching editable packages from this checkout
-        run: python -m pip install -e ./gpuwm-data -e ".[dev]"
+        run: python -m pip install -e ./gpuwm-data -e ".[dev]" numpy==${{ matrix.numpy }}
       - uses: ./.github/actions/build-native
-      # Directory collection admits new tests automatically. Static functional
-      # coverage stays here; three exact WPS comparisons run in the separate
-      # platform-qualification job. Tests
-      # needing external WPS_GEOG or the retained WRF bundle declare that need.
+        if: matrix.platform == 'linux'
+      # Thompson validation checks the declared table pins before preparation.
+      # The large freezeH2O table is fetched separately from the companion;
+      # this command keeps matching staged files and verifies downloads.
+      - name: stage the declared external Thompson tables
+        run: python -m gpuwm.cli fetch-tables
+        env:
+          GPUWM_NO_LOCAL_GPU: "1"
+      # The release Stage 1 list, publication files and CI selection controls
+      # run together. Its maintained census guards detect lost file coverage.
+      # Linux runs the full list and all Python/native integration. Windows
+      # excludes only the annotated native-dependent entries and retains the
+      # publication/CI controls; the separate Windows native Rust job remains.
+      # The extra static marker exclusion is accounted for by the separate
+      # static_qualification job, which executes and reports those exact tests.
       - name: the CPU-runnable estate
         run: |
-          python -m pytest -q -p no:cacheprovider \
+          python tools/battery/run_stage1.py --manifest tools/battery/stage1_files.txt \
+            --native-manifest tools/battery/stage1_native_files.txt --platform ${{ matrix.platform }} --minimum 389 -- \
+            -q -p no:cacheprovider -n ${{ matrix.workers }} --dist loadfile \
             -m "not gpu and not slow and not network and not static_platform_qualification" \
-            tests tilestream
+            --junitxml="$RUNNER_TEMP/stage1.xml" --basetemp="$RUNNER_TEMP/b"
         env:
           GPUWM_NO_LOCAL_GPU: "1"
 
@@ -96,6 +124,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-2025]
+        include:
+          - os: ubuntu-24.04
+            numpy: "2.4.6"
+          - os: windows-2025
+            numpy: "2.2.6"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
@@ -105,18 +138,25 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
+      # The float32 build profile is measured by the MYNN oracle fingerprint;
+      # dependency upgrades require another measured row, not wider ULP limits.
       - name: install matching editable packages from this checkout
-        run: python -m pip install -e ./gpuwm-data -e ".[dev]"
+        run: python -m pip install -e ./gpuwm-data -e ".[dev]" numpy==${{ matrix.numpy }}
       - uses: ./.github/actions/build-native
+      - name: stage the declared external Thompson tables
+        run: python -m gpuwm.cli fetch-tables
+        env:
+          GPUWM_NO_LOCAL_GPU: "1"
       # The manifest distinguishes shipped fixtures from external data. Slow
       # tests remain selected here because the committed SW oracle uses them.
+      # The runner hands the list to pytest without a shell: read through bash
+      # on Windows every path kept its CR and no deck ran. A listed file that
+      # does not exist fails the job by name.
       - name: bitwise oracle decks whose fixtures ship, skips forbidden
         run: |
-          mapfile -t decks < <(python -c "import pathlib; from tools.battery.no_silent_skip import parse_manifest; print('\n'.join(parse_manifest(pathlib.Path('tools/battery/must_run_gates.txt').read_text(encoding='utf-8'))))")
-          test "${#decks[@]}" -ge 20
-          python -m pytest -q -p no:cacheprovider \
-            -p tools.battery.no_silent_skip \
-            -m "not gpu and not network" "${decks[@]}"
+          python tools/battery/run_must_run_gates.py --minimum 20 -- \
+            -q -p no:cacheprovider -p tools.battery.no_silent_skip \
+            -m "not gpu and not network"
         env:
           GPUWM_NO_LOCAL_GPU: "1"
 

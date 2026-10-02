@@ -40,7 +40,7 @@ def _input(path, cfg, values, *, dimensions_override=None):
                     moisture_names=tuple(wi.active_moisture_map(cfg)))
     with netCDF4.Dataset(path, 'a') as ds:
         ds.createDimension('soil_layers_stag', soil_layer_count(cfg))
-        ds.setncatts(dict(MP_PHYSICS=cfg.mp_physics,
+        ds.setncatts(dict(GRID_ID=1, MP_PHYSICS=cfg.mp_physics,
                          SF_SURFACE_PHYSICS=cfg.sf_surface_physics,
                          BL_PBL_PHYSICS=cfg.bl_pbl_physics,
                          MMINLU='MODIFIED_IGBP_MODIS_NOAH'))
@@ -54,6 +54,54 @@ def _input(path, cfg, values, *, dimensions_override=None):
 def _read(path, cfg):
     return wi.read_wrfinput(path, cfg=cfg, expected_dimensions=_dimensions(cfg),
                             require_complete=False)
+
+
+def test_microphysics_off_admits_only_passive_vapor_when_moist():
+    cfg = _cfg(mp_physics=0)
+    vapor = frozenset(("QVAPOR",))
+    assert wi.active_moisture_inventory(cfg) == (vapor, vapor)
+    assert dict(wi.active_moisture_map(cfg)) == {"QVAPOR": "qv"}
+    assert wi.active_moisture_inventory(replace(cfg, moist=False)) == (
+        frozenset(), frozenset())
+
+
+def test_passive_vapor_reader_restores_exact_words_and_rk_initial_copy(tmp_path):
+    cfg = _cfg(mp_physics=0, sf_surface_physics=0, num_soil_layers=4)
+    values = np.asarray(np.arange(cfg.nz * cfg.ny * cfg.nx).reshape(
+        cfg.nz, cfg.ny, cfg.nx) * np.float32(1.e-5) + np.float32(.001),
+        dtype=np.float32)
+    path = _input(tmp_path / "input", cfg, {})
+    with netCDF4.Dataset(path, "a") as dataset:
+        dataset["QVAPOR"][:] = values
+    restored = _read(path, cfg)
+    state = SimpleNamespace(qv=np.full(values.shape, -1., np.float32),
+                            qv0=np.full(values.shape, -2., np.float32),
+                            qc=np.full(values.shape, 7., np.float32))
+    wi._restore_active_moisture(state, restored.raw, cfg, np)
+    np.testing.assert_array_equal(state.qv.view("u4"), values.view("u4"))
+    np.testing.assert_array_equal(state.qv0.view("u4"), values.view("u4"))
+    assert np.all(state.qc == np.float32(7.))
+    assert wi.read_wrfinput_metadata(path).has_qv is True
+
+
+def test_passive_vapor_keeps_missing_and_inactive_field_refusals(tmp_path):
+    cfg = _cfg(mp_physics=0, sf_surface_physics=0, num_soil_layers=4)
+    dry = replace(cfg, moist=False)
+    dry_path = _input(tmp_path / "dry", dry, {})
+    restored = _read(dry_path, dry)
+    assert "QVAPOR" not in restored.raw
+    assert wi.read_wrfinput_metadata(dry_path).has_qv is False
+    with pytest.raises(ValueError, match="missing mapped.*QVAPOR"):
+        wi.read_wrfinput(dry_path, cfg=cfg,
+                        expected_dimensions=_dimensions(cfg))
+    vapor_path = _input(tmp_path / "vapor", cfg, {})
+    with pytest.raises(ValueError, match="inactive WRF moisture.*QVAPOR"):
+        _read(vapor_path, dry)
+    with netCDF4.Dataset(vapor_path, "a") as dataset:
+        dataset.createVariable("QCLOUD", "f4", (
+            "Time", *wi.WRFINPUT_DIMENSIONS["QCLOUD"]))[:] = 0.
+    with pytest.raises(ValueError, match="inactive WRF moisture.*QCLOUD"):
+        _read(vapor_path, cfg)
 
 
 @pytest.mark.parametrize('qke_name', ['qke', 'QKE'])

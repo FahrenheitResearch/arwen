@@ -26,10 +26,12 @@ extern "C" __global__ void set_surface_w(
     float dys = __fsub_rn(ht[col], ht[((j + ny - 1) % ny) * nx + i]);
     float dxe = __fsub_rn(ht[j * nx + (i + 1) % nx], ht[col]);
     float dxw = __fsub_rn(ht[col], ht[j * nx + (i + nx - 1) % nx]);
-    if (by && j == 0) dys = dyn;
-    if (by && j == ny - 1) dyn = dys;
-    if (bx && i == 0) dxw = dxe;
-    if (bx && i == nx - 1) dxe = dxw;
+    // WRF module_bc_em.F clamps the outside donor to this cell. Its
+    // terrain difference is zero; copying the inside slope doubles it.
+    if (by && j == 0) dys = 0.0f;
+    if (by && j == ny - 1) dyn = 0.0f;
+    if (bx && i == 0) dxw = 0.0f;
+    if (bx && i == nx - 1) dxe = 0.0f;
     float y = __fmul_rn(half_rdy, __fadd_rn(__fmul_rn(dyn, vc1),
                                           __fmul_rn(dys, vc0)));
     float x = __fmul_rn(half_rdx, __fadd_rn(__fmul_rn(dxe, uc1),

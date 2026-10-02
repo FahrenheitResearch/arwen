@@ -125,14 +125,15 @@ def test_build_k_waits_for_lead_k_and_names_it(tmp_path, capsys):
     (kind, waiting), (after, first_seen) = writer.calls
     assert kind == "waiting" and after == "arrived"
     # The record carries the fetch's word on the lead (its schedule row's
-    # state and first_seen_at), so a seam's reason says what the fetch
-    # knows: here the row is still "scheduled", the fetch has not asked.
+    # state, first_seen_at and, since A136 L10, the host's last answer),
+    # so a seam's reason says what the fetch knows: here the row is still
+    # "scheduled", the fetch has not asked.
     assert waiting == {
         "source": SOURCE, "cycle": CYCLE, "lead": 2,
         "valid_time": "2026-09-30T14:00:00Z",
         "expected_at": "2026-09-30T15:42:00Z",
         "late_at": "2026-09-30T16:42:00Z", "since_utc": None,
-        "state": "scheduled", "first_seen_at": None}
+        "state": "scheduled", "first_seen_at": None, "last_answer": None}
     assert first_seen == "2026-09-30T15:40:31Z"
     assert [wait["lead"] for wait in leads.waits] == [2]
     err = capsys.readouterr().err
@@ -224,6 +225,15 @@ def test_the_seam_reason_says_what_the_fetch_knows_of_the_lead(tmp_path):
     assert reason(state="scheduled") == (
         "gfs f002 is not fetched yet; the fetch has not reached it "
         "(scheduled from about 15:42Z; late at 16:42Z)")
+    # The host could not be heard: said so, in either state the row is in.
+    for state in ("waiting", "scheduled"):
+        assert reason(state=state, last_answer="not_heard") == (
+            "gfs f002 is not fetched: its host cannot be heard, so whether "
+            "it is posted is not known (scheduled from about 15:42Z; late "
+            "at 16:42Z)")
+    assert reason(state="waiting", last_answer="not_posted") == (
+        "gfs f002 is not posted yet (scheduled from about 15:42Z; late at "
+        "16:42Z)")
     # A producer from before the fetch said its word: the old reason.
     assert "gfs f002 is not posted yet" in reason()
 

@@ -51,7 +51,9 @@ def test_load_base_installs_copy_owned_dz_min_cache(monkeypatch):
     state._dz_min = None
     state.cf1 = state.cf2 = state.cf3 = np.float32(0.0)
     state.cfn = state.cfn1 = np.float32(0.0)
-    monkeypatch.setattr(state_module.cp, "asarray", np.asarray)
+    # Replace the array module itself: the no-CuPy import deliberately leaves
+    # cp=None, and this test uses NumPy buffers rather than device arrays.
+    monkeypatch.setattr(state_module, "cp", SimpleNamespace(asarray=np.asarray))
 
     state.load_base(coord, base)
 

@@ -188,12 +188,17 @@ def _convert_proposal(document: dict, archive_report: dict | None = None, *, ver
                 chosen = deepcopy(domain.get("selectors", {}))
                 if "diff_opt" in chosen:
                     value = chosen.pop("diff_opt")
-                    if value != 2:
-                        case_issues.append(f"{old_tier}/{domain['id']}: diff_opt={value!r} is unsupported; native namelist import admits only the full-diffusion form 2")
-                    else:
+                    if isinstance(value, bool) or value not in (1, 2):
+                        case_issues.append(f"{old_tier}/{domain['id']}: diff_opt={value!r} is unsupported; select model-coordinate horizontal diffusion 1 or metric stress/scalar diffusion 2")
+                    elif value == 2:
                         mapped_counts["fixed_diff_opt_2"] += 1
                         transforms.append({"tier": tier, "grid_id": index + 1, "field": "diff_opt", "value": 2,
                                            "binding": "The existing gpuwm.namelist_import contract maps diff_opt=2 to ArWen's native mixing form; km_opt remains explicit."})
+                    else:
+                        chosen["diff_opt"] = value
+                        transforms.append({"tier": tier, "grid_id": index + 1,
+                                           "field": "diff_opt", "value": value,
+                                           "binding": "Model-coordinate horizontal diffusion is preserved; km_opt remains explicit."})
                 selectors.append(chosen)
             common = {key: value for key, value in selectors[0].items()
                       if all(row.get(key) == value for row in selectors)}

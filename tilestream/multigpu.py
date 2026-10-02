@@ -414,19 +414,37 @@ def _boundary_forced_cfg(cfg) -> bool:
 
 
 def validate_forced_plan(cfg, specs, halo: int, boundaries, *,
-                         enforce_halo: bool = True) -> None:
+                         enforce_halo: bool = True,
+                         nest_forcing: bool = False) -> None:
     """Refuse a forced decomposition that cannot be right.  Pure host logic.
 
     Raises :class:`MultiGPUError` with the defect NAMED and the remedy in the
     message; called by ``MultiGPUDomain.__init__`` and directly testable
     without a GPU.
+
+    ``nest_forcing`` is the caller saying it wires a NEST's live parent
+    forcing into every rank (``tilestream.ranks.RankedRun`` with a nest
+    hook, proven byte-identical to the unsplit tree on a two-domain
+    template).  ``MultiGPUDomain`` wires none, so it keeps the refusal.
     """
     forced = _boundary_forced_cfg(cfg)
-    if getattr(cfg, "nested", False):
+    if getattr(cfg, "nested", False) and not nest_forcing:
         raise MultiGPUError(
-            "cfg.nested=True: nested forcing is not wired through the "
+            "cfg.nested=True: nested forcing is not wired through this "
             "multi-GPU decomposition; run the child resident or streamed, "
+            "on the ranked road (tilestream.ranks with its nest hook), "
             "or use external specified forcing")
+    if getattr(cfg, "nested", False):
+        # The nest's boundary application writes the same perimeter frame a
+        # specified domain's does, from rolling tables that are zeros on a
+        # seam side, so the halo must cover that frame (ranked_halo adds it).
+        need = forced_halo(cfg)
+        if enforce_halo and int(halo) < need:
+            raise MultiGPUError(
+                f"halo={int(halo)} is below the nested decomposition radius "
+                f"{need}: a seam-side nest boundary application writes "
+                "fiction that a narrower halo lets reach owned cells")
+        return
     if forced and boundaries is None:
         raise MultiGPUError(
             "cfg.specified=True but no lateral forcing was given: pass "
@@ -900,10 +918,13 @@ class _SeamChannel:
     def transfer(self, stream_ptr: int) -> None:
         from cupy.cuda import runtime as rt
 
-        if self.transport == "peer":
+        if self.transport in ("peer", "staged"):
             rt.memcpyPeerAsync(self.recv_ptr, self.dst_dev,
                                self.send_ptr, self.src_dev,
                                self.nbytes, stream_ptr)
+        elif self.transport == "local":
+            rt.memcpyAsync(self.recv_ptr, self.send_ptr, self.nbytes,
+                           rt.memcpyDeviceToDevice, stream_ptr)
         elif self.transport == "default":
             rt.memcpyAsync(self.recv_ptr, self.send_ptr, self.nbytes,
                            rt.memcpyDefault, stream_ptr)
@@ -1642,11 +1663,13 @@ class MultiGPUDomain:
         arrived = []
         stepped = []
         unpacked = []
+        packed = []
         for g, dev in enumerate(self.devices):
             with cp.cuda.Device(dev):
                 stepped.append(cp.cuda.Event(block=False, disable_timing=True))
                 unpacked.append(cp.cuda.Event(block=False,
                                               disable_timing=True))
+                packed.append(cp.cuda.Event(block=False, disable_timing=True))
         for ch in self.channels:
             # An event is created on the device that RECORDS it; the waiter may
             # live on the other device (cudaStreamWaitEvent is cross-device).
@@ -1663,7 +1686,8 @@ class MultiGPUDomain:
                                              disable_timing=True))
             round_done.append(evs)
         self._events = dict(stepped=stepped, unpacked=unpacked,
-                            arrived=arrived, round_done=round_done)
+                            packed=packed, arrived=arrived,
+                            round_done=round_done)
         return self._events
 
     def step_events(self) -> None:
@@ -1677,6 +1701,20 @@ class MultiGPUDomain:
         * unpack(seam) after transfer(seam);
         * next step(dst) after every unpack into dst.
 
+        * next step(src) after every pack FROM src -- the pack reads src's
+          interior band, which src's next step overwrites in place;
+        * next step(src) after every unpack of the exchange, on any card --
+          the next transfer into a channel's receive buffer must not start
+          while the previous unpack still reads it.
+
+        The last two were missing until lane 282 found them by their effect:
+        ONE CARD SPLIT INTO 2x2 SLABS, a specified regional forecast, 3 h, the
+        merge-base engine wrote seven frames differing from the unsplit run in
+        3 of 6 runs on an RTX 5090 (first differing step 19 to 41), and the
+        Kain-Fritsch suite also stopped on non-finite tendencies.  A slab's
+        next step started when the unpacks INTO it finished, while its own
+        outbound pack could still be reading the interior that step rewrote.
+
         Note what is NOT required: pack on GPU a does not wait for GPU b.  So
         a's outbound copy starts the moment a finishes stepping and overlaps
         whatever b has left to do.
@@ -1689,8 +1727,14 @@ class MultiGPUDomain:
         """
         import cupy as cp
 
-        ev = self._ensure_events()
         self._step_launch_only()
+        self.exchange_events()
+
+    def exchange_events(self) -> None:
+        """Exchange fresh carriers, chaining the next compute after unpack."""
+        import cupy as cp
+
+        ev = self._ensure_events()
         if self.volatile_inventory:
             # Host-side rebinding happens during the LAUNCH, so the fresh
             # pointers are already correct even though the step has not run.
@@ -1721,7 +1765,15 @@ class MultiGPUDomain:
         for g, dev in enumerate(self.devices):
             with cp.cuda.Device(dev):
                 ev["unpacked"][g].record(self.unpack_streams[g])
-                self.compute_streams[g].wait_event(ev["unpacked"][g])
+                ev["packed"][g].record(self.copy_streams[g])
+        # The next step of each slab waits for its own outbound packs (they
+        # read the interior it rewrites) and for every unpack of this
+        # exchange (the next transfer reuses each channel's receive buffer).
+        for g, dev in enumerate(self.devices):
+            with cp.cuda.Device(dev):
+                self.compute_streams[g].wait_event(ev["packed"][g])
+                for h in range(len(self.devices)):
+                    self.compute_streams[g].wait_event(ev["unpacked"][h])
 
     # -- public driver ------------------------------------------------------
 

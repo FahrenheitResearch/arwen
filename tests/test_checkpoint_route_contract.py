@@ -238,30 +238,69 @@ def test_the_refusal_states_the_same_fact_the_clock_would_have(tmp_path):
     assert "d01 boundary" in message
 
 
+_TIMING_KEYS = (("run_seconds", "experiment"),
+                ("restart_interval_s", "experiment"),
+                ("history_interval_s", "domain"))
+
+
+def _off_grid(raw, key, table, *, adaptive):
+    """``raw`` on the chosen clock with ``key`` 2.5 root steps long."""
+
+    mutated = _mutated(raw)
+    mutated["shared"]["use_adaptive_time_step"] = adaptive
+    holder = (mutated["experiment"] if table == "experiment"
+              else mutated["domain"][0])
+    holder[key] = 2.5 * _root_dt(raw)
+    return mutated
+
+
 def test_the_three_timing_keys_are_refused_the_same_way(tmp_path):
     """CONTROL: run_seconds now behaves like the two that already did.
 
     Before this change `history_interval_s` and `restart_interval_s`
     were refused here and `run_seconds` was not -- the whole finding.
+
+    On a FIXED clock, where a step count is the only way any of the
+    three can be met.  The wizard writes an adaptive clock, and there
+    lane/282-namelist-tolerance (e292dbcf5) made the driver shorten a
+    step to land on every history alarm, so an off-grid history cadence
+    is met exactly rather than refused; the next test holds that half.
     """
 
     raw = _single_domain_raw(tmp_path)
-    dt = _root_dt(raw)
+    assert raw["shared"]["use_adaptive_time_step"] is True
     refusals = {}
-    for key, table in (("run_seconds", "experiment"),
-                       ("restart_interval_s", "experiment"),
-                       ("history_interval_s", "domain")):
-        mutated = _mutated(raw)
-        holder = (mutated["experiment"] if table == "experiment"
-                  else mutated["domain"][0])
-        holder[key] = 2.5 * dt
+    for key, table in _TIMING_KEYS:
         with pytest.raises(ValueError) as caught:
-            build_experiment(mutated, source="admission-test")
+            build_experiment(_off_grid(raw, key, table, adaptive=False),
+                             source="admission-test")
         refusals[key] = str(caught.value)
     assert len(refusals) == 3
     for key, message in refusals.items():
         assert key in message, message
         assert "whole number" in message, message
+
+
+def test_an_adaptive_clock_admits_off_grid_history_and_refuses_the_rest(
+        tmp_path):
+    """The adaptive driver shortens a step to land on every history
+    alarm, so lane/282-namelist-tolerance (e292dbcf5) resolves an
+    adaptive history cadence to exact ticks instead of step multiples
+    and admits one off the nominal step grid
+    (tests/test_adaptive_history_timing.py runs it).  That lane relaxed
+    history and the physics calendars only: admission still holds the
+    run length and the restart cadence to the nominal step grid on
+    either clock, so those two are refused by name, as on the fixed
+    clock."""
+
+    raw = _single_domain_raw(tmp_path)
+    for key, table in _TIMING_KEYS:
+        mutated = _off_grid(raw, key, table, adaptive=True)
+        if key == "history_interval_s":
+            build_experiment(mutated, source="admission-test")
+            continue
+        with pytest.raises(ValueError, match=f"{key}.*whole number"):
+            build_experiment(mutated, source="admission-test")
 
 
 # ---------------------------------------------------------------------------

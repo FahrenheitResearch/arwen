@@ -294,6 +294,25 @@ def window(model_lat, model_lon, obs_lat, obs_lon, obs_values, obs_valid,
 # one golden case
 # --------------------------------------------------------------------------
 
+def unit_vectors_fnv1a64(source_points: np.ndarray,
+                         destination_points: np.ndarray) -> str:
+    """FNV-1a 64 over the reference's unit vectors, source then destination.
+
+    The vectors are this platform's sin and cos, whose last bits can
+    differ between C libraries (glibc 2.43 and the Windows UCRT
+    disagree on 4,361 of the 56,100 components of the real cases, by up to
+    2 ULP).  tests/parity.rs computes the same hash from obs-regrid's own
+    vectors: equal, and max_used_distance_m must match to the bit; different,
+    and it is held to the bound that disagreement allows.
+    """
+    data = (np.ascontiguousarray(source_points, "<f8").tobytes()
+            + np.ascontiguousarray(destination_points, "<f8").tobytes())
+    value = 0xCBF29CE484222325
+    for byte in data:
+        value = ((value ^ byte) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"0x{value:016x}"
+
+
 def emit_case(name: str, *, source_latitude, source_longitude,
               destination_latitude, destination_longitude, values, valid,
               method: str, max_distance_m: float,
@@ -333,6 +352,9 @@ def emit_case(name: str, *, source_latitude, source_longitude,
         "method": method,
         "max_distance_m": hexf(max_distance_m),
         "max_used_distance_m": hexf(plan.max_used_distance_m),
+        "unit_vectors_fnv1a64": unit_vectors_fnv1a64(
+            regrid.unit_vectors(source_latitude, source_longitude),
+            regrid.unit_vectors(destination_latitude, destination_longitude)),
         "source_shape": list(plan.source_shape),
         "destination_shape": list(plan.destination_shape),
         "record": {

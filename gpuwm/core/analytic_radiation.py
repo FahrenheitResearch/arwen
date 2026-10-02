@@ -127,11 +127,9 @@ class AnalyticClearSkyRadiation:
         # surface carrier follows WRF's radiation-clock geometry: only the
         # hour angle is shifted by half the radiation interval.
         from gpuwm.core.dudhia import wrf_solar_geometry
-        from gpuwm.core.physics import (
-            _model_clock_dt, _physics_interval_seconds)
+        from gpuwm.core.physics import _physics_period_seconds
         radt_minutes = cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes
-        interval = _physics_interval_seconds(
-            radt_minutes, _model_clock_dt(cfg))
+        interval = _physics_period_seconds(radt_minutes, cfg)
         coszen, _ = wrf_solar_geometry(
             valid_time, self.latitude_deg, self.longitude_deg,
             hour_offset_seconds=0.5 * interval)

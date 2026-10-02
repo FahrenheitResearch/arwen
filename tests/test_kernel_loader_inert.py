@@ -52,6 +52,12 @@ _ALLOWED_AEROSOL_MODULES = frozenset({
 #: at max_ulp 0, which is a stronger gate than source identity and the only
 #: reason the trade was takeable.
 _EXPECTED_HEADERS = {
+    "noah_init": ("noah.cu",),
+    "horizontal": ("portable_libm64.cuh",),
+    # Test-only bit grading, with the same shared header future callers use.
+    "portable_libm64_grade": ("portable_libm64.cuh",),
+    "vert_interp": ("glibc_flt32.cuh",),
+    "thompson_cold_start": ("glibc_flt32.cuh", "portable_libm64.cuh"),
     **{name: ("thompson_aerosol_common.cuh",)
        for name in _ALLOWED_AEROSOL_MODULES},
     "rrtmgp_rte": ("rrtmgp_planck_common.cuh",),
@@ -63,10 +69,17 @@ _EXPECTED_HEADERS = {
     "urban_bep": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
     "urban_bep_couple": ("glibc_flt32.cuh",),
     "myjurb": ("glibc_flt32.cuh",),
+    # YSU's topo_wind arm (ysu_column_topo) takes glibc's powf; the default
+    # entry points compile to byte-identical PTX with the header present
+    # (tests/test_mp8_frozen.py, the ysu re-pin).
+    "ysu": ("glibc_flt32.cuh", "ysu_topo.cuh"),
     # The UW moist-turbulence PBL: a new module, so no existing unit moves.
     "uwpbl": ("glibc_flt64.cuh", "uwpbl_common.cuh", "uwpbl_wvsat.cuh",
               "uwpbl_vdiff.cuh", "uwpbl_zisocl.cuh", "uwpbl_caleddy.cuh",
               "uwpbl_eddy.cuh", "uwpbl_driver.cuh"),
+    "real_init_math": ("real_init_common.cuh", "portable_libm64.cuh"),
+    # gp-device: only the new REAL unit receives its NaN/rounding vocabulary.
+    "real_init": ("real_init_common.cuh",),
     # A new module; the WRF v4.7.1 Noah mosaic column oracle grades it
     # bitwise.
     "noah_mosaic": ("glibc_flt32.cuh",),
@@ -141,13 +154,13 @@ def test_allow_list_is_a_closed_literal_mapping():
         assert isinstance(headers, tuple)
 
 
-def test_allow_listed_headers_exist_and_are_not_translation_units():
-    for headers in kernel_loader.EXTRA_HEADERS.values():
+def test_allow_listed_headers_exist_and_translation_units_are_explicit():
+    for module, headers in kernel_loader.EXTRA_HEADERS.items():
         for header in headers:
             path = _KDIR / header
             assert path.is_file(), f"missing device header {header}"
-            assert path.suffix == ".cuh", (
-                "an allow-listed header must be a .cuh, never a .cu")
+            assert path.suffix == ".cuh" or (module == "noah_init" and header == "noah.cu"), (
+                "only the explicitly reused Noah unit may supply a .cu header")
 
 
 def test_allow_list_has_no_implicit_filesystem_behaviour():
@@ -227,3 +240,13 @@ def test_mosaic_ucm_composes_one_header_and_unchanged_ucm():
                       + (_KDIR / "noah_mosaic.cu").read_text(encoding="utf-8"))
     assert source.count("struct UcmCol {") == 1
     assert "NOAH_MOSAIC_UCM" not in kernel_loader.module_source("urban_ucm")
+
+
+def test_noah_initialization_reuses_device_physics_without_moving_forecast_source():
+    assert "noah" not in kernel_loader.EXTRA_HEADERS
+    assert kernel_loader.module_source("noah") == _pre_hook_source("noah")
+    assert kernel_loader.EXTRA_HEADERS["noah_init"] == ("noah.cu",)
+    reused = (_KDIR / "noah.cu").read_text(encoding="utf-8")
+    body = (_KDIR / "noah_init.cu").read_text(encoding="utf-8")
+    assert kernel_loader.module_source("noah_init") == kernel_loader._preamble() + reused + body
+    assert "__device__ static real noah_frh2o(" not in body

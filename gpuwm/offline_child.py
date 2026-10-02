@@ -647,7 +647,16 @@ def resolve_child_run_config(child_config_path, *, child_levels=None):
 
     from gpuwm.config import load_config, validate_run_config
 
-    cfg = load_config(child_config_path)
+    from types import SimpleNamespace
+    from gpuwm.config import load_device_options
+    from gpuwm.core.devices import refuse_unrouted_devices
+    refuse_unrouted_devices(
+        SimpleNamespace(devices=load_device_options(child_config_path)),
+        "offline child and downscale")
+    # "auto" is admitted: this route carries the label to the floor
+    # (adapt_child_acoustics reads it with child_epssm_is_auto).
+    cfg = load_config(child_config_path, accept_epssm_auto=True,
+                      child_static=True)
     if child_levels is None:
         return cfg
     # Imported here and not at module scope: ``gpuwm.downscale`` imports
@@ -685,6 +694,93 @@ def resolve_child_run_config(child_config_path, *, child_levels=None):
     return cfg
 
 
+def child_epssm_is_auto(child_config_path) -> bool:
+    """Whether the child config leaves ``epssm`` to the model.
+
+    True where no ``[grid]``/``[dynamics]``/``[run]`` table names it or
+    one names ``"auto"`` or ``{ auto = VALUE }``, which retains a derived
+    parent's numeric setting and its model-choice label. The same rule
+    the experiment loader applies to a
+    ``[[domain]]`` (``ExperimentConfig.auto_epssm``), read off the same
+    bytes :func:`resolve_child_run_config` loads.
+    """
+
+    import io
+    import tomllib
+
+    from gpuwm.config import _RUN_CONFIG_TABLES, EPSSM_AUTO
+    from gpuwm.config_authority import read_config_authority
+
+    raw = tomllib.load(io.BytesIO(
+        read_config_authority(child_config_path).payload))
+    for table in _RUN_CONFIG_TABLES:
+        entries = raw.get(table, {})
+        if isinstance(entries, dict) and "epssm" in entries:
+            choice = entries["epssm"]
+            return choice == EPSSM_AUTO or (
+                isinstance(choice, dict) and set(choice) == {EPSSM_AUTO})
+    return True
+
+
+def child_terrain_reading(frame_path, placement: "OfflineChildPlacement", *,
+                          child_cfg):
+    """The steepest slope of the terrain an offline child integrates.
+
+    The child runs its parent's ``HGT`` carried onto its own grid by the
+    SINT its initial state is built with (``terrain_policy``
+    ``sint-parent-inherited``, :func:`interpolate_parent_initial_state`),
+    on the map factors the same SINT carries down, so that is the ground
+    read: the prepared doors read each domain's static ``HGT_M`` the same
+    way (:func:`gpuwm.acoustic_adaptation.readings_from_static`).  Three
+    two-dimensional fields of one frame, on the host, so the answer is
+    known before the archive is interpolated.
+    """
+
+    from gpuwm.acoustic_adaptation import steepest_slope
+
+    with _ParentHistory(frame_path) as dataset:
+        fields = {name: _read_record(dataset, name)
+                  for name in ("HGT", "MAPFAC_U", "MAPFAC_V")}
+    child = {
+        name: sint(np.ascontiguousarray(value, dtype=np.float32),
+                   placement.registration(
+                       _INITIAL_FIELD_STAGGER.get(name, ""),
+                       wrapper="interp"))
+        for name, value in fields.items()}
+    return steepest_slope(
+        child["HGT"], float(child_cfg.dx), float(child_cfg.dy),
+        msfu=child["MAPFAC_U"], msfv=child["MAPFAC_V"],
+        label=f"d{int(child_cfg.grid_id):02d}")
+
+
+def adapt_child_acoustics(cfg, *, child_config_path, frame_path,
+                          placement: "OfflineChildPlacement"):
+    """The child config with the acoustic rule its own ground needs.
+
+    ``(cfg, adaptation)``: the off-centering floor and the substep count
+    (:func:`gpuwm.acoustic_adaptation.adapt_run_to_terrain`), read off
+    the terrain the child integrates (:func:`child_terrain_reading`), the
+    rule every prepared door applies to each of its domains.  An
+    ``epssm`` the child config leaves to the model (unset or ``"auto"``,
+    :func:`child_epssm_is_auto`) is raised to the floor; one it writes is
+    the user's and is refused below the floor, remedy first.  Plan review
+    and the runner both call this, so each line is said once per command
+    (:func:`_warn_resolution_once`).
+    """
+
+    from gpuwm.acoustic_adaptation import adapt_run_to_terrain
+
+    reading = child_terrain_reading(frame_path, placement, child_cfg=cfg)
+    try:
+        return adapt_run_to_terrain(
+            cfg, reading, grid_id=int(cfg.grid_id),
+            auto_epssm=child_epssm_is_auto(child_config_path),
+            say=lambda sentence, why: _warn_resolution_once(
+                sentence, why=why))
+    except ValueError as error:
+        raise OfflineChildContractError(str(error)) from error
+
+
 #: What a downscaled child's own ``report.json`` calls the pipeline that
 #: wrote it, on BOTH of its outcomes -- the run that reached its last
 #: frame and the one whose fields stopped being finite.  One spelling,
@@ -719,9 +815,8 @@ LES_CHILD_SPACING_SOURCE = "docs/public/LES.md"
 #: ``validate_km_opt``): the vertical exchange pair of both is applied by
 #: ``vertical_diffusion_2``, which is PBL-off gated, so with a scheme on
 #: only the horizontal half of the selected closure would run.  WRF's
-#: ``diff_opt`` is not a key here -- ``gpuwm.namelist_import`` maps
-#: ``diff_opt = 2`` onto the native mixing form on the way in and
-#: ``km_opt`` stays the whole of the selection.
+#: ``diff_opt = 2`` selects that metric-aware vertical exchange path;
+#: ``diff_opt = 1`` selects model-coordinate horizontal diffusion.
 LES_CHILD_THREE_DIMENSIONAL_CLOSURES = (2, 3)
 
 #: The two-dimensional operators, which compute no vertical exchange pair
@@ -2795,14 +2890,20 @@ def interpolate_parent_initial_state(
         physics_binding: ParentPhysicsBinding | None = None,
         target_mp_physics: int | None = None,
         morr_rimed_ice: int | None = None, backend: str = "cpu",
-        child_eta_levels=None, child_cfg=None,
+        child_eta_levels=None, child_cfg=None, geography=None,
 ) -> InterpolatedInitialState:
     """SINT one archived parent state into a standalone child cold start.
 
-    This first executable mode deliberately inherits SINT parent terrain and
-    base state.  A later static-geography join may replace/blend those fields,
-    but it must run the existing ``blend_terrain``/``adjust_tempqv`` contract;
-    this function never claims a high-resolution terrain adjustment happened.
+    With ``geography`` ``None`` the child inherits the SINT parent terrain
+    and base state, as every child did before engine item E3, and the
+    receipt says ``sint-parent-inherited``.  With a
+    :class:`gpuwm.offline_child_geography.ChildGeography`, the interpolated
+    state is moved onto the child's OWN terrain the way WRF's ``ndown``
+    moves it (:func:`_onto_child_terrain`): the two terrains are blended
+    across the child's boundary zone (``blend_terrain``) and the state is
+    rebalanced onto the blend (ndown's ``rebalance``), after the vertical
+    remap onto the child's own ladder when it declares one, which is
+    ndown's order (``vertical_interp`` before ``rebalance_driver``).
 
     A child of a DIFFERENT microphysics scheme is converted on the parent's
     own grid first, by the online nest edge's contract and kernel
@@ -2920,6 +3021,11 @@ def interpolate_parent_initial_state(
                   else np.asarray(value, dtype=np.float32)
                   for name, value in fields.items()}
         fields["PHB"] = np.ascontiguousarray(fields["PHB"], dtype=np.float64)
+    terrain_receipt = None
+    if geography is not None:
+        fields, terrain_receipt = _onto_child_terrain(
+            fields, source_mixing, geography=geography, child_cfg=child_cfg,
+            hybrid_opt=hybrid_opt, etac=etac, p_top=p_top)
     receipt = MappingProxyType({
         "path": str(Path(path).resolve()),
         "valid_time": info.valid_time.isoformat(),
@@ -2931,7 +3037,8 @@ def interpolate_parent_initial_state(
         "target_mp_physics": target_mp,
         "backend": backend,
         "positive_definite_clamp": initial_clamp,
-        "terrain_policy": "sint-parent-inherited",
+        "terrain_policy": ("sint-parent-inherited" if terrain_receipt is None
+                           else terrain_receipt["policy"]),
         "spinup_policy": (
             "new-standalone-child; source held physics tendencies and "
             "scheduler state are not inherited"),
@@ -2952,11 +3059,93 @@ def interpolate_parent_initial_state(
         },
         "conversion": None if conversion_receipt is None else dict(conversion_receipt),
         "seconds": time.perf_counter() - started,
+        **({} if terrain_receipt is None else {"terrain": terrain_receipt}),
     })
     return InterpolatedInitialState(
         info.valid_time, MappingProxyType(fields),
         MappingProxyType({name: _to_host(value)
                           for name, value in source_mixing.items()}), receipt)
+
+
+def _onto_child_terrain(fields, source_mixing, *, geography, child_cfg,
+                        hybrid_opt, etac, p_top):
+    """Move one interpolated child state onto the child's own terrain.
+
+    WRF ndown's two steps, in its order (main/ndown_em.F:586-710): the
+    parent's interpolated terrain and the child's own are blended across the
+    child's boundary zone (``blend_terrain``), and the state is rebalanced
+    onto the blend (``rebalance``,
+    :func:`gpuwm.offline_child_geography.rebalance_to_child_terrain`).
+    Every boundary frame takes the same two steps
+    (:func:`_own_geography_boundary_snapshot`), so the boundary strips are
+    made on exactly the terrain under the rows they are applied to.
+
+    The base state comes back in float64 (``MUB``, ``PB``, ``PHB``): the
+    child's base on its own terrain is analytic, and
+    :func:`_base_from_interpolated_initial` re-derives the inverse density
+    and base potential temperature from those three, so rounding them here
+    would put a float32 step between the base the state was balanced on
+    and the base the child integrates on.
+    """
+
+    from gpuwm.offline_child_geography import (
+        OWN_TERRAIN_POLICY, WRF_BLEND_WIDTH, blend_child_terrain,
+        rebalance_to_child_terrain)
+
+    if child_cfg is None:
+        raise OfflineChildContractError(
+            "a child on its own terrain is rebalanced with its own config "
+            "(spec_bdy_width, base_temp, hypsometric_opt); pass child_cfg")
+    if "qv" not in source_mixing:
+        raise OfflineChildContractError(
+            "a child on its own terrain is rebalanced with its vapour, and "
+            "the interpolated state carries no qv")
+    znw = np.asarray(fields["ZNW"], dtype=np.float64).reshape(-1)
+    coord = make_vertical_coord(znw.size - 1, hybrid_opt=int(hybrid_opt),
+                                etac=float(etac), eta_levels=znw)
+    finalize_vertical_coord(coord, float(p_top))
+    terrain_interpolated = np.asarray(fields["HGT"], dtype=np.float64)
+    spec_bdy_width = int(child_cfg.spec_bdy_width)
+    terrain_child = blend_child_terrain(
+        terrain_interpolated, geography.terrain,
+        spec_bdy_width=spec_bdy_width, blend_width=WRF_BLEND_WIDTH)
+    columns = rebalance_to_child_terrain(
+        theta=fields["T"], mu=fields["MU"],
+        qv=_to_host(source_mixing["qv"]), coord=coord, p_top=float(p_top),
+        terrain_interpolated=terrain_interpolated,
+        terrain_child=terrain_child, base_temp=float(child_cfg.base_temp),
+        hypsometric_opt=int(child_cfg.hypsometric_opt))
+    out = dict(fields)
+    base = columns.base
+    out.update({
+        "HGT": np.asarray(terrain_child, dtype=np.float32),
+        "MUB": np.ascontiguousarray(base.mub, dtype=np.float64),
+        "PB": np.ascontiguousarray(base.pb, dtype=np.float64),
+        "PHB": np.ascontiguousarray(base.phb, dtype=np.float64),
+        "T": np.asarray(columns.theta, dtype=np.float32),
+        "PH": np.asarray(columns.ph, dtype=np.float32),
+        "P": np.asarray(columns.p, dtype=np.float32),
+        "PSFC": np.asarray(columns.psfc, dtype=np.float32),
+    })
+    change = terrain_child - terrain_interpolated
+    receipt = {
+        "policy": OWN_TERRAIN_POLICY,
+        "method": "WRF v4.7.1 ndown: blend_terrain (dyn_em/"
+                  "nest_init_utils.F:712-785) then rebalance (dyn_em/"
+                  "module_initialize_real.F:4982-5266), every frame",
+        "blend": {"spec_bdy_width": spec_bdy_width,
+                  "blend_width": WRF_BLEND_WIDTH},
+        "terrain_change_m": {
+            "max_rise": float(change.max()), "max_drop": float(-change.min()),
+            "mean_abs": float(np.mean(np.abs(change)))},
+        "terrain_m": {"interpolated_max": float(terrain_interpolated.max()),
+                      "child_max": float(terrain_child.max())},
+        "theta_shift_k": {
+            "lowest_level_min": float(columns.theta_shift[0].min()),
+            "lowest_level_max": float(columns.theta_shift[0].max())},
+        "geography_sha256": str(geography.receipt.get("terrain_sha256")),
+    }
+    return out, receipt
 
 
 def _child_base_geopotential(phb_parent, mub, *, parent_znw, child_znw,
@@ -3389,7 +3578,7 @@ def interpolate_parent_boundary_snapshot(
         physics_binding: ParentPhysicsBinding | None = None,
         target_mp_physics: int | None = None,
         morr_rimed_ice: int | None = None, backend: str = "cpu",
-        child_eta_levels=None, child_cfg=None,
+        child_eta_levels=None, child_cfg=None, geography=None,
 ) -> InterpolatedBoundarySnapshot:
     """Conservatively SINT one archived parent state onto a child frame.
 
@@ -3399,8 +3588,19 @@ def interpolate_parent_boundary_snapshot(
     edge kernel, COUPLED by the kernel itself with the parent's hybrid mass
     (the ``coupled=True`` form the live nest coupler uses), and interpolated
     beside the dynamics exactly as the parent's own species would have been.
+
+    A child on its own ``geography`` takes ndown's route instead
+    (:func:`_own_geography_boundary_snapshot`).
     """
 
+    if geography is not None:
+        return _own_geography_boundary_snapshot(
+            path, placement, source_mp_physics=source_mp_physics,
+            physics_binding=physics_binding,
+            target_mp_physics=target_mp_physics,
+            morr_rimed_ice=morr_rimed_ice, backend=backend,
+            child_eta_levels=child_eta_levels, child_cfg=child_cfg,
+            geography=geography)
     source_mp_physics, morr_rimed_ice = _resolve_source_physics(
         source_mp_physics, physics_binding, morr_rimed_ice)
     backend = str(backend).strip().lower()
@@ -3525,6 +3725,94 @@ def interpolate_parent_boundary_snapshot(
     return InterpolatedBoundarySnapshot(info.valid_time, fields, receipt)
 
 
+def _own_geography_boundary_snapshot(
+        path, placement, *, source_mp_physics, physics_binding,
+        target_mp_physics, morr_rimed_ice, backend, child_eta_levels,
+        child_cfg, geography) -> InterpolatedBoundarySnapshot:
+    """One boundary frame of a child on its own terrain, as ndown makes it.
+
+    ndown builds its boundary file from the fine grid's own rebalanced
+    state, frame by frame (main/ndown_em.F:806-860): every parent frame is
+    interpolated, blended and rebalanced exactly as the initial state is,
+    then coupled with the CHILD's own total dry mass and map factors
+    (``couple``: u with ``msfuy``, v with ``msfvx``, theta, geopotential
+    and scalars with the mass-point mass).  The interpolation is therefore
+    the initial state's own (:func:`interpolate_parent_initial_state`, the
+    uncoupled SINT and its positive-definite fix-up), and the coupling is
+    :func:`_couple_parent`'s arithmetic on the child's arrays, the same
+    convention the parent-terrain route couples with.
+    """
+
+    started = time.perf_counter()
+    state = interpolate_parent_initial_state(
+        path, placement, source_mp_physics=source_mp_physics,
+        physics_binding=physics_binding,
+        target_mp_physics=target_mp_physics, morr_rimed_ice=morr_rimed_ice,
+        backend=backend, child_eta_levels=child_eta_levels,
+        child_cfg=child_cfg, geography=geography)
+    receipt = state.receipt
+    info = inspect_parent_history_frame(
+        path, source_mp_physics=int(receipt["source_mp_physics"]))
+    fields = state.fields
+    znw = np.asarray(fields["ZNW"], dtype=np.float64).reshape(-1)
+    coeffs = compute_hybrid_coeffs(znw, int(receipt["hybrid_opt"]),
+                                   float(receipt["etac"]), float(c.P0),
+                                   float(receipt["p_top"]))
+
+    def column(name):
+        return np.asarray(coeffs[name], dtype=np.float64)[:, None, None]
+
+    c1h, c2h, c1f, c2f = (column(name) for name in ("c1h", "c2h",
+                                                    "c1f", "c2f"))
+    mu = np.asarray(fields["MU"], dtype=np.float64)
+    total = np.asarray(fields["MUB"], dtype=np.float64) + mu
+    mux = _edge_pinned(np.asarray(mu_at_u_faces(total), dtype=np.float64),
+                       total, axis=1)
+    muy = _edge_pinned(np.asarray(mu_at_v_faces(total), dtype=np.float64),
+                       total, axis=0)
+    chm = c1h * total[None] + c2h
+    chf = c1f * total[None] + c2f
+
+    def host(name):
+        return np.asarray(fields[name], dtype=np.float64)
+
+    coupled = {
+        "u": (c1h * mux[None] + c2h) * host("U") / host("MAPFAC_U")[None],
+        "v": (c1h * muy[None] + c2h) * host("V") / host("MAPFAC_V")[None],
+        "w": chf * host("W") / host("MAPFAC_M")[None],
+        "theta": chm * host("T"),
+        "phi": chf * host("PH"),
+        "mu": mu[None],
+    }
+    coupled.update({name: chm * np.asarray(value, dtype=np.float64)
+                    for name, value in state.microphysics.items()})
+    out = MappingProxyType({name: np.ascontiguousarray(value, dtype=np.float32)
+                            for name, value in coupled.items()})
+    snapshot_receipt = MappingProxyType({
+        "path": receipt["path"],
+        "valid_time": receipt["valid_time"],
+        "geometry_sha256": receipt["geometry_sha256"],
+        "source_kind": info.source_kind,
+        "source_mp_physics": receipt["source_mp_physics"],
+        "advisory_inferred_mp_physics": receipt["advisory_inferred_mp_physics"],
+        "source_physics_binding": receipt["source_physics_binding"],
+        "target_mp_physics": receipt["target_mp_physics"],
+        "backend": receipt["backend"],
+        "positive_definite_clamp": receipt["positive_definite_clamp"],
+        "hybrid_opt": receipt["hybrid_opt"],
+        "etac": receipt["etac"],
+        "p_top": receipt["p_top"],
+        "field_inventory": tuple(sorted(out)),
+        "vertical_remap": receipt["vertical_remap"],
+        "conversion": receipt["conversion"],
+        "terrain_policy": receipt["terrain_policy"],
+        "terrain": receipt.get("terrain"),
+        "seconds": time.perf_counter() - started,
+    })
+    return InterpolatedBoundarySnapshot(state.valid_time, out,
+                                        snapshot_receipt)
+
+
 def _single_precision_interval(interval: BoundaryInterval) -> BoundaryInterval:
     """The same interval held at the precision the device reads it at.
 
@@ -3564,8 +3852,13 @@ def build_offline_lateral_boundaries(
         morr_rimed_ice: int | None = None, backend: str = "cpu",
         child_eta_levels=None, child_cfg=None,
         spec_bdy_width: int = 5, spec_zone: int = 1, relax_zone: int = 4,
+        geography=None,
 ) -> OfflineBoundaryResult:
-    """Stream parent frames into compact child lateral value/tendency strips."""
+    """Stream parent frames into compact child lateral value/tendency strips.
+
+    ``geography`` puts every frame on the child's own terrain first
+    (:func:`_own_geography_boundary_snapshot`); ``None`` keeps the parent's.
+    """
 
     if contract.source_mp_physics is None:
         raise OfflineChildContractError(
@@ -3590,6 +3883,7 @@ def build_offline_lateral_boundaries(
             target_mp_physics=target_mp_physics,
             morr_rimed_ice=morr_rimed_ice, backend=backend,
             child_eta_levels=child_eta_levels, child_cfg=child_cfg,
+            geography=geography,
         )
         sides = {
             side: extract_lateral_side(snapshot.fields, side, spec_bdy_width)

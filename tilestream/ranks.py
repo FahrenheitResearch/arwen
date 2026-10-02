@@ -1,0 +1,717 @@
+"""Resident ranked domain with one host store and one domain clock."""
+from __future__ import annotations
+
+from dataclasses import fields, replace
+from queue import Queue
+from threading import Thread
+from time import perf_counter
+
+from tilestream import driver, gather, harness, multigpu, spec
+from tilestream import physics_inventory as physics
+
+
+class RankedRunError(driver.TiledRunError):
+    pass
+
+
+def choose_transports(devices, requested, peers):
+    """Resolve ordered card pairs without allocating or importing CUDA."""
+    if requested not in ("auto", "peer", "staged", "host"):
+        raise RankedRunError(f"unknown ranked transport {requested!r}")
+    paths = {}
+    for src in devices:
+        for dst in devices:
+            pair = (int(src), int(dst))
+            both = peers.get(pair, False) and peers.get(pair[::-1], False)
+            if src == dst:
+                paths[pair] = "local"
+            elif requested == "peer" and not both:
+                raise RankedRunError(
+                    f"peer transport refused for cards {src} and {dst}: both "
+                    "directions must support peer access to prevent a staged "
+                    "copy being reported as direct peer transport")
+            else:
+                paths[pair] = ("peer" if both else "staged") \
+                    if requested == "auto" else requested
+    return paths
+
+
+class RankedRun(multigpu.MultiGPUDomain):
+    """A rank stays resident; host transfers occur only at an exposed seam."""
+    ranked = True
+
+    def __init__(self, store, cfg, *, options, scalars, geography, template,
+                 clock=None, seam="zeros", boundaries=None,
+                 check_geography=True, step_mode="threads", halo=None,
+                 nest_hook=None, _unsafe_short_halo=False):
+        from gpuwm.core.devices import validate_ranked_physics
+        validate_ranked_physics(cfg)
+        import cupy as cp
+        from gpuwm.core import streaming
+        from gpuwm.core.adaptive_clock import maximum_map_factor
+
+        if step_mode not in ("threads", "sequential"):
+            raise RankedRunError(f"unknown ranked step mode {step_mode!r}")
+        self.cfg = cfg
+        self.step_mode = step_mode
+        self.nz, self.ny, self.nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
+        self.devices = list(options.device_ids())
+        self.ngpu = self.nbuffers = len(self.devices)
+        self.grid = options.resolved_grid(self.nx, self.ny)
+        self.periodic_x, self.periodic_y = streaming._periodic_axes(cfg)
+        self.periodic = self.periodic_x and self.periodic_y
+        need = streaming.ranked_halo(
+            cfg, max_map_factor=maximum_map_factor(geography=geography))
+        self.halo = need if halo is None else int(halo)
+        if self.halo < need and not _unsafe_short_halo:
+            raise RankedRunError(
+                f"ranked halo {self.halo} is below required halo {need}; "
+                "seam fiction would reach owned forecast cells")
+        self.specs = streaming.ranked_specs(cfg, options, halo=self.halo)
+        spec.validate_plan(self.specs, self.ny, self.nx)
+        multigpu.validate_forced_plan(cfg, self.specs, self.halo, boundaries,
+                                      enforce_halo=not _unsafe_short_halo,
+                                      nest_forcing=nest_hook is not None)
+        self.seams = multigpu.seam_plan(self.specs, self.halo)
+        self.boundaries = boundaries
+        self.transport = options.transport
+        available = cp.cuda.runtime.getDeviceCount()
+        if any(d < 0 or d >= available for d in self.devices):
+            raise RankedRunError(f"rank cards {self.devices} exceed {available} available cards")
+        peers = multigpu.peer_access_matrix(self.devices)
+        self._peers = peers
+        self._paths = choose_transports(self.devices, self.transport, peers)
+        self.inventory_fn = streaming.streamed_store_inventory()
+        self.volatile_inventory = True
+        self._home = store
+        self.scalars = scalars
+        self._clock = dict(scalars)
+        self.geography_fields = list(geography)
+        self.sub_cfgs = [harness.tile_config(cfg, s.cnx, s.cny) for s in self.specs]
+        self.tile_cfg = self.sub_cfgs[0]
+        self.tiles = self.states = []
+        self.compute_streams, self.copy_streams, self.unpack_streams = [], [], []
+        if nest_hook is not None and boundaries is not None:
+            raise RankedRunError("a nested ranked domain takes its forcing from its "
+                                 "parent each parent step; it cannot also carry "
+                                 "tabulated lateral boundaries")
+        tables = None if boundaries is None else streaming.tile_boundary_tables(
+            boundaries, self.specs, seam=seam)
+        hook = None if tables is None else streaming.make_tile_hook(
+            tables, domain_state=None, external_clock=clock)
+        # A NEST's slab forcing is windowed out of the rolling tables its
+        # coupler's FORCE attaches to the nest's own state, and the first
+        # FORCE comes after this constructor (the executor guarantees FORCE
+        # before the nest's first STEP).  So the hook runs at each slab's
+        # first step instead of here (``_step_rank``); after that the
+        # launch-time reload keeps the slab current, as on the [tiles] road.
+        self._nest_hook = nest_hook
+        self._nest_attached = [False] * len(self.devices)
+        flags = driver.geography_scalars(geography)
+        for rank, dev in enumerate(self.devices):
+            try:
+                with cp.cuda.Device(dev):
+                    factory = streaming.prepared_tile_state_factory(
+                        template, cfg, tables0=None if tables is None else tables[rank])
+                    tile = factory(self.sub_cfgs[rank])
+                    self.tiles.append(tile)
+                    compute = cp.cuda.Stream(non_blocking=True)
+                    self.compute_streams.append(compute)
+                    self.copy_streams.append(cp.cuda.Stream(non_blocking=True))
+                    self.unpack_streams.append(cp.cuda.Stream(non_blocking=True))
+                    # Constructor setup uploads on the default stream.
+                    cp.cuda.runtime.deviceSynchronize()
+                    driver._pin_scheme_geography(tile)
+                    with compute:
+                        gather.gather_tile(geography, tile, self.specs[rank], compute,
+                                           inventory_fn=driver.geography_inventory, nz=self.nz)
+                        for key, value in flags.items():
+                            setattr(tile, key, value)
+                        if check_geography and rank == 0:
+                            driver.assert_geography_gathered(tile, keys=self.geography_fields)
+                        if hook is not None:
+                            hook(tile, self.specs[rank], rank, compute)
+                        gather.gather_tile(store, tile, self.specs[rank], compute,
+                                           inventory_fn=self.inventory_fn, nz=self.nz)
+                        physics.set_carrier_scalars(tile, self._clock)
+                    compute.synchronize()
+            except BaseException as exc:
+                self._drain_after_error()
+                raise RankedRunError(
+                    f"rank {rank} card {dev} build failed: {exc}") from exc
+        self.arrays = [self.inventory_fn(tile) for tile in self.tiles]
+        self.names = list(self.arrays[0])
+        for rank, arrays in enumerate(self.arrays):
+            if set(arrays) != set(store):
+                raise RankedRunError(f"rank {rank} inventory differs from host store: "
+                                     f"{sorted(set(arrays) ^ set(store))}")
+            if any(a.device.id != self.devices[rank] for a in arrays.values()):
+                raise RankedRunError(f"rank {rank} allocated carriers on the wrong card")
+        # Template vertical setup may use CuPy's cross-device copy path,
+        # which can enable peer access. Resolve the measured seam transport
+        # only after those construction copies have drained.
+        for (src, dst), path in self._paths.items():
+            if path == "staged":
+                with cp.cuda.Device(src):
+                    try:
+                        cp.cuda.runtime.deviceDisablePeerAccess(dst)
+                    except cp.cuda.runtime.CUDARuntimeError as exc:
+                        if exc.status != 705:  # cudaErrorPeerAccessNotEnabled
+                            raise
+            if path == "peer":
+                with cp.cuda.Device(src):
+                    try:
+                        cp.cuda.runtime.deviceEnablePeerAccess(dst)
+                    except cp.cuda.runtime.CUDARuntimeError as exc:
+                        if exc.status != 704:  # cudaErrorPeerAccessAlreadyEnabled
+                            raise
+        self.exchange_names = list(self.names)
+        self._build_channels()
+        self._streams = self.compute_streams
+        self.observer = None
+        self.post_step_hook = streaming.refl_handoff_hook()
+        self._closed = self._ahead = self._exposed = False
+        # The output road (see download()): which store keys already hold
+        # this generation, the in-flight frame download, the per-rank
+        # streams it runs on, the callables that release borrowed views of
+        # the store before anything writes it again, and the receipt.
+        self._fresh = set()
+        self._downloads = []
+        self._generation = 0
+        self._guarded_generation = -1
+        self._frame_streams = None
+        self._frame_snapshots = [{} for _ in self.devices]
+        self._snapshot_done = [None for _ in self.devices]
+        from gpuwm.core.devices_memory import FRAME_SNAPSHOT_LIMIT_BYTES
+        self._snapshot_limit = FRAME_SNAPSHOT_LIMIT_BYTES
+        self._store_guards = []
+        self.output_report = dict(full_drains=0, full_drain_seconds=0.0,
+                                  full_gathers=0, frame_downloads=0,
+                                  frame_download_bytes=0, frame_issue_seconds=[],
+                                  frame_wait_seconds=[], scratch_zeroes=0,
+                                  frame_snapshot_bytes=0, fallback_downloads=0)
+        self._jobs = [Queue() for _ in self.tiles]
+        self._done = Queue()
+        self._workers = [Thread(target=self._worker, args=(rank,),
+                                name=f"rank-{rank}-card-{dev}", daemon=True)
+                         for rank, dev in enumerate(self.devices)]
+        try:
+            for rank, worker in enumerate(self._workers):
+                worker.start()
+        except BaseException as exc:
+            self._drain_after_error()
+            for jobs, worker in zip(self._jobs, self._workers):
+                if worker.is_alive():
+                    jobs.put(None)
+            for worker in self._workers:
+                if worker.ident is not None:
+                    worker.join()
+            self._closed = True
+            self._release_owners()
+            raise RankedRunError(
+                f"rank {rank} card {self.devices[rank]} worker startup failed: {exc}") from exc
+
+    def _build_channels(self):
+        self.channels = []
+        for seam in self.seams:
+            src, dst = seam.src_gpu, seam.dst_gpu
+            bands, size = multigpu._bands(seam, self.arrays[src], self.arrays[dst],
+                self.nz, self.specs[src], self.specs[dst], self.exchange_names)
+            self.channels.append(multigpu._SeamChannel(seam, self.devices[src],
+                self.devices[dst], bands, size, self._paths[(self.devices[src], self.devices[dst])]))
+        self.channel_phases = [[(k, ch) for k, ch in enumerate(self.channels)
+                                if ch.seam.phase == phase]
+                               for phase in sorted({c.seam.phase for c in self.channels})]
+        self._events = None
+        self._seam_bytes = sum(ch.nbytes for ch in self.channels)
+        self._transfers_per_exchange = sum(ch.n_transfers_packed for ch in self.channels)
+
+    def transport_report(self):
+        return [dict(src_dev=src, dst_dev=dst, requested=self.transport,
+                     can_access_peer=bool(self._peers.get((src, dst), False)),
+                     actual=path, transfer_legs=2 if path == "host" else 1,
+                     host_legs=(2 if path == "host" else 1 if path == "staged" else 0))
+                for (src, dst), path in sorted(self._paths.items())]
+
+    def devices_report(self):
+        return dict(ranks=self.ngpu, grid=list(self.grid), devices=list(self.devices),
+                    halo=self.halo, rank_shapes=[[s.cny, s.cnx] for s in self.specs],
+                    seam_bytes_per_exchange=self._seam_bytes,
+                    transfers_per_exchange=self._transfers_per_exchange,
+                    transport=self.transport_report())
+
+    def _worker(self, rank):
+        while True:
+            job = self._jobs[rank].get()
+            if job is None:
+                return
+            try:
+                self._step_rank(rank, *job)
+            except BaseException as exc:
+                self._done.put((rank, exc))
+            else:
+                self._done.put((rank, None))
+
+    def _step_rank(self, rank, kwargs, control):
+        import cupy as cp
+        from gpuwm.core import dycore
+        with cp.cuda.Device(self.devices[rank]), self.compute_streams[rank]:
+            tile = self.tiles[rank]
+            physics.set_carrier_scalars(tile, self._clock)
+            if self._nest_hook is not None and not self._nest_attached[rank]:
+                self._nest_hook(tile, self.specs[rank], rank, self.compute_streams[rank])
+                self._nest_attached[rank] = True
+            if control is not None:
+                control.apply(tile)
+            dycore.set_wrf_cfl_tile_window(self.cfg.grid_id, self.specs[rank])
+            dycore.step(tile, self.sub_cfgs[rank], **kwargs)
+            dycore.finish_wrf_cfl_tile(self.cfg.grid_id)
+            if self.observer is not None:
+                self.observer(tile, self.specs[rank], rank, self.compute_streams[rank])
+            self.post_step_hook(tile, self.specs[rank], rank, self.compute_streams[rank])
+
+    def _require_open(self):
+        if self._closed:
+            raise RankedRunError("ranked run is closed; resident ranks were released")
+
+    @property
+    def closed(self):
+        return self._closed
+
+    @property
+    def store(self):
+        self._require_open()
+        self.drain()
+        return self._home
+
+    def store_keys(self):
+        """The host store's member names, WITHOUT draining it.
+
+        ``key in run.store`` is a full drain on this road (every carrier of
+        every slab copied to the host, and the whole store copied back before
+        the next step), and the stepper asked it before every reflectivity
+        step.  A membership question needs neither.
+        """
+        self._require_open()
+        return self._home.keys()
+
+    @property
+    def raw_store(self):
+        """The pinned host store as an object, for planning only.
+
+        Nothing may read a member's VALUES through this: they are as fresh as
+        the last :meth:`drain` or :meth:`download` that named them and no
+        fresher.  It exists for what only needs keys, shapes and dtypes (the
+        frame plan) and for the frame road, which reads the members it
+        downloaded after waiting for that download.
+        """
+        self._require_open()
+        return self._home
+
+    def add_store_guard(self, guard):
+        """Register a callable that must return before the store is written.
+
+        The history writer borrows views of the store for the frame it is
+        writing.  On this road the next sweep never writes the store, so the
+        writer can keep them while the model steps on; the next write into
+        the store (the next frame's download, a full drain) calls every guard
+        first, which waits until the writer has released them.
+        """
+        if not any(g is guard or g == guard for g in self._store_guards):
+            self._store_guards.append(guard)
+
+    def _guard_store(self):
+        for guard in list(self._store_guards):
+            guard()
+
+    def pending_downloads(self):
+        """The frame downloads in flight now, as a value a reader can keep."""
+        return tuple(self._downloads)
+
+    def wait_downloads(self, downloads):
+        """Block until ``downloads`` (from :meth:`pending_downloads`) land.
+
+        Thread-safe: it touches only the events it was handed.  The frame's
+        reader calls it on the writer thread, for the downloads its frame
+        was issued behind and no others.
+        """
+        import cupy as cp
+        start = perf_counter()
+        for download in downloads:
+            for dev, event in download["events"]:
+                with cp.cuda.Device(dev):
+                    event.synchronize()
+        waited = perf_counter() - start
+        self.output_report["frame_wait_seconds"].append(round(waited, 6))
+        return waited
+
+    def _await_download(self):
+        """Wait for every frame download in flight (stepping thread only)."""
+        pending, self._downloads = self._downloads, []
+        return self.wait_downloads(pending) if pending else 0.0
+
+    def download(self, names):
+        """Copy the named store members of every slab to the host, async.
+
+        THE OUTPUT ROAD.  A history frame needs a few dozen members of a
+        store that holds every carrier, and the store is only a mirror on
+        this road: the slabs stay resident and the next step never reads it.
+        So a frame does not :meth:`drain` (which copies every carrier of
+        every slab to the host and marks the whole store to be copied back
+        before the next step); it downloads the members it names:
+
+        * each slab's owned interior of each member, by the same scatter
+          plan :meth:`drain` uses, so the bytes that land are the bytes a
+          drain would land;
+        * into reusable device snapshots on the compute stream, after the
+          step and halo exchange, so later kernels cannot change a frame;
+        * from those snapshots on a frame stream per rank, while the next
+          model step runs. Snapshot reuse waits for its previous host copy.
+
+        Nothing here blocks the host.  :meth:`_await_download` (called by the
+        frame's reader, on the writer thread, and before any other host use
+        of the store) is the only wait.  Members already fresh this
+        generation (an earlier download or a drain) are not copied again.
+        Returns the list of members copied.
+        """
+        import cupy as cp
+        self._require_open()
+        start = perf_counter()
+        names = [n for n in dict.fromkeys(names) if n in self._home]
+        if self._exposed or not self._ahead:
+            # The store already holds this generation (a drain landed it, or
+            # nothing stepped since), and an exposed store may carry a
+            # consumer's write that the next sweep gathers: copying the
+            # slabs over it would discard that write.
+            return []
+        names = [n for n in names if n not in self._fresh]
+        if not names:
+            return []
+        if self._guarded_generation != self._generation:
+            # The first download of a generation: any frame the writer still
+            # holds views of must be written before these bytes land.  Later
+            # downloads of the same generation write other members only.
+            self._guard_store()
+            self._guarded_generation = self._generation
+        # Downloads that have landed need no further wait from anyone.
+        self._downloads = [d for d in self._downloads
+                           if not all(event.done for _dev, event in d["events"])]
+        if self._frame_streams is None:
+            self._frame_streams = []
+            for dev in self.devices:
+                with cp.cuda.Device(dev):
+                    self._frame_streams.append(cp.cuda.Stream(non_blocking=True))
+        events = []
+        moved = 0
+        captures = []
+        # Queue every slab's capture before any host DMA. On one card,
+        # pitched copies share a copy engine; a host transfer issued first
+        # can otherwise delay a later slab's device capture and its step.
+        for rank, dev in enumerate(self.devices):
+            with cp.cuda.Device(dev):
+                compute = self.compute_streams[rank]
+                snapshot = self._frame_snapshots[rank]
+                # A subsequent frame may reuse these device buffers only
+                # after its previous DMA has stopped reading them. This is
+                # distinct from the host store's writer-view guard.
+                previous = self._snapshot_done[rank]
+                if previous is not None:
+                    compute.wait_event(previous)
+                source = self.inventory_fn(self.tiles[rank], names)
+                if any(not array.flags.c_contiguous for array in source.values()):
+                    raise RankedRunError(
+                        f"rank {rank} output source is not C-contiguous; a raw "
+                        "snapshot copy would read different cells than the frame")
+                needed = sum(array.nbytes for array in snapshot.values()) + sum(
+                    array.nbytes for name, array in source.items() if name not in snapshot)
+                buffered = needed <= self._snapshot_limit
+                if buffered:
+                    with compute:
+                        for name, array in source.items():
+                            if name not in snapshot:
+                                snapshot[name] = cp.empty_like(array)
+                            cp.cuda.runtime.memcpyAsync(
+                                snapshot[name].data.ptr, array.data.ptr,
+                                array.nbytes, cp.cuda.runtime.memcpyDeviceToDevice,
+                                compute.ptr)
+                ready = cp.cuda.Event(disable_timing=True)
+                ready.record(compute)
+                captures.append((source, buffered, ready))
+        for rank, dev in enumerate(self.devices):
+            with cp.cuda.Device(dev):
+                source, buffered, ready = captures[rank]
+                snapshot = self._frame_snapshots[rank]
+                compute = self.compute_streams[rank]
+                stream = self._frame_streams[rank]
+                stream.wait_event(ready)
+                src = {name: snapshot[name] for name in names} if buffered else source
+                dst = {name: self._home[name] for name in names}
+                plan = gather.make_plan(src, dst, self.specs[rank], "scatter", nz=self.nz)
+                plan.execute(src, dst, stream)
+                moved += int(plan.nbytes)
+                done = cp.cuda.Event(disable_timing=True)
+                done.record(stream)
+                if not buffered:
+                    # Large frames keep the bounded-memory road. Their DMA
+                    # reads live arrays, so the next kernel must wait.
+                    compute.wait_event(done)
+                    self.output_report["fallback_downloads"] += 1
+                self._snapshot_done[rank] = done
+                events.append((dev, done))
+        self._downloads.append({"events": events, "names": tuple(names)})
+        self._fresh.update(names)
+        report = self.output_report
+        report["frame_downloads"] += 1
+        report["frame_download_bytes"] += moved
+        report["frame_snapshot_bytes"] = sum(
+            array.nbytes for snapshots in self._frame_snapshots
+            for array in snapshots.values())
+        report["frame_issue_seconds"].append(round(perf_counter() - start, 6))
+        return names
+
+    def zero_scratch(self, key):
+        """Zero one store member on every slab, on each slab's compute stream.
+
+        For the running maxima the history route resets after each frame
+        (``UP_HELI_MAX``).  Zeroing the HOST copy would need a drain first and
+        a full gather after, and would race the frame download that is still
+        reading the store; the slabs are where the domain is, so the reset
+        goes there, every slab's whole compute window (halo included, so no
+        exchange is needed for the halo to agree).  Queued on the compute
+        stream, after the frame's device snapshot, so the frame keeps the
+        pre-reset values while its download continues. The host copy
+        is then stale and is marked so.
+        """
+        import cupy as cp
+        self._require_open()
+        if self._exposed:
+            # The store is the authority until the next sweep gathers it.
+            self._await_download()
+            self._guard_store()
+            self._home[key][...] = 0
+            return
+        for rank, dev in enumerate(self.devices):
+            arrays = self.inventory_fn(self.tiles[rank], [key])
+            if key not in arrays:
+                raise RankedRunError(f"slab {rank} carries no {key!r} to zero")
+            with cp.cuda.Device(dev), self.compute_streams[rank]:
+                arrays[key].fill(0)
+        self._fresh.discard(key)
+        self._ahead = True
+        self.output_report["scratch_zeroes"] += 1
+
+    def canonical_store(self):
+        """Joined carriers plus the resident digest's small forcing weights."""
+        import cupy as cp
+        arrays = dict(self.store)
+        weights = []
+        for dev, tile in zip(self.devices, self.tiles):
+            value = getattr(tile, "_scratch", {}).get("lbc_weights_0")
+            if value is not None:
+                with cp.cuda.Device(dev):
+                    weights.append(cp.asnumpy(value))
+        if weights:
+            if len(weights) != len(self.tiles) or any(
+                    w.tobytes() != weights[0].tobytes() for w in weights[1:]):
+                raise RankedRunError("rank Davies weights disagree; ranks consumed different forcing")
+            arrays["scratch/lbc_weights_0"] = weights[0]
+        return arrays
+
+    def _order_after_caller(self):
+        """Every slab's next kernel waits for what the caller queued since.
+
+        The slabs step on non-blocking streams, which do not order against
+        the caller's own stream (the legacy default stream on every card).
+        Between two sweeps the caller writes what the slabs read: a nest
+        parent's FORCE fills this domain's rolling boundary tables, which
+        each slab's launch-time reload copies from.  Without this edge that
+        copy could run before FORCE's kernels finish.  One event per card on
+        the caller's current stream, waited on by every slab's compute
+        stream; nothing blocks the host.
+        """
+        import cupy as cp
+        events = []
+        for dev in dict.fromkeys([int(cp.cuda.Device().id), *self.devices]):
+            with cp.cuda.Device(dev):
+                event = cp.cuda.Event(disable_timing=True)
+                event.record(cp.cuda.get_current_stream())
+                events.append(event)
+        for dev, stream in zip(self.devices, self.compute_streams):
+            with cp.cuda.Device(dev):
+                for event in events:
+                    stream.wait_event(event)
+
+    def _gather_exposed(self):
+        import cupy as cp
+        if not self._exposed:
+            return
+        for rank, dev in enumerate(self.devices):
+            with cp.cuda.Device(dev), self.compute_streams[rank]:
+                gather.gather_tile(self._home, self.tiles[rank], self.specs[rank],
+                    self.compute_streams[rank], inventory_fn=self.inventory_fn, nz=self.nz)
+        self._exposed = False
+        self.output_report["full_gathers"] += 1
+
+    def drain(self):
+        import cupy as cp
+        if self._closed:
+            return
+        self._await_download()
+        # Before the store is written here or handed out for writing: a
+        # frame the writer still holds views of keeps its bytes.
+        self._guard_store()
+        self.sync_all()
+        if self._ahead:
+            start = perf_counter()
+            self.refresh_arrays()
+            for rank, dev in enumerate(self.devices):
+                with cp.cuda.Device(dev):
+                    gather.scatter_tile(self.tiles[rank], self._home, self.specs[rank],
+                        self.compute_streams[rank], inventory_fn=self.inventory_fn, nz=self.nz)
+            self.sync_compute()
+            self._ahead = False
+            self.output_report["full_drains"] += 1
+            self.output_report["full_drain_seconds"] += perf_counter() - start
+        self._exposed = True
+
+    def sync_compute(self):
+        import cupy as cp
+        for dev, stream in zip(self.devices, self.compute_streams):
+            with cp.cuda.Device(dev):
+                stream.synchronize()
+
+    def reseed_clock(self, scalars):
+        self._require_open()
+        self.sync_all()
+        self._clock = dict(scalars)
+        self.scalars.clear()
+        self.scalars.update(self._clock)
+
+    def impose_domain_clock(self, seconds):
+        """Integer ticks are the domain authority between model operations."""
+        self._clock["elapsed_seconds"] = float(seconds)
+
+    def _drain_after_error(self):
+        import cupy as cp
+        for dev in dict.fromkeys(self.devices):
+            try:
+                with cp.cuda.Device(dev):
+                    cp.cuda.runtime.deviceSynchronize()
+            except BaseException:
+                # Preserve the worker exception, but still drain other cards.
+                pass
+
+    def _set_live_config(self, incoming):
+        from gpuwm.core.adaptive_clock import ADAPTIVE_DERIVED_RUN_FIELDS
+        changed = {f.name for f in fields(self.cfg)
+                   if getattr(self.cfg, f.name) != getattr(incoming, f.name)}
+        structural = changed - ADAPTIVE_DERIVED_RUN_FIELDS
+        if structural:
+            raise RankedRunError(f"a ranked domain cannot change {sorted(structural)} "
+                                 "between steps; rebuild its ranks to prevent stale setup")
+        required = multigpu.forced_halo(incoming) if incoming.specified else harness.halo_radius(incoming)
+        if required > self.halo:
+            raise RankedRunError(f"live time_step_sound={incoming.time_step_sound} needs "
+                f"halo {required}, but ranks allocated halo {self.halo}; construct with "
+                "the adaptive acoustic ceiling to keep seam fiction outside owned cells")
+        self.cfg = incoming
+        self.sub_cfgs = [replace(cfg, **{name: getattr(incoming, name) for name in changed})
+                         for cfg in self.sub_cfgs]
+        self.tile_cfg = self.sub_cfgs[0]
+
+    def sweep(self, nsteps=1, *, step_kwargs=None, report=None, progress=None,
+              live_config=None, physics_control=None):
+        from gpuwm.core import dycore
+        self._require_open()
+        kwargs = dict(step_kwargs or {})
+        for name in ("mass_flux_observer", "mass_flux_accumulator"):
+            if kwargs.get(name) is not None:
+                raise RankedRunError(f"{name} is DOMAIN-scope; rank compute-window "
+                                     "faces are not domain faces and would double-count seam flux")
+        if live_config is not None and live_config != self.cfg:
+            self.sync_all()
+            self._set_live_config(live_config)
+        self._gather_exposed()
+        self._order_after_caller()
+        timing = report is not None and bool(report.get("timing", False))
+        step_seconds = exchange_seconds = 0.0
+        steps = []
+        for index in range(int(nsteps)):
+            dycore.begin_wrf_cfl_domain_step(self.cfg, devices=self.devices)
+            try:
+                if timing:
+                    self.sync_all()
+                    start = perf_counter()
+                if self.step_mode == "threads":
+                    for jobs in self._jobs:
+                        jobs.put((kwargs, physics_control))
+                    errors = [self._done.get() for _ in self.tiles]
+                    errors = sorted((rank, exc) for rank, exc in errors if exc is not None)
+                    if errors:
+                        rank, exc = errors[0]
+                        # DRAIN BEFORE ABORTING: queued work may retain arrays.
+                        self._drain_after_error()
+                        raise RankedRunError(f"rank {rank} card {self.devices[rank]} failed: {exc}") from exc
+                else:
+                    for rank in range(len(self.tiles)):
+                        try:
+                            self._step_rank(rank, kwargs, physics_control)
+                        except BaseException as exc:
+                            self._drain_after_error()
+                            raise RankedRunError(f"rank {rank} card {self.devices[rank]} failed: {exc}") from exc
+                dycore.finish_wrf_cfl_domain_step(self.cfg.grid_id)
+                if timing:
+                    self.sync_all()
+                    middle = perf_counter()
+                    step_seconds += middle - start
+                self.exchange_events()
+                if timing:
+                    self.sync_all()
+                    exchange_seconds += perf_counter() - middle
+                self._clock = driver._advance_clock(self._clock, self.tiles, len(self.tiles)-1, physics)
+                self.scalars.clear()
+                self.scalars.update(self._clock)
+                self._ahead = True
+                self._fresh.clear()
+                self._generation += 1
+                steps.append(dict(dt=float(self.cfg.dt), time_step_sound=int(self.cfg.time_step_sound)))
+                if progress is not None:
+                    for rank, window in enumerate(self.specs):
+                        progress(index, rank, window)
+            finally:
+                dycore.finish_wrf_cfl_domain_step(self.cfg.grid_id, commit=False)
+        if report is not None:
+            report.update(self.devices_report(), steps=steps, dt=float(self.cfg.dt),
+                          time_step_sound=int(self.cfg.time_step_sound))
+            if timing:
+                report.update(step_seconds=step_seconds, exchange_seconds=exchange_seconds,
+                              wall_seconds=step_seconds + exchange_seconds)
+
+    def _release_owners(self):
+        self.tiles = self.states = []
+        self.arrays = []
+        self.channels = []
+        self.channel_phases = []
+        self._events = None
+        self.compute_streams = self.copy_streams = self.unpack_streams = []
+        self._streams = []
+        self._frame_snapshots = []
+        self._snapshot_done = []
+        self._frame_streams = None
+        self._home = None
+        self.observer = self.post_step_hook = None
+        import gc
+        gc.collect()
+
+    def close(self):
+        if self._closed:
+            return
+        # A failed drain leaves the owner intact, as TiledRun.close does.
+        # Never free a caller's pinned source while DMA can still reach it.
+        self.drain()
+        for jobs in self._jobs:
+            jobs.put(None)
+        for worker in self._workers:
+            worker.join()
+        self._closed = True
+        self._release_owners()

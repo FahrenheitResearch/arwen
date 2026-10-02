@@ -300,7 +300,7 @@ def build_shared_scratch_arena(domains: Iterable[object],
     tree_tuple = None if tree is None else tuple(tree)
     return ScratchArena(
         shared_scratch_arena_shapes(domain_tuple, tree_tuple),
-        slot_aliases=shared_scratch_arena_aliases(domain_tuple))
+        slot_aliases=shared_scratch_arena_aliases(domain_tuple, tree_tuple))
 
 
 def build_shared_dycore_state_workspace(

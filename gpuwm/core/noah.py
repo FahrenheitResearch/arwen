@@ -378,6 +378,11 @@ def sh2o_init(smois, tslb, isltyp, params: NoahParams) -> np.ndarray:
 
     out = smois.copy()
     blim, hlice, grav, t0 = 5.5, 3.335e5, 9.81, 273.15
+    # LSMINIT compares a stored FP32 soil temperature against this FP32
+    # literal. Evaluating the literal as FP64 would send its own FP32
+    # boundary word through the cold solve instead of the warm copy
+    # (module_sf_noahdrv.F:1931,1955).
+    cold_threshold = float(np.float32(273.149))
     for column in np.ndindex(column_shape):
         category = int(soil_type[column])
         if category < 1 or category > params.slcats:
@@ -391,7 +396,7 @@ def sh2o_init(smois, tslb, isltyp, params: NoahParams) -> np.ndarray:
         bx = min(bx, blim)
         for k in range(smois.shape[0]):
             index = (k, *column)
-            if tslb[index] >= 273.149:
+            if tslb[index] >= cold_threshold:
                 continue
             fk = (((hlice / (grav * (-psisat)))
                    * ((tslb[index] - t0) / tslb[index]))
@@ -447,21 +452,51 @@ def _device_tables(params: NoahParams, dzs):
     """
     import cupy as cp
 
-    key = (id(params), tuple(float(v)
+    from gpuwm.core.device_cache import cached_ready
+
+    key = (int(cp.cuda.Device().id), id(params), tuple(float(v)
                              for v in np.asarray(dzs, np.float32).ravel()))
-    held = _DEVICE_TABLES.get(key)
-    if held is None:
-        held = (params,
+    def upload():
+        return (params,
                 (cp.asarray(params.veg.astype(np.float32).ravel()),
                  cp.asarray(params.soil.astype(np.float32).ravel()),
                  cp.asarray(params.gen.astype(np.float32)),
                  cp.asarray(np.asarray(dzs, np.float32))))
-        _DEVICE_TABLES[key] = held
-    return held[1]
+    return cached_ready(cp, _DEVICE_TABLES, key, upload)[1]
 
 
-#: ``(id(params), dzs) -> (params, device tables)``.  See :func:`_device_tables`.
+#: ``(device, id(params), dzs) -> (params, device tables)``.  See :func:`_device_tables`.
 _DEVICE_TABLES: dict = {}
+
+def initialize_noah_liquid_water(dev: dict, params: NoahParams, dzs) -> None:
+    """Run WRF LSMINIT's cold-start liquid-water initialization on CUDA.
+
+    Call after native fields have been restored and before loading any
+    checkpoint. Warm soil copies SMOIS exactly; frozen soil uses the
+    existing Noah FRH2O device function and its FP32 arithmetic.
+    """
+    import cupy as cp
+    from gpuwm.core.kernels import get_kernel
+
+    moisture, temperature, liquid = (dev[name] for name in ("smois", "tslb", "sh2o"))
+    if moisture.ndim != 3 or moisture.shape[0] != NUM_SOIL_LAYERS:
+        raise ValueError("Noah initialization requires four soil layers")
+    for name, value in (("smois", moisture), ("tslb", temperature), ("sh2o", liquid)):
+        if (not isinstance(value, cp.ndarray) or value.shape != moisture.shape
+                or value.dtype != cp.float32 or not value.flags.c_contiguous):
+            raise ValueError(f"{name}: expected contiguous float32 soil profiles")
+    soil = dev["isltyp"]
+    if (not isinstance(soil, cp.ndarray) or soil.shape != moisture.shape[1:]
+            or soil.dtype != cp.int32 or not soil.flags.c_contiguous):
+        raise ValueError("isltyp: expected contiguous int32 soil categories")
+    if bool(cp.any((soil < 1) | (soil > params.slcats)).item()):
+        raise ValueError("isltyp category is outside the Noah soil table")
+    _, soil_table, _, _ = _device_tables(params, dzs)
+    columns = soil.size
+    kernel = get_kernel("noah_init", "noah_initialize_sh2o")
+    kernel(((columns + _TPB - 1) // _TPB,), (_TPB,),
+           (soil, moisture, temperature, liquid, soil_table,
+            np.int32(params.slcats), np.int32(columns)))
 
 def _urban_args(urban, ny: int, nx: int) -> list:
     """The ten trailing ``noah_column_urban`` arguments for the urban

@@ -1,0 +1,34 @@
+# bl_ysu.o -O0 libm symbols:
+                 U expf
+                 U powf
+                 U tanhf
+# bl_gwdo.o -O0 libm symbols:
+                 U atan2f
+                 U powf
+# module_bl_gwdo.o -O0 libm symbols:
+# module_bl_gwdo_gsl.o -O0 libm symbols:
+                 U atan2f
+                 U expf
+                 U powf
+                 U sinf
+# wrf_topo_wind_inline.o -O0 libm symbols:
+                 U asinf
+                 U atan2f
+                 U logf
+                 U powf
+# phys/physics_mmm/bl_ysu.F90 at WRF's -O2 -ftree-vectorize -funroll-loops:
+                 U expf
+                 U powf
+                 U tanhf
+# phys/physics_mmm/bl_gwdo.F90 at WRF's -O2 -ftree-vectorize -funroll-loops:
+                 U atan2f
+                 U powf
+# phys/module_bl_gwdo_gsl.F at WRF's -O2 -ftree-vectorize -funroll-loops:
+                 U atan2f
+                 U expf
+                 U powf
+                 U _ZGVbN4v_expf
+                 U _ZGVbN4vv_powf
+# positive control (plain expf loop at -Ofast):
+                 U expf
+                 U _ZGVbN4v_expf

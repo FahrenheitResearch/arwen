@@ -186,6 +186,7 @@ from tilestream import physics_inventory as physinv
 
 
 __all__ = [
+    "DeferredStoreFrame",
     "FramePlan",
     "SOURCE_CARRIER",
     "SOURCE_DERIVED",
@@ -770,6 +771,31 @@ class StoreFrame:
         """Host RAM the ``overlap=True`` double buffer costs."""
         return sum(int(a.nbytes) for a in self._snapshot.values())
 
+    #: The store members :meth:`fields` reads for each derived row, beside
+    #: the carriers' own origins.  Kept next to ``fields`` so the two cannot
+    #: drift: a road that copies only a frame's members to the host
+    #: (``tilestream.ranks.RankedRun.download``) copies exactly these.
+    _DERIVED_INPUTS = {"T": ("state/thp",), "P": ("state/p",),
+                       "PSFC": ("state/php", "state/p")}
+
+    def store_keys(self) -> tuple[str, ...]:
+        """Every store member :meth:`fields` reads, in frame order."""
+        keys = []
+        for name in self.plan.order:
+            kind = self.plan.source[name]
+            if kind == SOURCE_CARRIER:
+                keys.append(self.plan.origin[name])
+            elif kind == SOURCE_DERIVED:
+                keys.extend(self._DERIVED_INPUTS.get(name, ()))
+        return tuple(dict.fromkeys(keys))
+
+    def nbytes(self) -> int:
+        """Bytes of one frame, from the plan's shapes and dtypes."""
+        return sum(int(np.prod(self.plan.shape[n])) * np.dtype(self.plan.dtype[n]).itemsize
+                   for n in self.plan.order
+                   if self.plan.source[n] != SOURCE_DRIVER_DIAGNOSTIC
+                   and n in self.plan.shape)
+
     def _carrier(self, name):
         array = self._store[self.plan.origin[name]]
         if not self.overlap:
@@ -824,6 +850,42 @@ class StoreFrame:
                 # the unavailable set on purpose.
                 continue
         return out
+
+
+class DeferredStoreFrame:
+    """A :class:`StoreFrame` whose members are still on their way to the host.
+
+    The ranked road's history frame (``tilestream.ranks``).  Its slabs stay
+    resident and the store is only a mirror, so at an output time the frame's
+    members are downloaded on a stream of their own while the model steps on
+    (:meth:`tilestream.ranks.RankedRun.download`).  The frame cannot be
+    assembled until that copy lands -- ``T``, ``P`` and ``PSFC`` are derived
+    on the host from it -- so this object carries the assembly instead of
+    its result, and the writer thread performs it: :meth:`materialize` waits
+    for the download, then runs the very same :meth:`StoreFrame.fields`, so
+    the bytes are the bytes the blocking road writes.
+
+    ``names`` is the frame's field order and ``nbytes`` its size, both from
+    the plan, for the writer's bookkeeping before any member exists on the
+    host.  Single use: materialized once, on one thread.
+    """
+
+    deferred = True
+
+    def __init__(self, frame: StoreFrame, wait):
+        self._frame = frame
+        self._wait = wait
+        self.names = tuple(n for n in frame.plan.order
+                           if frame.plan.source[n] != SOURCE_DRIVER_DIAGNOSTIC)
+        self.nbytes = frame.nbytes()
+        self.materialized = False
+
+    def materialize(self) -> dict[str, np.ndarray]:
+        if self.materialized:
+            raise RuntimeError("a deferred frame is assembled once; this one already was")
+        self.materialized = True
+        self._wait()
+        return self._frame.fields()
 
 
 # --------------------------------------------------------------------------

@@ -336,10 +336,10 @@ def mynn_pbl_step(
 #: Validity words for :func:`validate_mynn_tendencies`, which has no
 #: workspace to draw from because ``physics.py`` calls it on the returned
 #: fields.  Built on first use rather than at import so a CPU-only test run
-#: can import this module, and held for the life of the process: 256 bytes,
-#: allocated once, never per step.
+#: can import this module, and held for the life of the process: six int32 words,
+#: allocated once per device and stream, never per step.
 #:
-#: KEYED BY DEVICE, and the 256 bytes are per card.  Held as a single array
+#: KEYED BY DEVICE AND STREAM, so concurrent slabs never share writable words.  Held as a single array
 #: it was allocated on whichever device ran MYNN first, and a second device
 #: in the same process then reduced into it -- CuPy refuses that outright
 #: ("The device where the array resides (0) is different from the current
@@ -348,15 +348,15 @@ def mynn_pbl_step(
 #: address.  MEASURED on a dual-4090: with this held per process, the
 #: ``full+MYNN`` and ``full+MYNN+Noah-MP`` rungs cannot run on two cards in
 #: one process at all.
-_VALIDITY_FLAGS: dict[int, cp.ndarray] = {}
+_VALIDITY_FLAGS: dict[tuple[int, int], cp.ndarray] = {}
 
 
 def _validity_flags() -> cp.ndarray:
-    device = cp.cuda.runtime.getDevice()
-    flags = _VALIDITY_FLAGS.get(device)
+    key = (int(cp.cuda.Device().id), int(cp.cuda.get_current_stream().ptr))
+    flags = _VALIDITY_FLAGS.get(key)
     if flags is None:
         flags = cp.zeros(len(MYNN_PBL_TENDENCY_FIELDS), dtype=cp.int32)
-        _VALIDITY_FLAGS[device] = flags
+        _VALIDITY_FLAGS[key] = flags
     return flags
 
 

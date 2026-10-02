@@ -15,7 +15,7 @@
 //   east :  ub = MAX(ru + cb*(c1h*mut + c2h), 0)
 //   tend += -rdx * ub * (one-sided du at the boundary)
 //
-// with ru = (c1h*mut + c2h)*u coupled by the boundary CELL's column mass
+// with ru = (c1h*mut + c2h)*u/msfuy coupled by the boundary CELL's column mass
 // (WRF's muu at the domain edge under the zero-gradient mu ghost copy).
 // The radiation speed cb comes from the launcher (dycore.OPEN_CB): WRF's
 // cb = 25 m/s per share/module_model_constants.F:47, adjudicated over the
@@ -48,8 +48,9 @@ void open_u_radiative(real* __restrict__ ru_t,          // (nz, ny, nx+1)
                       const real* __restrict__ mub2d,   // (ny, nx)
                       const real* __restrict__ c1h,     // (nz,)
                       const real* __restrict__ c2h,     // (nz,)
+                      const real* __restrict__ msfu,    // (ny, nx+1)
                       real rdx, real cb,
-                      int nz, int ny, int nx)
+                      int nz, int ny, int nx, int has_msf)
 {
     int t = blockIdx.x * blockDim.x + threadIdx.x;      // one per (k, j)
     if (t >= nz * ny) return;
@@ -61,6 +62,8 @@ void open_u_radiative(real* __restrict__ ru_t,          // (nz, ny, nx+1)
     size_t f0 = I3S(k, j, 0, ny, nxf);
     size_t f1 = I3S(k, j, 1, ny, nxf);
     real ub = fminf(mw * u[f0] - cb * mw, 0.0f);
+    if (has_msf)
+        ub = fminf(__fdiv_rn(mw * u[f0], msfu[(size_t)j * nxf]) - cb * mw, 0.0f);
     ru_t[f0] += -rdx * ub * (u[f1] - u[f0]);
 
     size_t ce = (size_t)j * nx + (nx - 1);               // east cell
@@ -68,6 +71,8 @@ void open_u_radiative(real* __restrict__ ru_t,          // (nz, ny, nx+1)
     size_t fe = I3S(k, j, nx, ny, nxf);
     size_t fi = I3S(k, j, nx - 1, ny, nxf);
     ub = fmaxf(me * u[fe] + cb * me, 0.0f);
+    if (has_msf)
+        ub = fmaxf(__fdiv_rn(me * u[fe], msfu[(size_t)j * nxf + nx]) + cb * me, 0.0f);
     ru_t[fe] += -rdx * ub * (u[fe] - u[fi]);
 }
 
@@ -78,8 +83,9 @@ void open_v_radiative(real* __restrict__ rv_t,          // (nz, ny+1, nx)
                       const real* __restrict__ mub2d,   // (ny, nx)
                       const real* __restrict__ c1h,     // (nz,)
                       const real* __restrict__ c2h,     // (nz,)
+                      const real* __restrict__ msfv,    // (ny+1, nx)
                       real rdy, real cb,
-                      int nz, int ny, int nx)
+                      int nz, int ny, int nx, int has_msf)
 {
     int t = blockIdx.x * blockDim.x + threadIdx.x;      // one per (k, i)
     if (t >= nz * nx) return;
@@ -91,6 +97,8 @@ void open_v_radiative(real* __restrict__ rv_t,          // (nz, ny+1, nx)
     size_t f0 = I3S(k, 0, i, nyf, nx);
     size_t f1 = I3S(k, 1, i, nyf, nx);
     real vb = fminf(ms * v[f0] - cb * ms, 0.0f);
+    if (has_msf)
+        vb = fminf(__fdiv_rn(ms * v[f0], msfv[i]) - cb * ms, 0.0f);
     rv_t[f0] += -rdy * vb * (v[f1] - v[f0]);
 
     size_t cn = (size_t)(ny - 1) * nx + i;               // north cell
@@ -98,6 +106,8 @@ void open_v_radiative(real* __restrict__ rv_t,          // (nz, ny+1, nx)
     size_t fn = I3S(k, ny, i, nyf, nx);
     size_t fi = I3S(k, ny - 1, i, nyf, nx);
     vb = fmaxf(mn * v[fn] + cb * mn, 0.0f);
+    if (has_msf)
+        vb = fmaxf(__fdiv_rn(mn * v[fn], msfv[(size_t)ny * nx + i]) + cb * mn, 0.0f);
     rv_t[fn] += -rdy * vb * (v[fn] - v[fi]);
 }
 
@@ -119,12 +129,15 @@ void w_damp(real* __restrict__ rw_t,                    // (nz+1, ny, nx)
     int k = t / plane + 1;                              // k = 1 .. nz-1
     int c = t - (k - 1) * plane;
 
-    real m = c1f[k] * (mub2d[c] + mup[c]) + c2f[k];
+    // Preserve WRF's REAL operator boundaries. An FMA here can move the
+    // CFL across the strict 1/2 onset and turn the limiter on or off.
+    real m = __fadd_rn(__fmul_rn(c1f[k], __fadd_rn(mub2d[c], mup[c])), c2f[k]);
     size_t ix = (size_t)k * plane + c;
-    real vert_cfl = fabsf(ww[ix] / m * rdnw[k] * dt);
+    real vert_cfl = fabsf(__fmul_rn(__fmul_rn(__fdiv_rn(ww[ix], m), rdnw[k]), dt));
     if (vert_cfl > w_damp_on) {
-        rw_t[ix] -= copysignf(1.0f, w[ix]) * W_DAMP_ALPHA
-                    * (vert_cfl - w_crit_cfl) * m;
+        real damp = __fmul_rn(copysignf(1.0f, w[ix]), W_DAMP_ALPHA);
+        damp = __fmul_rn(damp, __fsub_rn(vert_cfl, w_crit_cfl));
+        rw_t[ix] = __fsub_rn(rw_t[ix], __fmul_rn(damp, m));
     }
 }
 
@@ -204,9 +217,9 @@ void w_cfl_stat_impl(const real* __restrict__ ww,            // (nz+1, ny, nx)
         int cell = t - (k - 1) * owned_plane;
         int j = j0 + cell / width, i = i0 + cell % width;
         int c = j * nx + i;
-        real m = c1f[k] * (mub2d[c] + mup[c]) + c2f[k];
+        real m = __fadd_rn(__fmul_rn(c1f[k], __fadd_rn(mub2d[c], mup[c])), c2f[k]);
         size_t ix = (size_t)k * plane + c;
-        real vert_cfl = fabsf(ww[ix] / m * rdnw[k] * dt);
+        real vert_cfl = fabsf(__fmul_rn(__fmul_rn(__fdiv_rn(ww[ix], m), rdnw[k]), dt));
         bits = __float_as_uint(vert_cfl);
         hit = (vert_cfl > w_damp_on) ? 1u : 0u;
         // Written as "< top ? floor : last" rather than a min(), so that a

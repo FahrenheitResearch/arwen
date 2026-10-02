@@ -3003,9 +3003,21 @@ def _member_names(path) -> list[str]:
 #: configuration digest does not move: with no urban model the three keys
 #: are dropped from it (restart._configuration_digest_values), so every
 #: checkpoint written before them still resumes.
+#:
+#: RE-PINNED for the moist_cq default flip (e13fa45c0 / 59f7e280f).
+#: The header echoes True instead of False and its two derived physics
+#: hashes move.  The dedicated default-move reconstruction below changes
+#: only that value back and recovers both previous canonical digests,
+#: retaining every array byte and every other header value.  Older ledger
+#: reconstructions first unwind the same default before removing their keys.
 _LIFECYCLE_FREE_ROOT_DIGEST = \
-    "9ead8250634097dc3d514611b5b2aed7aefec327008f36c8b2897683a7325b93"
+    "efca0135a058d4aedb3a120ee729b769ed13d08352446eaa350f7cf5276fc76a"
 _LIFECYCLE_FREE_CHILD_DIGEST = \
+    "e35a7d91043c4096d8b7087e66eea09a7ca87bea63f3ad4cb8f47b3d5cce48c7"
+
+_PRE_CQ_DEFAULT_ROOT_DIGEST = \
+    "9ead8250634097dc3d514611b5b2aed7aefec327008f36c8b2897683a7325b93"
+_PRE_CQ_DEFAULT_CHILD_DIGEST = \
     "231ea033d29f5c3fabea95e4ce46bf4ad0a83907eaf2688d33453d1a3b53d4da"
 
 
@@ -3051,7 +3063,7 @@ _WIF_CONFIG_KEYS = ("mp28_aerosol_source", "wif_climatology_path",
 
 
 
-def _digest_without_config_keys(path, keys) -> str:
+def _digest_without_config_keys(path, keys, *, config_overrides=None) -> str:
     """The canonical member digest as it would read WITHOUT ``keys``.
 
     Same construction as :func:`_canonical_member_digest`, with exactly
@@ -3063,6 +3075,11 @@ def _digest_without_config_keys(path, keys) -> str:
     them.  Every array member is hashed unchanged, so anything that moved
     outside the config echo survives into the result and the caller's
     comparison fails.
+
+    ``config_overrides`` reconstructs a declared default-value move without
+    dropping its identity-bound key.  The writer's own derived hashes are
+    recomputed after the named replacements; every other header value and
+    every array byte remain bound.
 
     Taking ``keys`` as an argument is what lets one construction serve
     both the cumulative reconstruction below and the per-change
@@ -3079,6 +3096,9 @@ def _digest_without_config_keys(path, keys) -> str:
         header["format_version"] = _HISTORICAL_FORMAT_VERSION
         for key in keys:
             header["config"].pop(key, None)
+        for key, value in (config_overrides or {}).items():
+            assert key in header["config"], key
+            header["config"][key] = value
         values = restart._configuration_digest_values(header["config"])
         setup = copy.deepcopy(header["physics_setup"])
         setup["configuration_sha256"] = restart._json_sha256(
@@ -3099,8 +3119,11 @@ def _digest_without_config_keys(path, keys) -> str:
 
 
 def _digest_without_the_wif_config_keys(path) -> str:
-    """The cumulative reconstruction: every key appended since pre-WIF."""
-    return _digest_without_config_keys(path, _WIF_CONFIG_KEYS)
+    """Unwind later config additions and the declared moisture default move."""
+    # e13fa45c0 / 59f7e280f turned moist_cq on by default.  These pre-WIF
+    # anchors were recorded with it off; restore that value, retain the key.
+    return _digest_without_config_keys(
+        path, _WIF_CONFIG_KEYS, config_overrides={"moist_cq": False})
 
 
 def test_the_checkpoint_pins_moved_for_the_two_wif_keys_and_nothing_else(
@@ -3157,6 +3180,26 @@ def test_a_lifecycle_free_tree_checkpoint_is_byte_identical(
     assert _canonical_member_digest(root_path) == _LIFECYCLE_FREE_ROOT_DIGEST
     assert _canonical_member_digest(child_path) == \
         _LIFECYCLE_FREE_CHILD_DIGEST
+
+
+def test_the_checkpoint_pins_moved_for_the_moist_cq_default_and_nothing_else(
+        monkeypatch, tmp_path):
+    """e13fa45c0 / 59f7e280f changed one bound default, not the format."""
+    source, start = _sealed_tree_fixture(
+        monkeypatch, forcing_count=2, run_seconds=3600.0, payload_seed=31)
+    root_path = restart.write_tree_restart(
+        tmp_path, source, start + timedelta(seconds=3600))
+    child_path = next(p for p in tmp_path.glob("gpuwmrst_d02_*.npz"))
+    for path, old_digest, current_digest in (
+            (root_path, _PRE_CQ_DEFAULT_ROOT_DIGEST,
+             _LIFECYCLE_FREE_ROOT_DIGEST),
+            (child_path, _PRE_CQ_DEFAULT_CHILD_DIGEST,
+             _LIFECYCLE_FREE_CHILD_DIGEST)):
+        assert restart.read_restart_header(path)["config"]["moist_cq"] is True
+        assert _canonical_member_digest(path) == current_digest
+        assert current_digest != old_digest
+        assert _digest_without_config_keys(
+            path, (), config_overrides={"moist_cq": False}) == old_digest
 
 
 def test_the_live_format_stamp_is_the_declared_v6_and_v5_is_named(

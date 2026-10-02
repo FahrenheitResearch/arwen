@@ -283,11 +283,15 @@ def test_job_list_does_not_multiply_full_selected_render_summaries(tmp_path, mon
 
 def test_persisted_remote_job_retains_original_reviewed_source_identity_not_current_editor(tmp_path, monkeypatch):
     from gpuwm import remote_artifacts
+    # This status reply belongs to a Linux worker. The host test filesystem
+    # may be Windows; no local /proc process ownership is exercised here.
+    monkeypatch.setattr(rw, "_ownership_provider", lambda: rw.OWNERSHIP_PROVIDERS["linux"])
     record={"id":"job-fixture","created_at":"2026-09-07T18:00:00Z","config":"/node/rewritten-case.toml",
         "config_sha256":"b"*64,"outdir":"/node/run","runtime":{},"action":"start-plan",
         "source":{"config_path":r"\\?\C:\saved\original-case.toml","config_sha256":"a"*64}}
     monkeypatch.setattr(rw,"_record",lambda _:copy.deepcopy(record))
     monkeypatch.setattr(remote_artifacts,"native_progress",lambda *_:{})
+    assert rw.capabilities()["process_handles"] == "Linux pidfd"
     value=rw._status(tmp_path)
     assert value["source_config_sha256"]=="a"*64
     assert value["source_config_path"]==record["source"]["config_path"]

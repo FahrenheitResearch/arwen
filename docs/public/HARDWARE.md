@@ -72,7 +72,8 @@ those intervals; supply a narrower input window to reduce them.
 
 ## Independent runs on multiple GPUs
 
-One forecast remains a one-GPU process. On a host with several cards,
+A prepared single-domain forecast can use several cards through
+[`[devices]`](MULTIGPU.md). On a host with several cards,
 `gpuwm multi-run` starts any number of independent production runners at
 once, with one unique physical GPU per process. The convenient form invokes
 `gpuwm run`:

@@ -557,11 +557,9 @@ def test_synthetic_import_resolves_and_reports(tmp_path):
     assert len(report.model_choices) == 1
     assert "d02 take(s) WRF's Registry default 0.1" in report.model_choices[0]
     assert 'Left to the model (written "auto"):' in report.format()
-    # RunConfig-default moist_cq: a Morrison + Shin-Hong suite matches no
-    # shipped profile since bl_pbl = 11 imports natively, so the implicit
-    # switch takes implicit_runtime_switches' documented fallback (it was
-    # [True, True] from the Morrison profile while 11 substituted to YSU).
-    assert [dc.run.moist_cq for dc in exp.domains] == [False, False]
+    # The unmatched Morrison + Shin-Hong suite remains moist, so the
+    # shared fallback retains WRF's moisture pressure correction.
+    assert [dc.run.moist_cq for dc in exp.domains] == [True, True]
     assert toml_text.count('epssm = "auto"') == 1
     assert "epssm = 0.1" not in toml_text
     assert 'wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-to-rte-rrtmgp-v2"' \
@@ -1021,6 +1019,36 @@ def test_ordinary_land_use_keys_import_with_receipts(tmp_path):
         import_namelists(*_pair(tmp_path, inp=garbage))
 
 
+@pytest.mark.parametrize("qv_domains,expected_moist", [
+    ((), [False, False]),
+    ((1, 2), [True, True]),
+    ((2,), [False, True]),
+])
+def test_native_passive_vapor_headers_enable_moisture_with_microphysics_off(
+        tmp_path, qv_domains, expected_moist):
+    """Only native QV headers distinguish passive vapor from a dry mp=0 file."""
+    inp = INPUT_TEXT
+    for old, new in (
+        ("mp_physics = 55, 55", "mp_physics = 0, 0"),
+        ("ra_lw_physics = 4, 4", "ra_lw_physics = 0, 0"),
+        ("ra_sw_physics = 4, 4", "ra_sw_physics = 0, 0"),
+        ("sf_sfclay_physics = 91, 91", "sf_sfclay_physics = 0, 0"),
+        ("sf_surface_physics = 2, 2", "sf_surface_physics = 0, 0"),
+        ("bl_pbl_physics = 11, 11", "bl_pbl_physics = 0, 0"),
+        ("cu_physics = 1, 0", "cu_physics = 0, 0"),
+    ):
+        inp = inp.replace(old, new)
+    wps_path, inp_path = _pair(tmp_path, inp=inp)
+    text, _report = import_namelists(
+        wps_path, inp_path,
+        wrfinput_qv_domains=qv_domains)
+    target = tmp_path / "passive.toml"
+    target.write_text(text)
+    experiment = load_experiment(target)
+    assert [domain.run.moist for domain in experiment.domains] == expected_moist
+    assert all(domain.run.moist_cq for domain in experiment.domains)
+
+
 def test_implicit_switches_come_from_the_shipped_profile_not_the_importer(
         tmp_path):
     """``moist_cq`` and ``top_lid`` have ONE authority now.
@@ -1029,9 +1057,8 @@ def test_implicit_switches_come_from_the_shipped_profile_not_the_importer(
     default is deliberately not WRF's Registry default.  The importer used
     to answer both itself -- ``moist_cq = mp_physics > 0`` and WRF's open
     top -- while the HRRR root preparer and the domain wizard read the
-    shipped physics profiles.  For every WSM6-family suite the two
-    answers were opposite, so a public root prepared from a profile could
-    never bind a public hierarchy imported from the same namelist.
+    shipped physics profiles.  CQ now follows WRF for every moist suite;
+    the top-lid policy still comes from the selected profile.
     """
 
     from gpuwm.physics_compat import (
@@ -1052,13 +1079,13 @@ def test_implicit_switches_come_from_the_shipped_profile_not_the_importer(
         acknowledgements=(CONSTANT_DOWNWARD_LONGWAVE_ACK,))
 
     profile = single_domain_runtime_switches(WSM6_PROFILE_ID)
-    assert profile["moist_cq"] is False and profile["top_lid"] is True
-    assert "moist_cq = false" in toml_text
+    assert profile["moist_cq"] is True and profile["top_lid"] is True
+    assert "moist_cq = true" in toml_text
     assert "top_lid = true" in toml_text
     applied = {entry.key: entry for entry in report.defaults_applied}
     assert WSM6_PROFILE_ID in applied["top_lid"].reason
 
-    # The Morrison-family profile states the other answer, and the importer
+    # The Morrison-family profile states an open-top policy, and the importer
     # agrees with it for the profile's own suite.  The fixture selects
     # bl_pbl_physics = 1 explicitly: since the Shin-Hong port the base
     # pair's bl = 11 imports natively, and Morrison + Shin-Hong is NOT a
@@ -1073,10 +1100,10 @@ def test_implicit_switches_come_from_the_shipped_profile_not_the_importer(
     assert "top_lid = false" in profile_toml
 
     # And the native Shin-Hong variant of the same suite matches no
-    # shipped profile, so both implicit switches take gpuwm's RunConfig
-    # defaults -- implicit_runtime_switches' documented fallback.
+    # shipped profile. Moisture pressure correction stays active, while
+    # the top-lid switch takes the RunConfig default.
     shinhong_toml, _ = import_namelists(*_pair(tmp_path))
-    assert "moist_cq = false" in shinhong_toml
+    assert "moist_cq = true" in shinhong_toml
     assert "top_lid = true" in shinhong_toml
 
     # An explicit namelist top_lid still wins over the profile: this is a
@@ -1190,21 +1217,23 @@ def test_km_opt4_without_pbl_imports_complete_vertical_diffusion(tmp_path):
     assert all(domain.run.km_opt == 4 for domain in imported.domains)
 
 
-def test_mix_full_fields_must_be_explicitly_true(tmp_path):
+def test_mix_full_fields_default_and_false_are_declared_substitutions(tmp_path):
     omitted = INPUT_TEXT.replace(
         " mix_full_fields = .true., .true.,\n", "")
-    # A missing must-set key is reported by the one-sweep missing-key
-    # census (single report, not one traceback per key).
-    with pytest.raises(ValueError,
-                       match=r"missing required key\(s\)[\s\S]*"
-                             r"mix_full_fields"):
-        import_namelists(*_pair(tmp_path, inp=omitted))
+    _, report = import_namelists(*_pair(tmp_path, inp=omitted))
+    assert any(entry.key == "mix_full_fields" and entry.value is False
+               for entry in report.namelist_defaults)
+    assert any(entry.key == "mix_full_fields" and entry.gpuwm_value is True
+               for entry in report.substitutions)
 
     false = INPUT_TEXT.replace(
         " mix_full_fields = .true., .true.,",
         " mix_full_fields = .true., .false.,")
-    with pytest.raises(ValueError, match="mix_full_fields"):
-        import_namelists(*_pair(tmp_path, inp=false))
+    _, report = import_namelists(*_pair(tmp_path, inp=false))
+    change = next(entry for entry in report.substitutions
+                  if entry.key == "mix_full_fields")
+    assert change.wrf_value == (True, False)
+    assert "tendencies can differ" in change.reason
 
     toml_text, _ = import_namelists(*_pair(tmp_path, inp=INPUT_TEXT))
     assert "km_opt = 4" in toml_text
@@ -1710,7 +1739,9 @@ def test_tke_adv_opt_drops_as_inert(tmp_path):
 
 
 @pytest.mark.parametrize("key", [
-    "swint_opt", "gwd_opt", "sf_lake_physics", "shcu_physics",
+    # gwd_opt left this list with lane/282-terrain-drag: 1 and 3 are ported
+    # (tests/test_terrain_drag_config.py).
+    "swint_opt", "sf_lake_physics", "shcu_physics",
     "kf_edrates", "flag_sm_adj",
     "sst_update", "sst_skin", "tmn_update",
 ])
@@ -2116,10 +2147,8 @@ def test_effective_bundle_round_trip_reproduces_committed_toml(tmp_path):
     # imports 11 natively since the Shin-Hong port.  The receipt is never
     # rewritten, so the comparison harmonizes exactly the lines that one
     # admission moves: the selector, its substitution-header comment, and
-    # the two profile-implicit switches -- a Morrison + Shin-Hong suite is
-    # not a shipped profile, so implicit_runtime_switches answers with
-    # RunConfig defaults (its documented fallback) instead of the Morrison
-    # profile's moist_cq/top_lid.
+    # the profile-implicit top-lid switch. The unmatched moist suite
+    # retains the same moisture pressure correction as the receipt.
     committed_bl = "\nbl_pbl_physics = 1\n"
     emitted_bl = "\nbl_pbl_physics = 11\n"
     assert committed_bl in harmonized
@@ -2131,9 +2160,7 @@ def test_effective_bundle_round_trip_reproduces_committed_toml(tmp_path):
     assert "Shin-Hong" not in toml_text
     harmonized = harmonized.replace(header_bl, "")
     for receipt_line, imported_line in (("\ntop_lid = false\n",
-                                         "\ntop_lid = true\n"),
-                                        ("\nmoist_cq = true\n",
-                                         "\nmoist_cq = false\n")):
+                                         "\ntop_lid = true\n"),):
         assert receipt_line in harmonized
         assert imported_line in toml_text
         harmonized = harmonized.replace(receipt_line, imported_line)
@@ -2190,11 +2217,10 @@ def test_effective_bundle_import_matches_loaded_committed_experiment(tmp_path):
     # test above: the campaign receipt records the Shin-Hong -> YSU
     # substitution; a fresh import is native bl_pbl_physics = 11, and a
     # Morrison + Shin-Hong suite matches no shipped profile, so the
-    # implicit moist_cq/top_lid answers fall back to RunConfig defaults.
+    # implicit top-lid answer falls back to the RunConfig default.
     with_bl = (harmonized
                .replace("\nbl_pbl_physics = 1\n", "\nbl_pbl_physics = 11\n")
-               .replace("\ntop_lid = false\n", "\ntop_lid = true\n")
-               .replace("\nmoist_cq = true\n", "\nmoist_cq = false\n"))
+               .replace("\ntop_lid = false\n", "\ntop_lid = true\n"))
     assert with_bl != harmonized
     harmonized = with_bl
     harmonized_path = tmp_path / "committed_harmonized.toml"

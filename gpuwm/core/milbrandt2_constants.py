@@ -508,9 +508,14 @@ def ck_vector_device():
     CuPy is imported inside the call because this module is otherwise pure
     numpy and is imported on CPU-only routes.
     """
+    # PER CARD.  One plane per process was one card's memory: a second card
+    # in the same process (the [devices] split) would launch with the first
+    # card's pointer, which is an illegal address or silently wrong numbers.
+    import cupy as cp
+    from gpuwm.core.device_cache import cached_ready
+
     global _CK_DEVICE
     if _CK_DEVICE is None:
-        import cupy as cp
-
-        _CK_DEVICE = cp.asarray(ck_vector())
-    return _CK_DEVICE
+        _CK_DEVICE = {}
+    return cached_ready(cp, _CK_DEVICE, int(cp.cuda.Device().id),
+                        lambda: cp.asarray(ck_vector()))

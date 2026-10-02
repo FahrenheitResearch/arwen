@@ -550,7 +550,8 @@ def test_go_run_stamp_off_is_the_pre_2_5_0_tree(tmp_path):
 
 
 def test_go_refuses_to_run_a_second_time_into_one_run_folder(tmp_path,
-                                                             capsys):
+                                                             capsys,
+                                                             monkeypatch):
     """The create-only refusal, at the one path that can still reach it.
 
     Pointing --outdir at an existing run folder is honoured verbatim,
@@ -558,6 +559,11 @@ def test_go_refuses_to_run_a_second_time_into_one_run_folder(tmp_path,
     receipts describing neither.  That refusal must survive the
     stamping, and it must name the run folder the caller typed.
     """
+    from gpuwm import capabilities
+
+    installed = capabilities.is_installed
+    monkeypatch.setattr(capabilities, "is_installed",
+                        lambda module: module == "cupy" or installed(module))
 
     config = _config(tmp_path)
     named = tmp_path / run_stamp.format_stamp(launch=_LAUNCH, init=_INIT)

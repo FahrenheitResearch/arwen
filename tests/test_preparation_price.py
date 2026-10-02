@@ -878,3 +878,36 @@ def test_an_explicit_cuda_gfs_preparation_is_refused_before_the_decoder_runs(
     assert decoded == []
     assert card.allocations == []
     assert "refused before anything was allocated" in str(refused.value)
+
+
+def test_device_real_columns_cover_the_measured_pool_peak():
+    # sm_120, NVRTC 13.4.92, three init-1 capture replays with allocation
+    # hooks: 12,371,798,528 B live and 13,114,399,232 B reserved each time.
+    cfg = _cfg(800, 600, 50)
+    inventory = pp.SourceInventory(39, 11, 29, device_real_columns=True)
+    price = pp.price_preparation("mapped", [cfg], inventory)
+    measured = 13_114_399_232 + price.terms["cuda_context"]
+    assert measured <= price.need_bytes <= 1.25 * measured
+    assert price.terms["real_columns"] > 0
+    host_store = pp.price_preparation("experiment-host-store", [cfg], inventory)
+    assert "real_columns" not in host_store.terms
+
+
+def test_device_real_inventory_uses_the_dispatch_fields():
+    shapes = {"PRES": (39, 2, 3), "SPFH": (39, 2, 3), "Q2": (2, 3)}
+    assert pp.SourceInventory.from_shapes(shapes).device_real_columns
+    decoded = dict(zip(("air_pressure", "specific_humidity", "specific_humidity_2m"), shapes.values()))
+    assert pp.SourceInventory.from_shapes(decoded).device_real_columns
+    del shapes["Q2"]
+    assert not pp.SourceInventory.from_shapes(shapes).device_real_columns
+
+
+def test_mp28_prices_host_columns_and_lazy_temperature_uploads():
+    from dataclasses import replace
+    cfg = replace(_cfg(800, 600, 50), mp_physics=28)
+    inventory = pp.SourceInventory(1, 1, 1, device_real_columns=True)
+    terms = pp._build(cfg, inventory)
+    cells = cfg.nx * cfg.ny * cfg.nz
+    closure = (12 + 16) * cells + 112 * min(cells, 1048576)
+    assert "real_columns" not in terms
+    assert terms["setup_residual"] >= closure

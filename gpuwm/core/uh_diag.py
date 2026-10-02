@@ -579,5 +579,16 @@ def _zero_domain_slot(state, slot: str) -> None:
     """
     from gpuwm.core.streaming import live_scratch
 
+    streamed = getattr(state, "_streamed_domain", None)
+    zero = getattr(streamed, "zero_scratch", None)
+    if zero is not None and zero(slot):
+        # The ranked road zeroed its slabs (StreamedDomain.zero_scratch);
+        # the state's own copy follows, so a later re-attach cannot
+        # resurrect the stale one.
+        existing = getattr(state, "existing_scratch", None)
+        buf = existing(slot) if existing is not None else None
+        if buf is not None:
+            buf[...] = 0.0
+        return
     for buf in live_scratch(state, slot):
         buf[...] = 0.0

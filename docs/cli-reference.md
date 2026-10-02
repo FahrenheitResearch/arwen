@@ -273,6 +273,16 @@ threads of the host steps it runs in the Rust preprocessing library (soil,
 snow, skin temperature and sea ice), which otherwise use every CPU the
 process may use.
 
+Under `cuda`, the horizontal and WRF-real vertical steps reproduce the CPU
+arithmetic on the card. For specific-humidity inputs with surface-to-surface
+pressure adjustment, `initialize_real` also keeps its column thermodynamics
+on the card when the state is on CUDA, no initial perturbation is configured,
+and `mp_physics` is not 28. Other column configurations use the host helpers.
+The Thompson cold-start closure follows the state onto the card; cloud-number
+entry retains the host double-precision power calculation. Prepared-array
+identity is checked byte for byte. Cache identity retains the backend and
+implementation provenance, so CPU and CUDA cache content digests differ.
+
 An explicit CPU bridge is valid only with the CPU backend. More than one
 hierarchy worker also requires the CPU backend; current CUDA hierarchy setup
 is deterministic with one worker. During HRRR root preparation,

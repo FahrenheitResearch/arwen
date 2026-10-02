@@ -1,0 +1,41 @@
+{
+    "wrf_tag":  "v4.7.1",
+    "wrf_commit":  "f52c197ed39d12e087d02c50f412d90d418f6186",
+    "source_sha256":  "bd177b6b5ba7949cf9e694d7ad654fd9ae2f07d39d85802f0716c5318889a815",
+    "routines":  {
+                     "rhs_ph":  "837310506d3ae5be619ddeae72a1197061b519732033d7527beb7cdf492a2c3d",
+                     "phy_prep":  "19faf5657fd16314d22dc5b49e54153667a2daf6a4aa1e4d09d5c586f17c93ac"
+                 },
+    "outputs":  [
+                    "ph_tend",
+                    "rho",
+                    "th_phy",
+                    "th_phy_m_t0",
+                    "p_phy",
+                    "pi_phy",
+                    "u_phy",
+                    "v_phy",
+                    "p8w",
+                    "t_phy",
+                    "t8w",
+                    "z",
+                    "z_at_w",
+                    "dz8w",
+                    "p_hyd",
+                    "p_hyd_w"
+                ],
+    "constants_sha256":  "5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062",
+    "files":  {
+                  "prep-map-extremes.npz":  "8c827dd57a99e4d288051491dd2b87c41b34ba6db2f61234c2b3f437e71fff7f",
+                  "prep-near-zero-motion.npz":  "845f9d615f83724dc010813c53f4044428c95b6d69d899d29134b4ee86e0df59",
+                  "prep-real-periodic2.npz":  "0b7647c05e4a004e1439dc65309374414fc0e3a583681af6681f01aaeed97597",
+                  "prep-real-periodic5.npz":  "5f364ffd62e8eb9064972115e68913bd81343296dcd8c112426606ecf4cc7542",
+                  "prep-real-specified2.npz":  "0c017bdb59ac57ba0b4ae720b75a0a92b2906ad8b5f24b6df00c237b638cd30e",
+                  "prep-real-specified5.npz":  "d9c9d46fec20f37275c5f2eebeaf34fa155f5d83c90ef3048ddaeaf1e4602a14",
+                  "prep-steep-terrain.npz":  "8ab7de2b4146b6402b6ea9568fb02eb9405793817f1a74f3342834883ba9da74",
+                  "prep-zero-motion.npz":  "3b2cb9ad0aed3f0afefc8c3c4851ec3fdb62612e59c5a2a8f2cbee9ddbf7e06b",
+                  "prep-measurements.json":  "13c27ec91574eccc4a3424c737ff50da34566ccc4a1545e96130300b581ac559"
+              },
+    "state_sha256":  "744d7cffbdf37db5768fa4b620bfc0cbc15971d5bfa792b4adb6de0f6ad2b22e",
+    "omega_fixture_sha256":  "0501c9bb7005325d70db6b00e8ab28b7a9d303558d08b9f5f8fed033ad4688c6"
+}

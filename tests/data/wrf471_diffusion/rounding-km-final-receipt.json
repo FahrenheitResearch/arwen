@@ -1,0 +1,5337 @@
+{
+  "diagnostic_only": true,
+  "mode": "glibc",
+  "family": "km",
+  "ieee_direct_nvrtc": false,
+  "cases": {
+    "deformation-evolved_map_extremes.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c14c185522273b2d282dabdd2ca86c3ec52923826c866193513da529ae33314d",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "203514b02a271cf2d4bb86d1f590a13508647c4ef4fe4340cb517b7ea94107bd",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a0c360e894846c842653be8e736db91772bbb968ae25561e467edec97efba964",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "58586a79215d1e6ba37a06d616a3e8b87c48b37b65be1f96da0c179c5b7dfb50",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "13f244743a100460d0c87fc8f8acd2e9adb3f5d6b82378850e97a1a8b29780ba",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "dc2194a7bbf7b1a1c3f8a4e4acbe07455d877e1374c25ff50bd0b5a6538628a3",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f8778bc64435e965e182deb09ff34ab1326c5094533606ed1c1276e99b9c18ce",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "25dfa9acd72e0596942fe436e2bd113761f0e465670707e95af08fba75e72a4f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "25dfa9acd72e0596942fe436e2bd113761f0e465670707e95af08fba75e72a4f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "dcc14d5a38642074aedc3871f01f3e5045fd5a4ade0108d72a87247b043bbce9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ca78dee51b87251cfab47b810b659452a389464fc2ff02ea4d6bbce807f9f7f1",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6f73288cafcd1e097e1393ac5a290942fef6c0054cbdf0a3fba720905a373451",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "7b77486ace4e3ab10bf706c55c6ea58a062b24e9890f79cd291cf0e5c41b570d",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e1ce6e133592f6793b837f0d9611fd982ac450e5a70c8adae3f37e4b7de10038",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "29594a7c2afc1aa508b1844c351c995320089bb2e2ccd08316c553bd185e229f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "29594a7c2afc1aa508b1844c351c995320089bb2e2ccd08316c553bd185e229f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1005780fc5abcfe70ba27f7b44c0c007fde006713a70608430484da58d9516ac",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f6f3fe2d863bc18dea09172121b8179cf7e676db62079207c56ea6e9476e14a9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4bcf3cd93655d3a671cab922bc3be9b4f95c39bc543d5cfd81ac27523fe96434",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "34c42e7563b9b284d6d0d23c73717aa6082b51b7eab26d2ea12954bffe7c9892",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "70a94f0afa4f0d91dc775c6f33d9176a757af2de68a11c9dd1b94fa68800b34b",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8268a8f8eb8c2fcaaa1321fc9188b1684f3cd0459118fb6c8879150fc3410ce0",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "7b77902b36c10fd8e9d53be9bd946c5038d0cc720f9fa51d41d8bb2685538fd3",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1337ef581cc31af24a3534e8642b2efa0fbd8d0ec0b4515811ba608088877e7a",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "93cc99019eb0887497c8897445d0286ca86ada6091cb50ba238fa3ef388e568d",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4aa8175f4b5a91776db3cf0b24d7ea3e620dba26c0c4349d8b15c760182f6942",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      }
+    },
+    "deformation-evolved_near_zero_flow.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0c47d78eeb9f66624d1120f6df37579f1259824cabd2abdec381986e84280715",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "748589b5dcd1d776b7c0fca704126f76714b633206e59e14d0f87c2f9f6becff",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "69336258051c636e1e3936b5cb212881deb0024cfec86c4ab40c38fbf5f323b9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e4aa7566746e2eb929af67e87fbb5cbe79b875cdd86b417a8187e152a4a3f857",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8de3be4057e529a04658f9548f6b0b03a7b84cc2a35475a44aed5a4379217229",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2b826fc90037aecf0a298d32e8bb12fc71bcdd446614462242249618108d21b9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "efa49e242e8a61c2d56dfdbe7acfaae4bafe95fb825d53c758d38aef47df73c7",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b9c4e97429e40baa8bdfb4de892280b0c62a394f24f50cdd052728c4a0136739",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "14ffc2a34674ac6934b5241de83679efd819567d3a5e754845e67d8aefe496f8",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f547b374e34c0aacca998a3a495d5ecf590c0cd5131bf3457b248b5b84671c07",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f4a5375ab7dd1b718cf478a18d57b6fb0c46f128acd8d2eef978df2785079f2a",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f270c7c170478926815a0e93f927a9b8c890201d0dec56339667f927e71bb791",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f270c7c170478926815a0e93f927a9b8c890201d0dec56339667f927e71bb791",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3d08e8c4f090615fdf272415ad7009fa1ee0996538dc8c65e70b325274158f4e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3d08e8c4f090615fdf272415ad7009fa1ee0996538dc8c65e70b325274158f4e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "cd0a7edfa4f619a6f5619dec5cb3d696164e95f12d0b49d19f3848dbbcd2b675",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d0e0b9b6b556156de32d5f0e38186cfaa6740b2e4556d8263af99f4cf9602919",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1990688cf93ba0003ebad9f5d283052dd32177fac4836e1835d78338f60a61d6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f8dadf4a1db89d3d15defe873c9177b1ce91a0b95f8dac8033ad3626352754f6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8185d9ce5ae2c506af8251383896fe812db6874db47a1c446317594298816ec9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ca66aec43f99be973cab85ad12487a0bfb6aff4bbb8ad9abbee2c7cbb60ab51e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ba6509500a816a31fa09e2e707a46b17ced561d07098796470047ee6550312cd",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "50d1e9949ba7297eb13942ffeb572a04c9495c08f7fd020e1908a1cfe68fc2d3",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      }
+    },
+    "deformation-evolved_real_open.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c87201a7408019bd3f8dbc3c11454659e26f33edcd1720f90b9971fabb4186ae",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "154fbf0243ff53c14cd714e5885f8b5040a8f88fa046f03c7615603fc244cdc5",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9bbd67cdbc289e8040ba3ed88e518769ef9bcdadf35b361a1ed918931f5a5253",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "58586a79215d1e6ba37a06d616a3e8b87c48b37b65be1f96da0c179c5b7dfb50",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4e43dc7e9ad9e8b9e11de7ee5d5309b01ade0698f13103010445ff588c8fed5e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a5bd6d0584cd92e5789ae28246827ba6f410a56e862842a52ea17e1187efc408",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5b14b533536cfe54c8d93bec99ff3349b20e8b90715de0021bcee173af247911",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "be1da421795ffb3a021ae4f03f26a6a98a63e3b8b1e74171fa3d00e0e00da93c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "be1da421795ffb3a021ae4f03f26a6a98a63e3b8b1e74171fa3d00e0e00da93c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "135a024f966afa89cbf08023edf2e41372278d91c7502c28eeeaa238eaeb932a",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bb95accd6884beee3fbe85655fbe09c602dc2d6fb36a2b1687c6578f3901b997",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5a337fe7dcc094abf042f1c7d9f3442c6afc206f6b291efe956c56887b00aa6f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6f616fb1a4e5033b2d9c46ad76eaa12caf54d20ae6d294c54d5f38c376e539c6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9ec440dd399f292135c78b33985bbee244d3d2234a74efcdfa3a0d26df05a236",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "147caa54543dd9c6c18ed670f220e18771e405d0e6dd5ae5f3f2e772442c3c9c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "147caa54543dd9c6c18ed670f220e18771e405d0e6dd5ae5f3f2e772442c3c9c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "262ba6b89f863407a9e04ff4ebf444cb8eef32a97531de0cdf890d2ff840ee18",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "262ba6b89f863407a9e04ff4ebf444cb8eef32a97531de0cdf890d2ff840ee18",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f744220ccc60664790729016f440bfd63640381e3a71d7c8bc04bfc90952d484",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5cb3295b41201d90435328e667fe9116ad854b43a740edee9c452900b757c40a",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0cea0d17cc24a75d18d64fed0e94403f51b9a1d7b112722e95c516971e0bf503",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "edccb25e19d85dd833e84b20ffcd25575cfa6b95c8481a7a44c88ec4d90a5910",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2cb04897e1084f7e9b55731d5ce54cff04aefbdd4c11292947a6c8a99851bc72",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4c9632ee88954900d4984a135ec70b8d1dc3f331cb6129b4c1796613c4cf09bc",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9152d52ef5ee612d0e151c3f127e0e00df25e636b0f6af1910785be3565fb4d3",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "7997649433a73e55c812833a9dcfeef5407e018c7c9c8579a9e2a985f8d96160",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      }
+    },
+    "deformation-evolved_real_periodic.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b4ab231d6247bbb02f0be3019f560e149fe22124434c6f2a3529fe5a8a08f0c0",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d31c6bab1b63cd3145942985945cdf9fadf86a9c883b2ef2a448a52d6c6bff93",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d5804796644c958c7af8ecfd2673bb348b3b310b1571b295a10bf5686667d4d6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "58586a79215d1e6ba37a06d616a3e8b87c48b37b65be1f96da0c179c5b7dfb50",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b52fab88a2b7918d94a5088ee1e5bc609a17776ea2e14211b55c0e703273e1a1",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0b24e92d5a080e73c3fb7d0426b61a902c88fe88581fcbc5e334e8b9b9eb0495",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4fc42e8d913a1459028640c26a72152c8b71e25b8b76e11d9b8db2eddf1ea9d5",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0d8a414a487fac3403da7175f6219598e85712da90ecf9330ec4850dc5c8be22",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0d8a414a487fac3403da7175f6219598e85712da90ecf9330ec4850dc5c8be22",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9058aaf0b7529c57b19567dc6bff5131507fa4c71798c8b7c9b24bd9a94af484",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "38a056dd87a467c451573b92dfe96909b301a5e4cc3822ee0d7eb4db12ae84cf",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6f73288cafcd1e097e1393ac5a290942fef6c0054cbdf0a3fba720905a373451",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4fb238dfc2ef7cf9be5465294a08a153cac2904859a8184b8cd58d5d300e3d85",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e1ce6e133592f6793b837f0d9611fd982ac450e5a70c8adae3f37e4b7de10038",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "48a529c6fa8aa110c4d408c3db9e438354bc530b47166f02ca67d5af0ec0e967",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "48a529c6fa8aa110c4d408c3db9e438354bc530b47166f02ca67d5af0ec0e967",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "de8573744da55feb3ea041c3e4870c0337dccf8e37e140983a70b706fe11d5bc",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "de8573744da55feb3ea041c3e4870c0337dccf8e37e140983a70b706fe11d5bc",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9e0db550543d85fdfa102d9d3044bd3b960b72cabd93ed39a695c3d9a8dbbc58",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e80e49c61bb88a0a9f08160cc78a732d7b4a82885b2019b7045d7e1912f9d59d",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "cfff1b7ac7e8a0ca4c19df26d9e976ad26ceeed4f0e2d421c96684c00f49e204",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "66429312282de72b34c422bf70add2e0fe4b967d5d4df6dd803c3f8a6c1ee6e9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "054fc29e2b78d441fe1a366b547b0a2434a2caaea83a85dafd631c073885b4a8",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e9f2ed3289c80cf937e952ae7078a3e3909c665ff7717bffbed72755f6d7136b",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "84758f20da12b080d76f191384780f3ba9a5e0abecb1122069670cdff1ae66f7",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "43c1639fede7a8c6972d55c0239cca297a339ddad2f6085f4a5cb3a37ac29e49",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      }
+    },
+    "deformation-evolved_southern_open.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "10f61bcb224ad4472f8590dfcc083cf3be7ceba07aca6340ba48fb43d8c0f8c7",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "154fbf0243ff53c14cd714e5885f8b5040a8f88fa046f03c7615603fc244cdc5",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f233f5cb23266f3543283e77626bf4a98a72b6326b23c9a55834fb95d8ff5ccb",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "58586a79215d1e6ba37a06d616a3e8b87c48b37b65be1f96da0c179c5b7dfb50",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "27d6f6ea8cb029d48bc9b2ac01fcdf2652302b35b099d8ec323ba81e5fdbdaa2",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a5bd6d0584cd92e5789ae28246827ba6f410a56e862842a52ea17e1187efc408",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "04c87e6f7868d0acce476afeda1f3ba03f5201b5e930603b34f63d63c2748f0f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "30d45fdb2a4467b4a92fc286ba35448616092d3c5669e3ea5bfa3fb5d8ee1eb3",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "30d45fdb2a4467b4a92fc286ba35448616092d3c5669e3ea5bfa3fb5d8ee1eb3",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ee6feee80ec70cf9283d75af17703e1f2bef82b2d4b0fb6ea457b8422162fa30",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bb95accd6884beee3fbe85655fbe09c602dc2d6fb36a2b1687c6578f3901b997",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5a337fe7dcc094abf042f1c7d9f3442c6afc206f6b291efe956c56887b00aa6f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6f616fb1a4e5033b2d9c46ad76eaa12caf54d20ae6d294c54d5f38c376e539c6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9ec440dd399f292135c78b33985bbee244d3d2234a74efcdfa3a0d26df05a236",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "147caa54543dd9c6c18ed670f220e18771e405d0e6dd5ae5f3f2e772442c3c9c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "147caa54543dd9c6c18ed670f220e18771e405d0e6dd5ae5f3f2e772442c3c9c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "262ba6b89f863407a9e04ff4ebf444cb8eef32a97531de0cdf890d2ff840ee18",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "262ba6b89f863407a9e04ff4ebf444cb8eef32a97531de0cdf890d2ff840ee18",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a32a99433a4d71f5c0575c915cfe11a3727e06b46b3b3b8bc7f2d5dd968adb61",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6473284d2400b4f1166823d40c888c06f5ecc575d55863d5c62ceabd233e6ef1",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e053669802323a2349aacb70c70c5473a72ac6a7578200303ffdb6811073debf",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "410f39b002537a2289ad87e1977993b8bc78b046bd694873bc09fc75df463660",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bafd2d75b623b052e813053b9c04d7182e5c474c8af54cee548458107229262a",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "619def8881f95daee3f18be92e6fb9c7d1341e60d501e8646693a1c63e259517",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5e2127af4be37925288ff83d68c9fa8d275cd02b7096f755853763c9050dd054",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "787e0dfeaa377d031a0336fa9d6b82e75352182544b7848fa2ad1d55bbcb42a3",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      }
+    },
+    "deformation-evolved_steep_open.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3c090d30e82c1cf215f322ff7b9a56d58848e74f390f9c16e9aac850d7393ffb",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "633cd1bc076810177b3d728ba39136468e47a7141de6e7c3d002a37d747009a6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "90f4525e00df0e8e077a1ada7c80741f643ffc386a77a4e1e9fdebf7d0347b73",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0dae7139d84a5d1ab0f9c5911adf0fa2678dd5fc8b25c24531c74b51f8fb2221",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6e9480d739d0e6d03799c69d7e98d48f12952205ba6b6f3ccf1f5a8f14f0e1c5",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "58097b3ef35674cba133fa70b1312cb091a014e8a180da0b4f3a0be4f7108bbd",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1501a68cae13ab77b84cd3e6b2955e6360c556d275da97cda63c522049e04594",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "842aa7bfc763e9b56b4f1f5fd9faefb47f066e07897defb526cd1a6daabadfbc",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "842aa7bfc763e9b56b4f1f5fd9faefb47f066e07897defb526cd1a6daabadfbc",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "337acf4c18158964065a3b2b83f92896f7314a7754ff38c2f0d3abb201d0c10f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bb95accd6884beee3fbe85655fbe09c602dc2d6fb36a2b1687c6578f3901b997",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "cb31a73a7c9666e1d661530436f54110f24479674a54987cbf1636e70df969a1",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6f616fb1a4e5033b2d9c46ad76eaa12caf54d20ae6d294c54d5f38c376e539c6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2dcb6c10e94231c40a359976e8930c2f6ff5428205a79c470fdafa58dc6535ec",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "134266b7668cb630a371641e611af84d58572df7b6134dd48ac74541e649d3c4",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "134266b7668cb630a371641e611af84d58572df7b6134dd48ac74541e649d3c4",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a2f5b8928843824d812e60846abd5e00c5ebbe450fdce724e7055a005d12a87c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e1c703392d810b38f84b2f91f103f85efac45d3aa56810d8d0a6e21a574f9fc3",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6932f0b199b295ab49cc81d483669d73fd970ba9dbea701193f633ebfd203f43",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d03ecd56be30ade8296f35ca3b919cfba7bfa63e17adca39e9a37b3336240d15",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "20e42da5adb7c1e51700287efded3da0460a29b2c2aebc357e7618cc235bb653",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f94584f01fde111916d3dbbd4d0887b3e6a45951fe0e4610e3cbc7517eab390d",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "db6c27f02d067aaeaf45276d227ae1bc7cff73d46103f85dc20893b9ea866e70",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a08829688772773a81fe654021ccfc9c52f5d45e767d53e96d5ba410e2595bc1",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "057c7e1000557bf5c4a03b43c3cbb0761d8669fb321d99ffc0b66d2bff754cbf",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "55125e8e4545805cd3bbc1dc11c6d30db6d90dddf4ed0106d57d217b5bb29470",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      }
+    },
+    "deformation-evolved_zero_flow.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "7c4ee06f7f537a4df23bdfe1eb83b94dc8cc1a07f6a0fe98eb1edb0fdff31c49",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "010cd87ef9ffed7aa03f5e4ddd5fa30b58c289dff286762c4d7003e029ad16a2",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d5b5fb615b455c203606145a24742b837d28c0e1ee97c1e5f85ad90e262e5acb",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c1cf102263c3f553b38f23c6dde928b66443e419ffa4caa4106283d04c5a5f3c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "78ffe35598baf1045eec3b22a6be97de66f5a7d365e163dfd595e2fe1394443b",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "223055ce5f8a601d8b37bb5bc9c7927cb3a3e91f5591b8434c2fe0dbd09fd446",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b9c4e97429e40baa8bdfb4de892280b0c62a394f24f50cdd052728c4a0136739",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "14ffc2a34674ac6934b5241de83679efd819567d3a5e754845e67d8aefe496f8",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f547b374e34c0aacca998a3a495d5ecf590c0cd5131bf3457b248b5b84671c07",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f4a5375ab7dd1b718cf478a18d57b6fb0c46f128acd8d2eef978df2785079f2a",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f270c7c170478926815a0e93f927a9b8c890201d0dec56339667f927e71bb791",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f270c7c170478926815a0e93f927a9b8c890201d0dec56339667f927e71bb791",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3d08e8c4f090615fdf272415ad7009fa1ee0996538dc8c65e70b325274158f4e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3d08e8c4f090615fdf272415ad7009fa1ee0996538dc8c65e70b325274158f4e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "cd0a7edfa4f619a6f5619dec5cb3d696164e95f12d0b49d19f3848dbbcd2b675",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d0e0b9b6b556156de32d5f0e38186cfaa6740b2e4556d8263af99f4cf9602919",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1990688cf93ba0003ebad9f5d283052dd32177fac4836e1835d78338f60a61d6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f8dadf4a1db89d3d15defe873c9177b1ce91a0b95f8dac8033ad3626352754f6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8185d9ce5ae2c506af8251383896fe812db6874db47a1c446317594298816ec9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ca66aec43f99be973cab85ad12487a0bfb6aff4bbb8ad9abbee2c7cbb60ab51e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ba6509500a816a31fa09e2e707a46b17ced561d07098796470047ee6550312cd",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "50d1e9949ba7297eb13942ffeb572a04c9495c08f7fd020e1908a1cfe68fc2d3",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      }
+    },
+    "deformation-map_extremes.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "babf5c31caebe9ac343f5779e0f26b35d2a355096e4e0ce0203eb049ca55b660",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2dce129c5e4c732994c8c52162cd7d03c51d183ad57a16e703ddf1a548d718c0",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "58df974deaa24f49ed56c9fe2b4256dfa79080c38a54f545a2b49d40b8b075ad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3f6ffb067c5ad403b20e31e4ac05df8e8c2bd50cdb16c2894efd2032d7d775c1",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2577dc9e8c3bc4d8d8f5dbc884e813265f3d7603c64dca2ade5d7025fe2f3aec",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "366ddb408a856c331a44b91b49b567e54a948b8e21ba17fc15dcfa726ad8f5a8",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c55c43a246a035bcb973e67bed37164fc9c38ac815d987fbaf237415a221ed03",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c55c43a246a035bcb973e67bed37164fc9c38ac815d987fbaf237415a221ed03",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0cdcd9f51567ca61668ba2f63769ee796f9f707d3af4050b11861f28727664bd",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ca78dee51b87251cfab47b810b659452a389464fc2ff02ea4d6bbce807f9f7f1",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6f73288cafcd1e097e1393ac5a290942fef6c0054cbdf0a3fba720905a373451",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "7b77486ace4e3ab10bf706c55c6ea58a062b24e9890f79cd291cf0e5c41b570d",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e1ce6e133592f6793b837f0d9611fd982ac450e5a70c8adae3f37e4b7de10038",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "29594a7c2afc1aa508b1844c351c995320089bb2e2ccd08316c553bd185e229f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "29594a7c2afc1aa508b1844c351c995320089bb2e2ccd08316c553bd185e229f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1005780fc5abcfe70ba27f7b44c0c007fde006713a70608430484da58d9516ac",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f6f3fe2d863bc18dea09172121b8179cf7e676db62079207c56ea6e9476e14a9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e917d5fb4f9b0bb4506419ccc4471710c08249fc98c3341ff3c31d6d433d63c7",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "188fd6c909e1466f2cae3dc97dbe65698e3ddfa42133cade88606139c7ee6083",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "476137e20561f3d8e2d947a723fbba12931df976f3a3b739b74600af6b1a7154",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d684325486a53558ec39d08cd3aaaf77f57efbf0e16467edd4d7266a42f61fbc",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f287fc0158f03d42c13378af8fd89e8034985edeed2e2278f3424f1488295040",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "49b11e686f4b09a3a1e1ad0c597f8c0e77e5dfeb559f5c4d68b6b378317b63bb",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9da6d1c67fbc990a6e8047acf66b23cec479bd3c87b93b529f077ef5f2178089",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5f4e58e30d57a75fb9e420cbda0a2b9d0a7282cae3ec570621f9d26263de798b",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      }
+    },
+    "deformation-near_zero_flow.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "06eb39fc3cb59cf7f47a044e7fd66a9cf804c326d2eb9ee31058e77abc269008",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "31cba0ddbcfb04279c6004848cc3a1a18c89ebf25803e49f5c7052c2bb90fcd1",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1abff66c7a3ae1d6044dd4f0f9e9dc1729150b2a2eee06e0be0cae6d09ac8100",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8a5a0f8394b862888ea4d40eacf138833a0948357352a4b161e2ba95689a5987",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9f265b8fe54a7d8f188621788e614b6661a2522f7f2398dcde3972ce146d8614",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b379c3cccb37d9f3bba3e894af00a9fa4eb8d11f6dfb839f3cff723f6e9a67b9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b9c4e97429e40baa8bdfb4de892280b0c62a394f24f50cdd052728c4a0136739",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "14ffc2a34674ac6934b5241de83679efd819567d3a5e754845e67d8aefe496f8",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f547b374e34c0aacca998a3a495d5ecf590c0cd5131bf3457b248b5b84671c07",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f4a5375ab7dd1b718cf478a18d57b6fb0c46f128acd8d2eef978df2785079f2a",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f270c7c170478926815a0e93f927a9b8c890201d0dec56339667f927e71bb791",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f270c7c170478926815a0e93f927a9b8c890201d0dec56339667f927e71bb791",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3d08e8c4f090615fdf272415ad7009fa1ee0996538dc8c65e70b325274158f4e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3d08e8c4f090615fdf272415ad7009fa1ee0996538dc8c65e70b325274158f4e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "cd0a7edfa4f619a6f5619dec5cb3d696164e95f12d0b49d19f3848dbbcd2b675",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d0e0b9b6b556156de32d5f0e38186cfaa6740b2e4556d8263af99f4cf9602919",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1990688cf93ba0003ebad9f5d283052dd32177fac4836e1835d78338f60a61d6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f8dadf4a1db89d3d15defe873c9177b1ce91a0b95f8dac8033ad3626352754f6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8185d9ce5ae2c506af8251383896fe812db6874db47a1c446317594298816ec9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ca66aec43f99be973cab85ad12487a0bfb6aff4bbb8ad9abbee2c7cbb60ab51e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ba6509500a816a31fa09e2e707a46b17ced561d07098796470047ee6550312cd",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "50d1e9949ba7297eb13942ffeb572a04c9495c08f7fd020e1908a1cfe68fc2d3",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      }
+    },
+    "deformation-real_open.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1ab9208b9e4bc7fa58b60ac2a08bb7b270aa1720ddc6452b52de776e71228a48",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "16bc1dd5a7b0aae7d09e63c2557fe430b1db36fd618539e89cba18e7c67c74c1",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "cd2b4d0dabd344d4837670c026450925b42d8be434f7efaed6a9c51179c7e9e9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5ea1bd7f931d38bf84b6e98d198d565a83188a9a99d444d08495a89d5bc3c2cf",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6703b985af2383a214f562ce043b897532ef3ac45784a95ab8c616c787f91fe6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8ad12823cd2402b8a750b5ff7c28cac0319822252d3962065520e51c4c805985",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "7dea5c1c7f93639c3a977b0387c78109d42dcc8a1758e7f721487b64d902d554",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "7dea5c1c7f93639c3a977b0387c78109d42dcc8a1758e7f721487b64d902d554",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bd9d7d198656127826191db981051733a0467678ff469b7aa828d27a0984c59c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bb95accd6884beee3fbe85655fbe09c602dc2d6fb36a2b1687c6578f3901b997",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5a337fe7dcc094abf042f1c7d9f3442c6afc206f6b291efe956c56887b00aa6f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6f616fb1a4e5033b2d9c46ad76eaa12caf54d20ae6d294c54d5f38c376e539c6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9ec440dd399f292135c78b33985bbee244d3d2234a74efcdfa3a0d26df05a236",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "147caa54543dd9c6c18ed670f220e18771e405d0e6dd5ae5f3f2e772442c3c9c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "147caa54543dd9c6c18ed670f220e18771e405d0e6dd5ae5f3f2e772442c3c9c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "262ba6b89f863407a9e04ff4ebf444cb8eef32a97531de0cdf890d2ff840ee18",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "262ba6b89f863407a9e04ff4ebf444cb8eef32a97531de0cdf890d2ff840ee18",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9cdc29250d036e1556df62fbba22196eaae80ca179cef717fccdc66a98812d07",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c7091ff3ac02550aeee68bf4d038e82041524fc0b5081bb14d3fa958a84cad86",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5066e4d3d02951ceb82deea630ace490ae6c1e0a4154c9f76024ed1195b44eb9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c991aa0994ef36f0bb684564f20a76638e39a8d8363e70da7404755aefd1d019",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4b5269abe1a30acb86056fd258be95e4d5f9443e966e83d70d438a220bc825ef",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2de1a941803bfcd6c2d41bdb0d81a853e15e967e4c15a21543c29f7b3620bb09",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c4eb79edb94458cfa37155c8c32d06cb0fab2ca8c344c7361d1837421ee1a185",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c178b762ec029e3fd66cf1b2e55d7e704982ca211fe83344a01df39db5b74138",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      }
+    },
+    "deformation-real_periodic.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "94a5d4186d038d7ca59f8604e14071fa1e93d0ffd9471692a9ea442a95d41a4d",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4c6a15d672b4ddccaf295ab36b74f727a45b0b6b79a43d239eaf61391b0e4422",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "024faed8e357b76ac80d039fd4c0a4615b5142d91c1e6e32920b2ed207aa2c2c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "016c0c7e73d087175edc2c6dd3b8ac4c21a1afe8a3c2f79dc30694dd5476392a",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2577dc9e8c3bc4d8d8f5dbc884e813265f3d7603c64dca2ade5d7025fe2f3aec",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "366ddb408a856c331a44b91b49b567e54a948b8e21ba17fc15dcfa726ad8f5a8",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b94bac55dcc4f3517da607574ca2ad31248385dd265010c1dd91536b18b888b8",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b94bac55dcc4f3517da607574ca2ad31248385dd265010c1dd91536b18b888b8",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "66ec1a41559d92be92eaa82f35c7d927a8b899b260b7913f4ea4ae77a5f4a061",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "38a056dd87a467c451573b92dfe96909b301a5e4cc3822ee0d7eb4db12ae84cf",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6f73288cafcd1e097e1393ac5a290942fef6c0054cbdf0a3fba720905a373451",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4fb238dfc2ef7cf9be5465294a08a153cac2904859a8184b8cd58d5d300e3d85",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e1ce6e133592f6793b837f0d9611fd982ac450e5a70c8adae3f37e4b7de10038",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "48a529c6fa8aa110c4d408c3db9e438354bc530b47166f02ca67d5af0ec0e967",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "48a529c6fa8aa110c4d408c3db9e438354bc530b47166f02ca67d5af0ec0e967",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "de8573744da55feb3ea041c3e4870c0337dccf8e37e140983a70b706fe11d5bc",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "de8573744da55feb3ea041c3e4870c0337dccf8e37e140983a70b706fe11d5bc",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "46dc8930ea7a587cf8771ec9d8fd390233a0a71afe1fc05c336199089ad39c84",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "fe99578280c45190f997f49566ed3e59e64cc03da93e50dbeff7f774930892c6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "73c6817b0db17c54f6db328fdfa7282553e4ca5cd7bdaaf8e2e66faf47973416",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4a50d83e601d33213ca551d2f107469a9b7953207b448069f2d103819132d179",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9cfc410dac92832221d366cb5c9d26a4350a69280a7d02fcade876823ac2eb1d",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0eb1269458fb37e5639d85033ea1bdc277032da06b04335fb955edabdbeb647f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "caf6dc7b520270eb1e8457bcf0f8884f1765a3714df44320e3ab3ab94b59556b",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8f726ec087d852579dd5bd09cbf36693cc092259b4227d7fdd896a3b33689254",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      }
+    },
+    "deformation-southern_open.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "699da01fde151b717f845035eaa8d42337fe58feadcc434d6ec68751c183db89",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "16bc1dd5a7b0aae7d09e63c2557fe430b1db36fd618539e89cba18e7c67c74c1",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3a43a1fcbf32f7523a0a1f30c1f2a45d6ddee58f92a43b28707f7d452230bf72",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "7659b258a4a7db6c50c60669dd011ed90368f2eef68ffe3f8359ce181334297e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6703b985af2383a214f562ce043b897532ef3ac45784a95ab8c616c787f91fe6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "efd246aefc4de84645c07d85ac4887aa524db4069d3129d54f88559c003dff32",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ee09793d623135205f2a20c6cb94856fa6a3fef66ff465f75be5fc8faba984b9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ee09793d623135205f2a20c6cb94856fa6a3fef66ff465f75be5fc8faba984b9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0c25688ba0260a7f554478e28bd1e59aee60c222e6c5910597f7980c3999d0d6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bb95accd6884beee3fbe85655fbe09c602dc2d6fb36a2b1687c6578f3901b997",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5a337fe7dcc094abf042f1c7d9f3442c6afc206f6b291efe956c56887b00aa6f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6f616fb1a4e5033b2d9c46ad76eaa12caf54d20ae6d294c54d5f38c376e539c6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9ec440dd399f292135c78b33985bbee244d3d2234a74efcdfa3a0d26df05a236",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "147caa54543dd9c6c18ed670f220e18771e405d0e6dd5ae5f3f2e772442c3c9c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "147caa54543dd9c6c18ed670f220e18771e405d0e6dd5ae5f3f2e772442c3c9c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "262ba6b89f863407a9e04ff4ebf444cb8eef32a97531de0cdf890d2ff840ee18",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "262ba6b89f863407a9e04ff4ebf444cb8eef32a97531de0cdf890d2ff840ee18",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "269dba8fb7e533d5fd8220a0058c705a19f0f9e96406803ec69f110ca58f2502",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2ce446dbfd4fb5fd0ada2720332f11c34fc5eb82b9238639adc1ff8e6204f3aa",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "cd5bde64bdbbc8044901c17c54856de2313a4af4c675351155d79f8acb1512d1",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d9ce43f1fdaa35ce68d597ddba06fcb54a95f6a1514a73b791eac44c948ae48c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6f889359889ce7106dc394472b1cf7e1edc04b52aeb98f0a473cd3d1e0eb13d2",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "636b4e74aa2f72a2be054c51c50996631f3c18f88ff719c87782349f91485417",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "db8103c361b3a2dd80a3a35e3a16a8bc2dfa6769f5be56b12a7f9954e0d4edf5",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "65fddc88499f3e88995b7b4a967eb97373abb379e82bc942046b0a70abc0d6d0",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      }
+    },
+    "deformation-steep_open.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b148e09f9d7c6f61f4b0312e711f25196492500f652b2045f79ce913b2ee20b3",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d11c0d13c5a2d21f9a3667c9c7ac8c95f9468d4ac301b6bd1881b61c03181084",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ea5c9b57c2cf13cf084e61c2ad0493c91815ddd67592b40df7e37509b9bc0999",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "85cec808ed368fbbb6a8aa00e670cb719cafb14d018f37712e48cffcdbd35f4f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c3bb7d6584dd31d02e74d1b09f2f9cafaff6aada6719cda926f0b161006c2495",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4ae8bacd3f23c9c20c380efede741c278df7baec2db8cdfdeb6dd0c7c222353d",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b41967527ea03687f27ca43d0e95ae6514b8a0ca23bfe677046f4f555754fb89",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b41967527ea03687f27ca43d0e95ae6514b8a0ca23bfe677046f4f555754fb89",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4ee0d9777c27f4a83b5b711ef44c87e47a683a0e8b8df37c367c2316771b7048",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bb95accd6884beee3fbe85655fbe09c602dc2d6fb36a2b1687c6578f3901b997",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "cb31a73a7c9666e1d661530436f54110f24479674a54987cbf1636e70df969a1",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6f616fb1a4e5033b2d9c46ad76eaa12caf54d20ae6d294c54d5f38c376e539c6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2dcb6c10e94231c40a359976e8930c2f6ff5428205a79c470fdafa58dc6535ec",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "134266b7668cb630a371641e611af84d58572df7b6134dd48ac74541e649d3c4",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "134266b7668cb630a371641e611af84d58572df7b6134dd48ac74541e649d3c4",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a2f5b8928843824d812e60846abd5e00c5ebbe450fdce724e7055a005d12a87c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e1c703392d810b38f84b2f91f103f85efac45d3aa56810d8d0a6e21a574f9fc3",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "55fa74e0a8fe1f622207e0159a26a7486dbd4bd15e949b6d698f4c89010ae2f5",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c05977f5172b815d606aed0d58ba2ca4ca1a3437f32cb18b6b0a44338c344c7e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bf9e340b9b8cbc92056af320e6276011430b4ab95d38bb768e4bc4eab710f4c9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "89ddd0f06893933aa2abfcff95561295353aa521fb630578afd651be6e1e990e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c9741be18a603577e55879bf4bf994cdb0d6409edd4092d0657451351ec5b5af",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "cafa6cdbfd5c79b70ab63d33edc0c3d02bc7e14c3047a218dbf3f0d10536fb65",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "26f62992657fcc623df30253ba0cd67dfabe2aeeb25d76d4a830e1b5b2900050",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "61ea30c8c0f6fd438d2564ca1b46b364a272d9c8a7ca297bad79751b7ff6a6aa",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      }
+    },
+    "deformation-zero_flow.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "50eae5d7bd680f88bfa2ad79b4f58ae69bc0074460579ab8954e7b3271e6e8e6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d178320629ec53aa9df199b5f5fa3b6c1b64ba6b499a4df3956ffb2b5aa802dc",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c1cf102263c3f553b38f23c6dde928b66443e419ffa4caa4106283d04c5a5f3c",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "78ffe35598baf1045eec3b22a6be97de66f5a7d365e163dfd595e2fe1394443b",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f8643286558afff25fc3e1c88ede0efbbf396ea354e7f7cf63d9529f4de260f9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b9c4e97429e40baa8bdfb4de892280b0c62a394f24f50cdd052728c4a0136739",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "14ffc2a34674ac6934b5241de83679efd819567d3a5e754845e67d8aefe496f8",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f547b374e34c0aacca998a3a495d5ecf590c0cd5131bf3457b248b5b84671c07",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f4a5375ab7dd1b718cf478a18d57b6fb0c46f128acd8d2eef978df2785079f2a",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f270c7c170478926815a0e93f927a9b8c890201d0dec56339667f927e71bb791",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f270c7c170478926815a0e93f927a9b8c890201d0dec56339667f927e71bb791",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3d08e8c4f090615fdf272415ad7009fa1ee0996538dc8c65e70b325274158f4e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3d08e8c4f090615fdf272415ad7009fa1ee0996538dc8c65e70b325274158f4e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "cd0a7edfa4f619a6f5619dec5cb3d696164e95f12d0b49d19f3848dbbcd2b675",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d0e0b9b6b556156de32d5f0e38186cfaa6740b2e4556d8263af99f4cf9602919",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1990688cf93ba0003ebad9f5d283052dd32177fac4836e1835d78338f60a61d6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f8dadf4a1db89d3d15defe873c9177b1ce91a0b95f8dac8033ad3626352754f6",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8185d9ce5ae2c506af8251383896fe812db6874db47a1c446317594298816ec9",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ca66aec43f99be973cab85ad12487a0bfb6aff4bbb8ad9abbee2c7cbb60ab51e",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ba6509500a816a31fa09e2e707a46b17ced561d07098796470047ee6550312cd",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "50d1e9949ba7297eb13942ffeb572a04c9495c08f7fd020e1908a1cfe68fc2d3",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f",
+          "native_subnormal_gpu_zero_words": 0,
+          "signed_zero_words": 0,
+          "other_different_words": 0
+        }
+      }
+    }
+  },
+  "aggregate": {
+    "km4_iso0:div": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km4_iso0:d11": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km4_iso0:d22": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km4_iso0:d33": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km4_iso0:d12": {
+      "cases": 14,
+      "words": 151606,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km4_iso0:d13": {
+      "cases": 14,
+      "words": 142800,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km4_iso0:d23": {
+      "cases": 14,
+      "words": 145600,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km4_iso0:kmh": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km4_iso0:kmv": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km4_iso0:khh": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km4_iso0:khv": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km4_iso0:bn2": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km2_iso0:kmh": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km2_iso0:kmv": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km2_iso0:khh": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km2_iso0:khv": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km2_iso0:bn2": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km2_iso1:kmh": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km2_iso1:kmv": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km2_iso1:khh": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km2_iso1:khv": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km2_iso1:bn2": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km3_iso0:kmh": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km3_iso0:kmv": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km3_iso0:khh": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km3_iso0:khv": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km3_iso0:bn2": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km3_iso1:kmh": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km3_iso1:kmv": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km3_iso1:khh": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km3_iso1:khv": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    },
+    "km3_iso1:bn2": {
+      "cases": 14,
+      "words": 131712,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0
+    }
+  },
+  "device": "NVIDIA GeForce RTX 4090",
+  "cupy": "14.2.0",
+  "no_fma": true,
+  "native_wrf_metrics": true,
+  "reference_tensor_order": true,
+  "production_source_sha256": "381bbd6fa16439b973f9cfdaad6bf932c720282746d3eac227d0e98271ebfeeb",
+  "tool_sha256": "f3bcd53c942a821d2952fe902d748cb1b162463f233b28c7067ad705842fb198"
+}

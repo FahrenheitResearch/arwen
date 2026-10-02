@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -148,6 +149,141 @@ def test_six_domain_thompson_stock_export_passes_gpuwm_runtime_separate(tmp_path
     assert [field["netcdf_name"] for field in fields][-2:] == ["QNICE", "QNRAIN"]
     # The report itself is strict JSON, suitable for automation and receipts.
     json.dumps(report, allow_nan=False)
+
+
+def test_self_parent_root_is_accepted_and_reported_on_both_doors(tmp_path):
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    inp.write_text(inp.read_text(encoding="utf-8").replace(
+        " parent_id = 0, 1,", " parent_id = 1, 1,"), encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    assert report["verdict"] == "PASS"
+    assert report["required_state"]["gpuwm_runtime"]["verdict"] == "PASS"
+    assert report["geometry"]["domains"][0]["parent_id"] == 0
+    issue = next(item for item in report["issues"]
+                 if item["code"] == "ROOT_PARENT_ID_NORMALIZED")
+    assert issue["severity"] == SEVERITY_ADVISORY
+    _, imported = import_namelists(wps, inp)
+    assert any(entry.key == "parent_id (root)" for entry in imported.dropped)
+
+
+@pytest.mark.parametrize("key,hour", [("start_date", "00"), ("end_date", "12")])
+def test_wps_staging_dates_and_inactive_tail_are_advisory(tmp_path, key, hour):
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    date = f"2020-05-01_{hour}:00:00"
+    original = f" {key} = '{date}', '{date}',"
+    replacement = (f" {key} = '@year@-@month@-@day@_@hour@:00:00', "
+                   f"'{date}', 'inactive',")
+    text = wps.read_text(encoding="utf-8")
+    assert original in text
+    wps.write_text(text.replace(original, replacement), encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    assert report["verdict"] == "PASS"
+    assert report["required_state"]["gpuwm_runtime"]["verdict"] == "PASS"
+    issues = {item["code"]: item for item in report["issues"]
+              if item["location"] == f"&share/{key}"}
+    assert {"WPS_STAGING_DATE_SUBSTITUTION", "WPS_INACTIVE_DATES_IGNORED"} <= issues.keys()
+    assert all(item["severity"] == SEVERITY_ADVISORY for item in issues.values())
+    import_namelists(wps, inp)
+
+
+def test_malformed_active_wps_template_still_refuses_on_both_doors(tmp_path):
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    wps.write_text(wps.read_text(encoding="utf-8").replace(
+        " start_date = '2020-05-01_00:00:00',",
+        " start_date = '@year@-invalid',"), encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    assert report["verdict"] == "FAIL"
+    assert any("invalid WRF date" in item["message"]
+               for item in report["issues"])
+    with pytest.raises(ValueError):
+        import_namelists(wps, inp)
+
+
+def test_all_seventeen_audited_defaults_are_reported_without_editing_files(tmp_path):
+    wps, inp = _write_pair(tmp_path, max_dom=1, mass_levels=30, mp=6)
+    wps_text = (wps.read_text(encoding="utf-8")
+                .replace("2020-05-01_00:00:00", "1993-03-13_00:00:00")
+                .replace("2020-05-01_12:00:00", "1993-03-14_00:00:00")
+                .replace(" e_we = 121,", " e_we = 32,")
+                .replace(" e_sn = 101,", " e_sn = 32,"))
+    for key in ("parent_id", "truelat2"):
+        wps_text = re.sub(rf"^ {key} = .*\n", "", wps_text, flags=re.M)
+    input_text = inp.read_text(encoding="utf-8").replace(" end_hour = 12,", " end_hour = 0,")
+    for key in ("run_hours", "start_year", "start_month", "start_day",
+                "end_year", "end_month", "end_day", "e_we", "e_sn", "e_vert",
+                "parent_id", "i_parent_start", "j_parent_start",
+                "parent_grid_ratio", "parent_time_step_ratio", "mix_full_fields"):
+        input_text = re.sub(rf"^ {key} = .*\n", "", input_text, flags=re.M)
+    wps.write_text(wps_text, encoding="utf-8")
+    inp.write_text(input_text, encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    assert report["verdict"] == "PASS", report["issues"]
+    assert report["required_state"]["gpuwm_runtime"]["verdict"] == "PASS"
+    applied = [issue for issue in report["issues"]
+               if issue["code"] == "NAMELIST_DEFAULT_APPLIED"]
+    assert len(applied) == 17
+    assert all(issue["severity"] == SEVERITY_ADVISORY for issue in applied)
+    assert wps.read_text(encoding="utf-8") == wps_text
+    assert inp.read_text(encoding="utf-8") == input_text
+
+
+def test_defaulted_geometry_still_checks_the_paired_wps_extent(tmp_path):
+    wps, inp = _write_pair(tmp_path, max_dom=1, mp=6)
+    inp.write_text(re.sub(r"^ e_we = .*\n", "",
+                         inp.read_text(encoding="utf-8"), flags=re.M), encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    assert report["verdict"] == "FAIL"
+    assert any("ordered WPS/input e_we arrays differ" in issue["message"]
+               for issue in report["issues"])
+
+
+def test_positive_duration_ignores_partial_end_columns_in_support_report(tmp_path):
+    wps, inp = _write_pair(tmp_path, max_dom=2, mp=6)
+    inp.write_text(re.sub(r"^ end_year = .*\n", "",
+                         inp.read_text(encoding="utf-8"), flags=re.M), encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    assert report["verdict"] == "PASS"
+    assert report["required_state"]["gpuwm_runtime"]["verdict"] == "PASS"
+    assert any(issue["code"] == "END_COLUMNS_IGNORED" for issue in report["issues"])
+
+
+def test_gui_metadata_and_output_controls_are_classified_in_support_report(tmp_path):
+    wps, inp = _write_pair(tmp_path, max_dom=1, mp=6)
+    wps.write_text(wps.read_text(encoding="utf-8").replace(
+        "&share", "&share\n opt_output_from_geogrid_path='./geo',") + """
+&domain_wizard
+ gui_version='synthetic',
+/
+&mod_levs
+ press_pa=95000,85000,
+/
+&plotfmt
+ ix=12,jx=15,
+/
+""", encoding="utf-8")
+    inp.write_text(inp.read_text(encoding="utf-8")
+                   .replace("&domains", "&domains\n s_we=1,s_sn=1,s_vert=1,")
+                   .replace("&time_control", """&time_control
+ write_input=.true.,input_outname='aux_<domain>',
+ inputout_begin_h=0,inputout_end_h=12,inputout_interval=60,
+"""), encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    assert report["verdict"] == "PASS", report["issues"]
+    assert not [issue for issue in report["issues"]
+                if issue["code"] == "UNCLASSIFIED_NAMELIST_SETTING"]
+    legacy = {entry["section"] for entry in report["classifications"]["legacy_stage_only"]}
+    assert {"domain_wizard", "mod_levs", "plotfmt"} <= legacy
+
+
+@pytest.mark.parametrize("key", ["s_we", "s_sn", "s_vert"])
+def test_nonstandard_active_index_origin_blocks_support_report(tmp_path, key):
+    wps, inp = _write_pair(tmp_path, max_dom=1, mp=6)
+    inp.write_text(inp.read_text(encoding="utf-8").replace(
+        "&domains", f"&domains\n {key}=2,"), encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    assert report["verdict"] == "FAIL"
+    assert any(issue["code"] == "INVALID_INDEX_ORIGIN"
+               and issue["location"] == f"&domains/{key}" for issue in report["issues"])
 
 
 def _stagger_pair(tmp_path, *, child_minute: int, interval: int):
@@ -354,31 +490,45 @@ def test_the_compat_door_gives_the_same_theta_m_answer_as_the_importer(
     assert theta_m_decision(1).reason in issue["message"]
 
 
-@pytest.mark.parametrize(
-    ("line", "default_text", "action_text"),
-    [
-        (
-            " mix_full_fields = .true., .true., .true., .true., .true., .true.,\n",
-            "WRF Registry default false",
-            "mix_full_fields = .true.",
-        ),
-    ],
-)
-def test_gpuwm_runtime_reports_trajectory_changing_omitted_defaults(
-        tmp_path, line, default_text, action_text):
+@pytest.mark.parametrize("declaration", [None, ".false.", ".true."])
+def test_mix_full_fields_defaults_and_unassigned_tails_are_declared(
+        tmp_path, declaration):
     wps, inp = _write_pair(tmp_path, mp=6)
     text = inp.read_text(encoding="utf-8")
+    line = " mix_full_fields = " + ", ".join([".true."] * 6) + ",\n"
     assert line in text
-    inp.write_text(text.replace(line, ""), encoding="utf-8")
+    replacement = ("" if declaration is None else
+                   f" mix_full_fields = {declaration},\n")
+    inp.write_text(text.replace(line, replacement), encoding="utf-8")
     report = analyze_namelists(wps, inp)
     assert report["verdict"] == "PASS"
     assert report["required_state"]["stock_wrf_export"]["verdict"] == "PASS"
     runtime = report["required_state"]["gpuwm_runtime"]
+    assert runtime["verdict"] == "PASS"
+    issue = next(item for item in report["issues"]
+                 if item["code"] == "MIX_FULL_FIELDS_SUBSTITUTION")
+    assert issue["severity"] == SEVERITY_ADVISORY
+    from gpuwm.namelist_import import MIX_FULL_FIELDS_SUBSTITUTION
+
+    assert MIX_FULL_FIELDS_SUBSTITUTION in issue["message"]
+    if declaration is None:
+        assert "WRF Registry default false" in issue["message"]
+    elif declaration == ".true.":
+        assert "domains [2, 3, 4, 5, 6]" in issue["message"]
+    else:
+        assert "domains [1, 2, 3, 4, 5, 6]" in issue["message"]
+
+
+def test_mix_full_fields_still_requires_fortran_logicals(tmp_path):
+    wps, inp = _write_pair(tmp_path, mp=6)
+    inp.write_text(inp.read_text(encoding="utf-8").replace(
+        " mix_full_fields = .true.,", " mix_full_fields = 0,"),
+        encoding="utf-8")
+    report = analyze_namelists(wps, inp)
+    runtime = report["required_state"]["gpuwm_runtime"]
     assert runtime["verdict"] == "FAIL"
-    assert any(
-        default_text in reason and action_text in reason
-        for reason in runtime["reasons"]
-    )
+    assert any("mix_full_fields must contain Fortran logicals" in reason
+               for reason in runtime["reasons"])
 
 
 def test_morrison_stock_inventory_keeps_all_number_moments(tmp_path):
@@ -470,10 +620,11 @@ def test_milbrandt_runtime_is_reported_runnable_while_its_export_is_not(
     assert state["stock_wrf_export"]["verdict"] == "FAIL"
     export = [issue for issue in report["issues"]
               if issue["code"] == "STOCK_WRF_EXPORT_INVENTORY_MISSING"]
-    # One per domain, and nothing else: the export gap is the ONLY thing
-    # wrong with this namelist, and it is reported per domain the way
-    # every other per-domain export issue is.
-    assert len(export) == len(report["issues"]) == report["max_dom"]
+    # The export gap is the only blocker, one per domain. Advisory
+    # receipts for ignored staging controls do not make a run unsupported.
+    blockers = [issue for issue in report["issues"]
+                if issue["severity"] != "advisory"]
+    assert len(export) == len(blockers) == report["max_dom"]
     assert [issue["location"] for issue in export] == [
         f"d{index + 1:02d} &physics/mp_physics"
         for index in range(report["max_dom"])]

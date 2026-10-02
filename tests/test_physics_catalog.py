@@ -817,10 +817,9 @@ def _domain(argv):
 def test_a_mix_from_hrrr_is_written_as_the_route_runs_it_and_passes_its_round_trip(tmp_path):
     """The HRRR route runs its namelists, which have no key for moist_cq.
 
-    Its importer answers moist_cq from physics_compat for the schemes the namelists select, and a set no shipped
-    profile matches takes the RunConfig default there.  The mix was written with the Thompson row's moist_cq =
-    true, so `gpuwm domain --source hrrr --physics-choices` refused its own emission at the round trip ("the
-    emitted HRRR namelists do not reproduce the emitted config ... moist_cq"), after New forecast had started it.
+    The importer and catalog share the implicit-switch authority. An
+    unmatched moist suite retains its pressure correction through the
+    emitted configuration and namelist round trip.
     """
 
     from gpuwm.experiment import load_experiment
@@ -828,7 +827,7 @@ def test_a_mix_from_hrrr_is_written_as_the_route_runs_it_and_passes_its_round_tr
 
     verdict = pc.check({"choices": THOMPSON_MYJ_ETA, "dx_km": 3, "source": "hrrr"})
     assert verdict["valid"] and verdict["named_suite"] is None
-    assert verdict["changed_from_suite"]["moist_cq"] is False
+    assert verdict["changed_from_suite"].get("moist_cq", True) is True
     # A route that reads the configuration itself runs the row's value.
     assert pc.check({"choices": THOMPSON_MYJ_ETA, "dx_km": 3, "source": "gfs"})["changed_from_suite"].get(
         "moist_cq", True) is True
@@ -841,7 +840,7 @@ def test_a_mix_from_hrrr_is_written_as_the_route_runs_it_and_passes_its_round_tr
     assert rc == 0, printed.getvalue()
     exp = load_experiment(out)
     root = exp.root.run
-    assert (root.mp_physics, root.bl_pbl_physics, root.sf_sfclay_physics, root.moist_cq) == (8, 2, 2, False)
+    assert (root.mp_physics, root.bl_pbl_physics, root.sf_sfclay_physics, root.moist_cq) == (8, 2, 2, True)
     paths = route_input_paths(out)
     verify_round_trip(exp, paths["wps_namelist"], paths["namelist_input"])
     # The header names what the root runs, not the suite the mix replaced.

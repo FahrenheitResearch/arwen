@@ -121,6 +121,13 @@ def test_a_new_case_needs_no_driver_edit(tmp_path, monkeypatch, capsys):
     GATES exits 0, and one whose metric sits outside exits 1 naming the
     gate.  A discovered case that could not fail would prove nothing."""
     import gpuwm.cli as cli
+    from gpuwm import capabilities
+
+    # This discovered case computes its metric on the CPU.  Pin only the
+    # module-presence seam so the CLI reaches the case's actual gate.
+    installed = capabilities.is_installed
+    monkeypatch.setattr(capabilities, "is_installed",
+                        lambda module: module == "cupy" or installed(module))
 
     external = tmp_path / "extra_cases"
     _plant(external, "probe_pass", _VERIFY_CASE)

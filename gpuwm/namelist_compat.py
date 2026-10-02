@@ -10,15 +10,20 @@ support separately and never substitutes one physics scheme for another.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from fractions import Fraction
 import math
 from pathlib import Path
 from typing import Iterable
 
 from gpuwm.namelist_import import (
+    MIX_FULL_FIELDS_SUBSTITUTION,
     NUDGING_NOT_IMPLEMENTED,
     THETA_M_ADMITTED,
+    WPS_AUXILIARY_SECTIONS,
+    _apply_namelist_defaults,
+    _run_length_seconds,
+    _WPS_DATE_TEMPLATE,
     active_nudging_selectors,
     fine_input_stream_decision,
     read_namelist_role,
@@ -86,6 +91,7 @@ _PREPROCESSING_KEYS = {
     "domains": {
         "time_step", "time_step_fract_num", "time_step_fract_den", "max_dom",
         "e_we", "e_sn", "e_vert", "eta_levels", "p_top_requested", "dx",
+        "s_we", "s_sn", "s_vert",
         "dy", "grid_id", "parent_id", "i_parent_start", "j_parent_start",
         "parent_grid_ratio", "parent_time_step_ratio", "feedback",
         "smooth_option", "blend_width", "num_metgrid_levels",
@@ -142,7 +148,8 @@ _PHYSICS_STATE_KEYS = {
 }
 
 _RUNTIME_OUTPUT_KEYS = {
-    "share": {"io_form_geogrid", "debug_level", "nocolons"},
+    "share": {"io_form_geogrid", "debug_level", "nocolons",
+              "opt_output_from_geogrid_path"},
     "ungrib": {"out_format", "prefix"},
     "metgrid": {"fg_name", "constants_name", "io_form_metgrid", "opt_metgrid_tbl_path"},
     "time_control": {
@@ -156,6 +163,8 @@ _RUNTIME_OUTPUT_KEYS = {
         # stream itself is classified above and reported below.
         "io_form_auxinput2", "override_restart_timers",
         "iofields_filename", "ignore_iofields_warning",
+        "write_input", "input_outname", "inputout_begin_h",
+        "inputout_end_h", "inputout_interval",
     },
     "physics": {
         "radt", "bldt", "cudt", "isfflx", "ifsnow", "do_radar_ref",
@@ -355,16 +364,21 @@ def _datetime_columns(
     ]
 
 
-def _wps_datetime_columns(values: list[object], count: int, location: str
+def _wps_datetime_columns(values: list[object], count: int, location: str,
+                          concrete_dates: list[datetime] | None = None
                           ) -> list[datetime]:
-    if len(values) > count:
-        raise ValueError(
-            f"{location} declares {len(values)} values but max_dom={count}")
-    expanded = list(values) + [values[-1]] * (count - len(values))
+    expanded = list(values[:count])
+    if not expanded:
+        raise ValueError(f"{location} has no active-domain dates")
+    expanded += [expanded[-1]] * (count - len(expanded))
     result = []
-    for value in expanded:
+    for index, value in enumerate(expanded):
         if not isinstance(value, str):
             raise ValueError(f"{location} must contain WRF date strings")
+        if (concrete_dates is not None and "@" in value
+                and _WPS_DATE_TEMPLATE.fullmatch(value)):
+            result.append(concrete_dates[index])
+            continue
         try:
             result.append(datetime.strptime(value, "%Y-%m-%d_%H:%M:%S"))
         except ValueError as error:
@@ -484,6 +498,7 @@ def analyze_namelists(
     # rather than as a traceback out of pathlib.
     wps = read_namelist_role(wps_path, "namelist.wps")
     inp = read_namelist_role(input_path, "namelist.input")
+    mix_full_fields_given = "mix_full_fields" in inp.get("dynamics", {})
     issues: list[CompatibilityIssue] = []
     projection: dict[str, object] | None = None
     # Resolved once: the classification loop and the gate below must
@@ -509,7 +524,8 @@ def analyze_namelists(
                     target = "preprocessing_relevant"
                 elif key in _PHYSICS_STATE_KEYS.get(section, set()):
                     target = "physics_state_relevant"
-                elif section in {"ungrib", "metgrid"}:
+                elif (section in {"ungrib", "metgrid"}
+                      or source == "namelist.wps" and section in WPS_AUXILIARY_SECTIONS):
                     target = "legacy_stage_only"
                 elif section in {"fdda", "grib2", "namelist_quilt"}:
                     target = "runtime_output_only"
@@ -537,13 +553,14 @@ def analyze_namelists(
         geogrid = wps["geogrid"]
         domains = inp["domains"]
         physics = inp["physics"]
+        time_control = inp["time_control"]
     except KeyError as error:
         issues.append(_issue(
             "MISSING_REQUIRED_SECTION",
             f"&{error.args[0]}",
             "The paired WRF/WPS namelists lack a required section.",
-            "Provide &share and &geogrid in namelist.wps plus &domains and "
-            "&physics in namelist.input.",
+            "Provide &share and &geogrid in namelist.wps plus &time_control, "
+            "&domains and &physics in namelist.input.",
         ))
         return _finish_report(
             max_dom=None,
@@ -596,6 +613,26 @@ def analyze_namelists(
             f"{max_dom!r}.",
             "Make both namelists describe the same ordered hierarchy.",
         ))
+
+    if 1 <= max_dom <= MAX_DOMAINS:
+        for entry in _apply_namelist_defaults(wps, inp):
+            issues.append(_issue(
+                "NAMELIST_DEFAULT_APPLIED", f"&{entry.section}/{entry.key}",
+                f"The omitted {entry.role} key takes {entry.value!r}: "
+                + entry.reason + ".",
+                "Nothing to change: the effective value still undergoes "
+                "the geometry and clock cross-checks.",
+                severity=SEVERITY_ADVISORY,
+            ))
+        for key in ("s_we", "s_sn", "s_vert"):
+            if any(isinstance(value, bool) or not isinstance(value, int)
+                   or value != 1 for value in domains.get(key, [])[:max_dom]):
+                issues.append(_issue(
+                    "INVALID_INDEX_ORIGIN", f"&domains/{key}",
+                    "The imported grid starts at WRF index 1; a different "
+                    "start index would shift its extent.",
+                    f"Set {key}=1 on every active domain.",
+                ))
 
     raw_projection = _value(geogrid, "map_proj")
     # The implemented set is DECLARED once, by the module that implements
@@ -746,29 +783,36 @@ def analyze_namelists(
             "independent and supported."
         )
     try:
-        mix_values = _column(
-            dynamics, "mix_full_fields", max_dom, default=False)
+        # Unassigned Registry array elements keep their initialized False
+        # value, including the tail after a scalar namelist assignment.
+        mix_values = list(dynamics.get("mix_full_fields", []))[:max_dom]
+        mix_values += [False] * (max_dom - len(mix_values))
         if any(not isinstance(value, bool) for value in mix_values):
             raise ValueError(
                 "&dynamics/mix_full_fields must contain Fortran logicals, "
                 f"got {mix_values!r}")
-        unsupported_mix = [
+        diff_values = _column(dynamics, "diff_opt", max_dom, default=2)
+        perturbation_mix = [
             index + 1 for index, value in enumerate(mix_values)
-            if value is not True
+            if value is not True and diff_values[index] == 2
         ]
-        if unsupported_mix:
+        if perturbation_mix:
             declaration = (
                 "is omitted, so WRF Registry default false applies"
-                if "mix_full_fields" not in dynamics
+                if not mix_full_fields_given
                 else f"resolves to {mix_values!r}"
             )
-            gpuwm_reasons.append(
-                "gpuwm forecast runtime implements only full-field "
-                f"diff_opt=2 mixing: &dynamics/mix_full_fields {declaration}; "
-                f"unsupported on domains {unsupported_mix}. Set explicit "
-                "mix_full_fields = .true. on every domain. Stock-WRF input "
-                "export remains independent and supported."
-            )
+            issues.append(_issue(
+                "MIX_FULL_FIELDS_SUBSTITUTION", "&dynamics/mix_full_fields",
+                f"&dynamics/mix_full_fields {declaration}; domains "
+                f"{perturbation_mix} select WRF's perturbation-field mixing. "
+                + MIX_FULL_FIELDS_SUBSTITUTION,
+                "Nothing to change: the import books this as a declared "
+                "divergence and announces it. Set explicit "
+                "mix_full_fields = .true. on every domain to select the "
+                "same full-field mixing in WRF.",
+                severity=SEVERITY_ADVISORY,
+            ))
     except (KeyError, ValueError) as error:
         gpuwm_reasons.append(
             "gpuwm forecast runtime cannot classify "
@@ -920,8 +964,19 @@ def analyze_namelists(
                     raise ValueError(
                         f"ordered WPS/input {key} arrays differ: {left} != {right}"
                     )
-            if inp_parent[0] != 0 or wps_parent[0] != 1:
-                raise ValueError("d01 parent_id must be 0 in WRF and 1 in WPS")
+            if inp_parent[0] not in (0, grid_ids[0]) or wps_parent[0] != 1:
+                raise ValueError(
+                    "d01 parent_id must be 0 or its own grid_id in WRF "
+                    "and 1 in WPS; the head grid cannot have an external parent")
+            if inp_parent[0] != 0:
+                inp_parent[0] = 0
+                issues.append(_issue(
+                    "ROOT_PARENT_ID_NORMALIZED", "&domains/parent_id",
+                    "WRF's head grid has no parent; its self-parent spelling "
+                    "is normalized to the experiment's root marker 0.",
+                    "Nothing to change: both WRF root spellings are accepted.",
+                    severity=SEVERITY_ADVISORY,
+                ))
             if any(value < 2 for value in (*inp_we, *inp_sn)):
                 raise ValueError("every e_we/e_sn dimension must be at least 2")
             if (
@@ -1469,11 +1524,44 @@ def analyze_namelists(
         try:
             time_control = inp["time_control"]
             starts = _datetime_columns(time_control, "start", max_dom)
-            ends = _datetime_columns(time_control, "end", max_dom)
+            run_seconds = _run_length_seconds(time_control)
+            if run_seconds > 0:
+                ends = [starts[0] + timedelta(seconds=run_seconds)] * max_dom
+                if any(key.startswith("end_") for key in time_control):
+                    issues.append(_issue(
+                        "END_COLUMNS_IGNORED", "&time_control/end_*",
+                        "WRF takes the end from the root start plus positive "
+                        "run_* duration; supplied end_* columns are ignored.",
+                        "Nothing to change: the run_* clock is authoritative.",
+                        severity=SEVERITY_ADVISORY,
+                    ))
+            else:
+                ends = _datetime_columns(time_control, "end", max_dom)
             wps_starts = _wps_datetime_columns(
-                share["start_date"], max_dom, "&share/start_date")
+                share["start_date"], max_dom, "&share/start_date", starts)
             wps_ends = _wps_datetime_columns(
-                share["end_date"], max_dom, "&share/end_date")
+                share["end_date"], max_dom, "&share/end_date", ends)
+            for key in ("start_date", "end_date"):
+                values = share[key]
+                if len(values) > max_dom:
+                    issues.append(_issue(
+                        "WPS_INACTIVE_DATES_IGNORED", f"&share/{key}",
+                        "WPS reads only the max_dom active-domain dates; "
+                        "trailing staging entries do not change the run.",
+                        "Nothing to change: inactive-domain dates are ignored.",
+                        severity=SEVERITY_ADVISORY,
+                    ))
+                if any(isinstance(value, str) and "@" in value
+                       and _WPS_DATE_TEMPLATE.fullmatch(value)
+                       for value in values[:max_dom]):
+                    issues.append(_issue(
+                        "WPS_STAGING_DATE_SUBSTITUTION", f"&share/{key}",
+                        "Unresolved WPS staging date templates are replaced "
+                        "by the concrete &time_control forecast clock.",
+                        "Nothing to change: concrete WPS dates still "
+                        "cross-check against namelist.input.",
+                        severity=SEVERITY_ADVISORY,
+                    ))
             if starts != wps_starts:
                 raise ValueError(
                     "ordered namelist.input start columns differ from "

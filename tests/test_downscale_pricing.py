@@ -362,6 +362,8 @@ def test_the_runner_decides_before_it_reads_a_parent_frame(tmp_path, monkeypatch
         child_config=child, parent_grid_ratio=1, i_parent_start=4,
         j_parent_start=4, max_boundary_interval_seconds=3600.0,
         accepted_parent_cadence=True, child_surface_from=None,
+        # no WPS_GEOG tree is staged for the fixture parent
+        child_terrain="parent",
         preprocess_backend="cpu", health_interval_seconds=60.0,
         outdir=tmp_path / "child-run")
     with pytest.raises(_Sentinel):
@@ -424,6 +426,8 @@ def _drive_the_runner_to_its_decision(run_dir: Path, *, tiles_mode) -> None:
         parent_grid_ratio=1, i_parent_start=4, j_parent_start=4,
         max_boundary_interval_seconds=3600.0, accepted_parent_cadence=True,
         child_surface_from=None, preprocess_backend="cpu",
+        # no WPS_GEOG tree is staged for the fixture parent
+        child_terrain="parent",
         health_interval_seconds=60.0, outdir=run_dir / "child-run")
     with pytest.raises(_Sentinel):
         child_run._run(args, child_run._ChildProgress())

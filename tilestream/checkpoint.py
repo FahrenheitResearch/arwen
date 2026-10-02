@@ -112,7 +112,6 @@ other module's source would pass while the semantics moved underneath it.
 from __future__ import annotations
 
 import contextlib
-import dataclasses
 import json
 import os
 from datetime import datetime, timezone
@@ -443,7 +442,7 @@ def store_restart_header(arrays: Mapping[str, np.ndarray],
         "producer": _restart.producer_identity(),
         "elapsed_seconds": _restart._admissible_elapsed_seconds(
             scalars["elapsed_seconds"], "streamed restart write"),
-        "config": dataclasses.asdict(cfg),
+        "config": _restart.configuration_echo(cfg),
         "setup_fingerprint": setup.setup_fingerprint,
         "physics_setup": physics_setup,
         "physics_setup_fingerprint": _restart._json_sha256(physics_setup),

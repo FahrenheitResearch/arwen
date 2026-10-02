@@ -65,6 +65,15 @@ The three scope-1 keys are deliberately **absent** from
 a per-domain override would be inventing surface WRF does not have.  The
 other nine are per-domain.
 
+With `use_adaptive_time_step = true`, history intervals need only be
+positive whole seconds. They do not have to divide the declared
+`time_step`. The root shortens its live step to each domain's history
+alarm, including `history_begin`, and divides that step down to its
+children. Positive radiation, cumulus, and surface/PBL periods likewise
+use exact tick deadlines at their requested intervals. Zero physics
+periods still mean every step. Fixed-clock cadence validation and its
+WRF step-count predicates are unchanged.
+
 One more field sits beside them and is not a WRF key:
 `min_time_step_sound` (default 0, even, per domain).  The clock derives
 each domain's acoustic substep count from its live step, as upstream's

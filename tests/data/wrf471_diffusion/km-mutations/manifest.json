@@ -1,0 +1,248 @@
+{
+  "schema": "wrf471-km-mutable-outputs-v1",
+  "cases": [
+    {
+      "file": "deformation-evolved_map_extremes.npz",
+      "source_fixture_sha256": "38cd2198cab5174f44adee2400af6cefefc4d898e813de9578609b3a097a87d5"
+    },
+    {
+      "file": "deformation-evolved_near_zero_flow.npz",
+      "source_fixture_sha256": "4b0c3c946f9d12e402a6455312625cedf6249c84139521b09fb19c01fb5a5b45"
+    },
+    {
+      "file": "deformation-evolved_real_open.npz",
+      "source_fixture_sha256": "0c6955e60971157baeb64c9b142024b64535e35a358e0aa4c0e1fba02876ec8a"
+    },
+    {
+      "file": "deformation-evolved_real_periodic.npz",
+      "source_fixture_sha256": "3766984a2de574f45dbb340b71e98fc65f72990236ee723e65267b8f887ee020"
+    },
+    {
+      "file": "deformation-evolved_southern_open.npz",
+      "source_fixture_sha256": "3af48c5761e4a0ed9f0eca5e819df9c5440e8e5aecedebafaec0da99ce3b89d2"
+    },
+    {
+      "file": "deformation-evolved_steep_open.npz",
+      "source_fixture_sha256": "b45fb0daa04eab6aaf33abcd0990d752fd1224f6ef423dbf6e867007396f6c97"
+    },
+    {
+      "file": "deformation-evolved_zero_flow.npz",
+      "source_fixture_sha256": "7038ffb196dfd142a6efcf80f1175e78aa7ab788e61a49c4ff0323cfbdb1e1df"
+    },
+    {
+      "file": "deformation-map_extremes.npz",
+      "source_fixture_sha256": "83c43a53cd9665b3cbc6396c99f7dfbd1ac6aa743ffac1e16fa358731692a756"
+    },
+    {
+      "file": "deformation-near_zero_flow.npz",
+      "source_fixture_sha256": "d3ed4db92cfabd517d79c1aeeb02f9684f6c1936dd87db5a213e241717c63330"
+    },
+    {
+      "file": "deformation-real_open.npz",
+      "source_fixture_sha256": "1d3604bb4eeed33ed2210e8a79ccfd02f666a4f54cc9dc671615806df2b8c537"
+    },
+    {
+      "file": "deformation-real_periodic.npz",
+      "source_fixture_sha256": "f21685ff1ae14100727ce0178ca23668a094691a6ed00078dbce0eaf3e8a7c43"
+    },
+    {
+      "file": "deformation-southern_open.npz",
+      "source_fixture_sha256": "6ef2276ac195edfda19431f9fb45167d762039d89223da4a1f7bf61f785716e0"
+    },
+    {
+      "file": "deformation-steep_open.npz",
+      "source_fixture_sha256": "68c5cc95daf3a2716f3afc637c5b9204ca6ebecc76f01181d0dc5a0d14e5cff1"
+    },
+    {
+      "file": "deformation-zero_flow.npz",
+      "source_fixture_sha256": "45701b924e2c423dcf08b1bd5402f06f92191f8eddb18b726f839b8135f383bd"
+    }
+  ],
+  "files": {
+    "deformation-evolved_map_extremes.npz": "07ef29a617ddf901902d5d1dadb270d77a4f026ae6aae676c6283d7b12bde3f4",
+    "deformation-evolved_near_zero_flow.npz": "37cc95f28257143369197ad6add7841fee0206cd182f7ce6acac829340d94bc7",
+    "deformation-evolved_real_open.npz": "07ef29a617ddf901902d5d1dadb270d77a4f026ae6aae676c6283d7b12bde3f4",
+    "deformation-evolved_real_periodic.npz": "07ef29a617ddf901902d5d1dadb270d77a4f026ae6aae676c6283d7b12bde3f4",
+    "deformation-evolved_southern_open.npz": "07ef29a617ddf901902d5d1dadb270d77a4f026ae6aae676c6283d7b12bde3f4",
+    "deformation-evolved_steep_open.npz": "07ef29a617ddf901902d5d1dadb270d77a4f026ae6aae676c6283d7b12bde3f4",
+    "deformation-evolved_zero_flow.npz": "01ec056561e7f971f1e8f0f281fea00d772219c9b761eb7b7415a9288a384c0b",
+    "deformation-map_extremes.npz": "07ef29a617ddf901902d5d1dadb270d77a4f026ae6aae676c6283d7b12bde3f4",
+    "deformation-near_zero_flow.npz": "37cc95f28257143369197ad6add7841fee0206cd182f7ce6acac829340d94bc7",
+    "deformation-real_open.npz": "07ef29a617ddf901902d5d1dadb270d77a4f026ae6aae676c6283d7b12bde3f4",
+    "deformation-real_periodic.npz": "07ef29a617ddf901902d5d1dadb270d77a4f026ae6aae676c6283d7b12bde3f4",
+    "deformation-southern_open.npz": "07ef29a617ddf901902d5d1dadb270d77a4f026ae6aae676c6283d7b12bde3f4",
+    "deformation-steep_open.npz": "07ef29a617ddf901902d5d1dadb270d77a4f026ae6aae676c6283d7b12bde3f4",
+    "deformation-zero_flow.npz": "01ec056561e7f971f1e8f0f281fea00d772219c9b761eb7b7415a9288a384c0b"
+  },
+  "fortran_build": {
+    "wrf_release": "4.7.1",
+    "wrf_commit": "f52c197ed39d12e087d02c50f412d90d418f6186",
+    "compiler": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+    "commands": [
+      [
+        "gfortran",
+        "-O0",
+        "-g",
+        "-fPIC",
+        "-cpp",
+        "-ffree-form",
+        "-ffree-line-length-none",
+        "-ffp-contract=off",
+        "-fno-tree-vectorize",
+        "-fcheck=bounds",
+        "-c",
+        "oracle_config.F90",
+        "-o",
+        "oracle_config.o"
+      ],
+      [
+        "gfortran",
+        "-O0",
+        "-g",
+        "-fPIC",
+        "-cpp",
+        "-ffree-form",
+        "-ffree-line-length-none",
+        "-ffp-contract=off",
+        "-fno-tree-vectorize",
+        "-fcheck=bounds",
+        "-c",
+        "module_model_constants.F",
+        "-o",
+        "constants.o"
+      ],
+      [
+        "gfortran",
+        "-O0",
+        "-g",
+        "-fPIC",
+        "-cpp",
+        "-ffree-form",
+        "-ffree-line-length-none",
+        "-ffp-contract=off",
+        "-fno-tree-vectorize",
+        "-fcheck=bounds",
+        "-c",
+        "wrf_routines.F90",
+        "-o",
+        "routines.o"
+      ],
+      [
+        "gfortran",
+        "-O0",
+        "-g",
+        "-fPIC",
+        "-cpp",
+        "-ffree-form",
+        "-ffree-line-length-none",
+        "-ffp-contract=off",
+        "-fno-tree-vectorize",
+        "-fcheck=bounds",
+        "-c",
+        "deformation_wrappers.F90",
+        "-o",
+        "wrapper.o"
+      ],
+      [
+        "gfortran",
+        "-shared",
+        "oracle_config.o",
+        "constants.o",
+        "routines.o",
+        "wrapper.o",
+        "-o",
+        "oracle.so"
+      ]
+    ],
+    "routines": {
+      "cal_deform_and_div": {
+        "first_line": 16,
+        "last_line": 1192,
+        "sha256": "84e91fbc8849399c8b0c299b3696857b7c59eb546c93174161d905c22ef04058"
+      },
+      "calculate_km_kh": {
+        "first_line": 1194,
+        "last_line": 1351,
+        "sha256": "d794c65e3e0e8965f6566b314ab392f5ff4847bf1caaf7dcc8164c7a8748fc08"
+      },
+      "calculate_N2": {
+        "first_line": 1484,
+        "last_line": 1715,
+        "sha256": "33e7c32f77268ccd76b5700f030769f17079a8439a474f251bd6a734b499d532"
+      },
+      "cal_dampkm": {
+        "first_line": 1352,
+        "last_line": 1482,
+        "sha256": "f728ae3db102f94ac41cb8b50bee89979dd2332bee4a7ec59c63bd05690869cb"
+      },
+      "isotropic_km": {
+        "first_line": 1717,
+        "last_line": 1774,
+        "sha256": "b31c73dbf21a7abbc38a880ae37d1f6cde12a938da1512f420043a8152d8b7a3"
+      },
+      "smag_km": {
+        "first_line": 1776,
+        "last_line": 1931,
+        "sha256": "586c2e65b34acd25c2acf36d01c43fe43a4789eef177f77650aab252e61a6f8a"
+      },
+      "smag2d_km": {
+        "first_line": 1933,
+        "last_line": 2046,
+        "sha256": "0ebb6c933f7712cf42ddc46e582327037c667138554ab8e3a51ff684eb5c07bb"
+      },
+      "tke_km": {
+        "first_line": 2048,
+        "last_line": 2338,
+        "sha256": "e001cf3f3082a737d46fbdd7866d0efb4027352943734657cdb63ad09f019572"
+      },
+      "calc_l_scale": {
+        "first_line": 2340,
+        "last_line": 2408,
+        "sha256": "5ea3e7af00fbdee1a2ef7a3c76ed8967d2a0574b718eb97b21ece8e7dc8467b1"
+      },
+      "pthl": {
+        "first_line": 5274,
+        "last_line": 5301,
+        "sha256": "9a4e5e98397e45dbd954aa3d698ce134e2426db2ae8c518b617282c15b3ce02d"
+      },
+      "pu": {
+        "first_line": 5302,
+        "last_line": 5328,
+        "sha256": "59ba3b05fc2b7a81f4b92619bcf3a000c737835dc03763e3203fcc7325eaba27"
+      },
+      "compute_diff_metrics": {
+        "first_line": 6881,
+        "last_line": 7131,
+        "sha256": "b42653382bfc6b71c1686c1330611a49255ba32b153227751ac3832842432d76"
+      }
+    },
+    "extra_sources": {
+      "module_bc.F": {
+        "sha256": "61b9235004b2a7799faabaa928276af8a7ef2e4672619c8ad120c857461301ad",
+        "routines": {
+          "set_physical_bc3d": {
+            "first_line": 650,
+            "last_line": 1114,
+            "sha256": "89afe66021a063bc41c20c8fbd0dd1d7d5b564c572b4a13bc18b0dd55704800e"
+          }
+        }
+      },
+      "module_big_step_utilities_em.F": {
+        "sha256": "bd177b6b5ba7949cf9e694d7ad654fd9ae2f07d39d85802f0716c5318889a815",
+        "routines": {
+          "phy_prep": {
+            "first_line": 4729,
+            "last_line": 4976,
+            "sha256": "fa0ea64366b4e6c003c8e0bbeb0d92851f34e91e0f6bd7002065d51c2a459346"
+          }
+        }
+      }
+    },
+    "source_sha256": "a7d4570c97e51c635e86a0dbd628c6846457ac5b93d5a7af798b118c7d8d2d54",
+    "constants_sha256": "5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062",
+    "wrapper_sha256": "13058bc6c598b13a4b9dc36c3280425872ecec53adfdc7381edd3f599f3a05a5",
+    "config_sha256": "ddff231e3ca6c27c5c4a3aad2c9e6a2a9bf7c7e6e974e5b2b064aeb924a526de",
+    "generated_sha256": "1c62d47f5b3d0336f4e4df1bc64cc8704552ad29476f418a448cadb04ba6fb9e",
+    "library_sha256": "53c1b4bd4a05c65faa9c9453b4f203854a64461a2c6981120331443bd488b57e"
+  }
+}

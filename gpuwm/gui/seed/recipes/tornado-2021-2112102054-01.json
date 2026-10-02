@@ -141,14 +141,14 @@
       "need_gib": 6.31,
       "budget_gib": 6.75
      },
-     "disk_gib": 25.9,
+     "disk_gib": 25.4,
      "disk_budget_gib": 40,
      "output": {
       "history_interval_s": 3600,
       "nest_history_interval_s": 3600,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 17.4 GiB of HRRR files for 16 forcing times; the preparation, 3.0 GiB; the history files, 3.4 GiB, written every hour on the outer grid; the one checkpoint the run keeps (two while a new one is written), 1.1 GiB; the rendered pictures, 1.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 40 GiB disk budget",
+     "disk_basis": "the download, 17.4 GiB of HRRR files for 16 forcing times; the preparation, 3.0 GiB; the history files, 2.9 GiB, written every hour on the outer grid; the one checkpoint the run keeps (two while a new one is written), 1.1 GiB; the rendered pictures, 1.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 40 GiB disk budget",
      "download": {
       "bytes": 18665600000,
       "transfer_bytes": 18665600000,
@@ -277,14 +277,14 @@
       "need_gib": 10.09,
       "budget_gib": 10.75
      },
-     "disk_gib": 40.3,
+     "disk_gib": 39.0,
      "disk_budget_gib": 50,
      "output": {
       "history_interval_s": 3600,
       "nest_history_interval_s": 3600,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 17.4 GiB of HRRR files for 16 forcing times; the preparation, 8.9 GiB; the history files, 9.9 GiB, written every hour on the outer grid; the one checkpoint the run keeps (two while a new one is written), 3.1 GiB; the rendered pictures, 1.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 50 GiB disk budget",
+     "disk_basis": "the download, 17.4 GiB of HRRR files for 16 forcing times; the preparation, 8.9 GiB; the history files, 8.6 GiB, written every hour on the outer grid; the one checkpoint the run keeps (two while a new one is written), 3.1 GiB; the rendered pictures, 1.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 50 GiB disk budget",
      "download": {
       "bytes": 18665600000,
       "transfer_bytes": 18665600000,
@@ -420,14 +420,14 @@
       "need_gib": 10.65,
       "budget_gib": 14.54
      },
-     "disk_gib": 51.8,
+     "disk_gib": 48.8,
      "disk_budget_gib": 60,
      "output": {
       "history_interval_s": 3600,
       "nest_history_interval_s": 1800,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 17.4 GiB of HRRR files for 16 forcing times; the preparation, 4.6 GiB; the history files, 23.1 GiB, written every hour on the outer grid and every 30 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 3.8 GiB; the rendered pictures, 3.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 60 GiB disk budget",
+     "disk_basis": "the download, 17.4 GiB of HRRR files for 16 forcing times; the preparation, 4.6 GiB; the history files, 20.1 GiB, written every hour on the outer grid and every 30 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 3.8 GiB; the rendered pictures, 3.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 60 GiB disk budget",
      "download": {
       "bytes": 18665600000,
       "transfer_bytes": 18665600000,
@@ -563,14 +563,14 @@
       "need_gib": 14.55,
       "budget_gib": 22.06
      },
-     "disk_gib": 72.8,
+     "disk_gib": 67.8,
      "disk_budget_gib": 80,
      "output": {
       "history_interval_s": 3600,
       "nest_history_interval_s": 1800,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 17.4 GiB of HRRR files for 16 forcing times; the preparation, 7.9 GiB; the history files, 38.1 GiB, written every hour on the outer grid and every 30 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 6.4 GiB; the rendered pictures, 3.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 80 GiB disk budget",
+     "disk_basis": "the download, 17.4 GiB of HRRR files for 16 forcing times; the preparation, 7.9 GiB; the history files, 33.1 GiB, written every hour on the outer grid and every 30 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 6.4 GiB; the rendered pictures, 3.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 80 GiB disk budget",
      "download": {
       "bytes": 18665600000,
       "transfer_bytes": 18665600000,
@@ -696,14 +696,14 @@
       "need_gib": 18.38,
       "budget_gib": 29.58
      },
-     "disk_gib": 93.2,
+     "disk_gib": 86.2,
      "disk_budget_gib": 100,
      "output": {
       "history_interval_s": 3600,
       "nest_history_interval_s": 1800,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 17.4 GiB of HRRR files for 16 forcing times; the preparation, 11.1 GiB; the history files, 52.8 GiB, written every hour on the outer grid and every 30 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 8.9 GiB; the rendered pictures, 3.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 100 GiB disk budget",
+     "disk_basis": "the download, 17.4 GiB of HRRR files for 16 forcing times; the preparation, 11.1 GiB; the history files, 45.9 GiB, written every hour on the outer grid and every 30 minutes on the nests; the one checkpoint the run keeps (two while a new one is written), 8.9 GiB; the rendered pictures, 3.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 100 GiB disk budget",
      "download": {
       "bytes": 18665600000,
       "transfer_bytes": 18665600000,

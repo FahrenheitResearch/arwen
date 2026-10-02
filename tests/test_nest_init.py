@@ -22,6 +22,72 @@ from gpuwm.verify.cases.wk82 import wk82_sounding, wk82_theta
 from gpuwm.verify.npref import np_sint
 
 
+class _DeviceSintPayload:
+    """Device-shaped CPU witness, distinct from a NumPy preparation array."""
+    def __init__(self, value):
+        self.value = np.ascontiguousarray(value)
+
+    def __getattr__(self, name):
+        return getattr(self.value, name)
+
+    def __array__(self, dtype=None, copy=None):
+        return np.asarray(self.value, dtype=dtype)
+
+    def __getitem__(self, index):
+        return self.value[index]
+
+    def __setitem__(self, index, value):
+        self.value[index] = np.asarray(value)
+
+
+@pytest.mark.parametrize('stagger', ['', 'x', 'y'])
+@pytest.mark.parametrize('dimensions', [2, 3])
+def test_full_device_reconstruction_stages_only_exact_host_donors(
+        monkeypatch, stagger, dimensions):
+    import sys
+    from gpuwm.core.nest_interp import register_nest, window_registration
+    reg = register_nest(nri=3, nrj=3, i_parent_start=7, j_parent_start=8,
+                        child_nx=9, child_ny=12, parent_nx=64, parent_ny=64,
+                        stagger=stagger, wrapper='interp')
+    shape = (reg.nyp, reg.nxp) if dimensions == 2 else (2, reg.nyp, reg.nxp)
+    source = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+    uploads, seen = [], []
+    def upload(value):
+        assert value.flags.c_contiguous
+        uploads.append(value.copy())
+        return _DeviceSintPayload(value)
+    monkeypatch.setitem(sys.modules, 'cupy', SimpleNamespace(asarray=upload))
+    def interpolate(payload, cropped):
+        assert isinstance(payload, _DeviceSintPayload)
+        seen.append(cropped)
+        return np_sint(payload.value, cropped, dtype=np.float64).astype(np.float32)
+    monkeypatch.setattr(ni, 'sint', interpolate)
+    observed = ni._reconstruction_sint(source, reg, device_windows=True)
+    cropped, donor = window_registration(reg, (slice(0, reg.nyc), slice(0, reg.nxc)))
+    assert len(uploads) == len(seen) == 1
+    np.testing.assert_array_equal(uploads[0], source[(...,)+donor])
+    assert uploads[0].nbytes < source.nbytes
+    assert (seen[0].nyc, seen[0].nxc, seen[0].ystag, seen[0].xstag) == (
+        reg.nyc, reg.nxc, reg.ystag, reg.xstag)
+    np.testing.assert_array_equal(observed,
+        np_sint(source, reg, dtype=np.float64).astype(np.float32))
+
+
+@pytest.mark.parametrize('backend', ['numpy-preparation', 'resident-device'])
+def test_original_reconstruction_backend_keeps_original_registration(monkeypatch, backend):
+    source = np.zeros((2, 12, 12), np.float32)
+    if backend == 'resident-device':
+        source = _DeviceSintPayload(source)
+    registration, result = object(), object()
+    seen = []
+    monkeypatch.setattr(ni, 'sint', lambda value, reg, **kwargs:
+                        seen.append((value, reg, kwargs)) or result)
+    assert ni._reconstruction_sint(source, registration,
+        device_windows=backend == 'resident-device') is result
+    assert len(seen) == 1 and seen[0][0] is source and seen[0][1] is registration
+    assert seen[0][2] == {}
+
+
 def test_pending_child_inputs_overlap_and_collect_in_parent_order(monkeypatch):
     domains = tuple(SimpleNamespace(grid_id=grid_id) for grid_id in (2, 3, 4))
     grids = {domain.grid_id: object() for domain in domains}
@@ -974,6 +1040,45 @@ def test_parent_only_wk82_child_fixture_is_cpu_testable(monkeypatch):
     assert float(result.state.qv.max()) > 0.0  # the analytic WK82 moisture
     assert diagnosed == [True]
     assert result.real is result.soil is result.static_fields is None
+
+
+def test_device_child_from_host_parent_retains_full_child_geometry(monkeypatch):
+    import sys
+    parent_state = _flat_parent_state()
+    parent_run = SimpleNamespace(nx=12, ny=12, nz=3)
+    parent_grid = LambertGrid(ref_lat=35., ref_lon=-97., truelat1=30., truelat2=60.,
+        stand_lon=-97., dx=1000., dy=1000., e_we=13, e_sn=13)
+    parent_node = SimpleNamespace(cfg=SimpleNamespace(grid_id=1, run=parent_run),
+                                  state=parent_state, grid=parent_grid)
+    child_run = SimpleNamespace(nx=4, ny=4, nz=3, dx=1000., dy=1000.,
+                                terrain_opt=0, hypsometric_opt=1)
+    child_dc = SimpleNamespace(grid_id=2, parent_id=1, i_parent_start=4,
+                               j_parent_start=4, parent_grid_ratio=1, run=child_run)
+    built, registrations = [], []
+    class DeviceState(_CpuState):
+        def __init__(self, cfg):
+            built.append(cfg)
+            super().__init__(cfg)
+            for name, value in list(vars(self).items()):
+                if isinstance(value, np.ndarray):
+                    setattr(self, name, _DeviceSintPayload(value))
+    monkeypatch.setattr(ni, 'DomainState', DeviceState)
+    monkeypatch.setitem(sys.modules, 'cupy', SimpleNamespace(asarray=_DeviceSintPayload))
+    def interpolate(payload, reg):
+        assert isinstance(payload, _DeviceSintPayload)
+        registrations.append(reg)
+        return _DeviceSintPayload(np_sint(payload.value, reg, dtype=np.float64).astype(np.float32))
+    monkeypatch.setattr(ni, 'sint', interpolate)
+    monkeypatch.setattr(ni, 'update_diagnostics', lambda *args: None)
+    result = ni.parent_only_init(child_dc, parent_node, clamp_undershoot=False)
+    assert built == [child_run] and built[0] is child_run
+    assert result.state.u.shape == (3, 4, 5) and result.state.v.shape == (3, 5, 4)
+    assert (result.grid.e_we, result.grid.e_sn) == (5, 5)
+    assert registrations and all(reg.nyp < 12 for reg in registrations)
+    mass_reg = ni._mass_registration(child_dc, parent_node)
+    expected = np_sint(parent_state.qv, mass_reg, dtype=np.float64).astype(np.float32)
+    np.testing.assert_array_equal(result.state.qv.value, expected)
+    np.testing.assert_array_equal(result.state.qv0.value, expected)
 
 
 def test_mixed_parent_only_init_reuses_flat_force_slot_and_resets_heating(

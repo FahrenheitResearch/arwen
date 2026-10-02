@@ -59,24 +59,14 @@ def _fixture():
     return SimpleNamespace(nx=nx, ny=ny, nz=nz, dt=dt, **out)
 
 
-def _fma32(a, b, c):
-    """float32 a*b + c rounded once (the float32 product is exact in
-    float64; the sum's double rounding is measured absent on this
-    fixture)."""
-    return (np.asarray(a, np.float64) * np.asarray(b, np.float64)
-            + np.asarray(c, np.float64)).astype(np.float32)
-
-
-def _wrf_order_f32(fx, w_crit_cfl, zadvect_implicit, *, contracted=False):
+def _wrf_order_f32(fx, w_crit_cfl, zadvect_implicit):
     """WRF's w_damp in float32, one rounding per Fortran operation.
 
     WRF's -O2 build on x86-64 has no FMA and no reassociation, so each
     operation of ``vert_cfl = abs(ww/(c1f*mut+c2f)*rdnw*dt)`` and of
     ``rw - sign(1.,w)*w_alpha*(vert_cfl-w_crit_cfl)*(c1f*mut+c2f)`` rounds
-    once, left to right; NumPy float32 does exactly that.  ``contracted``
-    instead rounds ``c1f*mut + c2f`` and ``rw - term*m`` once each, the
-    two fused multiply-adds NVRTC's default ``-fmad=true`` makes of
-    openbc.cu's w_damp.
+    once, left to right; NumPy float32 does exactly that. The device
+    limiter preserves these boundaries with explicit rounding intrinsics.
     """
     f32 = np.float32
     nz = fx.nz
@@ -84,13 +74,12 @@ def _wrf_order_f32(fx, w_crit_cfl, zadvect_implicit, *, contracted=False):
     c1f = np.broadcast_to(fx.c1f[k, None, None], fx.ww[k].shape)
     c2f = np.broadcast_to(fx.c2f[k, None, None], fx.ww[k].shape)
     mut = np.broadcast_to(fx.mut[None], fx.ww[k].shape)
-    m = _fma32(c1f, mut, c2f) if contracted else c1f * mut + c2f
+    m = c1f * mut + c2f
     cfl = np.abs(fx.ww[k] / m * fx.rdnw[k, None, None] * f32(fx.dt))
     onset = f32(w_crit_cfl) if zadvect_implicit > 0 else f32(1.0)
     excess = (np.copysign(f32(1.0), fx.w[k]) * f32(0.3)
               * (cfl - f32(w_crit_cfl)))
-    damped = (_fma32(-excess, m, fx.rw_t[k]) if contracted
-              else fx.rw_t[k] - excess * m)
+    damped = fx.rw_t[k] - excess * m
     out = fx.rw_t.copy()
     out[k] = np.where(cfl > onset, damped, fx.rw_t[k])
     return out, cfl, onset
@@ -232,18 +221,12 @@ def _device_state(fx, cp):
 
 @requires_gpu
 @pytest.mark.parametrize("tag,crit,ieva", CASES)
-def test_w_damp_is_wrf_471_up_to_nvrtcs_two_contractions(tag, crit, ieva):
-    """The onset, the excess, SIGN and the operation order are WRF's.
+def test_w_damp_is_bit_identical_to_wrf_471(tag, crit, ieva):
+    """Every tendency word matches WRF, including strict onset branches.
 
-    The kernel damps exactly the cells WRF's compiled w_damp damps, and
-    its words are WRF's float32 order with ``c1f*mut + c2f`` and
-    ``rw - term*m`` each rounded once: openbc.cu compiles with NVRTC's
-    default ``-fmad=true``, which fuses those two, where WRF's x86-64
-    build rounds every operation.  That contraction predates w_crit_cfl
-    (gpuwm's 1.0 kernel made it too) and moves 370 of WRF's 1,278 damped
-    words at 1.0 (at most 51 ULP, on tendencies that nearly cancel);
-    removing it moves every w_damping = 1 forecast past Courant 1, so it
-    is held apart from this port, whose default must stay byte-identical.
+    A rounded-once hybrid mass can cross the strict onset at Courant 1
+    or 2. The compiled real-state oracle reproduced that branch defect;
+    explicit rounding fixes it and retires the contraction allowance.
     """
     import cupy as cp
     from gpuwm.core.dycore import apply_w_damping
@@ -260,22 +243,7 @@ def test_w_damp_is_wrf_471_up_to_nvrtcs_two_contractions(tag, crit, ieva):
     assert int((wrf != fx.rw_t).sum()) > 0
     np.testing.assert_array_equal(mine != fx.rw_t, wrf != fx.rw_t,
                                   err_msg=f"{tag}: damped cells differ")
-    contracted, _, _ = _wrf_order_f32(fx, crit, ieva, contracted=True)
-    assert _differing_words(mine, contracted) == 0, (
-        f"{tag}: {_differing_words(mine, contracted)} words differ from "
-        "WRF 4.7.1's order with the two contractions")
-    # The contractions' size against WRF's own words: a few float32
-    # roundings of the result and of w_alpha*vert_cfl*(c1f*mut + c2f),
-    # the scale on which the rounding of the fused c1f*mut + c2f reaches
-    # vert_cfl - w_crit_cfl (which can nearly cancel).
-    k = slice(1, fx.nz)
-    m = (fx.c1f[k, None, None].astype(np.float64) * fx.mut[None]
-         + fx.c2f[k, None, None])
-    _, cfl, _ = _wrf_order_f32(fx, crit, ieva)
-    eps = float(np.finfo(np.float32).eps)
-    bound = np.zeros(wrf.shape)
-    bound[k] = 4 * eps * (np.abs(wrf[k].astype(np.float64)) + 0.3 * cfl * m)
-    assert (np.abs(mine.astype(np.float64) - wrf) <= bound).all(), tag
+    assert _differing_words(mine, wrf) == 0, tag
 
 
 @requires_gpu

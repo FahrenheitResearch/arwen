@@ -64,7 +64,7 @@ import importlib.machinery
 import json
 import sys
 from pathlib import Path
-from typing import NamedTuple
+from typing import Mapping, NamedTuple
 
 from gpuwm import run_stamp
 
@@ -558,11 +558,15 @@ def resolve_head_bundle(prepared_root: Path, head_sha256: str) -> dict:
             raise StageRefusal(
                 f"the prepared head in {root} names {tree.get('domains')} "
                 f"but its proof counts {domains!r} domains")
+    posted = head["basis"].get("as_posted")
+    plan = posted.get("input_plan") if isinstance(posted, dict) else None
+    planned_manifest = plan.get("manifest") if isinstance(plan, dict) else None
     return {
         "document": root / "boundary-stream" / "head.json",
         "root": root,
         "schema": schema,
-        "source": _resolve_packaged_source(root, entry),
+        "source": _resolve_packaged_source(
+            root, entry, manifest=planned_manifest),
         "layout": layout,
         "domains": domains,
         "payload": payload,
@@ -596,7 +600,8 @@ _MAPPED_EVIDENCE_MAPPING = "source-evidence/mapping.json"
 _MAPPED_EVIDENCE_COMPOSITION = "source-evidence/composition.json"
 
 
-def packaged_source_of(prepared_root: Path) -> str | None:
+def packaged_source_of(prepared_root: Path, *,
+                       manifest: Mapping[str, object] | None = None) -> str | None:
     """Which packaged profile prepared this tree, by its own bytes.
 
     Every packaged source writes the SAME proof schema, because they are
@@ -617,6 +622,10 @@ def packaged_source_of(prepared_root: Path) -> str | None:
 
     ``None`` means no shipped profile matches, which is exactly what a
     caller-authored mapping looks like.
+
+    An as-posted head has no sealed manifest yet. Its caller supplies the
+    manifest from the digest-bound head's input plan instead, so the same
+    authority checks identify the source before and after the seal.
     """
 
     from gpuwm.source_adapters import packaged_profile_sources
@@ -627,13 +636,14 @@ def packaged_source_of(prepared_root: Path) -> str | None:
     composition = Path(prepared_root) / _MAPPED_EVIDENCE_COMPOSITION
     if not (mapping.is_file() and composition.is_file()):
         return None
-    manifest_path = Path(prepared_root) / _MAPPED_EVIDENCE_MANIFEST
-    if not manifest_path.is_file():
-        return None
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return None  # the sealed evidence reader diagnoses invalid content
+    if manifest is None:
+        manifest_path = Path(prepared_root) / _MAPPED_EVIDENCE_MANIFEST
+        if not manifest_path.is_file():
+            return None
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None  # the sealed evidence reader diagnoses invalid content
 
     from gpuwm.prepared_source_schemas import source_schemas
     schemas = source_schemas()
@@ -642,14 +652,15 @@ def packaged_source_of(prepared_root: Path) -> str | None:
     for source, profile_id in packaged_profile_sources().items():
         pins = packaged_authority_sha256(profile_id)
         if (observed_composition == pins["composition"]
-                and isinstance(manifest, dict)
+                and isinstance(manifest, Mapping)
                 and manifest.get("schema") == schemas.get(source)
                 and bound_mapping_refusal(profile_id, mapping_bytes) is None):
             return source
     return None
 
 
-def _resolve_packaged_source(prepared_root: Path, entry: dict) -> str:
+def _resolve_packaged_source(prepared_root: Path, entry: dict, *,
+                             manifest: Mapping[str, object] | None = None) -> str:
     """The source a bundle was prepared from, disambiguated when it must be."""
 
     from gpuwm.prepared_source_schemas import mapped_sources
@@ -658,7 +669,7 @@ def _resolve_packaged_source(prepared_root: Path, entry: dict) -> str:
     sources = entry.get("sources") or [entry["source"]]
     if not mapped.intersection(sources):
         return str(entry["source"])
-    identified = packaged_source_of(prepared_root)
+    identified = packaged_source_of(prepared_root, manifest=manifest)
     if identified in mapped:
         return str(identified)
     # The shared mapped proof schema identifies a route, not a model.
@@ -833,6 +844,39 @@ def _health_debug_flags(layout: str, enabled: bool) -> list[str]:
     return ["--health-debug"] if enabled else []
 
 
+def _devices_table_argument(text):
+    """``gpuwm sim --devices-table JSON`` as validated :class:`DeviceOptions`.
+
+    The [tiles] precedent (``--tiles JSON``): a prepared bundle binds its
+    experiment TOML byte for byte, so a split cannot be asked for by editing
+    that file -- the forecast refuses a config whose bytes differ from the
+    receipt.  The table travels beside it instead, validated here by the same
+    ``DeviceOptions.from_mapping`` the TOML parser uses, and binds nothing.
+    It is the only way to name ``ids`` for such a bundle, which the one-card
+    proof needs (``{"count": 2, "ids": [0, 0]}``).
+    """
+    if text is None:
+        return None
+    from gpuwm.core.devices import DeviceOptions
+    try:
+        table = json.loads(text)
+        return DeviceOptions.from_mapping(table, source="--devices-table")
+    except (ValueError, TypeError) as error:
+        raise StageRefusal(f"--devices-table refused: {error}") from error
+
+
+def devices_flags(layout: str, *, options=None):
+    """``--devices-table`` for the owning runner: single domain and tree alike.
+
+    The tree runner reads ``domains`` (which grids run split) from the same
+    table; the single-domain runner refuses a ``domains`` list that leaves its
+    one grid out.
+    """
+    if options is None or not options.enabled:
+        return []
+    return ["--devices-table", json.dumps(options.to_mapping(), sort_keys=True)]
+
+
 def streaming_flags(layout: str, *, tiles=None,
                     stream_init: str | None = None) -> list[str]:
     """Validate and encode the owning runner's execution-only overrides."""
@@ -871,7 +915,7 @@ def sim_command(bundle: dict, *, experiment_config: Path,
                 health_debug: bool = False,
                 render_products: str | None = None,
                 render_dir: Path | None = None,
-                tiles=None, stream_init: str | None = None,
+                tiles=None, stream_init: str | None = None, devices: int | None = None, devices_options=None,
                 memory_gate: bool = True) -> list[str]:
     """The exact runner command this prepared tree needs.
 
@@ -900,6 +944,9 @@ def sim_command(bundle: dict, *, experiment_config: Path,
     if layout not in {"single", "tree"}:
         raise StageRefusal(f"unknown runner arm {layout!r}")
     stream_flags = streaming_flags(layout, tiles=tiles, stream_init=stream_init)
+    stream_flags += devices_flags(layout, options=devices_options)
+    if devices is not None:
+        stream_flags += ["--devices", str(devices)]
     profile_flags = ([] if physics_profile is None else
                      ["--physics-profile", str(physics_profile)])
     restart_flags = _restart_flags(layout, restart, sealed_forcing_extension)
@@ -925,7 +972,11 @@ def sim_command(bundle: dict, *, experiment_config: Path,
                 *binding,
                 "--experiment-config", str(config),
                 "--experiment-config-sha256", digests["experiment_config"],
-                *profile_flags, *restart_flags, *health_flags, *render_flags,
+                # The split travels to the tree runner exactly as to the
+                # single-domain one (streaming_flags refuses tree [tiles]
+                # overrides above, so this is the devices table alone).
+                *profile_flags, *stream_flags,
+                *restart_flags, *health_flags, *render_flags,
                 *gate_flags, *_progress_flags(progress_format),
                 "--io-mode", io_mode, "--outdir", str(outdir)]
     if wps_namelist is None:
@@ -1091,6 +1142,9 @@ def sim_main(args) -> int:
             render_products=getattr(args, "render_products", None),
             render_dir=getattr(args, "render_dir", None),
             tiles=getattr(args, "tiles", None),
+            devices=getattr(args, "devices", None),
+            devices_options=_devices_table_argument(
+                getattr(args, "devices_table", None)),
             stream_init=getattr(args, "stream_init", None),
             memory_gate=not getattr(args, "no_memory_gate", False))
         if not getattr(args, "print_command", False):
@@ -1220,6 +1274,15 @@ def register_cli(subparsers) -> None:
                      help="use the existing prepared-tree append-only forcing "
                           "prefix contract when writing or restoring checkpoints")
     from gpuwm.prepared_single_domain_forecast import STREAM_INIT_CHOICES
+    sim.add_argument("--devices", type=int, default=None, metavar="N",
+                     help="resident slab count; replaces [devices] count "
+                          "(on a tree, for every grid [devices] domains names)")
+    sim.add_argument("--devices-table", default=None, metavar="JSON",
+                     dest="devices_table",
+                     help="[devices] table as JSON (count, grid, ids, transport, "
+                          "and on a tree domains); validated by the runner, "
+                          "without modifying the prepared configuration or its "
+                          "digests")
     sim.add_argument("--tiles", default=None, metavar="JSON",
                      help="single-domain streaming override as a JSON [tiles] "
                           "mapping; validated by the runner, without modifying "

@@ -1,0 +1,114 @@
+{
+  "production.advect_u.normal": {
+    "words": 2352,
+    "different_words": 1926,
+    "max_ulp": 1164848586,
+    "worst_physical_index": [
+      40,
+      0,
+      24
+    ],
+    "got": 0.0,
+    "reference": -3810.86181640625,
+    "got_bits": "00000000",
+    "reference_bits": "c56e2dca"
+  },
+  "production.advect_u.other": {
+    "words": 27048,
+    "different_words": 26069,
+    "max_ulp": 7300847,
+    "worst_physical_index": [
+      15,
+      14,
+      22
+    ],
+    "got": -0.0003574411093723029,
+    "reference": -0.000194549560546875,
+    "got_bits": "b9bb66ef",
+    "reference_bits": "b94c0000"
+  },
+  "production.advect_v.normal": {
+    "words": 2352,
+    "different_words": 2352,
+    "max_ulp": 1158357093,
+    "worst_physical_index": [
+      42,
+      24,
+      17
+    ],
+    "got": 0.0,
+    "reference": -2226.024658203125,
+    "got_bits": "00000000",
+    "reference_bits": "c50b2065"
+  },
+  "production.advect_v.other": {
+    "words": 27048,
+    "different_words": 25711,
+    "max_ulp": 352347,
+    "worst_physical_index": [
+      24,
+      22,
+      7
+    ],
+    "got": -0.026132414117455482,
+    "reference": -0.026788711547851562,
+    "got_bits": "bcd613a5",
+    "reference_bits": "bcdb7400"
+  },
+  "wrf_flux_no_fma.advect_u.normal": {
+    "words": 2352,
+    "different_words": 1926,
+    "max_ulp": 1164848586,
+    "worst_physical_index": [
+      40,
+      0,
+      24
+    ],
+    "got": 0.0,
+    "reference": -3810.86181640625,
+    "got_bits": "00000000",
+    "reference_bits": "c56e2dca"
+  },
+  "wrf_flux_no_fma.advect_u.other": {
+    "words": 27048,
+    "different_words": 12873,
+    "max_ulp": 65536,
+    "worst_physical_index": [
+      45,
+      15,
+      20
+    ],
+    "got": 0.00095367431640625,
+    "reference": 0.000949859619140625,
+    "got_bits": "3a7a0000",
+    "reference_bits": "3a790000"
+  },
+  "wrf_flux_no_fma.advect_v.normal": {
+    "words": 2352,
+    "different_words": 2352,
+    "max_ulp": 1158357093,
+    "worst_physical_index": [
+      42,
+      24,
+      17
+    ],
+    "got": 0.0,
+    "reference": -2226.024658203125,
+    "got_bits": "00000000",
+    "reference_bits": "c50b2065"
+  },
+  "wrf_flux_no_fma.advect_v.other": {
+    "words": 27048,
+    "different_words": 13514,
+    "max_ulp": 34752,
+    "worst_physical_index": [
+      23,
+      15,
+      0
+    ],
+    "got": 0.03915905952453613,
+    "reference": 0.03928852081298828,
+    "got_bits": "3d206540",
+    "reference_bits": "3d20ed00"
+  }
+}

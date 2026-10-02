@@ -262,6 +262,43 @@ def _first_party_targets(node: ast.AST) -> set[str]:
     return names
 
 
+def _sibling_targets(node: ast.AST, path: str) -> set[str]:
+    """The SIBLING test modules one import node binds, as absolute paths.
+
+    ``tests/`` is not a package, so pytest's default ``prepend`` import mode
+    puts the directory itself on ``sys.path`` and ``from test_noahmp_runtime
+    import _build`` is an ordinary import of ``tests/test_noahmp_runtime.py``.
+    The closure followed only gpuwm, tilestream and tools, so three modules
+    that reach cupy through a sibling (test_da_cycle_join_gpu,
+    test_noahmp_cold_start_device, test_noahmp_device_wiring) were imported
+    on a cupy-less install and ended the public CI's CPU job with
+    ``Interrupted: 3 errors during collection`` on 2.7.6, 2.7.7 and 2.8.0.
+    A file inside a package is not resolved this way, so only a directory
+    without ``__init__.py`` contributes siblings.  The key is the file path,
+    which no dotted first-party name can be mistaken for.
+    """
+    folder = pathlib.Path(path).resolve().parent
+    if (folder / "__init__.py").is_file():
+        return set()
+    if isinstance(node, ast.Import):
+        tops = {alias.name.split(".")[0] for alias in node.names}
+    elif isinstance(node, ast.ImportFrom) and not node.level:
+        tops = {(node.module or "").split(".")[0]}
+    else:
+        return set()
+    found: set[str] = set()
+    for top in tops:
+        if not top or top in _FIRST_PARTY or top == "cupy":
+            continue
+        module = folder / (top + ".py")
+        package = folder / top / "__init__.py"
+        if module.is_file():
+            found.add(str(module))
+        elif package.is_file():
+            found.add(str(package))
+    return found
+
+
 @functools.lru_cache(maxsize=None)
 def _import_time_edges(path: str) -> tuple[frozenset[str], bool]:
     """What runs when this file is imported: ``(first-party, cupy)``.
@@ -298,6 +335,7 @@ def _import_time_edges(path: str) -> tuple[frozenset[str], bool]:
             if (node.module or "").split(".")[0] == "cupy":
                 cupy = True
         imports |= _first_party_targets(node)
+        imports |= _sibling_targets(node, path)
     return frozenset(imports), cupy
 
 
@@ -317,19 +355,27 @@ def _cupy_import_chain(dotted: str,
         return _IMPORT_CLOSURE[dotted]
     if dotted in stack:
         return None                      # a cycle proves nothing by itself
-    path = _first_party_file(dotted)
+    # A sibling test module arrives as its own file path (see
+    # _sibling_targets) and is named in the chain by its module name.
+    sibling = dotted.endswith(".py")
+    path = dotted if sibling else _first_party_file(dotted)
     if path is None:
         _IMPORT_CLOSURE[dotted] = None
         return None
+    label = dotted
+    if sibling:
+        located = pathlib.Path(dotted)
+        label = (located.parent.name if located.name == "__init__.py"
+                 else located.stem)
     imports, cupy = _import_time_edges(path)
     if cupy:
-        _IMPORT_CLOSURE[dotted] = (dotted,)
+        _IMPORT_CLOSURE[dotted] = (label,)
         return _IMPORT_CLOSURE[dotted]
     answer = None
     for module in sorted(imports):
         found = _cupy_import_chain(module, stack + (dotted,))
         if found:
-            answer = (dotted,) + found
+            answer = (label,) + found
             break
     _IMPORT_CLOSURE[dotted] = answer
     return answer

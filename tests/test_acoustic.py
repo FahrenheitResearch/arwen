@@ -154,6 +154,48 @@ def test_open_top_moist_cq_matches_reference():
     assert np.max(np.abs(cp.asnumpy(state.w_pp[-1]))) > 1.0e-6
 
 
+@pytest.mark.parametrize("mp", [0, 1, 6])
+@requires_gpu
+def test_default_moist_cq_prebound_packages_match_reference(mp):
+    """Passive QV, Kessler and WSM6 run the default prebound CQ path."""
+    import cupy as cp
+
+    from gpuwm.core.acoustic import (prepare_acoustic_coefficients,
+                                     prepare_acoustic_substep_launch,
+                                     prepare_moist_cq)
+    from gpuwm.verify.npref import (np_acoustic_substep, np_calc_cq,
+                                    random_acoustic_state, snapshot)
+
+    state, cfg = random_acoustic_state(seed=113, moist=True, mp_physics=mp)
+    assert cfg.moist_cq is True
+    qv = cp.linspace(0.001, 0.018, cfg.nz * cfg.ny * cfg.nx,
+                     dtype=cp.float32).reshape(cfg.nz, cfg.ny, cfg.nx)
+    for scale, name in zip(
+            (1.0, 0.20, 0.10, 0.05, 0.03, 0.02),
+            ("qv", "qc", "qr", "qi", "qs", "qg"), strict=True):
+        field = getattr(state, name, None)
+        if field is not None:
+            field[...] = scale * qv
+    before = snapshot(state)
+    device_cq = prepare_moist_cq(state, cfg)
+    assert device_cq[3] is True
+    for got, expected in zip(device_cq[:3], np_calc_cq(before, mp), strict=True):
+        np.testing.assert_allclose(cp.asnumpy(got), expected,
+                                   rtol=3.0e-6, atol=2.0e-7)
+    coefficients = prepare_acoustic_coefficients(state, cfg, dtau=0.5,
+                                                 cq=device_cq)
+    launch = prepare_acoustic_substep_launch(state, cfg, dtau=0.5,
+                                            coefficients=coefficients)
+    launch(first=False)
+    cp.cuda.runtime.deviceSynchronize()
+    reference = np_acoustic_substep(before, cfg, dtau=0.5)
+    for name in ("u_pp", "v_pp", "w_pp", "ph_pp", "mu_pp", "th_pp",
+                 "ww_pp", "p_pp", "al_pp"):
+        np.testing.assert_allclose(cp.asnumpy(getattr(state, name)),
+                                   reference[name], rtol=3.0e-4,
+                                   atol=2.0e-5, err_msg=name)
+
+
 @requires_gpu
 def test_nssl_moist_cq_device_path_matches_reference():
     """Exercise option-18 QV..QH argument marshaling and acoustic use."""

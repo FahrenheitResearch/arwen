@@ -359,37 +359,88 @@ real wrf_phi(const WrfSmagGrid& q, int kw, int j, int i)
     return base + q.php[I3(kw, jj, ii, q.ny, q.nx)];
 }
 
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+
+__device__ __forceinline__
+real wrf_exact_z_at_w(const WrfSmagGrid& q, int kw, int j, int i)
+{
+    return __fdiv_rn(wrf_phi(q, kw, j, i), G);
+}
+
+#endif
 __device__ __forceinline__
 real wrf_rdzw(const WrfSmagGrid& q, int k, int j, int i)
 {
     k = k < 0 ? 0 : (k >= q.nz ? q.nz - 1 : k);
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+    return __fdiv_rn(1.0f, __fsub_rn(wrf_exact_z_at_w(q, k + 1, j, i),
+                                     wrf_exact_z_at_w(q, k, j, i)));
+#else
     return G / (wrf_phi(q, k + 1, j, i) - wrf_phi(q, k, j, i));
+#endif
 }
 
 __device__ __forceinline__
 real wrf_rdz(const WrfSmagGrid& q, int kw, int j, int i)
 {
     if (kw <= 0)
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+        return __fdiv_rn(2.0f, __fsub_rn(wrf_exact_z_at_w(q, 1, j, i),
+                                         wrf_exact_z_at_w(q, 0, j, i)));
+    if (kw >= q.nz) return 0.0f; // WRF does not write the top rdz row.
+    return __fdiv_rn(2.0f, __fsub_rn(wrf_exact_z_at_w(q, kw + 1, j, i),
+                                     wrf_exact_z_at_w(q, kw - 1, j, i)));
+#else
         return 2.0f * G / (wrf_phi(q, 1, j, i) - wrf_phi(q, 0, j, i));
     if (kw >= q.nz)
         return 2.0f * G / (wrf_phi(q, q.nz, j, i)
                          - wrf_phi(q, q.nz - 1, j, i));
     return 2.0f * G / (wrf_phi(q, kw + 1, j, i)
                      - wrf_phi(q, kw - 1, j, i));
+#endif
 }
 
 __device__ __forceinline__
 real wrf_zx(const WrfSmagGrid& q, int kw, int j, int iface)
 {
+    // compute_diff_metrics zeroes the west physical slope. Its subsequent
+    // set_physical_bc3d('e') copies the last interior slope to the east face.
+    if (q.boundary_x && iface <= 0) return 0.0f;
+    if (q.boundary_x && iface >= q.nx) iface = q.nx - 1;
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+    int jc = wrf_iy(q, j), ip = wrf_ix(q, iface), im = wrf_ix(q, iface - 1);
+    kw = kw < 0 ? 0 : (kw > q.nz ? q.nz : kw);
+    size_t a = I3(kw, jc, ip, q.ny, q.nx), b = I3(kw, jc, im, q.ny, q.nx);
+    real base_a = q.phb3d ? q.phb[a] : q.phb[kw];
+    real base_b = q.phb3d ? q.phb[b] : q.phb[kw];
+    real base = __fdiv_rn(q.rdx * __fsub_rn(base_a, base_b), G);
+    real perturbation = __fdiv_rn(q.rdx * __fsub_rn(q.php[a], q.php[b]), G);
+    return __fadd_rn(base, perturbation);
+#else
     return __fdiv_rn(q.rdx * (wrf_phi(q, kw, j, iface)
                   - wrf_phi(q, kw, j, iface - 1)), G);
+#endif
 }
 
 __device__ __forceinline__
 real wrf_zy(const WrfSmagGrid& q, int kw, int jface, int i)
 {
+    // The 'f' metric boundary extension uses the last interior north slope.
+    if (q.boundary_y && jface <= 0) return 0.0f;
+    if (q.boundary_y && jface >= q.ny) jface = q.ny - 1;
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+    int ic = wrf_ix(q, i), jp = wrf_iy(q, jface), jm = wrf_iy(q, jface - 1);
+    kw = kw < 0 ? 0 : (kw > q.nz ? q.nz : kw);
+    size_t a = I3(kw, jp, ic, q.ny, q.nx), b = I3(kw, jm, ic, q.ny, q.nx);
+    real base_a = q.phb3d ? q.phb[a] : q.phb[kw];
+    real base_b = q.phb3d ? q.phb[b] : q.phb[kw];
+    real base = __fdiv_rn(q.rdy * __fsub_rn(base_a, base_b), G);
+    real perturbation = __fdiv_rn(q.rdy * __fsub_rn(q.php[a], q.php[b]), G);
+    return __fadd_rn(base, perturbation);
+#else
     return __fdiv_rn(q.rdy * (wrf_phi(q, kw, jface, i)
                   - wrf_phi(q, kw, jface - 1, i)), G);
+#endif
 }
 
 __device__ __forceinline__
@@ -397,11 +448,16 @@ real wrf_rho(const WrfSmagGrid& q, int k, int j, int i)
 {
     int jj = wrf_iy(q, j), ii = wrf_ix(q, i);
     size_t h = I3(k, jj, ii, q.ny, q.nx);
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+    real inverse_volume = __fdiv_rn(1.0f, q.alt[h]);
+    return q.moist ? __fmul_rn(inverse_volume, __fadd_rn(1.0f, q.qv[h])) : inverse_volume;
+#else
     // module_big_step_utilities_em.F:4856.  ALT is dry specific volume;
     // WRF's diffusion density includes vapor loading.  The dry branch must
     // not read qv so it stays bitwise identical to the former 1/ALT path.
     if (q.moist) return (1.0f + q.qv[h]) / q.alt[h];
     return 1.0f / q.alt[h];
+#endif
 }
 
 __device__ __forceinline__
@@ -445,6 +501,10 @@ real wrf_full_weights(const WrfSmagGrid& q, int kw,
 __device__ __forceinline__
 real wrf_u_w_xcenter(const WrfSmagGrid& q, int kw, int j, int i)
 {
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+if (kw <= 0) return 0.5f * (q.cf1 * wrf_uhat(q,0,j,i) + q.cf2 * wrf_uhat(q,1,j,i) + q.cf3 * wrf_uhat(q,2,j,i) + q.cf1 * wrf_uhat(q,0,j,i + 1) + q.cf2 * wrf_uhat(q,1,j,i + 1) + q.cf3 * wrf_uhat(q,2,j,i + 1));
+
+#endif
     real p0 = wrf_uhat(q, 0, j, i) + wrf_uhat(q, 0, j, i + 1);
     real p1 = wrf_uhat(q, 1, j, i) + wrf_uhat(q, 1, j, i + 1);
     real p2 = wrf_uhat(q, 2, j, i) + wrf_uhat(q, 2, j, i + 1);
@@ -460,6 +520,10 @@ real wrf_u_w_xcenter(const WrfSmagGrid& q, int kw, int j, int i)
 __device__ __forceinline__
 real wrf_v_w_ycenter(const WrfSmagGrid& q, int kw, int j, int i)
 {
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+if (kw <= 0) return 0.5f * (q.cf1 * wrf_vhat(q,0,j,i) + q.cf2 * wrf_vhat(q,1,j,i) + q.cf3 * wrf_vhat(q,2,j,i) + q.cf1 * wrf_vhat(q,0,j + 1,i) + q.cf2 * wrf_vhat(q,1,j + 1,i) + q.cf3 * wrf_vhat(q,2,j + 1,i));
+
+#endif
     real p0 = wrf_vhat(q, 0, j, i) + wrf_vhat(q, 0, j + 1, i);
     real p1 = wrf_vhat(q, 1, j, i) + wrf_vhat(q, 1, j + 1, i);
     real p2 = wrf_vhat(q, 2, j, i) + wrf_vhat(q, 2, j + 1, i);
@@ -475,6 +539,10 @@ real wrf_v_w_ycenter(const WrfSmagGrid& q, int kw, int j, int i)
 __device__ __forceinline__
 real wrf_u_w_corner(const WrfSmagGrid& q, int kw, int j, int i)
 {
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+if (kw <= 0) return 0.5f * (q.cf1 * wrf_uhat(q,0,j - 1,i) + q.cf2 * wrf_uhat(q,1,j - 1,i) + q.cf3 * wrf_uhat(q,2,j - 1,i) + q.cf1 * wrf_uhat(q,0,j,i) + q.cf2 * wrf_uhat(q,1,j,i) + q.cf3 * wrf_uhat(q,2,j,i));
+
+#endif
     real p0 = wrf_uhat(q, 0, j - 1, i) + wrf_uhat(q, 0, j, i);
     real p1 = wrf_uhat(q, 1, j - 1, i) + wrf_uhat(q, 1, j, i);
     real p2 = wrf_uhat(q, 2, j - 1, i) + wrf_uhat(q, 2, j, i);
@@ -490,6 +558,10 @@ real wrf_u_w_corner(const WrfSmagGrid& q, int kw, int j, int i)
 __device__ __forceinline__
 real wrf_v_w_corner(const WrfSmagGrid& q, int kw, int j, int i)
 {
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+if (kw <= 0) return 0.5f * (q.cf1 * wrf_vhat(q,0,j,i - 1) + q.cf2 * wrf_vhat(q,1,j,i - 1) + q.cf3 * wrf_vhat(q,2,j,i - 1) + q.cf1 * wrf_vhat(q,0,j,i) + q.cf2 * wrf_vhat(q,1,j,i) + q.cf3 * wrf_vhat(q,2,j,i));
+
+#endif
     real p0 = wrf_vhat(q, 0, j, i - 1) + wrf_vhat(q, 0, j, i);
     real p1 = wrf_vhat(q, 1, j, i - 1) + wrf_vhat(q, 1, j, i);
     real p2 = wrf_vhat(q, 2, j, i - 1) + wrf_vhat(q, 2, j, i);
@@ -537,6 +609,12 @@ real wrf_defor22(const WrfSmagGrid& q, int k, int j, int i)
 __device__ __forceinline__
 real wrf_defor12(const WrfSmagGrid& q, int k, int j, int i)
 {
+    // cal_deform_and_div copies outer tensor faces from the adjacent
+    // interior tensor. Clamping each wind separately changes the gradient.
+    if (q.boundary_x) i = i <= 0 ? (q.nx > 1 ? 1 : 0)
+                                    : (i >= q.nx ? q.nx - 1 : i);
+    if (q.boundary_y) j = j <= 0 ? (q.ny > 1 ? 1 : 0)
+                                    : (j >= q.ny ? q.ny - 1 : j);
     int iu = wrf_iu(q, i), jm = wrf_iy(q, j - 1), jc = wrf_iy(q, j);
     int iv = wrf_ix(q, i), im = wrf_ix(q, i - 1), jv = wrf_jv(q, j);
     real mm = 0.25f * (q.msfu[(size_t)jm * (q.nx + 1) + iu]
@@ -554,11 +632,16 @@ real wrf_defor12(const WrfSmagGrid& q, int k, int j, int i)
                             + wrf_zx(q, k + 1, j - 1, i)
                             + wrf_zx(q, k + 1, j, i));
     real vslope = (wrf_v_w_corner(q, k + 1, j, i)
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+                 - wrf_v_w_corner(q, k, j, i)) * 0.25f * tmpzx * (wrf_rdzw(q,k,j,i) + wrf_rdzw(q,k,j-1,i) + wrf_rdzw(q,k,j-1,i-1) + wrf_rdzw(q,k,j,i-1));
+    return mm * (q.rdy * (wrf_uhat(q,k,j,i)-wrf_uhat(q,k,j-1,i))-uslope) + mm * (q.rdx * (wrf_vhat(q,k,j,i)-wrf_vhat(q,k,j,i-1))-vslope);
+#else
                  - wrf_v_w_corner(q, k, j, i)) * 0.25f * tmpzx * rr;
     return mm * (q.rdy * (wrf_uhat(q, k, j, i)
                          - wrf_uhat(q, k, j - 1, i)) - uslope
                + q.rdx * (wrf_vhat(q, k, j, i)
                          - wrf_vhat(q, k, j, i - 1)) - vslope);
+#endif
 }
 
 __device__ __forceinline__
@@ -629,10 +712,18 @@ void wrf_smag2d_km(const real* u, const real* v, const real* w,
                          + wrf_d(q, d12a, k, j + 1, i)
                          + wrf_d(q, d12a, k, j, i + 1)
                          + wrf_d(q, d12a, k, j + 1, i + 1));
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+    real strain = sqrtf(0.25f * ((d11 - d22) * (d11 - d22)) + d12 * d12);
+#else
     real strain = sqrtf(0.25f * (d11 - d22) * (d11 - d22) + d12 * d12);
+#endif
     real map = msft[(size_t)j * nx + i];
     real dxm = dx / map, dym = dy / map;
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+    real mlen = sqrtf(__fdiv_rn(dxm * dy, map));
+#else
     real mlen = sqrtf(dxm * dym);
+#endif
     real km = fminf(c_s * c_s * mlen * mlen * strain, 10.0f * mlen);
     real sx = 0.25f * (fabsf(wrf_zx(q, k, j, i))
                         + fabsf(wrf_zx(q, k, j, i + 1))
@@ -791,7 +882,13 @@ void wrf_smag_hd_u(WRF_SMAG_GRID_ARGS, const real* km,
                               - wrf_tau11_uavg(q, km, d11, k, j, i)) / tmpdz
               + msf * zy_u * (wrf_tau12_uavg(q, km, d12, k + 1, j, i)
                               - wrf_tau12_uavg(q, km, d12, k, j, i)) / tmpdz;
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+    real first = __fdiv_rn(msf * zx_u * (wrf_tau11_uavg(q, km, d11, k + 1, j, i) - wrf_tau11_uavg(q, km, d11, k, j, i)), tmpdz);
+    real second = __fdiv_rn(msf * zy_u * (wrf_tau12_uavg(q, km, d12, k + 1, j, i) - wrf_tau12_uavg(q, km, d12, k, j, i)), tmpdz);
+    tend[I3S(k, j, i, ny, nx + 1)] += __fdiv_rn(G * tmpdz, dnw[k]) * ((divh - first) - second);
+#else
     tend[I3S(k, j, i, ny, nx + 1)] += G * tmpdz / dnw[k] * (divh - divz);
+#endif
 }
 
 extern "C" __global__
@@ -810,11 +907,15 @@ void wrf_smag_hd_v(WRF_SMAG_GRID_ARGS, const real* km,
     real msf = msfv[(size_t)jv * nx + ii];
     real tmpdz = 0.5f * (1.0f / wrf_rdzw(q, k, jc, i)
                           + 1.0f / wrf_rdzw(q, k, jm, i));
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+    real zx_v=0.125f*(wrf_zx(q,k,jc,i)+wrf_zx(q,k,jc,i+1)+wrf_zx(q,k,jm,i)+wrf_zx(q,k,jm,i+1)+wrf_zx(q,k+1,jc,i)+wrf_zx(q,k+1,jc,i+1)+wrf_zx(q,k+1,jm,i)+wrf_zx(q,k+1,jm,i+1));
+#else
     real zx_v = 0.125f * (
         wrf_zx(q, k, jm, i) + wrf_zx(q, k, jm, i + 1)
       + wrf_zx(q, k, jc, i) + wrf_zx(q, k, jc, i + 1)
       + wrf_zx(q, k + 1, jm, i) + wrf_zx(q, k + 1, jm, i + 1)
       + wrf_zx(q, k + 1, jc, i) + wrf_zx(q, k + 1, jc, i + 1));
+#endif
     real zy_v = 0.5f * (wrf_zy(q, k, j, i) + wrf_zy(q, k + 1, j, i));
     real divh = msf * rdy * (wrf_tau22(q, km, d22, k, jc, i)
                               - wrf_tau22(q, km, d22, k, jm, i))
@@ -824,7 +925,13 @@ void wrf_smag_hd_v(WRF_SMAG_GRID_ARGS, const real* km,
                               - wrf_tau12_vavg(q, km, d12, k, j, i)) / tmpdz
               + msf * zy_v * (wrf_tau22_vavg(q, km, d22, k + 1, j, i)
                               - wrf_tau22_vavg(q, km, d22, k, j, i)) / tmpdz;
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+    real first = __fdiv_rn(msf * zx_v * (wrf_tau12_vavg(q, km, d12, k + 1, j, i) - wrf_tau12_vavg(q, km, d12, k, j, i)), tmpdz);
+    real second = __fdiv_rn(msf * zy_v * (wrf_tau22_vavg(q, km, d22, k + 1, j, i) - wrf_tau22_vavg(q, km, d22, k, j, i)), tmpdz);
+    tend[I3S(k, j, i, ny + 1, nx)] += __fdiv_rn(G * tmpdz, dnw[k]) * ((divh - first) - second);
+#else
     tend[I3S(k, j, i, ny + 1, nx)] += G * tmpdz / dnw[k] * (divh - divz);
+#endif
 }
 
 __device__ __forceinline__
@@ -847,6 +954,10 @@ __device__ __forceinline__
 real wrf_defor13(const WrfSmagGrid& q, int kw, int j, int i)
 {
     if (kw <= 0 || kw >= q.nz) return 0.0f;
+    if (q.boundary_x) i = i <= 0 ? (q.nx > 1 ? 1 : 0)
+                                    : (i >= q.nx ? q.nx - 1 : i);
+    if (q.boundary_y) j = j <= 0 ? (q.ny > 1 ? 1 : 0)
+                                    : (j >= q.ny ? q.ny - 1 : j);
     int jj = wrf_iy(q, j), iu = wrf_iu(q, i);
     real msf = q.msfu[(size_t)jj * (q.nx + 1) + iu];
     real rz = 0.5f * (wrf_rdz(q, kw, j, i) + wrf_rdz(q, kw, j, i - 1));
@@ -864,6 +975,10 @@ __device__ __forceinline__
 real wrf_defor23(const WrfSmagGrid& q, int kw, int j, int i)
 {
     if (kw <= 0 || kw >= q.nz) return 0.0f;
+    if (q.boundary_x) i = i <= 0 ? (q.nx > 1 ? 1 : 0)
+                                    : (i >= q.nx ? q.nx - 1 : i);
+    if (q.boundary_y) j = j <= 0 ? (q.ny > 1 ? 1 : 0)
+                                    : (j >= q.ny ? q.ny - 1 : j);
     int jv = wrf_jv(q, j), ii = wrf_ix(q, i);
     real msf = q.msfv[(size_t)jv * q.nx + ii];
     real rz = 0.5f * (wrf_rdz(q, kw, j, i) + wrf_rdz(q, kw, j - 1, i));
@@ -1051,22 +1166,31 @@ void wrf_smag_surface_scalars(
 
 __device__ __forceinline__
 real wrf_tau13_mavg(const WrfSmagGrid& q, const real* km, int k, int j, int i)
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+{return 0.25f*(wrf_tau13(q,km,k+1,j,i+1)+wrf_tau13(q,km,k+1,j,i)+wrf_tau13(q,km,k,j,i+1)+wrf_tau13(q,km,k,j,i));}
+#else
 {
     return 0.25f * (wrf_tau13(q, km, k, j, i)
                      + wrf_tau13(q, km, k, j, i + 1)
                      + wrf_tau13(q, km, k + 1, j, i)
                      + wrf_tau13(q, km, k + 1, j, i + 1));
 }
+#endif
 
 __device__ __forceinline__
 real wrf_tau23_mavg(const WrfSmagGrid& q, const real* km, int k, int j, int i)
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+{return 0.25f*(wrf_tau23(q,km,k+1,j+1,i)+wrf_tau23(q,km,k+1,j,i)+wrf_tau23(q,km,k,j+1,i)+wrf_tau23(q,km,k,j,i));}
+#else
 {
     return 0.25f * (wrf_tau23(q, km, k, j, i)
                      + wrf_tau23(q, km, k, j + 1, i)
                      + wrf_tau23(q, km, k + 1, j, i)
                      + wrf_tau23(q, km, k + 1, j + 1, i));
 }
+#endif
 
+#if defined(GPUWM_WRF_EXACT) || defined(GPUWM_WRF_EXACT_C_DIFFUSION) || defined(GPUWM_SMAG_DIRECT_W_REFERENCE)
 extern "C" __global__
 void wrf_smag_hd_w(WRF_SMAG_GRID_ARGS, const real* km, real* tend,
                    int nz, int ny, int nx, int phb3d,
@@ -1092,6 +1216,304 @@ void wrf_smag_hd_w(WRF_SMAG_GRID_ARGS, const real* km, real* tend,
                                      - wrf_tau23_mavg(q, km, kw - 1, j, i)));
     tend[I3(kw, j, i, ny, nx)] += G / (dn[kw] * rz) * (divh - divz);
 }
+#endif
+
+#if defined(GPUWM_WRF_EXACT) || defined(GPUWM_WRF_EXACT_C_DIFFUSION)
+#else
+// Cache W's quotients once per point before its deformation and stress.
+// The caller borrows step-dead acoustic and diff6 workspaces; no new field
+// allocation is needed. Rdz and face slopes are consumed only at interior
+// W levels, while the wind averages also read the top W plane.
+// Keep the final stress and divergence products in their original order.
+__device__ __forceinline__
+real wrf_smag_w_hat(const WrfSmagGrid& q, int kw, int j, int i, const real* cached_what, const real* cached_rdz, const real* cached_zx, const real* cached_zy)
+{
+return cached_what[I3(kw, wrf_iy(q, j), wrf_ix(q, i), q.ny, q.nx)];
+}
+__device__ __forceinline__
+real wrf_smag_w_rdz(const WrfSmagGrid& q, int kw, int j, int i, const real* cached_what, const real* cached_rdz, const real* cached_zx, const real* cached_zy)
+{
+kw = kw < 0 ? 0 : (kw > q.nz ? q.nz : kw);
+return cached_rdz[I3(kw, wrf_iy(q, j), wrf_ix(q, i), q.ny, q.nx)];
+}
+__device__ __forceinline__
+real wrf_smag_w_zx(const WrfSmagGrid& q, int kw, int j, int iface, const real* cached_what, const real* cached_rdz, const real* cached_zx, const real* cached_zy)
+{
+return cached_zx[I3S(kw, wrf_iy(q, j), wrf_iu(q, iface), q.ny, q.nx + 1)];
+}
+__device__ __forceinline__
+real wrf_smag_w_zy(const WrfSmagGrid& q, int kw, int jface, int i, const real* cached_what, const real* cached_rdz, const real* cached_zx, const real* cached_zy)
+{
+return cached_zy[I3S(kw, wrf_jv(q, jface), wrf_ix(q, i), q.ny + 1, q.nx)];
+}
+__device__ __forceinline__
+real wrf_smag_w_xavg(const WrfSmagGrid& q, int k, int j, int i, const real* cached_what, const real* cached_rdz, const real* cached_zx, const real* cached_zy)
+{
+    return 0.25f * (wrf_smag_w_hat(q, k, j, i, cached_what, cached_rdz, cached_zx, cached_zy) + wrf_smag_w_hat(q, k + 1, j, i, cached_what, cached_rdz, cached_zx, cached_zy)
+                     + wrf_smag_w_hat(q, k, j, i - 1, cached_what, cached_rdz, cached_zx, cached_zy)
+                     + wrf_smag_w_hat(q, k + 1, j, i - 1, cached_what, cached_rdz, cached_zx, cached_zy));
+}
+__device__ __forceinline__
+real wrf_smag_w_yavg(const WrfSmagGrid& q, int k, int j, int i, const real* cached_what, const real* cached_rdz, const real* cached_zx, const real* cached_zy)
+{
+    return 0.25f * (wrf_smag_w_hat(q, k, j, i, cached_what, cached_rdz, cached_zx, cached_zy) + wrf_smag_w_hat(q, k + 1, j, i, cached_what, cached_rdz, cached_zx, cached_zy)
+                     + wrf_smag_w_hat(q, k, j - 1, i, cached_what, cached_rdz, cached_zx, cached_zy)
+                     + wrf_smag_w_hat(q, k + 1, j - 1, i, cached_what, cached_rdz, cached_zx, cached_zy));
+}
+__device__ __forceinline__
+real wrf_smag_w_defor13(const WrfSmagGrid& q, int kw, int j, int i, const real* cached_what, const real* cached_rdz, const real* cached_zx, const real* cached_zy)
+{
+
+    if (kw <= 0 || kw >= q.nz) return 0.0f;
+    if (q.boundary_x) i = i <= 0 ? (q.nx > 1 ? 1 : 0)
+                                    : (i >= q.nx ? q.nx - 1 : i);
+    if (q.boundary_y) j = j <= 0 ? (q.ny > 1 ? 1 : 0)
+                                    : (j >= q.ny ? q.ny - 1 : j);
+    int jj = wrf_iy(q, j), iu = wrf_iu(q, i);
+    real msf = q.msfu[(size_t)jj * (q.nx + 1) + iu];
+    real rz = 0.5f * (wrf_smag_w_rdz(q, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy) + wrf_smag_w_rdz(q, kw, j, i - 1, cached_what, cached_rdz, cached_zx, cached_zy));
+    real slope = (wrf_smag_w_xavg(q, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy) - wrf_smag_w_xavg(q, kw - 1, j, i, cached_what, cached_rdz, cached_zx, cached_zy))
+               * wrf_smag_w_zx(q, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy) * rz;
+    real dwdx = msf * msf * (q.rdx * (wrf_smag_w_hat(q, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy)
+                                      - wrf_smag_w_hat(q, kw, j, i - 1, cached_what, cached_rdz, cached_zx, cached_zy)) - slope);
+    int iface = wrf_iu(q, i);
+    real delta = (q.u[I3S(kw, jj, iface, q.ny, q.nx + 1)]
+                 - q.u[I3S(kw - 1, jj, iface, q.ny, q.nx + 1)]);
+    return __fmaf_rn(rz, delta, dwdx);
+
+}
+__device__ __forceinline__
+real wrf_smag_w_defor23(const WrfSmagGrid& q, int kw, int j, int i, const real* cached_what, const real* cached_rdz, const real* cached_zx, const real* cached_zy)
+{
+
+    if (kw <= 0 || kw >= q.nz) return 0.0f;
+    if (q.boundary_x) i = i <= 0 ? (q.nx > 1 ? 1 : 0)
+                                    : (i >= q.nx ? q.nx - 1 : i);
+    if (q.boundary_y) j = j <= 0 ? (q.ny > 1 ? 1 : 0)
+                                    : (j >= q.ny ? q.ny - 1 : j);
+    int jv = wrf_jv(q, j), ii = wrf_ix(q, i);
+    real msf = q.msfv[(size_t)jv * q.nx + ii];
+    real rz = 0.5f * (wrf_smag_w_rdz(q, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy) + wrf_smag_w_rdz(q, kw, j - 1, i, cached_what, cached_rdz, cached_zx, cached_zy));
+    real slope = (wrf_smag_w_yavg(q, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy) - wrf_smag_w_yavg(q, kw - 1, j, i, cached_what, cached_rdz, cached_zx, cached_zy))
+               * wrf_smag_w_zy(q, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy) * rz;
+    real dwdy = msf * msf * (q.rdy * (wrf_smag_w_hat(q, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy)
+                                      - wrf_smag_w_hat(q, kw, j - 1, i, cached_what, cached_rdz, cached_zx, cached_zy)) - slope);
+    real delta = (q.v[I3S(kw, jv, ii, q.ny + 1, q.nx)]
+                 - q.v[I3S(kw - 1, jv, ii, q.ny + 1, q.nx)]);
+    return __fmaf_rn(rz, delta, dwdy);
+
+}
+__device__ __forceinline__
+real wrf_smag_w_tau13(const WrfSmagGrid& q, const real* km, int kw, int j, int i, const real* cached_what, const real* cached_rdz, const real* cached_zx, const real* cached_zy)
+{
+    if (kw <= 0 || kw >= q.nz) return 0.0f;
+    real rhoavg = 0.5f * (q.fnm[kw] * (wrf_rho(q, kw, j, i - 1)
+                                        + wrf_rho(q, kw, j, i))
+                           + q.fnp[kw] * (wrf_rho(q, kw - 1, j, i - 1)
+                                        + wrf_rho(q, kw - 1, j, i)));
+    real kavg = 0.5f * (q.fnm[kw] * (wrf_k(q, km, kw, j, i - 1)
+                                      + wrf_k(q, km, kw, j, i))
+                         + q.fnp[kw] * (wrf_k(q, km, kw - 1, j, i - 1)
+                                      + wrf_k(q, km, kw - 1, j, i)));
+    return -rhoavg * kavg * wrf_smag_w_defor13(q, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy);
+}
+__device__ __forceinline__
+real wrf_smag_w_tau23(const WrfSmagGrid& q, const real* km, int kw, int j, int i, const real* cached_what, const real* cached_rdz, const real* cached_zx, const real* cached_zy)
+{
+    if (kw <= 0 || kw >= q.nz) return 0.0f;
+    real rhoavg = 0.5f * (q.fnm[kw] * (wrf_rho(q, kw, j - 1, i)
+                                        + wrf_rho(q, kw, j, i))
+                           + q.fnp[kw] * (wrf_rho(q, kw - 1, j - 1, i)
+                                        + wrf_rho(q, kw - 1, j, i)));
+    real kavg = 0.5f * (q.fnm[kw] * (wrf_k(q, km, kw, j - 1, i)
+                                      + wrf_k(q, km, kw, j, i))
+                         + q.fnp[kw] * (wrf_k(q, km, kw - 1, j - 1, i)
+                                      + wrf_k(q, km, kw - 1, j, i)));
+    return -rhoavg * kavg * wrf_smag_w_defor23(q, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy);
+}
+__device__ __forceinline__
+real wrf_smag_w_tau13_mavg(const WrfSmagGrid& q, const real* km, int k, int j, int i, const real* cached_what, const real* cached_rdz, const real* cached_zx, const real* cached_zy)
+{
+    return 0.25f * (wrf_smag_w_tau13(q, km, k, j, i, cached_what, cached_rdz, cached_zx, cached_zy)
+                     + wrf_smag_w_tau13(q, km, k, j, i + 1, cached_what, cached_rdz, cached_zx, cached_zy)
+                     + wrf_smag_w_tau13(q, km, k + 1, j, i, cached_what, cached_rdz, cached_zx, cached_zy)
+                     + wrf_smag_w_tau13(q, km, k + 1, j, i + 1, cached_what, cached_rdz, cached_zx, cached_zy));
+}
+__device__ __forceinline__
+real wrf_smag_w_tau23_mavg(const WrfSmagGrid& q, const real* km, int k, int j, int i, const real* cached_what, const real* cached_rdz, const real* cached_zx, const real* cached_zy)
+{
+    return 0.25f * (wrf_smag_w_tau23(q, km, k, j, i, cached_what, cached_rdz, cached_zx, cached_zy)
+                     + wrf_smag_w_tau23(q, km, k, j + 1, i, cached_what, cached_rdz, cached_zx, cached_zy)
+                     + wrf_smag_w_tau23(q, km, k + 1, j, i, cached_what, cached_rdz, cached_zx, cached_zy)
+                     + wrf_smag_w_tau23(q, km, k + 1, j + 1, i, cached_what, cached_rdz, cached_zx, cached_zy));
+}
+extern "C" __global__
+void wrf_smag_hd_w_cached(WRF_SMAG_GRID_ARGS, const real* km, const real* cached_what, const real* cached_rdz, const real* cached_zx, const real* cached_zy, real* tend,
+                   int nz, int ny, int nx, int phb3d,
+                   int boundary_x, int boundary_y)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int kw = blockIdx.z * blockDim.z + threadIdx.z;
+    if (i >= nx || j >= ny || kw >= nz + 1 || kw == 0 || kw == nz) return;
+    WRF_SMAG_MAKE_GRID;
+    int ii = wrf_ix(q, i), jj = wrf_iy(q, j);
+    real map = msft[(size_t)jj * nx + ii];
+    real zx_w = 0.5f * (wrf_smag_w_zx(q, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy) + wrf_smag_w_zx(q, kw, j, i + 1, cached_what, cached_rdz, cached_zx, cached_zy));
+    real zy_w = 0.5f * (wrf_smag_w_zy(q, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy) + wrf_smag_w_zy(q, kw, j + 1, i, cached_what, cached_rdz, cached_zx, cached_zy));
+    real rz = wrf_smag_w_rdz(q, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy);
+    real divh = map * rdx * (wrf_smag_w_tau13(q, km, kw, j, i + 1, cached_what, cached_rdz, cached_zx, cached_zy)
+                              - wrf_smag_w_tau13(q, km, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy))
+              + map * rdy * (wrf_smag_w_tau23(q, km, kw, j + 1, i, cached_what, cached_rdz, cached_zx, cached_zy)
+                              - wrf_smag_w_tau23(q, km, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy));
+    real divz = map * rz * (zx_w * (wrf_smag_w_tau13_mavg(q, km, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy)
+                                     - wrf_smag_w_tau13_mavg(q, km, kw - 1, j, i, cached_what, cached_rdz, cached_zx, cached_zy))
+                           + zy_w * (wrf_smag_w_tau23_mavg(q, km, kw, j, i, cached_what, cached_rdz, cached_zx, cached_zy)
+                                     - wrf_smag_w_tau23_mavg(q, km, kw - 1, j, i, cached_what, cached_rdz, cached_zx, cached_zy)));
+    tend[I3(kw, j, i, ny, nx)] += __fdiv_rn(G, dn[kw] * rz) * (divh - divz);
+}
+extern "C" __global__
+void wrf_smag_w_primitives(WRF_SMAG_GRID_ARGS, real* cached_what, real* cached_rdz, real* cached_zx, real* cached_zy,
+int nz, int ny, int nx, int phb3d, int boundary_x, int boundary_y) {
+int i = blockIdx.x * blockDim.x + threadIdx.x;
+int j = blockIdx.y * blockDim.y + threadIdx.y;
+int kw = blockIdx.z * blockDim.z + threadIdx.z;
+if (kw > nz) return;
+WRF_SMAG_MAKE_GRID;
+if (i < nx && j < ny) {
+cached_what[I3(kw, j, i, ny, nx)] = wrf_what(q, kw, j, i);
+}
+if (kw < nz && i < nx && j < ny) {
+cached_rdz[I3(kw, j, i, ny, nx)] = wrf_rdz(q, kw, j, i);
+}
+if (kw < nz && i <= nx && j < ny) {
+cached_zx[I3S(kw, j, i, ny, nx + 1)] = wrf_zx(q, kw, j, i);
+}
+if (kw < nz && i < nx && j <= ny) {
+cached_zy[I3S(kw, j, i, ny + 1, nx)] = wrf_zy(q, kw, j, i);
+}
+}
+
+
+// Store each interior W stress face once. Explicit rounded operations keep
+// the density interpolation, deformation and divergence contraction order.
+// The zero end levels need no storage; the existing diff6 face slots suffice.
+__device__ __forceinline__
+real wrf_smag_tau_add4(real a, real b, real c, real d) {
+    return __fadd_rn(__fadd_rn(__fadd_rn(a, b), c), d);
+}
+__device__ __forceinline__
+real wrf_smag_tau_def13(const WrfSmagGrid& q, int kw, int j, int i) {
+    if (kw <= 0 || kw >= q.nz) return 0.0f;
+    if (q.boundary_x) i = i <= 0 ? (q.nx > 1 ? 1 : 0) : (i >= q.nx ? q.nx - 1 : i);
+    if (q.boundary_y) j = j <= 0 ? (q.ny > 1 ? 1 : 0) : (j >= q.ny ? q.ny - 1 : j);
+    int jj = wrf_iy(q, j), iu = wrf_iu(q, i);
+    real msf = q.msfu[(size_t)jj * (q.nx + 1) + iu];
+    real rz = __fmul_rn(0.5f, __fadd_rn(wrf_rdz(q, kw, j, i), wrf_rdz(q, kw, j, i - 1)));
+    real upper = wrf_smag_tau_add4(wrf_what(q, kw, j, i), wrf_what(q, kw + 1, j, i),
+                         wrf_what(q, kw, j, i - 1), wrf_what(q, kw + 1, j, i - 1));
+    real lower = wrf_smag_tau_add4(wrf_what(q, kw - 1, j, i), wrf_what(q, kw, j, i),
+                         wrf_what(q, kw - 1, j, i - 1), wrf_what(q, kw, j, i - 1));
+    real avg_delta = __fmaf_rn(upper, 0.25f, -__fmul_rn(lower, 0.25f));
+    real slope = __fmul_rn(__fmul_rn(avg_delta, wrf_zx(q, kw, j, i)), rz);
+    real what_delta = __fadd_rn(wrf_what(q, kw, j, i), -wrf_what(q, kw, j, i - 1));
+    real gradient = __fmaf_rn(what_delta, q.rdx, -slope);
+    real horizontal = __fmul_rn(__fmul_rn(msf, msf), gradient);
+    real vertical_delta = __fadd_rn(q.u[I3S(kw, jj, iu, q.ny, q.nx + 1)],
+                                  -q.u[I3S(kw - 1, jj, iu, q.ny, q.nx + 1)]);
+    return __fmaf_rn(rz, vertical_delta, horizontal);
+}
+__device__ __forceinline__
+real wrf_smag_tau_def23(const WrfSmagGrid& q, int kw, int j, int i) {
+    if (kw <= 0 || kw >= q.nz) return 0.0f;
+    if (q.boundary_x) i = i <= 0 ? (q.nx > 1 ? 1 : 0) : (i >= q.nx ? q.nx - 1 : i);
+    if (q.boundary_y) j = j <= 0 ? (q.ny > 1 ? 1 : 0) : (j >= q.ny ? q.ny - 1 : j);
+    int jv = wrf_jv(q, j), ii = wrf_ix(q, i);
+    real msf = q.msfv[(size_t)jv * q.nx + ii];
+    real rz = __fmul_rn(0.5f, __fadd_rn(wrf_rdz(q, kw, j, i), wrf_rdz(q, kw, j - 1, i)));
+    real upper = wrf_smag_tau_add4(wrf_what(q, kw, j, i), wrf_what(q, kw + 1, j, i),
+                         wrf_what(q, kw, j - 1, i), wrf_what(q, kw + 1, j - 1, i));
+    real lower = wrf_smag_tau_add4(wrf_what(q, kw - 1, j, i), wrf_what(q, kw, j, i),
+                         wrf_what(q, kw - 1, j - 1, i), wrf_what(q, kw, j - 1, i));
+    real avg_delta = __fmaf_rn(upper, 0.25f, -__fmul_rn(lower, 0.25f));
+    real slope = __fmul_rn(__fmul_rn(avg_delta, wrf_zy(q, kw, j, i)), rz);
+    real what_delta = __fadd_rn(wrf_what(q, kw, j, i), -wrf_what(q, kw, j - 1, i));
+    real gradient = __fmaf_rn(what_delta, q.rdy, -slope);
+    real horizontal = __fmul_rn(__fmul_rn(msf, msf), gradient);
+    real vertical_delta = __fadd_rn(q.v[I3S(kw, jv, ii, q.ny + 1, q.nx)],
+                                  -q.v[I3S(kw - 1, jv, ii, q.ny + 1, q.nx)]);
+    return __fmaf_rn(rz, vertical_delta, horizontal);
+}
+template<int AXIS>
+__device__ __forceinline__ real wrf_smag_tau_face(const WrfSmagGrid& q, const real* km, int kw, int j, int i) {
+    if (kw <= 0 || kw >= q.nz) return 0.0f;
+    int ja = AXIS == 13 ? j : j - 1;
+    int ia = AXIS == 13 ? i - 1 : i;
+    real ru = __fadd_rn(wrf_rho(q, kw, ja, ia), wrf_rho(q, kw, j, i));
+    real rl = __fadd_rn(wrf_rho(q, kw - 1, ja, ia), wrf_rho(q, kw - 1, j, i));
+    real ku = __fadd_rn(wrf_k(q, km, kw, ja, ia), wrf_k(q, km, kw, j, i));
+    real kl = __fadd_rn(wrf_k(q, km, kw - 1, ja, ia), wrf_k(q, km, kw - 1, j, i));
+    real rhoavg, kavg;
+    rhoavg = __fmul_rn(0.5f, __fmaf_rn(q.fnm[kw], ru, __fmul_rn(q.fnp[kw], rl)));
+    kavg = __fmul_rn(0.5f, __fmaf_rn(q.fnp[kw], kl, __fmul_rn(q.fnm[kw], ku)));
+    real deformation;
+    deformation = AXIS == 13 ? wrf_smag_tau_def13(q, kw, j, i) : wrf_smag_tau_def23(q, kw, j, i);
+    return __fmul_rn(__fmul_rn(-rhoavg, kavg), deformation);
+}
+__device__ __forceinline__ void wrf_smag_tau_produce(const WrfSmagGrid& q, const real* km, real* tx, real* ty,
+                                          int kw, int j, int i) {
+    if (i <= q.nx && j < q.ny) tx[I3S(kw, j, i, q.ny, q.nx + 1)] = wrf_smag_tau_face<13>(q, km, kw, j, i);
+    if (i < q.nx && j <= q.ny) ty[I3S(kw, j, i, q.ny + 1, q.nx)] = wrf_smag_tau_face<23>(q, km, kw, j, i);
+}
+__device__ __forceinline__ real wrf_smag_tau_tx(const WrfSmagGrid& q, const real* tx, int k, int j, int i) {
+    if (k <= 0 || k >= q.nz) return 0.0f;
+    return tx[I3S(k, wrf_iy(q, j), wrf_iu(q, i), q.ny, q.nx + 1)];
+}
+__device__ __forceinline__ real wrf_smag_tau_ty(const WrfSmagGrid& q, const real* ty, int k, int j, int i) {
+    if (k <= 0 || k >= q.nz) return 0.0f;
+    return ty[I3S(k, wrf_jv(q, j), wrf_ix(q, i), q.ny + 1, q.nx)];
+}
+__device__ __forceinline__ real wrf_smag_tau_sum13(const WrfSmagGrid& q, const real* tx, int k, int j, int i) {
+    return wrf_smag_tau_add4(wrf_smag_tau_tx(q, tx, k, j, i), wrf_smag_tau_tx(q, tx, k, j, i + 1),
+                    wrf_smag_tau_tx(q, tx, k + 1, j, i), wrf_smag_tau_tx(q, tx, k + 1, j, i + 1));
+}
+__device__ __forceinline__ real wrf_smag_tau_sum23(const WrfSmagGrid& q, const real* ty, int k, int j, int i) {
+    return wrf_smag_tau_add4(wrf_smag_tau_ty(q, ty, k, j, i), wrf_smag_tau_ty(q, ty, k, j + 1, i),
+                    wrf_smag_tau_ty(q, ty, k + 1, j, i), wrf_smag_tau_ty(q, ty, k + 1, j + 1, i));
+}
+extern "C" __global__ void wrf_smag_hd_w_stress(WRF_SMAG_GRID_ARGS, const real* tx, const real* ty, real* tend,
+    int nz, int ny, int nx, int phb3d, int boundary_x, int boundary_y) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x, j = blockIdx.y, kw = blockIdx.z;
+    if (i >= nx || kw <= 0 || kw >= nz) return;
+    WRF_SMAG_MAKE_GRID;
+    int ii = wrf_ix(q, i), jj = wrf_iy(q, j);
+    real map = msft[(size_t)jj * nx + ii];
+    real zx = __fmul_rn(0.5f, __fadd_rn(wrf_zx(q, kw, j, i), wrf_zx(q, kw, j, i + 1)));
+    real zy = __fmul_rn(0.5f, __fadd_rn(wrf_zy(q, kw, j, i), wrf_zy(q, kw, j + 1, i)));
+    real rz = wrf_rdz(q, kw, j, i);
+    real x_difference = __fadd_rn(wrf_smag_tau_tx(q, tx, kw, j, i + 1), -wrf_smag_tau_tx(q, tx, kw, j, i));
+    real y_difference = __fadd_rn(wrf_smag_tau_ty(q, ty, kw, j + 1, i), -wrf_smag_tau_ty(q, ty, kw, j, i));
+    real divh = __fmaf_rn(x_difference, __fmul_rn(map, rdx), __fmul_rn(__fmul_rn(map, rdy), y_difference));
+    real xavg = __fmaf_rn(wrf_smag_tau_sum13(q, tx, kw, j, i), 0.25f,
+                          -__fmul_rn(wrf_smag_tau_sum13(q, tx, kw - 1, j, i), 0.25f));
+    real yavg = __fmaf_rn(wrf_smag_tau_sum23(q, ty, kw, j, i), 0.25f,
+                          -__fmul_rn(wrf_smag_tau_sum23(q, ty, kw - 1, j, i), 0.25f));
+    real inner = __fmaf_rn(yavg, zy, __fmul_rn(xavg, zx));
+    real divz = __fmul_rn(__fmul_rn(map, rz), inner);
+    real quotient = __fdiv_rn(G, __fmul_rn(dn[kw], rz));
+    size_t at = I3(kw, j, i, ny, nx);
+    tend[at] = __fmaf_rn(__fadd_rn(divh, -divz), quotient, tend[at]);
+}
+
+extern "C" __global__
+void wrf_smag_w_stress(WRF_SMAG_GRID_ARGS, const real* km, real* tx, real* ty,
+    int nz, int ny, int nx, int phb3d, int boundary_x, int boundary_y) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x, j = blockIdx.y, kw = blockIdx.z;
+    if (kw >= nz) return;
+    WRF_SMAG_MAKE_GRID;
+    wrf_smag_tau_produce(q, km, tx, ty, kw, j, i);
+}
+#endif
 
 struct WrfScalarField {
     const real* f;
@@ -1115,15 +1537,25 @@ real wrf_scalar(const WrfSmagGrid& q, const WrfScalarField& s,
         // WRF horizontal_diffusion_2 receives grid%t_2 = theta - T0.
         // gpuwm stores thp = theta - thb, so reconstruct the WRF field at
         // the point of use without allocating a full-domain temporary.
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+        value = value; // Canonical native exact input already is theta - 300.
+#else
         value = __fsub_rn(__fadd_rn(s.thb[h], value), WRF_T0);
+#endif
     }
     return value;
 }
 
+#if defined(GPUWM_WRF_EXACT) || defined(GPUWM_WRF_EXACT_C_DIFFUSION)
 __device__ __forceinline__
 real wrf_scalar_w_xface(const WrfSmagGrid& q, const WrfScalarField& s,
                         int kw, int j, int i)
 {
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+if (kw <= 0) return 0.5f * (q.cf1 * wrf_scalar(q,s,0,j,i) + q.cf2 * wrf_scalar(q,s,1,j,i) + q.cf3 * wrf_scalar(q,s,2,j,i) + q.cf1 * wrf_scalar(q,s,0,j,i - 1) + q.cf2 * wrf_scalar(q,s,1,j,i - 1) + q.cf3 * wrf_scalar(q,s,2,j,i - 1));
+if (kw >= q.nz) return 0.5f * (wrf_scalar(q,s,q.nz-1,j,i)+__fdiv_rn((wrf_scalar(q,s,q.nz-1,j,i)-wrf_scalar(q,s,q.nz-2,j,i))*0.5f*q.dnw[q.nz-1], q.dn[q.nz-1]) + wrf_scalar(q,s,q.nz-1,j,i - 1)+__fdiv_rn((wrf_scalar(q,s,q.nz-1,j,i - 1)-wrf_scalar(q,s,q.nz-2,j,i - 1))*0.5f*q.dnw[q.nz-1], q.dn[q.nz-1]));
+
+#endif
     real p0 = wrf_scalar(q, s, 0, j, i - 1) + wrf_scalar(q, s, 0, j, i);
     real p1 = wrf_scalar(q, s, 1, j, i - 1) + wrf_scalar(q, s, 1, j, i);
     real p2 = wrf_scalar(q, s, 2, j, i - 1) + wrf_scalar(q, s, 2, j, i);
@@ -1137,11 +1569,42 @@ real wrf_scalar_w_xface(const WrfSmagGrid& q, const WrfScalarField& s,
     real pb = wrf_scalar(q, s, kb, j, i - 1) + wrf_scalar(q, s, kb, j, i);
     return 0.5f * wrf_full_weights(q, kw, p0, p1, p2, pl, pp, pc, pb);
 }
+#else
+__device__ __forceinline__
+real wrf_scalar_w_xface(const WrfSmagGrid& q, const WrfScalarField& s,
+                        int kw, int j, int i)
+{
+    if (kw <= 0) {
+        real p0 = wrf_scalar(q, s, 0, j, i - 1) + wrf_scalar(q, s, 0, j, i);
+        real p1 = wrf_scalar(q, s, 1, j, i - 1) + wrf_scalar(q, s, 1, j, i);
+        real p2 = wrf_scalar(q, s, 2, j, i - 1) + wrf_scalar(q, s, 2, j, i);
+        return 0.5f * wrf_full_weights(q, kw, p0, p1, p2, 0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    if (kw >= q.nz) {
+        real pl = wrf_scalar(q, s, q.nz - 1, j, i - 1)
+            + wrf_scalar(q, s, q.nz - 1, j, i);
+        real pp = wrf_scalar(q, s, q.nz - 2, j, i - 1)
+            + wrf_scalar(q, s, q.nz - 2, j, i);
+        return 0.5f * wrf_full_weights(q, kw, 0.0f, 0.0f, 0.0f, pl, pp, 0.0f, 0.0f);
+    }
+    int kc = kw >= q.nz ? q.nz - 1 : kw;
+    int kb = kc > 0 ? kc - 1 : 0;
+    real pc = wrf_scalar(q, s, kc, j, i - 1) + wrf_scalar(q, s, kc, j, i);
+    real pb = wrf_scalar(q, s, kb, j, i - 1) + wrf_scalar(q, s, kb, j, i);
+    return 0.5f * wrf_full_weights(q, kw, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, pc, pb);
+}
+#endif
 
+#if defined(GPUWM_WRF_EXACT) || defined(GPUWM_WRF_EXACT_C_DIFFUSION)
 __device__ __forceinline__
 real wrf_scalar_w_yface(const WrfSmagGrid& q, const WrfScalarField& s,
                         int kw, int j, int i)
 {
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+if (kw <= 0) return 0.5f * (q.cf1 * wrf_scalar(q,s,0,j,i) + q.cf2 * wrf_scalar(q,s,1,j,i) + q.cf3 * wrf_scalar(q,s,2,j,i) + q.cf1 * wrf_scalar(q,s,0,j - 1,i) + q.cf2 * wrf_scalar(q,s,1,j - 1,i) + q.cf3 * wrf_scalar(q,s,2,j - 1,i));
+if (kw >= q.nz) return 0.5f * (wrf_scalar(q,s,q.nz-1,j,i)+__fdiv_rn((wrf_scalar(q,s,q.nz-1,j,i)-wrf_scalar(q,s,q.nz-2,j,i))*0.5f*q.dnw[q.nz-1], q.dn[q.nz-1]) + wrf_scalar(q,s,q.nz-1,j - 1,i)+__fdiv_rn((wrf_scalar(q,s,q.nz-1,j - 1,i)-wrf_scalar(q,s,q.nz-2,j - 1,i))*0.5f*q.dnw[q.nz-1], q.dn[q.nz-1]));
+
+#endif
     real p0 = wrf_scalar(q, s, 0, j - 1, i) + wrf_scalar(q, s, 0, j, i);
     real p1 = wrf_scalar(q, s, 1, j - 1, i) + wrf_scalar(q, s, 1, j, i);
     real p2 = wrf_scalar(q, s, 2, j - 1, i) + wrf_scalar(q, s, 2, j, i);
@@ -1155,6 +1618,31 @@ real wrf_scalar_w_yface(const WrfSmagGrid& q, const WrfScalarField& s,
     real pb = wrf_scalar(q, s, kb, j - 1, i) + wrf_scalar(q, s, kb, j, i);
     return 0.5f * wrf_full_weights(q, kw, p0, p1, p2, pl, pp, pc, pb);
 }
+#else
+__device__ __forceinline__
+real wrf_scalar_w_yface(const WrfSmagGrid& q, const WrfScalarField& s,
+                        int kw, int j, int i)
+{
+    if (kw <= 0) {
+        real p0 = wrf_scalar(q, s, 0, j - 1, i) + wrf_scalar(q, s, 0, j, i);
+        real p1 = wrf_scalar(q, s, 1, j - 1, i) + wrf_scalar(q, s, 1, j, i);
+        real p2 = wrf_scalar(q, s, 2, j - 1, i) + wrf_scalar(q, s, 2, j, i);
+        return 0.5f * wrf_full_weights(q, kw, p0, p1, p2, 0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    if (kw >= q.nz) {
+        real pl = wrf_scalar(q, s, q.nz - 1, j - 1, i)
+            + wrf_scalar(q, s, q.nz - 1, j, i);
+        real pp = wrf_scalar(q, s, q.nz - 2, j - 1, i)
+            + wrf_scalar(q, s, q.nz - 2, j, i);
+        return 0.5f * wrf_full_weights(q, kw, 0.0f, 0.0f, 0.0f, pl, pp, 0.0f, 0.0f);
+    }
+    int kc = kw >= q.nz ? q.nz - 1 : kw;
+    int kb = kc > 0 ? kc - 1 : 0;
+    real pc = wrf_scalar(q, s, kc, j - 1, i) + wrf_scalar(q, s, kc, j, i);
+    real pb = wrf_scalar(q, s, kb, j - 1, i) + wrf_scalar(q, s, kb, j, i);
+    return 0.5f * wrf_full_weights(q, kw, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, pc, pb);
+}
+#endif
 
 __device__ __forceinline__
 real wrf_h1(const WrfSmagGrid& q, const WrfScalarField& s, const real* kh,
@@ -1173,7 +1661,11 @@ real wrf_h1(const WrfSmagGrid& q, const WrfScalarField& s, const real* kh,
                          - wrf_scalar(q, s, k, j, i - 1))
               - tmpzx * (wrf_scalar_w_xface(q, s, k + 1, j, i)
                          - wrf_scalar_w_xface(q, s, k, j, i)) * rdzu;
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+    real xkxavg=kavg*0.5f*(wrf_rho(q,k,j,i-1)+wrf_rho(q,k,j,i)); return -map*xkxavg*grad;
+#else
     return -map * rhoavg * kavg * grad;
+#endif
 }
 
 __device__ __forceinline__
@@ -1193,7 +1685,11 @@ real wrf_h2(const WrfSmagGrid& q, const WrfScalarField& s, const real* kh,
                          - wrf_scalar(q, s, k, j - 1, i))
               - tmpzy * (wrf_scalar_w_yface(q, s, k + 1, j, i)
                          - wrf_scalar_w_yface(q, s, k, j, i)) * rdzv;
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+    real xkxavg=kavg*0.5f*(wrf_rho(q,k,j-1,i)+wrf_rho(q,k,j,i)); return -map*xkxavg*grad;
+#else
     return -map * rhoavg * kavg * grad;
+#endif
 }
 
 __device__ __forceinline__
@@ -1277,7 +1773,13 @@ void wrf_smag_hd_s(WRF_SMAG_GRID_ARGS, const real* fx, const real* fy,
                               - wrf_h1_mavg(q, fx, k, j, i)) * rz
               + map * zy_m * (wrf_h2_mavg(q, fy, k + 1, j, i)
                               - wrf_h2_mavg(q, fy, k, j, i)) * rz;
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+    real first=map*zx_m*(wrf_h1_mavg(q,fx,k+1,j,i)-wrf_h1_mavg(q,fx,k,j,i))*rz;
+    real second=map*zy_m*(wrf_h2_mavg(q,fy,k+1,j,i)-wrf_h2_mavg(q,fy,k,j,i))*rz;
+    tend[IDX3(k,j,i)] += __fdiv_rn(G, dnw[k] * rz)*((divh-first)-second);
+#else
     tend[IDX3(k, j, i)] += G / (dnw[k] * rz) * (divh - divz);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -1372,6 +1874,12 @@ void wrf_calc_n2(WRF_SMAG_GRID_ARGS,
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     int k = blockIdx.z * blockDim.z + threadIdx.z;
     if (i >= nx || j >= ny || k >= nz) return;
+    // calculate_N2 excludes the cold-zeroed physical outer mass row.
+    if ((boundary_x && (i == 0 || i == nx - 1))
+            || (boundary_y && (j == 0 || j == ny - 1))) {
+        bn2[IDX3(k, j, i)] = 0.0f;
+        return;
+    }
     WRF_SMAG_MAKE_GRID;
     WrfN2Column n = {thp, thb, thb3d, p, qc, qi, has_qc, has_qi};
 
@@ -1446,10 +1954,15 @@ void wrf_calc_n2(WRF_SMAG_GRID_ARGS,
             // phy_prep surface extrapolation for p8w/t8w (z-linear,
             // module_big_step_utilities_em.F:4916-4923).
             real z0 = __fdiv_rn(wrf_phi(q, 0, j, i), G);
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+            real z1 = 0.5f * (__fdiv_rn(wrf_phi(q, 0, j, i), G) + __fdiv_rn(wrf_phi(q, 1, j, i), G));
+            real z2 = 0.5f * (__fdiv_rn(wrf_phi(q, 1, j, i), G) + __fdiv_rn(wrf_phi(q, 2, j, i), G));
+#else
             real z1 = __fdiv_rn(0.5f * (wrf_phi(q, 0, j, i)
                               + wrf_phi(q, 1, j, i)), G);
             real z2 = __fdiv_rn(0.5f * (wrf_phi(q, 1, j, i)
                               + wrf_phi(q, 2, j, i)), G);
+#endif
             real w1 = (z0 - z2) / (z1 - z2);
             real w2 = 1.0f - w1;
             real p8w0 = w1 * p_c + w2 * p[h1];
@@ -1651,18 +2164,24 @@ void wrf_smag_surface_v_cd0(WRF_SMAG_GRID_ARGS, real cd0,
 // vertical_diffusion_2 hflux CASE(0,2) (:4286-4305): prescribed constant
 // kinematic surface heat flux (namelist tke_heat_flux, K m s-1), applied
 // to the coupled theta tendency through the use_theta_m=0 branch
-// rt_tendf -= g*heat_flux*rho(kts)/dnw(kts).  WRF's hfx(i,j) refresh at
-// :4293 is "provided for output only" and is not reproduced here (gpuwm
-// holds hfx on the physics side; documented divergence, output-only).
+// rt_tendf -= g*heat_flux*rho(kts)/dnw(kts). Refresh the available HFX
+// output with the prescribed flux, as WRF does at :4293.
 extern "C" __global__
 void wrf_smag_surface_heat_const(WRF_SMAG_GRID_ARGS, real heat_flux,
-                                 real* rth, int nz, int ny, int nx,
+                                 real* hfx, int write_hfx, real* rth,
+                                 int nz, int ny, int nx,
                                  int phb3d, int boundary_x, int boundary_y)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     if (i >= nx || j >= ny) return;
     WRF_SMAG_MAKE_GRID;
+    if (write_hfx) {
+        real vapor = q.moist ? q.qv[I3(0, j, i, ny, nx)] : 0.0f;
+        real cpm = __fmul_rn(CP, __fadd_rn(1.0f, __fmul_rn(0.8f, vapor)));
+        hfx[(size_t)j * nx + i] =
+            __fmul_rn(__fmul_rn(heat_flux, cpm), wrf_rho(q, 0, j, i));
+    }
     rth[I3(0, j, i, ny, nx)] -=
         G * heat_flux * wrf_rho(q, 0, j, i) / dnw[0];
 }
@@ -1741,10 +2260,15 @@ void wrf_tke_km(WRF_SMAG_GRID_ARGS,
             real tmpdz = 1.0f / wrf_rdzw(q, 1, j, i)
                        + 1.0f / wrf_rdzw(q, 0, j, i);
             real z0 = __fdiv_rn(wrf_phi(q, 0, j, i), G);
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+            real z1 = 0.5f * (__fdiv_rn(wrf_phi(q, 0, j, i), G) + __fdiv_rn(wrf_phi(q, 1, j, i), G));
+            real z2 = 0.5f * (__fdiv_rn(wrf_phi(q, 1, j, i), G) + __fdiv_rn(wrf_phi(q, 2, j, i), G));
+#else
             real z1 = __fdiv_rn(0.5f * (wrf_phi(q, 0, j, i)
                               + wrf_phi(q, 1, j, i)), G);
             real z2 = __fdiv_rn(0.5f * (wrf_phi(q, 1, j, i)
                               + wrf_phi(q, 2, j, i)), G);
+#endif
             real w1 = (z0 - z2) / (z1 - z2);
             real w2 = 1.0f - w1;
             real t0 = wrf_theta_full(q, thp, thb, thb3d, 0, j, i)
@@ -1760,10 +2284,15 @@ void wrf_tke_km(WRF_SMAG_GRID_ARGS,
             real tmpdz = 1.0f / wrf_rdz(q, nz - 1, j, i)
                        + 0.5f / wrf_rdzw(q, nz - 1, j, i);
             real z0 = __fdiv_rn(wrf_phi(q, nz, j, i), G);
+#ifdef GPUWM_WRF_EXACT_C_DIFFUSION
+            real z1 = 0.5f * (__fdiv_rn(wrf_phi(q, nz - 1, j, i), G) + __fdiv_rn(wrf_phi(q, nz, j, i), G));
+            real z2 = 0.5f * (__fdiv_rn(wrf_phi(q, nz - 2, j, i), G) + __fdiv_rn(wrf_phi(q, nz - 1, j, i), G));
+#else
             real z1 = __fdiv_rn(0.5f * (wrf_phi(q, nz - 1, j, i)
                               + wrf_phi(q, nz, j, i)), G);
             real z2 = __fdiv_rn(0.5f * (wrf_phi(q, nz - 2, j, i)
                               + wrf_phi(q, nz - 1, j, i)), G);
+#endif
             real w1 = (z0 - z2) / (z1 - z2);
             real w2 = 1.0f - w1;
             real tm1 = wrf_theta_full(q, thp, thb, thb3d, nz - 1, j, i)
@@ -1841,6 +2370,10 @@ void wrf_tke_rhs(WRF_SMAG_GRID_ARGS,
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     int k = blockIdx.z * blockDim.z + threadIdx.z;
     if (i >= nx || j >= ny || k >= nz) return;
+    // WRF tke_rhs excludes the outer mass rows for open lateral boundaries.
+    // A nonzero source there advances TKE in cells WRF leaves untouched.
+    if ((boundary_x && (i == 0 || i == nx - 1))
+        || (boundary_y && (j == 0 || j == ny - 1))) return;
     WRF_SMAG_MAKE_GRID;
     size_t idx = IDX3(k, j, i);
     real chm = c1[k] * mut[(size_t)j * nx + i] + c2[k];

@@ -2364,6 +2364,12 @@ def test_the_announced_download_cache_is_the_one_the_stages_use(
     is what the line was written for and must not move, and
     ``--data-dir`` is the case it got wrong.
     """
+    from gpuwm.render_layout import fs_path
+
+    def canonical(path):
+        # Windows' long-path spelling and the ordinary spelling identify
+        # the same directory.  Compare the filesystem paths the stages use.
+        return Path(fs_path(path, descend=True)).resolve()
 
     monkeypatch.setattr(go_cli, "resolve_bridge", lambda: tmp_path / "bridge")
     argv = ["go", str(gfs_config), "--dry-run",
@@ -2373,14 +2379,14 @@ def test_the_announced_download_cache_is_the_one_the_stages_use(
     assert cli_main(argv) == 0
     printed = capsys.readouterr().out
 
-    announced = Path(_announced_cache(printed))
-    used = Path(_fetch_stage_out(printed))
+    announced = canonical(_announced_cache(printed))
+    used = canonical(_fetch_stage_out(printed))
     assert announced == used, (
         f"go announces the download cache at {announced} but the fetch "
         f"stage writes to {used}")
     # And it is the directory the reader NAMED, not one derived from the
     # run root: equality above would also hold if both had drifted.
     if named_cache:
-        assert announced == tmp_path / "mycache"
+        assert announced == canonical(tmp_path / "mycache")
     else:
-        assert announced.parent == tmp_path / "out" / "downloads"
+        assert announced.parent == canonical(tmp_path / "out" / "downloads")

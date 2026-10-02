@@ -2325,6 +2325,7 @@ def test_resolve_hrrr_transport_auto_takes_the_mirror_once_it_has_the_window():
     assert probed[:2] == [
         fetch.hrrr_object_url(cycle, 6, "wrfnat", transport="s3"),
         fetch.hrrr_object_url(cycle, 6, "wrfprs", transport="s3")]
+    assert len(probed) == 2
     assert any("mirrored" in line and "throughput" in line
                for line in lines), lines
     assert not any("publishes" in line for line in lines), lines
@@ -2347,6 +2348,127 @@ def test_resolve_hrrr_transport_auto_stays_on_nomads_while_the_mirror_lags():
     assert any("using nomads" in line and "before the mirrors" in line
                for line in lines), lines
     assert not any("mirrored" in line for line in lines), lines
+
+
+@pytest.mark.parametrize("index_only", [False, True])
+def test_native_auto_transport_uses_one_host_for_every_prefix_object(index_only):
+    cycle = datetime(2026, 7, 28, 5)
+    now = datetime(2026, 7, 28, 8)
+    leads = (15, 16, 17, 18)
+    asked = []
+    missing = fetch.hrrr_object_url(cycle, 17, "wrfprs", transport="s3")
+    if index_only:
+        missing += ".idx"
+
+    def probe(url):
+        asked.append(url)
+        # S3's final pair is up, while an intermediate soil object or
+        # its index still lags. NOMADS serves the entire requested set.
+        return url != missing
+
+    assert fetch.resolve_hrrr_transport(
+        cycle, "auto", last_hour=18, now=now, probe=probe,
+        required_leads=leads, progress=lambda *_: None) == "nomads"
+    assert missing in asked
+    expected = {fetch.hrrr_object_url(cycle, lead, product, transport="nomads")
+                + suffix for lead in leads for product in ("wrfnat", "wrfprs")
+                for suffix in ("", ".idx")}
+    assert expected <= set(asked)
+
+
+def test_native_auto_transport_still_prefers_a_complete_s3_prefix():
+    cycle = datetime(2026, 7, 28, 5)
+    now = datetime(2026, 7, 28, 8)
+    leads = (15, 16, 17, 18)
+    asked = []
+    assert fetch.resolve_hrrr_transport(
+        cycle, "auto", last_hour=18, now=now,
+        probe=lambda url: asked.append(url) or True,
+        required_leads=leads, progress=lambda *_: None) == "s3"
+    assert set(asked) == {
+        fetch.hrrr_object_url(cycle, lead, product, transport="s3") + suffix
+        for lead in leads for product in ("wrfnat", "wrfprs")
+        for suffix in ("", ".idx")}
+
+
+@pytest.mark.parametrize("missing", ["wrfprs", "wrfprs.idx", "everything"])
+def test_native_auto_transport_never_falls_back_to_an_unverified_prefix(missing):
+    """Every host said an object of the prefix is missing: none is taken."""
+
+    cycle = datetime(2026, 7, 28, 5)
+    lagging = {fetch.hrrr_object_url(cycle, 17, "wrfprs", transport=name)
+               + (".idx" if missing == "wrfprs.idx" else "")
+               for name in ("s3", "nomads")}
+
+    def probe(url):
+        return False if missing == "everything" or url in lagging else True
+
+    with pytest.raises(fetch._HrrrPrefixNotPosted, match="missing intermediate"):
+        fetch.resolve_hrrr_transport(
+            cycle, "auto", last_hour=18,
+            now=datetime(2026, 7, 28, 8), required_leads=(15, 16, 17, 18),
+            probe=probe, progress=lambda *_: None)
+
+
+@pytest.mark.parametrize("unheard, missing", [
+    ("nomads", "s3"), ("s3", "nomads"), ("s3", None)])
+def test_native_auto_transport_lets_the_transfer_try_a_host_not_heard(
+        unheard, missing):
+    """GS-05 on the posted prefix: a probe with no answer is not a missing object.
+
+    One host could not be heard about an intermediate soil index (a HEAD
+    it refused and a GET it did not answer), the other said the index is
+    missing or could not be heard either.  The unheard host is taken and
+    its transfer's own index, inventory and digest checks decide; a host
+    that said an object is missing is never taken.  Reading the unheard
+    answer as missing made a host that refuses HEAD wait out the whole
+    posting budget and exit 75 where the final-lead choice downloaded.
+    """
+
+    cycle = datetime(2026, 7, 28, 5)
+    index = {name: fetch.hrrr_object_url(cycle, 17, "wrfprs", transport=name)
+             + ".idx" for name in ("s3", "nomads")}
+
+    def probe(url):
+        if missing is not None and url == index[missing]:
+            return False
+        return None if url in (index[unheard], index["nomads"]
+                               if missing is None else None) else True
+
+    said = []
+    assert fetch.resolve_hrrr_transport(
+        cycle, "auto", last_hour=18, now=datetime(2026, 7, 28, 8),
+        required_leads=(15, 16, 17, 18), probe=probe,
+        progress=said.append) == unheard
+    assert any(f"{unheard} could not be heard" in line
+               and "own checks decide" in line for line in said), said
+
+
+def test_native_auto_transport_waits_again_before_any_unverified_download(monkeypatch):
+    cycle = datetime(2026, 7, 28, 5)
+    leads = (15, 16, 17, 18)
+    calls = []
+
+    def resolve(got_cycle, requested, *, last_hour, required_leads):
+        assert (got_cycle, requested, last_hour, required_leads) \
+            == (cycle, "auto", 18, leads)
+        calls.append("resolve")
+        if calls.count("resolve") == 1:
+            raise fetch._HrrrPrefixNotPosted("the host has not served the prefix")
+        return "nomads"
+
+    class Loop:
+        def wait_again(self, waited, error):
+            assert waited == (18,) and isinstance(error, fetch._HrrrPrefixNotPosted)
+            calls.append("posting_wait")
+
+        def __call__(self, lead):
+            assert lead == 18
+            calls.append("lead_gate")
+
+    monkeypatch.setattr(fetch, "resolve_hrrr_transport", resolve)
+    assert fetch._posted_hrrr_transport(Loop(), cycle, leads) == "nomads"
+    assert calls == ["resolve", "posting_wait", "lead_gate", "resolve"]
 
 
 def test_resolve_hrrr_transport_auto_falls_through_to_the_archive():

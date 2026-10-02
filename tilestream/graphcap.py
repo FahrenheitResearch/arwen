@@ -205,7 +205,8 @@ def cadence_key(state, cfg) -> tuple:
         _radiation_step_due(itimestep, stepra, drv.radt_minutes)
         if override is None else override))
     surface = bool(drv.surface_enabled and _surface_pbl_step_due(
-        itimestep, drv.stepbl, cfg.bldt))
+        itimestep, drv.stepbl, cfg.bldt,
+        getattr(drv, "surface_pbl_due_override", None)))
     override = getattr(drv, "cumulus_due_override", None)
     stepcu = _physics_interval_steps(drv.cudt_minutes, cfg.dt)
     cumulus = bool(cfg.cu_physics and (

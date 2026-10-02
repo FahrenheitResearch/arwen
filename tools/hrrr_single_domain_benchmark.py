@@ -3419,8 +3419,296 @@ def _write_chained_head(
             soil_temperature_repair, pipeline_report)
 
 
-def _seal_chained_cache(writer, *, timing, mapping_reports, last_valid_time):
-    """Seal the streamed cache: every lead's mapping report, then the header."""
+#: An as-posted native preparation (A136 L7c): the portable manifest has
+#: no lead role (each lead's two objects are rows of the source manifest,
+#: a document of their own), so its plan blanks only the two documents the
+#: seal writes from the leads: the decoded bridge's SHA256SUMS and the
+#: source manifest.  The prefix names no role of that manifest.
+POSTED_NATIVE_LEAD_ROLE_PREFIX = "hrrr-f"
+POSTED_NATIVE_DERIVED_ROLES = ("bridge", "source_manifest")
+#: The two cache identity keys that carry those documents' digests, and the
+#: manifest role each is bound to (boundary_stream.DOCUMENT_ROW_RULES).
+POSTED_NATIVE_DOCUMENT_KEYS = {"bridge_manifest_sha256": "bridge",
+                               "source_manifest_sha256": "source_manifest"}
+#: The bridge rows that are no lead's decoded files: written from the
+#: reference lead and the series (the sealer holds the gate to them).
+POSTED_NATIVE_BRIDGE_FIXED_ROWS = ("./gate.txt", "./inventory.tsv")
+#: Where an as-posted bundle keeps the source manifest its seal authors
+#: from the leads' markers (``tools/prepare_hrrr_wrf.py`` passes this path
+#: as ``--source-manifest``).
+POSTED_SOURCE_MANIFEST = "native/posted-source/SHA256SUMS"
+
+
+def _posted_native_leads(posting, *, cycle, source_forecast_hours):
+    """The lead wait of an as-posted native preparation, held to its window.
+
+    ``posting`` is the as-posted fetch's ``posting/`` folder; its schedule
+    must be this cycle's native HRRR window and schedule every lead this
+    preparation reads, so no lead is waited for that the fetch will never
+    fetch.
+    """
+
+    from gpuwm.ingest.boundary_stream import (
+        POSTING_SCHEDULE_NAME, PostedLeads, read_replaced_json)
+
+    path = Path(posting) / POSTING_SCHEDULE_NAME
+    try:
+        schedule = read_replaced_json(path)
+    except (OSError, ValueError) as error:
+        raise ValueError(
+            f"an as-posted native preparation reads the fetch's posting "
+            f"schedule, and {path} is not readable: {error}") from None
+    label = cycle.strftime("%Y-%m-%dT%H")
+    if (not isinstance(schedule, dict) or schedule.get("source") != "hrrr"
+            or str(schedule.get("cycle", ""))[:13] != label):
+        raise ValueError(
+            f"{path} schedules {schedule.get('source')} "
+            f"{schedule.get('cycle')}, not the hrrr {label} cycle this "
+            "preparation reads")
+    scheduled = {int(row["lead"]) for row in schedule.get("leads") or ()}
+    unscheduled = sorted(set(source_forecast_hours) - scheduled)
+    if unscheduled:
+        raise ValueError(
+            f"{path} does not schedule lead(s) "
+            f"{', '.join(f'f{lead:03d}' for lead in unscheduled)} of this "
+            "preparation's window, so nothing would ever post them here")
+    return PostedLeads(Path(posting), source="hrrr",
+                       cycle=str(schedule["cycle"]))
+
+
+def _decoded_lead_record(root, hour, *, workers=8):
+    """``{row: sha256}`` of one decoded lead's files, as the bridge seal names them.
+
+    Read when the lead is taken from the decoder's staging, so each segment
+    binds the decoded bytes its interval was built from, and the sealed
+    bridge's ``SHA256SUMS`` rows are held to them (``decoded_leads``).
+    """
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    files = []
+    for role in ("atmosphere", "soil"):
+        directory = Path(root) / f"{role}-f{int(hour):02d}"
+        files += [(f"./{role}-f{int(hour):02d}/{path.name}", path)
+                  for path in sorted(directory.iterdir()) if path.is_file()]
+    with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
+        digests = list(pool.map(lambda item: _sha256(item[1]), files))
+    return {name: digest for (name, _), digest in zip(files, digests)}
+
+
+def _await_admitted(admitter, producer, lead, *, poll_seconds=1.0,
+                    between=None):
+    """Lead ``lead``'s posted marker once it is admitted to the decoder.
+
+    A lead may take its whole lateness budget to post, and the decoder can
+    fail first (it exits at once on a series it cannot read).  The decoder
+    is looked at between waits, so its failure is raised now, not once the
+    lead posts: the breakage this prevents is a preparation that sat out a
+    lead's whole budget beside a decoder that had already died (node-4,
+    HRRR 2026-10-01T06, 30 minutes).  ``between`` is called between waits
+    too (the build loop writes the intervals already built).
+    """
+
+    while True:
+        marker = admitter.wait(lead, timeout=poll_seconds)
+        if marker is not None:
+            return marker
+        producer.check()
+        if between is not None:
+            between()
+
+
+def _seal_posted_bridge(args, *, admitter, pipeline_producer, source_window,
+                        timing):
+    """Finish an as-posted decode; author the source manifest; seal the bridge.
+
+    The source manifest is written from the leads' posted markers (each
+    object's name and digest, sorted by name), byte for byte the
+    ``SHA256SUMS`` a one-shot fetch of the same window writes; its digest is
+    what the seal binds where a one-shot preparation binds
+    ``--source-manifest-sha256``.  Returns ``(pipeline_report,
+    source_hash_receipt)``.
+    """
+
+    pipeline_report = pipeline_producer.finish()
+    started = time.perf_counter()
+    manifest = Path(args.source_manifest)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    with manifest.open("x", encoding="utf-8", newline="\n") as stream:
+        stream.write(admitter.source_manifest_text())
+    args.source_manifest_sha256 = _sha256(manifest)
+    source_hash_receipt = admitter.receipt(manifest)
+    seal_process, seal_receipt, seal_started = _start_seal(
+        args, pipeline_report, source_hash_receipt, source_window)
+    stdout, stderr = seal_process.communicate()
+    timing["pipeline_bridge_seal_wall"] = time.perf_counter() - seal_started
+    if seal_process.returncode != 0:
+        raise RuntimeError("pipeline bridge seal failed: " + stderr[-4000:])
+    if seal_receipt is None or not seal_receipt.is_file():
+        raise RuntimeError("pipeline bridge seal omitted receipt")
+    seal = json.loads(seal_receipt.read_text())
+    args.manifest_sha256 = seal["manifest_sha256"]
+    pipeline_report["seal"] = seal
+    pipeline_report["seal_stdout"] = stdout.strip()
+    timing["posted_source_manifest_and_bridge_seal"] = (
+        time.perf_counter() - started)
+    return pipeline_report, source_hash_receipt
+
+
+def _write_posted_head(
+        args, *, chain, exp, dc, grid, static, soil_mesh, admitter,
+        producer, posted_leads, decoded_records, timing, make_identity,
+        requested_cycle, source_forecast_hours, model_forcing_hours,
+        requested_hours, initial_snapshot, root_result, root_met,
+        mapping_reports, boundary_sides, preprocess_receipt,
+        source_identity):
+    """Publish an as-posted native preparation's head (A136 L7c (b)).
+
+    Written once the start state exists and the first boundary lead is
+    posted (the start needs, f(S) and f(S+1)), without waiting for any later
+    lead: the head binds the input plan (the portable manifest with the
+    bridge and source-manifest digests not yet known) and the two start
+    leads' markers, and its cache identity carries the plan's placeholder
+    in ``bridge_manifest_sha256`` and ``source_manifest_sha256``, which the
+    seal writes as the digests of the documents it writes then.  Returns
+    ``(writer, lbc_digest, identity, root_surface,
+    soil_temperature_repair)``; ``writer`` is ``None`` when the portable
+    authorities cannot be published, as the chained head says.
+    """
+
+    from gpuwm.hrrr_prepared_bundle import (
+        AS_POSTED_SEAL_KEYS, HrrrBundleError, publish_hrrr_bundle_head)
+    from gpuwm.ingest.boundary_stream import (
+        PreparedTreeWriter, as_posted_placeholder, input_plan,
+        input_plan_sha256)
+    from gpuwm.ingest.hrrr_physics import resolve_prepared_noah_surface
+    from gpuwm.ingest.preprocess_backend import preprocess_reports_identity
+    from gpuwm.ingest.soil import soil_temperature_repair_proof
+
+    started = time.perf_counter()
+    start_leads = tuple(source_forecast_hours[:2])
+    start_markers = {lead: _await_admitted(admitter, producer, lead)
+                     for lead in start_leads}
+    timing["posted_head_start_leads_wait"] = time.perf_counter() - started
+
+    root_surface = resolve_prepared_noah_surface(
+        root_met, dc.run, static, soil_mesh=soil_mesh)
+    soil_temperature_repair = soil_temperature_repair_proof(root_surface, grid)
+    start_key = f"f{source_forecast_hours[0]:02d}"
+    metadata = {
+        "initial_valid_time": initial_snapshot.valid_time.isoformat(),
+        "last_valid_time": (initial_snapshot.valid_time + timedelta(
+            hours=int(requested_hours[-1]))).isoformat(),
+        "source_cycle": requested_cycle.isoformat(),
+        "source_forecast_hours": list(source_forecast_hours),
+        "model_forcing_hours": list(model_forcing_hours),
+        "forcing_hours": list(requested_hours),
+        "mapping_reports": _strict_json(preprocess_reports_identity(
+            {start_key: mapping_reports[start_key]})),
+        "soil_texture_downscale": _strict_json(
+            root_surface.soil_texture_downscale),
+        **({"soil_temperature_repair": _strict_json(
+            soil_temperature_repair)}
+           if soil_temperature_repair is not None else {}),
+    }
+    root = Path(chain["output_root"]).resolve()
+
+    def optional_path(key):
+        value = chain.get(key)
+        return None if value is None else Path(value)
+
+    try:
+        head_bundle = publish_hrrr_bundle_head(
+            output_root=root, prepared_cache=root / CHAINED_CACHE_NAME,
+            static_cache=Path(chain["static_cache"]),
+            static_receipt=Path(chain["static_receipt"]),
+            geometry_receipt=Path(chain["geometry_receipt"]),
+            bridge_manifest=args.bridge / "SHA256SUMS",
+            namelist_input=args.namelist_input,
+            wps_namelist=optional_path("wps_namelist"),
+            source_manifest=Path(chain["source_manifest"]),
+            experiment_config=Path(chain["experiment_config"]),
+            source_cycle=requested_cycle,
+            source_forecast_hours=source_forecast_hours,
+            model_forcing_hours=model_forcing_hours,
+            preprocessing=_strict_json(preprocess_receipt),
+            source_identity=source_identity,
+            physics_profile=chain.get("physics_profile"),
+            cache_user_metadata=metadata,
+            expert_acknowledgements=tuple(chain.get("acknowledgements") or ()),
+            domain_spec=optional_path("domain_spec"), as_posted=True)
+    except HrrrBundleError as error:
+        print("prepare: chained preparation not used: the portable bundle's "
+              f"head could not be published ({error}); the forecast starts "
+              "after preparation", file=sys.stderr, flush=True)
+        return None, None, None, root_surface, soil_temperature_repair
+
+    plan = input_plan(
+        head_bundle["manifest"], lead_role_prefix=POSTED_NATIVE_LEAD_ROLE_PREFIX,
+        route_table_sha256=posted_leads.route_table_sha256(),
+        derived_roles=POSTED_NATIVE_DERIVED_ROLES)
+    placeholder = as_posted_placeholder(input_plan_sha256(plan))
+    identity = make_identity(placeholder, placeholder)
+    writer = PreparedTreeWriter(
+        staging=root, output_root=root, identity=identity,
+        cache_name=CHAINED_CACHE_NAME, publish=_bundle_root_in_place)
+    backend = str(preprocess_receipt["backend"])
+    device_bytes = (int(native_preparation_price(
+        dc.run, forcing_times=len(requested_hours),
+        prepare_workers=args.prepare_workers).need_bytes)
+        if backend == "cuda" else None)
+    writer.admit(experiment=exp, backend=backend, device_bytes=device_bytes,
+                 source="hrrr")
+    writer.bind_posted_leads(admitter.markers)
+    writer.bind_decoded_leads(decoded_records)
+    bridge_relative = (Path(args.bridge).resolve() / "SHA256SUMS").relative_to(
+        root).as_posix()
+    source_relative = Path(chain["source_manifest"]).resolve().relative_to(
+        root).as_posix()
+    writer.write_head(
+        initial_result=root_result, met=root_met,
+        surface=root_surface.fields, metadata=metadata,
+        lbc={"spec_bdy_width": int(dc.run.spec_bdy_width),
+             "spec_zone": 1, "relax_zone": 4,
+             "schedule": [[float(k * 3600), float((k + 1) * 3600)]
+                          for k in range(len(requested_hours) - 1)],
+             "fields": sorted(boundary_sides["west"])},
+        proof_head=head_bundle["proof_head"], input_manifest_sha256=None,
+        forcing=_interval_host_pricing(boundary_sides),
+        seal_completes=CHAINED_SEAL_COMPLETES,
+        as_posted={
+            "input_plan": plan,
+            "start_markers": start_markers,
+            "forcing_leads": list(source_forecast_hours),
+            "seal_authored_proof_keys": AS_POSTED_SEAL_KEYS,
+            "manifest_path": "source-input-manifest.json",
+            "lead_role_prefix": POSTED_NATIVE_LEAD_ROLE_PREFIX,
+            "derived_roles": POSTED_NATIVE_DERIVED_ROLES,
+            "document_bound_identity_keys": POSTED_NATIVE_DOCUMENT_KEYS,
+            "documents": {
+                "bridge": {"path": bridge_relative,
+                           "lead_rows": "decoded_leads",
+                           "fixed_rows": POSTED_NATIVE_BRIDGE_FIXED_ROWS},
+                "source_manifest": {"path": source_relative,
+                                    "lead_rows": "posted_objects"},
+            },
+        })
+    writer.native_bundle_head = head_bundle
+    # From here a wait on a later lead says so on the producer heartbeat
+    # (waiting_for_source), and a forecast that stopped ends it.
+    posted_leads.writer = writer
+    return (writer, _LbcPayloadDigest(), identity, root_surface,
+            soil_temperature_repair)
+
+
+def _seal_chained_cache(writer, *, timing, mapping_reports, last_valid_time,
+                        **posted):
+    """Seal the streamed cache: every lead's mapping report, then the header.
+
+    ``posted`` (an as-posted head) is ``identity``, ``manifest_sha256`` and
+    ``document_sha256``, the one-shot identity its seal writes
+    (:meth:`gpuwm.ingest.boundary_stream.PreparedTreeWriter.seal_cache`).
+    """
 
     from gpuwm.ingest.preprocess_backend import preprocess_reports_identity
 
@@ -3436,12 +3724,13 @@ def _seal_chained_cache(writer, *, timing, mapping_reports, last_valid_time):
     started = time.perf_counter()
     receipt = writer.seal_cache(completed_metadata={
         "mapping_reports": _strict_json(
-            preprocess_reports_identity(mapping_reports))})
+            preprocess_reports_identity(mapping_reports))}, **posted)
     timing["seal_streamed_prepared_cache"] = time.perf_counter() - started
     return receipt
 
 
-def _publish_chained_proof(writer, args, *, chain, report, configured_run):
+def _publish_chained_proof(writer, args, *, chain, report, configured_run,
+                           posted_proof=None):
     """Check the preparation's receipts, then write ``proof.json`` last.
 
     The receipts are the ones ``tools/prepare_hrrr_wrf.py`` checks before
@@ -3479,6 +3768,9 @@ def _publish_chained_proof(writer, args, *, chain, report, configured_run):
         head, output_root=root, prepared_cache=root / CHAINED_CACHE_NAME,
         static_cache=Path(chain["static_cache"]),
         geometry_receipt=Path(chain["geometry_receipt"]))
+    # An as-posted head's seal-authored keys (the portable manifest and the
+    # bridge it names, written at the seal) and its posting record.
+    proof.update(posted_proof or {})
     proof["boundary_stream"] = writer.boundary_stream_proof()
     writer.publish(proof)
     return sealed_handoff(head, proof_path=root / PROOF_NAME,
@@ -3860,6 +4152,11 @@ def run(args):
         and args.prepared_cache.exists()
     chain = None if restore_cached else _chained_bundle(args)
     sealed_leads = _SealedBridgeLeads()
+    #: As posted: the lead admission, the fetch's lead wait, and each lead's
+    #: decoded-file record by lead (_decoded_lead_record).
+    admitter = None
+    posted_leads = None
+    decoded_records = {}
     writer = None
     lbc_digest = None
     if restore_cached and args.pipeline_series is not None:
@@ -3880,10 +4177,16 @@ def run(args):
     if args.prepared_cache is not None:
         from gpuwm.ingest.prepared_cache import prepared_cache_identity as identity
 
-        def make_prepared_cache_identity(bridge_manifest_sha256):
+        def make_prepared_cache_identity(bridge_manifest_sha256,
+                                         source_manifest_sha256=None):
+            # An as-posted head names the plan's placeholder for both
+            # documents; every other caller the source manifest it bound.
             return identity(
                 bridge_manifest_sha256=bridge_manifest_sha256,
-                source_manifest_sha256=args.source_manifest_sha256,
+                source_manifest_sha256=(
+                    args.source_manifest_sha256
+                    if source_manifest_sha256 is None
+                    else source_manifest_sha256),
                 static_cache_sha256=static_load["cache_sha256"],
                 namelist_sha256=namelist_sha256,
                 domain_config=dc, forcing_hours=requested_hours,
@@ -4013,6 +4316,61 @@ def run(args):
             "prepared_cache_content_sha256": restored.receipt[
                 "content_sha256"],
         })
+    elif args.pipeline_series is not None and args.as_posted is not None:
+        # AS POSTED (A136 L7c (b)): no lead is hashed up front.  Each is
+        # admitted to the decoder once its posted marker is there and its
+        # two files are the marker's (PostedLeadAdmitter), and the decoder
+        # inventories the first lead up front and each later one when it is
+        # admitted (--series-workers-posted).
+        from tools.hrrr_pipeline import (
+            HrrrPipelineProducer, PostedLeadAdmitter)
+        posted_leads = _posted_native_leads(
+            args.as_posted, cycle=requested_cycle,
+            source_forecast_hours=source_forecast_hours)
+        admitter = PostedLeadAdmitter(
+            posted=posted_leads, series=args.pipeline_series,
+            admissions=args.pipeline_signals.with_name(
+                args.pipeline_signals.name + "-admitted"))
+        if admitter.hours != tuple(source_forecast_hours):
+            raise ValueError(
+                "pipeline source leads differ from the requested window: "
+                f"{list(admitter.hours)} != {list(source_forecast_hours)}")
+        pipeline_producer = HrrrPipelineProducer(
+            decoder=args.pipeline_decoder, series=args.pipeline_series,
+            output=args.bridge, signals=args.pipeline_signals,
+            cycle=requested_cycle.strftime("%Y-%m-%d %H:%M:%S"),
+            window=source_window.bridge_tuple(),
+            workers=args.pipeline_workers,
+            log=args.pipeline_signals.with_suffix(".decoder.log"),
+            admissions=admitter.admissions)
+        started = time.perf_counter()
+        pipeline_producer.start()
+        admitter.start()
+
+        def admitted(lead):
+            return _await_admitted(admitter, pipeline_producer, lead)
+
+        try:
+            admitted(source_forecast_hours[0])
+            timing["posted_start_lead_wait"] = time.perf_counter() - started
+            pipeline_producer.wait_preflight()
+        except BaseException:
+            admitter.stop()
+            pipeline_producer.cancel()
+            raise
+        timing["decoder_inventory_preflight_wait"] = time.perf_counter() - started
+        available_hours = requested_hours
+
+        def acquire_snapshot(hour):
+            # Waits for the lead's admission (posted, held to its marker),
+            # then for its decode; the decoded files are recorded as they
+            # are taken, so each segment binds the bytes it was built from.
+            source_hour = source_forecast_hours[hour]
+            admitted(source_hour)
+            root = pipeline_producer.wait_hour(source_hour)
+            decoded_records[source_hour] = _decoded_lead_record(
+                root, source_hour)
+            return load_hrrr_pipeline_ready_window(root, source_hour)
     elif args.pipeline_series is not None:
         from tools.hrrr_pipeline import (
             HrrrPipelineProducer, verify_source_tree)
@@ -4187,7 +4545,25 @@ def run(args):
             })
 
             completed_hours = {0}
-            if chain is not None:
+            if chain is not None and admitter is not None:
+                (writer, lbc_digest, posted_identity, root_surface,
+                 soil_temperature_repair) = _write_posted_head(
+                    args, chain=chain, exp=exp, dc=dc, grid=grid,
+                    static=static, soil_mesh=soil_mesh, admitter=admitter,
+                    producer=pipeline_producer, posted_leads=posted_leads,
+                    decoded_records=decoded_records, timing=timing,
+                    make_identity=make_prepared_cache_identity,
+                    requested_cycle=requested_cycle,
+                    source_forecast_hours=source_forecast_hours,
+                    model_forcing_hours=model_forcing_hours,
+                    requested_hours=requested_hours,
+                    initial_snapshot=initial_snapshot,
+                    root_result=root_result, root_met=root_met,
+                    mapping_reports=mapping_reports,
+                    boundary_sides=boundary_sides_by_hour[0],
+                    preprocess_receipt=preprocess_receipt,
+                    source_identity=source_identity)
+            elif chain is not None:
                 (writer, lbc_digest, prepared_cache_identity, root_surface,
                  soil_temperature_repair, pipeline_report) = _write_chained_head(
                     args, chain=chain, exp=exp, dc=dc, grid=grid,
@@ -4413,9 +4789,30 @@ def run(args):
                         slot_futures[worker_slot] = None
                     record_boundary_worker(hour, future.result())
 
+                def collect_finished():
+                    for future in [future for future in slot_futures
+                                   if future is not None and future.done()]:
+                        collect(future)
+
                 try:
                     for index, hour in enumerate(future_hours):
                         worker_slot = index % schedule_slots
+                        if admitter is not None:
+                            # As posted, lead ``hour`` may not be here yet.
+                            # A finished hour is collected while it is
+                            # awaited, so each interval is written once its
+                            # two hours are built: collected only when its
+                            # slot came round again, interval k waited for
+                            # lead k + slots, not k + 1 (node-4, HRRR
+                            # 2026-10-01T08, two slots: interval 3 waited for
+                            # f005 although f004 was in at 09:02Z).  Collection
+                            # order moves no byte (segments are written in
+                            # time order, receipts sorted).
+                            _await_admitted(
+                                admitter, pipeline_producer,
+                                source_forecast_hours[hour],
+                                between=collect_finished)
+                            collect_finished()
                         previous = slot_futures[worker_slot]
                         if previous is not None:
                             # A deterministic hour-to-slot binding makes the
@@ -4472,7 +4869,20 @@ def run(args):
                         start_seconds=float((hour - 1) * 3600),
                         end_seconds=float(hour * 3600)))
             last_valid_time = valid_time_by_hour[requested_hours[-1]]
+            if admitter is not None:
+                # Every lead is decoded: the source manifest is authored
+                # from the leads' markers and the bridge sealed, and the
+                # one-shot identity of those bytes is what the seal writes.
+                pipeline_report, source_hash_receipt = _seal_posted_bridge(
+                    args, admitter=admitter,
+                    pipeline_producer=pipeline_producer,
+                    source_window=source_window, timing=timing)
+                pipeline_producer = None
+                prepared_cache_identity = make_prepared_cache_identity(
+                    args.manifest_sha256)
         except BaseException as error:
+            if admitter is not None:
+                admitter.stop()
             if pipeline_producer is not None:
                 pipeline_producer.cancel()
             if writer is not None:
@@ -4493,7 +4903,39 @@ def run(args):
             time.perf_counter() - total_started)
 
         verify_overlay_sequence(overlay_series)
-        if writer is not None:
+        posted_proof = None
+        if writer is not None and admitter is not None:
+            try:
+                from gpuwm.hrrr_prepared_bundle import seal_hrrr_posted_inputs
+
+                posted_inputs = seal_hrrr_posted_inputs(
+                    writer.native_bundle_head,
+                    output_root=Path(chain["output_root"]),
+                    bridge_manifest=args.bridge / "SHA256SUMS",
+                    source_manifest=Path(args.source_manifest))
+                window = set(source_forecast_hours)
+                writer.write_posted_leads(
+                    {lead: marker for lead, marker in admitter.markers.items()
+                     if lead in window},
+                    route_table_sha256=posted_leads.route_table_sha256(),
+                    decoded=decoded_records)
+                prepared_cache_receipt = _seal_chained_cache(
+                    writer, timing=timing, mapping_reports=mapping_reports,
+                    last_valid_time=last_valid_time,
+                    identity=prepared_cache_identity,
+                    manifest_sha256=posted_inputs["input_manifest_sha256"],
+                    document_sha256={
+                        "bridge_manifest_sha256": args.manifest_sha256,
+                        "source_manifest_sha256": args.source_manifest_sha256})
+                posted_proof = {
+                    **posted_inputs,
+                    "posting": {"as_posted": True,
+                                "waits": list(posted_leads.waits),
+                                "leads_late": []}}
+            except BaseException as error:
+                writer.fail(error)
+                raise
+        elif writer is not None:
             try:
                 prepared_cache_receipt = _seal_chained_cache(
                     writer, timing=timing, mapping_reports=mapping_reports,
@@ -4683,7 +5125,7 @@ def run(args):
             try:
                 report["portable_bundle"] = _publish_chained_proof(
                     writer, args, chain=chain, report=report,
-                    configured_run=exp.root.run)
+                    configured_run=exp.root.run, posted_proof=posted_proof)
             except BaseException as error:
                 writer.fail(error)
                 raise
@@ -5258,6 +5700,14 @@ def _parse_args(argv=None):
               "hour after it, and proof.json at the seal, so a forecast can "
               "start on the head"))
     parser.add_argument(
+        "--as-posted", type=Path, dest="as_posted",
+        help=("an as-posted fetch's posting/ folder (A136): each lead is "
+              "decoded once its posted marker is there and its files are the "
+              "marker's, the head is published on the first two leads, and "
+              "the seal writes the source manifest at --source-manifest from "
+              "the leads' markers (no --source-manifest-sha256: that "
+              "manifest does not exist before the last lead)"))
+    parser.add_argument(
         "--sealed-prepared-cache", action="store_true",
         help=("opt in to a prefix-sealed prepared cache that an operational "
               "controller may extend by one cryptographically joined hour"))
@@ -5283,6 +5733,27 @@ def _parse_args(argv=None):
         help=("reuse an existing --outdir instead of refusing it; output "
               "files already in it are still never overwritten"))
     args = parser.parse_args(argv)
+    if args.as_posted is not None:
+        # Each names the breakage it prevents.
+        if args.pipeline_series is None or not args.prepare_only:
+            parser.error(
+                "--as-posted decodes each lead as it posts, which only a "
+                "prepare-only pipeline preparation does (--pipeline-series, "
+                "--prepare-only)")
+        if args.sealed_prepared_cache:
+            parser.error(
+                "--as-posted and --sealed-prepared-cache are mutually "
+                "exclusive: a prefix-sealed cache binds a source manifest "
+                "before it decodes, which an as-posted window does not have")
+        if args.source_manifest_sha256 is not None:
+            parser.error(
+                "--source-manifest-sha256 names a source manifest, and an "
+                "as-posted preparation writes it at its seal from the leads' "
+                "markers (at --source-manifest); omit the flag")
+        if args.source_manifest is None or args.source_manifest.exists():
+            parser.error(
+                "--as-posted needs --source-manifest naming where its seal "
+                "writes the source manifest, a path that does not exist yet")
     if args.pipeline_series is not None:
         required = {
             "pipeline_decoder": args.pipeline_decoder,
@@ -5291,6 +5762,8 @@ def _parse_args(argv=None):
             "source_manifest": args.source_manifest,
             "source_manifest_sha256": args.source_manifest_sha256,
         }
+        if args.as_posted is not None:
+            required.pop("source_manifest_sha256")
         missing = [key for key, value in required.items() if value is None]
         if missing:
             parser.error(f"pipeline mode is missing: {missing}")
@@ -5298,7 +5771,8 @@ def _parse_args(argv=None):
             parser.error("pipeline mode produces --manifest-sha256")
     elif args.manifest_sha256 is None:
         parser.error("--manifest-sha256 is required without pipeline mode")
-    if args.prepared_cache is not None and args.source_manifest_sha256 is None:
+    if (args.prepared_cache is not None and args.source_manifest_sha256 is None
+            and args.as_posted is None):
         parser.error(
             "--source-manifest-sha256 is required with --prepared-cache")
     if args.prepare_only and args.prepared_cache is None:

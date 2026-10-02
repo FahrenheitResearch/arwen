@@ -433,6 +433,43 @@ def default_slab_rows(nx: int, ny: int) -> int:
     return min(64, ny, max(1, DEFAULT_COLUMN_CHUNK // nx))
 
 
+def _store_boundaries(reader, metadata, boundary_source=None):
+    """The host series, eager at a seal and lazy at a preparation head.
+
+    Check the declared schedule without reading future intervals. A head
+    contains only start-state arrays; opening its boundary arrays eagerly
+    would wait for the whole preparation instead of the model's next seam.
+    """
+    lbc = metadata.get("lbc") or {}
+    intervals = lbc.get("intervals")
+    if boundary_source is None:
+        if reader.header.get("status") == "HEAD" and intervals is not None:
+            raise PreparedStoreError(
+                "a prepared head's host store requires its streamed boundary "
+                "source: later boundary arrays do not exist at the head")
+        return (None if intervals is None else
+                _boundaries_from_cache(reader, metadata))
+    bounds = getattr(boundary_source.intervals, "bounds", ())
+    if intervals is None or [list(map(float, row)) for row in bounds] != [
+            [float(row["start_seconds"]), float(row["end_seconds"])]
+            for row in intervals]:
+        raise PreparedStoreError(
+            "streamed boundary schedule differs from the prepared host "
+            "store's declared intervals")
+    for name in ("spec_bdy_width", "spec_zone", "relax_zone"):
+        if int(getattr(boundary_source, name)) != int(lbc[name]):
+            raise PreparedStoreError(
+                f"streamed boundary {name} differs from the prepared host "
+                "store, which would apply forcing to different edge cells")
+    fields = getattr(boundary_source.intervals, "fields", None)
+    if fields is not None and any(
+            sorted(fields) != sorted(row["fields"]) for row in intervals):
+        raise PreparedStoreError(
+            "streamed boundary fields differ from the prepared host store, "
+            "which would omit or replace its declared forcing carriers")
+    return boundary_source
+
+
 def store_from_prepared_cache(path, *, expected_identity, cfg, static,
                               landuse_attrs, grid, valid_time,
                               rows_per_slab: int | None = None,
@@ -440,6 +477,7 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
                               verify_payload: bool = True,
                               center_lat=None, constant_glw_wm2=None,
                               inventory_fn=None, physics_initializer=None,
+                              reader=None, boundary_source=None,
                               log=print) -> PreparedStore:
     """Load a prepared cache into pinned host arrays, slab by slab.
 
@@ -452,6 +490,10 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
     physics contract on each row window. It receives the same inputs as
     ``initialize_prepared_physics`` plus ``row_start`` and ``domain_rows``
     for windowing caller-owned setup fields. The default is unchanged.
+
+    ``reader`` may be the checked start-state reader of a chained head.
+    Its ``boundary_source`` is retained lazily on the host, so each tile
+    takes a checked interval only when the model reaches that seam.
 
     No domain-shaped device array is ever allocated.  The peak device
     residency is one slab's state plus its physics; the peak HOST transient
@@ -494,8 +536,11 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
     nz, ny, nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
     if rows_per_slab is None:
         rows_per_slab = default_slab_rows(nx, ny)
-    reader = PreparedCacheReader(path, expected_identity=expected_identity)
+    if reader is None:
+        reader = PreparedCacheReader(path, expected_identity=expected_identity)
     metadata = reader.header["metadata"]
+    if boundary_source is not None or reader.header.get("status") == "HEAD":
+        _store_boundaries(reader, metadata, boundary_source)
 
     from gpuwm.core.grid import BaseState, VerticalCoord
 
@@ -695,8 +740,7 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
             "and neither is the interior value the whole domain would have "
             "produced.  Slabbing this cache needs a y-halo for those "
             "carriers before its store can be trusted.")
-    boundaries = (None if (metadata.get("lbc") or {}).get("intervals") is None
-                  else _boundaries_from_cache(reader, metadata))
+    boundaries = _store_boundaries(reader, metadata, boundary_source)
     missing = tuple(sorted(set(store) - seen))
     receipt = MappingProxyType({
         "schema": "gpuwm-prepared-store-v1",

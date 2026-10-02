@@ -965,6 +965,8 @@ def _worker_reservation_bytes(module: str,
     single-domain runner's own ``--source``, else the one its prepared
     root names).  Without it a multi-run of HRRR-forced forecasts reserved
     a shared card short by those tables.
+    Verified prepared land cover supplies the urban column counts; an
+    unreadable prepared bundle retains the configuration's workspace bound.
     """
 
     values = _runner_path_values(module, arguments, "worker arguments")
@@ -975,10 +977,23 @@ def _worker_reservation_bytes(module: str,
 
     root = values.get("--prepared-root")
     source = _runner_option_value(arguments, "--source")
-    return priced_reservation_bytes(
-        Path(config),
-        source=(source if root is None else
-                boundary_pricing_source(Path(root), source)))
+    pricing = {"source": (source if root is None else
+                          boundary_pricing_source(Path(root), source))}
+    if root is not None:
+        from gpuwm.core.preflight import _prepared_check_inputs
+
+        wps = values.get("--wps-namelist")
+        try:
+            prepared = _prepared_check_inputs(argparse.Namespace(
+                config=Path(config), prepared_root=Path(root),
+                wps_namelist=None if wps is None else Path(wps)))
+        except (OSError, ValueError, RuntimeError, ImportError):
+            # Reservation pricing is advisory. The runner verifies the
+            # bundle before restore; unverified land cover keeps the bound.
+            prepared = None
+        if prepared is not None and prepared.urban_columns is not None:
+            pricing["urban_columns"] = prepared.urban_columns
+    return priced_reservation_bytes(Path(config), **pricing)
 
 
 def _runner_option_value(arguments: Sequence[str], flag: str) -> str | None:

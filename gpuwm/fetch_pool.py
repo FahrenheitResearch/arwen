@@ -169,6 +169,8 @@ def host_key(url: str | None) -> str:
 def host_worker_cap(host: str, workers: int) -> int:
     """How many of ``workers`` may target ``host`` at once."""
 
+    if fetch_endpoints.aws_fetch_policy() and host.lower() == "nomads.ncep.noaa.gov":
+        return min(1, workers)
     cap = HOST_FILE_WORKER_CAPS.get(host.lower())
     if cap is None:
         return workers
@@ -220,6 +222,7 @@ class _Stop:
         self._event = threading.Event()
         self._lock = threading.Lock()
         self._processes: set = set()
+        self._conditions: set[threading.Condition] = set()
         #: Submission index of the job whose failure fired the stop, or
         #: None (not fired, or fired by an interrupt on the caller's
         #: thread).  The first to fire wins.
@@ -242,8 +245,22 @@ class _Stop:
                 self.origin = origin
             self._event.set()
             processes = list(self._processes)
+            conditions = list(self._conditions)
+        for condition in conditions:
+            with condition:
+                condition.notify_all()
         for process in processes:
             _terminate(process)
+
+    def notify_when_stopped(self, condition: threading.Condition) -> None:
+        """Wake a host-slot wait when this request fails or is interrupted."""
+
+        with self._lock:
+            self._conditions.add(condition)
+            fired = self._event.is_set()
+        if fired:
+            with condition:
+                condition.notify_all()
 
     @contextlib.contextmanager
     def adopt(self, process):
@@ -269,11 +286,6 @@ def _terminate(process) -> None:
         pass
 
 
-#: How often (seconds) a file waiting for its host's turn looks whether
-#: the request was stopped meanwhile.
-_TURN_WAKE_SECONDS = 0.25
-
-
 class _HostTurns:
     """One host's transfer slots, handed out in submission order.
 
@@ -295,19 +307,22 @@ class _HostTurns:
 
     def __init__(self, cap: int, indices) -> None:
         self._cond = threading.Condition()
-        self._free = int(cap)
+        self._cap = self._free = int(cap)
         self._turns = list(indices)
         self._next = 0
 
     def acquire(self, index: int, stop: _Stop) -> bool:
         """Wait for ``index``'s turn and a free slot; False once stopped."""
 
+        stop.notify_when_stopped(self._cond)
         with self._cond:
-            while not (self._free > 0 and self._next < len(self._turns)
-                       and self._turns[self._next] == index):
+            while True:
                 if stop.fired:
                     return False
-                self._cond.wait(_TURN_WAKE_SECONDS)
+                if (self._free > 0 and self._next < len(self._turns)
+                        and self._turns[self._next] == index):
+                    break
+                self._cond.wait()
             self._next += 1
             self._free -= 1
             # The next file's turn may already have a free slot.
@@ -316,6 +331,8 @@ class _HostTurns:
 
     def release(self) -> None:
         with self._cond:
+            if self._free >= self._cap:
+                raise ValueError("host transfer slot released more than acquired")
             self._free += 1
             self._cond.notify_all()
 

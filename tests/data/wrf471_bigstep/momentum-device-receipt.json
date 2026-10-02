@@ -1,0 +1,14 @@
+{
+  "cupy": "14.2.0",
+  "device": "NVIDIA GeForce RTX 5090",
+  "runtime": 13020,
+  "driver": 13030,
+  "kernel_source_sha256": {
+    "dycore": "433ab4ba2ae49a20dc1c3abcf83753fd6d831f6267639bc1c9bbf812977fbdaf",
+    "coriolis_map": "505e5ce3a03a28482fc4d520dd60b82682e290885c1ffeb1920b87b1b18fb67e"
+  },
+  "launch_paths": [
+    "gpuwm.core.dycore._launch_slow_pgf",
+    "gpuwm.core.dycore.launch_coriolis_curvature"
+  ]
+}

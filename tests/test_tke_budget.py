@@ -83,6 +83,21 @@ def _state_bytes(state):
     return out
 
 
+def _seed_lateral_tke(state):
+    """A live carrier makes boundary copying observable without a source there.
+
+    WRF excludes outer rows from the TKE source and vertical diffusion.
+    A cold-zero carrier therefore cannot distinguish a missing lateral arm.
+    """
+    import cupy as cp
+
+    _, ny, nx = state.tke.shape
+    x = cp.arange(nx, dtype=cp.float32)[None, :]
+    y = cp.arange(ny, dtype=cp.float32)[:, None]
+    state.tke[...] = cp.float32(0.1) + cp.float32(0.01) * (x + y)
+    return state
+
+
 # ---------------------------------------------------------------------------
 # (1) The restart boundary
 # ---------------------------------------------------------------------------
@@ -238,7 +253,7 @@ def test_flow_dep_bdy_fills_the_spec_zone_on_a_specified_domain():
     def _build():
         # A uniform mean wind so both an inflow and an outflow face exist,
         # frozen into the specified boundary tables as well as the interior.
-        s = _state(cfg)
+        s = _seed_lateral_tke(_state(cfg))
         s.u[...] += 5.0
         s.v[...] += 3.0
         attach_lateral_boundaries(
@@ -281,7 +296,7 @@ def test_flow_dep_bdy_fills_the_spec_zone_on_a_specified_domain():
 
 
 @requires_gpu
-def test_the_walled_les_driver_gates_on_the_lateral_arm():
+def test_the_walled_les_driver_gates_on_the_lateral_arm(monkeypatch):
     """The ``--lateral specified`` driver reaches the boundary arm on a
     real trajectory and files the invariant as a GATE, and it drops the
     periodic-only mass-closure gate instead of failing it.
@@ -298,6 +313,12 @@ def test_the_walled_les_driver_gates_on_the_lateral_arm():
                           dt=0.5, minutes=0.5, km_opt=2,
                           lateral="specified")
     assert cfg.specified and not cfg.nested
+
+    # Both replays carry the same live field. A missing boundary arm must
+    # change its prescribed rows even when the sources correctly exclude them.
+    original_build = cbl.build
+    monkeypatch.setattr(cbl, "build", lambda cfg, seed=0:
+                        _seed_lateral_tke(original_build(cfg, seed=seed)))
 
     result = cbl._integrate(cfg, seed=3, sample_every_s=15.0)
     metrics = result["metrics"]

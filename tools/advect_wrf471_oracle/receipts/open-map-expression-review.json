@@ -1,0 +1,36 @@
+{
+  "advect_u": {
+    "physical_index": [
+      40,
+      0,
+      24
+    ],
+    "map_factor": 0.9754111766815186,
+    "mass": 95000.0,
+    "wind": 24.73509979248047,
+    "supplied_coupled_flux": 2409070.75,
+    "reconstructed_without_map_flux": 2349834.5,
+    "native_reference": -3810.86181640625,
+    "native_reference_bits": "c56e2dca",
+    "source_expression_no_fma_native_flux": -3810.86181640625,
+    "source_expression_no_fma_without_map": -3763.675537109375,
+    "source_expression_absolute_difference": 47.186279296875
+  },
+  "advect_v": {
+    "physical_index": [
+      42,
+      24,
+      17
+    ],
+    "map_factor": 0.9739469289779663,
+    "mass": 95000.0,
+    "wind": 6.475107192993164,
+    "supplied_coupled_flux": 631590.0625,
+    "reconstructed_without_map_flux": 615135.1875,
+    "native_reference": -2226.024658203125,
+    "native_reference_bits": "c50b2065",
+    "source_expression_no_fma_native_flux": -2226.024658203125,
+    "source_expression_no_fma_without_map": -2213.841796875,
+    "source_expression_absolute_difference": 12.182861328125
+  }
+}

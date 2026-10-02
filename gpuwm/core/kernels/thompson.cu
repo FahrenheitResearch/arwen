@@ -7205,7 +7205,14 @@ extern "C" __global__ void thompson_frozen_vapor_network(
     temperature[idx] = post_source_temperature;
 }
 
-extern "C" __global__ void thompson_frozen_vapor_cloud_network(
+// Keep the source expressions unchanged while admitting two 256-thread
+// blocks within the SM register file. The production launch uses 64 threads.
+#ifdef __CUDACC_RTC__
+#define THOMPSON_COLD_NETWORK_BOUNDS __launch_bounds__(256, 2)
+#else
+#define THOMPSON_COLD_NETWORK_BOUNDS
+#endif
+extern "C" __global__ THOMPSON_COLD_NETWORK_BOUNDS void thompson_frozen_vapor_cloud_network(
     float* __restrict__ qi,
     float* __restrict__ ni,
     float* __restrict__ qs,

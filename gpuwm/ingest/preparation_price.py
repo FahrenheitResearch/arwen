@@ -27,6 +27,10 @@ THE TERMS, per domain being built (bytes, float32):
   ``nz x (mass_outputs x C + U + V)``, with ``mass_outputs`` the source's
   mass-point level fields (temperature, humidity, pressure and every
   hydrometeor the source carries), never fewer than three.
+* ``real_columns``: source doubles, column thermodynamics and staggered
+  pressure workspaces for the specific-humidity device dispatch. Allocation
+  hooks measured 12,371,798,528 bytes live and 13,114,399,232 reserved on
+  sm_120 at 800 x 600 x 50; this term conservatively covers that peak.
 * ``setup_residual``: :data:`SETUP_RESIDUAL` minus one, times the analysis
   and vertical setup, for the temporaries the itemization does not name.
 * ``pool_headroom``: :data:`PREPARATION_POOL_HEADROOM` minus one, times
@@ -81,6 +85,9 @@ GIB = 1024 ** 3
 #: interpolation temporaries differ from the measured one (the GFS failure
 #: held 1.17 times its itemization RESERVED, which this term times
 #: :data:`PREPARATION_POOL_HEADROOM` covers at 1.32).
+#: This margin also holds the preparation-owned regular plans: four FP32
+#: coordinate planes per staggering, plus a receipt's integer magnitude,
+#: masks and packed bits. The focused inventory test bounds them in this term.
 SETUP_RESIDUAL = 1.10
 
 #: CuPy pool bytes reserved per byte live at a preparation's peak.
@@ -119,6 +126,8 @@ class SourceInventory:
     surface_planes: int
     source_points: int = 0
     fp64_humidity_transform: bool = False
+    hydrometeor_replays: bool | None = None
+    device_real_columns: bool = False
 
     def __post_init__(self):
         for name in ("levels", "level_fields", "surface_planes",
@@ -129,6 +138,10 @@ class SourceInventory:
                 raise ValueError(f"{name} must be a non-negative integer")
         if self.levels < 1:
             raise ValueError("a source has at least one level")
+        if self.hydrometeor_replays is None:
+            # Shape-only nominal inventories above the six atmospheric
+            # profiles conservatively include possible analyzed mass.
+            object.__setattr__(self, "hydrometeor_replays", self.level_fields > 6)
 
     @property
     def mass_outputs(self) -> int:
@@ -164,9 +177,20 @@ class SourceInventory:
         planes = sum((shape[0] if len(shape) == 3 else 1) for shape in dims
                      if not (len(shape) == 3 and shape[0] == levels
                              and levels > 1))
+        from gpuwm.mapped_source import HYDROMETEOR_LEGACY_NAMES
+        mass_names = {name.upper() for name in HYDROMETEOR_LEGACY_NAMES}
+        mass_names.update(HYDROMETEOR_LEGACY_NAMES.values())
+        mass_names.add("QH")
+        hydrometeor_replays = any(name.upper() in mass_names and len(shape) == 3
+                                 for name, shape in shapes.items())
         return cls(levels=levels, level_fields=level_fields,
                    surface_planes=planes, source_points=int(source_points),
-                   fp64_humidity_transform=bool(fp64_humidity_transform))
+                   fp64_humidity_transform=bool(fp64_humidity_transform),
+                   hydrometeor_replays=hydrometeor_replays,
+                   device_real_columns=(
+                       {"PRES", "SPFH", "Q2"}.issubset(shapes)
+                       or {"air_pressure", "specific_humidity",
+                           "specific_humidity_2m"}.issubset(shapes)))
 
     @classmethod
     def from_snapshot(cls, snapshot, *, fp64_humidity_transform: bool = False
@@ -311,6 +335,7 @@ class PreparationDevicePrice:
         labels = (("model_state", "model state"),
                   ("forcing_analysis", "forcing analysis"),
                   ("vertical_setup", "vertical setup"),
+                  ("real_columns", "device REAL columns"),
                   ("parent_fields", "parent fields"),
                   ("child_fields", "child fields"),
                   ("setup_residual", "setup temporaries"),
@@ -396,12 +421,46 @@ def context_bytes(*, profile=None, vram_gib: float | None = None,
 
 
 def _build(cfg, inventory: SourceInventory, *, state_on_card=True):
+    device_columns = inventory.device_real_columns and int(cfg.mp_physics) != 28
     state = state_bytes(cfg) if state_on_card else 0
     analysis = analysis_bytes(cfg, inventory)
     setup = vertical_setup_bytes(cfg, inventory)
     residual = math.ceil((SETUP_RESIDUAL - 1.0) * (analysis + setup))
-    return {"model_state": state, "forcing_analysis": analysis,
-            "vertical_setup": setup, "setup_residual": residual}
+    mass, u, v = _columns(cfg)
+    # Cached regular plans hold x/y and supported x/y on each staggering.
+    # The receipt temporarily holds a uint32 magnitude plus four masks
+    # and packed bits. Existing padding covers the product grids; shallow
+    # inputs still price these allocations explicitly before admission.
+    receipt_cells = int(cfg.nz) * mass
+    # Named source inventories identify the mass fields that run a receipt.
+    receipt_masks = (8 * receipt_cells + (receipt_cells + 7) // 8
+                     if inventory.hydrometeor_replays else 0)
+    retained_setup = 16 * (mass + u + v) + receipt_masks
+    residual = max(residual, retained_setup)
+    # Candidate number arrays span the grid; all other closure scratch is
+    # bounded by closure_device.COLD_START_CHUNK_CELLS. Reuse setup's budget.
+    if state_on_card and int(cfg.mp_physics) in (8, 28):
+        cells = int(cfg.nz) * mass
+        numbers = 3 if int(cfg.mp_physics) == 28 else 2
+        # Supplied theta/pressure may still be host fields. Their lazy
+        # f64 uploads cost 16 bytes per cell; on the device REAL route they
+        # are already resident (real_columns) and are reused.
+        uploads = 0 if device_columns else 16
+        closure = (4 * numbers + uploads) * cells + 112 * min(cells, 1048576)
+        residual = max(residual, closure)
+    terms = {"model_state": state, "forcing_analysis": analysis,
+             "vertical_setup": setup, "setup_residual": residual}
+    if state_on_card and device_columns:
+        # Twelve source planes cover the four widened inputs, q/pd/RH
+        # and their contiguous temporaries. Eighteen target planes cover
+        # the thermodynamics, base, condensate and split temporaries.
+        # Twenty surface planes and both staggered ladders coexist.
+        # Source inventory cannot see all initialization options, so this
+        # also reserves an upper bound for option-selected host fallbacks.
+        terms["real_columns"] = (
+            8 * mass * (12 * inventory.levels + 18 * int(cfg.nz) + 20)
+            + 8 * (u + v) * (inventory.levels + int(cfg.nz)))
+    return terms
 
 
 def _add(total: dict, part: Mapping[str, int]) -> dict:
@@ -499,7 +558,10 @@ def price_preparation(route: str, domains: Sequence, inventory: SourceInventory,
     return PreparationDevicePrice(
         route=route, need_bytes=int(totals[binding]),
         terms=MappingProxyType(dict(phases[binding])), phase=binding,
-        basis=_route_basis(row), phases=MappingProxyType(dict(totals)))
+        basis=(_route_basis(row) + (
+            "; device REAL column workspace priced from its live arrays"
+            if inventory.device_real_columns and row.state_on_card else "")),
+        phases=MappingProxyType(dict(totals)))
 
 
 def _route_basis(row: PreparationRoute) -> str:
@@ -711,7 +773,9 @@ MEASURED_ROUTE_PEAKS = (
     {"route": "hrrr-native",
      "case": "3 km 556x444x49, f00 to f02, two boundary workers",
      "domains": ((556, 444, 49),), "boundary_workers": 2,
-     "predicted_bytes": 6_946_725_087, "priced_bytes": 6_946_725_087,
+     # gp-closure: bounded scratch and temperature uploads add 40,312,580 bytes.
+     # The measured historical prediction and card peak stay unchanged.
+     "predicted_bytes": 6_946_725_087, "priced_bytes": 6_987_037_667,
      "card_gb": 4.496, "reserved_gb": None},
 )
 

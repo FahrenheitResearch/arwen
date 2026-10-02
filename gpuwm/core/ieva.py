@@ -77,6 +77,7 @@ import cupy as cp
 import numpy as np
 
 from gpuwm.core import constants as c
+from gpuwm.wrf_exact import ENABLED as WRF_EXACT
 from gpuwm.core.ieva_constants import IEVA_LEVEL_TIERS, level_tier  # noqa: F401
 from gpuwm.core.kernels import get_kernel_int_defines
 from gpuwm.core.state import DTYPE, mu_at_u_faces, mu_at_v_faces
@@ -163,8 +164,27 @@ def split_omega(state, cfg, ww, u, v, mut, dt: float):
 
 def stage_face_masses(state, cfg, mu):
     """The stage face column masses ``stage_fluxes`` couples ru/rv with."""
-    mux = mu_at_u_faces(mu)
-    muy = mu_at_v_faces(mu)
+    if WRF_EXACT:
+        # calc_mu_uv adds the two perturbations before the two base words.
+        mp, mb = state.mup, state.mub2d
+        mux0 = DTYPE(0.5) * (((mp + cp.roll(mp, 1, axis=1)) + mb)
+                             + cp.roll(mb, 1, axis=1))
+        muy0 = DTYPE(0.5) * (((mp + cp.roll(mp, 1, axis=0)) + mb)
+                             + cp.roll(mb, 1, axis=0))
+        mux = cp.concatenate((mux0, mux0[:, :1]), axis=1)
+        muy = cp.concatenate((muy0, muy0[:1]), axis=0)
+        if not _periodic_x(cfg):
+            for face, column in ((0, 0), (-1, -1)):
+                m, b = mp[:, column], mb[:, column]
+                mux[:, face] = DTYPE(0.5) * (((m + m) + b) + b)
+        if not _periodic_y(cfg):
+            for face, row in ((0, 0), (-1, -1)):
+                m, b = mp[row], mb[row]
+                muy[face] = DTYPE(0.5) * (((m + m) + b) + b)
+        return mux, muy
+    else:
+        mux = mu_at_u_faces(mu)
+        muy = mu_at_v_faces(mu)
     if not _periodic_x(cfg):
         mux[:, 0] = mu[:, 0]
         mux[:, -1] = mu[:, -1]

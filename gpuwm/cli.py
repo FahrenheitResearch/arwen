@@ -107,6 +107,7 @@ go_register_cli = _lazy_register("gpuwm.go_cli")
 speedrun_register_cli = _lazy_register("gpuwm.speedrun_cli")
 ingest_register_cli = _lazy_register("gpuwm.ingest.preflight")
 mesh_register_cli = _lazy_register("gpuwm.mpas_mesh")
+ml_export_register_cli = _lazy_register("gpuwm.ml_export")
 multi_run_register_cli = _lazy_register("gpuwm.multi_run")
 obs_register_cli = _lazy_register("gpuwm.obs.cli")
 render_register_cli = _lazy_register("gpuwm.render")
@@ -429,6 +430,10 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
     case_catalog_register_cli = _lazy_register("gpuwm.case_catalog")
     case_catalog_register_cli(sub)
     render_register_cli(sub)
+    # A run's history files as a machine-learning dataset: registered
+    # beside render, the other door that turns history files into a
+    # product.
+    ml_export_register_cli(sub)
     enprod_register_cli(sub)
     downscale_register_cli(sub)
     doctor_register_cli(sub)
@@ -1297,6 +1302,12 @@ def _dispatch(args) -> int:
             f"and {args.config} is a legacy [run] config whose frozen case "
             "path does not read it; refusing to drop it and run the case's "
             "own preparation under your pin")
+    if args.command == "run":
+        from types import SimpleNamespace
+        from gpuwm.config import load_device_options
+        from gpuwm.core.devices import refuse_unrouted_devices
+        refuse_unrouted_devices(SimpleNamespace(devices=load_device_options(args.config)),
+                                "gpuwm run legacy case")
     cfg = load_config(args.config)
     if not cfg.case:
         raise ValueError(

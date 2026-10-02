@@ -7,6 +7,8 @@ checks establish their stated fixture coverage, not general forecast skill.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import numpy as np
 
 from gpuwm.core import constants as _constants
@@ -16,6 +18,17 @@ from gpuwm.core.state import DTYPE
 _COLUMN_TPB = 32
 _SHALLOW_KMAX = 64
 _KMAX = 256
+
+
+@lru_cache(None)
+def _warm_network_threads(device_id: int) -> int:
+    """Cache the warm network width for each device architecture."""
+    import cupy as cp
+
+    major = int(cp.cuda.runtime.getDeviceProperties(device_id)["major"])
+    # Wider blocks avoid excess block scheduling on these architectures.
+    # The independent cell arithmetic is identical at either launch width.
+    return 256 if major in (9, 10) else 64
 
 #: Fallout of a column of at most ``_SHALLOW_KMAX`` levels runs through the
 #: ``*_levels_*`` kernels: eight columns a block (thirty-two for graupel,
@@ -701,9 +714,9 @@ def launch_frozen_vapor_network(
         qg if snow_velocity_boost is None else snow_velocity_boost)
     if not np.isfinite(dt) or dt <= 0.0:
         raise ValueError(f"dt must be finite and positive, got {dt}")
-    # Smaller blocks admit more resident warps for this register-heavy
-    # cell kernel. Its compiled arithmetic and cell mapping are unchanged.
-    threads = 128
+    # Small blocks distribute this register-heavy cell kernel across SMs.
+    # The cell mapping and floating-point expression order are unchanged.
+    threads = 64
     blocks = (size + threads - 1) // threads
     common = (
         qi, ni, qs, qg, qr, nr, temperature, pressure, qv,
@@ -850,7 +863,8 @@ def launch_warm_frozen_source_network(
         _validate_fp64_fortran_table(name, table, (37, 37, 1, 37, 37))
     if not np.isfinite(dt) or dt <= 0.0:
         raise ValueError(f"dt must be finite and positive, got {dt}")
-    threads = 256
+    device_id = getattr(getattr(qc, "device", None), "id", None)
+    threads = 64 if device_id is None else _warm_network_threads(device_id)
     blocks = (size + threads - 1) // threads
     get_kernel("thompson", "thompson_warm_frozen_source_network")(
         (blocks,), (threads,),

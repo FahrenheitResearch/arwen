@@ -54,12 +54,25 @@ def test_off_does_not_read_count_or_change_checkpoint_identity():
         legacy[field.name] = getattr(cfg, field.name)
         if field.name == "min_time_step_sound":
             break
-    assert hashlib.sha256(json.dumps(legacy, sort_keys=True,
-                                    separators=(",", ":")).encode()).hexdigest() == "feb433beb07ab5f7056b98fd684ddea7ef7eaef00dd164d4bd2c93f5ac7519fb"
+    # e13fa45c0 / 59f7e280f enable moist_cq by default. The pre-mosaic
+    # anchor was recorded with it disabled; unwind only that later default.
+    assert legacy["moist_cq"] is True
+    historical = dict(legacy, moist_cq=False)
+    def digest(values):
+        return hashlib.sha256(json.dumps(
+            values, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    assert digest(legacy) != digest(historical)
+    assert digest(historical) == "feb433beb07ab5f7056b98fd684ddea7ef7eaef00dd164d4bd2c93f5ac7519fb"
     before = asdict(cfg)
     before.pop("sf_surface_mosaic")
     before.pop("mosaic_cat")
     before.pop("mosaic_urban_canopy")
+    # A checkpoint written before the mosaic trio also predates the two
+    # diffusion selectors appended after it (lane/282-namelist-tolerance),
+    # whose defaults the same echo drops for the same reason.
+    before.pop("diff_opt")
+    before.pop("mix_full_fields")
     assert _configuration_digest_values(asdict(cfg)) == _configuration_digest_values(before)
     assert _mosaic_checkpoint_config(asdict(cfg)) == before
     _require_config_match(before, cfg, "old checkpoint")

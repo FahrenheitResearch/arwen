@@ -9,6 +9,7 @@ import numpy as np
 from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
 
 _THREADS = 256
+_WRF_THREADS = 192
 
 #: Column capacities ``wrf_real_vertical_interpolate`` is compiled at.  A
 #: column is the source levels plus the surface pseudo-level, and each tier
@@ -22,6 +23,29 @@ _THREADS = 256
 WRF_VERT_INTERP_LEVEL_TIERS = (64, 160, 256)
 
 _WRF_VI_DEFINE = "WRF_VI_MAX_LEVELS"
+
+
+def _device_field_float32(value):
+    """Replace the existing dtype conversion with bridge-equal device words."""
+    cp = _cupy()
+    if hasattr(value, "__cuda_array_interface__"):
+        value = cp.asarray(value)
+    if (hasattr(value, "__cuda_array_interface__")
+            and value.dtype == np.dtype(np.float64) and value.ndim in (2, 3)):
+        # This buffer replaces cp.asarray(..., dtype=float32)'s cast output.
+        output = cp.empty(value.shape, dtype=cp.float32)
+        ny, nx = map(int, value.shape[-2:])
+        strides = tuple(int(s // value.itemsize) for s in value.strides)
+        sk, sj, si = strides if value.ndim == 3 else (0, *strides)
+        total = int(value.size)
+        if total == 0:
+            return output
+        kernel = get_kernel("vert_interp", "wrf_vertical_field_float32")
+        kernel(((total + _THREADS - 1) // _THREADS,), (_THREADS,),
+               (value, output, np.int32(total), np.int32(ny), np.int32(nx),
+                np.int64(sk), np.int64(sj), np.int64(si)))
+        return output
+    return cp.asarray(value, dtype=cp.float32)
 
 
 def wrf_vert_interp_level_tier(column_levels: int) -> int | None:
@@ -188,8 +212,8 @@ def _wrf_vert_interp_gpu_prepared(
         raise ValueError("extrap must be 'constant' or 'temperature'")
     if not isinstance(values_are_finite, (bool, np.bool_)):
         raise TypeError("values_are_finite must be boolean")
-    values = cp.asarray(field, dtype=cp.float32)
-    sfc_value = cp.asarray(surface_value, dtype=cp.float32)
+    values = _device_field_float32(field)
+    sfc_value = _device_field_float32(surface_value)
     if tuple(map(int, values.shape)) != plan.source_shape:
         raise ValueError("field shape does not match prepared source pressure")
     if sfc_value.shape != values.shape[1:]:
@@ -215,13 +239,16 @@ def _wrf_vert_interp_gpu_prepared(
     ntarget = int(plan.target.shape[0])
     ncolumn = ny * nx
     kernel = _wrf_vert_kernel(plan.kernel_level_tier)
-    kernel(((ncolumn + _THREADS - 1) // _THREADS,), (_THREADS,),
+    kernel(((ncolumn + _WRF_THREADS - 1) // _WRF_THREADS,), (_WRF_THREADS,),
            (values, sfc_value, plan.source, plan.surface_pressure,
             plan.target, output, np.int32(nsource), np.int32(ntarget),
             np.int32(ncolumn), np.int32(bool(interp_in_logp)),
             np.int32(extrap == "temperature"),
             np.int32(force_sfc_in_vinterp),
-            np.float32(zap_close_levels), np.int32(vboundb)))
+            np.float32(zap_close_levels), np.int32(vboundb),
+            np.float32(100000.0), np.float32(0.2857143), np.float32(100.0),
+            np.float32(np.float32(11880.516) * np.float32(0.1902632)),
+            np.float32(np.float32(0.1902632) - np.float32(1.0))))
     return output
 
 
@@ -316,8 +343,8 @@ def wrf_vert_interp_gpu(field, surface_value, source_pressure,
     cp = _cupy()
     if extrap not in ("constant", "temperature"):
         raise ValueError("extrap must be 'constant' or 'temperature'")
-    values = cp.asarray(field, dtype=cp.float32)
-    sfc_value = cp.asarray(surface_value, dtype=cp.float32)
+    values = _device_field_float32(field)
+    sfc_value = _device_field_float32(surface_value)
     source = cp.asarray(source_pressure, dtype=cp.float32)
     sfc_pressure = cp.asarray(surface_pressure, dtype=cp.float32)
     target = cp.asarray(target_pressure, dtype=cp.float32)
@@ -373,13 +400,16 @@ def wrf_vert_interp_gpu(field, surface_value, source_pressure,
     ntarget = target.shape[0]
     ncolumn = ny * nx
     kernel = _wrf_vert_kernel(tier)
-    kernel(((ncolumn + _THREADS - 1) // _THREADS,), (_THREADS,),
+    kernel(((ncolumn + _WRF_THREADS - 1) // _WRF_THREADS,), (_WRF_THREADS,),
            (values, sfc_value, source, sfc_pressure, target, output,
             np.int32(nsource), np.int32(ntarget), np.int32(ncolumn),
             np.int32(bool(interp_in_logp)),
             np.int32(extrap == "temperature"),
             np.int32(force_sfc_in_vinterp),
-            np.float32(zap_close_levels), np.int32(vboundb)))
+            np.float32(zap_close_levels), np.int32(vboundb),
+            np.float32(100000.0), np.float32(0.2857143), np.float32(100.0),
+            np.float32(np.float32(11880.516) * np.float32(0.1902632)),
+            np.float32(np.float32(0.1902632) - np.float32(1.0))))
     return output
 
 

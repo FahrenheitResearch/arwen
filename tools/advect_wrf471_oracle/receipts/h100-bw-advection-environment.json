@@ -1,0 +1,24 @@
+{
+  "gpu": "NVIDIA H100 80GB HBM3",
+  "compute_capability": [
+    9,
+    0
+  ],
+  "cupy": "14.2.0",
+  "cuda_runtime": 12090,
+  "cuda_driver_api": 12080,
+  "device_count": 1,
+  "nvrtc_version": [
+    12,
+    6
+  ],
+  "compile_platform": {
+    "nvrtc_build": "12.6.85",
+    "nvrtc_build_id": "CL-35059454",
+    "nvrtc_library_sha256": "a1f1e7d6b5db02754145b77e8b2b5ddb56f5a47c69d7a112239cb850dbbfac58",
+    "cuda_driver_version": "12080",
+    "device_compute_capability": "90",
+    "cupy_version": "14.2.0",
+    "numpy_version": "2.3.3"
+  }
+}

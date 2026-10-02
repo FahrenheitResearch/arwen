@@ -120,7 +120,7 @@ def launch_flux_div_v(v, ru, rv, rw, tend, coord, dx, dy,
 def launch_flux_div_w(w, ru, rv, rw, tend, coord, dx, dy,
                       open_x=False, open_y=False,
                       msf=None, has_msf=None, spec=False) -> None:
-    """Add the flux divergence of ``w`` (w-points, interior levels only)
+    """Add the flux divergence of ``w`` (interior and top w-points)
     into ``tend``.  Uses ``coord.rdn`` (w-level spacing), not ``rdnw``.
 
     ``msf`` (optional) is the mass-point map factor ``msft (ny, nx)``."""

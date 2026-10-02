@@ -1,0 +1,161 @@
+{
+ "tool": "tools/kernel_ptx_identity/compare.py",
+ "trees": [
+  "receipt_source_9eee49ce0",
+  "integrate_1a5783fea"
+ ],
+ "nvrtc_version": [
+  12,
+  6
+ ],
+ "assembly": "gpuwm.core.kernels.module_source(name) in a child process per tree; GPUWM_WRF_EXACT* removed, CUDA_VISIBLE_DEVICES empty",
+ "compile": "gpuwm.nvrtc_cache_key.compile_program(source, options + (-arch=<arch>,), target=ptx)",
+ "option_sets": {
+  "load_module": [
+   "-std=c++17"
+  ],
+  "rawmodule": [
+   "-std=c++17",
+   "-ftz=true"
+  ]
+ },
+ "archs": [
+  "compute_90"
+ ],
+ "modules": {
+  "advection": {
+   "file_sha256": {
+    "receipt_source_9eee49ce0": "6facc4f85b4ba06393172637738069790a0c0b0c451aaf9caa4ed82350c749db",
+    "integrate_1a5783fea": "85062beca117763ef921c933cfdc015fafba979f38565a22bfe225872c7728ef"
+   },
+   "assembled_source_sha256": {
+    "receipt_source_9eee49ce0": "66e08b7ab87c7d892b5fe8bbf7ffb9198e8ea2953def1781c36545d77e40ade8",
+    "integrate_1a5783fea": "e3fa613578e3989e27678e1cce00f4465a941bd541567807a96da652f2b2c9ab"
+   },
+   "entries": [
+    "flux_div_scalar",
+    "flux_div_u",
+    "flux_div_v",
+    "flux_div_w"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_90": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "receipt_source_9eee49ce0": "4010d8e7d8b966bc09a6490a9fcc867c8706ae960387300f8b170944f35eee3e",
+      "integrate_1a5783fea": "e37b6cffa2ef26fe871e864049e7312479af635c1a828a87a766302d37ef27e6"
+     },
+     "entry_compared": 4,
+     "entry_different": [
+      "flux_div_scalar",
+      "flux_div_v"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "receipt_source_9eee49ce0": "c1c3648589bf4c60e5750ac7dcd24a15b6d68dc01190b4b02d14766acb0fae5e",
+      "integrate_1a5783fea": "4e292500285fccfc3e9a54f4fdc8dad5d5c47d58d6e1bafb29b73d1dd48af271"
+     },
+     "entry_compared": 4,
+     "entry_different": [
+      "flux_div_scalar",
+      "flux_div_v"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  },
+  "pd_advection": {
+   "file_sha256": {
+    "receipt_source_9eee49ce0": "8284e1975ec25fdeb923d113a3ade028b9bcccc4fd33cc51572d23400aef762b",
+    "integrate_1a5783fea": "20a2dd7977d06b42f66ca3ca7c3170a5d638a5ad6f7603323f468c95b14460a5"
+   },
+   "assembled_source_sha256": {
+    "receipt_source_9eee49ce0": "7de1823f03619e982064e8b7487121c528886848c23474fd08d73f6f232cdfb7",
+    "integrate_1a5783fea": "b4832282be55c3658586478788e979e3595a66a9fae56e00378843c25f62b28f"
+   },
+   "entries": [
+    "pd_fluxes",
+    "pd_renorm_apply"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_90": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "receipt_source_9eee49ce0": "fa3009be3c65c29ed34bb24462da55250618daa3ebdebe814a6f64c79497bef4",
+      "integrate_1a5783fea": "d1da8580836e391077538550c1142240e0987c1dd286d21622e919e93cac0842"
+     },
+     "entry_compared": 2,
+     "entry_different": [
+      "pd_fluxes",
+      "pd_renorm_apply"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "receipt_source_9eee49ce0": "5521e01451569c170c4355e6888404641eb70afe55b198cc8d652ca318835ee5",
+      "integrate_1a5783fea": "1b0e0f68f52c3fea573e92b1fe1e03a4d7db3ab64dc56b160f593fa52045495f"
+     },
+     "entry_compared": 2,
+     "entry_different": [
+      "pd_fluxes",
+      "pd_renorm_apply"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  },
+  "openbc": {
+   "file_sha256": {
+    "receipt_source_9eee49ce0": "fd3ba041744821bd4e2b01db3ae53a1189cbc088e17b710e60848988d2203bf2",
+    "integrate_1a5783fea": "fd3ba041744821bd4e2b01db3ae53a1189cbc088e17b710e60848988d2203bf2"
+   },
+   "assembled_source_sha256": {
+    "receipt_source_9eee49ce0": "5bf7babe4a953b1a12f8ddca403f04d86fa0aed0f7684992b5eabb5d82cbca57",
+    "integrate_1a5783fea": "5bf7babe4a953b1a12f8ddca403f04d86fa0aed0f7684992b5eabb5d82cbca57"
+   },
+   "entries": [
+    "open_u_radiative",
+    "open_v_radiative",
+    "w_cfl_stat",
+    "w_cfl_stat_window",
+    "w_damp"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "receipt_source_9eee49ce0": "d2fb29526d40c0ebb13e8d572c9b5006e745d88dee5f12ac7d8630c7486ee835",
+      "integrate_1a5783fea": "d2fb29526d40c0ebb13e8d572c9b5006e745d88dee5f12ac7d8630c7486ee835"
+     },
+     "entry_compared": 5,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "receipt_source_9eee49ce0": "b7078115ab7fcc4974720ef132f0d379aa8041f06dbb7425010f66a739e028dc",
+      "integrate_1a5783fea": "b7078115ab7fcc4974720ef132f0d379aa8041f06dbb7425010f66a739e028dc"
+     },
+     "entry_compared": 5,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  }
+ }
+}

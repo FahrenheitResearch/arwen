@@ -53,6 +53,64 @@ pub unsafe extern "C" fn gpuwm_static_build_fields(
     })
 }
 
+/// Legacy orographic entry marker retained for ABI compatibility.
+/// Corrected statistics are identified by `gpuwm_static_orographic_v2`.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpuwm_static_orographic_v1() -> u32 {
+    1
+}
+
+/// WPS default-REAL coordinates, interpolation, and post-interpolation scaling.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpuwm_static_orographic_v2() -> u32 {
+    2
+}
+
+/// Build WRF's sub-grid orographic statistics (VAR_SSO, CON, VAR, OA1-4,
+/// OL1-4 and the GSL large- and small-scale sets) for a grid handle from a
+/// JSON `OrographicRequest`.  Writes a field-set handle holding only them.
+///
+/// # Safety
+/// `request_json`/`request_len` must describe readable UTF-8; `out_handle`
+/// must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_static_build_orographic(
+    grid: u64,
+    request_json: *const u8,
+    request_len: usize,
+    halo: u32,
+    out_handle: *mut u64,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        let Some(text) = (unsafe { utf8(request_json, request_len) }) else {
+            return set_error("orographic request pointer/UTF-8 invalid");
+        };
+        let request: crate::fields::OrographicRequest =
+            match serde_json::from_str(text) {
+                Ok(request) => request,
+                Err(err) => {
+                    return set_error(format!("orographic request JSON: {err}"))
+                }
+            };
+        let halo = if halo == u32::MAX { HALO } else { halo as usize };
+        let built = with_grid(grid, |grid| {
+            crate::fields::build_orographic(grid, &request, halo)
+        });
+        match built {
+            None => set_error(format!("unknown grid handle {grid}")),
+            Some(Err(err)) => set_error(err.to_string()),
+            Some(Ok(fields)) => {
+                if out_handle.is_null() {
+                    return set_error("out_handle is null");
+                }
+                unsafe { *out_handle = register_fieldset(fields) };
+                OK
+            }
+        }
+    })
+}
+
 /// Build a terrain-only field set for the vertical survey.
 /// # Safety
 /// The path must be readable UTF-8 and out_handle must be writable.

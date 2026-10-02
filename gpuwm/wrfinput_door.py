@@ -333,6 +333,9 @@ def resolve_wrfinput_run(directory: str | Path, *, name: str | None = None,
     toml_text, report = _import_with_synthesized_wps(
         wps_text, namelist, inherited_eta=identities[min(identities)].eta_levels, name=name, rrtmg_variant=rrtmg_variant,
         acknowledgements=tuple(acknowledgements), landuse_identity=landuse_identity,
+        wrfinput_qv_domains=tuple(
+            grid_id for grid_id, item in metadata.items()
+            if getattr(item, "has_qv", False)),
         wrf_boundary_use_theta_m=int(metadata[min(metadata)].global_attributes['USE_THETA_M']))
     require_preserved_wrf_selectors(report)
     # ``import_namelists`` has already validated this text through

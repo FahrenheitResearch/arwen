@@ -299,7 +299,11 @@ def test_the_default_noah_launch_compiles_without_the_urban_handover():
 
     text = (Path(__file__).resolve().parents[1] / "gpuwm" / "core" / "kernels"
             / "noah.cu").read_text(encoding="utf-8")
-    default = text[text.index('extern "C" __global__\nvoid noah_column('):]
+    declaration = re.search(
+        r'extern\s+"C"\s+__global__\s+'
+        r'(?:__launch_bounds__\([^)]*\)\s+)?void\s+noah_column\(', text)
+    assert declaration is not None, "the default Noah kernel declaration is missing"
+    default = text[declaration.start():]
     default = default[:default.index("\n}\n")]
     assert "noah_column_body<false>(" in default and "urban_opt" not in default
     assert 'void noah_column_urban(' in text

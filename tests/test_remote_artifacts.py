@@ -619,20 +619,30 @@ def test_the_committed_output_set_is_retrieved_with_a_digest_for_every_file(case
     case.events.write_bytes(encoded(case.event) + encoded(
         {**case.event, "sequence": 2, "path": str(second), "size_bytes": second.stat().st_size,
          "valid_time": "2026-09-07T18:15:00Z"}))
-    monkeypatch.setattr(remote_cli, "_transport", lambda _command, request, **_kwargs: {
-        "ok": True, **({"artifact_index": ra.catalog(request, case.tmp_path, metadata_only=True)}
-                       if request["action"] == "artifact-index"
-                       else {"artifacts": ra.catalog(request, case.tmp_path)})})
+    def transport(_command, request, **_kwargs):
+        # The RPC node uses POSIX paths even when its protocol-only files are
+        # held in this test's Windows filesystem. Keep the local cache native
+        # to the host and the remote wire paths native to the Linux worker.
+        assert request["workspace"] == "/node/work"
+        if request["action"] == "artifact-index":
+            return {"ok": True, "artifact_index": ra.catalog(request, case.tmp_path, metadata_only=True)}
+        value = ra.catalog(request, case.tmp_path)
+        for frame in value["frames"]:
+            frame["remote_path"] = "/node/run/" + Path(frame["remote_path"]).name
+        return {"ok": True, "artifacts": value}
+    monkeypatch.setattr(remote_cli, "_transport", transport)
     def download(_command, request, path, frame, **_kwargs):
         output = io.BytesIO()
         ra.stream(request, case.tmp_path, output)
         path.write_bytes(output.getvalue())
     monkeypatch.setattr(ra, "_download", download)
-    args = SimpleNamespace(workspace=str(case.tmp_path), job="job-fixture", domain=1,
+    args = SimpleNamespace(workspace="/node/work", job="job-fixture", domain=1,
                            after_sequence=0, cache_root=str(tmp_path / "outputs"))
     value = ra.sync_outputs(args, [], [])["committed_outputs"]
     assert [row["sequence"] for row in value["files"]] == [1, 2]
     assert [row["state"] for row in value["files"]] == ["transferred", "transferred"]
+    assert [row["remote_path"] for row in value["files"]] == [
+        "/node/run/" + case.frame.name, "/node/run/" + second.name]
     assert value["files"][0]["sha256"] == ra._file_sha(case.frame)
     assert value["files"][1]["sha256"] == ra._file_sha(second)
     assert Path(value["files"][1]["path"]).read_bytes() == second.read_bytes()

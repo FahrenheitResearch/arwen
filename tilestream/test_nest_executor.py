@@ -35,12 +35,28 @@ two-domain tree, and compares whole carrier sets:
                         same schedule cadence.  E's store vs C's store is
                         the #43 proof under streaming: a one-way parent is
                         bitwise unchanged by the presence of its nest.
-``N  negative``         C with the store UNPUBLISHED from the parent state
-                        and the executor's windowed FORCE projection
-                        disarmed -- today's coupler reads ``node.state``
-                        raw, exactly the pre-repair code path.  d02 MUST
-                        differ from A's, or this gate cannot see the defect
-                        it patrols and every PASS above is vacuous.
+``N  negative``         C with a coupler that reads the parent's frozen
+                        ``DomainState`` instead of its store, on both doors:
+                        the bounded ``NestWindowSource`` operands a marked
+                        parent takes are served from the frozen state
+                        (``test_nest.stale_parent_reads``), and the older
+                        published-store seam loses the store (unpublished)
+                        and the executor's projection.  d02 MUST differ from
+                        A's, or this gate cannot see the defect it patrols
+                        and every PASS above is vacuous.
+``W  negative``         C with the parent operands fresh only inside the
+                        halo-free child footprint: the bounded donor
+                        rectangles read stale cells in their two-cell SINT
+                        halo, and the published-store seam's footprint pull
+                        runs at ``NEST_FORCE_HALO_PARENT_CELLS = 0``.  d02
+                        MUST differ from A's and d01 MUST equal C's.
+
+Each negative control shuts both doors because the coupler's door moved
+under them once.  While a streamed parent with a resident child took the
+published-store seam, unpublishing the store and zeroing the halo were
+enough; once it took the bounded operands, both changed nothing (N's and
+W's d02 equal to A's, RTX 5090 --steps 6) while the identity rows still
+passed.
 
 Same discipline as the sibling gates: exit code 3 means the CARD WAS TAKEN
 (a lost allocation race on a shared box is not a measurement), cadence
@@ -152,25 +168,32 @@ def run_leg(mode, *, feedback=0, nested=True, steps=DEFAULT_STEPS,
             verbose=True) -> dict:
     """One executor-driven run.  ``mode`` is ``resident`` or ``streamed``.
 
-    ``unpublish=True`` is the negative control: the store is stripped from
-    the parent state (``domain_store`` answers None, so the coupler reads
-    the frozen attach-time arrays exactly as the pre-repair tree did).
-    The integration itself still runs off the store and is still correct --
-    what breaks is exactly and only what the repair repaired, which is what
-    makes it a control rather than a second defect.
+    ``unpublish=True`` is the negative control: the coupler reads the
+    frozen attach-time parent.  The store is stripped from the parent
+    state (``domain_store`` answers None) for the published-store seam, and
+    the bounded operands a marked parent takes are served from the frozen
+    state (:func:`tilestream.test_nest.stale_parent_reads` with no fresh
+    window).  The integration itself still runs off the store and is still
+    correct -- what breaks is exactly and only the coupler's store consult,
+    which is what makes it a control rather than a second defect.
 
     ``force_halo`` overrides ``nest.NEST_FORCE_HALO_PARENT_CELLS`` for the
     leg.  ``0`` is the OTHER negative control, the one that validates the
-    windowed FORCE corridor as an instrument: a window with no halo leaves
-    the SINT stencil's outer cells stale, which must move the child and
-    must NOT move the parent -- a too-small window that changed nothing
-    would mean the window is not actually narrowing the read, and every
+    windowed FORCE read as an instrument, and it starves both doors: the
+    published-store seam pulls the halo-free footprint, and the bounded
+    operands are served fresh only inside that same footprint, so the SINT
+    donor rectangles read stale cells in their halo.  That must move the
+    child and must NOT move the parent -- a starved window that changed
+    nothing would mean the window is not what the coupler reads, and every
     windowed PASS above it would be vacuous.
     """
+    import contextlib
+
     import cupy as cp
 
     from gpuwm.core import nest as nest_mod
     from gpuwm.core.model import execute_experiment
+    from tilestream.test_nest import _stale_parent_operands
 
     tile = TILE if tile is None else int(tile)
     wait_for_vram(VRAM_NEEDED_GIB)
@@ -199,16 +222,32 @@ def run_leg(mode, *, feedback=0, nested=True, steps=DEFAULT_STEPS,
     elif mode != "resident":
         raise ValueError(f"unknown mode {mode!r}")
 
+    if feedback and streamed is not None and nested and (
+            unpublish or force_halo is not None):
+        # The stale reads are copies; a feedback leg's parent writes would
+        # be lost in them and the control would mix two defects.
+        raise ValueError("unpublish and force_halo are feedback = 0 controls")
     halo_before = nest_mod.NEST_FORCE_HALO_PARENT_CELLS
     if force_halo is not None:
         nest_mod.NEST_FORCE_HALO_PARENT_CELLS = int(force_halo)
+    stale = contextlib.nullcontext()
+    if streamed is not None and nested and unpublish:
+        stale = _stale_parent_operands(model.root.state)
+    elif streamed is not None and nested and force_halo is not None:
+        # The footprint at the leg's halo, read after the override above:
+        # the cells the published-store seam pulls, and the only cells the
+        # bounded operands are served fresh in.
+        stale = _stale_parent_operands(
+            model.root.state,
+            nest_mod.parent_footprint_window(model.node(2).cfg))
     try:
-        t0 = time.perf_counter()
-        execution = execute_experiment(
-            model, steppers=steppers, validate_state=True,
-            pool_trim_per_period=False)
-        cp.cuda.runtime.deviceSynchronize()
-        wall = time.perf_counter() - t0
+        with stale:
+            t0 = time.perf_counter()
+            execution = execute_experiment(
+                model, steppers=steppers, validate_state=True,
+                pool_trim_per_period=False)
+            cp.cuda.runtime.deviceSynchronize()
+            wall = time.perf_counter() - t0
     finally:
         nest_mod.NEST_FORCE_HALO_PARENT_CELLS = halo_before
 

@@ -893,13 +893,13 @@ def test_sase_workspace_accounting_is_exact():
     from dataclasses import replace
 
     from gpuwm.core import preflight as pf
-    from gpuwm.core.sase import _DEFINE_VALUES
+    from gpuwm.core.sase_limits import THREADS_PER_BLOCK
 
     cfg = _sase_cfg()
     assert pf.sase_workspace_shapes(replace(cfg, bl_pbl_physics=0)) == {}
     shapes = pf.sase_workspace_shapes(cfg)
     ncell = cfg.nz * cfg.ny * cfg.nx
-    nblocks = -(-ncell // _DEFINE_VALUES["SASE_TPB"])
+    nblocks = -(-ncell // THREADS_PER_BLOCK)
     total = sum(math.prod(shape) * size for shape, size in shapes.values())
     assert total == (59 * 4 * ncell + 8 * 5 * nblocks
                      + 4 * cfg.ny * cfg.nx + 8 * 5 * nblocks

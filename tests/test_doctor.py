@@ -778,7 +778,8 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
                      "gpuwm_preprocess_cpu",
                      "gpuwm_mapped_engine", "static_fields", "obs_regrid",
                      "rw_mpas_mesh", "rw_mpas_static", "rw_mpas_init",
-                     "rw_mpas_convert", "rw_mpas_lbc", "arwen-tui", "rw_zarr", "rw_netcdf"}
+                     "rw_mpas_convert", "rw_mpas_lbc", "arwen-tui", "rw_zarr", "rw_netcdf",
+                     "rw_mlexport"}
 
 
 def test_the_decoder_door_gates_the_contract_for_every_caller(

@@ -1,0 +1,31 @@
+{
+  "mode": "diff2",
+  "device": "NVIDIA GeForce RTX 5090",
+  "cases": [
+    {
+      "name": "diff2_k2_b0_m0"
+    },
+    {
+      "name": "diff2_k2_b0_m1"
+    },
+    {
+      "name": "diff2_k2_b1_m0"
+    },
+    {
+      "name": "diff2_k2_b1_m1"
+    },
+    {
+      "name": "diff2_k4_b0_m0"
+    },
+    {
+      "name": "diff2_k4_b0_m1"
+    },
+    {
+      "name": "diff2_k4_b1_m0"
+    },
+    {
+      "name": "diff2_k4_b1_m1"
+    }
+  ],
+  "archive_sha256": "fa9f27c1eaecba49e59d7d7f693aa67cb65a3ccf19d2908f3a68f469112dbf94"
+}

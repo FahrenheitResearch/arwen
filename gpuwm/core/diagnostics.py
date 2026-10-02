@@ -8,6 +8,7 @@ from gpuwm.core import constants as c
 from gpuwm.core.kernels import get_kernel
 from gpuwm.core.noahmp_libm import log1pf_array, powf_array
 from gpuwm.core.state import DomainState
+from gpuwm.wrf_exact import DIAGNOSTICS_ENABLED
 
 _THREADS = 256
 
@@ -57,9 +58,11 @@ def update_diagnostics(state: DomainState, hypsometric_opt: int = 1,
     moist = state.qv is not None
     kernel = get_kernel("diagnostics", "calc_p_alpha")
     blocks = (nxw * nyw + _THREADS - 1) // _THREADS
-    kernel((blocks,), (_THREADS,),
-           (state.thp, state.php, state.mup,
-            state.thb, state.phb, state.dphb_resid, state.alb, state.rdnw,
+    args = (state.thp, state.php, state.mup,
+            state.thb, state.phb, state.dphb_resid, state.alb)
+    if DIAGNOSTICS_ENABLED:
+        args += (state.pb,)
+    args += (state.rdnw,
             state.c1h, state.c2h, state.c3h, state.c4h,
             state.c3f, state.c4f, state.dc3f, state.dc4f, state.mub2d,
             state.qv if moist else state.thp,
@@ -68,7 +71,13 @@ def update_diagnostics(state: DomainState, hypsometric_opt: int = 1,
             np.int32(moist), np.int32(state.thb.ndim == 3),
             np.int32(nz), np.int32(ny), np.int32(nx),
             np.int32(j0), np.int32(i0), np.int32(nyw), np.int32(nxw),
-            state.p, state.al, state.alt))
+            state.p, state.al, state.alt)
+    if DIAGNOSTICS_ENABLED:
+        if getattr(state, "p_perturbation", None) is None:
+            import cupy as cp
+            state.p_perturbation = cp.empty_like(state.p)
+        args += (state.p_perturbation,)
+    kernel((blocks,), (_THREADS,), args)
 
 
 def _validated_window(window, ny: int, nx: int) -> tuple[int, int, int, int]:

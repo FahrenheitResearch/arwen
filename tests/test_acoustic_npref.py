@@ -400,6 +400,22 @@ def test_prepare_moist_cq_mp0_launches_with_one_registry_species(monkeypatch):
     assert launched["n_mass"] == 1
 
 
+def test_default_moist_cq_bypasses_a_dry_state_without_work(monkeypatch):
+    """A default-enabled correction must not allocate or launch without qv."""
+    cfg = _cfg(top_lid=True, nx=2, ny=2)
+    assert cfg.moist_cq is True
+    pressure = np.ones((cfg.nz, cfg.ny, cfg.nx))
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("dry state entered the moisture correction")
+
+    state = SimpleNamespace(qv=None, p=pressure, scratch=forbidden)
+    monkeypatch.setattr("gpuwm.core.acoustic.get_kernel", forbidden)
+    cqu, cqv, cqw, use_cq = prepare_moist_cq(state, cfg)
+    assert use_cq is False
+    assert cqu is pressure and cqv is pressure and cqw is pressure
+
+
 def test_prepare_moist_cq_p3_zero_planes_reproduce_the_reference_row(
         monkeypatch):
     """The device's P3 arm and the mp=50 reference row are one number.

@@ -111,26 +111,46 @@ def test_every_shipped_profile_answers_its_own_implicit_switches():
 
     for profile in SINGLE_DOMAIN_PHYSICS_PROFILES:
         switches = single_domain_runtime_switches(profile)
+        assert switches["moist_cq"] is True, profile
         resolved = implicit_runtime_switches(**switches)
         assert profile in resolved["profiles"], profile
         for name in IMPLICIT_RUNTIME_SWITCHES:
             assert resolved[name] == switches[name], (profile, name)
         assert profile in resolved["source"]
 
-    # A suite that is no shipped profile falls back to gpuwm's own
-    # RunConfig defaults, and says so rather than guessing a profile.
+    # An unmatched moist suite still uses WRF's moisture pressure
+    # correction; unrelated implicit switches retain their defaults.
     defaults = _cfg()
     unknown = implicit_runtime_switches(
         mp_physics=6, sf_sfclay_physics=1, sf_surface_physics=0,
         bl_pbl_physics=0, cu_physics=0, num_soil_layers=4,
         ra_lw_physics=1, ra_sw_physics=1)
     assert unknown["profiles"] == ()
-    assert unknown["moist_cq"] == defaults.moist_cq
+    assert unknown["moist_cq"] is True
     assert unknown["top_lid"] == defaults.top_lid
     assert "not one of the shipped" in unknown["source"]
 
     # An empty selection is not a match for everything.
-    assert implicit_runtime_switches()["profiles"] == ()
+    empty = implicit_runtime_switches()
+    assert empty["profiles"] == ()
+    assert empty["moist_cq"] is True
+
+
+@pytest.mark.parametrize("mp,sfclay,expected_cq,matched", [
+    (8, 1, True, False),
+    (8, 91, True, True),
+    (0, 1, True, False),
+])
+def test_surface_scheme_selection_keeps_the_moist_pressure_correction(
+        mp, sfclay, expected_cq, matched):
+    resolved = implicit_runtime_switches(
+        mp_physics=mp, sf_sfclay_physics=sfclay, sf_surface_physics=2,
+        bl_pbl_physics=1, cu_physics=0, num_soil_layers=4,
+        ra_lw_physics=4, ra_sw_physics=4)
+    assert resolved["moist_cq"] is expected_cq
+    assert bool(resolved["profiles"]) is matched
+    if not matched:
+        assert "WRF moisture pressure correction" in resolved["source"]
 
 
 def test_no_shipped_selector_reachable_option_is_unimplemented():

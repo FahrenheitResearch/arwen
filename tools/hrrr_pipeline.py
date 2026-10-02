@@ -327,6 +327,211 @@ def verify_source_tree(*, source_root: Path, manifest: Path,
     }
 
 
+#: The two objects of one posted native HRRR lead, by the role its marker
+#: names them under (``gpuwm.fetch_as_posted.legacy_objects``), and the
+#: series column each is.
+POSTED_LEAD_ROLES = (("atmosphere", 1), ("soil", 2))
+
+
+def admission_name(hour: int) -> str:
+    """The file the decoder waits for before it reads lead ``hour``."""
+
+    return f"f{int(hour):02d}.admitted"
+
+
+class PostedLeadAdmitter:
+    """Admit each lead of a native series to the decoder as it posts (A136 L7c).
+
+    ``posted`` is the preparation's :class:`gpuwm.ingest.boundary_stream.PostedLeads`
+    over the as-posted fetch's ``posting/`` folder; ``series`` the native
+    series, every row naming the two objects of one lead in the fetch's
+    folder.  For each lead in order, :meth:`admit` waits for its posted
+    marker, holds both files to the marker (name, bytes, sha256), and
+    writes ``ADMIT_DIR/fNN.admitted`` naming the lead's series files, which
+    is what ``hrrr_grib2_bridge --series-workers-posted`` waits for before
+    it reads that lead.  So the decoder reads no byte a marker did not
+    name, in place of :func:`verify_source_tree` hashing every lead up
+    front, which a lead not posted yet cannot pass.  :meth:`start` admits
+    on its own thread, so the decoder runs ahead of the preparation as
+    leads post; a failure (a late lead, a file that is not its marker's) is
+    raised to whoever waits on a lead not admitted.
+    """
+
+    def __init__(self, *, posted, series: Path, admissions: Path,
+                 hash_workers: int = 2):
+        self.posted = posted
+        self.series = Path(series)
+        self.admissions = Path(admissions)
+        self.hash_workers = max(1, int(hash_workers))
+        self.out = Path(posted.folder).parent.resolve()
+        rows = []
+        for raw in self.series.read_text(encoding="utf-8").splitlines():
+            if not raw.strip() or raw.lstrip().startswith("#"):
+                continue
+            fields = raw.split("\t")
+            if len(fields) != 3:
+                # Breakage it prevents: a donor column binds bytes the
+                # fetch never posted, and the decoder decodes a donor
+                # series whole (--series-workers-ready).
+                raise ValueError(
+                    "an as-posted native series names each lead's two "
+                    "posted objects and nothing else; this one has "
+                    f"{len(fields) - 1} columns after the hour")
+            hour = int(fields[0])
+            paths = (fields[1], fields[2])
+            for value in paths:
+                if not Path(value).is_absolute() \
+                        or Path(value).parent.resolve() != self.out:
+                    raise ValueError(
+                        f"an as-posted native series reads the fetch's own "
+                        f"folder {self.out}; {value} is not in it")
+            rows.append((hour, paths))
+        validate_hrrr_source_forecast_hours([row[0] for row in rows])
+        self.rows = tuple(rows)
+        self.markers: dict[int, dict] = {}
+        self.leads: dict[int, dict] = {}
+        self._admitted = {hour: threading.Event() for hour, _ in rows}
+        self._lock = threading.Lock()
+        self._error: BaseException | None = None
+        self._thread: threading.Thread | None = None
+        self._stopped = threading.Event()
+        self.admissions.mkdir(parents=True, exist_ok=False)
+
+    @property
+    def hours(self) -> tuple[int, ...]:
+        return tuple(hour for hour, _ in self.rows)
+
+    def admit(self, hour: int) -> dict:
+        """Wait for lead ``hour``'s marker, hold its files to it, admit it."""
+
+        hour = int(hour)
+        paths = dict(self.rows)[hour]
+        marker = self.posted.wait(hour)
+        objects = {}
+        for item in marker.get("objects") or ():
+            role = str(item.get("role"))
+            if role in objects:
+                raise ValueError(
+                    f"the posted marker of f{hour:03d} names two {role} "
+                    "objects; a native HRRR lead is one of each")
+            objects[role] = item
+        if set(objects) != {role for role, _ in POSTED_LEAD_ROLES}:
+            raise ValueError(
+                f"the posted marker of f{hour:03d} names {sorted(objects)}, "
+                "not the atmosphere and soil objects a native HRRR lead is")
+
+        def held(role_column):
+            role, column = role_column
+            path = Path(paths[column - 1])
+            item = objects[role]
+            if item.get("name") != path.name:
+                raise ValueError(
+                    f"the posted {role} object of f{hour:03d} is "
+                    f"{item.get('name')}, not the series' {path.name}")
+            size = path.stat().st_size
+            digest = _sha256(path)
+            if digest != item.get("sha256") or size != item.get("bytes"):
+                raise ValueError(
+                    f"{path} is {size} bytes {digest}, not the {role} object "
+                    f"f{hour:03d}'s posted marker names "
+                    f"({item.get('bytes')} bytes {item.get('sha256')})")
+            return {"role": role, "name": path.name, "path": str(path),
+                    "bytes": size, "sha256": digest}
+
+        with ThreadPoolExecutor(max_workers=self.hash_workers) as pool:
+            files = list(pool.map(held, POSTED_LEAD_ROLES))
+        target = self.admissions / admission_name(hour)
+        temporary = target.with_suffix(".tmp")
+        temporary.write_text("".join((
+            f"forecast_hour\t{hour}\n",
+            f"atmosphere\t{paths[0]}\n",
+            f"soil\t{paths[1]}\n")), encoding="utf-8")
+        os.replace(temporary, target)
+        with self._lock:
+            self.markers[hour] = dict(marker)
+            self.leads[hour] = {"forecast_hour": hour, "files": files}
+        self._admitted[hour].set()
+        return marker
+
+    def _run(self) -> None:
+        try:
+            for hour in self.hours:
+                if self._stopped.is_set():
+                    return
+                if not self._admitted[hour].is_set():
+                    self.admit(hour)
+        except BaseException as error:  # noqa: BLE001 - raised by wait()
+            with self._lock:
+                self._error = error
+            for event in self._admitted.values():
+                event.set()
+
+    def start(self) -> None:
+        """Admit every lead in order on a thread of its own."""
+
+        self._thread = threading.Thread(
+            target=self._run, name="hrrr-posted-admitter", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stopped.set()
+
+    def wait(self, hour: int, *, timeout: float | None = None) -> dict | None:
+        """Block until lead ``hour`` is admitted; its marker, or the failure.
+
+        With ``timeout``, ``None`` when the lead is not admitted by then, so
+        a caller can look at the decoder between waits.
+        """
+
+        hour = int(hour)
+        if not self._admitted[hour].wait(timeout):
+            return None
+        with self._lock:
+            if hour in self.markers:
+                return self.markers[hour]
+            error = self._error
+        raise error if error is not None else RuntimeError(
+            f"f{hour:02d} was not admitted")
+
+    def failure(self) -> BaseException | None:
+        with self._lock:
+            return self._error
+
+    def source_manifest_text(self) -> str:
+        """The fetch's ``SHA256SUMS`` for these leads, from their markers.
+
+        One ``sha256  name`` row per posted object, sorted by name, as the
+        legacy fetch writes it, so it is byte for byte the one-shot fetch's
+        manifest of the same window.
+        """
+
+        rows = {}
+        for hour in self.hours:
+            for item in self.wait(hour).get("objects") or ():
+                rows[str(item["name"])] = str(item["sha256"])
+        return "".join(f"{digest}  {name}\n"
+                       for name, digest in sorted(rows.items()))
+
+    def receipt(self, manifest: Path) -> dict[str, object]:
+        """What :func:`verify_source_tree` returns, for leads held as they posted."""
+
+        leads = [self.leads[hour] for hour in self.hours]
+        return {
+            "status": "PASS",
+            "mode": "as_posted",
+            "manifest": str(Path(manifest).resolve()),
+            "manifest_sha256": _sha256(Path(manifest)),
+            "payload_file_count": sum(len(lead["files"]) for lead in leads),
+            "payload_bytes": int(sum(item["bytes"] for lead in leads
+                                     for item in lead["files"])),
+            "series_sha256": _sha256(self.series),
+            "forecast_hours": list(self.hours),
+            "source_forecast_hours": list(self.hours),
+            "model_forcing_hours": list(range(len(self.hours))),
+            "leads": leads,
+        }
+
+
 def _read_tsv(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     for raw in path.read_text().splitlines():
@@ -490,7 +695,10 @@ class HrrrPipelineProducer:
 
     def __init__(self, *, decoder: Path, series: Path, output: Path,
                  signals: Path, cycle: str, window: tuple[int, int, int, int],
-                 workers: str, log: Path):
+                 workers: str, log: Path, admissions: Path | None = None):
+        #: As posted (:class:`PostedLeadAdmitter`): the folder the decoder
+        #: waits in for each lead's admission.
+        self.admissions = admissions
         self.decoder = decoder
         self.series = series
         series_rows = _parse_series(series)
@@ -601,11 +809,19 @@ class HrrrPipelineProducer:
             self._log_status = (
                 f"unavailable: {type(error).__name__}: {error}")
         i0, i1, j0, j1 = self.window
-        self.argv = (
-            str(self.decoder), "--series-workers-ready", str(self.workers),
-            str(self.series), str(self.output), str(self.signals), self.cycle,
-            str(i0), str(i1), str(j0), str(j1),
-        )
+        if self.admissions is None:
+            self.argv = (
+                str(self.decoder), "--series-workers-ready", str(self.workers),
+                str(self.series), str(self.output), str(self.signals),
+                self.cycle, str(i0), str(i1), str(j0), str(j1),
+            )
+        else:
+            self.argv = (
+                str(self.decoder), "--series-workers-posted",
+                str(self.workers), str(self.series), str(self.output),
+                str(self.signals), str(self.admissions), self.cycle,
+                str(i0), str(i1), str(j0), str(j1),
+            )
         self.started = time.perf_counter()
         try:
             self.process = subprocess.Popen(
@@ -685,6 +901,11 @@ class HrrrPipelineProducer:
 
     def _failure(self, summary: str) -> HrrrProducerFailure:
         return HrrrProducerFailure(summary, self._capture_failure())
+
+    def check(self) -> None:
+        """Raise the producer's failure now, if it has failed."""
+
+        self._raise_if_failed()
 
     def _raise_if_failed(self) -> None:
         if self.process is None:

@@ -781,10 +781,45 @@ def test_every_option_carries_the_registrys_own_couplings():
     assert options["eta-similarity"]["requires_components"] == {"pbl": ["myj"]}
     # The conditional refusal this began with, Milbrandt-Yau against
     # RTE+RRTMGP, retired with the defect it described (the adapter carries
-    # the scheme's own cloud-optics row), so no option declares a
-    # ``refused_when`` rule today; the forward is held equal to the table
-    # above and a rule a later pass writes reaches the payload unchanged.
-    assert all(option["refused_when"] == [] for option in options.values())
+    # the scheme's own cloud-optics row).  The carriers today, named by
+    # (component, option) because "off" is an id in every component:
+    # microphysics off on a native HRRR source, and every turbulence
+    # closure, which carries the run door's diffusion-selector refusals
+    # (mix_full_fields = false under diff_opt = 2 on all five, diff_opt
+    # = 1 on the three closures that supply no coordinate coefficients)
+    # and, on the 1.5-order TKE closure, the PBL pairing under diff_opt
+    # = 2 that lane/282-namelist-tolerance wrote when diff_opt = 1
+    # admitted it.  The forward is held equal to the table above, so a
+    # rule a later pass writes reaches the payload unchanged.
+    carriers = {
+        (component["id"], option["id"]): option["refused_when"]
+        for component in editor.physics_components()
+        for option in component["options"] if option["refused_when"]}
+    turbulence = {"closure-supplied", "constant-k", "smagorinsky-2d",
+                  "smagorinsky-3d", "tke-1.5-order"}
+    assert set(carriers) == {("microphysics", "off")} | {
+        ("turbulence", option) for option in turbulence}
+    for option in turbulence:
+        rules = carriers[("turbulence", option)]
+        # Terrain admission adds more rules after the diffusion rules.
+        # Identify the metric mixing refusal by its condition, so this
+        # check keeps measuring that coupling rather than list order.
+        metric_mix = [rule for rule in rules
+                      if rule.get("settings") == {"diff_opt": [2],
+                                                  "mix_full_fields": [False]}]
+        assert len(metric_mix) == 1
+        assert metric_mix[0]["remedy_settings"] == {"mix_full_fields": True}
+        assert any(rule["settings"] == {"diff_opt": [1]}
+                   for rule in rules) is (
+            option in {"closure-supplied", "constant-k", "smagorinsky-3d"})
+        for name, values in (("topo_wind", [1, 2]), ("gwd_opt", [1, 3])):
+            terrain = [rule for rule in rules
+                       if rule.get("settings") == {name: values}]
+            assert len(terrain) == 1
+            assert terrain[0]["remedy_settings"] == {name: 0}
+    tke_rule = carriers[("turbulence", "tke-1.5-order")][0]
+    assert tke_rule["settings"] == {"diff_opt": [2]}
+    assert tke_rule["remedy_settings"] == {"bl_pbl_physics": 0}
     # The ra_rrtmg_variant fan-out gives one registry option several ids;
     # every one of them carries that registry option's couplings.
     variants = [option for option in options.values()

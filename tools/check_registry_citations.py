@@ -231,10 +231,18 @@ RESOLVED: dict[str, tuple[str, str]] = {
     # RE-PINNED a fourth time: A158 (zadvect_implicit, 04e80dc82) moved both
     # 71 lines.  The km_opt=2 header is now at :1218 and the km_opt=3 header
     # at :1308.  Anchors unchanged.
-    "gpuwm/core/dycore.py:1218": (
+    #
+    # RE-PINNED a fifth time: four 2.8.2 merges moved both, the km_opt=2
+    # header by 29 lines and the km_opt=3 header by 33 (lane/282-oracle-
+    # bigstep -1, lane/282-namelist-tolerance's diff_opt = 1 branch +8 and
+    # +12, lane/282-wrf-exact +11, lane/282-bw-glue +11).  The km_opt=2
+    # header is now at :1247 (launch_wrf_tke_km, def at :1245) and the
+    # km_opt=3 header at :1341 (launch_wrf_smag3d_km, def at :1339).
+    # Anchors unchanged.
+    "gpuwm/core/dycore.py:1247": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=2:"),
-    "gpuwm/core/dycore.py:1308": (
+    "gpuwm/core/dycore.py:1341": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=3:"),
 }

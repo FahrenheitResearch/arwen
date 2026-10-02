@@ -1,0 +1,82 @@
+{
+ "card": "NVIDIA GeForce RTX 4090",
+ "compared_card": "NVIDIA GeForce RTX 4090",
+ "compared_receipt": "gpu-receipt.json",
+ "compute_capability": [
+  8,
+  9
+ ],
+ "controls_not_in_compared_receipt": [],
+ "cuda_runtime": 13020,
+ "cupy": "14.2.0",
+ "driver": "610.57.04",
+ "fixture_manifest_equal": true,
+ "identical": true,
+ "kernels": {
+  "advection": "e3fa613578e3989e27678e1cce00f4465a941bd541567807a96da652f2b2c9ab",
+  "openbc": "5bf7babe4a953b1a12f8ddca403f04d86fa0aed0f7684992b5eabb5d82cbca57",
+  "pd_advection": "b4832282be55c3658586478788e979e3595a66a9fae56e00378843c25f62b28f"
+ },
+ "kernels_compared": {
+  "advection": "66e08b7ab87c7d892b5fe8bbf7ffb9198e8ea2953def1781c36545d77e40ade8",
+  "openbc": "5bf7babe4a953b1a12f8ddca403f04d86fa0aed0f7684992b5eabb5d82cbca57",
+  "pd_advection": "7de1823f03619e982064e8b7487121c528886848c23474fd08d73f6f232cdfb7"
+ },
+ "mutation_rejected": true,
+ "mutation_rejected_compared": true,
+ "nvrtc_build": "13.4.92",
+ "tree": "7486d241c",
+ "variants": {
+  "mutation": {
+   "arrays": 0,
+   "cases": 8,
+   "differing_words": 0,
+   "levels_identical": 8,
+   "measurements_identical": 8,
+   "word_files_compared": 0,
+   "word_files_identical": 0,
+   "words": 0
+  },
+  "no_fma": {
+   "arrays": 0,
+   "cases": 8,
+   "differing_words": 0,
+   "levels_identical": 8,
+   "measurements_identical": 8,
+   "word_files_compared": 0,
+   "word_files_identical": 0,
+   "words": 0
+  },
+  "production": {
+   "arrays": 56,
+   "cases": 8,
+   "differing_words": 0,
+   "levels_identical": 8,
+   "measurements_identical": 8,
+   "word_files_compared": 8,
+   "word_files_identical": 8,
+   "words": 2867200
+  },
+  "wrf_flux": {
+   "arrays": 0,
+   "cases": 8,
+   "differing_words": 0,
+   "levels_identical": 8,
+   "measurements_identical": 8,
+   "word_files_compared": 0,
+   "word_files_identical": 0,
+   "words": 0
+  },
+  "wrf_flux_no_fma": {
+   "arrays": 0,
+   "cases": 8,
+   "differing_words": 0,
+   "levels_identical": 8,
+   "measurements_identical": 8,
+   "word_files_compared": 0,
+   "word_files_identical": 0,
+   "words": 0
+  }
+ },
+ "what": "a fresh capture by tools/advect_wrf471_oracle/validate_advect_oracle.py --gpu --controls --mutation on this card at the bandwidth-tuned source, compared with the committed receipt: every measurement record and every level row of production and the four controls (each record carries the raw-word SHA256 of its output), and every production output word (the npz arrays bit for bit; the npz file hashes carry zip timestamps). The receipt keeps no control words, so control words are compared through their recorded hashes"
+}

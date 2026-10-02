@@ -1,0 +1,124 @@
+{
+ "tool": "tools/kernel_ptx_identity/compare.py",
+ "trees": [
+  "smallstep_tip_46b0a09fe",
+  "integrate_17dabc53e"
+ ],
+ "nvrtc_version": [
+  12,
+  9
+ ],
+ "assembly": "gpuwm.core.kernels.module_source(name) in a child process per tree; GPUWM_WRF_EXACT* removed, CUDA_VISIBLE_DEVICES empty",
+ "compile": "gpuwm.nvrtc_cache_key.compile_program(source, options + (-arch=<arch>,), target=ptx)",
+ "option_sets": {
+  "load_module": [
+   "-std=c++17"
+  ],
+  "rawmodule": [
+   "-std=c++17",
+   "-ftz=true"
+  ]
+ },
+ "archs": [
+  "compute_89",
+  "compute_90",
+  "compute_120"
+ ],
+ "modules": {
+  "acoustic": {
+   "file_sha256": {
+    "smallstep_tip_46b0a09fe": "fa1546499315e227e7970e88c01da210c50cebd1b3d25f0c8771887c825f0c87",
+    "integrate_17dabc53e": "e0db390a7d7eb605971ccee80426828897536a43d44ffb904e026de07252871c"
+   },
+   "assembled_source_sha256": {
+    "smallstep_tip_46b0a09fe": "d790562d35f30576dc36624675db3fe991f7e50c7b44f60fdb3956e6f82af378",
+    "integrate_17dabc53e": "51bf4cce07cfc6d5b85cef7db3b45da5b4523ae2add16b9279fb4fccafc5393e"
+   },
+   "entries": [
+    "accumulate_sumflux",
+    "advance_mu_th",
+    "advance_mu_th_msf",
+    "advance_nested_phi_w",
+    "advance_specified_phi_w",
+    "advance_uv",
+    "advance_w_phi",
+    "advance_w_phi_msf",
+    "apply_emdiv",
+    "calc_coefs",
+    "calc_cq",
+    "finish_sumflux",
+    "update_mudf",
+    "zero_sumflux"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "smallstep_tip_46b0a09fe": "8732638cc5ae9d586d0231c2172202bef0575e533c2f7bcd8079a4e2a312700b",
+      "integrate_17dabc53e": "8732638cc5ae9d586d0231c2172202bef0575e533c2f7bcd8079a4e2a312700b"
+     },
+     "entry_compared": 14,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "smallstep_tip_46b0a09fe": "f32eb55dad5cfead6496b44c8b53d2ac051b8a4dfa77a35a697bc9dae0f12664",
+      "integrate_17dabc53e": "f32eb55dad5cfead6496b44c8b53d2ac051b8a4dfa77a35a697bc9dae0f12664"
+     },
+     "entry_compared": 14,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "smallstep_tip_46b0a09fe": "9801bd76847f4b3d7839c89b0303af246c1ccd6388129cb39e03552128fd20ac",
+      "integrate_17dabc53e": "9801bd76847f4b3d7839c89b0303af246c1ccd6388129cb39e03552128fd20ac"
+     },
+     "entry_compared": 14,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "smallstep_tip_46b0a09fe": "f3ac40499cc43dc6a5e31aee047647e97e6bc42c62c0ba45ac06ea681ba2bd73",
+      "integrate_17dabc53e": "f3ac40499cc43dc6a5e31aee047647e97e6bc42c62c0ba45ac06ea681ba2bd73"
+     },
+     "entry_compared": 14,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "smallstep_tip_46b0a09fe": "1187735f0bf2b841658117e7db76ec50ed6291253e55c47142103c277663866c",
+      "integrate_17dabc53e": "1187735f0bf2b841658117e7db76ec50ed6291253e55c47142103c277663866c"
+     },
+     "entry_compared": 14,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "smallstep_tip_46b0a09fe": "9f166cf6a76f3df5b0cf61c1539ad13199ea36b404e8f6c0e8aa1527fe4e3591",
+      "integrate_17dabc53e": "9f166cf6a76f3df5b0cf61c1539ad13199ea36b404e8f6c0e8aa1527fe4e3591"
+     },
+     "entry_compared": 14,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  }
+ }
+}

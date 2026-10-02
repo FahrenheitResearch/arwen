@@ -1,0 +1,315 @@
+{
+    "schema":  "mp8-default-cq-scratch-layout-v1",
+    "upstream_change":  "59f7e280f",
+    "captured_base":  "1eaa688749e7199322b7c693923ade5f92cef162",
+    "captured_candidate":  "183691129c25b15d2749243ea8733d7f5d0da40a",
+    "capture_method":  "Unchanged receipt_r4_state on CPU with the default RunConfig and its real allocation registry",
+    "config":  {
+                   "dt":  1.0,
+                   "dx":  1000.0,
+                   "dy":  1000.0,
+                   "moist":  true,
+                   "mp_physics":  8,
+                   "nx":  8,
+                   "ny":  6,
+                   "nz":  4,
+                   "run_seconds":  10.0,
+                   "ztop":  10000.0
+               },
+    "moist_cq":  true,
+    "previous_slot_count":  56,
+    "new_slot_count":  59,
+    "added_slots":  {
+                        "acoustic_cqu":  [
+                                             4,
+                                             6,
+                                             9
+                                         ],
+                        "acoustic_cqv":  [
+                                             4,
+                                             7,
+                                             8
+                                         ],
+                        "acoustic_cqw":  [
+                                             5,
+                                             6,
+                                             8
+                                         ]
+                    },
+    "all_existing_rows_preserved":  true,
+    "base_and_candidate_full_r4_equal":  true,
+    "previous_scratch_digest":  "f00b1b1748fba27988bdedfde16ed05f3559a5e0bbd33cad474d7bef35d41949",
+    "scratch_slot_registry_digest":  "c4f040d8b21dc81d64c9725c8b3e061580b359144f70c705b466ab8a4e4ef4c2",
+    "state_array_shapes_digest":  "9bf527776f97f6e401d5c8084b31a58015f36c388eabba5dc3cc4eaefbaa124c",
+    "scratch_slot_registry":  {
+                                  "acoustic_a":  [
+                                                     5,
+                                                     6,
+                                                     8
+                                                 ],
+                                  "acoustic_alpha":  [
+                                                         5,
+                                                         6,
+                                                         8
+                                                     ],
+                                  "acoustic_c2a":  [
+                                                       4,
+                                                       6,
+                                                       8
+                                                   ],
+                                  "acoustic_cqu":  [
+                                                       4,
+                                                       6,
+                                                       9
+                                                   ],
+                                  "acoustic_cqv":  [
+                                                       4,
+                                                       7,
+                                                       8
+                                                   ],
+                                  "acoustic_cqw":  [
+                                                       5,
+                                                       6,
+                                                       8
+                                                   ],
+                                  "acoustic_gamma":  [
+                                                         5,
+                                                         6,
+                                                         8
+                                                     ],
+                                  "acoustic_mu_pp_old":  [
+                                                             6,
+                                                             8
+                                                         ],
+                                  "acoustic_th_pp_old":  [
+                                                             4,
+                                                             6,
+                                                             8
+                                                         ],
+                                  "adv_ru":  [
+                                                 4,
+                                                 6,
+                                                 9
+                                             ],
+                                  "adv_rv":  [
+                                                 4,
+                                                 7,
+                                                 8
+                                             ],
+                                  "adv_rw":  [
+                                                 5,
+                                                 6,
+                                                 8
+                                             ],
+                                  "integration_health_aux_ptr":  [
+                                                                     2048
+                                                                 ],
+                                  "integration_health_bounds":  [
+                                                                    1024,
+                                                                    2
+                                                                ],
+                                  "integration_health_field_ptr":  [
+                                                                       2048
+                                                                   ],
+                                  "integration_health_field_size":  [
+                                                                        2048
+                                                                    ],
+                                  "integration_health_flags":  [
+                                                                   1024
+                                                               ],
+                                  "integration_health_partial":  [
+                                                                     1,
+                                                                     9
+                                                                 ],
+                                  "integration_health_planes":  [
+                                                                    1024
+                                                                ],
+                                  "integration_health_result":  [
+                                                                    8
+                                                                ],
+                                  "integration_health_status_bits":  [
+                                                                         2048
+                                                                     ],
+                                  "integration_health_validation":  [
+                                                                        4
+                                                                    ],
+                                  "moist_pd_q0":  [
+                                                      4,
+                                                      6,
+                                                      8
+                                                  ],
+                                  "moist_rq_t":  [
+                                                     4,
+                                                     6,
+                                                     8
+                                                 ],
+                                  "mp_dz8w":  [
+                                                  4,
+                                                  6,
+                                                  8
+                                              ],
+                                  "mp_graupelnc":  [
+                                                       6,
+                                                       8
+                                                   ],
+                                  "mp_graupelncv":  [
+                                                        6,
+                                                        8
+                                                    ],
+                                  "mp_pii":  [
+                                                 4,
+                                                 6,
+                                                 8
+                                             ],
+                                  "mp_rainnc":  [
+                                                    6,
+                                                    8
+                                                ],
+                                  "mp_rainncv":  [
+                                                     6,
+                                                     8
+                                                 ],
+                                  "mp_snownc":  [
+                                                    6,
+                                                    8
+                                                ],
+                                  "mp_snowncv":  [
+                                                     6,
+                                                     8
+                                                 ],
+                                  "mp_sr":  [
+                                                6,
+                                                8
+                                            ],
+                                  "mp_th":  [
+                                                4,
+                                                6,
+                                                8
+                                            ],
+                                  "mp_thompson_frozen_reference_density":  [
+                                                                               4,
+                                                                               6,
+                                                                               8
+                                                                           ],
+                                  "mp_thompson_frozen_reference_temperature":  [
+                                                                                   4,
+                                                                                   6,
+                                                                                   8
+                                                                               ],
+                                  "mp_thompson_graupel_melt_marker":  [
+                                                                          4,
+                                                                          6,
+                                                                          8
+                                                                      ],
+                                  "mp_thompson_graupel_number_shadow":  [
+                                                                            4,
+                                                                            6,
+                                                                            8
+                                                                        ],
+                                  "mp_thompson_micro_columns":  [
+                                                                    6,
+                                                                    8
+                                                                ],
+                                  "mp_thompson_rain_reference_density":  [
+                                                                             4,
+                                                                             6,
+                                                                             8
+                                                                         ],
+                                  "mp_thompson_snow_melt_marker":  [
+                                                                       4,
+                                                                       6,
+                                                                       8
+                                                                   ],
+                                  "mp_thompson_snow_velocity_boost":  [
+                                                                          4,
+                                                                          6,
+                                                                          8
+                                                                      ],
+                                  "mp_thompson_temperature":  [
+                                                                  4,
+                                                                  6,
+                                                                  8
+                                                              ],
+                                  "mp_z8w":  [
+                                                 5,
+                                                 6,
+                                                 8
+                                             ],
+                                  "pd_fxc":  [
+                                                 4,
+                                                 6,
+                                                 9
+                                             ],
+                                  "pd_fxl":  [
+                                                 4,
+                                                 6,
+                                                 9
+                                             ],
+                                  "pd_fyc":  [
+                                                 4,
+                                                 7,
+                                                 8
+                                             ],
+                                  "pd_fyl":  [
+                                                 4,
+                                                 7,
+                                                 8
+                                             ],
+                                  "pd_fzc":  [
+                                                 5,
+                                                 6,
+                                                 8
+                                             ],
+                                  "pd_fzl":  [
+                                                 5,
+                                                 6,
+                                                 8
+                                             ],
+                                  "physics_validation_status":  [
+                                                                    1
+                                                                ],
+                                  "refl_10cm":  [
+                                                    4,
+                                                    6,
+                                                    8
+                                                ],
+                                  "refl_t":  [
+                                                 4,
+                                                 6,
+                                                 8
+                                             ],
+                                  "rk_ru":  [
+                                                4,
+                                                6,
+                                                9
+                                            ],
+                                  "rk_ru_m":  [
+                                                  4,
+                                                  6,
+                                                  9
+                                              ],
+                                  "rk_rv":  [
+                                                4,
+                                                7,
+                                                8
+                                            ],
+                                  "rk_rv_m":  [
+                                                  4,
+                                                  7,
+                                                  8
+                                              ],
+                                  "rk_ww":  [
+                                                5,
+                                                6,
+                                                8
+                                            ],
+                                  "rk_ww_m":  [
+                                                  5,
+                                                  6,
+                                                  8
+                                              ]
+                              },
+    "common_r4_canonical_sha256":  "1d0e83643c37ffd2d7bdff98c8a44afd642143f71255c3a83ab6757f8704d309",
+    "gpu_capture":  false,
+    "scope":  "Allocation-contract ratification for the upstream CQ default. No kernel words, numerical measurements, aliases, existing shapes or unrelated pins changed."
+}

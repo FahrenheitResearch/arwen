@@ -779,7 +779,8 @@ class AdaptiveClockDriver:
         # THE RETURN VALUE IS THE POINT.  _observe_radiation measures
         # the interval the producer actually took, and
         # _refresh_physics_cadence takes the larger of that and its own
-        # prediction -- the jitter cover its docstring argues for.  The
+        # prediction for callers without a resolved calendar. Exact
+        # calendars retain their configured interval. The
         # observation used to be computed here and dropped on the floor,
         # which left the `radt_seconds = max(predicted, observed)` arm
         # unreachable and the carrier gate refusing runs in which nothing
@@ -788,12 +789,16 @@ class AdaptiveClockDriver:
         _refresh_physics_cadence(node, ctl.last_dt, observed=observed)
         self._drive_radiation_on_time(int(grid_id), node)
         self._drive_cumulus_on_time(int(grid_id), node)
+        self._drive_surface_pbl_on_time(node)
         # The driver's memory just moved; re-publish so a checkpoint
         # written at this period's end carries it (ENG-019).
         node.clock.adaptive_state = self._published_state(int(grid_id), ctl)
 
     def _drive_radiation_on_time(self, grid_id: int, node) -> None:
         """Fire radiation on a TIME cadence, not a step count.
+
+        Resolved calendars use exact domain-relative tick deadlines. The
+        time-based policy below remains for callers without a calendar.
 
         ``_radiation_step_due`` is ``itimestep % stepra == 1``.  Under a
         varying dt that phase MOVES whenever stepra is re-derived, so the
@@ -821,6 +826,10 @@ class AdaptiveClockDriver:
         physics = getattr(node.state, "physics", None)
         if physics is None or not hasattr(physics, "stepra"):
             return
+        due = _physics_deadline_due(node, "radt")
+        if due is not None:
+            physics.radiation_due_override = due
+            return
         target = float(getattr(physics, "radt_seconds", 0.0) or 0.0)
         if target <= 0.0:
             return                      # radt = 0: every step, leave alone
@@ -839,6 +848,9 @@ class AdaptiveClockDriver:
 
     def _drive_cumulus_on_time(self, grid_id: int, node) -> None:
         """Fire cumulus on a TIME cadence too, for radiation's reason.
+
+        Resolved calendars use exact domain-relative tick deadlines. The
+        time-based policy below remains for callers without a calendar.
 
         ``_cumulus_step_due`` is ``itimestep % stepcu == 0``, and under an
         adaptive clock BOTH of its inputs stop meaning what they say:
@@ -864,6 +876,12 @@ class AdaptiveClockDriver:
             return
         if not bool(node.cfg.run.cu_physics):
             return
+        due = _physics_deadline_due(node, "cudt")
+        if due is not None:
+            physics.cumulus_due_override = due
+            if due:
+                self._cumulus_fired[grid_id] = float(node.clock.elapsed_seconds)
+            return
         target = float(getattr(physics, "cudt_seconds", 0.0) or 0.0)
         if target <= 0.0:
             return                      # cudt = 0: every step, leave alone
@@ -878,6 +896,15 @@ class AdaptiveClockDriver:
         physics.cumulus_due_override = due
         if due:
             self._cumulus_fired[grid_id] = now
+
+    def _drive_surface_pbl_on_time(self, node) -> None:
+        """Decide positive surface/PBL cadences from the exact calendar."""
+        physics = getattr(node.state, "physics", None)
+        if physics is None or not hasattr(physics, "stepbl"):
+            return
+        due = _physics_deadline_due(node, "bldt")
+        if due is not None:
+            physics.surface_pbl_due_override = due
 
     def _observe_radiation(self, grid_id: int, node) -> float | None:
         """The interval radiation ACTUALLY ran at, from the carrier record.
@@ -1142,7 +1169,7 @@ class AdaptiveClockDriver:
         return Fraction(snapped, self.tick_den)
 
     def _to_next_alarm_anywhere(self, clocks) -> Fraction:
-        """Seconds to the next history frame due ANYWHERE in the tree.
+        """Seconds to the next output or physics deadline anywhere in the tree.
 
         The root is the only domain that steps to a time -- upstream
         gates step_to_output_time `.not. grid%nested` (:325) -- so if it
@@ -1176,20 +1203,26 @@ class AdaptiveClockDriver:
             # (clock.py:441-455), so a checkpoint or a boundary seam the
             # clock steps over is not late -- it never happens.  A resume
             # cannot be tested at all if the checkpoint is never written.
-            for interval, phased in (
-                    (clock.spec.history_ticks, True),
-                    (clock.spec.restart_ticks, False),
-                    (clock.spec.lbc_interval_ticks, False)):
+            if clock.ticks < clock.spec.start_ticks:
+                if best is None or clock.spec.start_ticks < best:
+                    best = clock.spec.start_ticks
+                continue
+            alarms = [
+                (clock.spec.history_ticks, clock.spec.start_ticks
+                 + clock.spec.history_begin_ticks, True),
+                (clock.spec.restart_ticks, 0, False),
+                (clock.spec.lbc_interval_ticks, 0, False)]
+            # Positive physics cadences are deadlines too. A shortened
+            # history step must neither re-phase them nor round their
+            # requested period to a multiple of the nominal dt.
+            node = self.model.node(clock.spec.grid_id)
+            for label in ("radt", "cudt", "bldt"):
+                if _physics_deadline_minutes(node, label) > 0.0:
+                    alarms.append((getattr(clock.spec, label + "_ticks", None),
+                                   clock.spec.start_ticks, False))
+            for interval, origin, phased in alarms:
                 if not interval:
                     continue
-                origin = clock.spec.start_ticks if phased else 0
-                if clock.ticks < origin:
-                    continue
-                if phased:
-                    # The history lattice is anchored at the begin offset
-                    # (WRF's history_begin), and the first frame there is
-                    # a landing like any other.
-                    origin += clock.spec.history_begin_ticks
                 elapsed = clock.ticks - origin
                 if elapsed < 0:
                     due = origin
@@ -1209,6 +1242,31 @@ class AdaptiveClockDriver:
         return Fraction(best - now, self.tick_den)
 
 
+def _physics_deadline_minutes(node, label: str) -> float:
+    """The requested physics period, independent of a live step's rounding."""
+    run = node.cfg.run
+    if label == "radt":
+        minutes = float(getattr(run, "radt", 0.0) or 0.0)
+        return minutes if minutes > 0.0 else float(
+            getattr(run, "radt_minutes", 0.0) or 0.0)
+    if label == "cudt":
+        return float(getattr(run, "cudt_minutes", 0.0) or 0.0)
+    return float(getattr(run, "bldt", 0.0) or 0.0)
+
+
+def _physics_deadline_due(node, label: str) -> bool | None:
+    """An adaptive physics call at its exact domain-relative tick deadline.
+
+    Zero means every step and retains the ordinary predicate. A caller
+    without a resolved calendar can use the driver's legacy time policy.
+    """
+    interval = getattr(node.clock.spec, label + "_ticks", None)
+    if interval is None or _physics_deadline_minutes(node, label) <= 0.0:
+        return None
+    elapsed = node.clock.ticks - node.clock.spec.start_ticks
+    return elapsed >= 0 and elapsed % interval == 0
+
+
 def _interval(whole: int, den: int):
     """``min``/``max_time_step`` as a Fraction, or None when unset."""
     if whole == -1 and den == 0:
@@ -1219,6 +1277,10 @@ def _interval(whole: int, den: int):
 def _refresh_physics_cadence(node, baseline: Fraction, *,
                              observed: float | None = None) -> None:
     """Hold the physics cadence in TIME, and tell the contract the truth.
+
+    Resolved positive calendars keep their exact requested duration for
+    solar geometry and physical consumers. The baseline/observed policy
+    below applies to callers without a resolved calendar.
 
     WRF freezes STEPRA in phys_init and never revisits it, so under an
     adaptive clock its radiation cadence in SECONDS drifts with dt.  This
@@ -1280,8 +1342,13 @@ def _refresh_physics_cadence(node, baseline: Fraction, *,
     # across a resume on its own.
     current = float(node.cfg.run.dt)
     if current > 0.0:
-        physics.bldt_seconds = _physics_interval_seconds(
-            node.cfg.run.bldt, current)
+        if node.cfg.run.bldt > 0.0:
+            # A positive adaptive PBL period is an exact time interval,
+            # not a rounded count of the momentary integration step.
+            physics.bldt_seconds = float(node.cfg.run.bldt) * 60.0
+        else:
+            physics.bldt_seconds = _physics_interval_seconds(
+                node.cfg.run.bldt, current)
         if hasattr(physics, "stepbl"):
             physics.stepbl = max(
                 int(round(physics.bldt_seconds / current)), 1)
@@ -1300,6 +1367,16 @@ def _refresh_physics_cadence(node, baseline: Fraction, *,
         steps = _physics_interval_steps(minutes, dt)
         setattr(physics, steps_attr, steps)
         if hasattr(physics, seconds_attr):
+            clock = node.clock
+            label = "radt" if steps_attr == "stepra" else "cudt"
+            interval = getattr(clock.spec, label + "_ticks", None)
+            if interval is not None and minutes > 0.0:
+                # Solar half-interval geometry and physical consumers use
+                # this duration too. The exact calendar period must not
+                # be inflated by nominal rounding or an observed gap.
+                setattr(physics, seconds_attr,
+                        float(Fraction(interval, clock.tick_den)))
+                continue
             predicted = steps * dt
             # The LARGER of the prediction and what the producer was last
             # measured to do.  The prediction rises with the baseline and

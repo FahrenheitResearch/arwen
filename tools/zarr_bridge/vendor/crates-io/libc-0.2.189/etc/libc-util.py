@@ -502,7 +502,7 @@ class CheckAllTargets:
             fulldesc = f"{t.name} ({ran + 1} / {total})"
 
             if len(t.skip) > 0:
-                print(f"{E.YEL}Skipping {fulldesc} ({", ".join(t.skip)}){E.RST}")
+                print(f"{E.YEL}Skipping {fulldesc} ({', '.join(t.skip)}){E.RST}")
                 skipped += 1
                 continue
 

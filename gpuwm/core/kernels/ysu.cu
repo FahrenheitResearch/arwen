@@ -194,7 +194,7 @@ __device__ void ysu_tridi2n_v(YsuColC lower, YsuColC diag_v,
         rhs[k] -= gamma_u[k] * rhs[k + 1];
 }
 
-template <bool BEP>
+template <bool BEP, bool TOPO = false>
 __device__ __forceinline__
 void ysu_column_body(const real *u, const real *v, const real *theta,
                 const real *qv, const real *qc, const real *qi,
@@ -211,7 +211,7 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
                 real dt, real *topdown_radsum_out,
                 real *wstar3_2_out, int *cloudflg_out,
                 int ysu_topdown_pblmix, int nz, int ny, int nx,
-                real *ws, int wskp, int col0, const YsuBep bep) {
+                real *ws, int wskp, int col0, const YsuBep bep, const YsuTopo topo = YsuTopo{}) {
     // `col0` is the first column of this TILE.  The workspace is sized to
     // one tile, so its indexing uses the TILE-LOCAL blockIdx.x while every
     // field index keeps using the global column -- the arrays are
@@ -257,7 +257,7 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
         kpbl_out[col] = 1;
         wstar_out[col] = delta_out[col] = 0.0f;
         topdown_radsum_out[col] = wstar3_2_out[col] = 0.0f;
-        cloudflg_out[col] = 0;
+        cloudflg_out[col] = 0; if constexpr (TOPO) ysu_topo_blend_u10(topo, u10, v10, u[col], v[col], col);
         return;
     }
 
@@ -784,7 +784,59 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
     real fric = us * us / wspd1 * rho * G / delp[0] * dt2
               * (wspd1 / ysu_max(wspd[col], 1.0e-9f))
               * (wspd1 / ysu_max(wspd[col], 1.0e-9f));
-    diag[0] = 1.0f + fric;
+    if constexpr (TOPO) {
+        // bl_ysu.F90:1254-1314, the ctopo-present arm.  The paj TKE profile
+        // (:1257-1279) reads the diffusivities as the heat and moisture
+        // solves left them and before the momentum assembly below widens
+        // xkzm (:1338-1342); thli is dead here and holds it.
+        YsuCol tke = thli;
+        for (int k = 0; k < nz - 1; ++k) {
+            int q0 = k * st + col, q1 = (k + 1) * st + col;
+            real rdza = dza[k + 1];
+            real dudz = __fdiv_rn(__fsub_rn(u[q1], u[q0]), rdza);
+            real dvdz = __fdiv_rn(__fsub_rn(v[q1], v[q0]), rdza);
+            real su = __fdiv_rn(__fmul_rn(__fadd_rn(-__fdiv_rn(hgamu, hpbl), dudz),
+                                          __fsub_rn(u[q1], u[q0])), rdza);
+            real sv = __fdiv_rn(__fmul_rn(__fadd_rn(-__fdiv_rn(hgamv, hpbl), dvdz),
+                                          __fsub_rn(v[q1], v[q0])), rdza);
+            real shear = __fmul_rn(xkzm[k], __fadd_rn(su, sv));
+            real dthdz = __fdiv_rn(__fsub_rn(theta[q1], theta[q0]), rdza);
+            real buoy = __fmul_rn(__fmul_rn(__fmul_rn(xkzh[k], G),
+                                            __fdiv_rn(1.0f, theta[q0])),
+                                  __fadd_rn(-__fdiv_rn(hgamt, hpbl), dthdz));
+            real zk = __fmul_rn(karman, zq[k + 1]);
+            real rlamdz;
+            if (k + 1 >= kpbl) {
+                rlamdz = ysu_min(ysu_max(__fmul_rn(0.1f, rdza), rlam), 300.0f);
+                rlamdz = ysu_min(rdza, rlamdz);
+            } else {
+                rlamdz = 150.0f;
+            }
+            real el = __fdiv_rn(__fmul_rn(zk, rlamdz), __fadd_rn(rlamdz, zk));
+            real t = __fmul_rn(__fmul_rn(16.6f, el), __fsub_rn(shear, buoy));
+            tke[k] = (t <= 0.0f) ? 0.0f : gfk_pow(t, 0.66f);
+        }
+        real pblh_ysu = ysu_get_pblh<YsuColC>(thv, tke, zq, nz, xland[col]);
+        real vconv;
+        if (xland[col] < 1.5f) {
+            real fluxc = ysu_max(sflux, 0.0f);
+            vconv = __fmul_rn(1.0f, gfk_pow(__fmul_rn(__fmul_rn(
+                        __fdiv_rn(G, thv[0]), pblh_ysu), fluxc), 0.33f));
+        } else {
+            vconv = 0.0f;
+        }
+        real vconvnew = __fadd_rn(__fmul_rn(0.9f, vconv),
+                                  __fmul_rn(1.5f, ysu_max(__fdiv_rn(
+                                      __fsub_rn(pblh_ysu, 500.0f), 1000.0f),
+                                      0.0f)));
+        real vconvlim = ysu_min(vconvnew, 1.0f);
+        real ctopo = topo.ctopo[col];
+        diag[0] = __fadd_rn(__fadd_rn(1.0f, __fmul_rn(fric, vconvlim)),
+                            __fmul_rn(__fmul_rn(ctopo, fric),
+                                      __fsub_rn(1.0f, vconvlim)));
+    } else {
+        diag[0] = 1.0f + fric;
+    }
     if constexpr (BEP) {
         // DECLARED DIVERGENCE FROM WRF v4.7.1 (docs/public/PHYSICS.md, "Urban
         // canopy models"; pinned by tests/test_ysu_bep_rural_drag.py).
@@ -891,6 +943,7 @@ void ysu_column_body(const real *u, const real *v, const real *theta,
         ysu_thomas(lower, diag, upper, rhs, gamma, nz);
     }
     for (int k = 0; k < nz; ++k) dv[k * st + col] = (rhs[k] - v[k * st + col]) * rdt;
+    if constexpr (TOPO) ysu_topo_blend_u10(topo, u10, v10, u0, v0, col);
 
     exch_h[col] = exch_m[col] = 0.0f;
     for (int k = 1; k < nz; ++k) {
@@ -955,4 +1008,31 @@ void ysu_column_bep(const real *u, const real *v, const real *theta,
     YsuBep bep{a_u_bep, a_v_bep, a_t_bep, a_q_bep, b_u_bep, b_v_bep,
                b_t_bep, b_q_bep, sf_bep, vl_bep, frc_urb2d};
     ysu_column_body<true>(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, rthraten, psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland, u10, v10, du, dv, dtheta, dqv, dqc, dqi, hpbl_out, kpbl_out, exch_h, exch_m, wstar_out, delta_out, dt, topdown_radsum_out, wstar3_2_out, cloudflg_out, ysu_topdown_pblmix, nz, ny, nx, ws, wskp, col0, bep);
+}
+
+// topo_wind 1/2: the same column with ctopo/ctopo2 present (bl_ysu.F90
+// :1254-1314, :1402-1408).  ctopo, ctopo2 (ny, nx) come from
+// terrain_drag.cu::topo_wind_static; u10o/v10o receive the blended 10 m wind
+// (u10/v10 stay the surface layer's, which the ocean branch reads).
+extern "C" __global__
+void ysu_column_topo(const real *u, const real *v, const real *theta,
+                const real *qv, const real *qc, const real *qi,
+                const real *p, const real *p_interface, const real *exner,
+                const real *dz, const real *rthraten,
+                const real *psfc, const real *znt,
+                const real *ust, const real *hfx, const real *qfx,
+                const real *wspd, const real *br, const real *psim,
+                const real *psih, const real *xland, const real *u10,
+                const real *v10, real *du, real *dv, real *dtheta,
+                real *dqv, real *dqc, real *dqi, real *hpbl_out,
+                int *kpbl_out, real *exch_h, real *exch_m,
+                real *wstar_out, real *delta_out,
+                real dt, real *topdown_radsum_out,
+                real *wstar3_2_out, int *cloudflg_out,
+                int ysu_topdown_pblmix, int nz, int ny, int nx,
+                real *ws, int wskp, int col0,
+                const real *ctopo, const real *ctopo2,
+                real *u10o, real *v10o) {
+    YsuTopo topo{ctopo, ctopo2, u10o, v10o};
+    ysu_column_body<false, true>(u, v, theta, qv, qc, qi, p, p_interface, exner, dz, rthraten, psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland, u10, v10, du, dv, dtheta, dqv, dqc, dqi, hpbl_out, kpbl_out, exch_h, exch_m, wstar_out, delta_out, dt, topdown_radsum_out, wstar3_2_out, cloudflg_out, ysu_topdown_pblmix, nz, ny, nx, ws, wskp, col0, YsuBep{}, topo);
 }

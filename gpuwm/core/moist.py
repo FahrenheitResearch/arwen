@@ -348,14 +348,17 @@ def launch_pd_renorm_apply(q0, mu_old, fxl, fxc, fyl, fyc, fzl, fzc,
         msft = cp.ones((ny, nx), dtype=DTYPE)
     kern = get_kernel("pd_advection", "pd_renorm_apply")
     grid = ((nx + _TPB - 1) // _TPB, ny, nz)
-    kern(grid, (_TPB, 1, 1),
-         (q0, _mut2d(mu_old, ny, nx), fxl, fxc, fyl, fyc, fzl, fzc,
+    args = (q0, _mut2d(mu_old, ny, nx), fxl, fxc, fyl, fyc, fzl, fzc,
           cp.asarray(coord.c1h, dtype=DTYPE),
           cp.asarray(coord.c2h, dtype=DTYPE),
           cp.asarray(coord.rdnw, dtype=DTYPE), msft,
           DTYPE(1.0 / dx), DTYPE(1.0 / dy), DTYPE(dt),
           tend, np.int32(nz), np.int32(ny), np.int32(nx),
-          np.int32(has_msf), np.int32(open_x), np.int32(open_y)))
+          np.int32(has_msf), np.int32(open_x), np.int32(open_y))
+    from gpuwm.wrf_exact import ADVECTION_ENABLED
+    if ADVECTION_ENABLED:
+        args += (coord.mub2d, coord.mup0)
+    kern(grid, (_TPB, 1, 1), args)
 
 
 def _pd_fold_sources(state: DomainState, cfg: RunConfig, name: str,

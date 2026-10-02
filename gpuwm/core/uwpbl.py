@@ -36,6 +36,7 @@ device and refused here by name rather than returning a corrupted column.
 from __future__ import annotations
 
 from functools import lru_cache
+from gpuwm.core.device_cache import cuda_cache
 
 import cupy as cp
 import numpy as np
@@ -81,9 +82,14 @@ UWPBL_SURFACE_INPUTS = ("hfx", "qfx", "ust", "ht")
 UWPBL_TKE_COLD_START = 0.2
 
 
-@lru_cache(maxsize=None)
+@cuda_cache(maxsize=None, ready=True)
 def _module():
-    """The compiled module, with WRF's saturation table uploaded once.
+    """The compiled module, with WRF's saturation table uploaded once PER CARD.
+
+    Keyed by card and published with its upload event: the table is the
+    module's own global memory, which a module loaded on one card does not
+    give another card, and a slab on another stream must not launch before
+    the upload lands.
 
     ``UW_ESTBL`` is gestbl's table as the oracle holds it
     (gpuwm/core/uwpbl_constants.py): no host transcendental builds it.

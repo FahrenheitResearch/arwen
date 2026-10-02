@@ -207,12 +207,12 @@ class RunConfig:
     # WRF-fidelity stabilization campaign; flip only with a full-leg
     # stability + falsification receipt.
     top_lid: bool = True
-    # WRF always applies calc_cq when moist species exist.  gpuwm defaults
-    # OFF: the cq path threw CUDA_ERROR_ILLEGAL_ADDRESS at launch in the
-    # 2026-07-18 production probe (iso-cq_only_2dom) — argument marshaling
-    # under the prebound launcher is unproven on device.  Same receipt bar
-    # as top_lid before flipping.  Dry states bypass cq either way.
-    moist_cq: bool = False
+    # WRF applies calc_cq whenever its moist Registry carries water vapor,
+    # including passive vapor with microphysics off. The driver bypasses
+    # dry states. The former prebound-launch guard is retired by the
+    # MP0/MP1/MP6 device regression and stable moist forecast replay.
+    # Explicit False remains a verification counterfactual.
+    moist_cq: bool = True
     # WRF v4.6.1 Registry.EM_COMMON:2663-2666 default: Morrison dense ice
     # is hail (1); 0 retains the explicit graupel branch.  Appended to
     # preserve positional RunConfig compatibility.  The scheme selects
@@ -889,6 +889,27 @@ class RunConfig:
     #: "every_tile" gives that tile its urban type's own fraction instead.
     #: Per domain; read only when mosaic and urban option 1 are both on.
     mosaic_urban_canopy: str = "dominant"
+    # Appended to preserve existing positional RunConfig construction.
+    # 1 follows model coordinate surfaces; 2 is the existing metric form.
+    diff_opt: int = 2
+    mix_full_fields: bool = True
+    # Appended after the existing diffusion selectors, preserving their
+    # positional RunConfig construction.
+    #: WRF ``&physics topo_wind`` (Registry.EM_COMMON, max_domains, default
+    #: 0): the sub-grid terrain correction of the surface wind, under YSU
+    #: (:mod:`gpuwm.core.terrain_drag`).  1 is Jimenez and Dudhia (2012):
+    #: the first-level drag times ln(sqrt(VAR_SSO)) weighted toward stable
+    #: columns, tapered off on hill tops, where the 10 m wind blends toward
+    #: the first-level wind; 2 scales the drag by (VAR*0.4/200+1.175)^2,
+    #: capped at 1.575^2.  0 runs every column exactly as before.
+    topo_wind: int = 0
+    #: WRF ``&dynamics gwd_opt`` (max_domains, default 0): orographic drag
+    #: added to the PBL momentum tendencies (:mod:`gpuwm.core.terrain_drag`).
+    #: 1 is the KIM gravity-wave drag with flow blocking (module_bl_gwdo.F);
+    #: 3 the GSL drag suite (module_bl_gwdo_gsl.F: large-scale gravity-wave
+    #: drag and blocking, small-scale gravity-wave drag, turbulent
+    #: orographic form drag, each tapered by grid length).  0 adds nothing.
+    gwd_opt: int = 0
 
 
 #: The Noah-MP option identity gpuwm admits, field -> the only accepted
@@ -2347,7 +2368,19 @@ _RUN_CONFIG_TABLES = ("grid", "dynamics", "run")
 #: restart identity -- a run that trimmed its history must resume from a
 #: checkpoint written by one that did not, and the checkpoint stream is
 #: a different file written from model state.
-_KNOWN_TABLES = (*_RUN_CONFIG_TABLES, "tiles", "output")
+_KNOWN_TABLES = (*_RUN_CONFIG_TABLES, "tiles", "devices", "output")
+
+#: ``[static]`` is known to ONE RunConfig-TOML route, the one that builds
+#: static geography from a RunConfig: a downscaled child's own terrain,
+#: land use, smoothing and high-resolution sources
+#: (:func:`gpuwm.offline_child_geography.load_child_static_policy`, read
+#: through :func:`gpuwm.offline_child.resolve_child_run_config`).  It is
+#: not a RunConfig table either: the geography is an input the child is
+#: built from, not a number its restart identity binds.  Every other route
+#: that reads a RunConfig TOML builds no child geography, so it keeps
+#: refusing the table as unknown: accepted there, a ``[static]`` table
+#: would be dropped without a word.
+_CHILD_STATIC_TABLE = "static"
 
 
 def load_history_selection(path: str | Path):
@@ -2367,6 +2400,15 @@ def load_history_selection(path: str | Path):
     authority = read_config_authority(path)
     raw = tomllib.load(io.BytesIO(authority.payload))
     return HistorySelection.from_mapping(raw.get("output"), source=str(path))
+
+
+def load_device_options(path: str | Path):
+    """Read execution options separately so they never bind RunConfig identity."""
+    import io
+    from gpuwm.config_authority import read_config_authority
+    from gpuwm.core.devices import DeviceOptions
+    raw = tomllib.load(io.BytesIO(read_config_authority(path).payload))
+    return DeviceOptions.from_mapping(raw.get("devices"), source=str(path))
 
 
 def load_streaming_options(path: str | Path):
@@ -2437,18 +2479,41 @@ def _anchor_config_file_paths(merged: dict, config_path: str | Path) -> None:
                 break
 
 
-def load_config(path: str | Path) -> RunConfig:
+def load_config(path: str | Path, *, accept_epssm_auto: bool = False,
+                child_static: bool = False) -> RunConfig:
+    """The RunConfig a legacy ``[grid]``/``[dynamics]``/``[run]`` TOML names.
+
+    ``accept_epssm_auto`` admits ``epssm = "auto"`` (:data:`EPSSM_AUTO`),
+    which then starts on ``RunConfig.epssm`` like an unset key. A derived
+    child may carry ``epssm = { auto = 0.5 }`` to retain the inherited
+    model-chosen value and its automatic label. Only a
+    door that carries the label to the off-centering floor passes it
+    (:func:`gpuwm.offline_child.child_epssm_is_auto`); elsewhere the
+    string stays refused, because a door that read "auto" as a plain 0.1
+    would refuse that 0.1 over steep ground as if the user had chosen it.
+
+    ``child_static`` admits the ``[static]`` table of a downscaled child's
+    config (:data:`_CHILD_STATIC_TABLE`); only the offline child route,
+    which builds the geography that table describes, passes it.
+    """
     import io
 
     from gpuwm.config_authority import read_config_authority
 
     authority = read_config_authority(path)
     raw = tomllib.load(io.BytesIO(authority.payload))
-    unknown_tables = [name for name in raw if name not in _KNOWN_TABLES]
+    known_tables = (_KNOWN_TABLES + (_CHILD_STATIC_TABLE,) if child_static
+                    else _KNOWN_TABLES)
+    unknown_tables = [name for name in raw if name not in known_tables]
     if unknown_tables:
+        hint = ""
+        if _CHILD_STATIC_TABLE in unknown_tables:
+            hint = (" [static] belongs to a downscaled child's config "
+                    "(`gpuwm downscale --child-config`), the one RunConfig "
+                    "route that builds the geography it describes.")
         raise ValueError(
             f"unknown table(s)/top-level key(s) {unknown_tables} in config "
-            f"file {path}; known tables: {list(_KNOWN_TABLES)}."
+            f"file {path}; known tables: {list(_KNOWN_TABLES)}.{hint}"
         )
     # Validated here as well as in load_streaming_options, and discarded:
     # [tiles] is refused key by key by StreamingOptions on the
@@ -2456,11 +2521,19 @@ def load_config(path: str | Path) -> RunConfig:
     # silently does nothing is how a run gets configured for a mode it is
     # not in -- and a caller that reads only the RunConfig must not be the
     # reason a typo survives admission.
-    load_streaming_options(path)
+    tiles = load_streaming_options(path)
+    devices = load_device_options(path)
+    from gpuwm.core.devices import validate_device_road
+    validate_device_road(devices, tiles)
     # Same treatment for [output], and for the same reason: a misspelled
     # history_drop that silently does nothing is how a run comes to write
     # the full inventory under the name of your selection.
     load_history_selection(path)
+    # And for [static]: a misspelled smoother is how a child's terrain gets
+    # built under the default with your value's name on it.
+    if _CHILD_STATIC_TABLE in raw:
+        from gpuwm.offline_child_geography import parse_child_static_table
+        parse_child_static_table(raw[_CHILD_STATIC_TABLE], source=str(path))
     known_keys = {f.name for f in fields(RunConfig)}
     merged: dict = {}
     key_table: dict[str, str] = {}
@@ -2482,6 +2555,24 @@ def load_config(path: str | Path) -> RunConfig:
             key_table[key] = table
         merged.update(entries)
     _anchor_config_file_paths(merged, path)
+    choice = merged.get("epssm")
+    if not accept_epssm_auto and (
+            choice == EPSSM_AUTO or isinstance(choice, dict)):
+        raise ValueError(
+            'epssm automatic choices need the child configuration loader; '
+            'discarding the label could skip the steep-terrain acoustic floor. '
+            'Use the downscale child door or a numeric epssm value.')
+    if accept_epssm_auto:
+        if choice == EPSSM_AUTO:
+            del merged["epssm"]
+        elif isinstance(choice, dict):
+            if set(choice) != {EPSSM_AUTO} or isinstance(
+                    choice[EPSSM_AUTO], bool) or not isinstance(
+                    choice[EPSSM_AUTO], (int, float)):
+                raise ValueError(
+                    'epssm automatic inheritance must be { auto = NUMBER }; '
+                    'a different table would lose the inherited acoustic setting')
+            merged["epssm"] = choice[EPSSM_AUTO]
     # TOML arrays arrive as lists; RunConfig is frozen and hashable, so the
     # ladder is stored as a tuple.  Normalized here rather than in
     # validate_run_config, which returns its argument unchanged.
@@ -2957,6 +3048,48 @@ def _validate_dynamics_coefficients(cfg: RunConfig) -> None:
         raise ValueError(f"w_crit_cfl = {cfg.w_crit_cfl!r} {why}")
 
 
+#: WRF v4.7.1 topo_wind and gwd_opt values ported
+#: (:mod:`gpuwm.core.terrain_drag`).
+TOPO_WIND_VALUES = (0, 1, 2)
+GWD_OPT_VALUES = (0, 1, 3)
+
+
+def terrain_drag_refusal(*, topo_wind, gwd_opt, bl_pbl_physics,
+                         sf_urban_physics=0) -> str | None:
+    """Why ``topo_wind``/``gwd_opt`` cannot run as set, or None.
+
+    Shared by :func:`validate_run_config` and the namelist importer.
+    """
+    for name, value, allowed, what in (
+            ("topo_wind", topo_wind, TOPO_WIND_VALUES,
+             "0 off, 1 Jimenez-Dudhia, 2 the VAR form"),
+            ("gwd_opt", gwd_opt, GWD_OPT_VALUES,
+             "0 off, 1 the KIM drag, 3 the GSL drag suite; WRF's 2 is not "
+             "ported")):
+        if isinstance(value, bool) or value not in allowed:
+            return f"{name} = {value!r} is not one of {allowed} ({what})"
+    if topo_wind and int(bl_pbl_physics) != 1:
+        return (f"topo_wind = {topo_wind} acts only through YSU's surface "
+                "drag (bl_ysu.F90's ctopo/ctopo2), and bl_pbl_physics = "
+                f"{bl_pbl_physics} is not YSU: the coefficients would be "
+                "built and nothing would read them, so the run would differ "
+                "from topo_wind = 0 in its receipt only.  Select "
+                "bl_pbl_physics = 1, or use gwd_opt, which works under every "
+                "PBL scheme")
+    if topo_wind and int(sf_urban_physics) in (2, 3):
+        return (f"topo_wind = {topo_wind} scales YSU's first-level drag, "
+                "and under sf_urban_physics = "
+                f"{sf_urban_physics} (BEP) that drag is removed for the "
+                "declared rural-drag divergence (kernels/ysu.cu "
+                "ysu_column_bep), so there is no drag left to scale")
+    if gwd_opt and int(bl_pbl_physics) == 0:
+        return (f"gwd_opt = {gwd_opt} adds its drag inside WRF's PBL driver "
+                "(module_pbl_driver.F), which a run without a PBL scheme "
+                "never calls, and it reads the PBL height and top level the "
+                "scheme writes")
+    return None
+
+
 #: PBL schemes that produce horizontal mixing of their OWN.
 #:
 #: The whole content of the ``km_opt = 0`` question: with ``km_opt = 0``
@@ -3000,6 +3133,17 @@ def validate_km_opt(cfg: RunConfig) -> None:
       exists for and the thing the default refusal exists to prevent
       happening by accident.  See :data:`KM_OPT_ZERO_ACK`.
     """
+    if isinstance(cfg.diff_opt, bool) or not isinstance(cfg.diff_opt, int) or cfg.diff_opt not in (1, 2):
+        raise ValueError(
+            f"diff_opt must be 1 (model-coordinate horizontal diffusion) "
+            f"or 2 (metric stress/scalar diffusion), got {cfg.diff_opt}")
+    if not isinstance(cfg.mix_full_fields, bool):
+        raise ValueError("mix_full_fields must be a boolean")
+    if cfg.diff_opt == 1 and cfg.km_opt not in (2, 4):
+        raise ValueError(
+            f"diff_opt=1 requires km_opt=2 or 4; km_opt={cfg.km_opt} "
+            "does not supply the implemented model-coordinate operator's "
+            "exchange coefficients")
     ack = cfg.km_opt_zero_acknowledgement
     producer = km_opt_zero_producer(cfg)
     if not isinstance(ack, str):
@@ -3067,7 +3211,7 @@ def validate_km_opt(cfg: RunConfig) -> None:
             "domain, or km_opt=4 (2-D Smagorinsky), which is the "
             "horizontal-only closure every PBL-on template pins.")
     if cfg.km_opt == 2:
-        if cfg.bl_pbl_physics != 0:
+        if cfg.diff_opt == 2 and cfg.bl_pbl_physics != 0:
             raise ValueError(
                 "km_opt=2 (prognostic TKE) is admitted with "
                 "bl_pbl_physics=0 only. Its vertical TKE self-diffusion "
@@ -3100,6 +3244,20 @@ def validate_km_opt(cfg: RunConfig) -> None:
         # (the parent's TKE stays on the parent); gpuwm.experiment, the
         # only place that knows the parent, admits that tree with a
         # not-yet-verified warning.
+    if cfg.diff_opt == 2 and not cfg.mix_full_fields:
+        # After the closure refusals, which name the more basic problem.
+        # The metric operator mixes full fields only (smag2d.cu, and the
+        # importer substitutes true for a namelist's false here).  Admitted,
+        # false would be recorded in the run's configuration and checkpoint
+        # while the run mixed full fields: a WRF perturbation-mixing
+        # experiment that silently is not one.
+        raise ValueError(
+            "mix_full_fields = false selects WRF's perturbation mixing (the "
+            "base-state profile subtracted before mixing), which diff_opt=2 "
+            "does not implement: this run would mix full fields while its "
+            "configuration says otherwise. Set mix_full_fields = true, or "
+            "diff_opt = 1, whose coordinate operator mixes theta relative to "
+            "its initial field at either value")
     if cfg.km_opt in (1, 2, 3, 4):
         return
     if producer is None and ack != KM_OPT_ZERO_ACK:
@@ -3754,6 +3912,12 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     experiment TOML fails exactly as it always has on the legacy path.
     Returns ``cfg`` unchanged on success.
     """
+    why = terrain_drag_refusal(
+        topo_wind=cfg.topo_wind, gwd_opt=cfg.gwd_opt,
+        bl_pbl_physics=cfg.bl_pbl_physics,
+        sf_urban_physics=cfg.sf_urban_physics)
+    if why is not None:
+        raise ValueError(why)
     for name in ("slope_rad", "topo_shading"):
         value = getattr(cfg, name)
         if isinstance(value, bool) or value not in (0, 1):

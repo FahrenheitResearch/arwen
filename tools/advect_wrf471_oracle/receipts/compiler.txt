@@ -1,0 +1,3 @@
+GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43
+reference flags: -cpp -ffree-form -ffree-line-length-none -fallow-argument-mismatch -O0 -ffp-contract=off -fcheck=all -fbacktrace -g -Dwrfmodel -DEM_CORE=1 -DNMM_CORE=0 -DRWORDSIZE=4 -DIWORDSIZE=4 -DDWORDSIZE=8 -DLWORDSIZE=4

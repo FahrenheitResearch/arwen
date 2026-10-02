@@ -76,7 +76,9 @@ extern "C" __global__ void rrtmgp_interpolation_inline_reference(
   fpress_out[cell] = locpress - (float)jp1;
 }
 
-struct RRTMGPFlavorWeights {
+// The four weights are loaded together. Aligned rows let the compiler use
+// one shared-memory vector load without changing a computed float word.
+struct __align__(16) RRTMGPFlavorWeights {
   float cmix;
   int je;
   float fm0;
@@ -111,9 +113,10 @@ extern "C" __global__ void rrtmgp_gas_optics(
   if (cell_id >= ncol * nlay) return;
   const int col = cell_id / nlay;
   const int lay = cell_id - col * nlay;
+  const int minor_slots = (max(nminor_lower, nminor_upper) + 3) & ~3;
   extern __shared__ float s_storage[];
   float* s_scaling = s_storage + (threadIdx.x / 32)
-      * (max(nminor_lower, nminor_upper) + 8 * nflav);
+      * (minor_slots + 8 * nflav);
 
   const int npressk = npres + 1;
   const float avogad = 6.02214076e23f;
@@ -181,7 +184,7 @@ extern "C" __global__ void rrtmgp_gas_optics(
     // Ratios and eta weights depend on cell, flavor and temperature row.
     // Pin the base SASS contraction before storing each value for reuse.
     RRTMGPFlavorWeights* s_flavor = reinterpret_cast<RRTMGPFlavorWeights*>(
-        s_scaling + max(nminor_lower, nminor_upper));
+        s_scaling + minor_slots);
     for (int f = threadIdx.x % 32; f < nflav * 2; f += 32) {
         const int iflav = f / 2;
         const int itemp = f % 2;

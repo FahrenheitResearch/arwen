@@ -359,6 +359,121 @@ pub fn build_static_with_sampler_smoothed(
     Ok(set)
 }
 
+/// One sub-grid orographic statistic as GEOGRID.TBL.ARW builds it for WRF's
+/// terrain drag (`topo_wind`, `gwd_opt`).  Every row the table carries for
+/// these fields is `continuous` with `fill_missing = 0`; they differ in two
+/// switches only, which is all this request carries:
+///
+/// * `gcell`: `average_gcell(4.0)+four_pt+average_4pt` (VAR_SSO, the
+///   terrain's own sequence) when true, else `average_4pt` alone (CON, VAR,
+///   OA1-4, OL1-4 and the GSL large- and small-scale statistics);
+/// * `masked_water`: `masked = water`, so a water cell of the GEOG land use
+///   takes `fill_missing` and is never interpolated (the GREENFRAC
+///   treatment above, on the same land mask).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrographicField {
+    pub name: String,
+    pub path: PathBuf,
+    pub gcell: bool,
+    pub masked_water: bool,
+}
+
+/// The orographic fields to build, and the land-use dataset whose mask the
+/// `masked = water` rows read (the same dataset `build_static` reads).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrographicRequest {
+    #[serde(default)]
+    pub landuse: Option<PathBuf>,
+    pub fields: Vec<OrographicField>,
+}
+
+/// Build the requested orographic statistics for `grid` (no other field).
+pub fn build_orographic(
+    grid: &ProjectedGrid,
+    request: &OrographicRequest,
+    halo: usize,
+) -> Result<FieldSet> {
+    let dom = DomainSampler::new(grid, halo)?;
+    build_orographic_with_sampler(&dom, request)
+}
+
+/// [`build_orographic`] against an already-constructed sampler.
+pub fn build_orographic_with_sampler(
+    dom: &DomainSampler<'_>,
+    request: &OrographicRequest,
+) -> Result<FieldSet> {
+    let mut set = FieldSet::default();
+    let masked = request.fields.iter().any(|f| f.masked_water);
+    let (water, active_e) = if masked {
+        let Some(path) = request.landuse.as_ref() else {
+            return Err(StaticError::Invalid(
+                "a masked = water orographic field needs the land-use                  dataset its mask comes from"
+                    .to_string(),
+            ));
+        };
+        let lu_ds = GeogDataset::open(path, None)?;
+        let iswater = match lu_ds.index.iswater {
+            None | Some(0) => 17,
+            Some(w) => w,
+        };
+        let islake = match lu_ds.index.islake {
+            Some(l) if l < 0 => {
+                return Err(StaticError::Invalid(format!(
+                    "landuse index declares negative islake={l}"
+                )))
+            }
+            other => other,
+        };
+        let win = dom.window(&lu_ds, 3)?;
+        let luf_e = dom.categorical(&lu_ds, &win, true)?;
+        let landmask_e = landmask_from_landusef(&luf_e, iswater, islake)?;
+        let landmask = crop_grid(dom, &landmask_e);
+        let water: Vec<bool> =
+            landmask.data.iter().map(|&v| v == 0.0).collect();
+        let active_e: Vec<bool> =
+            landmask_e.data.iter().map(|&v| v != 0.0).collect();
+        (water, Some(active_e))
+    } else {
+        (Vec::new(), None)
+    };
+    for field in &request.fields {
+        if set.fields.contains_key(&field.name) {
+            return Err(StaticError::Invalid(format!(
+                "orographic field '{}' requested twice",
+                field.name
+            )));
+        }
+        let ds = GeogDataset::open(&field.path, None)?;
+        let win = dom.window(&ds, 3)?;
+        let receipt = dom.require_source_coverage(&ds, &win, &field.name)?;
+        set.coverage_reports.insert(field.name.clone(), receipt);
+        let seq: &[InterpOp] = if field.gcell {
+            &[InterpOp::FourPt, InterpOp::Average4Pt]
+        } else {
+            &[InterpOp::Average4Pt]
+        };
+        let active = if field.masked_water {
+            active_e.as_deref()
+        } else {
+            None
+        };
+        let plane =
+            dom.orographic_continuous(&ds, &win, 0, seq, 0.0, field.gcell, active)?;
+        let mut cropped = crop_grid(dom, &plane);
+        if field.masked_water {
+            for (value, &w) in cropped.data.iter_mut().zip(&water) {
+                if w {
+                    *value = 0.0;
+                }
+            }
+        }
+        set.fields.insert(field.name.clone(), Field::Plane(cropped));
+    }
+    Ok(set)
+}
+
 /// LANDMASK from LANDUSEF (`landmask_from_landusef`): 0 where the
 /// water fraction (iswater + islake) is >= 0.5, else 1.  LANE 2.
 pub fn landmask_from_landusef(

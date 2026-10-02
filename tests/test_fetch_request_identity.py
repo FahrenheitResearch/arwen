@@ -372,9 +372,12 @@ def _parse(tokens):
 
 def test_latest_hrrr_pinned_to_s3_takes_the_newest_cycle_s3_holds(
         tmp_path, monkeypatch, python_engine):
-    _with_probe(monkeypatch, "resolve_latest_cycle",
-                _hosts(datetime(2026, 2, 1, 6), datetime(2026, 2, 1, 5)),
-                now=_NOW)
+    hosts = _hosts(datetime(2026, 2, 1, 6), datetime(2026, 2, 1, 5))
+    _with_probe(monkeypatch, "resolve_latest_cycle", hosts, now=_NOW)
+    # The same two hosts answer the named cycle's check and the as-posted
+    # lead gate, so this test (not marked network) asks no real host.
+    _with_probe(monkeypatch, "require_published_cycle", hosts, now=_NOW)
+    monkeypatch.setattr(fetch, "_head_answer", hosts)
     handed = []
 
     def fetch_hrrr(**kwargs):
@@ -563,8 +566,14 @@ def test_the_path_keys_are_wizard_flags_that_take_a_path():
 # ---------------------------------------------------------------------------
 
 def _every_host_answers(monkeypatch):
-    """Every probe, on every host, says the object is there."""
+    """Every probe, on every host, says the object is there.
+
+    That includes the as-posted loop's lead gate and the native prefix's
+    host choice, which ask through ``_head_answer``: without it these
+    tests (not marked network) asked the real hosts on every run.
+    """
     monkeypatch.setattr(fetch, "_head_ok", lambda url: True)
+    monkeypatch.setattr(fetch, "_head_answer", lambda url: True)
     for name in ("resolve_latest_cycle", "require_published_cycle"):
         _with_probe(monkeypatch, name, lambda url: True, now=_NOW)
 
@@ -929,6 +938,9 @@ def test_a_damaged_file_is_fetched_again_from_a_host_that_still_has_it(
         return "nomads.ncep.noaa.gov" not in url
 
     monkeypatch.setattr(fetch, "_head_ok", keeps)
+    # The as-posted lead gate and the native prefix's host choice ask
+    # through _head_answer; the same hosts answer it.
+    monkeypatch.setattr(fetch, "_head_answer", keeps)
     _with_probe(monkeypatch, "require_published_cycle", keeps)
     rc = cli.main(["fetch", "--source", "hrrr", "--cycle", "2026-01-31T18",
                    "--hours", "1", "--out", str(out)])

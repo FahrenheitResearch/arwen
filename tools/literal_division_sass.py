@@ -10,7 +10,10 @@ because an immediate divisor and a register holding it can leave the
 allocator numbering and ordering the same instructions differently.
 
     CUDA_VISIBLE_DEVICES= python -m tools.literal_division_sass --arch sm_89 \
-        --nvdisasm /path/to/nvdisasm --json out.json
+        --nvdisasm /path/to/nvdisasm --json out.json [--root tree]
+
+``--root`` names the tree whose sources are compiled (default: the tree
+holding this tool), as in tools/literal_division_census.py (A193).
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from tools.literal_division_census import production_units
+from tools.literal_division_census import ROOT, production_units
 
 _INSN = re.compile(r"^\s+/\*[0-9a-f]{4,}\*/\s+(.*?)\s*(?:/\*.*)?$")
 
@@ -142,11 +145,11 @@ def type_checked(source: str) -> str:
         "{ return a146_fdiv(a, b); }", "{ return __fdiv_rn(a, b); }", 1)
 
 
-def ptx_digests(arch: str) -> dict[str, str]:
+def ptx_digests(arch: str, root=ROOT) -> dict[str, str]:
     """compute_* PTX digest of every unit spelled with ``/`` throughout."""
     from tools.literal_division_census import compile_ptx
     out = {}
-    for unit in production_units():
+    for unit in production_units(root):
         opts = tuple(unit.options) + ("-ftz=true", f"-arch={arch}")
         try:
             ptx = compile_ptx(spelled_as_slash(unit.source), opts)
@@ -157,10 +160,10 @@ def ptx_digests(arch: str) -> dict[str, str]:
     return out
 
 
-def type_check(arch: str) -> dict[str, str]:
+def type_check(arch: str, root=ROOT) -> dict[str, str]:
     from tools.literal_division_census import compile_ptx
     out = {}
-    for unit in production_units():
+    for unit in production_units(root):
         opts = tuple(unit.options) + ("-ftz=true", f"-arch={arch}")
         try:
             compile_ptx(type_checked(unit.source), opts)
@@ -174,7 +177,7 @@ def type_check(arch: str) -> dict[str, str]:
 _DIV_OR_CVT = re.compile(r"^\s*((?:div|rem|cvt)\.[a-z0-9.]+)\s", re.M)
 
 
-def division_histograms(arch: str) -> dict[str, dict[str, int]]:
+def division_histograms(arch: str, root=ROOT) -> dict[str, dict[str, int]]:
     """Count of every div/rem/cvt opcode per unit, in the real sources.
 
     The slash-spelled identity cannot see an integer or double operand that
@@ -185,7 +188,7 @@ def division_histograms(arch: str) -> dict[str, dict[str, int]]:
 
     from tools.literal_division_census import compile_ptx
     out = {}
-    for unit in production_units():
+    for unit in production_units(root):
         opts = tuple(unit.options) + ("-ftz=true", f"-arch={arch}")
         try:
             ptx = compile_ptx(unit.source, opts)
@@ -201,6 +204,8 @@ def main(argv=None) -> int:
     ap.add_argument("--arch", default="sm_89")
     ap.add_argument("--nvdisasm")
     ap.add_argument("--json", required=True)
+    ap.add_argument("--root", default=str(ROOT),
+                    help="repository root of the tree to compile")
     ap.add_argument("--slash-ptx", action="store_true",
                     help="digest compute_* PTX of the '/'-spelled sources")
     ap.add_argument("--div-histogram", action="store_true",
@@ -209,22 +214,24 @@ def main(argv=None) -> int:
                     help="refuse any __fdiv_rn operand that is not float")
     args = ap.parse_args(argv)
     if args.type_check:
-        res = type_check(args.arch.replace("sm_", "compute_"))
+        res = type_check(args.arch.replace("sm_", "compute_"), args.root)
         Path(args.json).write_text(json.dumps(res, indent=1))
         print(sum(v.startswith("refused") for v in res.values()), "refused")
         return 0
     if args.div_histogram:
-        hist = division_histograms(args.arch.replace("sm_", "compute_"))
+        hist = division_histograms(args.arch.replace("sm_", "compute_"),
+                                   args.root)
         Path(args.json).write_text(json.dumps(hist, indent=1))
         print(f"{len(hist)} units")
         return 0
     if args.slash_ptx:
-        digests = ptx_digests(args.arch.replace("sm_", "compute_"))
+        digests = ptx_digests(args.arch.replace("sm_", "compute_"),
+                              args.root)
         Path(args.json).write_text(json.dumps(digests, indent=1))
         print(f"{len(digests)} units")
         return 0
     result, failed = {}, {}
-    for unit in production_units():
+    for unit in production_units(args.root):
         opts = tuple(unit.options) + ("-ftz=true", f"-arch={args.arch}")
         try:
             result[unit.key] = kernel_digests(cubin(unit.source, opts),

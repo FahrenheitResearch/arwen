@@ -1,0 +1,2172 @@
+{
+  "mode": "all",
+  "device": "NVIDIA GeForce RTX 5090",
+  "cases": [
+    {
+      "name": "h0_0_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h0_0_1",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h0_1_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 702,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h0_2_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 720,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h0_3_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 756,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k4_0",
+      "family": "km4",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "deform_0",
+      "family": "deform",
+      "fields": {
+        "d11": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d22": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d12": {
+          "words": 648,
+          "different": 205,
+          "max_ulp": 92,
+          "max_abs": 4.656612873077393e-10
+        }
+      }
+    },
+    {
+      "name": "k2_0_0_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kmv": {
+          "words": 648,
+          "different": 324,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 323,
+          "max_ulp": 11883790,
+          "max_abs": 0.47916415333747864
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_0_0_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kmv": {
+          "words": 648,
+          "different": 324,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 323,
+          "max_ulp": 12582901,
+          "max_abs": 0.4999992549419403
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_0_1_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 216,
+          "max_ulp": 3,
+          "max_abs": 2.288818359375e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 212,
+          "max_ulp": 4,
+          "max_abs": 9.1552734375e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 216,
+          "max_ulp": 3,
+          "max_abs": 2.288818359375e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 212,
+          "max_ulp": 4,
+          "max_abs": 9.1552734375e-05
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_0_1_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 180,
+          "max_ulp": 3,
+          "max_abs": 2.288818359375e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 179,
+          "max_ulp": 4,
+          "max_abs": 9.1552734375e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 180,
+          "max_ulp": 3,
+          "max_abs": 2.288818359375e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 179,
+          "max_ulp": 4,
+          "max_abs": 9.1552734375e-05
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h1_0_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h1_0_1",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h1_1_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 702,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h1_2_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 720,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h1_3_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 756,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k4_1",
+      "family": "km4",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "deform_1",
+      "family": "deform",
+      "fields": {
+        "d11": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d22": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d12": {
+          "words": 648,
+          "different": 185,
+          "max_ulp": 217,
+          "max_abs": 4.656612873077393e-10
+        }
+      }
+    },
+    {
+      "name": "k2_1_0_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kmv": {
+          "words": 648,
+          "different": 270,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 265,
+          "max_ulp": 11883790,
+          "max_abs": 0.47916415333747864
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_1_0_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kmv": {
+          "words": 648,
+          "different": 270,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 266,
+          "max_ulp": 12582901,
+          "max_abs": 0.4999992549419403
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_1_1_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 389,
+          "max_ulp": 4,
+          "max_abs": 2.288818359375e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 329,
+          "max_ulp": 5,
+          "max_abs": 9.1552734375e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 389,
+          "max_ulp": 4,
+          "max_abs": 2.288818359375e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 329,
+          "max_ulp": 5,
+          "max_abs": 9.1552734375e-05
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_1_1_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 436,
+          "max_ulp": 4,
+          "max_abs": 2.288818359375e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 390,
+          "max_ulp": 5,
+          "max_abs": 9.1552734375e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 436,
+          "max_ulp": 4,
+          "max_abs": 2.288818359375e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 390,
+          "max_ulp": 5,
+          "max_abs": 9.1552734375e-05
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h2_0_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h2_0_1",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h2_1_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 702,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h2_2_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 720,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h2_3_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 756,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k4_2",
+      "family": "km4",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "deform_2",
+      "family": "deform",
+      "fields": {
+        "d11": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d22": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d12": {
+          "words": 648,
+          "different": 217,
+          "max_ulp": 75,
+          "max_abs": 4.656612873077393e-10
+        }
+      }
+    },
+    {
+      "name": "k2_2_0_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kmv": {
+          "words": 648,
+          "different": 252,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 248,
+          "max_ulp": 11883790,
+          "max_abs": 0.47916415333747864
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_2_0_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kmv": {
+          "words": 648,
+          "different": 252,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 250,
+          "max_ulp": 12582901,
+          "max_abs": 0.4999992549419403
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_2_1_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 168,
+          "max_ulp": 3,
+          "max_abs": 1.52587890625e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 165,
+          "max_ulp": 4,
+          "max_abs": 6.103515625e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 168,
+          "max_ulp": 3,
+          "max_abs": 1.52587890625e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 165,
+          "max_ulp": 4,
+          "max_abs": 6.103515625e-05
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_2_1_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 140,
+          "max_ulp": 3,
+          "max_abs": 2.288818359375e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 138,
+          "max_ulp": 4,
+          "max_abs": 6.103515625e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 140,
+          "max_ulp": 3,
+          "max_abs": 2.288818359375e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 138,
+          "max_ulp": 4,
+          "max_abs": 6.103515625e-05
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h3_0_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h3_0_1",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h3_1_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 702,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h3_2_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 720,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h3_3_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 756,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k4_3",
+      "family": "km4",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "deform_3",
+      "family": "deform",
+      "fields": {
+        "d11": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d22": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d12": {
+          "words": 648,
+          "different": 207,
+          "max_ulp": 319,
+          "max_abs": 4.656612873077393e-10
+        }
+      }
+    },
+    {
+      "name": "k2_3_0_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kmv": {
+          "words": 648,
+          "different": 210,
+          "max_ulp": 9992319,
+          "max_abs": 0.3455885350704193
+        },
+        "khv": {
+          "words": 648,
+          "different": 210,
+          "max_ulp": 17825330,
+          "max_abs": 1.3713104128837585
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_3_0_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kmv": {
+          "words": 648,
+          "different": 210,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 208,
+          "max_ulp": 12582901,
+          "max_abs": 0.4999992549419403
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_3_1_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 140,
+          "max_ulp": 3,
+          "max_abs": 2.288818359375e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 136,
+          "max_ulp": 4,
+          "max_abs": 6.103515625e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 140,
+          "max_ulp": 3,
+          "max_abs": 2.288818359375e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 136,
+          "max_ulp": 4,
+          "max_abs": 6.103515625e-05
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_3_1_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 126,
+          "max_ulp": 3,
+          "max_abs": 2.288818359375e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 124,
+          "max_ulp": 4,
+          "max_abs": 6.103515625e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 126,
+          "max_ulp": 3,
+          "max_abs": 2.288818359375e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 124,
+          "max_ulp": 4,
+          "max_abs": 6.103515625e-05
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h4_0_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h4_0_1",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h4_1_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 702,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h4_2_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 720,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h4_3_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 756,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k4_4",
+      "family": "km4",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "deform_4",
+      "family": "deform",
+      "fields": {
+        "d11": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d22": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d12": {
+          "words": 648,
+          "different": 323,
+          "max_ulp": 295,
+          "max_abs": 4.656612873077393e-10
+        }
+      }
+    },
+    {
+      "name": "k2_4_0_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 99,
+          "max_ulp": 2,
+          "max_abs": 1.52587890625e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 89,
+          "max_ulp": 4,
+          "max_abs": 6.103515625e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 324,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 321,
+          "max_ulp": 11883790,
+          "max_abs": 0.47916415333747864
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_4_0_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 102,
+          "max_ulp": 2,
+          "max_abs": 1.52587890625e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 93,
+          "max_ulp": 4,
+          "max_abs": 6.103515625e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 324,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 320,
+          "max_ulp": 12582901,
+          "max_abs": 0.4999992549419403
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_4_1_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 294,
+          "max_ulp": 4,
+          "max_abs": 2.288818359375e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 269,
+          "max_ulp": 5,
+          "max_abs": 9.1552734375e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 294,
+          "max_ulp": 4,
+          "max_abs": 2.288818359375e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 269,
+          "max_ulp": 5,
+          "max_abs": 9.1552734375e-05
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_4_1_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 250,
+          "max_ulp": 4,
+          "max_abs": 2.288818359375e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 230,
+          "max_ulp": 5,
+          "max_abs": 9.1552734375e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 250,
+          "max_ulp": 4,
+          "max_abs": 2.288818359375e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 230,
+          "max_ulp": 5,
+          "max_abs": 9.1552734375e-05
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h5_0_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h5_0_1",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h5_1_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 702,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h5_2_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 720,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h5_3_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 756,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k4_5",
+      "family": "km4",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "deform_5",
+      "family": "deform",
+      "fields": {
+        "d11": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d22": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d12": {
+          "words": 648,
+          "different": 298,
+          "max_ulp": 316,
+          "max_abs": 4.656612873077393e-10
+        }
+      }
+    },
+    {
+      "name": "k2_5_0_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 101,
+          "max_ulp": 3,
+          "max_abs": 1.52587890625e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 93,
+          "max_ulp": 4,
+          "max_abs": 6.103515625e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 270,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 268,
+          "max_ulp": 11883790,
+          "max_abs": 0.47916415333747864
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_5_0_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 103,
+          "max_ulp": 3,
+          "max_abs": 1.52587890625e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 93,
+          "max_ulp": 4,
+          "max_abs": 6.103515625e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 270,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 268,
+          "max_ulp": 12582901,
+          "max_abs": 0.4999992549419403
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_5_1_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 244,
+          "max_ulp": 4,
+          "max_abs": 3.0517578125e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 226,
+          "max_ulp": 5,
+          "max_abs": 9.1552734375e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 244,
+          "max_ulp": 4,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 226,
+          "max_ulp": 5,
+          "max_abs": 9.1552734375e-05
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_5_1_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 222,
+          "max_ulp": 4,
+          "max_abs": 3.0517578125e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 207,
+          "max_ulp": 4,
+          "max_abs": 0.0001220703125
+        },
+        "kmv": {
+          "words": 648,
+          "different": 222,
+          "max_ulp": 4,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 207,
+          "max_ulp": 4,
+          "max_abs": 0.0001220703125
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h6_0_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h6_0_1",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h6_1_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 702,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h6_2_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 720,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h6_3_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 756,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k4_6",
+      "family": "km4",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "deform_6",
+      "family": "deform",
+      "fields": {
+        "d11": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d22": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d12": {
+          "words": 648,
+          "different": 319,
+          "max_ulp": 110,
+          "max_abs": 4.656612873077393e-10
+        }
+      }
+    },
+    {
+      "name": "k2_6_0_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 60,
+          "max_ulp": 3,
+          "max_abs": 3.0517578125e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 53,
+          "max_ulp": 4,
+          "max_abs": 9.1552734375e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 252,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 248,
+          "max_ulp": 11883790,
+          "max_abs": 0.47916415333747864
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_6_0_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 62,
+          "max_ulp": 3,
+          "max_abs": 1.52587890625e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 51,
+          "max_ulp": 4,
+          "max_abs": 6.103515625e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 252,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 248,
+          "max_ulp": 12582901,
+          "max_abs": 0.4999992549419403
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_6_1_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 232,
+          "max_ulp": 4,
+          "max_abs": 3.0517578125e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 212,
+          "max_ulp": 5,
+          "max_abs": 7.62939453125e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 232,
+          "max_ulp": 4,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 212,
+          "max_ulp": 5,
+          "max_abs": 7.62939453125e-05
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_6_1_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 201,
+          "max_ulp": 4,
+          "max_abs": 3.0517578125e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 187,
+          "max_ulp": 4,
+          "max_abs": 9.1552734375e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 201,
+          "max_ulp": 4,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 187,
+          "max_ulp": 4,
+          "max_abs": 9.1552734375e-05
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h7_0_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h7_0_1",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h7_1_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 702,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h7_2_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 720,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "h7_3_0",
+      "family": "horizontal",
+      "fields": {
+        "tendency": {
+          "words": 756,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k4_7",
+      "family": "km4",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "kh": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "deform_7",
+      "family": "deform",
+      "fields": {
+        "d11": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d22": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "d12": {
+          "words": 648,
+          "different": 302,
+          "max_ulp": 300,
+          "max_abs": 4.656612873077393e-10
+        }
+      }
+    },
+    {
+      "name": "k2_7_0_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 24,
+          "max_ulp": 2,
+          "max_abs": 1.52587890625e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 21,
+          "max_ulp": 2,
+          "max_abs": 6.103515625e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 210,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 209,
+          "max_ulp": 11883790,
+          "max_abs": 0.47916415333747864
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_7_0_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 27,
+          "max_ulp": 2,
+          "max_abs": 1.52587890625e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 24,
+          "max_ulp": 2,
+          "max_abs": 6.103515625e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 210,
+          "max_ulp": 15,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 209,
+          "max_ulp": 12582901,
+          "max_abs": 0.4999992549419403
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_7_1_0",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 188,
+          "max_ulp": 4,
+          "max_abs": 3.0517578125e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 174,
+          "max_ulp": 5,
+          "max_abs": 9.1552734375e-05
+        },
+        "kmv": {
+          "words": 648,
+          "different": 188,
+          "max_ulp": 4,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 174,
+          "max_ulp": 5,
+          "max_abs": 9.1552734375e-05
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    },
+    {
+      "name": "k2_7_1_1",
+      "family": "km2",
+      "fields": {
+        "km": {
+          "words": 648,
+          "different": 174,
+          "max_ulp": 3,
+          "max_abs": 3.0517578125e-05
+        },
+        "kh": {
+          "words": 648,
+          "different": 160,
+          "max_ulp": 4,
+          "max_abs": 0.0001220703125
+        },
+        "kmv": {
+          "words": 648,
+          "different": 174,
+          "max_ulp": 3,
+          "max_abs": 3.0517578125e-05
+        },
+        "khv": {
+          "words": 648,
+          "different": 160,
+          "max_ulp": 4,
+          "max_abs": 0.0001220703125
+        },
+        "tke": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        },
+        "bn2": {
+          "words": 648,
+          "different": 0,
+          "max_ulp": 0,
+          "max_abs": 0.0
+        }
+      }
+    }
+  ],
+  "archive_sha256": "508de1e310977aabf905ee01a2ec55b1d42302ca6b3fae93c90e2c81e0463de5",
+  "native_archive_sha256": "461e735c1105391e5b9f095e0a1d188d80d36624b6d18ba38b685b1355c09788",
+  "module_source_sha256": {
+    "smag2d": "b60a029091011e77e3261c62b6b494cbd2d92ad3d2a09a0eae902d548cc422fd",
+    "diff_opt1": "9737655267fca7f30d0a4053008997de55a8e12f4fe552622a09f70ea994e271"
+  }
+}

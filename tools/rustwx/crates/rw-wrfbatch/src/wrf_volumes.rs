@@ -18,6 +18,10 @@
 #![allow(clippy::too_many_arguments)]
 
 use rustwx_core::checked_volume_elements;
+// The log-pressure column walk is shared with the ML exporter
+// (crates/rw-isobaric), so a chart and a training sample read off one
+// history file agree about where a pressure level is.
+use rw_isobaric::{bracket, lerp};
 use rw_store::PressureVolumeInput;
 use wrf_core::{ComputeOpts, VarOutput, WrfFile, getvar};
 
@@ -699,29 +703,6 @@ fn try_init_planes(name: &str, levels: usize, cells: usize) -> Result<Vec<Vec<f3
 
 fn pack(levels: &[u16], planes: Vec<Vec<f32>>) -> Vec<(u16, Vec<f32>)> {
     levels.iter().copied().zip(planes).collect()
-}
-
-/// Locate the native levels bracketing `target` hPa in a WRF column (pressure
-/// decreasing with index, level 0 nearest the surface) and return the lower
-/// level index plus the log-pressure interpolation weight. `None` when the
-/// target sits below the lowest level or above the model top.
-fn bracket(col_p: &[f64], target: f64) -> Option<(usize, f64)> {
-    for k in 0..col_p.len().saturating_sub(1) {
-        let (pk, pk1) = (col_p[k], col_p[k + 1]);
-        if !pk.is_finite() || !pk1.is_finite() || pk == pk1 {
-            continue;
-        }
-        let (hi, lo) = if pk >= pk1 { (pk, pk1) } else { (pk1, pk) };
-        if target <= hi && target >= lo {
-            let t = (target.ln() - pk.ln()) / (pk1.ln() - pk.ln());
-            return Some((k, t));
-        }
-    }
-    None
-}
-
-fn lerp(a: f64, b: f64, t: f64) -> Option<f64> {
-    (a.is_finite() && b.is_finite()).then_some(a + t * (b - a))
 }
 
 #[cfg(test)]

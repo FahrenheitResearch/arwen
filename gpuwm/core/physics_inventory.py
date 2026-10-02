@@ -19,7 +19,8 @@ interpreter where cupy does not resolve.
 
 from __future__ import annotations
 
-from gpuwm.config import RunConfig, SASE_PBL_SCHEME, radiation_enabled
+from gpuwm.config import (RunConfig, SASE_PBL_SCHEME, UW_PBL_SCHEME,
+                          radiation_enabled)
 
 #: HORIZONTAL EDDY-VISCOSITY DIAGNOSTIC (cfg.hmix_k_diag): the (momentum,
 #: scalar) history names each horizontal mixing producer publishes under.
@@ -76,6 +77,47 @@ def physics_driver_required(cfg: RunConfig) -> bool:
     return bool(cfg.mp_physics or physics_enabled(cfg))
 
 
+def terrain_drag_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+    """TerrainDrag's domain-sized coefficients and statistics, held on GPU."""
+    from gpuwm.static.orographic import GWD_FIELDS
+
+    shape = (int(cfg.ny), int(cfg.nx))
+    shapes = {}
+    if int(getattr(cfg, "topo_wind", 0) or 0):
+        shapes.update({f"terrain_drag/{name}": shape
+                       for name in ("ctopo", "ctopo2")})
+    for name in GWD_FIELDS.get(int(getattr(cfg, "gwd_opt", 0) or 0), ()):
+        shapes[f"terrain_drag/gwd/{name}"] = shape
+    return shapes
+
+
+def terrain_drag_transient_shapes(cfg: RunConfig
+                                  ) -> dict[str, tuple[int, ...]]:
+    """Per-call and cold-start terrain-drag workspace, all four-byte words.
+
+    Physics supplies contiguous float32 inputs and int32 KPBL, so coercion
+    aliases them.  Drag builds one mass-height field with one expression
+    intermediate, and packs the four directional planes for each statistic
+    and scale.  Its existing momentum targets are updated in place.  GSL
+    under SASE also diagnoses two surface planes without changing its
+    surface-layer carriers.  Topographic cold start holds three work planes
+    (input statistic, zero placeholder, laplacian), while each YSU call
+    holds two output planes; their envelope is three.
+    """
+    nz, ny, nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
+    shapes = {}
+    if int(getattr(cfg, "topo_wind", 0) or 0):
+        shapes["terrain_drag/topo_work"] = (3, ny, nx)
+    option = int(getattr(cfg, "gwd_opt", 0) or 0)
+    if option:
+        shapes["terrain_drag/column_heights"] = (2, nz, ny, nx)
+        scales = 2 if option == 3 else 1
+        shapes["terrain_drag/directional_statistics"] = (8 * scales, ny, nx)
+        if option == 3 and int(cfg.bl_pbl_physics) == SASE_PBL_SCHEME:
+            shapes["terrain_drag/sase_boundary"] = (2, ny, nx)
+    return shapes
+
+
 #: The one PBL selector whose driver path (``PhysicsDriver._run_ysu``, the
 #: ``1`` row of the PBL dispatch table in gpuwm/core/physics.py) creates the
 #: retained ``last_ysu`` output dict.
@@ -120,6 +162,10 @@ def physics_reuses_pbl_composition(cfg: RunConfig) -> bool:
 #: measurement constructs).  They used to be three literal tuples, and
 #: mp=16 reached production having moved only two of them.
 PBL_RQI_MICROPHYSICS = (6, 8, 9, 10, 16, 18, 28, 50)
+
+
+#: Microphysics producers with an output-due radar reflectivity carrier.
+REFL_10CM_MICROPHYSICS = (1, 6, 8, 9, 10, 16, 18, 28, 50)
 
 
 #: The raw PBL fields needed to repeat mass coupling after a grid move.
@@ -525,7 +571,12 @@ YSU_BLOCK = 32
 #: Blocks per SM the tile is sized for.  MEASURED, not assumed -- see
 #: docs/kernel_local_memory_bounds.md for the sweep this came from.  The
 #: device query in :func:`gpuwm.core.ysu.ysu_tile_columns` only ever
-#: lowers it.
+#: lowers it.  lane/282-bw-physics (b28c20509) doubled it to queue a second
+#: wave; 2.8.2 restores 16 because the doubled workspace is priced on every
+#: YSU domain (313,344,000 more bytes on an RTX 5090 at nz = 50) and turned
+#: trees that fit into refusals (tests/test_streamed_admission.py,
+#: tests/test_auto_search_host_floor.py) for a 0.06 to 0.3 percent
+#: forecast-hour gain.
 YSU_TILE_BLOCKS_PER_SM = 16
 
 
@@ -569,7 +620,8 @@ __all__ = [
     "MYJ_SFCLAY_OUTPUTS",
     "MYNN_PBL_DIAGNOSTICS_2D", "MYNN_PBL_DIAGNOSTICS_INT_2D",
     "MYNN_PBL_STATE_3D", "MYNN_SURFACE_OUTPUTS",
-    "PBL_RQI_MICROPHYSICS", "SFCLAY_OUTPUTS",
+    "PBL_RQI_MICROPHYSICS", "PHYSICS_SLOT_DISPATCH", "REFL_10CM_MICROPHYSICS",
+    "SFCLAY_OUTPUTS",
     "SHWS_SLOTS", "SHINHONG_BLOCK", "SHINHONG_TILE_BLOCKS_PER_SM",
     "shinhong_workspace_floats",
     "YSUWS_SLOTS", "YSU_BLOCK", "YSU_TILE_BLOCKS_PER_SM",
@@ -578,3 +630,65 @@ __all__ = [
     "physics_enabled", "physics_retains_ysu_output",
     "physics_reuses_pbl_composition", "ysu_workspace_floats",
 ]
+
+
+#: WRF selector value -> the ``PhysicsDriver`` method that runs THAT scheme.
+#: Zero means the slot is off and maps to ``None``.  Every dispatch in
+#: :meth:`PhysicsDriver.compute` goes through this table; a value that is
+#: absent raises :class:`UnroutedPhysicsSelectorError` instead of falling
+#: through to whichever scheme happens to be wired.  ``_run_sfclay``
+#: additionally re-dispatches on the exact value internally, so the two
+#: MM5 spellings and MYNN cannot be confused with each other either.
+PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
+    "sf_sfclay_physics": {
+        0: None,
+        1: "_run_sfclay",     # revised MM5
+        # Eta similarity (WRF v4.6.1 module_sf_myjsfc.F).  It gets its OWN
+        # runner rather than a fourth _run_sfclay arm because it publishes
+        # a different set: AKHS/AKMS/THZ0/QZ0/UZ0/VZ0 and no MOL, ZOL,
+        # PSIM/PSIH, REGIME, GZ1OZ0 or WSPD.  gpuwm.config.
+        # validate_myj_pairing refuses it with any PBL but MYJ for exactly
+        # that reason.
+        2: "_run_myj_sfclay",
+        5: "_run_sfclay",     # MYNN surface layer
+        91: "_run_sfclay",    # classic MM5
+    },
+    "sf_surface_physics": {
+        0: None,
+        2: "_run_noah",       # Noah LSM
+        3: "_run_ruc",        # RUC LSM
+        4: "_run_noahmp",     # Noah-MP LSM
+    },
+    "bl_pbl_physics": {
+        0: None,
+        1: "_run_ysu",        # YSU
+        # MYJ (WRF v4.6.1 module_bl_myjpbl.F), Mellor-Yamada level 2.5 as
+        # extended by Janjic.  Unlike every other row here the scheme does
+        # its OWN implicit vertical diffusion, so _run_myj_pbl receives
+        # finished tendencies rather than diffusivities.  Its surface
+        # pairing is enforced in gpuwm.config.validate_myj_pairing, which
+        # is WRF's own fatal at module_physics_init.F:3770-3772.
+        2: "_run_myj_pbl",
+        5: "_run_mynn_pbl",   # MYNN EDMF
+        # Shin-Hong scale-aware (WRF v4.6.1 module_bl_shinhong.F).  The
+        # scheme has NO RunConfig knobs on purpose: WRF's
+        # shinhong_tke_diag namelist is deliberately not imported.  The
+        # TKE chain is a pure passenger diagnostic -- the tendencies
+        # never read it, proven on the pinned source (the case-27/case-1
+        # oracle pair in tests/test_shinhong_wrf461_parity.py pins
+        # OFF/ON bitwise-identical tendencies) -- so ArWen computes it
+        # every step under scheme 11 (_run_shinhong passes tke_diag=1
+        # unconditionally) and publishes it as state.e_sgs, the field
+        # the D1 gray-zone instrument scores.
+        11: "_run_shinhong",
+        # UW moist turbulence (WRF v4.7.1 module_bl_camuwpbl_driver.F,
+        # CAMUWPBLSCHEME).  Like MYJ it performs its own implicit
+        # diffusion and returns finished tendencies; unlike every other
+        # row it computes in binary64 (CAM's real(r8)) and reads the
+        # radiation step's held RTHRATENLW and CLDFRA.
+        UW_PBL_SCHEME: "_run_uwpbl",
+        # SASE: not a WRF scheme and deliberately outside WRF's selector
+        # namespace, so it can never collide with one WRF adds later.
+        SASE_PBL_SCHEME: "_run_sase",
+    },
+}

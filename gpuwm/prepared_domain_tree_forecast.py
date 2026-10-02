@@ -379,9 +379,10 @@ def _bound_authority(authority: Mapping[str, object], head) -> dict:
 
     An as-posted head's domains bind its input plan where the manifest
     digest goes (the L3 design ruling): exactly this head's placeholder is
-    taken, and only in the identity keys the head declares manifest-bound.
-    The seal writes the digest, and :func:`_seal_tree_inputs` holds every
-    domain to it.  Everything else is a SHA-256 digest, as before.
+    taken, and only in the identity keys the head declares manifest-bound
+    or document-bound.  The seal writes the named document's digest, and
+    :func:`_seal_tree_inputs` holds every domain to it.  Everything else
+    is a SHA-256 digest, as before.
     """
 
     placeholder = None
@@ -391,7 +392,8 @@ def _bound_authority(authority: Mapping[str, object], head) -> dict:
 
         posted = head["basis"]["as_posted"]
         placeholder = as_posted_placeholder(posted["input_plan_sha256"])
-        bound = tuple(posted["manifest_bound_identity_keys"])
+        bound = (tuple(posted["manifest_bound_identity_keys"])
+                 + tuple(posted.get("document_bound_identity_keys") or {}))
     return {label: (value if placeholder is not None and label in bound
                     and value == placeholder else _digest(value, label))
             for label, value in authority.items()}
@@ -1410,68 +1412,6 @@ def _head_needs_seal(exp, *, relocation_follow: bool,
         return ("its nests follow a source, and this head carries no "
                 "statics corridor for a moving nest to re-ground over, "
                 "which the preparation's seal writes")
-    tiles = getattr(exp, "tiles", None)
-    if (tiles is not None and tiles.enabled
-            and streaming.options_for_domain(exp.domains[0], tiles).mode
-            == "on"):
-        # ``mode = "on"`` streams the root whatever the card.  ``auto``
-        # streams it only where the planner says it does not fit
-        # resident, which is asked of the card once the head is verified
-        # (:func:`_root_store_needs_seal`).
-        return ROOT_STORE_NEEDS_SEAL
-    return None
-
-
-#: Why a head-bound tree whose root streams under ``[tiles]`` starts after
-#: the seal: the forecast reads the root's host store, which is filled from
-#: the root's sealed prepared cache, and at the head that cache has no
-#: header and not every boundary interval.
-ROOT_STORE_NEEDS_SEAL = ("[tiles] streams its root from a host store, which "
-                         "is filled from the root's sealed prepared cache")
-
-
-def _root_store_needs_seal(inputs) -> str | None:
-    """Why this head-bound tree starts after the seal after all, or ``None``.
-
-    ``[tiles] mode = "auto"`` streams a domain only where the planner says
-    it does not fit resident on this card, and every cyclone setup writes
-    ``auto``.  Asked before the head was verified, a ``[tiles]`` table
-    alone sent such a tree to the seal wait even when its root was going
-    to run resident, which is a storm-following tree's usual answer on the
-    card it was sized for.  So the question is asked here, of the same
-    admission the run takes
-    (:func:`gpuwm.core.streaming.cold_tree_streaming_decision` on the cold
-    planning machine, priced with the root's own boundary tables), and
-    only a root the planner streams waits.  The run asks it again as it
-    decides, and a root it streams at the head still starts on the seal
-    (:func:`run_prepared_tree`).
-    """
-
-    if getattr(inputs, "stream_head", None) is None:
-        return None
-    exp = inputs.experiment
-    domains = tuple(getattr(exp, "domains", ()) or ())
-    tiles = getattr(exp, "tiles", None)
-    if (not domains or tiles is None or not tiles.enabled
-            or not streaming.options_for_domain(domains[0], tiles).enabled):
-        return None
-    root_reader = _root_bundle(inputs).cache_reader
-    decisions: dict = {}
-    try:
-        cold_tree_streaming_decision(
-            exp, _prepared_planning_nodes(inputs),
-            machine=streaming.cold_planning_machine(exp), decisions=decisions,
-            source=prepared_single._priced_boundary_source(
-                root_reader, inputs.source))
-    except Exception:  # noqa: BLE001 - the run's own admission answers it
-        # A tree the admission refuses (or a card it cannot read) is the
-        # run's to refuse, with its failed-run receipt, exactly as it did
-        # before this question was asked early; the run's decision below
-        # still sends a streamed root to the seal.
-        return None
-    decision = decisions.get(int(domains[0].grid_id))
-    if decision is not None and decision.stream:
-        return ROOT_STORE_NEEDS_SEAL + " on this card"
     return None
 
 
@@ -1650,6 +1590,21 @@ def _seal_tree_inputs(inputs: PreparedTreeInputs, *,
             "the root's streamed cache header is not the one the seal "
             "check read")
 
+    document_digests = None
+    if posted is not None and head["basis"]["as_posted"].get(
+            "document_bound_identity_keys"):
+        from gpuwm.ingest.boundary_stream import document_bound_digests
+
+        manifest_path = inputs.prepared_root / str(
+            head["basis"]["as_posted"]["manifest_path"])
+        if _sha256(manifest_path) != posted["input_manifest_sha256"]:
+            raise RuntimeError(
+                "the sealed tree's input manifest changed after the seal "
+                "check, so its document digests no longer bind this run")
+        document_digests = document_bound_digests(
+            head["basis"]["as_posted"],
+            _json_object(manifest_path, "sealed tree input manifest"))
+
     def same_identity(started, bound) -> bool:
         if posted is None:
             return dict(started.cache_identity) == dict(bound.cache_identity)
@@ -1662,7 +1617,8 @@ def _seal_tree_inputs(inputs: PreparedTreeInputs, *,
                 plan_sha256=head["basis"]["as_posted"]["input_plan_sha256"],
                 manifest_sha256=posted["input_manifest_sha256"],
                 manifest_bound=head["basis"]["as_posted"][
-                    "manifest_bound_identity_keys"])
+                    "manifest_bound_identity_keys"],
+                document_bound=document_digests)
         except BoundaryStreamError:
             return False
         return True
@@ -1770,6 +1726,8 @@ def preflight_prepared_tree(
     experiment_config_sha256: str,
     physics_profile: str | None = None,
     prepared_head_sha256: str | None = None,
+    devices: int | None = None,
+    devices_options=None,
 ) -> PreparedTreeInputs:
     """Verify the complete hierarchy and resolve a runnable CPU-only plan.
 
@@ -1785,7 +1743,8 @@ def preflight_prepared_tree(
     preflight_arguments = MappingProxyType(dict(
         prepared_root=prepared_root, experiment_config=experiment_config,
         experiment_config_sha256=experiment_config_sha256,
-        physics_profile=physics_profile))
+        physics_profile=physics_profile, devices=devices,
+        devices_options=devices_options))
     if (preparation_receipt_sha256 is None) == (prepared_head_sha256 is None):
         raise ValueError(
             "a prepared tree binds its sealed preparation receipt or its "
@@ -1836,6 +1795,17 @@ def preflight_prepared_tree(
                 "the one its evidence carries")
 
     exp = load_experiment(experiment_config)
+    # [devices] on a tree: the bound TOML's own table, or the split handed in
+    # beside it (gpuwm sim --devices-table / --devices; the bundle binds the
+    # TOML's bytes, so a split cannot be asked for by editing it).
+    if devices_options is not None:
+        exp = replace(exp, devices=devices_options)
+    if devices is not None:
+        from gpuwm.core.devices import override_device_count
+        exp = replace(exp, devices=override_device_count(exp.devices, devices))
+    from gpuwm.core.devices import validate_device_road, validate_tree_devices
+    validate_device_road(exp.devices, getattr(exp, "tiles", None), exp.domains)
+    validate_tree_devices(exp)
     # THE COORDINATE THE PREPARED INPUTS CARRY, before anything derived
     # from the configuration's own etac exists: the per-domain identity
     # comparison below, a streamed tile buffer's rebuilt coordinate, a
@@ -2794,6 +2764,75 @@ def _root_bundle(inputs):
                 if int(bundle.grid_id) == root_id)
 
 
+def tree_urban_columns(inputs) -> dict[int, int] | None:
+    """Each BEP+BEM domain's urban columns, read off the land cover this
+    door is about to restore (A176).
+
+    The configuration door prices BEP+BEM's column workspace at every
+    column urban because it runs before the land cover exists; this door
+    holds it.  Each bundle's static LU_INDEX (a wrfinput's own LU_INDEX
+    and FRC_URB2D, which its urban cold start reads), on the land-use
+    dataset that domain's physics initializes from: the wrfinput and
+    met_em doors' own attributes, the prepared caches' native identity.
+    ``None`` when no domain runs BEP+BEM.
+
+    A domain whose ground can change keeps the every-column bound: a mover
+    and its subtree, which rebuild their statics for new ground, and a
+    spawn nest and its subtree, placed when the trigger fires.  The land
+    cover restored at the start is not the one such a domain can hold.
+    """
+    from gpuwm.core.urban_state import (bem_workspace_counted,
+                                        prepared_urban_columns)
+    from gpuwm.static.corridor import relocating_subtree_grid_ids
+
+    exp = inputs.experiment
+    spawned = frozenset(int(dc.grid_id) for dc in exp.domains
+                        if getattr(dc, "spawn", None) is not None)
+    moving = set(relocating_subtree_grid_ids(exp))
+    if spawned:
+        moving.update(relocating_subtree_grid_ids(exp, moving_roots=spawned))
+    runs = {int(dc.grid_id): dc.run for dc in exp.domains}
+    counts: dict[int, int] = {}
+    for bundle in inputs.domains:
+        run = runs.get(int(bundle.grid_id))
+        if (run is None or int(bundle.grid_id) in moving
+                or not bem_workspace_counted(run)):
+            continue
+        raw = getattr(getattr(bundle, "restored", None), "raw", None) or {}
+        static = getattr(bundle, "static_fields", None) or {}
+        selection = getattr(bundle, "geog_selection", None)
+        attrs = (NATIVE_LANDUSE_IDENTITY if selection is None
+                 else selection.landuse_global_attrs())
+        if attrs.get("MMINLU") is None:
+            continue
+        count = prepared_urban_columns(
+            run, raw.get("LU_INDEX", static.get("LU_INDEX")),
+            landuse_dataset=str(attrs["MMINLU"]),
+            frc_urb2d=raw.get("FRC_URB2D", static.get("FRC_URB2D")))
+        if count is not None:
+            counts[int(bundle.grid_id)] = count
+    return counts or None
+
+
+def _root_setup_fingerprint(node, stream=None):
+    """Hash a root's complete setup using its domain geography.
+
+    A store-backed state's slab template can report different map-factor
+    or rotation flags from the whole domain. The restart setup rebuilds
+    those flags from the full geography before checking the sealed setup.
+    """
+    from gpuwm.state_serialization_contract import setup_fingerprint
+
+    if stream is None:
+        return setup_fingerprint(node.state)
+    from tilestream.restart_stream import domain_header_view
+
+    with domain_header_view(
+            stream.restart_setup(), stream.template_state, stream.store,
+            float(node.clock.elapsed_seconds)) as view:
+        return setup_fingerprint(view)
+
+
 def _priced_external_boundary_source(boundaries, source):
     """What the tree door prices a handed-in root boundary set from.
 
@@ -2811,6 +2850,93 @@ def _priced_external_boundary_source(boundaries, source):
         [{"fields": list(getattr(interval, "fields", None) or ())}
          for interval in boundaries.intervals])
     return source if carried is None else carried
+
+
+def _admit_devices_tree(exp, split_ids, *, forcing_intervals,
+                        forcing_interval_seconds, source):
+    """Per-card memory admission for a split tree, before anything restores.
+
+    Each split grid is priced the way the single-domain door prices one
+    (``estimate_devices``: every slab's resident envelope, its packed seam
+    bands and the store-building template), each resident grid as a
+    resident domain on the first card, and the pinned host stores of the
+    split grids together.  Refused (unless ``--no-memory-gate``) when any
+    card or the host is over: the breakage it prevents is a CUDA or pinned
+    host allocation failure part way through restoring the tree.
+    """
+    import cupy as cp
+    from gpuwm.core.devices import validate_device_count
+    from gpuwm.core.devices_memory import GIB, estimate_devices_tree
+    from gpuwm.core.preflight import host_available_bytes
+
+    validate_device_count(exp.devices, cp.cuda.runtime.getDeviceCount())
+    ids = list(dict.fromkeys(exp.devices.device_ids()))
+    budgets = {}
+    for dev in ids:
+        with cp.cuda.Device(dev):
+            budgets[dev] = int(cp.cuda.runtime.memGetInfo()[0])
+    # The same pricing `gpuwm check --devices` and the `gpuwm go` gate
+    # print before the download (devices_memory.estimate_devices_tree).
+    estimate = estimate_devices_tree(
+        exp, split_ids=split_ids, forcing_intervals=forcing_intervals,
+        forcing_interval_seconds=forcing_interval_seconds, source=source)
+    cards = {row["card"]: int(row["total_bytes"]) for row in estimate["cards"]}
+    host = int(estimate["host_bytes"])
+    rows = estimate["grids"]
+    host_budget = host_available_bytes()
+    lines = []
+    refused = False
+    for dev in ids:
+        over = cards[dev] > budgets[dev]
+        refused |= over
+        lines.append(f"card {dev}: {'REFUSED' if over else 'ADMITTED'}: "
+                     f"{cards[dev] / GIB:.2f} GiB priced; free "
+                     f"{budgets[dev] / GIB:.2f} GiB")
+    host_over = host_budget is not None and host > host_budget
+    refused |= host_over
+    lines.append(f"host: {'REFUSED' if host_over else 'PRICED'}: pinned stores "
+                 f"{host / GIB:.2f} GiB")
+    verdict = "\n".join(lines)
+    print("prepared tree: [devices] grids " + ", ".join(
+        f"d{g:02d}" for g in split_ids) + " split on cards "
+        f"{list(exp.devices.device_ids())}\n" + verdict, flush=True)
+    overridden = False
+    if refused:
+        from gpuwm.core.resident_admission import memory_gate_overridden
+        if not memory_gate_overridden():
+            raise DevicesRefused(
+                "[devices] tree memory admission refused before anything "
+                "restores: prevent a card or pinned host allocation failure "
+                "part way through the tree\n" + verdict)
+        overridden = True
+        print("prepared tree: [devices] memory admission OVERRIDDEN by "
+              "--no-memory-gate: the per-card figures are priced upper bounds "
+              "and each card's own allocation now decides", flush=True)
+    return {"split_grid_ids": list(split_ids), "grids": rows,
+            "card_bytes": {str(dev): cards[dev] for dev in ids},
+            "card_free_bytes": {str(dev): budgets[dev] for dev in ids},
+            "host_bytes": host, "verdict": verdict, "refused": bool(refused),
+            "overridden": overridden}
+
+
+def _devices_tree_receipt(exp, split_ids, steppers, decisions, admission):
+    """The split tree's receipt: options, admission, and per split grid the
+    slab plan, the transport actually used and how output reached the host."""
+    from gpuwm.prepared_single_domain_forecast import _devices_output_road
+    grids = {}
+    for gid in split_ids:
+        stepper = steppers.get(gid)
+        run = getattr(stepper, "tiled_run", None)
+        decision = decisions.get(gid)
+        report = getattr(run, "transport_report", None)
+        grids[f"d{gid:02d}"] = {
+            "halo": getattr(decision, "halo", None),
+            "detail": dict(getattr(decision, "detail", {}) or {}),
+            "transport_report": report() if callable(report) else None,
+            "output_road": _devices_output_road(run),
+        }
+    return {"options": exp.devices.to_json(), "admission": admission,
+            "grids": grids}
 
 
 def run_prepared_tree(
@@ -2846,6 +2972,11 @@ def run_prepared_tree(
 
     if io_mode not in {"history", "none"}:
         raise ValueError("io_mode must be 'history' or 'none'")
+    from gpuwm.output_disk import require_output_space, renderer_products
+
+    require_output_space(
+        inputs.experiment, output_directory, restart=restart, io_mode=io_mode,
+        render_products=renderer_products(first_products, observer))
     _verify_thompson_assets(inputs.experiment)
     if initialization is not None:
         initialization.verify_inputs(inputs)
@@ -2862,6 +2993,21 @@ def run_prepared_tree(
     inputs = _with_terrain_acoustics(inputs)
 
     import cupy as cp
+
+    # [devices] ON A TREE: the grids that run split, as resident slabs on
+    # the configured cards; every other grid runs resident on the first of
+    # them.  Empty -- and every line below the one-card tree it always was --
+    # when the experiment does not split.
+    from gpuwm.core.devices import DevicesRefused, validate_tree_devices
+    split_ids = tuple(int(g) for g in validate_tree_devices(inputs.experiment))
+    if split_ids:
+        if initialization is not None:
+            raise DevicesRefused(
+                "[devices] on a tree initialized by an external door (wrfinput, "
+                "met_em) is refused: those doors restore every grid resident "
+                "before the split could take them, so the grids the split exists "
+                "for would be allocated whole on one card")
+        cp.cuda.Device(inputs.experiment.devices.device_ids()[0]).use()
 
     from gpuwm import runtime
     from gpuwm.config import radiation_scheme_ids
@@ -2961,9 +3107,17 @@ def run_prepared_tree(
             root_reader.header["metadata"]["lbc"]["intervals"])
         priced_boundary = prepared_single._priced_boundary_source(
             root_reader, inputs.source)
+    # The land cover this run restores prices BEP+BEM's column workspace,
+    # in the ledger and at the admission below (A176).
+    from gpuwm.core.urban_state import urban_columns_line
+    urban_columns = tree_urban_columns(inputs)
+    urban_line = urban_columns_line(urban_columns)
+    if urban_line is not None:
+        print(f"prepared tree: {urban_line}", flush=True)
     estimate = estimate_experiment(
         exp, forcing_interval_seconds=inputs.boundary_interval_seconds,
         forcing_intervals=retained_intervals, lateral_boundaries=external_boundaries,
+        urban_columns=urban_columns,
     )
     cold_decisions = {}
     cold_nodes = _prepared_planning_nodes(inputs)
@@ -2972,8 +3126,21 @@ def run_prepared_tree(
     # estimate, which is a different question against a different budget.
     cold_tree = cold_tree_streaming_decision(
         exp, cold_nodes, machine=planning_machine, decisions=cold_decisions,
-        source=priced_boundary)
-    if cold_tree is None:
+        source=priced_boundary, urban_columns=urban_columns)
+    devices_admission = None
+    if split_ids:
+        # The split grids are priced per card, the resident ones on the
+        # first card, all before anything restores; and the split grids are
+        # store-direct (never resident on one card), so they join store_ids.
+        devices_admission = _admit_devices_tree(
+            exp, split_ids, forcing_intervals=retained_intervals,
+            forcing_interval_seconds=inputs.boundary_interval_seconds,
+            source=priced_boundary)
+        for dc in exp.domains:
+            if int(dc.grid_id) in split_ids:
+                cold_decisions[dc.grid_id] = streaming.ranked_decision(
+                    dc.run, exp.devices)
+    if cold_tree is None and not split_ids:
         # NOTHING STREAMS, SO THE WHOLE TREE IS RESIDENT, and it is admitted
         # before the shared workspaces and the first restore allocate: with
         # no [tiles] block the tree walk above consults nothing, and a tree
@@ -2998,18 +3165,11 @@ def run_prepared_tree(
                           profile=getattr(admission_machine,
                                           "device_profile", None),
                           boundary_species=source_boundary_species(
-                              priced_boundary))),
+                              priced_boundary),
+                          urban_columns=urban_columns)),
             what="this prepared domain tree, held resident on the card")
     store_ids = ({gid for gid, decision in cold_decisions.items() if decision.stream}
-                 if initialization is None else set())
-    if (getattr(inputs, "stream_head", None) is not None
-            and int(exp.domains[0].grid_id) in store_ids):
-        # The door asked this before the run (_root_store_needs_seal) and
-        # the card answered resident; asked again here it streams the root
-        # (its free memory moved in between).  Nothing is allocated yet, so
-        # the run starts again on the seal rather than reading a store the
-        # head cannot fill.
-        raise TreeHeadNeedsSeal(ROOT_STORE_NEEDS_SEAL + " on this card")
+                 if initialization is None else set()) | set(split_ids)
     resident_domains = tuple(dc for dc in exp.domains if dc.grid_id not in store_ids)
     started = time.perf_counter()
     # The estimator and core.model allocate shared arenas only for a tree.
@@ -3239,7 +3399,11 @@ def run_prepared_tree(
                 static=source.static_fields, landuse_attrs=NATIVE_LANDUSE_IDENTITY,
                 grid=grid, valid_time=exp.domain_start_time(domain.grid_id),
                 rows_per_slab=rows, budget_bytes=decision.detail.get('host_claim_bytes'),
-                constant_glw_wm2=declared_constant_glw(exp), physics_initializer=physics)
+                constant_glw_wm2=declared_constant_glw(exp), physics_initializer=physics,
+                **({"reader": source.cache_reader,
+                    "boundary_source": boundary_source}
+                   if boundary_source is not None and domain.parent_id == 0
+                   else {}))
         if perturbation_rows:
             receipt = copy(perturbation_rows[0])
             receipt['bubbles'] = [dict(row) for row in receipt['bubbles']]
@@ -3437,18 +3601,40 @@ def run_prepared_tree(
             from contextlib import nullcontext
             reservation = initial_reservations.get(domain.grid_id)
             with reservation.activate() if reservation is not None else nullcontext():
-                stream = streaming.store_domain_builder(store_bundle, node=node, clock=node.clock)(
-                    None, domain.run, cold_decisions[domain.grid_id])
+                if int(domain.grid_id) in split_ids:
+                    # The split grid's slabs, each built from the pinned
+                    # store at its compute window on its own card; a nest's
+                    # slabs window the rolling tables its coupler attaches
+                    # to node.state (ranked_domain_builder's node=).
+                    from gpuwm.core.adaptive_clock import maximum_map_factor
+                    cold_decisions[domain.grid_id] = streaming.ranked_decision(
+                        domain.run, exp.devices, max_map_factor=maximum_map_factor(
+                            geography=store_bundle.geography))
+                    stream = streaming.ranked_domain_builder(
+                        store_bundle, clock=node.clock, options=exp.devices,
+                        node=node)(None, domain.run, cold_decisions[domain.grid_id])
+                else:
+                    stream = streaming.store_domain_builder(store_bundle, node=node, clock=node.clock)(
+                        None, domain.run, cold_decisions[domain.grid_id])
             stream._state = node.state
             node.state._streamed_domain = stream
             from gpuwm.core.streaming import _STORE_ATTR, STREAMED_SCRATCH_ATTR
-            setattr(node.state, _STORE_ATTR, stream.store)
+            # A split grid's store is a mirror of its slabs; publishing it is
+            # a reference, not a reason to drain it (the next sweep would
+            # then copy the whole store back to every slab for nothing).
+            published = (stream._run.raw_store if getattr(stream, "ranked", False)
+                         else stream.store)
+            setattr(node.state, _STORE_ATTR, published)
             setattr(node.state, STREAMED_SCRATCH_ATTR,
-                {key[8:]: value for key, value in stream.store.items() if key.startswith('scratch/')})
+                {key[8:]: value for key, value in published.items() if key.startswith('scratch/')})
             if reservation is not None:
                 stream._reconstruction_reservation = reservation
                 stream._reconstruction_host_budget_bytes = int(cold_decisions[domain.grid_id].detail['host_claim_bytes'])
             early_steppers[domain.grid_id] = stream
+            if boundary_source is not None and domain.parent_id == 0:
+                from gpuwm.ingest.boundary_stream import keep_interval_check
+
+                keep_interval_check(boundary_source.intervals, clock_guard)
         if parent is not None:
             parent.children.append(node)
             if exp.feedback == 1 and starts_at_t0:
@@ -3915,8 +4101,12 @@ def run_prepared_tree(
             model, exp.tiles, builders=streaming.builders_for_tree(model, exp.tiles),
             decisions=streaming_decisions, machine=planning_machine,
             tree_decision=cold_tree)
+    # A split grid's decision is the [devices] road's, reported in the
+    # devices receipt; the [tiles] summary speaks for the rest.
+    tile_decisions = {gid: decision for gid, decision in streaming_decisions.items()
+                      if int(gid) not in split_ids}
     streaming_report = streaming.streaming_receipt(
-        exp.tiles, streaming_decisions)
+        exp.tiles, tile_decisions)
     if streaming_report:
         print(f"prepared tree: {streaming_report['summary']}", flush=True)
 
@@ -4057,14 +4247,13 @@ def run_prepared_tree(
         runtime._finalizing_progress(observer, "bind-prepared-seal")
         seal_started = time.perf_counter()
         inputs = _seal_tree_inputs(inputs, stream=boundary_source.intervals)
-        from gpuwm.state_serialization_contract import setup_fingerprint
-
         # The setup the root's restore could not check at the head (its
         # boundary series did not exist yet), checked as the single
         # domain checks it at its seal.
         recorded = _root_bundle(inputs).cache_reader.metadata.get(
             "setup_fingerprint")
-        if setup_fingerprint(nodes[int(exp.root.grid_id)].state) != recorded:
+        root_id = int(exp.root.grid_id)
+        if _root_setup_fingerprint(nodes[root_id], steppers.get(root_id)) != recorded:
             raise RuntimeError(
                 "the sealed root cache records a different setup fingerprint "
                 "than the streamed boundaries reproduce")
@@ -4237,7 +4426,7 @@ def run_prepared_tree(
             # and the receipt therefore byte-identical to the one written
             # before streaming existed -- whenever [tiles] is off.
             "tiles": streaming.receipt_entry(
-                exp.tiles, streaming_decisions),
+                exp.tiles, tile_decisions),
         },
         "output": {
             "io_mode": io_mode,
@@ -4293,6 +4482,9 @@ def run_prepared_tree(
     # prepared_single_domain_forecast.
     if streaming_report:
         report["tiles"] = streaming_report
+    if split_ids:
+        report["devices"] = _devices_tree_receipt(
+            exp, split_ids, early_steppers, cold_decisions, devices_admission)
     # WHICH AEROSOL INITIAL CONDITION EACH DOMAIN STARTED FROM.  PER
     # DOMAIN, because each domain has its own initialization and its own
     # prepared cache: a root fed from WRF's monthly WIF climatology and a
@@ -4595,6 +4787,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the line every xsec: product is cut along, "
                              "`gpuwm render --section`'s own value; "
                              "ignored without --render-products")
+    parser.add_argument("--devices", type=int, default=None, metavar="N",
+                        help="split every grid the tree's [devices] domains "
+                             "names (default every grid) into N resident "
+                             "slabs; replaces [devices] count")
+    parser.add_argument("--devices-table", default=None, metavar="JSON",
+                        dest="devices_table",
+                        help="the tree's [devices] table as JSON (count, grid, "
+                             "ids, transport, domains); validated here, "
+                             "without modifying the prepared configuration "
+                             "or its digests")
     parser.add_argument("--no-memory-gate", action="store_true",
                         dest="no_memory_gate",
                         help="restore a tree whose priced peak envelope "
@@ -4690,6 +4892,12 @@ def main(argv=None, *, observer=None) -> int:
            {"physics_profile": args.physics_profile}),
     }
     try:
+        if args.devices is not None:
+            binding["devices"] = args.devices
+        if args.devices_table is not None:
+            from gpuwm.core.devices import DeviceOptions
+            binding["devices_options"] = DeviceOptions.from_mapping(
+                json.loads(args.devices_table), source="--devices-table")
         if (args.preparation_receipt_sha256 is None) \
                 == (args.prepared_head_sha256 is None):
             raise ValueError(
@@ -4710,9 +4918,6 @@ def main(argv=None, *, observer=None) -> int:
                    {"preparation_receipt_sha256":
                     args.preparation_receipt_sha256}),
             )
-            store_need = _root_store_needs_seal(inputs)
-            if store_need is not None:
-                raise TreeHeadNeedsSeal(store_need)
         except TreeHeadNeedsSeal as waiting:
             print("prepared tree: the forecast starts after the "
                   f"preparation seals: {waiting}",
@@ -4775,7 +4980,6 @@ def main(argv=None, *, observer=None) -> int:
 
     try:
         clock_changed = None
-        needs_seal = None
         try:
             report = run(inputs, first_products, args.restart)
         except StreamedClockChanged as changed:
@@ -4784,21 +4988,14 @@ def main(argv=None, *, observer=None) -> int:
             # on the card; a sealed run started in here restored a second
             # tree beside it.
             clock_changed = str(changed)
-        except TreeHeadNeedsSeal as waiting:
-            # The run's own admission streams the root at the head (see
-            # run_prepared_tree); nothing stepped, so a checkpoint it
-            # resumed from is still this tree's.
-            needs_seal = str(waiting)
-        rerun_reason = clock_changed or needs_seal
+        rerun_reason = clock_changed
         if rerun_reason is not None:
             # The head-bound attempt stepped on a clock the sealed tree does
             # not choose, so it is not this tree's forecast: its outputs are
             # set aside (kept, named) and the forecast runs again on the
             # sealed tree, bound as a launch on its proof binds it.  Not
             # through _seal_tree_inputs, which holds the sealed clock to the
-            # head's and so refuses exactly this tree.  An attempt whose
-            # root the run's admission streams stopped before its first
-            # step, and runs again on the seal the same way.
+            # head's and so refuses exactly this tree.
             # First the heartbeat says a new attempt starts, so a supervisor
             # takes the step and model time going back to zero as that and
             # not as a regression, and times what follows as preparation;

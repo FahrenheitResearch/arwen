@@ -127,9 +127,13 @@ def test_unwinding_the_later_lanes_reaches_the_post_ntiedtke_digest(
     minus a guess.
     """
     root, child = _write(monkeypatch, tmp_path)
-    assert (_digest_without_config_keys(root, _KEYS_APPENDED_SINCE)
+    # e13fa45c0 / 59f7e280f changed the later moist_cq default. Keep
+    # every historical anchor and reconstruct its disabled value explicitly.
+    assert (_digest_without_config_keys(
+        root, _KEYS_APPENDED_SINCE, config_overrides={"moist_cq": False})
             == _POST_NTIEDTKE_ROOT_DIGEST)
-    assert (_digest_without_config_keys(child, _KEYS_APPENDED_SINCE)
+    assert (_digest_without_config_keys(
+        child, _KEYS_APPENDED_SINCE, config_overrides={"moist_cq": False})
             == _POST_NTIEDTKE_CHILD_DIGEST)
 
 
@@ -149,10 +153,31 @@ def test_removing_the_flag_restores_the_pre_ntiedtke_digest(
     """
     root, child = _write(monkeypatch, tmp_path)
     keys = NTIEDTKE_CLOSURE_RUN_FIELDS + tuple(_KEYS_APPENDED_SINCE)
-    assert (_digest_without_config_keys(root, keys)
+    assert (_digest_without_config_keys(
+        root, keys, config_overrides={"moist_cq": False})
             == _PRE_NTIEDTKE_ROOT_DIGEST)
-    assert (_digest_without_config_keys(child, keys)
+    assert (_digest_without_config_keys(
+        child, keys, config_overrides={"moist_cq": False})
             == _PRE_NTIEDTKE_CHILD_DIGEST)
+
+
+def test_the_ntiedtke_anchors_moved_for_the_moist_cq_default_and_nothing_else(
+        monkeypatch, tmp_path):
+    """The e13fa45c0 / 59f7e280f flip is the only new reconstruction."""
+    root, child = _write(monkeypatch, tmp_path)
+    for path, post_digest, pre_digest in (
+            (root, _POST_NTIEDTKE_ROOT_DIGEST, _PRE_NTIEDTKE_ROOT_DIGEST),
+            (child, _POST_NTIEDTKE_CHILD_DIGEST, _PRE_NTIEDTKE_CHILD_DIGEST)):
+        assert _echo(path)["moist_cq"] is True
+        for keys, historical_digest in (
+                (_KEYS_APPENDED_SINCE, post_digest),
+                (NTIEDTKE_CLOSURE_RUN_FIELDS + _KEYS_APPENDED_SINCE,
+                 pre_digest)):
+            current = _digest_without_config_keys(path, keys)
+            restored = _digest_without_config_keys(
+                path, keys, config_overrides={"moist_cq": False})
+            assert current != restored
+            assert restored == historical_digest
 
 
 def test_the_flag_really_is_in_the_echo(monkeypatch, tmp_path):

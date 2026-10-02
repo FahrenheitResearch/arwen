@@ -1145,6 +1145,12 @@ tests/test_aerosol_source_report.py
 tests/test_mynn_pbl.py
 tests/test_mp28_runnable.py
 tests/test_real_init.py
+# The card preparation (lane 281-gpu-forcing-prep): the per-forcing-time host
+# cuts that change no bit, and the preparation price, whose real_columns and
+# closure terms admit or refuse the card route before anything is allocated.
+# Their device halves are GPU shard 1u.
+tests/test_host_setup_cuts.py
+tests/test_preparation_price.py
 tests/test_config_freeze.py
 
 # The P3 (mp_physics=50) CPU legs.  On NO battery list before this: the
@@ -1580,6 +1586,7 @@ tests/test_gfs_initial_perturbation.py
 tests/test_downscale_archive_guards.py
 tests/test_downscale_auto_vram.py
 tests/test_downscale_adaptive_parent.py
+tests/test_offline_child_geography.py
 tests/test_case_catalog.py
 tests/test_source_availability.py
 tests/test_cli_memory_admission.py
@@ -1758,6 +1765,11 @@ tests/test_zadvect_implicit.py
 # gpuwm run's preparation backend pin (A157): prevents a config run on a busy card
 # silently preparing on the CPU while the arm it is compared with prepared on the card.
 tests/test_run_preprocess_backend.py
+
+# CPU devices table, identity, route refusals, forecast seam and per-card admission.
+tests/test_devices_door.py
+# Ranked geometry, transport choice, clock refusals and CFL host arithmetic.
+tests/test_ranked_domain.py
 # A165 (lane 281-w-crit-cfl): WRF's w_crit_cfl.  Its CPU rows: the option
 # and its named refusals, the namelist import, the restart and tree
 # identity, and the WRF 4.7.1 fixture checked in WRF's own float32 order;
@@ -1775,6 +1787,68 @@ tests/test_toolchain_rows.py
 # refusal of runs that fit (the urban arrays at their allocated size, the
 # 750 m city trees inside a 24 GiB card's budget).
 tests/test_memory_gate_a163.py
+# A176 (lane 281-bem-workspace-price): the prepared doors price BEP+BEM's
+# column workspace from the land cover's urban columns.  Prevents a price
+# below the plan the run allocates (a CUDA out-of-memory) and the refusal of
+# a prepared run at the configuration's every-column bound although it fits.
+tests/test_urban_workspace_price.py
+# A176 prepared admission counts at live heads, CUDA producer sharing and
+# prepared multi-run reservations. Prevents all-urban bounds delaying a
+# prepared forecast whose actual column workspace fits, while keeping an
+# oversized workspace refused and unknown or changing ground at its bound.
+tests/test_prepared_bem_auto_price.py
+tests/test_chained_bem_workspace_price.py
+tests/test_multi_run_bem_workspace_price.py
+
+# REASON: A186 tile checkpoints hash only prepared forcing before the seal;
+# restored prefixes retain all carriers and reject changed heads or forcing.
+tests/test_streamed_restart_boundary_prefix.py
+
+# REASON: A186 root tile buffers attach only the first prepared interval;
+# later intervals retain their checks and reuse the forcing slot at seams.
+tests/test_streamed_root_factory.py
+
+# REASON: A186 sends a streamed parent's feedback through bounded windows;
+# this file holds that a streamed child still restricts no species owing a
+# conversion (it failed at the first A186 tip and no stage-1 file saw it).
+tests/test_nest_feedback_reverse_edge.py
+
+# A181 (lane 281-child-acoustic-adaptation): the offline child and DA nested doors
+# take the acoustic adaptation, and checkpoints keep a parent's auto epssm.
+tests/test_child_acoustic_adaptation.py
+tests/test_da_nested_acoustic_adaptation.py
+# Fixed-clock and ensemble checkpoints preserve the automatic choice inherited
+# by downscale children; actual checkpoint serializers and the CLI are covered.
+tests/test_fixed_parent_acoustic_inheritance.py
+
+# A136 L10 (lane a136-l10-wiring): the as-posted fetch (its lead markers,
+# schedule rows and their last answers, exit 75 and the verified prefix) and
+# the mapped engine's lead-batch preparation ran on no stage-1 leg while every
+# door now runs them by default; and the staged chain (run-plan and go on a
+# mapped source) preparing beside its fetch, the mapped door forwarding
+# --as-posted and the forecast binding a mapped as-posted head.
+tests/test_posted_mapped_preparation.py
+# test_fetch_as_posted.py also holds (A136 L7c(b)) that a complete source hour
+# publishes once before its transfer batch ends and that repeated prefix checks
+# keep the marker a preparation has bound.
+tests/test_fetch_as_posted.py
+tests/test_staged_chain_as_posted.py
+
+# A136 L7c (b): native HRRR single domains and trees
+# prepares as its leads post.  Prevents a sealed native cache that binds a
+# bridge or source manifest no lead's marker or decode named, a decoder that
+# reads a lead before its files are its posted marker's, and a preparation
+# that waits a lead's whole lateness budget beside a decoder that had died.
+tests/test_native_hrrr_posted.py
+# A native tree must hold child and runner document identities to the
+# root's admitted leads, even when its manifests exist only at the seal.
+tests/test_native_hrrr_posted_tree.py
+tests/test_posted_tree_identity.py
+tests/test_native_posted_tree_identity.py
+tests/test_native_posted_tree_recovery.py
+# A136 native posted proof: a finishing download must not overtake older
+# leads waiting on the same host and delay their posting markers.
+tests/test_fetch_pool_host_order.py
 
 # A174: the Noah WRF 4.6.1 parity file's CPU rows (fixture receipts, branch
 # coverage, the baseline table, the mirror) and A167's compiler-row guard,
@@ -1783,6 +1857,7 @@ tests/test_memory_gate_a163.py
 # reaches.  The file was on no battery list, so no leg ran the guard: the
 # GPU pin set names only the file's device row.
 tests/test_noah_wrf461_parity.py
+
 # A180: every door that answers "which suite does this draft run" (the physics
 # check, New forecast's draft, the assistant's planner, gpuwm domain, the run)
 # and the local DA rungs read one default row.  Prevents a plan the run refuses
@@ -1798,3 +1873,92 @@ tests/test_physics_default_agreement.py
 tests/test_fetch_pool.py
 # A dataclass default Python 3.11 refuses breaks import gpuwm on 3.11 (requires-python >=3.11); found by the 2.8.1 pre-cut gate (fetch_routes LegacyPosting.providers).
 tests/test_dataclass_defaults_hashable.py
+
+# Compiled WRF v4.7.1 bigstep oracles: provenance in CPU legs, word comparisons in GPU legs.
+tests/test_bigstep_coupling_wrf471_parity.py
+tests/test_bigstep_momentum_wrf471_parity.py
+tests/test_bigstep_prep_wrf471_parity.py
+tests/test_bigstep_rk_wrf471_parity.py
+
+# Compiled WRF v4.7.1 advection and smallstep fixture, ABI and word-metric
+# contracts must run without a card; device comparisons are GPU-marked.
+tests/test_advect_wrf471_parity.py
+tests/test_smallstep_bookkeeping_wrf471_parity.py
+tests/test_smallstep_horizontal_wrf471_parity.py
+tests/test_smallstep_vertical_wrf471_parity.py
+tests/test_smallstep_oracle_contract.py
+
+# Compiled WRF diffusion fixture integrity runs on the CPU cut leg. Device
+# word comparisons run in the release GPU pin stage; losing these entries
+# would leave changed Fortran sources or stale receipts unchecked on CPU.
+tests/test_diff6_wrf471_parity.py
+tests/test_deformation_wrf471_parity.py
+tests/test_horizontal_diffusion_wrf471_parity.py
+tests/test_vertical_diffusion_wrf471_parity.py
+tests/test_constant_diffusion_wrf471_parity.py
+tests/test_diffusion_drivers_wrf471_parity.py
+
+# Actual WRF post-surface Q2 words and native cold-start carriers.
+tests/test_wrfinput_surface_native.py
+
+# gpuwm ml-export (lane 282-ml-export): the level and variable tables, the
+# argument-to-request door, the binary's contract markers and, where rw_mlexport
+# is built, a history file through the door into xarray and the levels against
+# GeoCAT above and below ground.  Prevents a table row the binary cannot make, a
+# machine path in a dataset's provenance, and pressure-level values that differ
+# from an independent implementation of the same column arithmetic.
+tests/test_ml_export.py
+# Lane 282-terrain-drag: WRF's topo_wind and gwd_opt.  Prevents a terrain-drag
+# option that silently does nothing (topo_wind outside YSU, gwd_opt without a
+# PBL scheme, a child whose statics lack the orographic statistics), a default
+# run whose identity or checkpoint moves, and a WRF namelist carrying either
+# key being refused or mistranslated. Pure CPU fixture, activation and frame
+# receipts run here; device parity and mutation tests run only on
+# gpu_shard_files.txt SHARD 1t.
+tests/test_terrain_drag_config.py
+tests/test_terrain_drag_receipts.py
+# Active drag caches bind the native WPS arithmetic revision so earlier
+# mixed-precision orography is refused; inactive cache identity stays exact.
+tests/test_terrain_drag_static_identity.py
+# Saved-child own geography must request drag statistics and pass them to
+# physics; otherwise an accepted downscale option stops during initialization.
+tests/test_terrain_drag_offline_child.py
+
+# Hosted AWS transport policy (lane/282-aws-transport).  Prevents a hosted
+# run under the AWS policy falling through to NOMADS after a failed AWS
+# transfer, "latest" settling on a cycle that is complete only on NOMADS,
+# and an ordinary install losing its NOMADS-first walk when the policy is
+# unset.  A production HRRR run spent about 45 minutes on NOMADS before its
+# worker died; the same files came from AWS in 59.5 s.
+tests/test_fetch_aws_policy.py
+
+# A191: the resident, streamed and out-of-core store checkpoint writers echo
+# one run configuration.  Prevents two checkpoints of one state, one per
+# writer, comparing unequal with identical arrays: the streamed and store
+# writers echoed nine default keys the resident writer drops, and the 2.8.1
+# bench's streamed relocation rebuild test failed on both datacenter cards.
+tests/test_checkpoint_config_echo.py
+
+# A193: the literal-division census and source scan read kernel sources only
+# from the tree they gate.  Prevents the gate reading an installed gpuwm
+# beside a source tests tree (the 2.8.1 B200 bench: three compiler-census
+# failures that were no division defect) and a root with no kernel sources
+# passing on nothing.
+tests/test_literal_division_scan_root.py
+
+# 2.8.2 fixes that shipped without a battery entry (found by the 2.8.2
+# release-input review).  Each prevents the named defect returning unseen:
+# diff_opt = 1 config, refusal and restart rows (a coordinate-diffusion run
+# admitted with an operator it cannot run, or resumed from a metric
+# checkpoint); the wrfinput reader's soil-water and cold-start carriers
+# (Noah SH2O restored from wrfinput's zeros); the coordinate thermal
+# reference priming before a streamed inventory (reused tiles losing the
+# initial theta field); the Noah initialization guard (a cold start
+# re-initializing a restarted column); and the compiled-WRF diff_opt = 1
+# oracle's fixture and receipt rows (changed Fortran sources or stale
+# receipts going unchecked).  Device rows of the last are on the GPU shard.
+tests/test_diff_opt1.py
+tests/test_wrfinput_reader_contract.py
+tests/test_coordinate_reference_prime.py
+tests/test_noah_initialization_guard.py
+tests/test_diff_opt1_wrf471.py

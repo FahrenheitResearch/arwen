@@ -344,7 +344,7 @@ RESTART_TOLERATED_EXPERIMENT_FIELDS = (
     # would therefore refuse exactly the operation it exists for: a
     # forecast that outgrew its card resuming on the card it outgrew.
     # See gpuwm.core.streaming.identity_payload_entry.
-    "tiles",
+    "tiles", "devices",
     # [output] selects which variables reach the HISTORY tape
     # (gpuwm.io.history_selection).  It changes no number the model
     # computes and touches no checkpoint: checkpoints are separate files
@@ -463,6 +463,7 @@ def restart_identity_payload(exp) -> dict:
     """
 
     from gpuwm.experiment import experiment_config_document
+    from gpuwm.checkpoint_identity import drop_default_diffusion_selectors
     experiment = _jsonable(experiment_config_document(exp))
     # The new attribute follower is an explicitly selected trajectory policy.
     # Bind its source, reduction, direction and movement controls while keeping
@@ -584,6 +585,7 @@ def restart_identity_payload(exp) -> dict:
         # trimmed must resume full.
         domain.pop("output", None)
         run = domain.get("run", {})
+        drop_default_diffusion_selectors(run)
         for name in RESTART_TOLERATED_RUN_FIELDS:
             run.pop(name, None)
         # ``eta_levels`` on the absent-stays-absent convention of the
@@ -714,6 +716,12 @@ def restart_identity_payload(exp) -> dict:
                 run.pop(name, None)
         elif run.get("mosaic_urban_canopy") == "dominant":
             run.pop("mosaic_urban_canopy", None)
+        # ... and no sub-grid terrain drag, WRF's default (topo_wind and
+        # gwd_opt 0; gpuwm.core.terrain_drag): absent-stays-absent, so every
+        # fingerprint written before the two fields existed keeps its value.
+        for name in ("topo_wind", "gwd_opt"):
+            if not run.get(name, 0):
+                run.pop(name, None)
     return experiment
 
 
@@ -1832,6 +1840,18 @@ def execute_experiment(
                         f"vertical Courant number at model step {clock.step_count + 1}: "
                         "a model layer's live thickness is non-positive or non-finite")
             poison()
+            if streamed_here is not None:
+                # The same authority AFTER the step as before it.  The tiles
+                # advanced their own carrier clock by dt from the REAL
+                # kernel-facing image imposed above, so until the next
+                # step's impose the domain's scalars held that free-running
+                # sum while the state held the exact next tick -- and the
+                # store-direct final digest reads the scalars.  MEASURED on
+                # a 3 h HRRR-grid forecast with a fractional adaptive dt:
+                # elapsed_seconds 10800.0 resident, 10800.0002734375 on the
+                # streamed road, every wrfout byte identical, so the two
+                # canonical digests differed for one forecast.
+                streamed_here.impose_clock(node.state.elapsed_seconds)
             if validators and health_debug:
                 validators[grid_id].require_healthy(
                     phase=f"post-step.d{grid_id:02d}")

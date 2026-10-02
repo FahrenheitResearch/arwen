@@ -56,16 +56,50 @@ _RECEIPT = ORACLE_DIR / "nt-aliasing-audit.txt"
 
 
 def _source():
+    unavailable = []
     for cand in _CANDIDATES:
         if not cand:
             continue
         p = Path(cand)
-        if p.is_file():
-            got = hashlib.sha256(p.read_bytes()).hexdigest()
-            if got != _SRC_SHA:
-                pytest.skip(f"{p} is {got[:12]}, not the pinned v4.6.1 file")
-            return p
-    pytest.skip("cu_ntiedtke.F90 not reachable; set NTIEDTKE_WRF_SRC")
+        try:
+            if not p.is_file():
+                continue
+            raw = p.read_bytes()
+        except OSError as error:
+            # The original source is optional and may live on an unavailable
+            # share.  A failed stat/read proves no reference is reachable;
+            # it cannot adjudicate the committed audit or its mirrors.
+            unavailable.append(f"{p}: {type(error).__name__}: {error}")
+            continue
+        got = hashlib.sha256(raw).hexdigest()
+        if got != _SRC_SHA:
+            pytest.skip(f"{p} is {got[:12]}, not the pinned v4.6.1 file")
+        return p
+    detail = "\n" + "\n".join(unavailable) if unavailable else ""
+    pytest.skip("original WRF cu_ntiedtke.F90 not reachable; "
+                "set NTIEDTKE_WRF_SRC to the pinned v4.6.1 source" + detail)
+
+
+@pytest.mark.parametrize("operation", ["stat", "read"])
+def test_an_unavailable_original_source_is_named_without_skipping_the_receipt(
+        tmp_path, monkeypatch, operation):
+    source = tmp_path / "cu_ntiedtke.F90"
+    source.write_bytes(b"owned source availability fixture")
+    monkeypatch.setattr(sys.modules[__name__], "_CANDIDATES", (str(source),))
+    original = getattr(Path, operation if operation == "stat" else "read_bytes")
+
+    def unavailable(path, *args, **kwargs):
+        if path == source:
+            raise OSError(64, "original reference share unavailable")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, operation if operation == "stat" else "read_bytes",
+                        unavailable)
+    with pytest.raises(pytest.skip.Exception, match="original WRF .*not reachable") as stopped:
+        _source()
+    assert "original reference share unavailable" in str(stopped.value)
+    assert "NTIEDTKE_WRF_SRC" in str(stopped.value)
+    assert _RECEIPT.is_file()
 
 
 def _body(text):

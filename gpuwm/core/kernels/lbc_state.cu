@@ -275,9 +275,13 @@ real coupled_current(int kind, int k, int j, int i,
     }
     ch = __fadd_rn(__fmul_rn(c1h[k], mass), c2h[k]);
     if (kind == LBC_THETA) {
+#if GPUWM_WRF_EXACT_C_BIGSTEP
+        return __fmul_rn(ch, thp[idx]);
+#else
         size_t h = thb_3d ? I3(k, j, i, mny, mnx) : (size_t)k;
         real total_theta = __fadd_rn(thb[h], thp[idx]);
         return __fmul_rn(ch, __fsub_rn(total_theta, 300.0f));
+#endif
     }
     return __fmul_rn(ch, scalar[idx]);
 }
@@ -634,8 +638,10 @@ void couple_nest_field(
         c1h[k], c2h[k], mub2d, mup, j, i, mnx);
     real value = target[tid];
     if (kind == LBC_THETA) {
+#if !GPUWM_WRF_EXACT_C_BIGSTEP
         size_t h = thb_3d ? I3(k, j, i, mny, mnx) : (size_t)k;
         value = __fsub_rn(__fadd_rn(thb[h], value), 300.0f);
+#endif
     }
     out[tid] = __fmul_rn(ch, value);
 }
@@ -706,8 +712,10 @@ void couple_nest_field_window(
         c1h[k], c2h[k], mub2d, mup, j, i, mnx);
     real value = target[tid];
     if (kind == LBC_THETA) {
+#if !GPUWM_WRF_EXACT_C_BIGSTEP
         size_t h = thb_3d ? I3(k, j, i, mny, mnx) : (size_t)k;
         value = __fsub_rn(__fadd_rn(thb[h], value), 300.0f);
+#endif
     }
     out[tid] = __fmul_rn(ch, value);
 }
@@ -777,8 +785,10 @@ void couple_nest_field_frame(
         c1h[k], c2h[k], mub2d, mup, j, i, mnx);
     real value = target[tid];
     if (kind == LBC_THETA) {
+#if !GPUWM_WRF_EXACT_C_BIGSTEP
         size_t h = thb_3d ? I3(k, j, i, mny, mnx) : (size_t)k;
         value = __fsub_rn(__fadd_rn(thb[h], value), 300.0f);
+#endif
     }
     out[tid] = __fmul_rn(ch, value);
 }
@@ -851,8 +861,10 @@ void uncouple_feedback_field(
         c1h[k], c2h[k], mub2d, mup, j, i, mnx);
     real result = __fdiv_rn(value, ch);
     if (kind == LBC_THETA) {
+#if !GPUWM_WRF_EXACT_C_BIGSTEP
         size_t h = thb_3d ? I3(k, j, i, mny, mnx) : (size_t)k;
         result = __fsub_rn(__fadd_rn(result, 300.0f), thb[h]);
+#endif
     }
     target[idx] = result;
 }
@@ -901,9 +913,13 @@ real coupled_old_target(int kind, int k, int j, int i,
     }
     ch = __fadd_rn(__fmul_rn(c1h[k], mass), c2h[k]);
     if (kind == LBC_THETA) {
+#if GPUWM_WRF_EXACT_C_BIGSTEP
+        return __fmul_rn(ch, target[idx]);
+#else
         size_t h = thb_3d ? I3(k, j, i, mny, mnx) : (size_t)k;
         real total_theta = __fadd_rn(thb[h], target[idx]);
         return __fmul_rn(ch, __fsub_rn(total_theta, 300.0f));
+#endif
     }
     return __fmul_rn(ch, target[idx]);
 }
@@ -940,6 +956,7 @@ void finalize_state_field(
     int rem = tid - k*ny*nx;
     int j = rem/nx;
     int i = rem - j*nx;
+#if GPUWM_WRF_EXACT_C_BIGSTEP
     real coupled = coupled_old_target(
         kind, k, j, i, target, old_mup_frame, mub2d, mup, thb,
         c1h, c2h, c1f, c2f, msft, msfu, msfv, has_msf, thb_3d,
@@ -950,6 +967,19 @@ void finalize_state_field(
                        north, north_t, dtbc, &installed, true)) {
         coupled = installed;
     }
+#else
+    real coupled;
+    // The installed value replaces the old coupling at specified cells.
+    // Do not load or couple a value that has no consumer.
+    if (!boundary_index(k, j, i, ny, nx, spec_zone, width,
+                        west, west_t, east, east_t, south, south_t,
+                        north, north_t, dtbc, &coupled, true)) {
+        coupled = coupled_old_target(
+            kind, k, j, i, target, old_mup_frame, mub2d, mup, thb,
+            c1h, c2h, c1f, c2f, msft, msfu, msfv, has_msf, thb_3d,
+            spec_zone, ny, nx, mny, mnx);
+    }
+#endif
     real mass;
     real ch;
     if (kind == LBC_U) {
@@ -977,8 +1007,10 @@ void finalize_state_field(
         ch = __fadd_rn(__fmul_rn(c1h[k], mass), c2h[k]);
         real result = __fdiv_rn(coupled, ch);
         if (kind == LBC_THETA) {
+#if !GPUWM_WRF_EXACT_C_BIGSTEP
             size_t h = thb_3d ? I3(k, j, i, mny, mnx) : (size_t)k;
             result = __fsub_rn(__fadd_rn(result, 300.0f), thb[h]);
+#endif
         } else if (!isnan(result)) {
             result = fmaxf(result, 0.0f);
         }

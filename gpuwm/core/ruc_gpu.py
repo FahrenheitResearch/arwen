@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import threading
 from collections.abc import Mapping
 from types import MappingProxyType, SimpleNamespace
 from functools import lru_cache
+from gpuwm.core.device_cache import cuda_cache, cached_ready
 
 import cupy as cp
 import numpy as np
@@ -221,7 +223,7 @@ def _upload_tables(
     return tables, len(rows), len(bundle.soil.rows), default_water
 
 
-@lru_cache(maxsize=None)
+@cuda_cache(maxsize=None, ready=True)
 def _default_device_tables(
     device_id: int,
     mminlu: str,
@@ -246,22 +248,21 @@ def _bundle_device_tables(bundle, mminlu):
     identity alone would retain stale tables after such a replacement.
     """
     vegetation = bundle.vegetation_for(mminlu)
-    key = (int(cp.cuda.runtime.getDevice()), mminlu, vegetation.name,
+    key = (int(cp.cuda.Device().id), mminlu, vegetation.name,
            vegetation.rows, float(vegetation.scalars["RSMAX_DATA"]),
            bundle.soil.rows)
-    if key not in _BUNDLE_DEVICE_TABLES:
-        _BUNDLE_DEVICE_TABLES[key] = _upload_tables(bundle, mminlu)
-    return _BUNDLE_DEVICE_TABLES[key]
+    return cached_ready(cp, _BUNDLE_DEVICE_TABLES, key,
+                        lambda: _upload_tables(bundle, mminlu))
 
 
-@lru_cache(maxsize=None)
+@cuda_cache(maxsize=None, ready=True)
 def _device_soil_half_levels(device_id, nzs):
     with cp.cuda.Device(device_id):
         zs, _ = ruc_soil_geometry(nzs)
         return cp.asarray(ruc_zshalf(zs))
 
 
-@lru_cache(maxsize=None)
+@cuda_cache(maxsize=None, ready=True)
 def _device_tbq(device_id: int) -> cp.ndarray:
     with cp.cuda.Device(device_id):
         return cp.asarray(ruc_saturation_table(), dtype=DTYPE)
@@ -276,7 +277,7 @@ def _integer_field(value, shape: tuple[int, ...], name: str) -> cp.ndarray:
     return cp.ascontiguousarray(raw, dtype=cp.int32)
 
 
-@lru_cache(maxsize=None)
+@cuda_cache(maxsize=None)
 def _validation_scan_kernel(count: int):
     """A read-only finiteness scan over ``count`` arrays, one flag word each.
 
@@ -1455,7 +1456,7 @@ class RucSnowPreparationCuda:
     iland: cp.ndarray
 
 
-@lru_cache(maxsize=None)
+@cuda_cache(maxsize=None, ready=True)
 def _snow_preparation_tables(
     device_id: int,
     mminlu: str,
@@ -2629,6 +2630,13 @@ def _dtype_normalising(function):
 
 
 _RUC_CONSTANT_CACHE = {}
+#: One upload per key at a time.  Unlocked, the slabs of a split domain
+#: (each on its own stream) each uploaded a missing constant and the last
+#: replaced the others, so a slab holding a replaced copy read memory its
+#: stream's pool had already handed back -- the defect measured on RRTMGP's
+#: tables (rrtmgp._upload_once).  An evicted array may also still be read
+#: on another stream, so eviction waits for the card first.
+_RUC_CONSTANT_LOCK = threading.RLock()
 
 
 def _constant_array(values, *, dtype):
@@ -2640,18 +2648,24 @@ def _constant_array(values, *, dtype):
     key = (int(cp.cuda.runtime.getDevice()), host.dtype.str,
            host.shape, host.tobytes())
     stream = cp.cuda.get_current_stream()
-    cached = _RUC_CONSTANT_CACHE.get(key)
-    if cached is not None:
-        if stream.ptr != cached[2]:
-            stream.wait_event(cached[1])
-        return cached[0]
-    array = cp.asarray(host)
-    ready = cp.cuda.Event(disable_timing=True)
-    ready.record()
-    if len(_RUC_CONSTANT_CACHE) >= 32:
-        _RUC_CONSTANT_CACHE.pop(next(iter(_RUC_CONSTANT_CACHE)))
-    _RUC_CONSTANT_CACHE[key] = (array, ready, stream.ptr)
-    return array
+    with _RUC_CONSTANT_LOCK:
+        cached = _RUC_CONSTANT_CACHE.get(key)
+        if cached is not None:
+            if stream.ptr != cached[2]:
+                stream.wait_event(cached[1])
+            return cached[0]
+        array = cp.asarray(host)
+        ready = cp.cuda.Event(disable_timing=True)
+        ready.record()
+        if len(_RUC_CONSTANT_CACHE) >= 32:
+            oldest = next(iter(_RUC_CONSTANT_CACHE))
+            # The cache spans cards. Its oldest array can still be read on
+            # another card, whose streams the current card cannot wait for.
+            with cp.cuda.Device(oldest[0]):
+                cp.cuda.Device().synchronize()
+            _RUC_CONSTANT_CACHE.pop(oldest)
+        _RUC_CONSTANT_CACHE[key] = (array, ready, stream.ptr)
+        return array
 
 
 #: CuPy behind the numpy surface :mod:`gpuwm.core.ruc`'s drivers use.
@@ -2870,7 +2884,8 @@ def _sfctmp_tables(parameters, mminlu, nzs):
     default = _default_parameter_bundle()
     bundle = default if parameters is None else parameters
     supplied = bundle.vegetation_for(mminlu)
-    key = (device, mminlu, nzs, parameters is None, supplied.name,
+    key = (device, cp.cuda.get_current_stream().ptr, mminlu, nzs,
+           parameters is None, supplied.name,
            supplied.rows, float(supplied.scalars['RSMAX_DATA']),
            int(supplied.scalars['URBAN']), bundle.soil.rows)
     cached = _SFCTMP_TABLE_CACHE.get(key)

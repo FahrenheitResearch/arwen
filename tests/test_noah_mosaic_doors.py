@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import requires_cupy
 from gpuwm.config import RunConfig
 from gpuwm.core.noah_mosaic import mosaic_array_shapes
 from gpuwm.core.noah_mosaic_door import attach_noah_mosaic_to_driver
@@ -400,7 +401,11 @@ def test_the_offline_child_names_why_it_cannot_run_mosaic():
     assert child_mosaic_refusal(SimpleNamespace()) is None
 
 
-@pytest.mark.parametrize("door", ["review", "run"])
+# The runner door imports cupy before it resolves the child config
+# (offline_child_run._run), so an install without cupy refuses for that gap
+# first and never reaches the mosaic check.  That door's order is checked
+# wherever cupy imports; the review door needs no cupy and always runs.
+@pytest.mark.parametrize("door", ["review", pytest.param("run", marks=requires_cupy)])
 def test_a_mosaic_child_is_refused_before_the_parent_is_interpolated(
         tmp_path, capsys, monkeypatch, door):
     """The deck's fitting --point child, its derived config given mosaic:

@@ -1,0 +1,13 @@
+{
+  "mode": "legacy",
+  "device": "NVIDIA GeForce RTX 5090",
+  "cases": [
+    {
+      "name": "k2"
+    },
+    {
+      "name": "k4"
+    }
+  ],
+  "archive_sha256": "6551f2107776cd785a37b3e6dd6058c924733f1867eae3e175bfabf781df9a92"
+}

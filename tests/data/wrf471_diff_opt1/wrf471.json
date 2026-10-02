@@ -1,0 +1,924 @@
+{
+  "schema": "wrf471-diff-opt1-v1",
+  "cases": [
+    {
+      "name": "h0_0_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 0,
+      "stag": 0,
+      "perturb": 0,
+      "dx": 800.0,
+      "dy": 1400.0
+    },
+    {
+      "name": "h0_0_1",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 0,
+      "stag": 0,
+      "perturb": 1,
+      "dx": 800.0,
+      "dy": 1400.0
+    },
+    {
+      "name": "h0_1_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 0,
+      "stag": 1,
+      "perturb": 0,
+      "dx": 800.0,
+      "dy": 1400.0
+    },
+    {
+      "name": "h0_2_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 0,
+      "stag": 2,
+      "perturb": 0,
+      "dx": 800.0,
+      "dy": 1400.0
+    },
+    {
+      "name": "h0_3_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 0,
+      "stag": 3,
+      "perturb": 0,
+      "dx": 800.0,
+      "dy": 1400.0
+    },
+    {
+      "name": "k4_0",
+      "family": "km4",
+      "bx": 0,
+      "by": 0,
+      "dx": 800.0,
+      "dy": 1400.0
+    },
+    {
+      "name": "deform_0",
+      "family": "deform",
+      "bx": 0,
+      "by": 0,
+      "dx": 800.0,
+      "dy": 1400.0
+    },
+    {
+      "name": "k2_0_0_0",
+      "family": "km2",
+      "bx": 0,
+      "by": 0,
+      "isotropic": 0,
+      "isfflx": 0,
+      "dx": 800.0,
+      "dy": 1400.0
+    },
+    {
+      "name": "k2_0_0_1",
+      "family": "km2",
+      "bx": 0,
+      "by": 0,
+      "isotropic": 0,
+      "isfflx": 1,
+      "dx": 800.0,
+      "dy": 1400.0
+    },
+    {
+      "name": "k2_0_1_0",
+      "family": "km2",
+      "bx": 0,
+      "by": 0,
+      "isotropic": 1,
+      "isfflx": 0,
+      "dx": 800.0,
+      "dy": 1400.0
+    },
+    {
+      "name": "k2_0_1_1",
+      "family": "km2",
+      "bx": 0,
+      "by": 0,
+      "isotropic": 1,
+      "isfflx": 1,
+      "dx": 800.0,
+      "dy": 1400.0
+    },
+    {
+      "name": "h1_0_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 0,
+      "stag": 0,
+      "perturb": 0,
+      "dx": 823.0,
+      "dy": 1417.0
+    },
+    {
+      "name": "h1_0_1",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 0,
+      "stag": 0,
+      "perturb": 1,
+      "dx": 823.0,
+      "dy": 1417.0
+    },
+    {
+      "name": "h1_1_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 0,
+      "stag": 1,
+      "perturb": 0,
+      "dx": 823.0,
+      "dy": 1417.0
+    },
+    {
+      "name": "h1_2_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 0,
+      "stag": 2,
+      "perturb": 0,
+      "dx": 823.0,
+      "dy": 1417.0
+    },
+    {
+      "name": "h1_3_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 0,
+      "stag": 3,
+      "perturb": 0,
+      "dx": 823.0,
+      "dy": 1417.0
+    },
+    {
+      "name": "k4_1",
+      "family": "km4",
+      "bx": 1,
+      "by": 0,
+      "dx": 823.0,
+      "dy": 1417.0
+    },
+    {
+      "name": "deform_1",
+      "family": "deform",
+      "bx": 1,
+      "by": 0,
+      "dx": 823.0,
+      "dy": 1417.0
+    },
+    {
+      "name": "k2_1_0_0",
+      "family": "km2",
+      "bx": 1,
+      "by": 0,
+      "isotropic": 0,
+      "isfflx": 0,
+      "dx": 823.0,
+      "dy": 1417.0
+    },
+    {
+      "name": "k2_1_0_1",
+      "family": "km2",
+      "bx": 1,
+      "by": 0,
+      "isotropic": 0,
+      "isfflx": 1,
+      "dx": 823.0,
+      "dy": 1417.0
+    },
+    {
+      "name": "k2_1_1_0",
+      "family": "km2",
+      "bx": 1,
+      "by": 0,
+      "isotropic": 1,
+      "isfflx": 0,
+      "dx": 823.0,
+      "dy": 1417.0
+    },
+    {
+      "name": "k2_1_1_1",
+      "family": "km2",
+      "bx": 1,
+      "by": 0,
+      "isotropic": 1,
+      "isfflx": 1,
+      "dx": 823.0,
+      "dy": 1417.0
+    },
+    {
+      "name": "h2_0_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 1,
+      "stag": 0,
+      "perturb": 0,
+      "dx": 846.0,
+      "dy": 1434.0
+    },
+    {
+      "name": "h2_0_1",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 1,
+      "stag": 0,
+      "perturb": 1,
+      "dx": 846.0,
+      "dy": 1434.0
+    },
+    {
+      "name": "h2_1_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 1,
+      "stag": 1,
+      "perturb": 0,
+      "dx": 846.0,
+      "dy": 1434.0
+    },
+    {
+      "name": "h2_2_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 1,
+      "stag": 2,
+      "perturb": 0,
+      "dx": 846.0,
+      "dy": 1434.0
+    },
+    {
+      "name": "h2_3_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 1,
+      "stag": 3,
+      "perturb": 0,
+      "dx": 846.0,
+      "dy": 1434.0
+    },
+    {
+      "name": "k4_2",
+      "family": "km4",
+      "bx": 0,
+      "by": 1,
+      "dx": 846.0,
+      "dy": 1434.0
+    },
+    {
+      "name": "deform_2",
+      "family": "deform",
+      "bx": 0,
+      "by": 1,
+      "dx": 846.0,
+      "dy": 1434.0
+    },
+    {
+      "name": "k2_2_0_0",
+      "family": "km2",
+      "bx": 0,
+      "by": 1,
+      "isotropic": 0,
+      "isfflx": 0,
+      "dx": 846.0,
+      "dy": 1434.0
+    },
+    {
+      "name": "k2_2_0_1",
+      "family": "km2",
+      "bx": 0,
+      "by": 1,
+      "isotropic": 0,
+      "isfflx": 1,
+      "dx": 846.0,
+      "dy": 1434.0
+    },
+    {
+      "name": "k2_2_1_0",
+      "family": "km2",
+      "bx": 0,
+      "by": 1,
+      "isotropic": 1,
+      "isfflx": 0,
+      "dx": 846.0,
+      "dy": 1434.0
+    },
+    {
+      "name": "k2_2_1_1",
+      "family": "km2",
+      "bx": 0,
+      "by": 1,
+      "isotropic": 1,
+      "isfflx": 1,
+      "dx": 846.0,
+      "dy": 1434.0
+    },
+    {
+      "name": "h3_0_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 1,
+      "stag": 0,
+      "perturb": 0,
+      "dx": 869.0,
+      "dy": 1451.0
+    },
+    {
+      "name": "h3_0_1",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 1,
+      "stag": 0,
+      "perturb": 1,
+      "dx": 869.0,
+      "dy": 1451.0
+    },
+    {
+      "name": "h3_1_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 1,
+      "stag": 1,
+      "perturb": 0,
+      "dx": 869.0,
+      "dy": 1451.0
+    },
+    {
+      "name": "h3_2_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 1,
+      "stag": 2,
+      "perturb": 0,
+      "dx": 869.0,
+      "dy": 1451.0
+    },
+    {
+      "name": "h3_3_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 1,
+      "stag": 3,
+      "perturb": 0,
+      "dx": 869.0,
+      "dy": 1451.0
+    },
+    {
+      "name": "k4_3",
+      "family": "km4",
+      "bx": 1,
+      "by": 1,
+      "dx": 869.0,
+      "dy": 1451.0
+    },
+    {
+      "name": "deform_3",
+      "family": "deform",
+      "bx": 1,
+      "by": 1,
+      "dx": 869.0,
+      "dy": 1451.0
+    },
+    {
+      "name": "k2_3_0_0",
+      "family": "km2",
+      "bx": 1,
+      "by": 1,
+      "isotropic": 0,
+      "isfflx": 0,
+      "dx": 869.0,
+      "dy": 1451.0
+    },
+    {
+      "name": "k2_3_0_1",
+      "family": "km2",
+      "bx": 1,
+      "by": 1,
+      "isotropic": 0,
+      "isfflx": 1,
+      "dx": 869.0,
+      "dy": 1451.0
+    },
+    {
+      "name": "k2_3_1_0",
+      "family": "km2",
+      "bx": 1,
+      "by": 1,
+      "isotropic": 1,
+      "isfflx": 0,
+      "dx": 869.0,
+      "dy": 1451.0
+    },
+    {
+      "name": "k2_3_1_1",
+      "family": "km2",
+      "bx": 1,
+      "by": 1,
+      "isotropic": 1,
+      "isfflx": 1,
+      "dx": 869.0,
+      "dy": 1451.0
+    },
+    {
+      "name": "h4_0_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 0,
+      "stag": 0,
+      "perturb": 0,
+      "dx": 892.0,
+      "dy": 1468.0
+    },
+    {
+      "name": "h4_0_1",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 0,
+      "stag": 0,
+      "perturb": 1,
+      "dx": 892.0,
+      "dy": 1468.0
+    },
+    {
+      "name": "h4_1_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 0,
+      "stag": 1,
+      "perturb": 0,
+      "dx": 892.0,
+      "dy": 1468.0
+    },
+    {
+      "name": "h4_2_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 0,
+      "stag": 2,
+      "perturb": 0,
+      "dx": 892.0,
+      "dy": 1468.0
+    },
+    {
+      "name": "h4_3_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 0,
+      "stag": 3,
+      "perturb": 0,
+      "dx": 892.0,
+      "dy": 1468.0
+    },
+    {
+      "name": "k4_4",
+      "family": "km4",
+      "bx": 0,
+      "by": 0,
+      "dx": 892.0,
+      "dy": 1468.0
+    },
+    {
+      "name": "deform_4",
+      "family": "deform",
+      "bx": 0,
+      "by": 0,
+      "dx": 892.0,
+      "dy": 1468.0
+    },
+    {
+      "name": "k2_4_0_0",
+      "family": "km2",
+      "bx": 0,
+      "by": 0,
+      "isotropic": 0,
+      "isfflx": 0,
+      "dx": 892.0,
+      "dy": 1468.0
+    },
+    {
+      "name": "k2_4_0_1",
+      "family": "km2",
+      "bx": 0,
+      "by": 0,
+      "isotropic": 0,
+      "isfflx": 1,
+      "dx": 892.0,
+      "dy": 1468.0
+    },
+    {
+      "name": "k2_4_1_0",
+      "family": "km2",
+      "bx": 0,
+      "by": 0,
+      "isotropic": 1,
+      "isfflx": 0,
+      "dx": 892.0,
+      "dy": 1468.0
+    },
+    {
+      "name": "k2_4_1_1",
+      "family": "km2",
+      "bx": 0,
+      "by": 0,
+      "isotropic": 1,
+      "isfflx": 1,
+      "dx": 892.0,
+      "dy": 1468.0
+    },
+    {
+      "name": "h5_0_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 0,
+      "stag": 0,
+      "perturb": 0,
+      "dx": 915.0,
+      "dy": 1485.0
+    },
+    {
+      "name": "h5_0_1",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 0,
+      "stag": 0,
+      "perturb": 1,
+      "dx": 915.0,
+      "dy": 1485.0
+    },
+    {
+      "name": "h5_1_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 0,
+      "stag": 1,
+      "perturb": 0,
+      "dx": 915.0,
+      "dy": 1485.0
+    },
+    {
+      "name": "h5_2_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 0,
+      "stag": 2,
+      "perturb": 0,
+      "dx": 915.0,
+      "dy": 1485.0
+    },
+    {
+      "name": "h5_3_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 0,
+      "stag": 3,
+      "perturb": 0,
+      "dx": 915.0,
+      "dy": 1485.0
+    },
+    {
+      "name": "k4_5",
+      "family": "km4",
+      "bx": 1,
+      "by": 0,
+      "dx": 915.0,
+      "dy": 1485.0
+    },
+    {
+      "name": "deform_5",
+      "family": "deform",
+      "bx": 1,
+      "by": 0,
+      "dx": 915.0,
+      "dy": 1485.0
+    },
+    {
+      "name": "k2_5_0_0",
+      "family": "km2",
+      "bx": 1,
+      "by": 0,
+      "isotropic": 0,
+      "isfflx": 0,
+      "dx": 915.0,
+      "dy": 1485.0
+    },
+    {
+      "name": "k2_5_0_1",
+      "family": "km2",
+      "bx": 1,
+      "by": 0,
+      "isotropic": 0,
+      "isfflx": 1,
+      "dx": 915.0,
+      "dy": 1485.0
+    },
+    {
+      "name": "k2_5_1_0",
+      "family": "km2",
+      "bx": 1,
+      "by": 0,
+      "isotropic": 1,
+      "isfflx": 0,
+      "dx": 915.0,
+      "dy": 1485.0
+    },
+    {
+      "name": "k2_5_1_1",
+      "family": "km2",
+      "bx": 1,
+      "by": 0,
+      "isotropic": 1,
+      "isfflx": 1,
+      "dx": 915.0,
+      "dy": 1485.0
+    },
+    {
+      "name": "h6_0_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 1,
+      "stag": 0,
+      "perturb": 0,
+      "dx": 938.0,
+      "dy": 1502.0
+    },
+    {
+      "name": "h6_0_1",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 1,
+      "stag": 0,
+      "perturb": 1,
+      "dx": 938.0,
+      "dy": 1502.0
+    },
+    {
+      "name": "h6_1_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 1,
+      "stag": 1,
+      "perturb": 0,
+      "dx": 938.0,
+      "dy": 1502.0
+    },
+    {
+      "name": "h6_2_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 1,
+      "stag": 2,
+      "perturb": 0,
+      "dx": 938.0,
+      "dy": 1502.0
+    },
+    {
+      "name": "h6_3_0",
+      "family": "horizontal",
+      "bx": 0,
+      "by": 1,
+      "stag": 3,
+      "perturb": 0,
+      "dx": 938.0,
+      "dy": 1502.0
+    },
+    {
+      "name": "k4_6",
+      "family": "km4",
+      "bx": 0,
+      "by": 1,
+      "dx": 938.0,
+      "dy": 1502.0
+    },
+    {
+      "name": "deform_6",
+      "family": "deform",
+      "bx": 0,
+      "by": 1,
+      "dx": 938.0,
+      "dy": 1502.0
+    },
+    {
+      "name": "k2_6_0_0",
+      "family": "km2",
+      "bx": 0,
+      "by": 1,
+      "isotropic": 0,
+      "isfflx": 0,
+      "dx": 938.0,
+      "dy": 1502.0
+    },
+    {
+      "name": "k2_6_0_1",
+      "family": "km2",
+      "bx": 0,
+      "by": 1,
+      "isotropic": 0,
+      "isfflx": 1,
+      "dx": 938.0,
+      "dy": 1502.0
+    },
+    {
+      "name": "k2_6_1_0",
+      "family": "km2",
+      "bx": 0,
+      "by": 1,
+      "isotropic": 1,
+      "isfflx": 0,
+      "dx": 938.0,
+      "dy": 1502.0
+    },
+    {
+      "name": "k2_6_1_1",
+      "family": "km2",
+      "bx": 0,
+      "by": 1,
+      "isotropic": 1,
+      "isfflx": 1,
+      "dx": 938.0,
+      "dy": 1502.0
+    },
+    {
+      "name": "h7_0_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 1,
+      "stag": 0,
+      "perturb": 0,
+      "dx": 961.0,
+      "dy": 1519.0
+    },
+    {
+      "name": "h7_0_1",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 1,
+      "stag": 0,
+      "perturb": 1,
+      "dx": 961.0,
+      "dy": 1519.0
+    },
+    {
+      "name": "h7_1_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 1,
+      "stag": 1,
+      "perturb": 0,
+      "dx": 961.0,
+      "dy": 1519.0
+    },
+    {
+      "name": "h7_2_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 1,
+      "stag": 2,
+      "perturb": 0,
+      "dx": 961.0,
+      "dy": 1519.0
+    },
+    {
+      "name": "h7_3_0",
+      "family": "horizontal",
+      "bx": 1,
+      "by": 1,
+      "stag": 3,
+      "perturb": 0,
+      "dx": 961.0,
+      "dy": 1519.0
+    },
+    {
+      "name": "k4_7",
+      "family": "km4",
+      "bx": 1,
+      "by": 1,
+      "dx": 961.0,
+      "dy": 1519.0
+    },
+    {
+      "name": "deform_7",
+      "family": "deform",
+      "bx": 1,
+      "by": 1,
+      "dx": 961.0,
+      "dy": 1519.0
+    },
+    {
+      "name": "k2_7_0_0",
+      "family": "km2",
+      "bx": 1,
+      "by": 1,
+      "isotropic": 0,
+      "isfflx": 0,
+      "dx": 961.0,
+      "dy": 1519.0
+    },
+    {
+      "name": "k2_7_0_1",
+      "family": "km2",
+      "bx": 1,
+      "by": 1,
+      "isotropic": 0,
+      "isfflx": 1,
+      "dx": 961.0,
+      "dy": 1519.0
+    },
+    {
+      "name": "k2_7_1_0",
+      "family": "km2",
+      "bx": 1,
+      "by": 1,
+      "isotropic": 1,
+      "isfflx": 0,
+      "dx": 961.0,
+      "dy": 1519.0
+    },
+    {
+      "name": "k2_7_1_1",
+      "family": "km2",
+      "bx": 1,
+      "by": 1,
+      "isotropic": 1,
+      "isfflx": 1,
+      "dx": 961.0,
+      "dy": 1519.0
+    }
+  ],
+  "build": {
+    "wrf_release": "4.7.1",
+    "wrf_commit": "f52c197ed39d12e087d02c50f412d90d418f6186",
+    "compiler": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+    "routines": {
+      "cal_deform_and_div": {
+        "first_line": 16,
+        "last_line": 1192,
+        "sha256": "84e91fbc8849399c8b0c299b3696857b7c59eb546c93174161d905c22ef04058"
+      },
+      "calculate_N2": {
+        "first_line": 1484,
+        "last_line": 1715,
+        "sha256": "33e7c32f77268ccd76b5700f030769f17079a8439a474f251bd6a734b499d532"
+      },
+      "smag2d_km": {
+        "first_line": 1933,
+        "last_line": 2046,
+        "sha256": "0ebb6c933f7712cf42ddc46e582327037c667138554ab8e3a51ff684eb5c07bb"
+      },
+      "tke_km": {
+        "first_line": 2048,
+        "last_line": 2338,
+        "sha256": "e001cf3f3082a737d46fbdd7866d0efb4027352943734657cdb63ad09f019572"
+      },
+      "calc_l_scale": {
+        "first_line": 2340,
+        "last_line": 2408,
+        "sha256": "5ea3e7af00fbdee1a2ef7a3c76ed8967d2a0574b718eb97b21ece8e7dc8467b1"
+      },
+      "pthl": {
+        "first_line": 5274,
+        "last_line": 5301,
+        "sha256": "9a4e5e98397e45dbd954aa3d698ce134e2426db2ae8c518b617282c15b3ce02d"
+      },
+      "pu": {
+        "first_line": 5302,
+        "last_line": 5328,
+        "sha256": "59ba3b05fc2b7a81f4b92619bcf3a000c737835dc03763e3203fcc7325eaba27"
+      },
+      "compute_diff_metrics": {
+        "first_line": 6881,
+        "last_line": 7131,
+        "sha256": "b42653382bfc6b71c1686c1330611a49255ba32b153227751ac3832842432d76"
+      }
+    },
+    "extra_sources": {
+      "module_big_step_utilities_em.F": {
+        "sha256": "bd177b6b5ba7949cf9e694d7ad654fd9ae2f07d39d85802f0716c5318889a815",
+        "routines": {
+          "horizontal_diffusion": {
+            "first_line": 2714,
+            "last_line": 2952,
+            "sha256": "e2ddf0f81def6c5e022eab5f8c6a7edb45bf83f1d819830ef333d545af84f217"
+          },
+          "horizontal_diffusion_3dmp": {
+            "first_line": 2953,
+            "last_line": 3062,
+            "sha256": "f2b76ed3457d0d61955839b6c091e392a3ada14d6fb993c102e31bb58ddedb23"
+          }
+        }
+      }
+    },
+    "source_sha256": "a7d4570c97e51c635e86a0dbd628c6846457ac5b93d5a7af798b118c7d8d2d54",
+    "constants_sha256": "5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062",
+    "wrapper_sha256": "634da0809e756c3ffe0085fdebf8f77ea49398bac79f16598093af29cea2dc26",
+    "config_sha256": "ddff231e3ca6c27c5c4a3aad2c9e6a2a9bf7c7e6e974e5b2b064aeb924a526de",
+    "generated_sha256": "df8a658e70796f228a824016437f3288cbe35c120899fb5dc6ef61f15104fb37",
+    "library_sha256": "dedbf10bb7516fc6bee67103d86935d5afea5d6a4017be9a65ed0797ef9eb0b1"
+  },
+  "archive_sha256": "461e735c1105391e5b9f095e0a1d188d80d36624b6d18ba38b685b1355c09788"
+}

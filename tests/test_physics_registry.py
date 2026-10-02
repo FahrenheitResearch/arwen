@@ -56,6 +56,14 @@ ROOT = Path(__file__).parents[1]
 REGISTRY_PATH = ROOT / "gpuwm" / "physics_registry_v2.json"
 
 
+@pytest.mark.parametrize("option", ["off", "kessler-mp1", "wsm6-mp6"])
+def test_moisture_pressure_correction_is_enabled_for_every_mass_package(option):
+    registry = physics_registry()
+    assert registry["parameters"]["moist_cq"]["default"] is True
+    assert registry["components"]["microphysics"]["options"][option][
+        "parameters"]["moist_cq"] is True
+
+
 def _mixed_plan() -> dict[str, object]:
     return {
         "schema": PLAN_SCHEMA,

@@ -101,15 +101,16 @@ def test_an_unmapped_key_names_where_wrf_declares_it(tmp_path):
 # gwd_opt where WRF v4 declares it
 # ---------------------------------------------------------------------------
 
-def test_gwd_opt_in_dynamics_is_pinned_and_gwd_diags_is_inert(tmp_path):
-    _, report = _import(tmp_path, _with(dynamics=" gwd_opt = 0, 0,\n"
-                                                 " gwd_diags = 1,\n"))
-    fixed = {(f.section, f.key): f for f in report.fixed}
-    assert fixed[("dynamics", "gwd_opt")].fixed_value == 0
+def test_gwd_opt_in_dynamics_imports_and_gwd_diags_is_output_only(tmp_path):
+    # lane/282-terrain-drag: gwd_opt 1 and 3 are ported, so the &dynamics
+    # key (WRF v4's placement) imports instead of being pinned to 0.
+    text, report = _import(tmp_path, _with(dynamics=" gwd_opt = 0, 0,\n"
+                                                    " gwd_diags = 1,\n"))
+    assert "gwd_opt" not in tomllib.loads(text)["shared"]
     dropped = {(d.section, d.key) for d in report.dropped}
     assert ("dynamics", "gwd_diags") in dropped
     with pytest.raises(ValueError, match="gwd_opt"):
-        _import(tmp_path, _with(dynamics=" gwd_opt = 1, 1,\n"))
+        _import(tmp_path, _with(dynamics=" gwd_opt = 2, 2,\n"))
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +288,8 @@ def test_the_contract_knows_the_users_namelist(contract):
                        ("dynamics", "hybrid_opt")):
         assert key in sections[group]["keys"], (group, key)
     assert sections["physics"]["keys"]["slope_rad"]["values"] == [0, 1]
-    assert sections["dynamics"]["keys"]["gwd_opt"]["values"] == [0]
+    assert sections["dynamics"]["keys"]["gwd_opt"]["values"] == [0, 1, 3]
+    assert sections["physics"]["keys"]["topo_wind"]["values"] == [0, 1, 2]
     assert sections["namelist_quilt"]["any_key"] is True
     assert all(row["used"] for row in contract["baselines"]), \
         contract["baselines"]
@@ -318,6 +320,42 @@ def test_every_value_rule_is_one_the_importer_enforces(contract, tmp_path):
                _with(dynamics=f" {key} = {bad}, {bad},\n"))
         with pytest.raises(ValueError, match=key):
             _import(tmp_path, inp)
+
+
+def test_mix_full_fields_contract_admits_both_logicals(contract, tmp_path):
+    rule = contract["sections"]["dynamics"]["keys"]["mix_full_fields"]
+    assert rule["values"] == [False, True]
+    assert rule["kind"] == "bool"
+    assert rule["required"] is False
+    text, report = _import(tmp_path, _with(replace=(
+        (" mix_full_fields = .true., .true.,",
+         " mix_full_fields = .true., .false.,"),)))
+    assert any(item.key == "mix_full_fields"
+               for item in report.substitutions)
+    from gpuwm.namelist_contract import _outside
+
+    bad = _outside(rule["values"])
+    assert not isinstance(bad, bool)
+    with pytest.raises(ValueError, match="mix_full_fields"):
+        _import(tmp_path, _with(replace=(
+            (" mix_full_fields = .true., .true.,",
+             f" mix_full_fields = {bad}, {bad},"),)))
+
+
+def test_registry_defaults_are_not_unconditional_contract_requirements(contract):
+    """A baseline mismatch cannot make the site demand a defaulted key."""
+    defaulted = {
+        "geogrid": ("parent_id", "truelat2"),
+        "time_control": ("start_year", "start_month", "start_day",
+                         "end_year", "end_month", "end_day"),
+        "domains": ("e_we", "e_sn", "e_vert", "parent_id",
+                    "i_parent_start", "j_parent_start", "parent_grid_ratio",
+                    "parent_time_step_ratio"),
+        "dynamics": ("mix_full_fields",),
+    }
+    for group, keys in defaulted.items():
+        for key in keys:
+            assert contract["sections"][group]["keys"][key]["required"] is False
 
 
 def test_every_rule_carries_its_measured_reach(contract):
@@ -354,10 +392,10 @@ def test_run_hours_alone_gives_the_end_as_wrf_does(tmp_path):
         tomllib.loads(reference)["experiment"]
 
 
-def test_without_run_hours_the_end_is_still_required(tmp_path):
+def test_default_end_year_still_checks_effective_chronology(tmp_path):
     inp = _with(replace=((" run_hours = 6,\n", ""),
                          (" end_year = 1999, 1999,\n", "")))
-    with pytest.raises(ValueError, match="end_year"):
+    with pytest.raises(ValueError, match="non-positive run length"):
         _import(tmp_path, inp)
 
 
@@ -373,5 +411,7 @@ def test_mercator_and_polar_need_no_truelat2(tmp_path, projection):
     assert table["map_proj"] == projection
     assert table["truelat2"] == table["truelat1"]
     lambert = WPS_TEXT.replace(" truelat2  = 60.0,\n", "")
-    with pytest.raises(ValueError, match="truelat2"):
-        import_namelists(*_pair(tmp_path, wps=lambert, inp=INPUT_TEXT))
+    text, report = import_namelists(*_pair(tmp_path, wps=lambert, inp=INPUT_TEXT))
+    table = tomllib.loads(text)["projection"]
+    assert table["truelat2"] == table["truelat1"]
+    assert any(entry.key == "truelat2" for entry in report.namelist_defaults)

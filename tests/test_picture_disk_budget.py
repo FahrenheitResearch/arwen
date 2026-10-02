@@ -17,9 +17,11 @@ def measured_catalog_fallback(monkeypatch):
 def projection(tmp_path, products, nx=36, ny=36):
     plan = SimpleNamespace(route="prepared", config_intent=None, run_dir=tmp_path,
                            run_options={"render_products": products})
+    from test_history_disk_layout import priced_run
+
     exp = SimpleNamespace(run_seconds=3600, restart_interval_s=0, domains=[
         SimpleNamespace(grid_id=1, history_interval_s=3600,
-                        run=SimpleNamespace(nx=nx, ny=ny, nz=49))])
+                        run=priced_run(nx, ny, 49))])
     return runplan._disk_projection(plan, exp, raw={}, data=None, fetch_arguments=None)
 
 
@@ -88,16 +90,21 @@ def test_image_size_saturates_outside_measured_grid_brackets():
 
 
 def test_vertical_levels_do_not_price_pictures():
+    from dataclasses import replace
+    from test_history_disk_layout import priced_run
+
     domain = SimpleNamespace(grid_id=1, history_interval_s=3600,
-                             run=SimpleNamespace(nx=36, ny=36, nz=20))
+                             run=priced_run(36, 36, 20))
     exp = SimpleNamespace(run_seconds=3600, restart_interval_s=0, domains=[domain])
     before = disk_budget.projected_run_bytes(exp, keep_checkpoints=1, fetch=None,
                                               chain=None, render=True)
-    domain.run.nz = 80
+    domain.run = replace(domain.run, nz=80)
     after = disk_budget.projected_run_bytes(exp, keep_checkpoints=1, fetch=None,
                                              chain=None, render=True)
     assert before["picture_bytes"] == after["picture_bytes"]
-    assert after["history_bytes"] == 4 * before["history_bytes"]
+    # A190: only volume/vertical coordinates scale with nz. The surface,
+    # staggering and container header keep their own sizes.
+    assert before["history_bytes"] < after["history_bytes"] < 4 * before["history_bytes"]
 
 
 def test_new_catalog_fact_is_only_a_table_row(monkeypatch):
@@ -125,14 +132,17 @@ def test_recipe_cache_key_includes_picture_measurements(tmp_path, monkeypatch):
 
 def test_child_and_forecast_share_product_prices(tmp_path):
     from gpuwm.offline_child_run import child_cadence, child_disk_projection
-    cfg = SimpleNamespace(nx=36, ny=36, nz=49, grid_id=2, dt=60,
-                          run_seconds=3600, output_interval_s=900, restart_interval_s=3600)
+    from dataclasses import replace
+    from test_history_disk_layout import priced_run
+
+    cfg = priced_run(36, 36, 49, grid_id=2, dt=60, run_seconds=3600,
+                     output_interval_s=900, restart_interval_s=3600)
     spec = "t2,xsec:wa=1,2,5@5,qpf_1h"
     child = child_disk_projection(cfg, child_cadence(cfg), keep_checkpoints=1,
                                  render_products=spec, outdir=tmp_path)
     assert child["pictures_per_frame"] == 3
     assert child["picture_bytes"] == disk_budget.projected_picture_bytes(36, 36, 3600, 900, spec)
-    cfg.nx, cfg.ny = 156, 124
+    cfg = replace(cfg, nx=156, ny=124)
     larger = child_disk_projection(cfg, child_cadence(cfg), keep_checkpoints=1,
                                   render_products=spec, outdir=tmp_path)
     assert larger["picture_bytes"] > child["picture_bytes"]
@@ -140,9 +150,10 @@ def test_child_and_forecast_share_product_prices(tmp_path):
 
 def test_child_final_frame_off_cadence_is_charged(tmp_path):
     from gpuwm.offline_child_run import child_cadence, child_disk_projection
-    cfg = SimpleNamespace(nx=36, ny=36, nz=49, grid_id=2, dt=60,
-                          run_seconds=4 * 3600, output_interval_s=3 * 3600,
-                          restart_interval_s=3600)
+    from test_history_disk_layout import priced_run
+
+    cfg = priced_run(36, 36, 49, grid_id=2, dt=60, run_seconds=4 * 3600,
+                     output_interval_s=3 * 3600, restart_interval_s=3600)
     child = child_disk_projection(cfg, child_cadence(cfg), keep_checkpoints=1,
                                  render_products="t2,qpf_total", outdir=tmp_path)
     assert child["domains"][0]["history_frames"] == 3

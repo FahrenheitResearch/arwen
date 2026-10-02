@@ -60,6 +60,99 @@ from gpuwm.ingest.prepared_store import (PreparedStoreError, _plan_slabs,
                                          _slab_base, _window_mapping)
 
 
+class _UnreadyIntervals:
+    """A declared schedule whose future tables must not be touched at startup."""
+
+    bounds = ((0.0, 3600.0), (3600.0, 7200.0))
+
+    def __iter__(self):
+        pytest.fail("a host-store restore consumed future boundary intervals")
+
+    def __getitem__(self, index):
+        pytest.fail(f"a host-store restore loaded boundary interval {index}")
+
+
+def _head_store_boundary_inputs():
+    from types import SimpleNamespace
+
+    reader = SimpleNamespace(header={"status": "HEAD"})
+    metadata = {"lbc": {
+        "spec_bdy_width": 5, "spec_zone": 1, "relax_zone": 4,
+        "intervals": [{"start_seconds": 0.0, "end_seconds": 3600.0},
+                      {"start_seconds": 3600.0, "end_seconds": 7200.0}]}}
+    source = SimpleNamespace(intervals=_UnreadyIntervals(), spec_bdy_width=5,
+                             spec_zone=1, relax_zone=4)
+    return reader, metadata, source
+
+
+def test_a_head_store_keeps_unready_boundaries_without_loading_them():
+    from gpuwm.ingest.prepared_store import _store_boundaries
+
+    reader, metadata, source = _head_store_boundary_inputs()
+    assert _store_boundaries(reader, metadata, source) is source
+
+
+def test_a_head_store_without_its_lazy_boundary_source_is_refused():
+    from gpuwm.ingest.prepared_store import _store_boundaries
+
+    reader, metadata, _ = _head_store_boundary_inputs()
+    with pytest.raises(PreparedStoreError,
+                       match="later boundary arrays do not exist at the head"):
+        _store_boundaries(reader, metadata)
+
+
+@pytest.mark.parametrize("bounds", [(), ((0.0, 3600.0),),
+    ((0.0, 1800.0), (1800.0, 7200.0)),
+    ((3600.0, 7200.0), (0.0, 3600.0))])
+def test_a_head_store_rejects_a_different_schedule_without_loading_it(bounds):
+    from gpuwm.ingest.prepared_store import _store_boundaries
+
+    reader, metadata, source = _head_store_boundary_inputs()
+    source.intervals.bounds = bounds
+    with pytest.raises(PreparedStoreError, match="schedule differs"):
+        _store_boundaries(reader, metadata, source)
+
+
+@pytest.mark.parametrize("zone", ["spec_bdy_width", "spec_zone", "relax_zone"])
+def test_a_head_store_rejects_a_different_edge_zone_without_loading_it(zone):
+    from gpuwm.ingest.prepared_store import _store_boundaries
+
+    reader, metadata, source = _head_store_boundary_inputs()
+    setattr(source, zone, getattr(source, zone) + 1)
+    with pytest.raises(PreparedStoreError,
+                       match=f"{zone}.*different edge cells"):
+        _store_boundaries(reader, metadata, source)
+
+
+def test_a_sealed_store_keeps_the_eager_cache_boundary_road(monkeypatch):
+    from gpuwm.ingest import prepared_store
+
+    reader, metadata, _ = _head_store_boundary_inputs()
+    reader.header["status"] = "COMPLETE"
+    boundary = object()
+    seen = []
+
+    def eager(held_reader, held_metadata):
+        seen.append((held_reader, held_metadata))
+        return boundary
+
+    monkeypatch.setattr(prepared_store, "_boundaries_from_cache", eager)
+    assert prepared_store._store_boundaries(reader, metadata) is boundary
+    assert seen == [(reader, metadata)]
+    assert prepared_store._store_boundaries(reader, {"lbc": None}) is None
+
+
+def test_a_head_store_rejects_replaced_forcing_fields_without_loading_them():
+    from gpuwm.ingest.prepared_store import _store_boundaries
+
+    reader, metadata, source = _head_store_boundary_inputs()
+    for row in metadata["lbc"]["intervals"]:
+        row["fields"] = ["qv"]
+    source.intervals.fields = ("thp",)
+    with pytest.raises(PreparedStoreError, match="fields differ.*forcing carriers"):
+        _store_boundaries(reader, metadata, source)
+
+
 # --------------------------------------------------------------------------
 # the synthetic domain, and why it has these numbers
 # --------------------------------------------------------------------------

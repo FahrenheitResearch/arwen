@@ -1960,7 +1960,7 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
                          cadence: int | None = None, start_hour: int = 0,
                          member: str | None = None,
                          provider: str | None = None,
-                         as_posted: bool = False) -> datetime:
+                         as_posted: bool | None = None) -> datetime:
     """Newest cycle whose final requested objects are actually published.
 
     With ``as_posted`` (the default of every front door, DESIGN A136
@@ -1972,7 +1972,8 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
     cycle cannot be waited on (a keyed job, an archive) resolves as
     before.
 
-    A cycle qualifies only when every probed object for forecast hour
+    Under the ordinary whole-cycle rule, a cycle qualifies only when
+    every probed object for forecast hour
     ``last_hour`` is already published, so a partially uploaded cycle
     never wins and the fetched window is complete by construction.  For
     HRRR that means BOTH the final ``wrfnat`` (atmosphere) and the final
@@ -1983,7 +1984,8 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
     same-cycle GDAS analysis) the donor's final lead has to be published
     too, because the fetch downloads both and refuses without it.
 
-    The endpoints are asked in ladder order, and the operational server
+    Without the hosted AWS policy, endpoints are asked in ladder order,
+    and the operational server
     heads it.  That IS the answer to "latest": the archive lags the
     operational server by minutes to hours, so resolving against the
     archive returned an older cycle than the one already published --
@@ -1992,6 +1994,9 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
     the operational server yields no complete cycle at all.
     """
 
+    transport = fetch_endpoints.policy_transport(source, transport)
+    if as_posted is None:
+        as_posted = fetch_endpoints.aws_fetch_policy()
     if isinstance(last_hour, bool) or not isinstance(last_hour, int) or last_hour < 0:
         raise ValueError("the final requested hour must be a nonnegative integer")
     if (isinstance(start_hour, bool) or not isinstance(start_hour, int)
@@ -2107,6 +2112,54 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
         f"no complete {source.upper()} cycle covering f{last_hour:03d}"
         f"{needs} was found on {tried} within the last "
         f"{grid.search_hours} h; pass an explicit --cycle")
+
+
+def resolve_cycle_for_valid_start(source: str, valid_start: datetime, hours: int,
+                                  cadence: int, *, now: datetime | None = None,
+                                  probe=_head_ok, transport: str | None = None,
+                                  as_posted: bool = True) -> tuple[datetime, int]:
+    """Newest startable cycle preserving a fixed valid start and duration."""
+
+    from gpuwm import source_readiness
+
+    if type(hours) is not int or hours < 0 or type(cadence) is not int or cadence < 1:
+        raise ValueError("the window needs nonnegative integer hours and a positive integer cadence")
+    if valid_start.tzinfo is not None:
+        valid_start = valid_start.astimezone(timezone.utc).replace(tzinfo=None)
+    if valid_start.minute or valid_start.second or valid_start.microsecond:
+        raise ValueError("the valid start must be on an exact UTC hour")
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is not None:
+        now = now.astimezone(timezone.utc).replace(tzinfo=None)
+    grid, _basis = provider_cycle_grid(source, None, now=now)
+    if not cycle_is_probeable(source):
+        raise ValueError(f"{source} publishes no objects to verify for a fixed valid start")
+    transport = fetch_endpoints.policy_transport(source, transport)
+    cycle = grid.snap(valid_start)
+    newest = cycle
+    while newest - cycle <= timedelta(hours=grid.search_hours):
+        start = int((valid_start - cycle).total_seconds() // 3600)
+        last = start + hours
+        horizon = grid.horizon(cycle)
+        if cycle <= now and (horizon is None or last <= horizon):
+            try:
+                window = source_readiness.resolve_window(
+                    source, cycle, hours, cadence=cadence, start_hour=start,
+                    transport=transport, now=now)
+            except ValueError:
+                cycle = grid.snap(cycle - timedelta(hours=1))
+                continue
+            needs = source_readiness.start_needs(window)
+            if not as_posted:
+                expected, late = source_readiness._due(source, cycle, last, None, None)
+                needs += (source_readiness.Need("whole_cycle", source, last, expected, late),)
+            if all(source_readiness.need_answer(window, need, probe=probe, now=now)["answer"]
+                   == source_readiness.POSTED for need in needs):
+                return cycle, start
+        cycle = grid.snap(cycle - timedelta(hours=1))
+    raise RuntimeError(
+        f"no {'startable' if as_posted else 'complete'} {source} cycle covers "
+        f"{valid_start:%Y-%m-%dT%H}Z for {hours} h within {grid.search_hours} h")
 
 
 def _startable_rule_applies(source: str) -> bool:
@@ -2258,9 +2311,13 @@ def _donor_published(source: str, cycle: datetime, last_hour: int, *,
     return False
 
 
+class _HrrrPrefixNotPosted(RuntimeError):
+    """Every endpoint said an object of a native prefix is missing; its posting loop waits."""
+
+
 def resolve_hrrr_transport(cycle: datetime, requested: str, *,
                            last_hour: int, now: datetime | None = None,
-                           probe=None, progress=print) -> str:
+                           probe=None, progress=print, required_leads=None) -> str:
     """Pick the concrete HRRR transport for one fetch invocation.
 
     Both hosts serve byte-identical HRRR files and ``.idx`` indexes, so
@@ -2286,10 +2343,15 @@ def resolve_hrrr_transport(cycle: datetime, requested: str, *,
     server is probed and taken, and it says so.  A cycle past its
     retention window skips the doomed probe entirely.
 
-    The window's FINAL hour is what is probed, on either host, for the
-    same reason ``resolve_latest_cycle`` probes it: publication within
-    a cycle runs forward, so a host serving the last hour serves every
-    earlier one.
+    Without ``required_leads`` this keeps the historical final-hour
+    selection. Native as-posted transfers supply their complete prefix:
+    every wrfnat, wrfprs and index must be available on one endpoint,
+    because a later mirrored lead can arrive before an earlier soil pair.
+    An endpoint that said one of them is missing (404 or 410) is never
+    taken.  When none holds the whole prefix but one could not be heard
+    about an object, that endpoint is taken and its transfer's own index,
+    inventory and digest checks decide (GS-05): a probe with no answer
+    is not a missing object.
 
     One decision per invocation, so a fetch never silently mixes hosts;
     the manifest records every file's actual URL and transport either
@@ -2298,6 +2360,49 @@ def resolve_hrrr_transport(cycle: datetime, requested: str, *,
     file mid-download.
     """
 
+    requested = fetch_endpoints.policy_transport("hrrr", requested)
+    if required_leads is not None:
+        if requested not in HRRR_TRANSPORTS:
+            raise ValueError(f"unknown HRRR transport {requested!r}")
+        leads = tuple(required_leads)
+        if not leads or leads[-1] != last_hour:
+            raise ValueError("required HRRR leads must end at last_hour")
+        selected_probe = _head_answer if probe is None else probe
+
+        def with_index(url):
+            found = selected_probe(url)
+            if found is not True:
+                return False if found is False else None
+            found = selected_probe(url + ".idx")
+            return found if found is True or found is False else None
+
+        ladder = fetch_endpoints.serving_ladder(
+            "hrrr", cycle=cycle, now=now,
+            pinned=None if requested == "auto" else requested)
+        asked = set()
+        unheard = []
+        for endpoint in (*fetch_endpoints.transfer_probes(ladder), *ladder):
+            if endpoint.name in asked:
+                continue
+            asked.add(endpoint.name)
+            verdict = probe_cycle_window(
+                "hrrr", cycle, leads, now=now, probe=with_index,
+                transport=endpoint.name)
+            if verdict["available"] is True:
+                progress(f"fetch hrrr: using {endpoint.name} for the complete "
+                         f"verified prefix f{leads[0]:03d}..f{leads[-1]:03d}")
+                return endpoint.name
+            if verdict["available"] is None:
+                unheard.append(endpoint.name)
+        if unheard:
+            progress(f"fetch hrrr: {unheard[0]} could not be heard about every "
+                     f"object of f{leads[0]:03d}..f{leads[-1]:03d} and said "
+                     "none is missing; its transfer's own checks decide")
+            return unheard[0]
+        raise _HrrrPrefixNotPosted(
+            f"every HRRR endpoint said a wrfnat, wrfprs or index of "
+            f"f{leads[0]:03d}..f{leads[-1]:03d} is missing; a final lead "
+            "alone cannot authorize downloading a missing intermediate object")
     if requested == "s3":
         return "s3"
     if requested not in ("auto", "nomads"):
@@ -2369,6 +2474,59 @@ def resolve_hrrr_transport(cycle: datetime, requested: str, *,
             f"old, beyond the ~{HRRR_NOMADS_RETENTION_HOURS} h NOMADS "
             "retention -- using the AWS S3 archive")
     return last.name
+
+
+def _posted_hrrr_transport(loop, cycle, leads):
+    """Choose one host for the prefix, waiting within the existing posting budget."""
+
+    while True:
+        try:
+            return resolve_hrrr_transport(
+                cycle, "auto", last_hour=leads[-1], required_leads=leads)
+        except _HrrrPrefixNotPosted as error:
+            # Every host said an object of the prefix is missing, though
+            # individual leads may be present on different hosts. Never
+            # fall back to a host known to lack a prefix object; re-ask
+            # within this lead's existing deadline instead.
+            loop.wait_again((leads[-1],), error)
+            loop(leads[-1])
+
+
+def _hrrr_pacing_advice(*, pinned: str | None, mode: str, cached: bool,
+                        say=print):
+    """``advise(host)``: what a resolved NOMADS whole-file transfer costs, said once.
+
+    Said BEFORE the first byte moves from the operational server, and
+    only when the host was RESOLVED rather than named: an operator who
+    typed ``--transport nomads`` made a decision, and a decision does not
+    get advice.  The archive was already asked first and did not hold the
+    window, so this is not a nudge towards ``--transport s3``, which
+    would only 404; it is the cost of the freshness that was the only
+    thing on offer.  Measured on one box, one cycle, the same four
+    objects through the same backbone: 348/209/418/255 s from the
+    operational server against 69/34/45/44 s from S3.
+
+    A whole-cycle fetch decides its host once, before the transfer; an
+    as-posted fetch decides it for each verified prefix, so ``advise``
+    is called with each prefix's host and speaks before the first one
+    the operational server serves, and never again in the same fetch.
+    """
+
+    said = []
+
+    def advise(host: str | None) -> None:
+        if (said or pinned is not None or cached or mode != "full-file"
+                or host != "nomads"):
+            return
+        said.append(host)
+        say("fetch hrrr: the operational server paces whole-file "
+            "transfers -- expect several times the wall clock of "
+            "the S3 archive for --mode full-file.  It is serving "
+            "this fetch because it is the only host that has "
+            "this window yet; once the archive catches up, a "
+            "re-run takes it from there without being asked.")
+
+    return advise
 
 
 # ---------------------------------------------------------------------------
@@ -2887,7 +3045,9 @@ def latest_cycle_request(args) -> tuple[str, int, dict]:
             "has no end without it")
     # As posted, latest is the newest cycle whose START needs are out
     # (DESIGN A136 2.2); the whole-cycle rule is --whole-cycle's.
-    as_posted = requested_as_posted(args) or None
+    as_posted = requested_as_posted(args)
+    if not as_posted and not fetch_endpoints.aws_fetch_policy():
+        as_posted = None
     if source in fetch_routes.route_ids():
         # A table route names its own hosts, and the fetch refuses any
         # other word in the route's own terms; the resolver asks the
@@ -2897,7 +3057,8 @@ def latest_cycle_request(args) -> tuple[str, int, dict]:
             cadence=args.cadence, start_hour=begin,
             member=getattr(args, "member", None),
             transport=getattr(args, "transport", None), as_posted=as_posted)
-    transport = pinned_host(getattr(args, "transport", None))
+    transport = fetch_endpoints.policy_transport(
+        source, pinned_host(getattr(args, "transport", None)))
     if source in GFS_CONTAINER_SOURCES:
         hours = container_forecast_hours(source, args.hours, args.cadence,
                                          start)
@@ -3739,6 +3900,7 @@ def fetch_gfs_fullfile(*, cycle: datetime, hours: tuple[int, ...],
     mesosphere into a tornado-scale decode.
     """
 
+    transport = fetch_endpoints.policy_transport(source, transport)
     with fetch_guard.hold("fetch-out", out, progress=progress):
         return _fetch_gfs_fullfile_locked(
             cycle=cycle, hours=hours, area=area,
@@ -5247,7 +5409,8 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
                mode: str = "auto", cache_dir: Path | None = None,
                accept_inventory_change: bool = False,
                file_workers: int | None = None,
-               transport_fallback: tuple[str, ...] = ()) -> Path:
+               transport_fallback: tuple[str, ...] = (),
+               on_hour_ready=None) -> Path:
     """Byte-range download the native HRRR subset series into ``out``.
 
     Single writer per ``--out``: the prior-receipt read, the ``force``
@@ -5256,8 +5419,13 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
     cannot publish receipts describing each other's bytes.
 
     See :func:`_fetch_hrrr_locked` for the transfer itself.
+    ``on_hour_ready(hour, manifest)`` runs after each complete hour's
+    ordinary checks and durable manifest publication, in lead order.
     """
 
+    if fetch_endpoints.policy_uses_aws("hrrr"):
+        transport = fetch_endpoints.policy_transport("hrrr", transport)
+        transport_fallback = ()
     with fetch_guard.hold("fetch-out", out, progress=progress):
         return _fetch_hrrr_locked(
             cycle=cycle, hours=hours, area=area,
@@ -5269,7 +5437,8 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
             mode=mode, cache_dir=cache_dir,
             accept_inventory_change=accept_inventory_change,
             file_workers=file_workers,
-            transport_fallback=transport_fallback)
+            transport_fallback=transport_fallback,
+            on_hour_ready=on_hour_ready)
 
 
 def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
@@ -5287,7 +5456,8 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
                        mode: str = "auto", cache_dir: Path | None = None,
                        accept_inventory_change: bool = False,
                        file_workers: int | None = None,
-                       transport_fallback: tuple[str, ...] = ()) -> Path:
+                       transport_fallback: tuple[str, ...] = (),
+                       on_hour_ready=None) -> Path:
     """The HRRR transfer, with the output-root lock already held.
 
     Reuses the proven ``.idx`` selection/range transport in
@@ -5614,7 +5784,12 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
         hour, kind = products[index][0], products[index][1]
         if kind == "soil":
             complete_hours.append(hour)
-            publish_manifest(tuple(complete_hours))
+            manifest = publish_manifest(tuple(complete_hours))
+            if on_hour_ready is not None:
+                # Both files passed the normal inventory and digest bars,
+                # and the ordered prefix is durable. A preparation may now
+                # admit this lead while the remaining files still download.
+                on_hour_ready(hour, manifest)
 
     if wait:
         # Live-cycle mode follows publication by definition: each
@@ -6485,8 +6660,11 @@ def _route_fetch_as_posted(plan, args, loop, *, last: int, options: dict) -> int
     loop.start()
     # The question a whole-cycle fetch asks first, through the same
     # function: a window whose final lead is out needs no waiting.
-    whole = _window_posted(loop.window, lambda said: require_published_cycle(
-        source, plan.cycle, last, progress=said, **options))
+    whole = (False if (fetch_endpoints.policy_uses_aws(source)
+                       or any(fetch_endpoints.policy_uses_aws(donor.source)
+                              for donor in plan.donors)) else
+             _window_posted(loop.window, lambda said: require_published_cycle(
+                 source, plan.cycle, last, progress=said, **options)))
     if whole:
         for donor in plan.donors:
             try:
@@ -6509,6 +6687,10 @@ def _route_fetch_as_posted(plan, args, loop, *, last: int, options: dict) -> int
         loop.wait_start()
     try:
         donor_files = _fetch_route_donors(plan, args)
+        # The handoff goes out once the start needs and donors are in,
+        # before later leads move, so preparation can run beside the fetch.
+        fetch_routes.write_handoff(plan, args.out, donor_files=donor_files,
+                                   posting=loop.folder)
 
         def published(lead, entries, composed):
             loop.publish(lead, fetch_as_posted.route_objects(entries),
@@ -6520,7 +6702,8 @@ def _route_fetch_as_posted(plan, args, loop, *, last: int, options: dict) -> int
                               on_lead=published)
     finally:
         loop.close()
-    fetch_routes.write_handoff(plan, args.out, donor_files=donor_files)
+    fetch_routes.write_handoff(plan, args.out, donor_files=donor_files,
+                               posting=loop.folder)
     print(f"fetch {source}: manifest {args.out / fetch_routes.MANIFEST_NAME}")
     for line in fetch_routes.handoff_lines(plan, args.out):
         print(line)
@@ -6575,7 +6758,8 @@ def _fetch_route_donors(plan, args) -> dict:
             engine=choice.engine, engine_bin=choice.binary,
             engine_selection=choice.selection, cache_dir=None,
             top_pressure_pa=None, all_levels=False,
-            file_workers=args.fetch_workers)
+            file_workers=args.fetch_workers,
+            transport=fetch_endpoints.policy_transport(donor.source))
         document = json.loads(Path(manifest).read_text(encoding="utf-8"))
         names = [entry["name"] for entry in document.get("files", [])]
         if not names:
@@ -6604,6 +6788,10 @@ def fetch_main(args) -> int:
 
 def _fetch_main(args) -> int:
     source = args.source
+    if fetch_endpoints.policy_uses_aws(source):
+        args.transport = fetch_endpoints.policy_transport(source)
+        if source in GFS_CONTAINER_SOURCES:
+            args.mode = "full-file"
     _posting_flag_refusal(args, requested_as_posted(args))
     if getattr(args, "readiness", False):
         return _readiness_main(args, source)
@@ -7094,10 +7282,20 @@ def _fetch_main(args) -> int:
                 loop = _posting_loop(source, cycle, args, leads=hours,
                                      transport=pinned_host(args.transport))
                 if loop is not None:
-                    whole = _window_posted(
-                        loop.window, lambda said: require_published_cycle(
-                            source, cycle, hours[-1], progress=said,
-                            transport=pinned_host(args.transport)))
+                    # The named cycle's own check still runs for what it
+                    # says: the refusal of a host that no longer keeps the
+                    # cycle, and the sentence naming a host that could not
+                    # be heard (GS-05). Its answer does not make the window
+                    # whole: a posted final lead does not prove the
+                    # intervening wrfnat/wrfprs pairs have reached this
+                    # host, so each lead is checked before it joins the
+                    # downloaded prefix.
+                    if not fetch_endpoints.policy_uses_aws(source):
+                        _window_posted(
+                            loop.window, lambda said: require_published_cycle(
+                                source, cycle, hours[-1], progress=said,
+                                transport=pinned_host(args.transport)))
+                    whole = False
             if not cached and args.cycle != "latest" and loop is None:
                 require_published_cycle(
                     source, cycle, hours[-1],
@@ -7122,36 +7320,22 @@ def _fetch_main(args) -> int:
                   + (f" ({engine_bin})" if engine_bin is not None else "")
                   + (f", mode {mode} ({mode_chooser})"
                      if engine == "rust" else ""))
-            if (pinned_host(args.transport) is None
-                    and transport == "nomads"
-                    and mode == "full-file" and not cached):
-                # Said BEFORE the first byte moves, and only when the
-                # host was RESOLVED rather than named: an operator who
-                # typed `--transport nomads` made a decision, and a
-                # decision does not get advice.  Reaching here means the
-                # archive was ALREADY asked and did not have this window
-                # -- so this is not a nudge towards --transport s3,
-                # which would only 404; it is the cost of the freshness
-                # that was the only thing on offer.  Measured on one
-                # box, one cycle, the same four objects through the same
-                # backbone: 348/209/418/255 s from the operational
-                # server against 69/34/45/44 s from S3.
-                print("fetch hrrr: the operational server paces whole-file "
-                      "transfers -- expect several times the wall clock of "
-                      "the S3 archive for --mode full-file.  It is serving "
-                      "this fetch because it is the only host that has "
-                      "this window yet; once the archive catches up, a "
-                      "re-run takes it from there without being asked.")
+            advise_pacing = _hrrr_pacing_advice(
+                pinned=pinned_host(args.transport), mode=mode, cached=cached)
+            advise_pacing(transport)
             requested_transport = transport
 
-            def transfer(window, force):
+            def transfer(window, force, *, on_hour_ready=None):
                 # The host is decided per call: under the loop the
                 # window's final hour is the newest posted one.
                 host = requested_transport
                 if loop is not None and not whole:
                     host = (pinned_host(args.transport)
-                            or resolve_hrrr_transport(
-                                cycle, "auto", last_hour=window[-1]))
+                            or _posted_hrrr_transport(loop, cycle, window))
+                    # As posted, the transport above stays unresolved, so
+                    # the cost of a resolved NOMADS whole-file transfer
+                    # is said here, before the first prefix it serves.
+                    advise_pacing(host)
                 return fetch_hrrr(
                     cycle=cycle, hours=window, area=area, out=args.out,
                     force=force, transport=host,
@@ -7160,10 +7344,14 @@ def _fetch_main(args) -> int:
                     cache_dir=args.cache_dir,
                     accept_inventory_change=args.accept_inventory_change,
                     file_workers=args.fetch_workers,
-                    transport_fallback=transport_fallback)
+                    transport_fallback=transport_fallback,
+                    **({} if on_hour_ready is None else {
+                        "on_hour_ready": on_hour_ready}))
 
             manifest = _legacy_transfer(loop, transfer, hours,
-                                        force=args.force_refetch, whole=whole)
+                force=args.force_refetch, whole=whole,
+                incremental_transfer=lambda window, force, ready: transfer(
+                    window, force, on_hour_ready=ready))
     else:
         raise ValueError(f"unknown fetch source {source!r}")
     print(f"fetch {source}: manifest {manifest}")
@@ -7273,20 +7461,61 @@ def _window_posted(window, check) -> bool:
 
 
 def _legacy_transfer(loop, transfer, hours, *, force: bool,
-                     whole: bool | None = None):
+                     whole: bool | None = None, incremental_transfer=None):
     """One legacy transport's window, whole or as it posts.
 
     Without a loop, ``transfer(hours, force)`` once, as before.  With one
     (:func:`gpuwm.fetch_as_posted.fetch_legacy_as_posted`) the transport
     is called for each verified prefix; a forced refetch sets the old
     files aside once, before the first call, and never again.
+    ``incremental_transfer(leads, force, ready)`` may call
+    ``ready(lead, manifest)`` before returning, after that lead's ordinary
+    checks and manifest publication. Each marker is then published once;
+    repeated prefix checks cannot change what the preparation already bound.
     """
 
     if loop is None:
         return transfer(hours, force)
-    from gpuwm.fetch_as_posted import fetch_legacy_as_posted, legacy_objects
+    from gpuwm.fetch_as_posted import (
+        fetch_legacy_as_posted, legacy_objects, marker_name)
 
     window = loop.window
+    if (incremental_transfer is not None
+            or fetch_endpoints.policy_uses_aws(window.source)):
+        # Native hourly completions belong to an individually gated
+        # prefix, even when a final-lead probe called the window whole.
+        # Otherwise a lagging intermediate object fails the fetch before
+        # any start lead is admitted to the preparation.
+        whole = False
+    published = {}
+
+    def publish_verified(lead, objects):
+        lead = int(lead)
+        objects = [dict(item) for item in objects]
+        if lead in published:
+            if published[lead] != objects:
+                raise ValueError(
+                    f"verified lead f{lead:03d} changed after its posted "
+                    "marker was written; the preparation has already "
+                    "bound the earlier objects")
+            return loop.folder / marker_name(lead)
+        if len(published) >= len(hours) or lead != hours[len(published)]:
+            raise ValueError(
+                f"verified lead f{lead:03d} arrived outside the ordered "
+                "prefix; publishing it would leave an earlier lead "
+                "unbound while the preparation waits for it")
+        path = loop.publish(lead, objects)
+        published[lead] = objects
+        return path
+
+    def ready(lead, manifest):
+        document = json.loads(Path(manifest).read_text(encoding="utf-8"))
+        publish_verified(lead, legacy_objects(document, lead))
+
+    def move(leads, fresh):
+        if incremental_transfer is None:
+            return transfer(leads, fresh)
+        return incremental_transfer(leads, fresh, ready)
     # A window whose final lead is out needs no waiting, and moves as one
     # request with its markers written in lead order.
     if whole is None:
@@ -7298,15 +7527,15 @@ def _legacy_transfer(loop, transfer, hours, *, force: bool,
         # transfer sets the old payloads aside, so no marker describes a
         # file that is gone while the new one downloads.
         loop.start(fresh=force)
-        manifest = transfer(hours, force)
+        manifest = move(hours, force)
         document = json.loads(Path(manifest).read_text(encoding="utf-8"))
         for lead in hours:
-            loop.publish(lead, legacy_objects(document, lead))
+            publish_verified(lead, legacy_objects(document, lead))
         return manifest
     forced = [force]
 
     def prefix(window):
-        manifest = transfer(window, forced[0])
+        manifest = move(window, forced[0])
         forced[0] = False
         return manifest
 
@@ -7317,7 +7546,8 @@ def _legacy_transfer(loop, transfer, hours, *, force: bool,
         # say a lead is ready whose file was just moved aside.
         _force_quarantine_output(loop.out, print, loop.window.source)
         forced[0] = False
-    return fetch_legacy_as_posted(loop, prefix, fresh=force)
+    return fetch_legacy_as_posted(loop, prefix, fresh=force,
+                                 publish_lead=publish_verified)
 
 
 def _resolve_manifest_bridge(source: str) -> Path:
@@ -7431,6 +7661,9 @@ def transport_refusal(source: str, transport: object) -> str | None:
         return (f"transport: {name} has no host to choose between, so there "
                 "is nothing to pin. what to do: remove transport.")
     if name in GFS_CONTAINER_SOURCES:
+        if fetch_endpoints.policy_uses_aws(name):
+            fetch_endpoints.endpoint_named(name, transport)
+            return None
         return (f"transport pins the host of whole {name} archive objects, "
                 f"which only `gpuwm fetch --source {name} --mode full-file` "
                 "downloads; a [fetch] table fetches the NOMADS grib-filter "
@@ -8005,7 +8238,7 @@ __all__ = [
     "PublicationCheck", "cycle_publication_check", "cycle_publication_refusal",
     "require_published_cycle",
     "analysis_window_reference",
-    "resolve_latest_cycle",
+    "resolve_latest_cycle", "resolve_cycle_for_valid_start",
     "sha256_file", "validate_era5_files", "write_era5_request",
     "read_grib1_grid", "wsl_path", "era5_retrieve_commands", "Grib1Grid",
     "write_fetch_manifest",

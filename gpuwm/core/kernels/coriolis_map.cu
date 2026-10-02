@@ -106,10 +106,24 @@ void coriolis_curvature(const real* __restrict__ ru,   // (nz, ny, nx+1)
     // WRF open/specified bounds leave boundary-normal velocity faces to
     // module_bc.  Tangential velocity and w tendencies remain active.
     if (j < ny && (!boundary_x || (i > 0 && i < nx))) {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
         int ic = i % nx, imc = (i - 1 + nx) % nx;
+#else
+        int ic = i == nx ? 0 : i, imc = i == 0 ? nx - 1 : i - 1;
+#endif
         size_t cA = (size_t)j * nx + ic, cB = (size_t)j * nx + imc;
         // 4-point averages of rv (rows j, j+1 of the two flanking columns)
         // and of rw (full levels k, k+1) — WRF coriolis/curvature stencils.
+#if GPUWM_WRF_EXACT_C_BIGSTEP
+        real rv4 = 0.25f * (rv[I3S(k, j + 1, imc, nyf, nx)]
+                          + rv[I3S(k, j + 1, ic,  nyf, nx)]
+                          + rv[I3S(k, j,     imc, nyf, nx)]
+                          + rv[I3S(k, j,     ic,  nyf, nx)]);
+        real rw4 = 0.25f * (rw_at(w, mut, msft, c1f, c2f, k + 1, cB, st)
+                          + rw_at(w, mut, msft, c1f, c2f, k,     cB, st)
+                          + rw_at(w, mut, msft, c1f, c2f, k + 1, cA, st)
+                          + rw_at(w, mut, msft, c1f, c2f, k,     cA, st));
+#else
         real rv4 = 0.25f * (rv[I3S(k, j,     imc, nyf, nx)]
                           + rv[I3S(k, j,     ic,  nyf, nx)]
                           + rv[I3S(k, j + 1, imc, nyf, nx)]
@@ -118,6 +132,7 @@ void coriolis_curvature(const real* __restrict__ ru,   // (nz, ny, nx+1)
                           + rw_at(w, mut, msft, c1f, c2f, k + 1, cB, st)
                           + rw_at(w, mut, msft, c1f, c2f, k,     cA, st)
                           + rw_at(w, mut, msft, c1f, c2f, k + 1, cA, st));
+#endif
         // coriolis: +(msfux/msfuy == 1)*<f>_x*<rv> - <e>_x*<cosa>_x*<rw>
         // (WRF :3726-3729; the cosa average is grouped so cosa == 1
         // multiplies by exactly 1.0f — rotation-free grids bitwise.)
@@ -129,22 +144,43 @@ void coriolis_curvature(const real* __restrict__ ru,   // (nz, ny, nx+1)
                                   k, j, ic, ny, nx)
                         + vxgm_at(u, v, msfu, msfv, rdx, rdy,
                                   k, j, imc, ny, nx));
+#if GPUWM_WRF_EXACT_C_BIGSTEP
+        size_t out = I3S(k, j, i, ny, nxf);
+        // WRF writes each routine's tendency and keeps each add/subtract.
+        ru_t[out] = (ru_t[out] + 0.5f * (f[cA] + f[cB]) * rv4)
+                  - 0.5f * (e[cA] + e[cB])
+                    * (0.5f * (cosa[cA] + cosa[cB])) * rw4;
+        ru_t[out] = (ru_t[out] + vx * rv4)
+                  - u[out] * RERADIUS * rw4;
+#else
         t += vx * rv4
            - u[I3S(k, j, i, ny, nxf)] * RERADIUS * rw4;
         ru_t[I3S(k, j, i, ny, nxf)] += t;
+#endif
     }
 
     if (i < nx && (!boundary_y || (j > 0 && j < ny))) {
+#if GPUWM_WRF_EXACT || GPUWM_WRF_EXACT_C_BIGSTEP || GPUWM_WRF_EXACT_C_ADVECTION || GPUWM_WRF_EXACT_C_DIFFUSION || GPUWM_WRF_EXACT_D_DIAGNOSTICS
         int jc = j % ny, jmc = (j - 1 + ny) % ny;
+#else
+        int jc = j == ny ? 0 : j, jmc = j == 0 ? ny - 1 : j - 1;
+#endif
         size_t cA = (size_t)jc * nx + i, cB = (size_t)jmc * nx + i;
         real ru4 = 0.25f * (ru[I3S(k, jc,  i,     ny, nxf)]
                           + ru[I3S(k, jc,  i + 1, ny, nxf)]
                           + ru[I3S(k, jmc, i,     ny, nxf)]
                           + ru[I3S(k, jmc, i + 1, ny, nxf)]);
+#if GPUWM_WRF_EXACT_C_BIGSTEP
+        real rw4 = 0.25f * (rw_at(w, mut, msft, c1f, c2f, k + 1, cB, st)
+                          + rw_at(w, mut, msft, c1f, c2f, k,     cB, st)
+                          + rw_at(w, mut, msft, c1f, c2f, k + 1, cA, st)
+                          + rw_at(w, mut, msft, c1f, c2f, k,     cA, st));
+#else
         real rw4 = 0.25f * (rw_at(w, mut, msft, c1f, c2f, k,     cB, st)
                           + rw_at(w, mut, msft, c1f, c2f, k + 1, cB, st)
                           + rw_at(w, mut, msft, c1f, c2f, k,     cA, st)
                           + rw_at(w, mut, msft, c1f, c2f, k + 1, cA, st));
+#endif
         // coriolis: -(msfvy/msfvx == 1)*<f>_y*<ru>  (WRF :3800-3803)
         real t = -0.5f * (f[cA] + f[cB]) * ru4;
         // curvature: -<vxgm>_y*<ru> - (msfvy/msfvx == 1)*v*<rw>/a
@@ -152,6 +188,14 @@ void coriolis_curvature(const real* __restrict__ ru,   // (nz, ny, nx+1)
                                   k, jc, i, ny, nx)
                         + vxgm_at(u, v, msfu, msfv, rdx, rdy,
                                   k, jmc, i, ny, nx));
+#if GPUWM_WRF_EXACT_C_BIGSTEP
+        size_t out = I3S(k, j, i, nyf, nx);
+        rv_t[out] = (rv_t[out] - 0.5f * (f[cA] + f[cB]) * ru4)
+                  + 0.5f * (e[cA] + e[cB])
+                    * (0.5f * (sina[cA] + sina[cB])) * rw4;
+        rv_t[out] = (rv_t[out] - vx * ru4)
+                  - v[out] * RERADIUS * rw4;
+#else
         t += -vx * ru4
              - v[I3S(k, j, i, nyf, nx)] * RERADIUS * rw4;
         // coriolis rotation: +(msfvy/msfvx == 1)*<e>_y*<sina>_y*<rw>
@@ -162,6 +206,7 @@ void coriolis_curvature(const real* __restrict__ ru,   // (nz, ny, nx+1)
         t += 0.5f * (e[cA] + e[cB])
              * (0.5f * (sina[cA] + sina[cB])) * rw4;
         rv_t[I3S(k, j, i, nyf, nx)] += t;
+#endif
     }
 
     if (i < nx && j < ny && k >= 1) {            // interior w level k
@@ -187,7 +232,12 @@ void coriolis_curvature(const real* __restrict__ ru,   // (nz, ny, nx+1)
         // coriolis: +e*(cosa*<ru> - (msftx/msfty == 1)*sina*<rv>)
         //           (WRF :3839-3844)
         // curvature: +(<ru><u> + (msftx/msfty == 1)*<rv><v>)/a
+#if GPUWM_WRF_EXACT_C_BIGSTEP
+        rw_t[(size_t)k * st + c] += e[c] * (cosa[c] * ruf - sina[c] * rvf);
+        rw_t[(size_t)k * st + c] += RERADIUS * (ruf * uf + rvf * vf);
+#else
         rw_t[(size_t)k * st + c] += e[c] * (cosa[c] * ruf - sina[c] * rvf)
                                   + RERADIUS * (ruf * uf + rvf * vf);
+#endif
     }
 }

@@ -41,8 +41,8 @@ down with the commit that caused it, which is the amendment discipline the
 repository already uses for a stale gate table.  Nothing here is exempt and
 nothing here is skipped.
 
-It hashes 91 text files.  It compiles nothing, imports no kernel and needs no
-CUDA device.
+It hashes 115 CUDA translation units and their declared device headers.
+It compiles nothing, imports no kernel and needs no CUDA device.
 """
 
 from __future__ import annotations
@@ -84,15 +84,8 @@ def _frozen_module():
 #: beneath makes it TEMPORARY: once a drift is ratified into the freeze,
 #: its row here must go.
 RE_PINNED_DRIFT: dict[str, tuple[str, str]] = {
-    # EMPTY on purpose, and the gate below keeps it true: the nine drifted
-    # modules this table shadow-pinned (diagnostics/nest for the two-way
-    # feedback, kf and ysu for the column-workspace moves, rrtmg_lw's
-    # buffer-march fix, rrtmg_sw's subnormal armor, and the contributed
-    # RRTMGP optimisation's three units) were RATIFIED into
-    # FROZEN_MODULE_DIGESTS with each owning lane's evidence cited beside
-    # its hash, so the drift this table recorded no longer exists.  A new
-    # drift enters here with its (sha, commit) pair until its own
-    # ratification retires it the same way.
+    # The three bandwidth modules are ratified into the frozen table
+    # by recorded native-word reproduction on their original cards.
 }
 
 #: The kernel translation units that ``FROZEN_MODULE_DIGESTS`` never pinned.
@@ -112,6 +105,33 @@ RE_PINNED_DRIFT: dict[str, tuple[str, str]] = {
 #: nothing observes.  The comment above each entry is the commit that last
 #: moved that file.
 BASELINE_PINNED: dict[str, str] = {
+    # gp-libm64: new test-only host-library bit grading entry points.
+    "portable_libm64_grade":
+        "080beeaea2eb617ae3e53beb529f8f99e793eea48c572710d0939c9ec19bb3a9",
+    # The card route of initialize_real: portable thermodynamics and the
+    # FP32 geopotential split (real_init_math), the arithmetic REAL twins
+    # (real_init); bitwise gates on sm_89 and sm_120.
+    "real_init_math": "54ab928d5769cde62f8d7bbd8ac56cef36c9cfce719ab45f6b3652638b9af0d0",
+    "real_init": "d730af022f5411b04c81ea52ec916254747bafe8677af6393321eb9654aa87e7",
+    # Fused horizontal arithmetic and portable binary64 RH conversion.
+    "horizontal": "dccca1222ba3e4d7be4157761deecceb00beed9db2c3318bdb5ae683960ed22c",
+    # gp-closure: gathered seeding with explicit subnormal rounding.
+    "thompson_cold_start": "900fa9a0c368943ade7edcb7ed0ffebc80823ed9136824c235365dd161731548",
+    # 679a5f5fe: WRF v4.7.1 coordinate-surface horizontal diffusion.
+    # Re-measured after the merged diffusion oracle's boundary-donor fix:
+    # the coordinate translation unit is unchanged. Both exports' driver
+    # attributes are recorded through the production loader on sm_120.
+    "diff_opt1":
+        "bbe1360f8ea5249270a89a11f5f2cd77f3fdc573d66d57755a37852ddacaa161",
+    # 6c974973d: native cold-start soil liquid water reuses frozen Noah FRH2O.
+    # test_wrfinput_cold_start.py drives real kernels against WRF-order
+    # startup mirrors; test_kernel_loader_inert.py preserves forecast Noah.
+    "noah_init":
+        "32ecd84ca52a513304d793664f5c88df9a7904bd50ffa2504a6339c90cdd3897",
+    # 6c974973d: terrain-following cold-start W, rounded like set_w_surface.
+    # test_wrfinput_cold_start.py retains WRF fill-mode and flat controls.
+    "wrf_cold_start_w":
+        "c33a86a5f2ff3884ab55265499ef2a93bf59e637461b1a764dbb948720a54303",
     # 3eb49b2fd: evaluation-time moist boundary conversion; measured
     # 73fc2406f evaluator/shared-dycore/public 1800-second forecast.
     # Raw + assembled compiler identities and resources are retained in
@@ -494,6 +514,17 @@ BASELINE_PINNED: dict[str, str] = {
     # same division either way.  Previously a25a77f1.
     "myjurb":
         "ff8c000f5fdbe9f43f903a00ef9a20c760635c5321e2912257ebfe2d172a26e8",
+    # lane/282-terrain-drag: sub-grid terrain drag from WRF v4.7.1, the
+    # topo_wind static coefficients (start_em.F:1539-1626), gwd_opt = 1
+    # (module_bl_gwdo.F -> bl_gwdo.F90) and gwd_opt = 3 (module_bl_gwdo_gsl.F),
+    # bit for bit against WRF's own Fortran on both cards
+    # (tests/test_terrain_drag_wrf471_parity.py).  Compiled by its own direct
+    # NVRTC loader (gpuwm/core/terrain_drag.py), -fmad=false --ftz=false.
+    # Re-pinned for the SASE upper-bracket PBL-top helper.  The complete
+    # module, its bit oracles, helper and mutation controls pass on
+    # sm_89 and sm_120; the WRF scheme arithmetic is unchanged.
+    "terrain_drag":
+        "eff252477f8d467e16b179023b8857ffd95feeedb94110ee72fe0d7a879e79d3",
     # ebcf4edd2 lane/urban-bep: the BEP column (sf_urban_physics=2)
     # (tests/test_urban_bep_wrf471_parity.py)
     "urban_bep":
@@ -525,10 +556,29 @@ BASELINE_PINNED: dict[str, str] = {
         "e68a95a475c3b2b958cf0e40805537bac5c0c075600b2b2ef81dae4261010ec0",
     "held_heating":
         "9228ead79c478bf4c8c7dd15dec9b917dcbd6a46cff0478dee51c97c25881c89",
+    # 2.8.2: four words per thread, aligned uint4 transactions, and scalar
+    # fallbacks for slices and tails. test_bandwidth_word_kernels.py checks
+    # copy payloads and zero words including NaNs and alignment boundaries.
+    # An eight-step default-suite run retains all 154 canonical arrays and
+    # byte-identical Rust history. Word moves have no WRF Fortran oracle.
     "rk_bookkeeping":
-        "f1e80e7d8b15b6266713c2694104ed7a08537ccdfa0721fbf8a4f0b7945f91c2",
+        "53ecc9f20a4e8a18f23a6ed17e43decdb80e2083660e90771a4f3d18b5dd8e66",
+    # 2.8.2: vector add/theta glue and fused theta-forcing export retain
+    # every eager FP32 arithmetic boundary and operand order. The tests in
+    # test_bandwidth_glue.py compare exact CuPy words for physical values,
+    # NaNs, subnormals, division extremes, broadcasts and alias fallbacks.
+    # The eight-step default-suite state/history proof covers the adds and
+    # theta construction. test_dycore_advective_forcing_export.py exercises
+    # the export through a real Grell-Freitas step. These array operators
+    # have no dedicated WRF Fortran oracle.
+    "bandwidth_glue":
+        "8ca05bd9653f73aa06b90ab25bfaf10468517b410f01d09725cc5de376458f12",
+    # WRF module_bc_em.F clamps outside terrain donors on nonperiodic
+    # edges. The former inside-slope copies doubled the normal component.
+    # test_surface_w_fused.py checks both launch paths against the WRF
+    # clamped-index formula, including periodic controls and upper W.
     "surface_w":
-        "f4b488281c8fb9a59afb676a88a9803e8951c3ad7d8a409205c60a896280ba38",
+        "587587787fd7d69b80b26861f10eaa78baeec3b9fa243b1cd7ca40e608941c03",
     # lane/speed-rrtmg-legacy.  rrtmg_legacy_adapter: added at 2c64326aa
     # (the adapter keeps the radiation call on the device), moved by
     # cfd6503b7 and last by 378191e61 (results, ozone and radius conversion
@@ -583,7 +633,14 @@ PINNED.update(BASELINE_PINNED)
 # docs/gf_gamma_known_delta.md and tests/test_gf_gamma_correctly_rounded.py;
 # header assembly is independently checked by test_kernel_loader_inert.py.
 PINNED_HEADERS = {
+    # gp-libm64: new Rust libm 0.2.16 and glibc 2.39 log1pf twins.
+    "portable_libm64.cuh": "bca62ac1366a4602b0c5bd0b11a11c9ee226a1e1a1f690060c924ef94a64655e",
+    # NumPy NaN payloads and explicit rounding for the real_init units.
+    "real_init_common.cuh": "f4b6187b4614daa458f96689036a3bf71c12b66b0c21f5844c579c75916deca2",
     "common.cuh": _FROZEN.COMMON_CUH_SHA256,
+    # noah_init reuses the full Noah unit through the real loader. Its
+    # header authority is the same source pin as the forecast unit.
+    "noah.cu": PINNED["noah"],
     # RE-PINNED at 2.7.6 from 794c7d4123bb0642 by the notice correction: the
     # comments at lines 235-237 and 344-353 stop describing the earlier gamma
     # as derived from glibc.  Comments only, measured: with comments removed
@@ -596,6 +653,10 @@ PINNED_HEADERS = {
     # asinf/acosf/atanf) for the urban BEP column, generated and proven by
     # tools/glibc_trig_flt32_proof/.
     "glibc_trig_flt32.cuh": "bbdb54c85d361d208ea9b1a7cb49a33132026d17694ad0f42c8b0bf5460baaf0",
+    # lane/282-terrain-drag: YSU's topo_wind arm (get_pblh, the hill-top 10 m
+    # blend), prepended to ysu.cu by _EXTRA_HEADERS["ysu"]; graded with it by
+    # tests/test_terrain_drag_wrf471_parity.py.
+    "ysu_topo.cuh": "0774d7ad30422eb3b4190879388499271da6170eb8031a0176b06f5f720c9b4f",
     # The UW PBL's prepended headers, in the loader's order
     # (gpuwm/core/kernels/__init__.py _EXTRA_HEADERS["uwpbl"]): the
     # binary64 libm (tools/uwpbl_wrf471_oracle/libm64 proves it), the
@@ -642,7 +703,15 @@ def test_header_pins_cover_the_actual_loader_closure():
     used = {"common.cuh", *(header for headers in EXTRA_HEADERS.values() for header in headers),
             *RUC_FUSED_SOURCES}
     assert used == set(PINNED_HEADERS)
-    assert {path.name for path in KERNELS.glob("*.cuh")} == used | set(COMPOSED_HEADERS)
+    # A loader may borrow an already frozen .cu unit as a header (noah_init
+    # reuses Noah's FRH2O). Keep the .cuh census exact, and require every
+    # borrowed .cu to carry the same source authority as its standalone unit.
+    assert {path.name for path in KERNELS.glob("*.cuh")} == {
+        name for name in used | set(COMPOSED_HEADERS) if name.endswith(".cuh")}
+    borrowed_units = {name for name in used if name.endswith(".cu")}
+    assert borrowed_units <= {f"{module}.cu" for module in PINNED}
+    for name in borrowed_units:
+        assert PINNED_HEADERS[name] == PINNED[name.removesuffix(".cu")]
     for header, sha in COMPOSED_HEADERS.items():
         assert hashlib.sha256((KERNELS / header).read_bytes()).hexdigest() == sha, (
             f"{header} changed; record the reading that moved it before its pin")

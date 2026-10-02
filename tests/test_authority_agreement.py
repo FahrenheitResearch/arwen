@@ -165,6 +165,12 @@ _SHARED_CODES = frozenset({
     # plan review narrower than the loader on exactly that setting, and
     # this battery is what holds the two doors equal.
     "component-admitted-setting",
+    # The Noah mosaic coupling law (fa2e5efd8, c517106a8).  Shared by
+    # construction: plan review calls gpuwm.config's
+    # validate_noah_mosaic_config, the function validate_run_config calls,
+    # on the resolved settings.  Unclassified, every mosaic_urban_canopy
+    # override was reported as a disagreement it is not.
+    "noah-mosaic-pairing",
     "parameter-value",
     "unimplemented-selector",
     "unknown-selector-combination",

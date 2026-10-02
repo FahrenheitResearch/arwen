@@ -1260,6 +1260,18 @@ fn validate_series_cycle_horizon(observed: &[u32], cycle: &str) -> Result<(), St
 }
 
 fn parse_series_manifest(path: &Path) -> Result<Vec<SeriesInput>, Box<dyn Error>> {
+    parse_series_manifest_with(path, true)
+}
+
+/// The series as written.  `require_files` false is the as-posted mode: a
+/// lead's GRIB is not on disk until the lead posts, the first lead's
+/// included (the decoder starts before the window's first lead posts), and
+/// each lead's files are opened only once the parent has admitted it
+/// (`wait_admitted`).
+fn parse_series_manifest_with(
+    path: &Path,
+    require_files: bool,
+) -> Result<Vec<SeriesInput>, Box<dyn Error>> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut inputs = Vec::new();
     for (line_number, raw) in fs::read_to_string(path)?.lines().enumerate() {
@@ -1290,7 +1302,7 @@ fn parse_series_manifest(path: &Path) -> Result<Vec<SeriesInput>, Box<dyn Error>
         };
         let atmosphere = resolve(fields[1]);
         let soil = resolve(fields[2]);
-        if !atmosphere.is_file() || !soil.is_file() {
+        if require_files && (!atmosphere.is_file() || !soil.is_file()) {
             return Err(format!(
                 "series manifest line {} references a missing file: atmosphere={atmosphere:?}, soil={soil:?}",
                 line_number + 1
@@ -1323,15 +1335,90 @@ fn parse_series_manifest(path: &Path) -> Result<Vec<SeriesInput>, Box<dyn Error>
     Ok(inputs)
 }
 
+/// Block until the parent has admitted `input`'s lead: its
+/// `ADMIT_DIR/fNN.admitted` names the same forecast hour and the same two
+/// files, written by the parent only after it held both files to the
+/// lead's posted marker (`tools/hrrr_pipeline.py`).  A lead whose files
+/// were never admitted is never opened.  Ends when another worker failed
+/// (`cancelled`) or, on Unix, when the parent that admits leads is gone,
+/// so an orphaned decoder does not wait for a lead nothing will admit.
+fn wait_admitted(
+    directory: &Path,
+    input: &SeriesInput,
+    cancelled: &AtomicBool,
+) -> Result<(), Box<dyn Error>> {
+    #[cfg(unix)]
+    let parent = std::os::unix::process::parent_id();
+    let path = directory.join(format!("f{:02}.admitted", input.forecast_hour));
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(format!(
+                "f{:02}: decode cancelled while waiting for its admission",
+                input.forecast_hour
+            )
+            .into());
+        }
+        if path.is_file() {
+            let text = fs::read_to_string(&path)?;
+            let expected = [
+                format!("forecast_hour\t{}", input.forecast_hour),
+                format!("atmosphere\t{}", input.atmosphere),
+                format!("soil\t{}", input.soil),
+            ];
+            let lines: Vec<&str> = text.lines().collect();
+            if lines.len() != expected.len()
+                || lines.iter().zip(&expected).any(|(line, want)| *line != want.as_str())
+            {
+                return Err(format!(
+                    "f{:02}: admission {path:?} does not name this lead's series files",
+                    input.forecast_hour
+                )
+                .into());
+            }
+            return Ok(());
+        }
+        #[cfg(unix)]
+        if std::os::unix::process::parent_id() != parent {
+            return Err(format!(
+                "f{:02}: the parent that admits leads exited",
+                input.forecast_hour
+            )
+            .into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     // Keep the release-provenance stamp in the binary: the cut
     // proves a staged bridge by these bytes (see lib.rs).
     let _ = std::hint::black_box(gpuwm_preprocess_cpu::SOURCE_REV_STAMP);
     let process_started = Instant::now();
     let args: Vec<String> = env::args().skip(1).collect();
-    let usage = "usage: hrrr_grib2_bridge WRFNAT_F00 WRFNAT_F01 SOIL_F00 SOIL_F01 OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series SERIES_TSV OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series-workers WORKERS SERIES_TSV OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series-workers-ready WORKERS SERIES_TSV OUTPUT_DIR SIGNAL_DIR EXPECTED_CYCLE I_START I_END J_START J_END";
+    let usage = "usage: hrrr_grib2_bridge WRFNAT_F00 WRFNAT_F01 SOIL_F00 SOIL_F01 OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series SERIES_TSV OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series-workers WORKERS SERIES_TSV OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series-workers-ready WORKERS SERIES_TSV OUTPUT_DIR SIGNAL_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series-workers-posted WORKERS SERIES_TSV OUTPUT_DIR SIGNAL_DIR ADMIT_DIR EXPECTED_CYCLE I_START I_END J_START J_END";
+    // As posted (A136 L7c): the first lead is inventoried up front and is
+    // the reference; every later lead is inventoried, held to that
+    // reference and decoded once the parent admits it (ADMIT_DIR).
+    let mut admissions: Option<PathBuf> = None;
     let (inputs, output, expected_cycle, coordinate_start, decode_workers, signals) =
-        if args.first().map(String::as_str) == Some("--series-workers-ready") {
+        if args.first().map(String::as_str) == Some("--series-workers-posted") {
+            if args.len() != 11 {
+                return Err(usage.into());
+            }
+            let workers = parse_usize(args.get(1).cloned(), "WORKERS")?;
+            if workers == 0 || workers > 13 {
+                return Err("WORKERS must be in 1..13".into());
+            }
+            admissions = Some(PathBuf::from(&args[5]));
+            (
+                parse_series_manifest_with(Path::new(&args[2]), false)?,
+                PathBuf::from(&args[3]),
+                normalized_cycle(args[6].clone()),
+                7usize,
+                workers,
+                Some(PathBuf::from(&args[4])),
+            )
+        } else if args.first().map(String::as_str) == Some("--series-workers-ready") {
             if args.len() != 10 {
                 return Err(usage.into());
             }
@@ -1420,10 +1507,24 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Inventory every file before creating output.  This is the primary
     // fail-closed gate: no partial bridge is published for mismatched times,
-    // fields, levels, grids, duplicates, or packing support.
-    let mut atmosphere_inventories = Vec::with_capacity(inputs.len());
-    let mut soil_inventories = Vec::with_capacity(inputs.len());
-    for input in &inputs {
+    // fields, levels, grids, duplicates, or packing support.  As posted only
+    // the first lead is here: it is the reference, and each later lead is
+    // held to it with the same comparisons before it is decoded, so the
+    // gate's claims hold for every lead of a published bridge.
+    if admissions.is_some() && inputs.iter().any(|input| !input.supplements.is_empty()) {
+        // Breakage it prevents: a donor's selection and its coverage check
+        // read every lead's inventory before any decode, which a lead not
+        // posted yet does not have.
+        return Err("--series-workers-posted decodes no PMSL donor; a series with donors is decoded whole (--series-workers-ready)".into());
+    }
+    let inventoried = if admissions.is_some() { 1 } else { inputs.len() };
+    let never_cancelled = AtomicBool::new(false);
+    if let Some(directory) = &admissions {
+        wait_admitted(directory, &inputs[0], &never_cancelled)?;
+    }
+    let mut atmosphere_inventories = Vec::with_capacity(inventoried);
+    let mut soil_inventories = Vec::with_capacity(inventoried);
+    for input in &inputs[..inventoried] {
         atmosphere_inventories.push(inventory_atmosphere(
             &input.atmosphere,
             &expected_cycle,
@@ -1437,7 +1538,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let atmosphere_reference = &atmosphere_inventories[0];
     let soil_reference = &soil_inventories[0];
-    for index in 0..inputs.len() {
+    for index in 0..inventoried {
         let hour = inputs[index].forecast_hour;
         compare_atmosphere_inventory(atmosphere_reference, &atmosphere_inventories[index], hour)?;
         compare_soil_inventory(soil_reference, &soil_inventories[index], hour)?;
@@ -1468,7 +1569,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let mut donors = Vec::with_capacity(inputs.len());
     let mut donor_rows = Vec::new();
+    if admissions.is_some() {
+        // Refused above: a posted series names no donor.
+        donors.resize(inputs.len(), None);
+    }
     for (input, atmosphere) in inputs.iter().zip(&atmosphere_inventories) {
+        if admissions.is_some() {
+            break;
+        }
         let message = if input.supplements.is_empty() {
             None
         } else {
@@ -1590,11 +1698,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                     format!("series_count\t{}", inputs.len()),
                     format!("cycle\t{expected_cycle}"),
                     format!("window_shape\t{}x{}", window.ny(), window.nx()),
-                    format!(
-                        "inventory\tPASS all f{:02}..f{:02} before decode",
-                        inputs.first().unwrap().forecast_hour,
-                        inputs.last().unwrap().forecast_hour
-                    ),
+                    if admissions.is_some() {
+                        format!(
+                            "inventory\tPASS f{:02} reference; f{:02}..f{:02} each held to it when admitted",
+                            inputs.first().unwrap().forecast_hour,
+                            inputs.first().unwrap().forecast_hour,
+                            inputs.last().unwrap().forecast_hour
+                        )
+                    } else {
+                        format!(
+                            "inventory\tPASS all f{:02}..f{:02} before decode",
+                            inputs.first().unwrap().forecast_hour,
+                            inputs.last().unwrap().forecast_hour
+                        )
+                    },
                     format!(
                         "producer_elapsed_seconds\t{:.9}",
                         process_started.elapsed().as_secs_f64()
@@ -1622,10 +1739,36 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let soil_role = format!("soil-f{hour:02}");
                     let fragment_path = partial.join(format!(".inventory-f{hour:02}.tsv"));
                     let decoded = (|| -> Result<(), Box<dyn Error>> {
+                        // As posted, a later lead is read only once
+                        // admitted, then held to the reference exactly as
+                        // the up-front inventory holds every lead.
+                        let admitted: (AtmosInventory, SoilInventory);
+                        let (atmosphere_inventory, soil_inventory) =
+                            if index < atmosphere_inventories.len() {
+                                (&atmosphere_inventories[index], &soil_inventories[index])
+                            } else {
+                                let directory = admissions
+                                    .as_ref()
+                                    .ok_or("a lead was not inventoried before decode")?;
+                                wait_admitted(directory, input, &cancelled)?;
+                                let atmosphere = inventory_atmosphere(
+                                    &input.atmosphere, &expected_cycle, hour)?;
+                                let soil = inventory_soil(&input.soil, &expected_cycle, hour)?;
+                                compare_atmosphere_inventory(atmosphere_reference, &atmosphere, hour)?;
+                                compare_soil_inventory(soil_reference, &soil, hour)?;
+                                if atmosphere.grid != soil.grid {
+                                    return Err(format!(
+                                        "soil f{hour:02} grid does not exactly equal atmosphere f{hour:02}"
+                                    )
+                                    .into());
+                                }
+                                admitted = (atmosphere, soil);
+                                (&admitted.0, &admitted.1)
+                            };
                         let mut fragment = BufWriter::new(File::create(&fragment_path)?);
                         write_atmosphere(
                             &input.atmosphere,
-                            &atmosphere_inventories[index],
+                            atmosphere_inventory,
                             &partial.join(&atmosphere_role),
                             &atmosphere_role,
                             window,
@@ -1633,7 +1776,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         )?;
                         write_soil(
                             &input.soil,
-                            &soil_inventories[index],
+                            soil_inventory,
                             &partial.join(&soil_role),
                             &soil_role,
                             window,
@@ -2205,5 +2348,76 @@ mod tests {
             columns[clamped + 1].parse::<f64>().unwrap(),
             1.9073486328125e-9
         );
+    }
+
+    fn posted_test_root(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gpuwm-hrrr-posted-{name}-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_posted_series_needs_no_lead_on_disk_before_its_admission() {
+        let root = posted_test_root("series");
+        for name in ["nat00.grib2", "soil00.grib2"] {
+            fs::write(root.join(name), b"GRIB").unwrap();
+        }
+        let series = root.join("series.tsv");
+        fs::write(
+            &series,
+            format!(
+                "0\t{0}/nat00.grib2\t{0}/soil00.grib2\n1\t{0}/nat01.grib2\t{0}/soil01.grib2\n",
+                root.display()
+            ),
+        )
+        .unwrap();
+        // The whole-series reader refuses a lead not posted yet; the posted
+        // reader takes it, the first lead included: the decoder starts
+        // before the window's first lead posts and opens a lead only once
+        // it is admitted.
+        assert!(parse_series_manifest(&series).is_err());
+        let inputs = parse_series_manifest_with(&series, false).unwrap();
+        assert_eq!(inputs.len(), 2);
+        fs::remove_file(root.join("nat00.grib2")).unwrap();
+        assert!(parse_series_manifest(&series).is_err());
+        assert_eq!(parse_series_manifest_with(&series, false).unwrap().len(), 2);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_lead_is_read_only_once_admitted_for_its_own_files() {
+        let root = posted_test_root("admit");
+        let input = SeriesInput {
+            forecast_hour: 3,
+            atmosphere: "/data/hrrr.t12z.wrfnatf03.grib2".to_owned(),
+            soil: "/data/hrrr.t12z.soilf03.grib2".to_owned(),
+            supplements: Vec::new(),
+        };
+        let cancelled = AtomicBool::new(true);
+        // Not admitted and cancelled: the wait ends, naming the lead.
+        let error = wait_admitted(&root, &input, &cancelled).unwrap_err();
+        assert!(error.to_string().contains("f03"));
+        let open = AtomicBool::new(false);
+        fs::write(
+            root.join("f03.admitted"),
+            "forecast_hour\t3\natmosphere\t/data/hrrr.t12z.wrfnatf03.grib2\nsoil\t/data/hrrr.t12z.soilf03.grib2\n",
+        )
+        .unwrap();
+        wait_admitted(&root, &input, &open).unwrap();
+        // An admission naming other files is refused, never read past.
+        fs::write(
+            root.join("f03.admitted"),
+            "forecast_hour\t3\natmosphere\t/data/other.grib2\nsoil\t/data/hrrr.t12z.soilf03.grib2\n",
+        )
+        .unwrap();
+        assert!(wait_admitted(&root, &input, &open).is_err());
+        fs::remove_dir_all(&root).unwrap();
     }
 }

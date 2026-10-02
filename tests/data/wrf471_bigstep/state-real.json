@@ -1,0 +1,389 @@
+{
+  "schema": "bigstep-wrf471-state-v1",
+  "file": "state-real.npz",
+  "sha256": "744d7cffbdf37db5768fa4b620bfc0cbc15971d5bfa792b4adb6de0f6ad2b22e",
+  "fields": {
+    "AL": {
+      "shape": [
+        49,
+        10,
+        12
+      ],
+      "sha256": "fcc1074118c3f2c4199cc132fcbdbbc615ec656003121657f539a79f68438f7a"
+    },
+    "ALB": {
+      "shape": [
+        49,
+        10,
+        12
+      ],
+      "sha256": "c2c256d2d47c9f426403c7e840c4e1df39ddba5c9b77a7104dc94f6b4b66222d"
+    },
+    "C1F": {
+      "shape": [
+        50
+      ],
+      "sha256": "460bbd1147890fa9824d29103b72358a1d6c62155fe01f868705dbdd6d4ed15a"
+    },
+    "C1H": {
+      "shape": [
+        49
+      ],
+      "sha256": "1884495f091c0f0ce69e6695359389f2edf8161c33e836f5842470cb6c67c074"
+    },
+    "C2F": {
+      "shape": [
+        50
+      ],
+      "sha256": "e8a19ac0c7934c9ebc8c01ef71103d354cc918c2f139a90985487d7366c1a1a2"
+    },
+    "C2H": {
+      "shape": [
+        49
+      ],
+      "sha256": "d5d808854273dffef3fe4978b1e1353f58e01f9c7e2047fd1d46de00b68837d4"
+    },
+    "CF1": {
+      "shape": [
+        1
+      ],
+      "sha256": "7f21f0ff73773a47f17b8cfbdd3f8afcf06e3072342da2b330adedf1c2c9bfb8"
+    },
+    "CF2": {
+      "shape": [
+        1
+      ],
+      "sha256": "f9cea9c7a7e0b940ba55633e1c0690632bdbaf9fdc20e77d23e1f3837e636019"
+    },
+    "CF3": {
+      "shape": [
+        1
+      ],
+      "sha256": "8b5795d7379fc83e2f45c4417536d3be69eba3c3d308df5b39c1da5e761d9663"
+    },
+    "CFN": {
+      "shape": [
+        1
+      ],
+      "sha256": "26c7b722a374b0f96abccd4682cd2a7d5fd42453da46c593b9a7a3638c343fb6"
+    },
+    "CFN1": {
+      "shape": [
+        1
+      ],
+      "sha256": "a62a12bdc0f5514e2c829f96d7d7851564c67938ab613545c3ac73f62b2d916d"
+    },
+    "COSALPHA": {
+      "shape": [
+        10,
+        12
+      ],
+      "sha256": "abc954adb4d574b499e35506e75ad159d09a729978d78c0cea196808a7fd59b8"
+    },
+    "DN": {
+      "shape": [
+        49
+      ],
+      "sha256": "795fb1bf38ea27d93c45096c1e6e25508ce32629788ed3a8db7b1e59634e19ae"
+    },
+    "DNW": {
+      "shape": [
+        49
+      ],
+      "sha256": "29a7e523644e15cee2c5a3e0719a14eb7615993a4499102628246d29a09e1ed9"
+    },
+    "E": {
+      "shape": [
+        10,
+        12
+      ],
+      "sha256": "0d43cc5ba846d2b42f668a6cf6a858132b8f369457c54a5d7d11975f7f903096"
+    },
+    "F": {
+      "shape": [
+        10,
+        12
+      ],
+      "sha256": "d5e2fa23c20cdab033fce077b86127e1409a1a2410ca45850d682cd316b3e41f"
+    },
+    "FNM": {
+      "shape": [
+        49
+      ],
+      "sha256": "3c7124ed16665c885f2f09f5713cd941d43e2ba2c84cb3e43f437397e3f006e1"
+    },
+    "FNP": {
+      "shape": [
+        49
+      ],
+      "sha256": "5d1ec4783410c557fbb341846e9ea38d592d129938346c27a5f8160c015939f1"
+    },
+    "HGT": {
+      "shape": [
+        10,
+        12
+      ],
+      "sha256": "e505f8d25d9779d8ca7ea317c4290d532d40d0c971194b044bbe9ce0e98c6cc8"
+    },
+    "MAPFAC_M": {
+      "shape": [
+        10,
+        12
+      ],
+      "sha256": "038f5fb7f5bc66f8040daabb0a51848804232a64561e79d4b187508a569a97c1"
+    },
+    "MAPFAC_MX": {
+      "shape": [
+        10,
+        12
+      ],
+      "sha256": "038f5fb7f5bc66f8040daabb0a51848804232a64561e79d4b187508a569a97c1"
+    },
+    "MAPFAC_MY": {
+      "shape": [
+        10,
+        12
+      ],
+      "sha256": "038f5fb7f5bc66f8040daabb0a51848804232a64561e79d4b187508a569a97c1"
+    },
+    "MAPFAC_U": {
+      "shape": [
+        10,
+        13
+      ],
+      "sha256": "3b5d412e396915e552fc09f35c6eeaf02b20242af217c1779a9936b930cb65e5"
+    },
+    "MAPFAC_UX": {
+      "shape": [
+        10,
+        13
+      ],
+      "sha256": "3b5d412e396915e552fc09f35c6eeaf02b20242af217c1779a9936b930cb65e5"
+    },
+    "MAPFAC_UY": {
+      "shape": [
+        10,
+        13
+      ],
+      "sha256": "3b5d412e396915e552fc09f35c6eeaf02b20242af217c1779a9936b930cb65e5"
+    },
+    "MAPFAC_V": {
+      "shape": [
+        11,
+        12
+      ],
+      "sha256": "9907bf58cce851da69287670dd2692a64247bbb9749882f79aaf09dcb888b1a0"
+    },
+    "MAPFAC_VX": {
+      "shape": [
+        11,
+        12
+      ],
+      "sha256": "9907bf58cce851da69287670dd2692a64247bbb9749882f79aaf09dcb888b1a0"
+    },
+    "MAPFAC_VY": {
+      "shape": [
+        11,
+        12
+      ],
+      "sha256": "9907bf58cce851da69287670dd2692a64247bbb9749882f79aaf09dcb888b1a0"
+    },
+    "MF_VX_INV": {
+      "shape": [
+        11,
+        12
+      ],
+      "sha256": "37b32bde6cc43dc72e07ec0a61c3922c200a4cccad3b1c5af126afdf5e55a740"
+    },
+    "MU": {
+      "shape": [
+        10,
+        12
+      ],
+      "sha256": "1f2990e94620b31893e656cba6db739245de3440f11e4d61f35ac044ee617a7c"
+    },
+    "MUB": {
+      "shape": [
+        10,
+        12
+      ],
+      "sha256": "e8599edeac3e821440090366935f67d162db8090189b1a24e18814c578d4ab9d"
+    },
+    "P": {
+      "shape": [
+        49,
+        10,
+        12
+      ],
+      "sha256": "db7da9974cb84cf1ced25b2be5a1bc3ad4be70b8df5cfe93d63905274c094c06"
+    },
+    "PB": {
+      "shape": [
+        49,
+        10,
+        12
+      ],
+      "sha256": "97fe70472ce29b1e425039e3c1f25c5c78cb03097028aeaef6edf71527109e02"
+    },
+    "PH": {
+      "shape": [
+        50,
+        10,
+        12
+      ],
+      "sha256": "02d28d355b5e03edcdaf7e1a296514ad3f39feeae474f7c5b564897454e99c35"
+    },
+    "PHB": {
+      "shape": [
+        50,
+        10,
+        12
+      ],
+      "sha256": "9a187327657b6a9659c217bf7a8092873b0636a8315fffb0df4f3ff4171a0aea"
+    },
+    "QCLOUD": {
+      "shape": [
+        49,
+        10,
+        12
+      ],
+      "sha256": "4c3b636836c85a4b7e00a397ec03e4789fb64e812a8313d3a051e8173afa3300"
+    },
+    "QGRAUP": {
+      "shape": [
+        49,
+        10,
+        12
+      ],
+      "sha256": "4c3b636836c85a4b7e00a397ec03e4789fb64e812a8313d3a051e8173afa3300"
+    },
+    "QICE": {
+      "shape": [
+        49,
+        10,
+        12
+      ],
+      "sha256": "4c3b636836c85a4b7e00a397ec03e4789fb64e812a8313d3a051e8173afa3300"
+    },
+    "QRAIN": {
+      "shape": [
+        49,
+        10,
+        12
+      ],
+      "sha256": "4c3b636836c85a4b7e00a397ec03e4789fb64e812a8313d3a051e8173afa3300"
+    },
+    "QSNOW": {
+      "shape": [
+        49,
+        10,
+        12
+      ],
+      "sha256": "4c3b636836c85a4b7e00a397ec03e4789fb64e812a8313d3a051e8173afa3300"
+    },
+    "QVAPOR": {
+      "shape": [
+        49,
+        10,
+        12
+      ],
+      "sha256": "eeefe9bd98db6df4cfdbc3e06c33e6af65705aadc1738bf9d0f32584c7bcc6c6"
+    },
+    "RDN": {
+      "shape": [
+        49
+      ],
+      "sha256": "714f451c6d8c776c0b3b94b888485c302fd10e04df3348e836d613d272a298e7"
+    },
+    "RDNW": {
+      "shape": [
+        49
+      ],
+      "sha256": "2e7980a472072f633e50387d0e33476b1fb0b1134eb994e0df84528d36559bfe"
+    },
+    "SINALPHA": {
+      "shape": [
+        10,
+        12
+      ],
+      "sha256": "ce75722870c22f44d1a68cb45cb4f901e8e6f8e75ce53cba0e8aab24f64b8913"
+    },
+    "T": {
+      "shape": [
+        49,
+        10,
+        12
+      ],
+      "sha256": "d37bdb9008c86d14341702955fd8a38ae56337a9fa5edeaecf9dee92f5777ff1"
+    },
+    "T_BASE": {
+      "shape": [
+        49
+      ],
+      "sha256": "d904e1f1e028ba9058a128a6fd724f0f9892ae8fe49c8f7dc2613183f7f8bbca"
+    },
+    "T_INIT": {
+      "shape": [
+        49,
+        10,
+        12
+      ],
+      "sha256": "390c706762f1a8e019118343e2a59892b1b7d982fd532e3842f8354cc0f29e62"
+    },
+    "U": {
+      "shape": [
+        49,
+        10,
+        13
+      ],
+      "sha256": "2315a301e50acb33e303245cafb387d479ebbba38f7a5385242f9c714a30d98b"
+    },
+    "U_BASE": {
+      "shape": [
+        49
+      ],
+      "sha256": "d904e1f1e028ba9058a128a6fd724f0f9892ae8fe49c8f7dc2613183f7f8bbca"
+    },
+    "V": {
+      "shape": [
+        49,
+        11,
+        12
+      ],
+      "sha256": "543ffadf84988f9bf5c10cfe29d2124aeeed1dc8ccf71192a4581b38dea4ccc6"
+    },
+    "V_BASE": {
+      "shape": [
+        49
+      ],
+      "sha256": "d904e1f1e028ba9058a128a6fd724f0f9892ae8fe49c8f7dc2613183f7f8bbca"
+    },
+    "W": {
+      "shape": [
+        50,
+        10,
+        12
+      ],
+      "sha256": "151ff79f29e96d211576b9a2e3e78f518b26109916616945d50cdee82dd2ba8b"
+    },
+    "XLAT": {
+      "shape": [
+        10,
+        12
+      ],
+      "sha256": "1bb5f43f2ccfe7e2bd47b4788092e6bf018199a2e2b53653d5d141d3365e3c59"
+    },
+    "ZNU": {
+      "shape": [
+        49
+      ],
+      "sha256": "8150da97552b16e3fd930989a45fe99fcc28df4744fb37145d67eb958410a152"
+    },
+    "ZNW": {
+      "shape": [
+        50
+      ],
+      "sha256": "88280e770486cefa05eccdc4ea58f1df61bd4db14f6f6abd85cd6294805457de"
+    }
+  }
+}

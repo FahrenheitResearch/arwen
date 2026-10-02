@@ -406,7 +406,7 @@
       "nest_history_interval_s": 10800,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 2.5 GiB of ERA5 files for 16 forcing times; the preparation, 0.0 GiB; the history files, 18.9 GiB, written every 3 hours on the outer grid; the one checkpoint the run keeps (two while a new one is written), 3.1 GiB; the rendered pictures, 2.5 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 50 GiB disk budget",
+     "disk_basis": "the download, 2.5 GiB of ERA5 files for 16 forcing times; the preparation, 0.0 GiB; the history files, 18.8 GiB, written every 3 hours on the outer grid; the one checkpoint the run keeps (two while a new one is written), 3.1 GiB; the rendered pictures, 2.5 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 50 GiB disk budget",
      "download": {
       "bytes": 2655590400,
       "transfer_bytes": 8816000000,
@@ -617,14 +617,14 @@
       "need_gib": 13.34,
       "budget_gib": 14.54
      },
-     "disk_gib": 47.2,
+     "disk_gib": 47.1,
      "disk_budget_gib": 60,
      "output": {
       "history_interval_s": 3600,
       "nest_history_interval_s": 3600,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 0.3 GiB of ERA5 files for 6 forcing times; the preparation, 0.0 GiB; the history files, 37.6 GiB, written every hour on the outer grid and every hour on the nests; the one checkpoint the run keeps (two while a new one is written), 5.1 GiB; the rendered pictures, 4.2 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 60 GiB disk budget",
+     "disk_basis": "the download, 0.3 GiB of ERA5 files for 6 forcing times; the preparation, 0.0 GiB; the history files, 37.5 GiB, written every hour on the outer grid and every hour on the nests; the one checkpoint the run keeps (two while a new one is written), 5.1 GiB; the rendered pictures, 4.2 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 60 GiB disk budget",
      "download": {
       "bytes": 331581600,
       "transfer_bytes": 3306000000,
@@ -837,14 +837,14 @@
       "need_gib": 14.92,
       "budget_gib": 22.06
      },
-     "disk_gib": 53.8,
+     "disk_gib": 53.7,
      "disk_budget_gib": 80,
      "output": {
       "history_interval_s": 3600,
       "nest_history_interval_s": 3600,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 0.3 GiB of ERA5 files for 6 forcing times; the preparation, 0.1 GiB; the history files, 43.3 GiB, written every hour on the outer grid and every hour on the nests; the one checkpoint the run keeps (two while a new one is written), 5.9 GiB; the rendered pictures, 4.2 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 80 GiB disk budget",
+     "disk_basis": "the download, 0.3 GiB of ERA5 files for 6 forcing times; the preparation, 0.1 GiB; the history files, 43.2 GiB, written every hour on the outer grid and every hour on the nests; the one checkpoint the run keeps (two while a new one is written), 5.9 GiB; the rendered pictures, 4.2 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 80 GiB disk budget",
      "download": {
       "bytes": 362212200,
       "transfer_bytes": 3306000000,
@@ -1052,14 +1052,14 @@
       "need_gib": 20.88,
       "budget_gib": 29.58
      },
-     "disk_gib": 91.2,
+     "disk_gib": 91.0,
      "disk_budget_gib": 100,
      "output": {
       "history_interval_s": 10800,
       "nest_history_interval_s": 10800,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 3.5 GiB of ERA5 files for 16 forcing times; the preparation, 0.1 GiB; the history files, 72.3 GiB, written every 3 hours on the outer grid and every 3 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 10.2 GiB; the rendered pictures, 5.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 100 GiB disk budget",
+     "disk_basis": "the download, 3.5 GiB of ERA5 files for 16 forcing times; the preparation, 0.1 GiB; the history files, 72.2 GiB, written every 3 hours on the outer grid and every 3 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 10.2 GiB; the rendered pictures, 5.0 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 100 GiB disk budget",
      "download": {
       "bytes": 3709658400,
       "transfer_bytes": 8816000000,

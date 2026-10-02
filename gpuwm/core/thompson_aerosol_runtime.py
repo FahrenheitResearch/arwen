@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import threading
 import json
 from pathlib import Path
 from time import perf_counter
@@ -75,12 +76,30 @@ def _payload_sha256(value: np.ndarray) -> str:
 
 
 def _synchronize(backend) -> None:
+    """Wait for the uploads this thread queued, on the stream it queued them.
+
+    That is the CURRENT stream.  The legacy NULL stream was synchronized
+    here, which is the current stream on the resident road and waits for
+    nothing a split slab's non-blocking stream queued.
+    """
     cuda = getattr(backend, "cuda", None)
+    current = getattr(cuda, "get_current_stream", None)
+    if current is not None:
+        current().synchronize()
+        return
     stream = getattr(cuda, "Stream", None)
     null = getattr(stream, "null", None)
     synchronize = getattr(null, "synchronize", None)
     if synchronize is not None:
         synchronize()
+
+
+def _synchronize_device(backend) -> None:
+    """Wait for every stream on the current card (a replaced table's readers)."""
+    cuda = getattr(backend, "cuda", None)
+    device = getattr(cuda, "Device", None)
+    if device is not None and hasattr(device(), "synchronize"):
+        device().synchronize()
 
 
 def _to_host_fortran(backend, value) -> np.ndarray:
@@ -248,6 +267,7 @@ def _upload_aerosol_table_set(
 
 _DEVICE_CACHE: dict[
     tuple[Path, Path, int, int | None], DeviceAerosolTableSet] = {}
+_DEVICE_CACHE_LOCK = threading.RLock()
 
 
 def load_aerosol_device_tables(
@@ -284,24 +304,39 @@ def load_aerosol_device_tables(
     device = getattr(cuda, "Device", None)
     device_id = int(device().id) if device is not None else None
     key = (root, source, id(backend), device_id)
-    existing = _DEVICE_CACHE.get(key) if cache else None
-    if existing is not None and (
-            existing.roundtrip_verified or not verify_roundtrip):
-        return existing
+    # A split domain's slabs step on their own non-blocking streams, and the
+    # first microphysics call of each loads these tables at once.
+    # Each uploaded its own copy on its own stream,
+    # synchronized the legacy NULL stream (which waits for none of them),
+    # and published it; a slab arriving after a publish took another slab's
+    # copy with no ordering against its upload, and a copy replaced in the
+    # cache went back to its stream's memory pool while another slab still
+    # read it -- the defect measured on RRTMGP's tables (rrtmgp._upload_once).
+    # So the load is serialized, the upload is waited on its own stream, and
+    # a published copy is never replaced while it can be read.
+    with _DEVICE_CACHE_LOCK:
+        existing = _DEVICE_CACHE.get(key) if cache else None
+        if existing is not None and (
+                existing.roundtrip_verified or not verify_roundtrip):
+            return existing
 
-    # Re-reads from the canonical, content-addressed files.  A caller cannot
-    # smuggle a manually constructed AerosolTableSet across this boundary.
-    table_set = load_validated_aerosol_tables(
-        root, ccn_path=source,
-        require_classic_assets=require_classic_assets)
-    result = _upload_aerosol_table_set(
-        table_set, backend,
-        device_id=device_id,
-        verify_roundtrip=verify_roundtrip,
-    )
-    if cache:
-        _DEVICE_CACHE[key] = result
-    return result
+        # Re-reads from the canonical, content-addressed files.  A caller cannot
+        # smuggle a manually constructed AerosolTableSet across this boundary.
+        table_set = load_validated_aerosol_tables(
+            root, ccn_path=source,
+            require_classic_assets=require_classic_assets)
+        result = _upload_aerosol_table_set(
+            table_set, backend,
+            device_id=device_id,
+            verify_roundtrip=verify_roundtrip,
+        )
+        if cache:
+            if existing is not None:
+                # A copy being replaced (a verified load asked for after
+                # an unverified one) may still be read on another stream.
+                _synchronize_device(backend)
+            _DEVICE_CACHE[key] = result
+        return result
 
 
 def device_drop_evaporation_number_table(classic_device_tables) -> object:

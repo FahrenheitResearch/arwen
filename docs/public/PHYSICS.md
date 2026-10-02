@@ -1235,6 +1235,35 @@ before relying on any of these over unusual surfaces):
   ignoring this is listed per field in the registry. Frozen-ground
   infiltration on simultaneously-frozen-and-melting columns differs
   through CUDA vs glibc `expf`/`powf` (water redistributed, not lost).
+- **Noah near-surface humidity:** after Noah, `SFCDIAGS` diagnoses Q2
+  from the surface humidity, moisture flux and exchange coefficient.
+  WRF can produce a nonpositive value from this inversion. ArWen
+  substitutes the lowest model level's water-vapor mixing ratio in that
+  case, preserving a nonnegative humidity diagnostic when the atmospheric
+  vapor is nonnegative. This is an
+  explicit difference from WRF in `PhysicsDriver._refresh_surface_diagnostics`
+  and `gpuwm/core/noah_sfcdiags.py`. In the ordinary Noah/YSU coupling,
+  this Q2 result is a published diagnostic: the surface and PBL schemes
+  receive atmospheric vapor separately. It must not be counted as an
+  atmospheric moisture tendency correction. A verification experiment
+  may publish WRF's raw inversion to measure this difference; the
+  default retains the positive-humidity policy.
+
+The common surface driver then applies WRF's land-only upper bound,
+`Q2 = min(Q2, 1.05 * lowest_level_vapor)` where `XLAND < 1.5`, after the
+land-surface and urban diagnostic writers and before the PBL. Open water
+retains its diagnosed value. This follows WRF 4.7.1
+`module_surface_driver.F:4443-4457`; it prevents the flux inversion from
+overstating near-surface humidity when the flux includes vegetation or
+other sources. The missing final bound was a driver defect. It is fixed
+by default and is separate from the lower-bound policy above.
+
+On a native Noah cold start with monthly albedo disabled, the background
+albedo remains the seasonal land-use table value initialized by WRF's
+`landuse_init`. A distinct monthly `ALBBCK` record in the input must not
+overwrite that initialized value. With monthly albedo enabled, the
+supplied monthly record retains authority. This fixes an input-restoration
+defect rather than changing the Noah scheme.
 - **Noah-MP:** glacier columns are refused during post-static
   initialization (not silently skipped); sea ice takes WRF's own skip.
   The WRF six-rate precipitation partition and radiation-cadence COSZEN

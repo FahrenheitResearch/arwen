@@ -98,6 +98,9 @@ _PINNED_PHYSICS_REGISTRY_SHA256_ENV = \
 # A later observation above it refuses before fetch and requires a new
 # software contract rather than silently invalidating the initial reserve.
 _SOURCE_HOUR_RESERVATION_BYTES = 8 * 1024 ** 3
+#: Doubles the retained preparation/checkpoint reservation only.  History is
+#: priced from the writer's own selected inventory (A190) and carries no
+#: blanket factor.
 _GENERATION_STORAGE_SAFETY_FACTOR = 2
 
 
@@ -1921,9 +1924,10 @@ def _observation(path: Path, *, backend, cycle: datetime, lead: int,
 
 
 def _estimated_generation_bytes(plan: StreamPlan, lead: int) -> int:
-    """Conservative retained prep/checkpoint/history storage estimate."""
+    """Conservative retained prep/checkpoint storage plus configured history."""
+    from gpuwm.output_disk import forecast_projection
+
     total = 0
-    seconds = lead * 3600.0
     for domain in plan.experiment.domains:
         cells_3d = (int(domain.run.nx) * int(domain.run.ny)
                     * int(domain.run.nz))
@@ -1934,14 +1938,13 @@ def _estimated_generation_bytes(plan: StreamPlan, lead: int) -> int:
         # erase the guard margin.
         preparation_and_checkpoint = (
             cells_3d * 4 * 192 + cells_2d * 4 * 96)
-        # History mode writes t=0 as well as every scheduled cadence through
-        # the endpoint.  Omitting that initial frame under-reserved every leg.
-        frames = 1 + int(math.ceil(
-            seconds / float(domain.history_interval_s)))
-        history = frames * (
-            cells_3d * 4 * 64 + cells_2d * 4 * 48)
-        total += preparation_and_checkpoint + history
-    return total * _GENERATION_STORAGE_SAFETY_FACTOR
+        total += preparation_and_checkpoint
+    # History is the writer's selected inventory on each domain's own clock
+    # (A190), with no blanket factor: the old 64/48-field rate it replaces
+    # priced every run as full history.
+    experiment = dataclasses.replace(plan.experiment, run_seconds=lead * 3600.0)
+    history = forecast_projection(experiment, io_mode=plan.io_mode)["history_bytes"]
+    return total * _GENERATION_STORAGE_SAFETY_FACTOR + history
 
 
 def _existing_disk_anchor(path: Path) -> Path:
@@ -2178,6 +2181,9 @@ def _disk_capacity_gate(path: Path, *, plan: StreamPlan, backend,
             "future_hour_size_policy": "enforced-fixed-upper-envelope-v1",
             "generation_storage_safety_factor":
                 _GENERATION_STORAGE_SAFETY_FACTOR,
+            "generation_storage_safety_factor_scope":
+                "preparation and checkpoint reservation only",
+            "generation_history_basis": "configured writer variables, domain cadences and windows",
             "domain_count": len(plan.experiment.domains),
             "history_cadence_seconds": {
                 f"d{domain.grid_id:02d}": float(domain.history_interval_s)

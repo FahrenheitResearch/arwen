@@ -22,6 +22,43 @@ use rayon::prelude::*;
 
 use crate::error::{Result, StaticError};
 
+/// WPS interpolation arithmetic for default-REAL orographic fields.
+/// The input values are integer words converted to f32. WPS applies the
+/// index scale only to the interpolated result.
+pub(crate) fn orographic_real(
+    tile: &crate::geog::GeogWindow, vals: &[f32], x: f32, y: f32, op: InterpOp,
+) -> f32 {
+    let (sx,sy,ex,ey)=(tile.x0,tile.y0,tile.x1(),tile.y1());
+    let (mut ix,mut jx,mut iy,mut jy)=(x.floor() as i64,x.ceil() as i64,
+                                    y.floor() as i64,y.ceil() as i64);
+    if op == InterpOp::Average4Pt {
+        if x > sx as f32-0.5 && ix < sx { ix=sx; jx=sx; }
+        else if x < ex as f32+0.5 && jx > ex { ix=ex; jx=ex; }
+        if y > sy as f32-0.5 && iy < sy { iy=sy; jy=sy; }
+        else if y < ey as f32+0.5 && jy > ey { iy=ey; jy=ey; }
+    }
+    if ix < sx || jx > ex || iy < sy || jy > ey { return f32::NAN; }
+    let at=|i:i64,j:i64| vals[(j-sy) as usize*tile.nx+(i-sx) as usize];
+    let (a,b,c,d)=(at(ix,iy),at(ix,jy),at(jx,iy),at(jx,jy));
+    match op {
+        InterpOp::Average4Pt => {
+            let mut sum=0.0f32;
+            let mut count=0.0f32;
+            for v in [a,b,c,d] { if !v.is_nan() { sum+=v; count+=1.0; } }
+            if count > 0.0 {sum/count} else {f32::NAN}
+        }
+        InterpOp::FourPt => {
+            if [a,b,c,d].iter().any(|v| v.is_nan()) { return f32::NAN; }
+            if ix == jx {
+                if iy == jy {a} else {a*(jy as f32-y)+b*(y-iy as f32)}
+            } else if iy == jy {a*(jx as f32-x)+c*(x-ix as f32)}
+            else {(y-iy as f32)*(b*(jx as f32-x)+d*(x-ix as f32))+
+                  (jy as f32-y)*(a*(jx as f32-x)+c*(x-ix as f32))}
+        }
+        _ => f32::NAN,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterpOp {
     FourPt,
@@ -327,6 +364,40 @@ pub fn interp_one(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn orographic_interpolation_matches_wps_real_oracle() {
+        use crate::geog::{GeogIndex,GeogWindow};
+        use super::{orographic_real,InterpOp};
+        let index=GeogIndex::parse(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("golden/orographic/index")).unwrap();
+        let mut tile=GeogWindow{index,x0:1,y0:1,first_plane:0,nz:1,ny:2,nx:2,
+            raw:vec![31,80,245,301],coverage:None};
+        let data=include_bytes!("../golden/orographic/interp-real.bin");
+        let x=[1.25,1.0,1.25,1.0,0.75,1.99999988,1.25,1.75];
+        let y=[1.75,1.75,1.0,1.0,1.25,1.00000012,1.25,1.25];
+        let values=tile.values_real(0);
+        for k in 0..x.len() {
+            for (m,op) in [InterpOp::Average4Pt,InterpOp::FourPt].iter().enumerate() {
+                let value=orographic_real(&tile,&values,x[k],y[k],*op);
+                let expected=f32::from_le_bytes(data[(k*2+m)*4..(k*2+m+1)*4].try_into().unwrap());
+                if expected == -99999.0 {assert!(value.is_nan());}
+                else {assert_eq!((value*tile.index.scale_factor as f32).to_bits(),expected.to_bits(),"point{k} {op:?}");}
+            }
+        }
+        for pattern in 0..2 {
+            if pattern==0 {tile.raw[0]=65535;} else {tile.raw.fill(65535);}
+            let values=tile.values_real(0);
+            for k in 0..4 {
+                for (m,op) in [InterpOp::Average4Pt,InterpOp::FourPt].iter().enumerate() {
+                    let value=orographic_real(&tile,&values,x[k],y[k],*op);
+                    let word=16+pattern*8+k*2+m;
+                    let expected=f32::from_le_bytes(data[word*4..(word+1)*4].try_into().unwrap());
+                    if expected==65535.0 {assert!(value.is_nan());}
+                    else {assert_eq!((value*tile.index.scale_factor as f32).to_bits(),expected.to_bits(),"missing pattern{pattern} point{k} {op:?}");}
+                }
+            }
+        }
+    }
     use super::*;
     use crate::testsupport::{
         assert_bits_f64, golden_dir, hex_f64_vec, json, read_f64,

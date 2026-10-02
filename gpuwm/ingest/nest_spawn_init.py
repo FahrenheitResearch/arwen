@@ -385,8 +385,8 @@ def _adopt_own_terrain(initialized: ChildInitResult, child_dc,
 
 
 def spawned_child_device_bytes(child_dc, parent_dc, *, scratch_arena=None,
-                               dycore_state_workspace=None
-                               ) -> dict[str, int]:
+                               dycore_state_workspace=None,
+                               urban_columns=None) -> dict[str, int]:
     """What a spawned child newly allocates on the card, by part.
 
     Priced from the same per-domain inventory the forecast admission sums
@@ -395,7 +395,10 @@ def spawned_child_device_bytes(child_dc, parent_dc, *, scratch_arena=None,
     tables its coupler fills.  A slot the tree's shared scratch arena
     already backs, and a state symbol the shared dycore workspace already
     backs, cost nothing new: both were sized over every declared domain,
-    dormant ones included, at startup.
+    dormant ones included, at startup.  ``urban_columns`` is the child's
+    urban column count read off its spawn statics
+    (:func:`spawn_urban_columns`), which prices BEP+BEM's column workspace
+    at the plan the child builds (A176).
     """
     from gpuwm.config import radiation_scheme_ids
     from gpuwm.core.preflight import (estimate_domain,
@@ -408,7 +411,7 @@ def spawned_child_device_bytes(child_dc, parent_dc, *, scratch_arena=None,
                      and int(run.o3input) == 2)
     estimate = estimate_domain(
         child_dc, spec_bdy_width=int(run.spec_bdy_width),
-        cam_ozone=cam_ozone, parent=parent_dc)
+        cam_ozone=cam_ozone, parent=parent_dc, urban_columns=urban_columns)
     shared_state = (shared_dycore_state_symbols()
                     if dycore_state_workspace is not None else frozenset())
 
@@ -450,9 +453,31 @@ def size_text(nbytes: int) -> str:
     return f"{nbytes / 1024 ** 2:.1f} MiB"
 
 
+def spawn_urban_columns(child_dc, static_fields) -> int | None:
+    """The spawned child's urban columns, read off the statics it is about
+    to adopt (:func:`prepare_spawn_statics`'s product: its LU_INDEX on the
+    land-use dataset its ``landuse_attrs`` name).  ``None`` (priced at
+    every column urban) when the child runs no BEP+BEM, follows a storm
+    (its ground changes after the birth), or the statics name no dataset,
+    as on the parent-SINT branch."""
+    if getattr(child_dc, "follow", None) is not None:
+        return None
+    if not (isinstance(static_fields, dict) and "static_fields" in static_fields):
+        return None
+    attrs = static_fields.get("landuse_attrs") or {}
+    fields = static_fields.get("static_fields")
+    if fields is None or "MMINLU" not in attrs:
+        return None
+    from gpuwm.core.urban_state import prepared_urban_columns
+
+    return prepared_urban_columns(
+        child_dc.run, fields.get("LU_INDEX"),
+        landuse_dataset=str(attrs["MMINLU"]))
+
+
 def admit_spawned_child(child_dc, parent_node, *, free_bytes: int,
-                        scratch_arena=None, dycore_state_workspace=None
-                        ) -> dict[str, object]:
+                        scratch_arena=None, dycore_state_workspace=None,
+                        urban_columns=None) -> dict[str, object]:
     """Refuse a spawn the card cannot hold, before any of it is allocated.
 
     THE BREAKAGE THIS PREVENTS.  A trigger fires mid-run, beside a tree
@@ -470,9 +495,10 @@ def admit_spawned_child(child_dc, parent_node, *, free_bytes: int,
     headroom = forecast_pool_headroom((child_dc.run, parent_node.cfg))
     parts = spawned_child_device_bytes(
         child_dc, parent_node.cfg, scratch_arena=scratch_arena,
-        dycore_state_workspace=dycore_state_workspace)
+        dycore_state_workspace=dycore_state_workspace,
+        urban_columns=urban_columns)
     itemized = int(sum(parts.values()))
-    held = urban_held_bytes(child_dc.run)
+    held = urban_held_bytes(child_dc.run, urban_columns=urban_columns)
     # The child's arrays go through the same pool as the tree's, so they
     # carry the forecast's one measured pool margin (A163): the startup
     # envelope priced this nest at that margin, and the check at the
@@ -483,7 +509,7 @@ def admit_spawned_child(child_dc, parent_node, *, free_bytes: int,
         itemized, held_exact_bytes=held, headroom=headroom)
     receipt: dict[str, object] = {
         "need_bytes": need, "itemized_bytes": itemized,
-        "held_exact_bytes": held,
+        "held_exact_bytes": held, "urban_columns": urban_columns,
         "pool_headroom": headroom, "parts_bytes": dict(parts),
         "card_free_bytes": int(free_bytes), "fits": need <= int(free_bytes),
     }
@@ -550,7 +576,8 @@ def spawn_child_from_parent(child_dc, parent_node, *,
         device_admission = admit_spawned_child(
             child_dc, parent_node, free_bytes=int(device_free_bytes()),
             scratch_arena=scratch_arena,
-            dycore_state_workspace=dycore_state_workspace)
+            dycore_state_workspace=dycore_state_workspace,
+            urban_columns=spawn_urban_columns(child_dc, static_fields))
 
     parent_sha_before = state_digest(parent_node.state)
 

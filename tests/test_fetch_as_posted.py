@@ -15,6 +15,7 @@ import hashlib
 import http.server
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ import pytest
 from gpuwm import fetch
 from gpuwm import fetch_as_posted
 from gpuwm import fetch_endpoints
+from gpuwm import fetch_pool
 from gpuwm import fetch_routes
 from gpuwm import source_posting as rows
 from gpuwm import source_readiness as readiness
@@ -61,6 +63,11 @@ class Replay:
         self.unheard_until: dict[str, datetime] = {}
         self.truncate_once: set[str] = set()
         self.gets: list[str] = []
+        #: The status every HEAD gets instead of its answer (a mirror or
+        #: cache that serves only GET), or None for a host that answers it.
+        self.head_status: int | None = None
+        #: ``(path, Range)`` of every GET that asked a byte range.
+        self.ranged: list[tuple[str, str]] = []
         for obj in plan.objects:
             at = reveal(obj.lead if obj.lead in plan.leads else plan.leads[0])
             self.objects["/" + obj.key] = (payload(obj.key), at)
@@ -77,6 +84,11 @@ class Replay:
                 path = self.path.split("/", 2)[-1]
                 path = "/" + path
                 now = replay.clock.now()
+                if not body and replay.head_status is not None:
+                    self.send_response(replay.head_status)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 blocked = replay.unheard_until.get(path)
                 if blocked is not None and now < blocked:
                     self.send_response(503)
@@ -90,6 +102,20 @@ class Replay:
                     self.end_headers()
                     return
                 data = found[0]
+                requested = self.headers.get("Range") if body else None
+                if requested is not None:
+                    first, _, last = requested.split("=", 1)[1].partition("-")
+                    first = int(first)
+                    last = int(last) if last else len(data) - 1
+                    part = data[first:last + 1]
+                    replay.ranged.append((path, requested))
+                    self.send_response(206)
+                    self.send_header("Content-Range",
+                                     f"bytes {first}-{last}/{len(data)}")
+                    self.send_header("Content-Length", str(len(part)))
+                    self.end_headers()
+                    self.wfile.write(part)
+                    return
                 if body and path in replay.truncate_once:
                     replay.truncate_once.discard(path)
                     data = data[:-4] + b"XXXX"
@@ -324,6 +350,34 @@ def test_a_host_never_heard_is_said_as_not_heard(replay, tmp_path):
     assert "has not posted" not in failed["message"]
 
 
+@pytest.mark.parametrize("status", [405, 501])
+def test_a_host_that_refuses_head_but_serves_get_is_heard(replay, tmp_path,
+                                                          status):
+    """A mirror or cache that serves GET but refuses HEAD.
+
+    The watch asks each lead by HEAD; the refusal is asked again as a GET
+    of the first byte, so each lead is heard absent until it posts and
+    dated when it does.  Read as not heard, every lead went to the
+    transfer unasked and its marker could not say when it posted.
+    """
+
+    server, clock = replay(on_schedule)
+    server.head_status = status
+    out = tmp_path / "gefs"
+    assert fetch.fetch_main(fetch_args(out)) == 0
+    written = markers(out)
+    assert [marker["lead"] for marker in written] == [0, 3, 6, 9, 12]
+    for marker in written:
+        # Heard not posted before it posted, then heard posted.
+        assert marker["posted_when_first_asked"] is False
+        assert (readiness.parse_instant(marker["first_seen_at"])
+                >= on_schedule(marker["lead"], clock))
+    assert server.ranged
+    assert {wanted for _path, wanted in server.ranged} == {
+        fetch_endpoints.CONFIRM_RANGE}
+    assert not (out / "posting" / "failed.json").exists()
+
+
 def test_a_verification_failure_is_fetched_again(replay, tmp_path):
     server, clock = replay(on_schedule)
     key = [path for path in server.objects if path.endswith("pgrb2a.0p50.f006")][0]
@@ -468,6 +522,405 @@ def test_a_forced_legacy_refetch_leaves_no_marker_of_a_moved_file(
     for lead in window.leads:
         marker = json.loads((folder / fetch_as_posted.marker_name(lead)).read_text())
         assert marker["objects"][0]["name"] == f"new.f{lead:03d}"
+
+
+@pytest.mark.parametrize("whole", [True, False])
+def test_a_native_batch_publishes_each_verified_hour_before_transfer_returns(
+        tmp_path, monkeypatch, whole):
+    """Native completion survives the prefix wrapper and starts preparation.
+
+    The prefix arm publishes early through the incremental callback, then
+    the wrapper's final publication must preserve those marker bytes and
+    close its posting watch. Dropping that callback at the wrapper either
+    raises on an undefined publisher or rewrites the markers at the end.
+    """
+
+    from tools import download_hrrr_native_subset as native_transport
+    from test_fetch_request_identity import _dated_hrrr_product
+
+    window = readiness.resolve_window("hrrr", CYCLE, 2, start_hour=1)
+    out = tmp_path / "hrrr"
+    clock = Clock(rows.expected_at("hrrr", CYCLE, window.leads[-1])
+                  + timedelta(minutes=5))
+    monkeypatch.setattr(fetch_as_posted, "pause", clock.sleep)
+    monkeypatch.setattr(native_transport, "_download_product",
+                        _dated_hrrr_product([]))
+    last_posted = [whole]
+    loop = fetch_as_posted.PostingLoop(
+        window, out,
+        probe=lambda url: (last_posted[0] or
+                           f"f{window.leads[-1]:02d}.grib2" not in url),
+        now=clock.now,
+        sleep=clock.sleep, progress=lambda *_: None)
+    written = []
+    first_bytes = {}
+    real_publish = loop.publish
+
+    def publish(lead, objects):
+        written.append(lead)
+        result = real_publish(lead, objects)
+        first_bytes[lead] = result.read_bytes()
+        return result
+
+    monkeypatch.setattr(loop, "publish", publish)
+    transfer_returned = []
+
+    def transfer(hours, force, ready=None):
+        returned = [False]
+
+        def hourly(lead, manifest):
+            assert not returned[0]
+            ready(lead, manifest)
+            assert [row["lead"] for row in markers(out)] == written
+            document = json.loads(manifest.read_text())
+            for item in fetch_as_posted.legacy_objects(document, lead):
+                path = out / item["name"]
+                assert item["bytes"] == path.stat().st_size
+                assert item["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+            # A repeated completion or the final batch publication must
+            # keep the marker the preparation has already bound.
+            clock.sleep(30)
+            ready(lead, manifest)
+            assert (loop.folder / fetch_as_posted.marker_name(lead)
+                    ).read_bytes() == first_bytes[lead]
+
+        result = fetch.fetch_hrrr(
+            cycle=CYCLE, hours=tuple(hours), area=None, out=out,
+            force=force, transport="s3", engine="python", file_workers=1,
+            progress=lambda *_: None,
+            on_hour_ready=hourly if ready is not None else None)
+        returned[0] = True
+        transfer_returned.append(True)
+        last_posted[0] = True
+        return result
+
+    manifest = fetch._legacy_transfer(
+        loop, transfer, window.leads, force=False, whole=whole,
+        incremental_transfer=transfer)
+    assert transfer_returned == [True] * (1 if whole else 2)
+    assert written == list(window.leads)
+    assert json.loads(manifest.read_text())["forecast_hours"] == list(window.leads)
+    for lead, data in first_bytes.items():
+        assert (loop.folder / fetch_as_posted.marker_name(lead)).read_bytes() == data
+    if not whole:
+        assert loop._watch_stop.is_set()
+        assert loop._watcher is None or not loop._watcher.is_alive()
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_an_early_native_completion_cannot_rebind_or_skip_a_posted_lead(
+        tmp_path, changed):
+    window = readiness.resolve_window("hrrr", CYCLE, 1, start_hour=1)
+    out = tmp_path / "hrrr"
+    clock = Clock(rows.expected_at("hrrr", CYCLE, window.leads[-1])
+                  + timedelta(minutes=5))
+    loop = fetch_as_posted.PostingLoop(
+        window, out, probe=lambda _url: True, now=clock.now,
+        sleep=clock.sleep, progress=lambda *_: None)
+
+    def incremental(_hours, _force, ready):
+        manifest = out / "fetch-manifest.json"
+        lead = window.leads[0] if changed else window.leads[1]
+        files = [{"forecast_hour": lead, "name": "native.grib2",
+                  "role": "atmosphere", "bytes": 1, "sha256": "a" * 64,
+                  "url": "u", "transport": "s3"}]
+        manifest.write_text(json.dumps({"files": files}))
+        ready(lead, manifest)
+        files[0]["sha256"] = "b" * 64
+        manifest.write_text(json.dumps({"files": files}))
+        ready(lead, manifest)
+        return manifest
+
+    with pytest.raises(ValueError, match=("changed after its posted marker"
+                                         if changed else "ordered prefix")):
+        fetch._legacy_transfer(loop, lambda *_: None, window.leads,
+                               force=False, whole=True,
+                               incremental_transfer=incremental)
+
+
+def test_a_pinned_native_prefix_waits_for_an_intermediate_s3_soil_object(
+        tmp_path):
+    """A later lead or NOMADS cannot authorize a missing pinned S3 object."""
+
+    window = readiness.resolve_window(
+        "hrrr", CYCLE, 3, start_hour=15, transport="s3")
+    out = tmp_path / "hrrr"
+    clock = Clock(rows.expected_at("hrrr", CYCLE, window.leads[-1])
+                  + timedelta(minutes=5))
+    soil_posted = [False]
+    asked = []
+
+    def probe(url):
+        asked.append(url)
+        # The operational mirror already serves every lead. Only the
+        # chosen archive's pressure object for the intermediate lead lags.
+        if "nomads.ncep.noaa.gov" in url:
+            return True
+        return soil_posted[0] or "wrfprsf17.grib2" not in url
+
+    loop = fetch_as_posted.PostingLoop(
+        window, out, probe=probe, now=clock.now, sleep=clock.sleep,
+        progress=lambda *_: None)
+    transfers = []
+    first_markers = {}
+
+    def incremental(hours, force, ready):
+        assert not force
+        if not soil_posted[0]:
+            assert tuple(hours) == (15, 16)
+        transfers.append(tuple(hours))
+        manifest = out / "fetch-manifest.json"
+        files = []
+        for lead in hours:
+            for kind in ("atmosphere", "soil"):
+                name = f"{kind}-f{lead:03d}.grib2"
+                data = payload(name)
+                (out / name).write_bytes(data)
+                files.append({"forecast_hour": lead, "name": name,
+                              "role": kind, "bytes": len(data),
+                              "sha256": hashlib.sha256(data).hexdigest(),
+                              "url": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com/" + name,
+                              "transport": "s3"})
+            manifest.write_text(json.dumps({"files": files}))
+            ready(lead, manifest)
+            marker = loop.folder / fetch_as_posted.marker_name(lead)
+            if lead in first_markers:
+                assert marker.read_bytes() == first_markers[lead]
+            else:
+                first_markers[lead] = marker.read_bytes()
+        soil_posted[0] = True
+        clock.sleep(30)
+        return manifest
+
+    # Even a final-lead proxy claiming the window whole must not bypass
+    # the native per-lead gate. S3 f18 is available before its f17 soil.
+    fetch._legacy_transfer(loop, lambda *_: None, window.leads,
+                           force=False, whole=True,
+                           incremental_transfer=incremental)
+    assert transfers == [(15, 16), (15, 16, 17, 18)]
+    assert asked and all("noaa-hrrr-bdp-pds.s3.amazonaws.com" in url
+                         for url in asked)
+    assert [marker["lead"] for marker in markers(out)] == [15, 16, 17, 18]
+    for lead, data in first_markers.items():
+        assert (loop.folder / fetch_as_posted.marker_name(lead)).read_bytes() == data
+
+
+class HrrrIndexHeadRefused:
+    """A native HRRR host whose objects answer HEAD and whose indexes do not.
+
+    Each lead's wrfnat and wrfprs, with their ``.idx``, are served from
+    ``reveal(lead)`` on the replay clock.  A GRIB object answers HEAD and
+    byte-range GETs; an index answers GET only, and 405 to HEAD, as a
+    mirror or cache that refuses HEAD does.  The payloads are minimal GRIB2
+    envelopes under complete certified inventories, so the transfer's own
+    index, inventory, envelope and digest checks run unchanged.
+    """
+
+    RECORD = b"GRIB" + b"\x0a\x01" + b"\x00\x02" + (20).to_bytes(8, "big") + b"7777"
+
+    def __init__(self, cycle: datetime, clock: Clock, reveal) -> None:
+        from tools import download_hrrr_native_subset as transport
+
+        stamp = f"d={cycle:%Y%m%d%H}"
+
+        def product(fields):
+            index = "".join(
+                f"{number}:{(number - 1) * len(self.RECORD)}:{stamp}:"
+                f"{variable}:{level}:anl\n"
+                for number, (variable, level) in enumerate(fields, 1))
+            return self.RECORD * len(fields), index.encode("ascii")
+
+        products = {
+            "wrfnat": product(
+                [(variable, f"{level} hybrid level")
+                 for variable in transport.HYBRID_FIELDS
+                 for level in range(1, 51)] + list(transport.SURFACE_FIELDS)),
+            "wrfprs": product([(variable, level)
+                               for variable in ("TSOIL", "SOILW")
+                               for level in transport.SOIL_LEVELS]),
+        }
+        self.requests: list[tuple[str, str, str | None]] = []
+        host = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):  # quiet
+                pass
+
+            def _empty(self, status: int) -> None:
+                self.send_response(status)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def _object(self) -> bytes | None:
+                name = self.path.rsplit("/", 1)[-1]
+                product, _, lead = name.split(".")[2].rpartition("f")
+                if clock.now() < reveal(int(lead)):
+                    return None
+                return products[product][int(name.endswith(".idx"))]
+
+            def do_HEAD(self):
+                host.requests.append(("HEAD", self.path, None))
+                if self.path.endswith(".idx"):
+                    self._empty(405)
+                    return
+                data = self._object()
+                if data is None:
+                    self._empty(404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+
+            def do_GET(self):
+                wanted = self.headers.get("Range")
+                host.requests.append(("GET", self.path, wanted))
+                data = self._object()
+                if data is None:
+                    self._empty(404)
+                    return
+                if wanted:
+                    first, _, last = wanted.split("=", 1)[1].partition("-")
+                    first = int(first)
+                    last = int(last) if last else len(data) - 1
+                    whole, data = len(data), data[first:last + 1]
+                    self.send_response(206)
+                    self.send_header("Content-Range",
+                                     f"bytes {first}-{last}/{whole}")
+                else:
+                    self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+        self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def test_a_native_hrrr_host_that_refuses_index_head_still_fetches_as_posted(
+        tmp_path, monkeypatch):
+    """A136 L7c(b): an index HEAD the host refuses is not a missing index.
+
+    Reproduced against the posted-prefix host choice: with every index
+    HEAD answered 405 it made no GET and exited 75 after the posting
+    budget, where the one-host final-lead choice before it downloaded and
+    published both leads.  Each refused HEAD is now asked again as a GET
+    of the index's first byte, and the leads download and publish their
+    markers as they post.
+    """
+
+    from tools import download_hrrr_native_subset as transport
+
+    clock = Clock(rows.expected_at("hrrr", CYCLE, 0) - timedelta(minutes=5))
+
+    def reveal(lead: int) -> datetime:
+        return rows.expected_at("hrrr", CYCLE, lead) + timedelta(seconds=20)
+
+    host = HrrrIndexHeadRefused(CYCLE, clock, reveal)
+    monkeypatch.setattr(fetch, "HRRR_S3_BASE", host.base + "/s3")
+    monkeypatch.setattr(fetch, "HRRR_NOMADS_BASE", host.base + "/nomads")
+    monkeypatch.setattr(fetch_endpoints, "SETTLE_BACKOFF_S", ())
+    monkeypatch.setattr(fetch_as_posted, "now_utc", clock.now)
+    monkeypatch.setattr(fetch_as_posted, "pause", clock.sleep)
+    parser = argparse.ArgumentParser()
+    fetch.register_cli(parser.add_subparsers())
+    out = tmp_path / "hrrr"
+    args = parser.parse_args([
+        "fetch", "--source", "hrrr", "--cycle", CYCLE.strftime("%Y-%m-%dT%H"),
+        "--hours", "1", "--out", str(out), "--engine", "python",
+        "--fetch-workers", "1", "--wait-timeout-minutes", "60"])
+    try:
+        assert fetch.fetch_main(args) == 0
+    finally:
+        host.close()
+    assert not (out / "posting" / "failed.json").exists()
+    written = markers(out)
+    assert [marker["lead"] for marker in written] == [0, 1]
+    for marker in written:
+        assert (readiness.parse_instant(marker["first_seen_at"])
+                >= reveal(marker["lead"]))
+    manifest = json.loads((out / "fetch-manifest.json").read_text())
+    assert manifest["forecast_hours"] == [0, 1]
+    assert [entry["records"] for entry in manifest["files"]
+            if "records" in entry] == [transport.ATMOSPHERE_RECORD_COUNT,
+                                       transport.SOIL_RECORD_COUNT] * 2
+    refused = {path for method, path, _ in host.requests
+               if method == "HEAD" and path.endswith(".idx")}
+    confirmed = {path for method, path, wanted in host.requests
+                 if method == "GET" and wanted == fetch_endpoints.CONFIRM_RANGE}
+    assert refused and refused <= confirmed
+    # One host moved every byte the transfer read: a fetch never mixes hosts.
+    moved = {path.split("/")[1] for method, path, wanted in host.requests
+             if method == "GET" and wanted != fetch_endpoints.CONFIRM_RANGE}
+    assert len(moved) == 1
+
+
+class _Answered:
+    def __init__(self, status: int) -> None:
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _wire(head, get):
+    """A fake network: HEAD gets ``head``, GET gets ``get`` (a status or "timeout")."""
+
+    from urllib.error import HTTPError, URLError
+
+    asked: list[tuple[str, str | None]] = []
+
+    def opener(request, timeout=None):
+        asked.append((request.get_method(), request.get_header("Range")))
+        step = head if request.get_method() == "HEAD" else get
+        if step == "timeout":
+            raise URLError(TimeoutError(110, "timed out"))
+        if not 200 <= step < 300:
+            raise HTTPError(request.full_url, step, "status", {}, None)
+        return _Answered(step)
+
+    return opener, asked
+
+
+@pytest.mark.parametrize("head, get, expected", [
+    (405, 206, True), (501, 200, True), (403, 206, True), (502, 206, True),
+    (405, 404, False), (405, 410, False), (405, 405, None),
+    (405, "timeout", None)])
+def test_a_refused_head_is_asked_again_as_a_one_byte_get(head, get, expected):
+    opener, asked = _wire(head, get)
+    assert fetch_endpoints.object_answer(
+        "https://mirror.example/hrrr.t12z.wrfprsf01.grib2.idx", timeout=1,
+        opener=opener) is expected
+    assert asked == [("HEAD", None), ("GET", fetch_endpoints.CONFIRM_RANGE)]
+
+
+@pytest.mark.parametrize("url, head, expected", [
+    # The host said the object is missing.
+    ("https://mirror.example/x", 404, False),
+    ("https://mirror.example/x", 410, False),
+    # The host asked this client to slow down: no second request at once.
+    ("https://mirror.example/x", 429, None),
+    ("https://mirror.example/x", 503, None),
+    # NCEP's missing-path row already reads its 403.
+    ("https://nomads.ncep.noaa.gov/pub/x", 403, None),
+    # No answer at all: left to the transfer, whose own checks decide.
+    ("https://mirror.example/x", "timeout", None)])
+def test_an_answered_or_unheard_head_is_not_asked_again(url, head, expected):
+    opener, asked = _wire(head, 200)
+    assert fetch_endpoints.object_answer(
+        url, timeout=1, opener=opener) is expected
+    assert asked == [("HEAD", None)]
 
 
 def test_the_posting_file_names_are_the_ones_the_go_relay_reads():
@@ -773,3 +1226,163 @@ def test_the_hrrr_operational_rung_says_the_as_posted_wait():
             if endpoint.name == "nomads"][0]
     assert "--wait-for" not in rung.why
     assert "as-posted" in rung.why
+
+
+def _schedule_snapshots(monkeypatch) -> list[dict]:
+    """Every schedule the loop publishes, as a reader of the file sees it."""
+
+    seen: list[dict] = []
+    real_write = fetch_as_posted.PostingLoop.write_schedule
+
+    def write_schedule(self):
+        seen.append(json.loads(json.dumps(self.document)))
+        return real_write(self)
+
+    monkeypatch.setattr(fetch_as_posted.PostingLoop, "write_schedule",
+                        write_schedule)
+    return seen
+
+
+def test_each_lead_row_records_the_host_s_last_answer(replay, tmp_path,
+                                                      monkeypatch):
+    """A lead asked before it posts says ``not_posted`` on its row, then
+    ``posted``: the schedule is the record a wait on the lead reads (A136
+    L10 item 3)."""
+
+    server, clock = replay(on_schedule)
+    out = tmp_path / "gefs"
+    seen = _schedule_snapshots(monkeypatch)
+    assert fetch.fetch_main(fetch_args(out)) == 0
+    answers = {lead: [] for lead in (0, 3, 6, 9, 12)}
+    for schedule in seen:
+        for row in schedule["leads"]:
+            said = row["last_answer"]
+            if said is not None and (not answers[row["lead"]]
+                                     or answers[row["lead"]][-1] != said):
+                answers[row["lead"]].append(said)
+    assert answers[6] == ["not_posted", "posted"]
+    final = json.loads((out / "posting" / "schedule.json").read_text())
+    assert {row["last_answer"] for row in final["leads"]} == {"posted"}
+
+
+def test_a_start_need_whose_host_cannot_be_heard_says_so(replay, tmp_path,
+                                                         monkeypatch):
+    """The run's start wait on a lead whose host does not answer says the
+    host cannot be heard, never "not posted yet" or "not fetched yet":
+    something the engine could not see is not the publisher being late
+    (DESIGN A136 3.6).  The row carried no answer, so both were said."""
+
+    from gpuwm.chain_events import start_wait_row
+    from gpuwm.ingest.boundary_stream import source_wait_reason
+
+    server, clock = replay(on_schedule)
+    for path in list(server.objects):
+        if path.endswith(".f000") or ".f000." in path:
+            server.unheard_until[path] = on_schedule(0, clock) + timedelta(
+                minutes=40)
+    out = tmp_path / "gefs"
+    seen = _schedule_snapshots(monkeypatch)
+    assert fetch.fetch_main(fetch_args(out)) == 0
+    waits = [start_wait_row(schedule) for schedule in seen]
+    unheard = [row for row in waits
+               if row is not None and row["lead"] == 0
+               and row["last_answer"] == "not_heard"]
+    assert unheard, "the start wait on f000 never said its host was not heard"
+    reason = source_wait_reason({**unheard[-1], "source": SOURCE})
+    assert reason.startswith("gefs f000 is not fetched: its host cannot be "
+                             "heard")
+    assert "not posted yet" not in reason
+    assert "not fetched yet" not in reason
+    assert [marker["lead"] for marker in markers(out)] == [0, 3, 6, 9, 12]
+
+
+class _FileFailed(RuntimeError):
+    """One file's own refusal: the failure the request ends with."""
+
+
+@pytest.mark.parametrize("stopped_by", ("another_file", "the_chain"))
+def test_a_lead_waiting_to_post_under_a_chain_stop_ends_when_either_stop_fires(
+        tmp_path, stopped_by):
+    """The staged chain registers its stop (``stop_event``) for every
+    as-posted fetch it runs, and the gate's posting wait runs inside the
+    transfer pool's jobs.  That wait blocked on the chain's stop alone, so
+    when another file failed the request after its retries, a worker
+    waiting for a later lead slept its wait out, and the pool, which waits
+    for its jobs to wind down before it raises, raised only then: no
+    ``failed.json``, the preparation still waiting on the failed lead, and
+    the other workers still downloading.  Reproduced on node-2: the
+    request raised after the 20 s posting wait instead of at 0.5 s.  The
+    wait now ends on either stop: the request's (``TransferCancelled``,
+    e4224502f) and the chain's (``FetchStopped``)."""
+
+    assert fetch_as_posted.pause is time.sleep, "the real wait is under test"
+    out = tmp_path / SOURCE
+    chain_stop = fetch_as_posted.stop_event(out)
+    try:
+        plan = fetch_routes.resolve_request(SOURCE, cycle=CYCLE, hours=6,
+                                            cadence=3)
+        window = readiness.Window(source=SOURCE, cycle=CYCLE,
+                                  leads=tuple(plan.leads), cadence=3,
+                                  member=None, transport=None, plan=plan,
+                                  hours=6)
+        # An hour before f006 is due, on a clock that moves with real
+        # time; the whole window's cap bounds the wait to 20 s, so a wait
+        # that does not end on the stop fails here instead of hanging.
+        begun = time.monotonic()
+        base = rows.expected_at(SOURCE, CYCLE, 6) - timedelta(hours=1)
+        asked: list[str] = []
+        loop = fetch_as_posted.PostingLoop(
+            window, out, wait_timeout_minutes=20 / 60,
+            probe=lambda url: asked.append(url) or False,
+            now=lambda: base + timedelta(seconds=time.monotonic() - begun),
+            progress=lambda *_: None)
+        loop.start()
+        waits: list[float] = []
+        waiting = threading.Event()
+        real_pause = loop._pause
+
+        def pause(seconds):
+            waits.append(seconds)
+            waiting.set()
+            real_pause(seconds)
+
+        loop._pause = pause
+        ended: dict[str, BaseException] = {}
+
+        def later_lead():
+            try:
+                return {"name": "f006", "bytes": 1, "endpoint": loop(6)}
+            except BaseException as error:
+                ended["f006"] = error
+                raise
+
+        def other_file():
+            assert waiting.wait(10), "f006 never waited for its posting"
+            if stopped_by == "the_chain":
+                chain_stop.set()
+                return {"name": "f000", "bytes": 1}
+            raise _FileFailed("f000: the transfer failed after its retries")
+
+        expected = (_FileFailed if stopped_by == "another_file"
+                    else fetch_as_posted.FetchStopped)
+        started = time.monotonic()
+        with pytest.raises(expected):
+            fetch_pool.run_transfers(
+                [fetch_pool.TransferJob(name="f006", url=None,
+                                        action=later_lead),
+                 fetch_pool.TransferJob(name="f000", url=None,
+                                        action=other_file)],
+                workers=2)
+        elapsed = time.monotonic() - started
+    finally:
+        fetch_as_posted.release_stop(out)
+    assert waits and waits[0] >= 15.0, "the posting wait under test is short"
+    assert elapsed < 5.0, "the posting wait was served"
+    assert asked == [], "a lead not due was asked"
+    if stopped_by == "another_file":
+        assert isinstance(ended["f006"], fetch_pool.TransferCancelled)
+        assert not chain_stop.is_set()
+    else:
+        assert isinstance(ended["f006"], fetch_as_posted.FetchStopped)
+    # Ended by a stop, not by its budget: nothing says the lead was late.
+    assert not (out / "posting" / "failed.json").exists()

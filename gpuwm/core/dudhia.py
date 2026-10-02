@@ -324,12 +324,11 @@ class DudhiaShortwaveRadiation:
         )
 
         from gpuwm.core.physics import (
-            RadiationResult, _model_clock_dt, _physics_interval_seconds)
+            RadiationResult, _physics_period_seconds)
         valid_time = (self.start_time
                       + timedelta(seconds=float(state.elapsed_seconds)))
         radt_minutes = cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes
-        interval = _physics_interval_seconds(
-            radt_minutes, _model_clock_dt(cfg))
+        interval = _physics_period_seconds(radt_minutes, cfg)
         mu, solcon = wrf_solar_geometry(
             valid_time, self.latitude_deg, self.longitude_deg,
             hour_offset_seconds=0.5 * interval)

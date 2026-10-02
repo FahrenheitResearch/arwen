@@ -199,8 +199,8 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _component_texts(parts):
-    return tuple((part, (KERNEL_DIR / f"{part}.cu").read_text(encoding="ascii"))
+def _component_texts(parts, kernel_dir=KERNEL_DIR):
+    return tuple((part, (Path(kernel_dir) / f"{part}.cu").read_text(encoding="ascii"))
                  for part in parts)
 
 
@@ -208,23 +208,25 @@ def _assemble(texts, prefix):
     return prefix + "".join(text for _, text in texts)
 
 
-def runtime_unit(name: str) -> RuntimeUnit:
+def runtime_unit(name: str, *, kernel_dir: Path = KERNEL_DIR) -> RuntimeUnit:
     """Snapshot the production composition and options, including VEGE_FLUX.
 
     All custom runtime factories and the compile-only measurement harness use
     this function.  Ordinary standalone units have byte-identical inputs to
     kernels.load_module; the CPU factory-interception tests enforce that too.
+    ``kernel_dir`` composes the unit from another tree's kernel files (the
+    A146 census gates the tree it scans, A193).
     """
     parts = NOAHMP_TRANSLATION_UNITS[name]
     # Read each component ONCE so its recorded digest and compiled text cannot
     # describe different reads of a concurrently edited file.
-    texts = _component_texts(parts)
+    texts = _component_texts(parts, kernel_dir)
     if name == "noahmp_vegeflux":
         prefix = ""
         options = ("-std=c++14",)
     else:
         from gpuwm.core.kernels import _preamble
-        prefix = _preamble()
+        prefix = _preamble(kernel_dir)
         options = DEFAULT_OPTIONS
     source = _assemble(texts, prefix)
     return RuntimeUnit(

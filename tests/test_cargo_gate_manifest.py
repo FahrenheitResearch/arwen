@@ -29,7 +29,9 @@ suites pass -- that is the leg itself,
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tomllib
 
@@ -383,6 +385,42 @@ def test_an_external_target_directory_is_accepted(tmp_path) -> None:
     runner = _runner()
     resolved = runner.resolve_target_dir(str(tmp_path / "cargo-target"))
     assert resolved == (tmp_path / "cargo-target").resolve()
+
+
+def _directory_alias(link: Path, target: Path):
+    """Owned fixture directories, using a junction where symlinks need privilege."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        if os.name != "nt":
+            raise
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                       check=True, capture_output=True, text=True)
+
+
+@pytest.mark.parametrize("name", ["in_tree_link", "external_real_path", "external_alias", "external_child"])
+def test_test_targets_cannot_share_release_artifacts_through_directory_aliases(tmp_path, monkeypatch, name):
+    runner = _runner()
+    source = tmp_path / "source"
+    release_target = tmp_path / "release-target"
+    release_target.mkdir()
+    in_tree = source / "tools/rustwx/target"
+    in_tree.parent.mkdir(parents=True)
+    _directory_alias(in_tree, release_target)
+    alias = tmp_path / "alias"
+    _directory_alias(alias, release_target)
+    monkeypatch.setattr(runner, "REPOSITORY_ROOT", source)
+    monkeypatch.setattr(runner, "read_manifest", lambda: [
+        runner.Entry("cpu", "tools/rustwx", "rw-wrfbatch", 1, (), ())])
+    chosen = {"in_tree_link": in_tree, "external_real_path": release_target,
+              "external_alias": alias, "external_child": alias / "test-child"}[name]
+    expected = "inside the repository" if name == "in_tree_link" else "release artifact target"
+    with pytest.raises(RuntimeError, match=expected):
+        runner.resolve_target_dir(str(chosen))
+    # A separate owned target is still admitted; this guard isolates artifacts,
+    # it does not ban external caches merely because symlinks exist elsewhere.
+    separate = tmp_path / "test-target"
+    assert runner.resolve_target_dir(str(separate)) == separate.resolve()
 
 
 def test_worker_gate_uses_the_battery_python_without_shell_expansion(monkeypatch, tmp_path):

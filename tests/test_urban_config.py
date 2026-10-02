@@ -103,14 +103,17 @@ def test_urban_model_in_build_reads_the_module_table():
 def test_the_fields_are_appended_last():
     # Appended right after adaptive_nest_lattice, so every earlier field keeps
     # its positional index.  The namelist-gaps merge appended slope_rad,
-    # topo_shading and shadlen after them; tests/test_config_freeze.py pins
-    # the whole tail.
+    # topo_shading and shadlen after them, the Noah mosaic trio followed,
+    # lane/282-namelist-tolerance appended diff_opt and mix_full_fields
+    # after the trio, and lane/282-terrain-drag appended topo_wind and
+    # gwd_opt after those; tests/test_config_freeze.py pins the whole tail.
     names = [f.name for f in dataclasses.fields(RunConfig)]
     at = names.index("adaptive_nest_lattice")
     assert names[at + 1:at + 4] == ["sf_urban_physics", "use_wudapt_lcz",
                                     "num_urban_hi"]
-    assert names[-3:] == ["sf_surface_mosaic", "mosaic_cat",
-                          "mosaic_urban_canopy"]
+    assert names[-7:] == ["sf_surface_mosaic", "mosaic_cat",
+                          "mosaic_urban_canopy", "diff_opt",
+                          "mix_full_fields", "topo_wind", "gwd_opt"]
 
 
 def test_the_memory_checks_price_the_urban_arrays():

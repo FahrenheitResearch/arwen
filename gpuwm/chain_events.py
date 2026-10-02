@@ -258,6 +258,9 @@ class GoChainEvents:
         self._source_behind_said = False
         #: The open ``phase: start`` source wait (:meth:`_relay_start_wait`).
         self._start_wait: dict[str, Any] | None = None
+        #: The preparation published its head: every start need was read,
+        #: so no later wait of the fetch is the run's start wait.
+        self._head_published = False
 
     # -- lifecycle -----------------------------------------------------
 
@@ -326,6 +329,7 @@ class GoChainEvents:
     def prepare_head_ready(self, *, head_sha256: str) -> None:
         """The preparation published its head; the forecast starts now."""
 
+        self._head_published = True
         self._emit("prepare_head_ready", head_sha256=str(head_sha256),
                    ready_unix_ms=int(time.time() * 1000))
 
@@ -372,6 +376,21 @@ class GoChainEvents:
 
     def stage_end(self, *, label: str, exit_code: int, ok: bool,
                   elapsed_seconds: float, progress) -> None:
+        self._end_stage(label=label, exit_code=exit_code, ok=ok,
+                        elapsed_seconds=elapsed_seconds, progress=progress)
+
+    def stage_secondary_end(self, *, label: str, exit_code: int, ok: bool,
+                            elapsed_seconds: float, progress,
+                            diagnostic: str) -> None:
+        """Close a stage that failed after the run's primary failure."""
+
+        self._end_stage(label=label, exit_code=exit_code, ok=ok,
+                        elapsed_seconds=elapsed_seconds, progress=progress,
+                        secondary=True, diagnostic=diagnostic)
+
+    def _end_stage(self, *, label: str, exit_code: int, ok: bool,
+                   elapsed_seconds: float, progress, secondary: bool = False,
+                   diagnostic: str = "") -> None:
         opened = self._open.pop(label, None)
         started_unix_ms = (None if opened is None
                            else opened["started_unix_ms"])
@@ -382,6 +401,8 @@ class GoChainEvents:
         extra: dict[str, Any] = {}
         if label == "fetch" and self._data_dir is not None:
             extra = self._fetch_fields()
+        if secondary:
+            extra.update(secondary=True, diagnostic=diagnostic)
         self._finish(label, wall_seconds=float(elapsed_seconds), ok=bool(ok),
                      exit_code=int(exit_code),
                      started_unix_ms=started_unix_ms, **extra)
@@ -574,7 +595,12 @@ class GoChainEvents:
             SOURCE_WAIT_PROGRESS_SECONDS, source_wait_reason,
         )
 
-        row = start_wait_row(schedule)
+        # After the head, a lead the fetch waits for again (its transfer
+        # did not verify, so it is asked once more) is not the run's start
+        # wait: the head read every start need, and the forecast says its
+        # own waits at its seams.  It was said as `phase: start` while the
+        # forecast stepped.
+        row = None if self._head_published else start_wait_row(schedule)
         key = (None if row is None else
                (schedule.get("source"), schedule.get("cycle"), row.get("lead")))
         now = time.monotonic()
@@ -615,6 +641,11 @@ class GoChainEvents:
         opened = self._start_wait
         if now - opened["said"] >= SOURCE_WAIT_PROGRESS_SECONDS:
             opened["said"] = now
+            # The fetch's word on the lead can change inside one wait (its
+            # host not heard, then heard and not posted); the progress
+            # record says the current one.
+            opened["fields"]["reason"] = source_wait_reason(
+                {**row, "source": schedule.get("source")})
             self._emit("source_wait_progress", **opened["fields"],
                        waited_seconds=round(now - opened["since"], 3))
             carried += 1
@@ -1081,6 +1112,11 @@ class HostedPostingRelay:
         """Watch from ``since_unix_ms`` (the fetch's launch) on."""
 
         self._relay._start_posting_relay(int(since_unix_ms))
+
+    def head_ready(self) -> None:
+        """The preparation published its head: no later wait is the start wait."""
+
+        self._relay._head_published = True
 
     def stop(self) -> None:
         """End the watch after carrying what landed since its last look."""

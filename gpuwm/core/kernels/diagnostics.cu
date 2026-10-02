@@ -81,6 +81,9 @@ void calc_p_alpha(const real* __restrict__ thp,   // (nz,   ny, nx) theta'
                                                   //   float64-minus-float32
                                                   //   residual
                   const real* __restrict__ alb,   // (nz[,ny,nx])   base alpha
+#ifdef GPUWM_WRF_EXACT_D_DIAGNOSTICS
+                  const real* __restrict__ pb,    // WRF pressure subtraction carrier
+#endif
                   const real* __restrict__ rdnw,  // (nz,)  1/dnw (< 0)
                   const real* __restrict__ c1h,   // (nz,)  dB/deta
                   const real* __restrict__ c2h,   // (nz,)  (1-c1h)(p0-pt)
@@ -97,7 +100,12 @@ void calc_p_alpha(const real* __restrict__ thp,   // (nz,   ny, nx) theta'
                   int j0, int i0, int nyw, int nxw,
                   real* __restrict__ p,           // (nz, ny, nx) full pressure
                   real* __restrict__ al,          // (nz, ny, nx) alpha'
+#ifdef GPUWM_WRF_EXACT_D_DIAGNOSTICS
+                  real* __restrict__ alt,         // (nz, ny, nx) total alpha
+                  real* __restrict__ p_perturbation)
+#else
                   real* __restrict__ alt)         // (nz, ny, nx) total alpha
+#endif
 {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     if (col >= nyw * nxw) return;
@@ -111,6 +119,53 @@ void calc_p_alpha(const real* __restrict__ thp,   // (nz,   ny, nx) theta'
 
     real mu = mub[(size_t)j * nx + i] + mup[(size_t)j * nx + i];
     for (int k = 0; k < nz; ++k) {
+#ifdef GPUWM_WRF_EXACT_D_DIAGNOSTICS
+        // Verification-only WRF v4.7.1 calc_p_rho_phi operation order.
+        // This substage reads canonical t = theta - 300 from thp. Native
+        // exact initialization keeps thb at 300; other initialization doors
+        // must supply that same carrier before selecting this substage.
+        // gfk_log/gfk_pow come from the conditional glibc_flt32 header.
+        const size_t h = IDX3(k, j, i);
+        const size_t b = (size_t)k * kstr + coff;
+        const real muts = __fadd_rn(mub[(size_t)j * nx + i],
+                                   mup[(size_t)j * nx + i]);
+        const real dphp = __fsub_rn(php[IDX3(k + 1, j, i)], php[h]);
+        real ap;
+        if (hypso == 2) {
+            const real pfu = __fadd_rn(
+                __fadd_rn(__fmul_rn(c3f[k + 1], muts), c4f[k + 1]), p_top);
+            const real pfd = __fadd_rn(
+                __fadd_rn(__fmul_rn(c3f[k], muts), c4f[k]), p_top);
+            const real phm = __fadd_rn(
+                __fadd_rn(__fmul_rn(c3h[k], muts), c4h[k]), p_top);
+            const real dph = __fsub_rn(
+                __fadd_rn(dphp, phb[(size_t)(k + 1) * kstr + coff]), phb[b]);
+            ap = __fsub_rn(
+                __fdiv_rn(__fdiv_rn(dph, phm),
+                          gfk_log(__fdiv_rn(pfd, pfu))), alb[b]);
+        } else {
+            const real inverse_mass = __fdiv_rn(
+                -1.0f, __fadd_rn(__fmul_rn(c1h[k], muts), c2h[k]));
+            const real base_mass = __fmul_rn(
+                alb[b], __fmul_rn(c1h[k], mup[(size_t)j * nx + i]));
+            ap = __fmul_rn(inverse_mass,
+                __fadd_rn(base_mass, __fmul_rn(rdnw[k], dphp)));
+        }
+        const real a = __fadd_rn(ap, alb[b]);
+        const real theta = __fadd_rn(300.0f, thp[h]);
+        real numerator = __fmul_rn(RD, theta);
+        if (moist) {
+            const real qvf = __fadd_rn(1.0f, __fmul_rn(RVOVRD, qv[h]));
+            numerator = __fmul_rn(numerator, qvf);
+        }
+        const real temperature_ratio = __fdiv_rn(numerator, __fmul_rn(P0, a));
+        const real perturbation_pressure = __fsub_rn(
+            __fmul_rn(gfk_pow(temperature_ratio, GAMMA), P0), pb[b]);
+        alt[h] = a;
+        al[h] = ap;
+        p_perturbation[h] = perturbation_pressure;
+        p[h] = __fadd_rn(perturbation_pressure, pb[b]);
+#else
         real th  = thb[k * kstr + coff] + thp[IDX3(k, j, i)];
         if (moist) th *= 1.0f + RVOVRD * qv[IDX3(k, j, i)];
         real dphb = (phb[(k + 1) * kstr + coff] - phb[k * kstr + coff])
@@ -131,5 +186,6 @@ void calc_p_alpha(const real* __restrict__ thp,   // (nz,   ny, nx) theta'
         alt[IDX3(k, j, i)] = a;
         al[IDX3(k, j, i)]  = ap;
         p[IDX3(k, j, i)]   = P0 * powf((RD * th) / (P0 * a), GAMMA);
+#endif
     }
 }

@@ -1208,7 +1208,8 @@ _XP_TABLES = {}
 def _tables(xp):
     """Module DATA tables in the target namespace (device copies of
     float32 constants are bit-preserving; -_PPROF negation is exact)."""
-    key = xp.__name__
+    key = (xp.__name__, int(xp.cuda.Device().id),
+           int(xp.cuda.get_current_stream().ptr)) if hasattr(xp, "cuda") else xp.__name__
     if key not in _XP_TABLES:
         _XP_TABLES[key] = {
             "retab": xp.asarray(_RETAB),

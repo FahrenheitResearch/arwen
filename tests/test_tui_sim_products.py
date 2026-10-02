@@ -147,7 +147,9 @@ def test_tree_failure_joins_dispatched_plot_thread_and_preserves_primary_error(
         allow_finish.set()
         original_wait(timeout=2)
         assert worker_finished.is_set()
-        assert not plots._thread.is_alive()
+        # WorkerEnd is the completion contract. The wrapper thread may still
+        # be leaving after its target returned and the completion event fired.
+        assert plots._ended.ended
         if join_fails:
             raise RuntimeError("plot join fixture")
 

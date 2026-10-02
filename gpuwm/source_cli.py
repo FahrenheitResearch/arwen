@@ -475,7 +475,9 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
         help="prepare as an as-posted fetch publishes the window's leads: "
              "POSTING_DIR is that fetch's posting/ folder; the preparation "
              "starts on the first leads and its seal writes the input "
-             "manifest, so no --source-manifest pair is given",
+             "manifest, so no --source-manifest pair is given (a mapped "
+             "source names where with --author-input-manifest, beside the "
+             "fetched files)",
     )
     # store_true with a falsy default, not store_false/default=True:
     # `_active_action_arguments` reads every non-None, non-False namespace
@@ -1658,6 +1660,25 @@ def _required_mapped_args(args: argparse.Namespace) -> list[str]:
         args.source_sha256s is not None or args.source_sha256s_sha256 is not None
     )
     authored_manifest = args.author_input_manifest is not None
+    if getattr(args, "as_posted", None) is not None:
+        # Breakage each prevents: an as-posted seal writes the input
+        # manifest from the lead markers, so a pinned one would be a second
+        # manifest the preparation neither reads nor seals; without a path
+        # the seal would have nowhere it is told to write; and authoring
+        # only would author a manifest of a window still posting.
+        if existing_manifest:
+            errors.append(
+                "--as-posted prepares a window whose seal writes the input "
+                "manifest; it takes no --source-manifest pair")
+        elif not authored_manifest:
+            errors.append(
+                "--as-posted needs --author-input-manifest PATH beside the "
+                "fetched files: the seal writes the window's input manifest "
+                "there")
+        if args.author_only:
+            errors.append(
+                "--author-only authors a manifest of the whole window, and "
+                "--as-posted prepares a window still posting; drop one")
     if args.author_only and not authored_manifest:
         errors.append("--author-only requires --author-input-manifest")
     if existing_manifest == authored_manifest:
@@ -2057,8 +2078,11 @@ def _mapped_command(args: argparse.Namespace) -> list[str]:
         str(args.mapping),
         "--input-manifest",
         str(args.source_sha256s),
-        "--input-manifest-sha256",
-        str(args.source_sha256s_sha256),
+        # As posted, the seal writes the manifest at that path, so there is
+        # no digest yet; the preparation waits on the fetch's lead markers.
+        *(("--as-posted", str(args.as_posted))
+          if getattr(args, "as_posted", None) is not None
+          else ("--input-manifest-sha256", str(args.source_sha256s_sha256))),
         "--wps-namelist",
         str(args.wps_namelist),
         "--geog-root",
@@ -2421,20 +2445,64 @@ class PreparationRunner:
 
 #: The preparation runners that take ``--as-posted``: they wait for each
 #: lead's posted marker, decode lead batches as they arrive and write the
-#: input manifest at their seal (DESIGN A136 2.4).  Every other runner reads
-#: a whole fetched window.
-AS_POSTED_RUNNERS = frozenset({"gfs_pgrb2_0p25_v1"})
+#: input manifest at their seal (DESIGN A136 2.4): the GFS bridge, and the
+#: mapped engine (``mapped_direct --as-posted``, A136 L3 (ii)).  Every other
+#: runner reads a whole fetched window.
+AS_POSTED_RUNNERS = frozenset({"gfs_pgrb2_0p25_v1", "mapped_composition_v1"})
+
+
+def as_posted_refusal(source: str) -> str | None:
+    """Why ``source``'s preparation cannot wait on posted leads, or ``None``.
+
+    The reasons are facts of the source's rows: a source that does not
+    post lead by lead (its posting shape is not ``rolling``: a whole cycle,
+    a donor gate, an archive or a broker, so there is no lead to prepare
+    as it posts), one with no posting row at all, a runner that reads a
+    whole fetched window, or a packaged profile that normalizes every
+    input file before its decode (the GDT-101 meshes are re-gridded whole,
+    so a lead not posted yet has nothing to normalize).
+    """
+
+    from gpuwm.source_adapters import get_source_adapter
+
+    try:
+        adapter = get_source_adapter(source)
+    except (KeyError, ValueError):
+        return f"{source} is not a registered source"
+    if adapter.runner not in AS_POSTED_RUNNERS:
+        return f"--source {source} prepares a whole fetched window"
+    from gpuwm.source_posting import posting
+
+    try:
+        row = posting(adapter.source_id)
+    except (KeyError, ValueError):
+        row = None
+    if row is None:
+        return (f"--source {source} declares no posting row, so nothing "
+                "says when a lead of it posts")
+    if not row.streams:
+        return (f"--source {source} does not post lead by lead (its "
+                f"posting shape is {row.shape}), so there is no lead to "
+                "prepare as it posts")
+    if adapter.packaged_profile is not None:
+        from gpuwm.source_authorities import packaged_profile
+
+        try:
+            normalizer = packaged_profile(adapter.packaged_profile).get(
+                "input_normalizer")
+        except (KeyError, ValueError):
+            normalizer = None
+        if normalizer:
+            return (f"--source {source} normalizes every input file of the "
+                    f"window ({normalizer}) before its decode, so a lead not "
+                    "posted yet has nothing to normalize")
+    return None
 
 
 def prepares_as_posted(source: str) -> bool:
     """Whether ``source``'s preparation can run beside an as-posted fetch."""
 
-    from gpuwm.source_adapters import get_source_adapter
-
-    try:
-        return get_source_adapter(source).runner in AS_POSTED_RUNNERS
-    except (KeyError, ValueError):
-        return False
+    return as_posted_refusal(source) is None
 
 
 def preparation_runners() -> dict[str, PreparationRunner]:
@@ -2909,15 +2977,15 @@ def dispatch(args: argparse.Namespace, *,
         return EXIT_CONFIG
 
     runner = runners[adapter.runner]
-    if (getattr(args, "as_posted", None) is not None
-            and adapter.runner not in AS_POSTED_RUNNERS):
+    posted_refusal = (None if getattr(args, "as_posted", None) is None
+                      else as_posted_refusal(args.source))
+    if posted_refusal is not None:
         # Breakage it prevents: this preparation reads its window whole, so
         # the flag would be read by nothing and a window still posting
         # would be prepared from whatever leads had arrived.
-        print(f"invalid or missing run arguments: --as-posted: --source "
-              f"{args.source} prepares a whole fetched window; fetch it "
-              "first (gpuwm fetch waits for every lead), then prepare",
-              file=sys.stderr)
+        print(f"invalid or missing run arguments: --as-posted: "
+              f"{posted_refusal}; fetch it first (gpuwm fetch waits for "
+              "every lead), then prepare", file=sys.stderr)
         return EXIT_USAGE
     required_args, build_command = runner.required, runner.command
     configuration_errors = required_args(args)
@@ -3119,6 +3187,14 @@ def dispatch(args: argparse.Namespace, *,
             print(f"source input normalization failed: {error}", file=sys.stderr)
             return EXIT_CONFIG
 
+    if (adapter.runner == "mapped_composition_v1"
+            and getattr(args, "as_posted", None) is not None):
+        # As posted, --author-input-manifest names where the seal writes
+        # the window's manifest (mapped_direct writes it with the same
+        # author once every lead is in), so nothing is authored here.
+        args.source_sha256s = Path(args.author_input_manifest).resolve()
+        args.source_sha256s_sha256 = None
+        args.author_input_manifest = None
     if adapter.runner == "mapped_composition_v1" and (
         args.descriptor is not None or args.author_input_manifest is not None
     ):

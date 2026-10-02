@@ -761,7 +761,7 @@ def test_the_contract_carries_both_rules():
     assert "use_wudapt_lcz = 1" in num_land_cat["why"]
     geog = sections["geogrid"]["keys"]["geog_data_res"]
     assert geog["values"] is None
-    assert geog["tokens"] == ["5m", "cglc_modis_lcz", "default",
+    assert geog["tokens"] == ["30s", "5m", "cglc_modis_lcz", "default",
                               "modis_lai"]
     assert geog["token_separator"] == "+"
     assert geog["reach"] == "max_dom"

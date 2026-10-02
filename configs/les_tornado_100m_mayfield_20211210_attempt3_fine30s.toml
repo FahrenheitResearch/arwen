@@ -1,20 +1,21 @@
 # ---------------------------------------------------------------------------
-# FINE-CADENCE RESUME of attempt #3.  Same experiment, resumed, written fast.
+# FINE-CADENCE RESUME of the current CQ-on attempt #3 configuration.
 # ---------------------------------------------------------------------------
-# THIS IS A RESTART, and it is the whole point of the file.  Attempt #3's
-# certified arm a wrote a complete gpuwmrst checkpoint set at 04:00Z, and
-# `gpuwm run --restart` publishes exactly one tolerance: the forecast length
-# and the output/restart cadence may differ from the run that wrote the
-# checkpoint, nothing else may (gpuwm/core/model.py
-# RESTART_TOLERATED_{EXPERIMENT,DOMAIN,RUN}_FIELDS; the tree runner binds the
-# same three sets, prepared_domain_tree_forecast.py:509-524).  A finer
-# history cadence over a shorter window is that tolerance and nothing more,
-# so this file changes FOUR numbers and leaves the other 26 kB byte-identical
-# to the file the certified pair ran under.
+# A checkpoint written by the current attempt #3 with moist_cq = true is
+# required. The archived certified CQ-off checkpoint at 04:00Z is not
+# restart-compatible: moist_cq changes the trajectory and is bound by the
+# restart identity (gpuwm/core/model.py restart_identity_payload).
+#
+# Relative to the current CQ-on attempt #3 file, this file changes the
+# forecast length and three history cadences below. These fields are
+# tolerated by gpuwm/core/model.py
+# RESTART_TOLERATED_{EXPERIMENT,DOMAIN,RUN}_FIELDS. The historical certified
+# run supplies the cadence rationale and disk measurements, not a compatible
+# checkpoint or a measured CQ-on forecast.
 #
 #   run_seconds               25200 -> 20700 s   00Z->07Z becomes 00Z->05:45Z,
-#                                                resumed at 04:00Z, so 6300 s
-#                                                of integration
+#                                                a CQ-on resume at 04:00Z
+#                                                integrates another 6300 s
 #   d02 history_interval_s      900 -> 1800 s    context, coarsened
 #   d03 history_interval_s      900 ->   60 s    the 500 m parent, matched at
 #                                                twice the child's spacing
@@ -41,8 +42,8 @@
 # THE 04:00Z FRAME IS NOT REWRITTEN.  restore_tree_restart marks every domain
 # whose history alarm is due at the resume instant as already committed
 # (gpuwm/io/restart.py:2796-2798), so the first frame this run writes is
-# 04:00:30Z.  wrfout_d04_2021-12-11_04_00_00 already exists in attempt #3's
-# certified arm a and is the same state by construction.
+# 04:00:30Z. The 04:00Z frame belongs to the same CQ-on run that wrote
+# the checkpoint; the historical CQ-off frame is a different trajectory.
 #
 # DISK, measured off attempt #3 arm a rather than estimated:
 #   d04  182,835,921 B/frame x 210 frames  =  38.4 GB
@@ -425,7 +426,7 @@ relax_zone = 4
 bldt = 0.0
 nwp_diagnostics = 1
 moist = true
-moist_cq = false
+moist_cq = true
 mp_physics = 6
 top_lid = true
 epssm = 0.5

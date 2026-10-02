@@ -254,162 +254,136 @@ def test_a_following_nest_starts_at_a_head_that_carries_its_corridor():
         exp, relocation_follow=True, head_corridor=True) is None
     assert "statics corridor" in tree._head_needs_seal(
         exp, relocation_follow=True, head_corridor=False)
-    # A root [tiles] streams whatever the card still reads the seal
-    # whatever the corridor.
+    # A streamed root uses the same head and corridor as a resident root.
     from gpuwm.core.streaming import StreamingOptions
 
     tiled = SimpleNamespace(
         domains=(SimpleNamespace(grid_id=1, tiles=None),),
         tiles=StreamingOptions.from_mapping({"mode": "on"}))
-    assert "[tiles]" in tree._head_needs_seal(
-        tiled, relocation_follow=True, head_corridor=True)
+    assert tree._head_needs_seal(
+        tiled, relocation_follow=True, head_corridor=True) is None
 
 
-def test_a_tiles_root_that_always_streams_starts_after_the_seal_by_name():
-    """``mode = "on"`` streams the root on every card, so it is known here.
+@pytest.mark.parametrize("mode", ["on", "auto"])
+def test_a_tiles_root_starts_at_its_head(mode):
+    """The root's store takes start arrays from the head, then seam tables.
 
-    The pin moved with its cause (A136 L7d): it held ``mode = "auto"`` to
-    the seal wait too, but ``auto`` streams only a root that does not fit
-    the card, and every cyclone setup writes it, so a storm-following tree
-    that ran resident waited for the seal all the same.  ``auto`` is now
-    asked of the card (:func:`_root_store_needs_seal`).
+    A186 retires the seal requirement for both explicit streaming and the
+    automatic mode a cyclone setup writes.  The planner still chooses the
+    card's resident or streamed road, but neither road requires the seal.
     """
 
     from gpuwm.core.streaming import StreamingOptions
 
     exp = SimpleNamespace(domains=(SimpleNamespace(grid_id=1, tiles=None),),
-                          tiles=StreamingOptions.from_mapping({"mode": "on"}))
-    reason = tree._head_needs_seal(exp, relocation_follow=False)
-    assert "[tiles]" in reason and "sealed prepared cache" in reason
-    exp = SimpleNamespace(
-        domains=(SimpleNamespace(grid_id=1, tiles=None),),
-        tiles=StreamingOptions.from_mapping({"mode": "auto"}))
+                          tiles=StreamingOptions.from_mapping({"mode": mode}))
     assert tree._head_needs_seal(exp, relocation_follow=False) is None
 
 
-def _auto_tiles_head_inputs(*, bound_to_head=True):
+@pytest.mark.parametrize('changed', [False, True])
+def test_tiles_root_seal_fingerprint_uses_full_domain_flags(monkeypatch, changed):
+    """The last slab is uniform while an earlier row rotates the domain."""
+    from dataclasses import replace
+    import numpy as np
+    from gpuwm.core.streamed_relocation import StreamedChildReconstruction
+    from gpuwm.core.streaming import StreamedDomain
+    from gpuwm.io import restart
+    from gpuwm.state_serialization_contract import STATE_SETUP_ARRAYS
+    from tilestream import driver, physics_inventory
+    from test_restart import _shim_state
+    from test_restart_preserved_forcing import _clear_out_state, _specified
+
+    cfg = _specified()
+    resident = _clear_out_state(cfg, monkeypatch)
+    resident.elapsed_seconds = 3600.
+    for name in ('msft', 'msfu', 'msfv'):
+        getattr(resident, name).fill(1.)
+    for name in ('f', 'e', 'sina'):
+        getattr(resident, name).fill(0.)
+    resident.cosa.fill(1.)
+    resident.msft[0, 0] = 1.25
+    resident.has_msf = resident.rotational = True
+    slab = _shim_state(replace(cfg, ny=2), monkeypatch)
+    for name in STATE_SETUP_ARRAYS:
+        source, target = getattr(resident, name), getattr(slab, name)
+        target[...] = (source if source.ndim < 2 else
+                       source[..., -target.shape[-2]:, :])
+    slab.has_msf = slab.rotational = False
+    geo = {key: value.copy() for key, value in driver.geography_inventory(resident).items()}
+    store = {key: value.copy() for key, value in physics_inventory.carrier_manifest(resident).items()}
+    scalars = physics_inventory.carrier_scalars(resident)
+    facade = StreamedChildReconstruction._facade(slab, cfg, store, geo, scalars)
+    facade.lateral_boundaries = resident.lateral_boundaries
+    assert not facade.has_msf and not facade.rotational
+    class Endpoint:
+        restart_setup = StreamedDomain.restart_setup
+    stream = Endpoint()
+    stream._setup = None
+    stream._template = stream.template_state = slab
+    stream._state = facade
+    stream._geography = geo
+    stream._boundaries = resident.lateral_boundaries
+    stream.store = store
+    setup = stream.restart_setup()
+    assert setup.scalars['has_msf'] and setup.scalars['rotational']
+    expected = restart.setup_fingerprint(resident)
+    assert restart.setup_fingerprint(facade) != expected
+    if changed:
+        # DomainSetup borrows the complete geography. A changed array must
+        # fail the final sealed fingerprint comparison even with correct flags.
+        geo['setup/ht'][0, 0] += np.float32(1.)
+    node = SimpleNamespace(state=facade, clock=SimpleNamespace(elapsed_seconds=3600.))
+    observed = tree._root_setup_fingerprint(node, stream)
+    assert (observed == expected) is (not changed)
+    assert tree._root_setup_fingerprint(SimpleNamespace(state=resident)) == expected
+
+
+def _tiles_head_inputs(*, mode="auto", bound_to_head=True):
     from gpuwm.core.streaming import StreamingOptions
 
-    root = SimpleNamespace(grid_id=1, parent_id=0, tiles=None)
-    child = SimpleNamespace(grid_id=2, parent_id=1, tiles=None)
+    run = SimpleNamespace(sf_urban_physics=0)
+    root = SimpleNamespace(grid_id=1, parent_id=0, tiles=None, run=run)
+    child = SimpleNamespace(grid_id=2, parent_id=1, tiles=None, run=run)
     exp = SimpleNamespace(
         domains=(root, child),
-        tiles=StreamingOptions.from_mapping({"mode": "auto"}))
+        tiles=StreamingOptions.from_mapping({"mode": mode}))
     return SimpleNamespace(
         experiment=exp, source="gfs",
+        domains=tuple(SimpleNamespace(grid_id=dc.grid_id) for dc in exp.domains),
         stream_head={"head_sha256": "d" * 64} if bound_to_head else None)
 
 
-@pytest.mark.parametrize("streamed", [(), (2,), (1,), (1, 2)])
-def test_an_auto_tiles_root_waits_for_the_seal_only_when_the_card_streams_it(
-        monkeypatch, streamed):
-    """A136 L7d: a cyclone setup's ``[tiles] mode = "auto"`` tree.
+@pytest.mark.parametrize("mode", ["on", "auto"])
+def test_the_tiles_tree_door_runs_the_head_without_waiting_for_the_seal(
+        tmp_path, monkeypatch, capsys, mode):
+    """The entry point preserves a head binding when the root can stream.
 
-    THE BREAKAGE: every storm-following tree a cyclone setup writes carries
-    ``auto``, and the head binding sent it to the seal wait for the table
-    alone, so its forecast started after the whole preparation even where
-    its root ran resident on the card.  The run's own admission is asked:
-    only a root the planner streams from a host store (filled from the
-    sealed root cache) waits; a streamed child alone does not.
+    The actual store and boundary behavior is exercised separately.  This
+    door test catches the retired fallback being reintroduced around it.
     """
-
-    asked = []
-
-    def decide(exp, nodes, *, machine, decisions, source):
-        asked.append((machine, source))
-        for domain in exp.domains:
-            decisions[int(domain.grid_id)] = SimpleNamespace(
-                stream=int(domain.grid_id) in streamed)
-        return SimpleNamespace()
-
-    monkeypatch.setattr(tree, "cold_tree_streaming_decision", decide)
-    monkeypatch.setattr(tree, "_prepared_planning_nodes", lambda inputs: [])
-    monkeypatch.setattr(tree, "_root_bundle", lambda inputs: SimpleNamespace(
-        cache_reader="root-reader"))
-    monkeypatch.setattr(tree.streaming, "cold_planning_machine",
-                        lambda exp: "card")
-    monkeypatch.setattr(tree.prepared_single, "_priced_boundary_source",
-                        lambda reader, source: (reader, source))
-
-    reason = tree._root_store_needs_seal(_auto_tiles_head_inputs())
-    assert asked == [("card", ("root-reader", "gfs"))]
-    if 1 in streamed:
-        assert "[tiles] streams its root from a host store" in reason
-        assert "on this card" in reason
-    else:
-        assert reason is None
-    # A sealed binding reads the sealed cache and asks nothing.
-    asked.clear()
-    assert tree._root_store_needs_seal(
-        _auto_tiles_head_inputs(bound_to_head=False)) is None
-    assert asked == []
-
-
-def test_an_unanswered_admission_leaves_the_question_to_the_run(monkeypatch):
-    """A refusal or an unread card is the run's, with its receipt, as before."""
-
-    def refuse(*_args, **_kwargs):
-        raise RuntimeError("the tree does not fit even streamed")
-
-    monkeypatch.setattr(tree, "cold_tree_streaming_decision", refuse)
-    monkeypatch.setattr(tree, "_prepared_planning_nodes", lambda inputs: [])
-    monkeypatch.setattr(tree, "_root_bundle", lambda inputs: SimpleNamespace(
-        cache_reader=None))
-    monkeypatch.setattr(tree.streaming, "cold_planning_machine",
-                        lambda exp: None)
-    monkeypatch.setattr(tree.prepared_single, "_priced_boundary_source",
-                        lambda reader, source: None)
-    assert tree._root_store_needs_seal(_auto_tiles_head_inputs()) is None
-
-
-@pytest.mark.parametrize("where", ["door", "run"])
-def test_a_head_bound_tree_whose_root_streams_runs_on_the_seal(
-        tmp_path, monkeypatch, capsys, where):
-    """The card streams the root: the forecast starts on the sealed tree.
-
-    ``door``: the question asked after the head's preflight answers
-    "streams", so the runner waits for the seal before any run.  ``run``:
-    the door heard "resident" and the run's own admission streams the root
-    (the card's free memory moved), so the run stops before its first step
-    and starts again on the seal, keeping the checkpoint it resumed from,
-    which no step of the head-bound attempt touched.
-    """
-
-    import sys
 
     from gpuwm import capabilities, provenance_gate
 
     monkeypatch.setattr(provenance_gate, "announce_for_main", lambda *_: None)
     monkeypatch.setattr(capabilities, "require", lambda *a, **k: None)
-    head_inputs = _auto_tiles_head_inputs()
-    sealed_inputs = _auto_tiles_head_inputs(bound_to_head=False)
-    bindings, seals, runs = [], [], []
+    head_inputs = _tiles_head_inputs(mode=mode)
+    bindings, runs = [], []
 
     def preflight(**binding):
         bindings.append(binding)
-        return (head_inputs if "prepared_head_sha256" in binding
-                else sealed_inputs)
+        return head_inputs
 
     def sealed_proof(root, head_sha256, *, on_wait=None):
-        seals.append((Path(root), head_sha256))
-        return "c" * 64
-
-    def root_store(inputs):
-        return (tree.ROOT_STORE_NEEDS_SEAL + " on this card"
-                if where == "door" and inputs is head_inputs else None)
+        pytest.fail("a tiles root waited for its seal before forecasting")
 
     def run_prepared_tree(bound, *, output_directory, restart, **_):
-        runs.append((bound, restart, sys.exc_info()[1]))
-        if bound is head_inputs:
-            raise tree.TreeHeadNeedsSeal(
-                tree.ROOT_STORE_NEEDS_SEAL + " on this card")
+        runs.append((bound, restart))
         return {"status": "PASS", "readiness": "ready",
                 "execution_plan": {"plan_id": "plan", "domain_count": 2},
                 "wall_seconds": 1.0, "output": {"frame_count": 1}}
 
     monkeypatch.setattr(tree, "preflight_prepared_tree", preflight)
     monkeypatch.setattr(tree, "_sealed_proof_sha256", sealed_proof)
-    monkeypatch.setattr(tree, "_root_store_needs_seal", root_store)
     monkeypatch.setattr(tree, "run_prepared_tree", run_prepared_tree)
     # The stand-in domains carry no physics to warn about.
     monkeypatch.setattr(tree, "experimental_selection_sentence",
@@ -430,20 +404,10 @@ def test_a_head_bound_tree_whose_root_streams_runs_on_the_seal(
     err = capsys.readouterr().err
 
     assert code == 0, err
-    assert "[tiles] streams its root from a host store" in err
-    assert seals == [(prepared, "d" * 64)]
+    assert "forecast starts after" not in err
     assert [("prepared_head_sha256" in b, "preparation_receipt_sha256" in b)
-            for b in bindings] == [(True, False), (False, True)]
-    if where == "door":
-        # Nothing ran on the head.
-        assert [(bound, restart) for bound, restart, _ in runs] == [
-            (sealed_inputs, checkpoint)]
-    else:
-        assert [(bound, restart) for bound, restart, _ in runs] == [
-            (head_inputs, checkpoint), (sealed_inputs, checkpoint)]
-        # The rerun starts after the handler let go of the attempt.
-        assert runs[1][2] is None
-        assert "was stepped on the head's clock" not in err
+            for b in bindings] == [(True, False)]
+    assert runs == [(head_inputs, checkpoint)]
     assert not (outdir / "evidence" / "failed-run-receipt.json").exists()
 
 
@@ -451,6 +415,148 @@ def test_a_plain_tree_starts_at_its_head():
     exp = SimpleNamespace(domains=(SimpleNamespace(grid_id=1, tiles=None),),
                           tiles=None)
     assert tree._head_needs_seal(exp, relocation_follow=False) is None
+
+
+def test_the_root_host_store_loads_the_head_and_takes_later_tables_at_seams(
+        tmp_path, monkeypatch):
+    """Real head/cache payloads and real lazy interval reads, without a GPU.
+
+    Only slab construction and pinned allocation stand in for the device.
+    The actual loader must verify/read the head's initial arrays without a
+    sealed cache header, then keep the same checked boundary source through
+    a later wait.  An eager future-table read fails rather than hanging.
+    """
+
+    from dataclasses import dataclass, replace
+
+    import cupy as cp
+    import numpy as np
+
+    from gpuwm.core import resident_admission, streaming
+    from gpuwm.core.grid import make_vertical_coord
+    from gpuwm.ingest import prepared_cache, prepared_store
+    from tilestream import driver, hoststore, physics_inventory, realdata
+
+    @dataclass(frozen=True)
+    class Config:
+        nz: int = 11
+        ny: int = 13
+        nx: int = 17
+
+    cfg = Config()
+    initial = _initial()
+    initial.state.u = np.arange(
+        cfg.nz * cfg.ny * (cfg.nx + 1), dtype=np.float32).reshape(
+            cfg.nz, cfg.ny, cfg.nx + 1)
+    initial.coord = make_vertical_coord(cfg.nz, hybrid_opt=0)
+    mass = np.full((cfg.ny, cfg.nx), 90_000.0)
+    initial.base = replace(
+        initial.base, mub=mass, pb=np.full((cfg.nz, *mass.shape), 50_000.0),
+        alb=np.full((cfg.nz, *mass.shape), 0.8),
+        thb=np.full((cfg.nz, *mass.shape), 290.0),
+        phb=np.zeros((cfg.nz + 1, *mass.shape)),
+        terrain_z=np.zeros_like(mass))
+    initial.surface_pressure = np.full(mass.shape, 99_000.0)
+    initial.surface_qv = np.full(mass.shape, 0.01)
+    met = SimpleNamespace(fields={"T2": np.full(mass.shape, 279.0)})
+    staging = tmp_path / ".tmp-store-head"
+    staging.mkdir()
+    writer = PreparedTreeWriter(
+        staging=staging, output_root=tmp_path / "store-head",
+        identity={"source": "tree-consumer-test"}, cache_name=TREE_CACHE,
+        chained=True)
+    snapshots = _snapshots(nz=cfg.nz, ny=cfg.ny, nx=cfg.nx)
+    times = _times(len(snapshots))
+    frames = _SnapshotFrames(spec_bdy_width=5, spec_zone=1, relax_zone=4)
+    frames.add_snapshot(snapshots[0], index=0)
+    writer.write_head(
+        initial_result=initial, met=met, lbc={
+            "spec_bdy_width": 5, "spec_zone": 1, "relax_zone": 4,
+            "schedule": [[0.0, 3600.0], [3600.0, 7200.0]],
+            "fields": frames.inventory}, proof_head={"schema": "test"},
+        forcing=frames,
+        tree=domain_tree_head_fields(["d01", "d02"], root_cache=TREE_CACHE))
+    head = boundary_stream.read_head(writer.root)
+    reader = prepared_cache.PreparedHeadReader(
+        writer.root, head, expected_identity={"source": "tree-consumer-test"})
+    checked = []
+    source = boundary_stream.streamed_boundaries(
+        writer.root, head=head,
+        validate=lambda interval: checked.append(interval.start_seconds))
+
+    def no_seal_reader(*_args, **_kwargs):
+        pytest.fail("the root store opened its sealed cache before the seal")
+
+    def slab(cfg_slab, coord, base_slab, static_slab, cache_rows, names):
+        assert names == ["u"]
+        return SimpleNamespace(u=np.array(cache_rows("u"), copy=True))
+
+    monkeypatch.setattr(prepared_cache, "PreparedCacheReader", no_seal_reader)
+    monkeypatch.setattr(prepared_store, "_boundaries_from_cache", no_seal_reader)
+    monkeypatch.setattr(prepared_store, "_slab_state", slab)
+    monkeypatch.setattr(resident_admission, "admitted_slab_rows",
+                        lambda cfg, rows, **_: rows)
+    monkeypatch.setattr(streaming, "prime_lazy_carriers", lambda *_: None)
+    monkeypatch.setattr(driver, "geography_inventory", lambda state: {
+        "terrain": np.zeros((state.u.shape[-2], cfg.nx), np.float32)})
+    monkeypatch.setattr(physics_inventory, "carrier_scalars", lambda _: {})
+    monkeypatch.setattr(realdata, "window_grid", lambda grid, *_: grid)
+    monkeypatch.setattr(hoststore, "check_allocatable", lambda *_a, **_k: None)
+    monkeypatch.setattr(hoststore, "alloc_pinned_array",
+                        lambda shape, dtype: np.empty(shape, dtype))
+    monkeypatch.setattr(cp, "get_default_memory_pool", lambda: SimpleNamespace(
+        free_all_blocks=lambda: None))
+    store = prepared_store.store_from_prepared_cache(
+        reader.path, expected_identity={"source": "tree-consumer-test"},
+        cfg=cfg, static={}, landuse_attrs={},
+        grid=SimpleNamespace(ref_lat=0.0), valid_time=times[0],
+        rows_per_slab=4, reader=reader, boundary_source=source,
+        inventory_fn=lambda state, _: {"state/u": state.u},
+        physics_initializer=lambda *_a, **_k: None, log=lambda *_: None)
+    assert store.store["state/u"].tobytes() == initial.state.u.tobytes()
+    assert store.receipt["slabs"] == 4
+    assert store.receipt["content_sha256"] is None
+    assert store.boundaries is source
+    assert source.intervals._loaded == {}
+    assert checked == []
+    assert not (reader.path / "header.json").exists()
+    assert not (writer.root / "proof.json").exists()
+
+    frames.add_snapshot(snapshots[1], index=1)
+    expected_first = frames.interval(0, times)
+    writer.write_segment(0, expected_first)
+    first = store.boundaries.interval_at(0.0)
+    assert list(source.intervals._loaded) == [0]
+    assert checked == [0.0]
+    assert source.intervals.ready_prefix() == 1
+
+    waits = []
+    expected_second = None
+
+    def publish_at_the_seam(report):
+        nonlocal expected_second
+        waits.append(report)
+        if report is not None:
+            assert report["interval"] == 1
+            frames.add_snapshot(snapshots[2], index=2)
+            expected_second = frames.interval(1, times)
+            writer.write_segment(1, expected_second)
+
+    source.intervals.on_wait = publish_at_the_seam
+    second = store.boundaries.interval_at(3600.0)
+    assert [report["interval"] for report in waits if report is not None] == [1]
+    assert waits[-1] is None
+    assert checked == [0.0, 3600.0]
+    assert not (writer.root / "proof.json").exists()
+    for actual, expected in ((first, expected_first), (second, expected_second)):
+        assert set(actual.fields) == set(expected.fields)
+        for name in actual.fields:
+            for side in ("west", "east", "south", "north"):
+                got = getattr(actual.fields[name], side)
+                want = getattr(expected.fields[name], side)
+                assert got.value.tobytes() == want.value.tobytes()
+                assert got.tendency.tobytes() == want.tendency.tobytes()
+    writer.fail(RuntimeError("test over"))
 
 
 # ---------------------------------------------------------------------------

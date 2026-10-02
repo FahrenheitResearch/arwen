@@ -49,9 +49,17 @@ still inline differently (13.4.92 compiles two of p3_device's functions out
 of line under ``-ftz=true`` only; no line of it is listed), so a new listing
 is read from the PTX before it is taken for a rewrite.
 
+Every source is read from one tree, named by ``root`` (A193): the gate tests
+pass the repository root they run from, and ``--root`` defaults to the tree
+holding this tool.  The loader's own composition functions assemble each
+unit from that tree's files, so a gpuwm imported from somewhere else (an
+installed wheel beside a source tests tree, the B200 bench shape) supplies
+no source.
+
 Usage (needs CuPy's NVRTC; no GPU is touched when CUDA is hidden)::
 
-    CUDA_VISIBLE_DEVICES= python -m tools.literal_division_census [--json out]
+    CUDA_VISIBLE_DEVICES= python -m tools.literal_division_census [--root tree]
+        [--json out]
 """
 from __future__ import annotations
 
@@ -64,8 +72,15 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
+#: The tree holding this tool: the command line's default ``--root`` only.
+#: Every function below reads the tree it is given.
 ROOT = Path(__file__).resolve().parents[1]
-KDIR = ROOT / "gpuwm" / "core" / "kernels"
+
+
+def kernel_dir(root) -> Path:
+    """The kernel source directory of the tree at ``root``."""
+    return Path(root) / "gpuwm" / "core" / "kernels"
+
 
 #: Units compiled with ``--ftz=false`` through ``compile_using_nvrtc``: the
 #: rewrite needs ``-ftz=true``, so their constant divisions stay IEEE.
@@ -122,40 +137,50 @@ def _segmented(key, pieces, options):
     return Unit(key, "".join(text for _label, text in pieces), options, segs)
 
 
-def _preamble_pieces():
+def _preamble_pieces(kdir: Path):
     from gpuwm.core.constants import CUDA_DEFINES
     defines = "".join(f"#define {k} {float(v)!r}f\n"
                       for k, v in CUDA_DEFINES.items())
-    common = (KDIR / "common.cuh").read_text(encoding="utf-8")
+    common = (kdir / "common.cuh").read_text(encoding="utf-8")
     return [("<CUDA_DEFINES>", defines), ("gpuwm/core/kernels/common.cuh",
                                           common + "\n")]
 
 
-def production_units() -> list[Unit]:
-    """Every -ftz=true translation unit the package compiles, as compiled."""
+def production_units(root) -> list[Unit]:
+    """Every -ftz=true translation unit the package compiles, as compiled
+    from the tree at ``root`` (its repository root).
+
+    Every source text is read under ``root`` (A193).  The loader's own
+    composition functions assemble each unit from that tree's kernel files,
+    and each unit the census labels line by line is checked against them,
+    so the census compiles what the loader would compile from this tree.
+    """
     from gpuwm.core import kernels as K
     from gpuwm.core import noahmp_kernel_sources as N
 
+    kdir = kernel_dir(Path(root).resolve())
+    if not (kdir / "common.cuh").is_file():
+        raise FileNotFoundError(f"{root} holds no gpuwm kernel tree at {kdir}")
     units: list[Unit] = []
-    pre = _preamble_pieces()
-    assert "".join(t for _l, t in pre) == K._preamble(), \
+    pre = _preamble_pieces(kdir)
+    assert "".join(t for _l, t in pre) == K._preamble(kdir), \
         "census preamble drifted from the loader's"
 
     def kfile(name):
         return (f"gpuwm/core/kernels/{name}",
-                (KDIR / name).read_text(encoding="utf-8"))
+                (kdir / name).read_text(encoding="utf-8"))
 
     noahmp_parts = set()
     for parts in N.NOAHMP_TRANSLATION_UNITS.values():
         noahmp_parts.update(parts)
-    for path in sorted(KDIR.glob("*.cu")):
+    for path in sorted(kdir.glob("*.cu")):
         name = path.stem
         if name in noahmp_parts:
             continue
         extra = [kfile(h) for h in K.EXTRA_HEADERS.get(name, ())]
         unit = _segmented(f"kernels:{name}", pre + extra + [kfile(path.name)],
                           ("-std=c++17",))
-        if unit.source != K.module_source(name):
+        if unit.source != K.module_source(name, kernel_dir=kdir):
             raise AssertionError(f"census source for {name} drifted")
         units.append(unit)
     # gf above 40 levels compiles with an integer tier; 60 is one such tier.
@@ -163,11 +188,13 @@ def production_units() -> list[Unit]:
     gf = _segmented("kernels:gf[GF_KMAX=60]",
                     pre + extra + [("<GF_KMAX>", "#define GF_KMAX 60\n"),
                                    kfile("gf.cu")], ("-std=c++17",))
-    assert gf.source == K.module_source_int_defines("gf", (("GF_KMAX", 60),))
+    assert gf.source == K.module_source_int_defines(
+        "gf", (("GF_KMAX", 60),), kernel_dir=kdir)
     units.append(gf)
     for name, parts in N.NOAHMP_TRANSLATION_UNITS.items():
-        ru = N.runtime_unit(name)
-        pieces = ([] if ru.preamble_sha256 != N._sha(K._preamble()) else pre)
+        ru = N.runtime_unit(name, kernel_dir=kdir)
+        pieces = ([] if ru.preamble_sha256 != N._sha(K._preamble(kdir))
+                  else pre)
         pieces = pieces + [kfile(p + ".cu") for p in parts]
         unit = _segmented(f"noahmp:{name}", pieces, tuple(ru.options))
         if unit.source != ru.source:
@@ -178,16 +205,16 @@ def production_units() -> list[Unit]:
         units.append(unit)
     from gpuwm.core import ruc_tier as RT
     for nzs in (6, 9):
-        units.append(Unit(f"ruc_tier[nzs={nzs}]", RT.ruc_fused_source(nzs),
+        units.append(Unit(f"ruc_tier[nzs={nzs}]",
+                          RT.ruc_fused_source(nzs, kernel_dir=kdir),
                           ("-std=c++17",), []))
     from gpuwm.core import p3_device as P3
+    # By file name in this tree: the imported package's paths name another
+    # tree whenever gpuwm is installed beside the one scanned (A193).
     p3 = _segmented("p3_device", pre + [
-        (str(P3._LIBM_SOURCE.relative_to(ROOT).as_posix()),
-         P3._LIBM_SOURCE.read_text(encoding="utf-8")),
-        (str(P3._P3_SOURCE.relative_to(ROOT).as_posix()),
-         P3._P3_SOURCE.read_text(encoding="utf-8"))],
+        kfile(P3._LIBM_SOURCE.name), kfile(P3._P3_SOURCE.name)],
         tuple(P3.DEFAULT_OPTIONS))
-    assert p3.source == P3.p3_source()
+    assert p3.source == P3.p3_source(kernel_dir=kdir)
     units.append(p3)
     return units
 
@@ -358,13 +385,16 @@ def rewrite_sites(unit: Unit, arch: str = "compute_120") -> dict:
             "rewritten_sites": sites}
 
 
-def census(units=None) -> list[dict]:
-    return [census_unit(u) for u in (units or production_units())]
+def census(root, units=None) -> list[dict]:
+    return [census_unit(u) for u in (units or production_units(root))]
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--json", help="write the full census here")
+    ap.add_argument("--root", default=str(ROOT),
+                    help="repository root of the tree to census (default: "
+                         "the tree holding this tool)")
     ap.add_argument("--arch", default=None,
                     help="compute_89 for the immediate census, compute_120 "
                          "for --rewrites (the defaults)")
@@ -375,7 +405,7 @@ def main(argv=None) -> int:
     rows, failed = [], []
     key = "rewritten_sites" if args.rewrites else "constant_divisor_sites"
     arch = args.arch or ("compute_120" if args.rewrites else "compute_89")
-    for unit in production_units():
+    for unit in production_units(args.root):
         try:
             rows.append(rewrite_sites(unit, arch) if args.rewrites
                         else census_unit(unit, arch))

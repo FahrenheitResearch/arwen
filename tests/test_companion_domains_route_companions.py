@@ -651,12 +651,10 @@ def test_the_way_out_the_refusal_names_publishes_a_candidate_that_runs(
 def test_the_second_step_is_named_only_where_the_route_needs_one(tmp_path):
     """Which keys need more than the scope, measured one door call each.
 
-    Three of the five are carried tree-wide by the namelist columns
-    alone.  The other two select a physics suite, and this route states
-    a runtime switch for the suite its namelists have no key for, so the
-    tree-wide edit is refused until that switch is stated with it.
-    Pinned as a measurement because it is the case the remedy used to
-    promise its way past.
+    All five are carried tree-wide by the namelist columns alone.
+    Selecting another moist suite keeps CQ enabled, so the MP and
+    surface-layer edits no longer require a second setting to repair
+    a profile's retired CQ-off guard.
     """
 
     base = _emit(tmp_path)
@@ -669,12 +667,11 @@ def test_the_second_step_is_named_only_where_the_route_needs_one(tmp_path):
         beyond[key] = sorted(set(refusal.value.all_domains_settings) - {key})
 
     assert beyond == {"bldt": [], "diff_6th_opt": [], "isfflx": [],
-                      "mp_physics": ["moist_cq"],
-                      "sf_sfclay_physics": ["moist_cq"]}
+                      "mp_physics": [], "sf_sfclay_physics": []}
     for key in ("mp_physics", "sf_sfclay_physics"):
-        assert not _all_domains_publishes(base, tmp_path,
-                                          {key: _PROBE_VALUE[key]},
-                                          f"{key}-alone")
+        assert _all_domains_publishes(base, tmp_path,
+                                     {key: _PROBE_VALUE[key]},
+                                     f"{key}-alone")
 
 
 def test_a_per_domain_key_the_route_does_carry_still_reaches_its_namelist(

@@ -68,6 +68,24 @@ _ALLOCATORS = frozenset((
     "empty_like", "zeros_like", "ones_like", "full_like",
 ))
 
+
+# Vertical value conversion owns one replacement for the dtype cast buffer.
+# It changes the conversion's words, not its shape or preparation peak.
+_VERTICAL_CAST_ALLOCATIONS = {"gpuwm/ingest/vert.py": 1}
+
+
+def test_vertical_value_cast_has_one_replacement_buffer():
+    for name, expected in _VERTICAL_CAST_ALLOCATIONS.items():
+        tree = ast.parse((ROOT / name).read_text(encoding="utf-8"))
+        function = next(node for node in tree.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_device_field_float32")
+        calls = [node for node in ast.walk(function)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute)
+                 and node.func.attr in _ALLOCATORS]
+        assert len(calls) == expected
+
 #: The two MYNN modules the arena lane converted.  Their entries in the
 #: inventory below are the enumerated exceptions, and each one is a place with
 #: no ``DomainState`` to draw from that allocates once rather than per step.
@@ -143,12 +161,45 @@ _PER_COLUMN_STRIDE_NAMES = frozenset((
 #: the no-``DomainState`` path used by the standalone harnesses, and the
 #: 256-byte validity words, built once per process.
 _PHYSICS_ALLOCATION_INVENTORY = {
+    # Preparation seeds: candidate numbers span the grid, while rounded alt
+    # and gathered scratch use at most 112 bytes per cell in one bounded chunk.
+    "gpuwm/ingest/closure_device.py": {
+        "temperature": 1,
+        "gathered_numbers": 2,
+        "_rounded_alt": 1,
+        "_closure_chunk": 4,
+        "thompson_cold_start_moment_closure": 2,
+    },
     'gpuwm/core/acoustic.py': {},
     'gpuwm/core/advection.py': {
         '_launch': 1,
         'advect_scalar_rk3_periodic_test': 7,
     },
-    'gpuwm/core/diagnostics.py': {},
+    # lane/282-bw-glue (ad13a2f37): ``total_theta`` builds thb + thp, the
+    # theta each RK stage transports, in one four-word launch.  Its
+    # ``cp.empty_like`` is the temporary the eager ``state.total_theta()``
+    # (``thb + thp``, gpuwm/core/state.py) has always drawn from CuPy's pool
+    # on every call, through an operator this scanner cannot see; the lane
+    # kept it on purpose ("Keep the original total_theta temporary's
+    # lifetime and pool reuse", at the call), so the forecast's per-stage
+    # allocations and its peak are what they were before 2.8.2.  Bound: one
+    # (nz, ny, nx) float32 per call, back in the pool when the stage drops
+    # it.  An unsupported layout falls back to ``state.total_theta()``.
+    'gpuwm/core/bandwidth_glue.py': {
+        'total_theta': 1,
+    },
+    # The opt-in WRF-exact diagnostics (270038669, lane/282-wrf-exact):
+    # ``update_diagnostics`` allocates ``state.p_perturbation``, one
+    # (nz, ny, nx) float32 field, the first time it runs on a state that
+    # has none, and reuses it after.  The line runs only when
+    # GPUWM_WRF_EXACT=1 and GPUWM_WRF_EXACT_DIAGNOSTICS=1 select WRF's
+    # perturbation-pressure word (gpuwm.wrf_exact.DIAGNOSTICS_ENABLED), so
+    # a default forecast never reaches it, and a wrfinput start under the
+    # selector seeds the field from P (gpuwm/ingest/wrfinput.py) before any
+    # step.  Bound: 4 bytes per cell, once per state, never per step.
+    'gpuwm/core/diagnostics.py': {
+        'update_diagnostics': 1,
+    },
     # THE STREAMED SAFETY FOLD's two buffers, from feat-safety-observers.
     # ``StreamedStability.__init__`` allocates the per-tile partial record
     # array (ntiles * 256 blocks x 9 floats) and the 8-word folded result,
@@ -158,7 +209,8 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     # the sweep never writes.  Bound: 9 KiB per tile plus 32 B, so 144 KiB
     # at 16 tiles, against a store measured in tens of GiB.
     'gpuwm/core/streaming.py': {
-        '__init__': 2,
+        # Ranked health adds one partial record allocation site per card.
+        '__init__': 3,
     },
     'gpuwm/core/diffusion.py': {
         'diffuse_only_test': 1,
@@ -194,7 +246,16 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         # resident/per-grid charge and reuse are gated by test_cfl_memory.
         '_wrf_cfl_buffer': 1,
         'launch_coriolis_curvature': 2,
-        'launch_diff6': 2,
+        # The identity map factors for a caller that omits one: msfu and
+        # msfv, and msft since the compiled-WRF diffusion oracle
+        # (83fde6032) made diff6 multiply by the field's own map factor.
+        # Each is a ones array built only when its argument is None.  Both
+        # forecast callers in this module pass state.msfu, state.msfv and
+        # state.msft, which DomainState allocates once, so no forecast step
+        # reaches them; the direct-launch tests (tests/test_diff6*.py) do.
+        # Bound: (ny, nx + 1), (ny + 1, nx) and (ny, nx) float32 per such
+        # call, freed on return.
+        'launch_diff6': 3,
         'reset': 1,
     },
     # Grell-Freitas.  Scanned since 5ef5d7dba (lane speed-default-pieces),
@@ -292,6 +353,7 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         'mynn_dmp_mf_cuda': 4,
     },
     'gpuwm/core/mynn_pbl_runtime.py': {
+        # One six-word int32 block per (device, stream), not per step.
         '_validity_flags': 1,
         # One became three with the mixscalars landing (4a0bb3f69): the
         # qn-family output planes (five (nz, ny, nx) fields on the
@@ -443,6 +505,7 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         'slope_geometry': 2,
         'terrain_shadow': 2,
     },
+    # RRTMGP chunk scratch is per (device, stream); allocation sites are unchanged.
     'gpuwm/core/rrtmgp.py': {
         # Four flux arrays still allocate once each per call. The LW switch
         # adds mutually exclusive zero-initializer branches beside lw_up's
@@ -739,6 +802,7 @@ def _physics_gpu_modules() -> tuple[str, ...]:
                     and node.func.id == "get_kernel"):
                 found.append(path.relative_to(ROOT).as_posix())
                 break
+    found.append("gpuwm/ingest/closure_device.py")
     return tuple(found)
 
 
@@ -852,6 +916,32 @@ def _inventory(source: str, rel: str) -> dict[str, int]:
         function = site[1]
         counts[function] = counts.get(function, 0) + 1
     return counts
+
+
+def test_real_device_helper_allocation_inventory():
+    # Setup helpers selected by initialize_real's device column route.
+    # Each output is caller-shaped FP64, except the split's FP32 full levels;
+    # _flag and integrate's missing-column index are single uint32 words.
+    # Casts, broadcast packing, reductions and base upload also allocate;
+    # preparation_price includes their measured device-column workspace.
+    rel = "gpuwm/ingest/real_device.py"
+    expected = {
+        "_flag": 1,
+        "widen": 1,
+        "float32": 1,
+        "_fp32_probe": 1,
+        "base_residual": 1,
+        "_specific_humidity_to_mixing_ratio": 1,
+        "_cap_stratospheric_qv": 1,
+        "_integrate_moisture": 3,
+        "_pressure_at": 1,
+        "dry_pressure_ladder": 1,
+        "_rebalance_moist_pressure": 1,
+        "_fp32_geopotential_split": 1,
+        "_thermo": 1,
+        "surface_pressure_from_surface": 1,
+    }
+    assert _inventory((ROOT / rel).read_text(encoding="utf-8"), rel) == expected
 
 
 def _live_inventory() -> dict[str, dict[str, int]]:

@@ -1,0 +1,55 @@
+# The machine-learning dataset exporter: history files in, Zarr out.
+#
+# `rw_mlexport` reads wrfout-shaped history files (a regional run's own, a
+# hex run's converted frames, a global run's tapes), unstaggers and rotates
+# the winds, puts the fields on pressure levels with the ERA5 below-ground
+# rules, optionally regrids onto a regular latitude-longitude lattice, and
+# writes one Zarr (format 2) dataset per domain plus an optional ZIP that
+# opens in place.  `gpuwm ml-export` writes the request and runs it; nothing
+# on the data path is Python.
+#
+# The binary never names an engine: the engine name and version arrive in
+# the request, because the WOOF assembly renames Python and settings by rule
+# and never touches Rust sources.
+#
+# Dependency posture: nothing new to the lockfile.  wrf-core is the
+# renderer's pinned WRF reader; static-fields carries the transcription of
+# WRF's own projections the regrid inverts; zstd, crc32fast, flate2 and
+# sha2 are already vendored for other members.
+#
+# `build.rs` injects GPUWM_BRIDGE_SOURCE_REV so the release cut can prove a
+# staged binary came from the commit being released.
+[package]
+name = "rw-mlexport"
+version = "0.1.0"
+build = "build.rs"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "rw_mlexport"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rw_mlexport"
+path = "src/bin/rw_mlexport.rs"
+
+[dependencies]
+crc32fast = "1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+rayon.workspace = true
+rw-host-memory = { path = "../rw-host-memory" }
+rw-isobaric = { path = "../rw-isobaric" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+static-fields = { path = "../static-fields" }
+wrf-core = { git = "https://github.com/FahrenheitResearch/wrf-rust.git", rev = "93bd2ca670c13fec35bcfc27a58108e6fd71c627", package = "wrf-core", default-features = false, features = ["pure-rust-reader"] }
+zstd = "0.13"
+
+# Test scope only: the round-trip and refusal tests write small wrfout-shaped
+# files with the workspace's classic NetCDF writer.
+[dev-dependencies]
+netcdf-writer = { path = "../netcdf-writer" }

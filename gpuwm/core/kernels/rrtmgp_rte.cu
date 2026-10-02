@@ -353,10 +353,12 @@ extern "C" __global__ void rrtmgp_sw_2stream(
   const float eps = 1.1920928955078125e-7f;
   const float min_k = 1.0e4f * eps;
   const float min_mu = 3.4526698300124393e-4f;
-  float rdif[RRTMGP_MAX_LAYERS], tdif[RRTMGP_MAX_LAYERS];
-  float src_dn[RRTMGP_MAX_LAYERS], src_up[RRTMGP_MAX_LAYERS];
+  // Both adding passes read the coefficient quartet together. Use an
+  // aligned local vector for it and a pair for albedo/source, preserving
+  // every expression and the serial recurrence and g-point fold order.
+  float4 optics[RRTMGP_MAX_LAYERS];
   float direct[RRTMGP_MAX_LAYERS + 1];
-  float albedo[RRTMGP_MAX_LAYERS + 1], source[RRTMGP_MAX_LAYERS + 1];
+  float2 adding[RRTMGP_MAX_LAYERS + 1];  // x: albedo, y: source
 
   const int spec = col * ngpt + gpt;
   const int base = gl * nlev;
@@ -413,8 +415,8 @@ extern "C" __global__ void rrtmgp_sw_2stream(
     const float ex = expf(-ts * kval);
     const float ex2 = ex * ex;
     float rt = 1.0f / (kval * (1.0f + ex2) + gamma1 * (1.0f - ex2));
-    rdif[lay] = rt * gamma2 * (1.0f - ex2);
-    tdif[lay] = rt * 2.0f * kval * ex;
+    const float rdif_value = rt * gamma2 * (1.0f - ex2);
+    const float tdif_value = rt * 2.0f * kval * ex;
     const float mu = fmaxf(min_mu, mu0[col * nlay + lay]);
     const float kmu = kval * mu;
     float dterm = 1.0f - kmu * kmu;
@@ -436,28 +438,31 @@ extern "C" __global__ void rrtmgp_sw_2stream(
       - 2.0f * (kg4 + alpha1 * kmu) * ex);
     rdir = fmaxf(0.0f, fminf(rdir, 1.0f - tnoscat));
     tdir = fmaxf(0.0f, fminf(tdir, 1.0f - tnoscat - rdir));
-    src_up[lay] = rdir * direct[ilev_in];
-    src_dn[lay] = tdir * direct[ilev_in];
+    float src_up_value = rdir * direct[ilev_in];
+    float src_dn_value = tdir * direct[ilev_in];
     direct[ilev_out] = tnoscat * direct[ilev_in];
     if (mu0[col * nlay + lay] <= 0.0f)
-      src_up[lay] = src_dn[lay] = 0.0f;
+      src_up_value = src_dn_value = 0.0f;
+    optics[lay] = make_float4(rdif_value, tdif_value,
+                              src_dn_value, src_up_value);
   }
   const float source_sfc = mu0[col * nlay + sfc_lay] > 0.0f
       ? direct[sfc] * sfc_alb_dir[spec] : 0.0f;
 
   float dnv, upv;
   if (top_at_1) {
-    albedo[nlay] = sfc_alb_dif[spec];
-    source[nlay] = source_sfc;
+    adding[nlay].x = sfc_alb_dif[spec];
+    adding[nlay].y = source_sfc;
     for (int lev = nlay - 1; lev >= 0; --lev) {
-      const float dn_ = 1.0f / (1.0f - rdif[lev] * albedo[lev + 1]);
-      albedo[lev] = rdif[lev] + tdif[lev] * tdif[lev]
-          * albedo[lev + 1] * dn_;
-      source[lev] = src_up[lev] + tdif[lev] * dn_
-          * (source[lev + 1] + albedo[lev + 1] * src_dn[lev]);
+      const float4 coeff = optics[lev];
+      const float dn_ = 1.0f / (1.0f - coeff.x * adding[lev + 1].x);
+      adding[lev].x = coeff.x + coeff.y * coeff.y
+          * adding[lev + 1].x * dn_;
+      adding[lev].y = coeff.w + coeff.y * dn_
+          * (adding[lev + 1].y + adding[lev + 1].x * coeff.z);
     }
     dnv = 0.0f;
-    upv = dnv * albedo[0] + source[0];
+    upv = dnv * adding[0].x + adding[0].y;
     if (warp_fold) {
       rte_fold_emit(part_up, col, nlev, 0, upv, 1.0f,
                     gl, gpt_tile, gpt0, fold_group, fold_count);
@@ -472,9 +477,10 @@ extern "C" __global__ void rrtmgp_sw_2stream(
     }
     for (int lev = 1; lev < nlev; ++lev) {
       const int lay = lev - 1;
-      const float dn_ = 1.0f / (1.0f - rdif[lay] * albedo[lev]);
-      dnv = (tdif[lay] * dnv + rdif[lay] * source[lev] + src_dn[lay]) * dn_;
-      upv = dnv * albedo[lev] + source[lev];
+      const float4 coeff = optics[lay];
+      const float dn_ = 1.0f / (1.0f - coeff.x * adding[lev].x);
+      dnv = (coeff.y * dnv + coeff.x * adding[lev].y + coeff.z) * dn_;
+      upv = dnv * adding[lev].x + adding[lev].y;
       if (warp_fold) {
         rte_fold_emit(part_up, col, nlev, lev, upv, 1.0f,
                       gl, gpt_tile, gpt0, fold_group, fold_count);
@@ -489,16 +495,17 @@ extern "C" __global__ void rrtmgp_sw_2stream(
       }
     }
   } else {
-    albedo[0] = sfc_alb_dif[spec];
-    source[0] = source_sfc;
+    adding[0].x = sfc_alb_dif[spec];
+    adding[0].y = source_sfc;
     for (int lev = 0; lev < nlay; ++lev) {
-      const float dn_ = 1.0f / (1.0f - rdif[lev] * albedo[lev]);
-      albedo[lev + 1] = rdif[lev] + tdif[lev] * tdif[lev] * albedo[lev] * dn_;
-      source[lev + 1] = src_up[lev] + tdif[lev] * dn_
-          * (source[lev] + albedo[lev] * src_dn[lev]);
+      const float4 coeff = optics[lev];
+      const float dn_ = 1.0f / (1.0f - coeff.x * adding[lev].x);
+      adding[lev + 1].x = coeff.x + coeff.y * coeff.y * adding[lev].x * dn_;
+      adding[lev + 1].y = coeff.w + coeff.y * dn_
+          * (adding[lev].y + adding[lev].x * coeff.z);
     }
     dnv = 0.0f;
-    upv = dnv * albedo[nlay] + source[nlay];
+    upv = dnv * adding[nlay].x + adding[nlay].y;
     if (warp_fold) {
       rte_fold_emit(part_up, col, nlev, nlay, upv, 1.0f,
                     gl, gpt_tile, gpt0, fold_group, fold_count);
@@ -512,9 +519,10 @@ extern "C" __global__ void rrtmgp_sw_2stream(
       part_dir[(base + nlay) * ncol + col] = direct[nlay];
     }
     for (int lev = nlay - 1; lev >= 0; --lev) {
-      const float dn_ = 1.0f / (1.0f - rdif[lev] * albedo[lev]);
-      dnv = (tdif[lev] * dnv + rdif[lev] * source[lev] + src_dn[lev]) * dn_;
-      upv = dnv * albedo[lev] + source[lev];
+      const float4 coeff = optics[lev];
+      const float dn_ = 1.0f / (1.0f - coeff.x * adding[lev].x);
+      dnv = (coeff.y * dnv + coeff.x * adding[lev].y + coeff.z) * dn_;
+      upv = dnv * adding[lev].x + adding[lev].y;
       if (warp_fold) {
         rte_fold_emit(part_up, col, nlev, lev, upv, 1.0f,
                       gl, gpt_tile, gpt0, fold_group, fold_count);

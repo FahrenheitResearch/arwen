@@ -247,6 +247,7 @@ def publish_hrrr_bundle_head(
         static_receipt: Path | None = None,
         domain_spec: Path | None = None,
         namelist_extension_invariant: Mapping[str, object] | None = None,
+        as_posted: bool = False,
 ) -> dict[str, object]:
     """Write the portable authorities; return the proof without its seal keys.
 
@@ -266,6 +267,14 @@ def publish_hrrr_bundle_head(
     handoff is :func:`publish_hrrr_prepared_bundle`'s return value without
     the two digests only the seal has (``proof_sha256``,
     ``prepared_content_sha256``), which :func:`sealed_handoff` adds.
+
+    ``as_posted`` (DESIGN A136 L7c): the decoded bridge's ``SHA256SUMS`` and
+    the source manifest are written only once the last lead is decoded, so
+    neither digest exists at the head.  The portable source manifest is
+    then not written here: the return carries it as ``manifest``, with
+    those two rows' digests ``None`` (the head's input plan), and the proof
+    leaves out the three keys that name them (:data:`AS_POSTED_SEAL_KEYS`),
+    which :func:`seal_hrrr_posted_inputs` writes at the seal.
     """
 
     from gpuwm.experiment import load_experiment
@@ -323,9 +332,11 @@ def publish_hrrr_bundle_head(
 
     files = {
         "bridge": {"name": Path(bridge_manifest).name,
-                   "sha256": _sha256(bridge_manifest)},
+                   "sha256": (None if as_posted
+                              else _sha256(bridge_manifest))},
         "source_manifest": {"name": Path(source_manifest).name,
-                            "sha256": _sha256(source_manifest)},
+                            "sha256": (None if as_posted
+                                       else _sha256(source_manifest))},
         "experiment_config": {"name": config_path.name,
                               "sha256": _sha256(config_path)},
         "wps_namelist": {"name": wps_path.name, "sha256": _sha256(wps_path)},
@@ -352,8 +363,11 @@ def publish_hrrr_bundle_head(
         "files": files,
     }
     manifest_path = root / SOURCE_MANIFEST_NAME
-    _write_json(manifest_path, manifest)
-    manifest_digest = _sha256(manifest_path)
+    if as_posted:
+        manifest_digest = None
+    else:
+        _write_json(manifest_path, manifest)
+        manifest_digest = _sha256(manifest_path)
 
     # ---- the physics receipt the front door recomputes -----------------
     cfg = experiment.root.run
@@ -432,9 +446,14 @@ def publish_hrrr_bundle_head(
     if namelist_extension_invariant is not None:
         proof_head["namelist_extension_invariant"] = dict(
             namelist_extension_invariant)
+    if as_posted:
+        for key in AS_POSTED_SEAL_KEYS:
+            proof_head.pop(key)
 
     return {
         "proof_head": proof_head,
+        "manifest": manifest,
+        "as_posted": bool(as_posted),
         "stock_refusal": stock_refusal,
         "mp_physics": mp_physics,
         "dimensions": {"nx": int(cfg.nx), "ny": int(cfg.ny),
@@ -460,6 +479,59 @@ def publish_hrrr_bundle_head(
 #: The native route's forcing cadence: HRRR posts hourly and the native
 #: preparation builds contiguous hourly leads (gpuwm.hrrr_forecast).
 HRRR_BOUNDARY_INTERVAL_SECONDS = 3600
+
+#: The proof keys that name the portable source manifest or the decoded
+#: bridge's digest.  An as-posted head's proof leaves them out and its seal
+#: writes them (:func:`seal_hrrr_posted_inputs`), each equal to what a
+#: one-shot preparation of the same bytes writes.
+AS_POSTED_SEAL_KEYS = ("decoder_sha256", "input_manifest_sha256",
+                       "source_inputs")
+
+
+def seal_hrrr_posted_inputs(head: dict, *, output_root: Path,
+                            bridge_manifest: Path,
+                            source_manifest: Path) -> dict[str, object]:
+    """Write an as-posted head's portable source manifest; its seal proof keys.
+
+    ``head`` is :func:`publish_hrrr_bundle_head`'s return value with
+    ``as_posted``; ``bridge_manifest`` and ``source_manifest`` are the
+    documents its seal wrote, named as the head's manifest names them.  The
+    manifest written is the head's with those two digests filled, so it
+    is the input plan the head bound (checked again at
+    :func:`gpuwm.ingest.boundary_stream.verify_seal`), and byte for byte the
+    one-shot manifest of the same bytes.  Returns the proof keys of
+    :data:`AS_POSTED_SEAL_KEYS` and updates ``head['handoff']`` with the
+    manifest's digest.
+    """
+
+    if not head.get("as_posted"):
+        raise HrrrBundleError(
+            "only an as-posted head's seal writes its source manifest")
+    root = Path(output_root).resolve()
+    manifest = json.loads(json.dumps(head["manifest"]))
+    files = manifest["files"]
+    for role, path in (("bridge", bridge_manifest),
+                       ("source_manifest", source_manifest)):
+        if files[role]["name"] != Path(path).name \
+                or files[role]["sha256"] is not None:
+            raise HrrrBundleError(
+                f"the head's manifest names {files[role]} for {role}, not a "
+                f"pending {Path(path).name}")
+        files[role]["sha256"] = _sha256(path)
+    manifest_path = root / SOURCE_MANIFEST_NAME
+    _write_json(manifest_path, manifest)
+    manifest_digest = _sha256(manifest_path)
+    head["handoff"] = {**dict(head["handoff"]),
+                       "source_manifest_sha256": manifest_digest}
+    return {
+        "input_manifest_sha256": manifest_digest,
+        "decoder_sha256": files["bridge"]["sha256"],
+        "source_inputs": {
+            "manifest_schema": SOURCE_MANIFEST_SCHEMA,
+            "manifest_sha256": manifest_digest,
+            "files": files,
+        },
+    }
 
 
 def seal_hrrr_bundle_proof(head: Mapping[str, object], *,
@@ -645,6 +717,8 @@ __all__ = [
     "WPS_NAMELIST_NAME",
     "WRF_NAMELIST_NAME",
     "HRRR_BOUNDARY_INTERVAL_SECONDS",
+    "AS_POSTED_SEAL_KEYS",
+    "seal_hrrr_posted_inputs",
     "publish_hrrr_bundle_head",
     "publish_hrrr_prepared_bundle",
     "render_wps_namelist",

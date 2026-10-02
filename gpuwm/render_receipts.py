@@ -181,6 +181,16 @@ def publish_invocation(*, root: Path, engine: str, requested_spec: str,
     from gpuwm.render_layout import fs_path
     from gpuwm.supervisor import atomic_write_json
     root = Path(fs_path(root, descend=True)).resolve()
+    if families:
+        # Written paths use the filesystem spelling below, which adds the
+        # Windows long-path prefix.  Normalize absolute product keys the
+        # same way or a named gallery panel is recorded as unclassified.
+        # Relative output keys keep their existing interpretation.
+        families = {
+            str(Path(fs_path(name, descend=True)).resolve())
+            if Path(name).is_absolute() else str(name): family
+            for name, family in families.items()
+        }
     directory = root / ".render-receipts"
     directory.mkdir(parents=True, exist_ok=True)
     paths = list(dict.fromkeys(str(Path(fs_path(path, descend=True)).resolve()) for path in written))

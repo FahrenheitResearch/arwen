@@ -191,6 +191,7 @@ def test_driver_disposition_repairs_passengers_and_keeps_tendencies_fatal(
     driver = types.SimpleNamespace(
         state=FakeState(),
         fields=fields,
+        terrain_drag=None,
         bldt_seconds=72.0,
         _shinhong_passenger_advisory=False,
         pbl_tendencies=FakeTendencies(),

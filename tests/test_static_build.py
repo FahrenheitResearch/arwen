@@ -135,9 +135,29 @@ def test_geog_selection_rejects_every_unrecognized_or_non_wps_alias(tmp_path):
         GeogSelection.from_tokens(tmp_path, "unknown_resolution")
     with pytest.raises(ValueError, match="unrecognized token"):
         GeogSelection.from_tokens(tmp_path, "unknown_resolution+default")
-    for alias in ("30s", "modis_30s"):
+    for alias in ("modis_30s",):
         with pytest.raises(ValueError, match="recognized:.*5m.*default.*modis_lai"):
             GeogSelection.from_tokens(tmp_path, alias)
+
+
+def test_thirty_second_selector_resolves_wps_soils_and_other_field_defaults(tmp_path):
+    selection = GeogSelection.from_tokens(tmp_path, "30s")
+    default = GeogSelection.fallback(tmp_path)
+    assert selection.resolution_tokens == ("30s",)
+    for field in ("terrain", "landuse", "soil_top", "soil_bottom", "greenfrac",
+                  "lai", "albedo", "snow_albedo", "soil_temperature"):
+        assert selection.path(field) == default.path(field)
+    # WPS token ordering applies independently to each field. Soil takes
+    # 30s, while terrain and land use have no bare 30s entry and take 5m.
+    mixed = GeogSelection.from_tokens(tmp_path, "30s+5m")
+    assert mixed.soil_top == "soiltype_top_30s"
+    assert mixed.soil_bottom == "soiltype_bot_30s"
+    assert mixed.terrain == "topo_gmted2010_5m"
+    assert mixed.landuse == "modis_landuse_20class_5m_with_lakes"
+    assert mixed.greenfrac == "greenfrac_fpar_modis_5m"
+    reverse = GeogSelection.from_tokens(tmp_path, "5m+30s")
+    assert reverse.soil_top == "soiltype_top_5m"
+    assert reverse.soil_bottom == "soiltype_bot_5m"
 
 
 def test_geog_selection_resolves_complete_global_five_minute_inventory(

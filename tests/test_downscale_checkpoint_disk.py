@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -143,10 +142,16 @@ def test_the_retention_is_the_flag_then_the_run_plan_knob_then_one(monkeypatch):
 
 
 def _the_long_child():
-    """The measured child: 250 m, 552x552x49, 11 h, hourly history and checkpoints."""
-    return SimpleNamespace(nx=552, ny=552, nz=49, grid_id=2, dt=1.25,
-                           run_seconds=39600.0, output_interval_s=3600.0,
-                           restart_interval_s=3600.0)
+    """The measured child: 250 m, 552x552x49, 11 h, hourly history and checkpoints.
+
+    Its own derived child config, physics included (moist Thompson, YSU, Noah,
+    RTE+RRTMGP, UH diagnostics): history is priced from the writer's inventory
+    for those settings, which a grid size alone does not name.
+    """
+    from gpuwm.config import RunConfig
+    from test_downscale_pricing import _TWO_FIFTY_METRE_CHILD
+
+    return RunConfig(**_TWO_FIFTY_METRE_CHILD)
 
 
 def test_the_projection_prices_the_long_child_on_its_own_clock(tmp_path):
@@ -160,9 +165,10 @@ def test_the_projection_prices_the_long_child_on_its_own_clock(tmp_path):
                                   render_products="all", outdir=tmp_path)
     assert every["checkpoint_sets_written"] == every["checkpoint_sets_held"] == 11
     # The projection bounds what that child actually wrote: 11 sets of
-    # 2.59 GB and 12 frames of 1.2 GB.
+    # 2.59 GB and 12 frames of 1.2 GB.  History is the writer's inventory for
+    # the child's own physics (A190), held within 10% above the measurement.
     assert every["checkpoint_bytes"] >= 11 * 2.59e9
-    assert every["history_bytes"] >= 12 * 1.2e9
+    assert 12 * 1.2e9 <= every["history_bytes"] <= 12 * 1.2e9 * 1.10
 
     one = child_disk_projection(cfg, cadence, keep_checkpoints=1,
                                 render_products="all", outdir=tmp_path)
@@ -297,10 +303,12 @@ def test_the_picture_price_covers_every_frame_it_was_read_from():
 
 
 def _a_short_child_at_minute_history():
-    """120x120x49 over 4 h with a frame every minute: 241 frames of 66 MB."""
-    return SimpleNamespace(nx=120, ny=120, nz=49, grid_id=2, dt=1.25,
-                           run_seconds=4 * 3600.0, output_interval_s=60.0,
-                           restart_interval_s=3600.0)
+    """120x120x49 over 4 h with a frame every minute: 241 frames, with the
+    measured long child's physics."""
+    from dataclasses import replace
+
+    return replace(_the_long_child(), nx=120, ny=120, run_seconds=4 * 3600.0,
+                   output_interval_s=60.0)
 
 
 def test_fewer_products_shrink_the_figure_and_a_child_that_fits_is_admitted(
@@ -324,7 +332,12 @@ def test_fewer_products_shrink_the_figure_and_a_child_that_fits_is_admitted(
         cfg.nx, cfg.ny, cfg.run_seconds, cfg.output_interval_s, THREE)
     assert none["picture_bytes"] == 0
     assert every["total_bytes"] > three["total_bytes"] > none["total_bytes"]
-    assert three["history_bytes"] > 14.5 * GIB
+    # Bounded below by the measured long child's bytes per cell (1.2 GB a
+    # frame over 552x552x49): a smaller grid carries relatively more face,
+    # surface and header bytes, never fewer per cell.
+    measured_per_cell = 1.2e9 / (552 * 552 * 49)
+    floor = 241 * 120 * 120 * 49 * measured_per_cell
+    assert floor <= three["history_bytes"] <= 1.15 * floor
     assert three["picture_bytes"] < 1 * GIB
     assert three["fits"] is True and three["refusal"] is None
 

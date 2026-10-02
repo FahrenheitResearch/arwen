@@ -1,0 +1,26 @@
+{
+  "schema": "ml-export.names/v1",
+  "note": "Naming schemes for --names; each variables row carries its name under every scheme here. A new scheme is a new row here and a new key in every variables row.",
+  "default": "wb2",
+  "history_attributes": {
+    "version": ["GPUWM_VERSION", "WOOF_VERSION"],
+    "ic_source": ["GPUWM_INITIAL_CONDITION_SOURCE", "WOOF_INITIAL_CONDITION_SOURCE"],
+    "ic_cycle": ["GPUWM_INITIAL_CONDITION_CYCLE", "WOOF_INITIAL_CONDITION_CYCLE"],
+    "history_preset": ["GPUWM_HISTORY_PRESET", "WOOF_HISTORY_PRESET"]
+  },
+  "history_engines": {
+    "GPUWM_VERSION": "gpuwm",
+    "WOOF_VERSION": "woof"
+  },
+  "history_engine_titles": { "WOOF ": "woof" },
+  "schemes": [
+    {
+      "id": "wb2",
+      "description": "the long names WeatherBench 2 and Google's ARCO ERA5 store use (temperature, 2m_temperature, ...)"
+    },
+    {
+      "id": "era5",
+      "description": "ERA5's short names as CDS NetCDF files spell them (t, t2m, ...); the surface geopotential is z_surface because z is the level variable"
+    }
+  ]
+}

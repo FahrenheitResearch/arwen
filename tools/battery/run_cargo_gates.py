@@ -14,8 +14,10 @@ reported -- and ends in a single verdict line, the same shape as the
 away the numbers that make a regression legible.
 
 THREE REFUSALS, ALL LOUD
-    * no ``CARGO_TARGET_DIR``, or one that resolves inside the
-      repository.  A cut hashes the worktree-local renderer at
+    * no ``CARGO_TARGET_DIR``, one named inside the repository, or an alias
+      of a worktree's release-artifact target directory. A symlink outside
+      the source tree does not make sharing that target safe.
+      A cut hashes the worktree-local renderer at
       ``tools/rustwx/target/release`` before it believes any leg that
       renders; a test leg sharing that directory can replace the binary
       the cut is adjudicating.  Defaulting to a scratch path would hide
@@ -193,14 +195,30 @@ def resolve_target_dir(explicit: str | None) -> Path:
             "this leg replace the binary the cut is adjudicating.  Set "
             "CARGO_TARGET_DIR to a path outside the repository, or pass "
             "--target-dir.")
-    target = Path(raw).resolve()
-    if target == REPOSITORY_ROOT or REPOSITORY_ROOT in target.parents:
+    # Check the named path before following symlinks: a staged in-tree target
+    # may point to an external build cache that still holds release artifacts.
+    named = Path(os.path.abspath(raw))
+    target = named.resolve()
+    if (named == REPOSITORY_ROOT or REPOSITORY_ROOT in named.parents
+            or target == REPOSITORY_ROOT or REPOSITORY_ROOT in target.parents):
         raise RuntimeError(
-            f"CARGO_TARGET_DIR={target} is inside the repository at "
+            f"CARGO_TARGET_DIR={named} is inside the repository at "
             f"{REPOSITORY_ROOT}.  Point it outside the tree: the cut's "
             "renderer check and its dirty-tree refusal both read this "
             "worktree, and cargo artefacts written into it make both "
             "answers depend on which leg ran last.")
+    # The manifest names the workspaces whose ordinary Cargo target folders
+    # may be linked to a shared build cache. Passing that cache's real path
+    # would bypass a lexical-only check and still share the cut's artifacts.
+    protected = {(REPOSITORY_ROOT / entry.workspace / "target").resolve()
+                 for entry in read_manifest()}
+    for artifact_target in sorted(protected):
+        if target == artifact_target or artifact_target in target.parents:
+            raise RuntimeError(
+                f"CARGO_TARGET_DIR={named} resolves to a release artifact target at "
+                f"{artifact_target}. A test leg sharing it can replace the renderer "
+                "or other native bytes the cut is adjudicating. Use a separate "
+                "external test target directory.")
     return target
 
 

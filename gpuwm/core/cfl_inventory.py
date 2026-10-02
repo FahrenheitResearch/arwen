@@ -21,3 +21,15 @@ def wrf_cfl_recording_requested(cfg=None, *, adaptive=None) -> bool:
         adaptive = bool(getattr(cfg, "use_adaptive_time_step", False))
     value = os.environ.get("GPUWM_WRF_CFL_PROBE", "")
     return bool(adaptive) or value.strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def fold_cfl_words(rows):
+    """Fold CUDA atomic words: unsigned maxima and modular uint32 sums."""
+    import numpy as np
+    values = np.asarray(rows, dtype=np.uint32)
+    if values.ndim < 2 or values.shape[-1] != WRF_CFL_WORDS or not len(values):
+        raise ValueError("CFL fold needs nonempty rows of WRF_CFL_WORDS words")
+    folded = values.sum(axis=0, dtype=np.uint32)
+    folded[..., 0] = values[..., 0].max(axis=0)
+    folded[..., 3] = values[..., 3].max(axis=0)
+    return folded

@@ -95,8 +95,8 @@ NSSL_MOISTURE_MAP = {
 ALL_MOISTURE_WRFINPUT = frozenset(MOISTURE_MAP) | frozenset(
     NSSL_MOISTURE_MAP)
 
-# ``real.exe`` writes a physics-package-specific moisture inventory.  The
-# first three mass species are active in every gpuwm moist configuration;
+# ``real.exe`` writes a physics-package-specific moisture inventory.
+# The first three mass species are active when microphysics is enabled;
 # WSM6 adds the three ice-category masses, while Morrison additionally owns
 # four transported number moments.  Native option-18 NSSL defaults add hail,
 # five two-moment number fields, predicted CCN, and graupel/hail volume.  Its
@@ -223,6 +223,7 @@ MYNN_QKE_INPUT_FIELDS = frozenset(PHYSICS_FIELD_ALIASES["qke"])
 OPTIONAL_WRFINPUT = (
     "H_DIABATIC", "RAINNC", "RAINC", "QNCLOUD", "SST", "CANWAT", "LAKEMASK",
     "QNWFA2D", "QNIFA2D",
+    "MAPFAC_MX", "MAPFAC_MY",
 )
 
 # These are the only non-science variable records allowed through the reader.
@@ -260,7 +261,7 @@ WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
     "U": _U_3D_DIMS, "V": _V_3D_DIMS, "W": _W_3D_DIMS,
     "PH": _W_3D_DIMS, "PHB": _W_3D_DIMS,
     **{name: _MASS_2D_DIMS for name in (
-        "MU", "MUB", "HGT", "MAPFAC_M", "F", "E", "SINALPHA",
+        "MU", "MUB", "HGT", "MAPFAC_M", "MAPFAC_MX", "MAPFAC_MY", "F", "E", "SINALPHA",
         "COSALPHA", "LANDMASK", "LU_INDEX", "ISLTYP", "TSK", "TMN",
         "SNOW", "SNOWH", "VEGFRA", "SNOALB", "SHDMIN", "SHDMAX",
         "PSFC", "T2", "Q2", "TH2", "U10", "V10", "XLAND", "IVGTYP",
@@ -328,7 +329,7 @@ IGNORED_WRFINPUT = frozenset({
     "LAT_UR_D", "LAT_UR_T", "LAT_UR_U", "LAT_UR_V", "LON_LL_D", "LON_LL_T",
     "LON_LL_U", "LON_LL_V", "LON_LR_D", "LON_LR_T", "LON_LR_U", "LON_LR_V",
     "LON_UL_D", "LON_UL_T", "LON_UL_U", "LON_UL_V", "LON_UR_D", "LON_UR_T",
-    "LON_UR_U", "LON_UR_V", "MAPFAC_MX", "MAPFAC_MY", "MAPFAC_UX",
+    "LON_UR_U", "LON_UR_V", "MAPFAC_UX",
     "MAPFAC_UY", "MAPFAC_VX", "MAPFAC_VY", "MF_VX_INV", "O3_GFS_DU", "P00",
     "PC", "PCB", "P_HYD", "P_STRAT", "QV_BASE", "RDX", "RDY", "RESM",
     "SAVE_TOPO_FROM_REAL", "SHDAVG", "SMCREL", "SNOWC", "SOILCBOT",
@@ -358,7 +359,7 @@ IGNORED_WRFINPUT = frozenset({
 #: an inventory for, in one table so the refusal and the reader cannot
 #: disagree about what is supported.
 SUPPORTED_MICROPHYSICS: Mapping[int, str] = MappingProxyType({
-    0: "moisture off (dry)",
+    0: "passive water vapor (microphysics off)",
     1: "Kessler warm rain",
     6: "WSM6",
     8: "Thompson",
@@ -668,6 +669,11 @@ def active_moisture_inventory(cfg) -> tuple[frozenset[str], frozenset[str]]:
             raise ValueError(
                 f"mp_physics={mp_physics} requires cfg.moist=True")
         return frozenset(), frozenset()
+    if mp_physics == 0:
+        # WRF's passiveqv package retains advected vapor with microphysics
+        # disabled. Cloud and precipitation species remain inactive.
+        vapor = frozenset(("QVAPOR",))
+        return vapor, vapor
     required = BASE_MOISTURE_WRFINPUT
     # 16 belongs with the ice-carrying set: wdm6scheme's moist inventory
     # (Registry.EM_COMMON:3031) is qv,qc,qr,qi,qs,qg -- WSM6's, character
@@ -1029,10 +1035,20 @@ def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
     for wrf_name, state_name in (("U", "u"), ("V", "v"), ("W", "w"),
                                  ("PH", "php"), ("MU", "mup")):
         getattr(state, state_name)[...] = cp.asarray(raw[wrf_name], dtype=cp.float32)
-    state.thp[...] = cp.asarray(
-        (raw["T"].astype(np.float32) + np.float32(300.0))
-        - base.thb, dtype=cp.float32)
+    from gpuwm.wrf_exact import ENABLED as wrf_exact
+    if wrf_exact:
+        # Keep the native perturbation word throughout integration. A round
+        # trip through full theta cannot recover its low bits.
+        state.thb[...] = cp.float32(300.0)
+        state.thp[...] = cp.asarray(raw["T"], dtype=cp.float32)
+    else:
+        state.thp[...] = cp.asarray(
+            (raw["T"].astype(np.float32) + np.float32(300.0))
+            - base.thb, dtype=cp.float32)
     state.p[...] = cp.asarray(raw["P"] + raw["PB"], dtype=cp.float32)
+    from gpuwm.wrf_exact import DIAGNOSTICS_ENABLED
+    if DIAGNOSTICS_ENABLED:
+        state.p_perturbation = cp.asarray(raw["P"], dtype=cp.float32)
     state.al[...] = cp.asarray(raw["AL"], dtype=cp.float32)
     state.alt[...] = cp.asarray(raw["AL"] + raw["ALB"], dtype=cp.float32)
     for name in ("CF1", "CF2", "CF3"):
@@ -1045,6 +1061,16 @@ def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
     _restore_active_moisture(state, raw, cfg, cp)
     if "H_DIABATIC" in raw:
         state.h_diabatic[...] = cp.asarray(raw["H_DIABATIC"], dtype=cp.float32)
+
+    # WRF start_domain_em diagnoses a cold-start W column after reading
+    # real.exe's zero W, before its first history frame. The native door
+    # admits the WRF default use_input_w=False; an explicit use_input_w
+    # namelist key has no translation in this door.
+    from gpuwm.ingest.wrfinput_startup import initialize_wrfinput_vertical_velocity
+    initialize_wrfinput_vertical_velocity(
+        state, restored, cfg,
+        periodic_x=not (cfg.open_x or cfg.specified or cfg.nested),
+        periodic_y=not (cfg.open_y or cfg.specified or cfg.nested))
 
     for current, initial in (
             ("u", "u0"), ("v", "v0"), ("w", "w0"),
@@ -1116,8 +1142,16 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
            if int(getattr(cfg, "sf_urban_physics", 0)) > 0
            and raw.get("FRC_URB2D") is not None else {}),
         **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
+    # landuse_init resets Noah's background albedo to the seasonal table
+    # when USEMONALB is false (WRF module_physics_init.F:1958). The native
+    # file can also contain a distinct monthly ALBBCK. Restoring that over
+    # the initialized carrier undoes the cold-start authority.
+    retain_landuse_albbck = (int(cfg.sf_surface_physics) == 2
+                            and landuse is not None and not cfg.usemonalb)
     from gpuwm.ingest.wrfinput_noahmp import NOAHMP_INITIALIZED_SURFACE_FIELDS
     for field in driver.fields:
+        if field == "albbck" and retain_landuse_albbck:
+            continue
         if (int(cfg.sf_surface_physics) == 4
                 and field in NOAHMP_INITIALIZED_SURFACE_FIELDS):
             continue
@@ -1132,13 +1166,21 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
                     f"gpuwm {field} shape {driver.fields[field].shape}")
             driver.fields[field][...] = cp.asarray(
                 value, dtype=driver.fields[field].dtype)
-    driver.fields["albbck"][...] = cp.asarray(albbck, dtype=cp.float32)
+    if not retain_landuse_albbck:
+        driver.fields["albbck"][...] = cp.asarray(albbck, dtype=cp.float32)
     if int(cfg.sf_surface_physics) != 4:
         driver.fields["lai"][...] = cp.asarray(lai, dtype=cp.float32)
     if "RAINNC" in raw:
         driver.microphysics.rainnc[...] = cp.asarray(raw["RAINNC"], dtype=cp.float32)
     if driver.rainc is not None and "RAINC" in raw:
         driver.rainc[...] = cp.asarray(raw["RAINC"], dtype=cp.float32)
+    if int(cfg.sf_surface_physics) == 2:
+        # LSMINIT follows native cold-start field restoration. A later
+        # checkpoint load replaces this initial state, including SH2O.
+        from gpuwm.core.noah import initialize_noah_liquid_water
+        from gpuwm.core.physics import NOAH_LAYER_THICKNESS_M
+        initialize_noah_liquid_water(driver.fields, driver.noah_params,
+                                    NOAH_LAYER_THICKNESS_M)
     if getattr(cfg, "sf_surface_mosaic", 0) == 1:
         from gpuwm.core.noah_mosaic_door import attach_wrfinput_noah_mosaic
         attach_wrfinput_noah_mosaic(driver, cfg, restored,
@@ -1821,7 +1863,7 @@ def read_wrfbdy(path: str | Path, *, run_seconds: float,
 class WrfinputMetadata:
     """Everything a door needs from a wrfinput without decoding a field.
 
-    Read from the file's dimensions and global attributes only, so it is
+    Read from dimensions, global attributes and variable headers, so it is
     cheap enough to run on every domain before anything is restored.  The
     checks that use it -- scheme support, geometry agreement with
     ``namelist.input`` -- must all fire before the first byte of U is
@@ -1836,6 +1878,7 @@ class WrfinputMetadata:
     sf_surface_physics: int
     start_date: str
     global_attributes: Mapping[str, object]
+    has_qv: bool = False
 
     @property
     def nx(self) -> int:
@@ -1875,6 +1918,7 @@ def read_wrfinput_metadata(path: str | Path) -> WrfinputMetadata:
                       for name, dim in dataset.dimensions.items()}
         attrs = {name: dataset.getncattr(name)
                  for name in dataset.ncattrs()}
+        has_qv = "QVAPOR" in dataset.variables
     missing = sorted(_WRFINPUT_GEOMETRY_DIMENSIONS - set(dimensions))
     if missing:
         raise ValueError(
@@ -1895,7 +1939,7 @@ def read_wrfinput_metadata(path: str | Path) -> WrfinputMetadata:
         mp_physics=resolved["MP_PHYSICS"],
         sf_surface_physics=resolved["SF_SURFACE_PHYSICS"],
         start_date=str(attrs.get("START_DATE", "")),
-        global_attributes=MappingProxyType(attrs))
+        global_attributes=MappingProxyType(attrs), has_qv=has_qv)
 
 
 def check_grid_agreement(metadata: WrfinputMetadata, cfg, *,

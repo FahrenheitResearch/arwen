@@ -464,6 +464,44 @@ def build_fields(grid_handle: int, geog_paths: dict,
     return int(handle.value)
 
 
+#: Exported by a library that builds WRF's sub-grid orographic statistics
+#: (``gpuwm_static_build_orographic``).  Bound on first use, never in
+#: ``_bind_entry_points``, so a library staged before it keeps serving
+#: every build that does not ask for them.
+OROGRAPHIC_MARKER: Final[str] = "gpuwm_static_orographic_v2"
+
+
+def build_orographic(grid_handle: int, request: dict,
+                     halo: int | None = None) -> int:
+    """Build the requested orographic statistics; returns a fieldset handle.
+
+    ``request`` is the crate's ``OrographicRequest``: ``{"landuse": path,
+    "fields": [{"name", "path", "gcell", "masked_water"}, ...]}``.
+    """
+    library = load()
+    if not hasattr(library, OROGRAPHIC_MARKER):
+        raise StaticBridgeError(
+            "the staged static-fields library predates the corrected WPS "
+            "single-precision sampling and post-interpolation scaling of sub-grid "
+            "orographic statistics (VAR_SSO, CON, VAR, OA1-4, OL1-4 and the "
+            "GSL sets) the terrain-drag options read; restage the rebuilt "
+            "bridge or rebuild from this checkout: "
+            + _checkout_build_command())
+    entry = library.gpuwm_static_build_orographic
+    u8p = ctypes.POINTER(ctypes.c_uint8)
+    entry.argtypes = [ctypes.c_uint64, u8p, ctypes.c_size_t,
+                      ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint64)]
+    entry.restype = ctypes.c_int32
+    buffer, length = _utf8(json.dumps(request))
+    handle = ctypes.c_uint64(0)
+    halo_code = 0xFFFFFFFF if halo is None else int(halo)
+    _check(library,
+           entry(ctypes.c_uint64(grid_handle), buffer, length,
+                 ctypes.c_uint32(halo_code), ctypes.byref(handle)),
+           "build_orographic")
+    return int(handle.value)
+
+
 def fieldset_to_dict(handle: int) -> dict[str, np.ndarray]:
     """Copy every field of a fieldset handle into float64 numpy arrays
     (2-D fields lose their leading singleton plane axis)."""

@@ -19,6 +19,7 @@ class NestWindowSource:
         self.store = self.owner.store if self.owner is not None else None
         self.geography = (getattr(self.owner, "_geography", None) or {})
         self.template = (getattr(self.owner, "template_state", None) or state)
+        self._geography_flags = None
         self.host_to_device_bytes = 0
         self.device_to_host_bytes = 0
         self.max_operand_bytes = 0
@@ -26,6 +27,11 @@ class NestWindowSource:
 
     def array(self, name):
         if self.store is not None:
+            if name in ("has_msf", "rotational"):
+                if self._geography_flags is None:
+                    from tilestream.driver import geography_scalars
+                    self._geography_flags = geography_scalars(self.geography)
+                return self._geography_flags[name]
             key = name if "/" in name else f"state/{name}"
             if key in self.store:
                 return self.store[key]
@@ -109,6 +115,29 @@ class NestWindowSource:
             value += thb if thb.ndim == 3 else thb[:, None, None]
             value -= np.float32(300.0)
         return value
+
+    def transitioned(self, contract, kind, window):
+        """Diagnose one exact donor window with the existing edge kernel."""
+        import cupy as cp
+        from gpuwm.core.microphysics_transition import (
+            edge_parent_planes, launch_microphysics_edge_field,
+            transition_source_field_shape, transition_source_window)
+
+        source = SimpleNamespace(**{
+            name: self.array(name) for name in
+            edge_parent_planes() + ("thb", "c1h", "c2h")})
+        local = transition_source_window(source, window)
+        for name, value in vars(source).items():
+            if isinstance(value, np.ndarray):
+                selected = value[(...,) + window] if value.ndim >= 2 else value
+                self.host_to_device_bytes += int(selected.nbytes)
+            prepared = getattr(local, name, None)
+            if hasattr(prepared, "nbytes"):
+                self.max_operand_bytes = max(self.max_operand_bytes,
+                                             int(prepared.nbytes))
+        out = cp.empty(transition_source_field_shape(local, kind), dtype=cp.float32)
+        return launch_microphysics_edge_field(
+            contract, local, kind, out=out, coupled=True)
 
 
 def streamed_chunk_shape(state):

@@ -208,3 +208,15 @@ gpu  tilestream.test_forced_gate
 # GPUWM_CASE_DATA_ROOT must point at the directory holding WPS_GEOG.
 gpu  tools.tiles_door_legs  LEG=A
 gpu  tools.tiles_door_legs  LEG=B
+# Same-domain step concurrency and planted shared-word witness.
+gpu  tests.test_multislab_hazards_gpu
+# Resident ranks through the streamed domain contract.
+gpu  tilestream.ranks_gate  RANKS_WHAT=gate
+gpu  tilestream.ranks_gate  RANKS_WHAT=controls
+gpu  tilestream.ranks_gate  RANKS_WHAT=bench
+gpu  tilestream.ranks_gate  RANKS_WHAT=transport
+# The one-domain adaptive driver consumes the ranked CFL fold.
+gpu  tilestream.ranks_gate  RANKS_WHAT=loop
+# The ranked nesting matrix checks both split and nest-only trees against
+# every resident carrier, with stale FORCE and omitted feedback controls.
+gpu  tests.test_ranked_nesting_gpu

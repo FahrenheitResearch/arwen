@@ -787,11 +787,15 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         # vertical-acoustic off-centering exactly where it needed it.
         f" epssm                               = "
         f"{_column(_f(r.epssm) for r in runs)}",
-        f" diff_opt                            = {_repeated(2, count)}",
+        # Per domain, from each domain's own run config: a hard-coded 2 and
+        # .true. made a diff_opt = 1 (or mix_full_fields = false) run fail
+        # its config-versus-namelist round trip with a misleading mismatch.
+        f" diff_opt                            = "
+        f"{_column(r.diff_opt for r in runs)}",
         f" km_opt                              = "
         f"{_column(r.km_opt for r in runs)}",
         f" mix_full_fields                     = "
-        f"{_repeated('.true.', count)}",
+        f"{_column(_logical(r.mix_full_fields) for r in runs)}",
         f" diff_6th_opt                        = "
         f"{_column(r.diff_6th_opt for r in runs)}",
         f" diff_6th_factor                     = "
@@ -977,10 +981,10 @@ def route_implicit_switches(source, switches) -> dict[str, object]:
     root.  Empty on every route that reads the configuration itself.  On
     this route it is physics_compat's answer for that selection, the
     lookup the importer makes when it reads the namelists back, so a set
-    written with it runs as written.  A shipped profile answers its own
-    value; a set no profile matches takes gpuwm's RunConfig default,
-    whatever its microphysics row carries, because that is what the
-    namelists run.
+    written with it runs as written.  The shared authority enables WRF's
+    moisture pressure correction for every suite; a dry state bypasses
+    it because it has no moisture carrier.  An explicit verification
+    opt-out cannot be encoded in these namelists.
     """
 
     from gpuwm.physics_compat import implicit_runtime_switches

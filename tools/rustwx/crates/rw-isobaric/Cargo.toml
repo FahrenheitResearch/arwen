@@ -1,0 +1,18 @@
+# Column arithmetic onto pressure levels, shared by the renderer and the
+# machine-learning exporter.
+#
+# `bracket` and `lerp` are the renderer's own log-pressure walk, moved here
+# whole out of crates/rw-wrfbatch/src/wrf_volumes.rs so the renderer's
+# 500/700/850 hPa charts and the exported dataset interpolate with one
+# piece of code.  The ECMWF below-ground rules (Trenberth, Berry and Buja
+# 1993, NCAR/TN-396, the formulas NCL's vinth2p_ecmwf and GeoCAT's
+# interp_hybrid_to_pressure implement) live beside them because they are
+# the same column arithmetic and nothing else in the workspace carries
+# them.  No dependencies.
+[package]
+name = "rw-isobaric"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true

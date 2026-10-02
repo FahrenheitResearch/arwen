@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
+from gpuwm.core.device_cache import cuda_cache
 
 import cupy as cp
 import numpy as np
@@ -329,7 +330,7 @@ def _validation_grid_blocks(longest: int, count: int, device: int) -> int:
     return min(needed, max(1, budget // count))
 
 
-@lru_cache(maxsize=32)
+@cuda_cache(maxsize=None)
 def _validation_batch_kernel(predicate: str, count: int):
     """Read-only FP32 scans, with one output word per input array.
 

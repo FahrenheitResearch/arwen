@@ -417,7 +417,10 @@ def test_up_heli_max_has_no_trajectory_or_restart_reader():
         # notice who forgot to USE it, which is what
         # test_every_history_publisher_resets_the_window is for.
         "gpuwm/prepared_single_domain_forecast.py",
-        "gpuwm/io/wrfout.py",         # emission
+        # Emission.  The frame mapping moved out of gpuwm/io/wrfout.py
+        # into history_layout.py (A190), so the writer and the disk
+        # planner walk one inventory; wrfout.py no longer names the slot.
+        "gpuwm/io/history_layout.py",
         "gpuwm/io/restart.py",        # serialization + tolerant restore
         # The [tiles] seam.  It never names the slot in code -- it takes
         # one -- but `live_scratch`'s docstring names the resets it exists
@@ -446,7 +449,7 @@ def test_up_heli_max_has_no_trajectory_or_restart_reader():
     # the slot at all; in dycore/runtime specifically, only the two entry
     # points may appear (no direct slot access).
     sanctioned_scratch = {"gpuwm/core/uh_diag.py", "gpuwm/core/state.py",
-                          "gpuwm/io/wrfout.py", "gpuwm/io/restart.py",
+                          "gpuwm/io/history_layout.py", "gpuwm/io/restart.py",
                           # Sanctioned for the indirect-acquisition rule
                           # below: live_scratch/domain_scratch ARE the
                           # scratch site for a streamed domain, and

@@ -46,6 +46,7 @@ from typing import NamedTuple
 import numpy as np
 
 from gpuwm import physics_mode as physics_mode_module
+from gpuwm.core.devices import DeviceOptions, DEVICES_OFF, validate_device_road
 from gpuwm.core import streaming as streaming_module
 from gpuwm.io import history_selection as history_selection_module
 from gpuwm.config_keys import KeyRow, key_rows
@@ -318,7 +319,7 @@ _DOMAIN_RUN_OVERRIDES = (
     "diff_6th_slopeopt", "diff_6th_thresh",
     "dampcoef", "zdamp",
     "emdiv", "smdiv",
-    "khdif", "kvdif",
+    "khdif", "kvdif", "diff_opt", "mix_full_fields",
     "h_sca_adv_order", "moist_adv_opt",
     "tke_budget",
     # Output-only, and per domain because its cost scales with the grid:
@@ -372,6 +373,10 @@ _DOMAIN_RUN_OVERRIDES = (
     # sf_urban_physics stay [shared]; every domain's RunConfig still passes
     # validate_noah_mosaic_config with them.
     "mosaic_urban_canopy",
+    # WRF declares topo_wind and gwd_opt max_domains too
+    # (gpuwm.core.terrain_drag); the GSL suite tapers itself with each
+    # domain's grid length, so a column is the natural shape.
+    "topo_wind", "gwd_opt",
 )
 
 #: Per-domain vertical keys are REJECTED outright (F1 amendment: the
@@ -1355,6 +1360,7 @@ class ExperimentConfig:
     #: code path, only the absence of one.  Excluded from the restart
     #: identity on purpose: see ``streaming.identity_payload_entry``.
     tiles: "streaming_module.StreamingOptions" = streaming_module.OFF
+    devices: "DeviceOptions" = DEVICES_OFF
     #: The resolved tree-wide [output] block
     #: (:mod:`gpuwm.io.history_selection`).  An experiment that never
     #: mentions it carries ``HistorySelection.FULL``, which writes every
@@ -1476,6 +1482,7 @@ class ExperimentConfig:
         context = (streaming_module.FollowerWindowMemoryContext(
             tuple(sorted(follower_slots.items())),
             follower_slots.get(int(self.root.grid_id), ())) if follower_slots else None)
+        validate_device_road(self.devices, self.tiles, self.domains)
         if context is not None or self.tiles.follower_context is not None:
             object.__setattr__(self, "tiles", replace(self.tiles, follower_context=context))
         object.__setattr__(self, "domains", tuple(
@@ -2427,6 +2434,32 @@ def _refuse_rebuilt_nest_noah_mosaic(domains, relocation, source) -> None:
                 "sf_surface_mosaic = 0.")
 
 
+def _refuse_child_terrain_drag(domains, source) -> None:
+    """topo_wind / gwd_opt on a child domain: refused until its statics route
+    builds the orographic statistics.
+
+    The root's preparation adds VAR_SSO, CON, VAR, OA1-4, OL1-4 and the GSL
+    sets to its static build (gpuwm.static.orographic); a child's statics
+    come from the nest initializers (gpuwm.ingest.nest_init and its
+    siblings), which do not ask for them yet, so the child's physics would
+    find no statistics to drag with and the run would stop at the child's
+    birth instead of before the first step.
+    """
+    for dc in domains:
+        if getattr(dc, "parent_id", None) in (None, 0)                 or int(dc.grid_id) == 1:
+            continue
+        for name in ("topo_wind", "gwd_opt"):
+            value = int(getattr(dc.run, name, 0) or 0)
+            if value:
+                raise ValueError(
+                    f"[[domain]] grid_id = {int(dc.grid_id)} of {source} "
+                    f"sets {name} = {value}: a child's statics are built by "
+                    "the nest initializer, which does not add the sub-grid "
+                    "orographic statistics the terrain drag reads, so the "
+                    "child would stop at its birth.  Set it on the root "
+                    "(grid_id = 1), or run the child as its own root.")
+
+
 def _refuse_windowed_stash_watch(domains, source) -> None:
     """A spawn or retire watch cannot read a parent with a history window.
 
@@ -3062,7 +3095,7 @@ def _parent_before_child(domain_tables: list, source: str) -> list:
 def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     """Validate a parsed experiment TOML dict and build the config."""
     known_tables = ("experiment", "shared", "projection", "domain",
-                    "relocation", "perturbation", "tiles", "output",
+                    "relocation", "perturbation", "tiles", "devices", "output",
                     "spectral_numerics")
     # [ingest] is INGEST POLICY, and it is validated-and-dropped HERE
     # rather than added to the companion list above.  The companion
@@ -3293,6 +3326,8 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         except (TypeError, ValueError) as err:
             raise ValueError(
                 f"[spectral_numerics] of {source}: {err}") from None
+
+    devices = DeviceOptions.from_mapping(raw.get("devices"), source=source)
 
     # ---- [tiles] ---------------------------------------------------
     # ABSENT is the OFF contract, and it is the shared StreamingOptions.OFF
@@ -3546,6 +3581,10 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
                                      source)
         _reject_misplaced_run_keys(dom, dom.get("grid_id", index + 1),
                                    source)
+        if "devices" in dom:
+            raise ValueError("devices on [[domain]] is refused: a tree has one split, "
+                             "the experiment [devices] table, whose domains key names "
+                             "the grids that run split")
         _reject_unknown_keys("domain", dom, _DOMAIN_KEYS, source)
         _reject_axis_authored_keys(
             f"domain grid_id={dom.get('grid_id', index + 1)}",
@@ -4075,20 +4114,25 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         # --- cadence divisibility (integer domain steps) ----------------
         # TOML decimal minutes use the same decimal clock as run_seconds;
         # a binary float Fraction would make 2.4 minutes fail on 72 s steps.
-        _check_cadence("history_interval_s", Fraction(history_interval_s),
-                       dt_ex, grid_id, source)
+        # The adaptive driver shortens the root step to every domain's
+        # history alarm and divides that step down the hierarchy. Its
+        # varying steps need not divide the declared history interval.
+        if not run.use_adaptive_time_step:
+            _check_cadence("history_interval_s", Fraction(history_interval_s),
+                           dt_ex, grid_id, source)
         _check_whole_second_cadence(
             "history_interval_s", Fraction(history_interval_s), grid_id,
             source)
-        if radiation_enabled(run):
+        if radiation_enabled(run) and not run.use_adaptive_time_step:
             radt_min = run.radt if run.radt > 0.0 else run.radt_minutes
             _check_cadence("radt", Fraction(str(radt_min)) * 60, dt_ex,
                            grid_id, source)
-        if run.cu_physics == 1:
+        if run.cu_physics == 1 and not run.use_adaptive_time_step:
             _check_cadence("cudt_minutes", Fraction(str(run.cudt_minutes)) * 60,
                            dt_ex, grid_id, source)
-        if (run.bl_pbl_physics != 0 or run.sf_sfclay_physics != 0
-                or run.sf_surface_physics != 0):
+        if (not run.use_adaptive_time_step and
+                (run.bl_pbl_physics != 0 or run.sf_sfclay_physics != 0
+                 or run.sf_surface_physics != 0)):
             _check_cadence("bldt", Fraction(str(run.bldt)) * 60, dt_ex,
                            grid_id, source)
         if is_root:
@@ -4251,6 +4295,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     _refuse_windowed_stash_watch(domains, source)
     _refuse_moving_slope_radiation(domains, relocation, source)
     _refuse_rebuilt_nest_noah_mosaic(domains, relocation, source)
+    _refuse_child_terrain_drag(domains, source)
     from gpuwm.core.attribute_tracking import validate_attribute_domains
     validate_attribute_domains(domains, relocation)
     experiment = ExperimentConfig(
@@ -4266,7 +4311,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         relocation=relocation,
         physics_mode=physics_mode,
         perturbation=perturbation,
-        tiles=tiles, output=output,
+        tiles=tiles, devices=devices, output=output,
         spectral_numerics=spectral_numerics,
         auto_epssm=tuple(sorted(auto_epssm_ids)))
     from gpuwm.static.terrain_smoothing import refuse_moving_reach
@@ -5088,6 +5133,8 @@ def _public_config_value(value):
     from dataclasses import fields, is_dataclass
     from gpuwm.core.streaming import StreamingOptions
     from gpuwm.core.storm_tracking import FollowConfig, ATTRIBUTE_KEYS
+    if isinstance(value, DeviceOptions):
+        return value.to_mapping()
     if isinstance(value, StreamingOptions):
         return value.to_mapping()
     if is_dataclass(value):
@@ -5112,4 +5159,9 @@ def domain_config_document(domain: DomainConfig) -> dict[str, object]:
 
 def experiment_config_document(exp: ExperimentConfig) -> dict[str, object]:
     """Resolved experiment fields, preserving the domain document contract."""
-    return _public_config_value(exp)
+    document = _public_config_value(exp)
+    # A newly introduced execution control stays absent when off, so default
+    # public snapshots and plans retain their pre-feature bytes.
+    if not exp.devices.enabled:
+        document.pop("devices", None)
+    return document

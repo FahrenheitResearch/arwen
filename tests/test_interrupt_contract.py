@@ -95,12 +95,24 @@ def _a_card_whose_free_vram_this_file_decides(monkeypatch):
     """
 
     from gpuwm.core import preflight
+    from gpuwm import capabilities
+
+    # The stages and device reading in this file are CPU test doubles.
+    # Pin runtime presence as well, so an absent extra cannot decide whether
+    # the interrupt or geography refusal is reached.
+    installed = capabilities.is_installed
+    monkeypatch.setattr(capabilities, "is_installed",
+                        lambda module: module == "cupy" or installed(module))
 
     monkeypatch.setattr(
         preflight, "device_memory_probe_subprocess",
         lambda **_kwargs: {"free_bytes": _PINNED_FREE_BYTES,
                            "total_bytes": 32 * 1024 ** 3,
                            "profile": None})
+    # These tests run mocked stages. The device readiness provider must use
+    # the same mock boundary as runtime presence and VRAM, otherwise a CPU
+    # install refuses before the interrupt or geography check under test.
+    monkeypatch.setattr(go_cli, "_require_forecast_device", lambda: None)
 
 
 def test_the_pinned_card_is_what_the_gate_reads(gfs_config, tmp_path):
@@ -277,11 +289,6 @@ def test_go_reports_the_interrupt_in_one_sentence_and_exits_130(
     monkeypatch.setattr(subprocess, "Popen", interrupt_at_fetch)
     monkeypatch.setattr(go_cli, "resolve_bridge",
                         lambda: tmp_path / "gfs_grib2_bridge")
-    # The device check runs its probe through subprocess, which is the
-    # stand-in above, so it would refuse before the fetch stage this test
-    # interrupts.  The check has its own tests.
-    monkeypatch.setattr(go_cli, "_require_forecast_device", lambda: None)
-
     rc = cli.main(["go", str(gfs_config), "--outdir", str(tmp_path / "go"),
                    "--geog-root", str(staged_geog)])
     captured = capsys.readouterr()

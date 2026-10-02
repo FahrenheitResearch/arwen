@@ -2864,7 +2864,9 @@ def test_the_legacy_sw_engine_is_shared_rather_than_compiled_per_buffer(
     class _Tables:
         pass
 
+    card = [0]
     monkeypatch.setattr(rrtmg_legacy, "_CUDA_SW_CACHE", None)
+    monkeypatch.setattr(rrtmg_legacy, "_cuda_sw_device", lambda: card[0])
     monkeypatch.setattr(rrtmg_legacy._sw, "CudaSW",
                         lambda tab: built.append(tab) or object())
     tables = _Tables()
@@ -2874,6 +2876,13 @@ def test_the_legacy_sw_engine_is_shared_rather_than_compiled_per_buffer(
     # Different coefficients get their own engine rather than borrowing.
     assert rrtmg_legacy._cuda_sw(_Tables()) is not first
     assert len(built) == 2
+    # A second CARD gets its own engine: a module and tables live on one
+    # card, and a [devices] slab on another must not launch them.
+    card[0] = 1
+    assert rrtmg_legacy._cuda_sw(tables) is not first
+    assert len(built) == 3
+    card[0] = 0
+    assert rrtmg_legacy._cuda_sw(tables) is first
 
 
 def test_the_budget_overrides_land_on_the_budget():

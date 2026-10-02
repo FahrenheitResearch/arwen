@@ -538,7 +538,7 @@ def _advection_inputs(seed=20260713, nz=12, ny=12, nx=16):
 
 @requires_gpu
 def test_advection_periodic_path_bitwise_regression():
-    # The periodic path of the extended kernels must be BITWISE unchanged:
+    # Existing periodic tendencies remain BITWISE unchanged below the lid:
     # compare against outputs captured from the pre-change kernels on a
     # fixed seed (tests/data/advection_periodic_regression.npz).
     #
@@ -575,7 +575,14 @@ def test_advection_periodic_path_bitwise_regression():
             (d["w"], launch_flux_div_w, "tend_w")):
         tend = cp.zeros(ref[key].shape, cp.float32)
         launcher(field, d["ru"], d["rv"], d["rw"], tend, coord, 100.0, 100.0)
-        np.testing.assert_array_equal(cp.asnumpy(tend), ref[key])
+        got = cp.asnumpy(tend)
+        if key == "tend_w":
+            # The old capture omitted WRF's nonzero lid contribution.
+            # Native Fortran lid controls and full-array word receipts in
+            # test_advect_wrf471_parity.py now guard that corrected row.
+            np.testing.assert_array_equal(got[:-1], ref[key][:-1])
+        else:
+            np.testing.assert_array_equal(got, ref[key])
 
 
 @requires_gpu

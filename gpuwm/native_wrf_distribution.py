@@ -162,6 +162,15 @@ CUDA_KERNEL_SOURCES = (
     "lbc_state.cu",
     "spec_bdy.cu",
     "vert_interp.cu",
+    # The card preparation's own kernels: the fused horizontal step,
+    # initialize_real's column twins and the Thompson cold-start closure.
+    "horizontal.cu",
+    "real_init.cu",
+    "real_init_common.cuh",
+    "real_init_math.cu",
+    "portable_libm64.cuh",
+    "glibc_flt32.cuh",
+    "thompson_cold_start.cu",
 )
 
 _MINIMUM_VERSIONS = {

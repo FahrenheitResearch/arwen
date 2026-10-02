@@ -1014,12 +1014,14 @@ def test_the_direct_hierarchy_path_knows_28():
     """The preparation gate delegates edge capability to the shared resolver.
 
     The source-specific selector allowlist was retired with configured
-    physics preparation. Exercise the actual gate, including its mixed-edge
-    refusal, so a replacement private constant cannot stand in for admission.
+    physics preparation. Exercise the actual gate and its mixed-edge CQ
+    requirement, so a replacement private constant cannot stand in for admission.
     """
     from dataclasses import asdict, replace
     from gpuwm.experiment import DomainConfig, ProjectionConfig
     from gpuwm.hrrr_hierarchy_direct import _supported_hierarchy_slice
+    from gpuwm.core.microphysics_transition import (
+        EDGE_MATRIX_POLICY, resolve_microphysics_transition)
 
     projection = ProjectionConfig(map_proj="lambert", ref_lat=35.0,
         ref_lon=-98.0, truelat1=38.5, truelat2=38.5, stand_lon=-97.5)
@@ -1040,10 +1042,25 @@ def test_the_direct_hierarchy_path_knows_28():
             spec_bdy_width=5)
         _supported_hierarchy_slice(exp, target, forcing_hours=(0, 1))
 
-    # MP28 remains admitted on same-scheme nests only: no number/aerosol
-    # moment mapping has been defined for a mixed MP28 edge.
+    # The MP28 entry/exit closure was implemented in b0c2f5924 and the
+    # default mixed-edge policy admitted in 34b577cbb. This old refusal
+    # only still fired because RunConfig left moist_cq=False. The CQ
+    # corrections e13fa45c0 / 59f7e280f enable the required contract by
+    # default; 59f7e280f also retires the obsolete ILLEGAL_ADDRESS guard.
     exp.domains = (parent, replace(child, run=replace(child.run, mp_physics=8)))
-    with pytest.raises(ValueError, match="MP28|mp_physics=28"):
+    assert parent.run.moist_cq is True
+    assert exp.domains[1].run.moist_cq is True
+    _supported_hierarchy_slice(exp, target, forcing_hours=(0, 1))
+    contract = resolve_microphysics_transition(parent.run, exp.domains[1].run)
+    assert (contract.source_mp_physics, contract.target_mp_physics) == (28, 8)
+    assert contract.mixed is True
+    assert contract.policy_id == EDGE_MATRIX_POLICY
+
+    # A deliberately CQ-off child still lacks the physical contract the
+    # mixed edge requires. The refusal names that requirement, not MP28.
+    exp.domains = (parent, replace(exp.domains[1], run=replace(
+        exp.domains[1].run, moist_cq=False)))
+    with pytest.raises(ValueError, match=r"missing child\.moist_cq=true"):
         _supported_hierarchy_slice(exp, target, forcing_hours=(0, 1))
 
 

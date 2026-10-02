@@ -39,7 +39,8 @@ _PRE_ADAPTIVE_CHILD_DIGEST = \
     "fb448bfd57196090e0aa3ac025f5ec7234764e1f80f628aded9e5b991a75312d"
 
 
-def _digest_without_the_adaptive_config_keys(path) -> str:
+def _digest_without_the_adaptive_config_keys(
+        path, *, restore_historical_moist_cq=False) -> str:
     """The canonical member digest as it would read WITHOUT the block.
 
     Same construction as :func:`_canonical_member_digest` with exactly
@@ -47,6 +48,9 @@ def _digest_without_the_adaptive_config_keys(path) -> str:
     and the two hashes the writer derives from that echo are recomputed
     from the trimmed one using the writer's own helpers.  Every array
     member is hashed unchanged.
+
+    The named historical arm also restores the moist_cq value recorded
+    before e13fa45c0 / 59f7e280f. It changes no array or non-config header.
     """
     with np.load(path, allow_pickle=False) as data:
         header = json.loads(bytes(bytearray(
@@ -64,6 +68,11 @@ def _digest_without_the_adaptive_config_keys(path) -> str:
                 "eta_levels", "relax_timescale_s", "relax_w",
                 "sf_urban_physics", "use_wudapt_lcz", "num_urban_hi"):
             header["config"].pop(key, None)
+        # The historical anchor predates the e13fa45c0 / 59f7e280f
+        # moist_cq default flip. Retain the key and unwind only its value.
+        assert header["config"]["moist_cq"] is True
+        if restore_historical_moist_cq:
+            header["config"]["moist_cq"] = False
         values = restart._configuration_digest_values(header["config"])
         setup = copy.deepcopy(header["physics_setup"])
         setup["configuration_sha256"] = restart._json_sha256(
@@ -95,10 +104,26 @@ def _write(monkeypatch, tmp_path):
 def test_removing_the_block_restores_the_pre_adaptive_digest(
         monkeypatch, tmp_path):
     root, child = _write(monkeypatch, tmp_path)
-    assert (_digest_without_the_adaptive_config_keys(root)
+    assert (_digest_without_the_adaptive_config_keys(
+        root, restore_historical_moist_cq=True)
             == _PRE_ADAPTIVE_ROOT_DIGEST)
-    assert (_digest_without_the_adaptive_config_keys(child)
+    assert (_digest_without_the_adaptive_config_keys(
+        child, restore_historical_moist_cq=True)
             == _PRE_ADAPTIVE_CHILD_DIGEST)
+
+
+def test_the_pre_adaptive_anchor_moved_for_the_moist_cq_default_and_nothing_else(
+        monkeypatch, tmp_path):
+    """e13fa45c0 / 59f7e280f moved one default, not checkpoint members."""
+    root, child = _write(monkeypatch, tmp_path)
+    for path, historical_digest in (
+            (root, _PRE_ADAPTIVE_ROOT_DIGEST),
+            (child, _PRE_ADAPTIVE_CHILD_DIGEST)):
+        current = _digest_without_the_adaptive_config_keys(path)
+        restored = _digest_without_the_adaptive_config_keys(
+            path, restore_historical_moist_cq=True)
+        assert current != restored
+        assert restored == historical_digest
 
 
 def test_the_keys_really_are_in_the_echo(monkeypatch, tmp_path):

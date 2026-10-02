@@ -2825,6 +2825,45 @@ def merge_batch_alignment(receipts: Sequence[Mapping[str, object]], *,
     return merged
 
 
+def without_earlier_batch_times(bundle: MappedSourceBundle,
+                                earlier: MappedSourceBundle
+                                ) -> MappedSourceBundle:
+    """A lead batch's bundle without the times an earlier batch listed.
+
+    A batch that decoded the window's first lead again, because that lead's
+    file alone carries the cycle's step-0 statics
+    (``mapped_direct._PostedMappedSource._needs_first_lead``), lists that
+    lead's time in its alignment receipts' time lists.  One decode of the
+    window lists each time once, so every item the first batch's same list
+    holds is left out here, and :func:`merge_batch_alignment` joins the
+    lists as it joins any batch's own.  The frames are the batch's own; the
+    re-decoded time is simply never located.
+    """
+
+    from dataclasses import replace
+
+    def trim(receipt, base):
+        trimmed = dict(receipt)
+        for key in _BATCH_TIME_LIST_KEYS:
+            mine, theirs = trimmed.get(key), base.get(key)
+            if isinstance(mine, list) and isinstance(theirs, list):
+                trimmed[key] = [item for item in mine if item not in theirs]
+        return trimmed
+
+    if len(bundle.contributing_sources) != len(earlier.contributing_sources):
+        raise PostedCompositionRefusal(
+            "the lead batches decoded different contributing sources")
+    return replace(
+        bundle,
+        alignment_receipt=trim(bundle.alignment_receipt,
+                               earlier.alignment_receipt),
+        contributing_sources=tuple(
+            {**dict(record),
+             "alignment": trim(record["alignment"], base["alignment"])}
+            for record, base in zip(bundle.contributing_sources,
+                                    earlier.contributing_sources)))
+
+
 def _identical(values, what: str):
     first = values[0]
     for value in values[1:]:
@@ -2958,7 +2997,7 @@ __all__ = [
     "COMPOSITION_SCHEMA", "INPUT_MANIFEST_SCHEMA", "RECEIPT_SCHEMA",
     "MappedSourceBundle", "PostedCompositionRefusal", "PostedFrames",
     "composition_receipt_binding_matches", "merge_batch_alignment",
-    "posted_composition_bundle",
+    "posted_composition_bundle", "without_earlier_batch_times",
     "composition_receipt_identity", "composition_receipt_identity_sha256",
     "decode_composed_source", "decoded_vertical_ladder",
     "load_composition", "mapped_composition_receipt",

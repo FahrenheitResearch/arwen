@@ -1,0 +1,7 @@
+{
+  "wrf_version": "4.7.1",
+  "wrf_commit": "f52c197ed39d12e087d02c50f412d90d418f6186",
+  "source_hashes": "SOURCES.sha256",
+  "reference": "byte-unmodified full module, binary32, gfortran -O0 -ffp-contract=off",
+  "protocol_version": 1
+}

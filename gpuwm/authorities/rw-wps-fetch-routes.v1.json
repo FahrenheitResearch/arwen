@@ -18,7 +18,7 @@
     "note": "The three sources whose transport predates this table (gfs, gdas, hrrr) still declare their endpoints HERE, in the same row shape as a route's `hosts`, so preferring the operational server is one table fact for every NCEP source rather than two mechanisms. Their host vocabulary is their own -- `s3` where the table routes say `aws` -- because that is the name their --transport has accepted since before the table existed.",
     "gfs": [
       {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod", "default": true, "retention_hours": 240, "transfer_rank": 1, "why": "the operational server publishes each pgrb2.0p25 object first; 10 day directories present, measured 2026-08-24"},
-      {"name": "s3", "base": "https://noaa-gfs-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data archive noaa-gfs-bdp-pds is unbounded, holds every cycle the operational window has dropped, and serves bulk objects several times quicker at peak hours -- so it takes any object it has already mirrored"}
+      {"name": "s3", "base": "https://noaa-gfs-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "posting_delay_minutes": [{"from_lead": 0, "minutes": 16}], "posting_delay_note": "2026-10-02 metadata proxy: four matched AWS/NOMADS Content-Length pairs for GFS f000/f003 across two cycles, maximum extra AWS Last-Modified lag 952 s. Rounded allowance, not measured first visibility. No GDAS calibration is inferred.", "why": "the AWS Open Data archive noaa-gfs-bdp-pds is unbounded, holds every cycle the operational window has dropped, and serves bulk objects several times quicker at peak hours -- so it takes any object it has already mirrored"}
     ],
     "gdas": [
       {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod", "default": true, "retention_hours": 240, "transfer_rank": 1, "why": "GDAS publishes into the same operational tree as GFS; 10 day directories present, measured 2026-08-24"},
@@ -26,7 +26,7 @@
     ],
     "hrrr": [
       {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod", "default": true, "retention_hours": 48, "transfer_rank": 1, "why": "the operational server publishes each forecast hour before the mirrors, which is why an as-posted fetch asks it first while a cycle is posting; 2 day directories present, measured 2026-08-24"},
-      {"name": "s3", "base": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data archive noaa-hrrr-bdp-pds serves byte-identical files and .idx indexes without a retention bound, and serves them quicker at peak hours -- so it takes any object it has already mirrored"}
+      {"name": "s3", "base": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "posting_delay_minutes": [{"from_lead": 0, "through_lead": 1, "minutes": 3}, {"from_lead": 2, "minutes": 11}], "posting_delay_note": "2026-10-02 metadata proxy: 40 matched AWS/NOMADS Content-Length pairs across five HRRR cycles. First f000/f001 wrfnat and wrfprs objects had at most 101 s extra AWS Last-Modified lag, with corresponding index comparisons up to 139 s over two cycles; a later soil object had 630 s. Rounded allowances, not measured first visibility.", "why": "the AWS Open Data archive noaa-hrrr-bdp-pds serves byte-identical files and .idx indexes without a retention bound, and serves them quicker at peak hours -- so it takes any object it has already mirrored"}
     ]
   },
   "legacy_posting": {
@@ -272,7 +272,7 @@
       "measured": "2026-08-17",
       "hosts": [
         {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod", "default": true, "retention_hours": 48, "transfer_rank": 1, "why": "the operational server publishes each forecast hour first; 2 day directories present, measured 2026-08-24"},
-        {"name": "aws", "base": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "why": "the AWS Open Data mirror is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"}
+        {"name": "aws", "base": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "posting_delay_minutes": [{"from_lead": 0, "through_lead": 1, "minutes": 3}, {"from_lead": 2, "minutes": 11}], "posting_delay_note": "2026-10-02 metadata proxy: 40 matched AWS/NOMADS Content-Length pairs across five HRRR cycles. First f000/f001 wrfnat and wrfprs objects had at most 101 s extra AWS Last-Modified lag, with corresponding index comparisons up to 139 s over two cycles; a later soil object had 630 s. Rounded allowances, not measured first visibility.", "why": "the AWS Open Data mirror is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"}
       ],
       "cycle_hours": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
       "publication_lag": [

@@ -82,3 +82,23 @@ Run on Linux with GNU Fortran:
 `build.sh`, records `nm -u module_sf_mynn.o` and refuses to continue if the
 object binds libmvec (`_ZGV*`), because the `max_ulp 0` leaf claim is against
 scalar glibc `expf`/`logf`/`powf`.
+
+The CPU reference profile can be measured against the retained fixtures
+without rebuilding WRF or changing any assertion:
+
+```sh
+python tools/mynn_wrf461_oracle/measure_profile.py --out mynn-profile.json
+```
+
+Run this from the repository root, with NumPy and the test dependencies installed. The tool
+hides CUDA, runs the surface, coarse and water CPU oracle checks serially,
+and records every compared ULP vector beside its existing per-column budget.
+It returns pytest's exit code and records before/after table hashes, the C
+library and whether NumPy dispatched AVX-512, because those two pick the
+float32 `arctan` a profile matches.
+
+[The Linux Python 3.11 / NumPy 2.4.6 receipt](receipts/numpy-2.4.6-linux-python3.11.json)
+was measured on the CPU test nodes (Ubuntu 26.04, glibc 2.43, no AVX-512). It
+records 83 passing tests, 1,007 output comparisons and 10,521 compared slots,
+including repeated controls. No slot exceeded its unchanged limit. This is
+CPU oracle evidence; no CUDA comparisons were run.

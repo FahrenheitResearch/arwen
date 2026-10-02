@@ -148,6 +148,7 @@ def _seam_stubbed_driver(monkeypatch, e_sgs):
     driver = types.SimpleNamespace(
         state=FakeState(),
         fields=fields,
+        terrain_drag=None,
         bldt_seconds=72.0,
         _shinhong_passenger_advisory=False,
         _shinhong_entry_advisory=False,

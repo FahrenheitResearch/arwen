@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shlex
 import sys
+import time
 
 import pytest
 
@@ -247,11 +248,17 @@ def test_a_node_that_keeps_saying_it_works_is_not_cut_off_at_the_deadline(tmp_pa
     reply = json.dumps({"schema": rc.SCHEMA, "ok": True, "action": "start"})
     keepalive = json.dumps({"schema": rc.KEEPALIVE_SCHEMA, "action": "start"})
     program = _program(tmp_path, "import sys\n"
-        "for _ in range(6):\n"
+        "for _ in range(15):\n"
         f"    sys.stdout.write({keepalive!r} + chr(10)); sys.stdout.flush(); time.sleep(.3)\n"
         f"sys.stdout.write({reply!r} + chr(10)); sys.stdout.flush()")
     # The whole call outlasts the deadline; no single silence inside it does.
-    value = rc._transport(program, {"action": "start"}, timeout=1)
+    # The interpreter's start is silence too, and on a loaded Windows host it
+    # took over a second (the Windows CPU job's command failed here with a
+    # 1 s deadline), so the deadline is 3 s and the program talks every 0.3 s
+    # for 4.5 s.
+    started = time.monotonic()
+    value = rc._transport(program, {"action": "start"}, timeout=3)
+    assert time.monotonic() - started > 3, "the call never outlasted the deadline"
     assert value["ok"] is True and value["action"] == "start"
 
 

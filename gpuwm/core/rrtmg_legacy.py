@@ -115,6 +115,8 @@ exactly that shape.
 
 from __future__ import annotations
 
+from gpuwm.core.device_cache import cuda_cache
+
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -837,39 +839,38 @@ def _sw_tables():
 _CUDA_SW_CACHE = None
 
 
+def _cuda_sw_device() -> int:
+    """The card a legacy SW engine is being asked for (the current one)."""
+    import cupy as cp
+    return int(cp.cuda.Device().id)
+
+
 def _cuda_sw(tab):
-    """The compiled CUDA SW engine for ``tab``, once per process.
+    """The compiled CUDA SW engine for ``tab`` on this card, once per card.
 
     Construction is the expensive half of this adapter: ``CudaSW.__init__``
     runs a full NVRTC compile of ``kernels/rrtmg_sw.cu`` and uploads the
-    packed tables to the device.  The LW and McICA halves are already
-    process-cached (``rrtmg_lw._GPU_KERNELS`` / ``_GPU_PREFLIGHTED``,
-    ``rrtmg_mcica``); the SW engine was the only per-INSTANCE GPU cost,
-    which did not matter while one adapter existed per process and does
-    now: streaming builds one adapter per TILE BUFFER, so an uncached
-    engine would multiply both the compile and the resident device tables
-    that streaming exists to save.
+    packed tables.  Streaming builds one adapter per TILE BUFFER and the
+    [devices] split one per SLAB, so an uncached engine would multiply both
+    the compile and the resident tables.
 
-    Sharing is sound because ``CudaSW`` carries no state between calls
-    that a caller can observe: every ``self.<x> =`` in it is in
-    ``__init__`` (``cp``, ``tab``, ``module``, ``tab_gpu``, ``ngb_gpu``,
-    ``max_nlay``, ``_scratch``, ``_chunk_by_nlayers``), its stage drivers
-    allocate their outputs per call, and the one mutable member -- the
-    batched chain's per-chunk workspace (``CudaSW.scratch``) -- is
-    touched only inside ``rrtmg_sw_batched_device`` on the one stream,
-    holds nothing a result aliases, and is released by this adapter after
-    every radiation event.  It is a compiled module plus constant tables
-    plus reusable workspace, not a carrier.
-
-    Keyed on the tables OBJECT, not merely cached once: ``_sw_tables`` is
-    itself a process singleton, so the identity check is normally free, but
-    a caller assembling its own tables gets its own engine rather than
-    silently borrowing one built from different coefficients.
+    PER CARD, because a compiled module and its tables live on one card and
+    a slab on another card must not launch them.  The engine's writable
+    batched workspace is per STREAM inside the engine (``CudaSW._scratch``),
+    so slabs stepping at once on one card share the read-only module and
+    tables and never the workspace.  Keyed on the tables OBJECT, held in the
+    entry so its id cannot be reused: a caller assembling its own tables
+    gets its own engine rather than borrowing one built from different
+    coefficients.
     """
     global _CUDA_SW_CACHE
-    if _CUDA_SW_CACHE is None or _CUDA_SW_CACHE[0] is not tab:
-        _CUDA_SW_CACHE = (tab, _sw.CudaSW(tab))
-    return _CUDA_SW_CACHE[1]
+    if _CUDA_SW_CACHE is None:
+        _CUDA_SW_CACHE = {}
+    key = (_cuda_sw_device(), id(tab))
+    hit = _CUDA_SW_CACHE.get(key)
+    if hit is None:
+        hit = _CUDA_SW_CACHE.setdefault(key, (tab, _sw.CudaSW(tab)))
+    return hit[1]
 
 
 # ---------------------------------------------------------------------------
@@ -883,17 +884,19 @@ def _cuda_sw(tab):
 # (see the .cu header); adapter_gpu_preflight proves both on the live device.
 # ---------------------------------------------------------------------------
 
-_ADAPTER_MODULE = None
+_ADAPTER_MODULE = {}
 _ADAPTER_KERNELS = {}
-_ADAPTER_PREFLIGHTED = False
+_ADAPTER_PREFLIGHTED = set()
 _ADAPTER_BLOCK = 256
 
 
+@cuda_cache(maxsize=None)
 def _adapter_module():
     """Compile kernels/rrtmg_legacy_adapter.cu via NVRTC directly (the
     route and the missing ``-arch`` follow ``rrtmg_lw._gpu_module``)."""
-    global _ADAPTER_MODULE
-    if _ADAPTER_MODULE is None:
+    import cupy as cp
+    device = int(cp.cuda.Device().id)
+    if device not in _ADAPTER_MODULE:
         import cupy as cp
         from cupy.cuda import compiler as _cc
         path = (Path(__file__).resolve().parent / "kernels"
@@ -904,22 +907,26 @@ def _adapter_module():
             None, "rrtmg_legacy_adapter.cu")
         mod = cp.cuda.function.Module()
         mod.load(ptx.encode() if isinstance(ptx, str) else ptx)
-        _ADAPTER_MODULE = mod
-    return _ADAPTER_MODULE
+        _ADAPTER_MODULE[device] = mod
+    return _ADAPTER_MODULE[device]
 
 
+@cuda_cache(maxsize=None)
 def _adapter_kernel(name):
-    if name not in _ADAPTER_KERNELS:
-        _ADAPTER_KERNELS[name] = _adapter_module().get_function(name)
-    return _ADAPTER_KERNELS[name]
+    import cupy as cp
+    key = (int(cp.cuda.Device().id), name)
+    if key not in _ADAPTER_KERNELS:
+        _ADAPTER_KERNELS[key] = _adapter_module().get_function(name)
+    return _ADAPTER_KERNELS[key]
 
 
 def adapter_gpu_preflight(force=False):
     """Prove on the live device that the glue unit keeps FP32 subnormals:
     a subnormal product and quotient survive and a subnormal compares
     greater than zero, bitwise equal to NumPy."""
-    global _ADAPTER_PREFLIGHTED
-    if _ADAPTER_PREFLIGHTED and not force:
+    import cupy as cp
+    device = int(cp.cuda.Device().id)
+    if device in _ADAPTER_PREFLIGHTED and not force:
         return
     import cupy as cp
     x = np.array([1.0e-30, 1.0e-10, 1.0e-40, 1.0e-38, 4.0], np.float32)
@@ -932,7 +939,7 @@ def adapter_gpu_preflight(force=False):
         raise RuntimeError(
             "rrtmg_legacy adapter GPU preflight failed: got %r want %r "
             "(subnormal flush on this toolchain)" % (got, want))
-    _ADAPTER_PREFLIGHTED = True
+    _ADAPTER_PREFLIGHTED.add(device)
 
 
 #: Prep outputs that are WRF-level extras, not engine inputs; the device
@@ -1855,7 +1862,7 @@ class RRTMGLegacyRadiation:
         # (swrad_prep_batch's nlay is kte + 1 = nz + 1, as the pricing
         # assumes); an explicit column_chunk is untouched.
         chunk_sw = (self.column_chunk
-                    or (self._cuda_sw.batch_column_chunk(nz + 1)
+                    or (_cuda_sw(self._sw_tables).batch_column_chunk(nz + 1)
                         if self.shortwave else _sw.SW_BATCH_COLUMN_CHUNK))
         day_idx_d = cp.asarray(day_idx.astype(np.int64))
         for c0 in range(0, day_idx.size if self.shortwave else 0, chunk_sw):
@@ -1873,7 +1880,7 @@ class RRTMGLegacyRadiation:
                 ps.pop(extra, None)
             nc = int(ps["ncol"])
             adjes = np.full(nc, ps["adjes"], np.float32)
-            res = self._cuda_sw.rrtmg_sw_batched_device(
+            res = _cuda_sw(self._sw_tables).rrtmg_sw_batched_device(
                 nc, ps["nlay"], ps["icld"], ps["play"], ps["plev"],
                 ps["tlay"], ps["tlev"], ps["tsfc"], ps["h2ovmr"],
                 ps["o3vmr"], ps["co2vmr"], ps["ch4vmr"], ps["n2ovmr"],
@@ -1907,7 +1914,7 @@ class RRTMGLegacyRadiation:
             # pool trim return the bytes to the driver, so the run's
             # resident footprint is what it was before the workspace was
             # hoisted out of the chunk loop.
-            self._cuda_sw.release_scratch()
+            _cuda_sw(self._sw_tables).release_scratch()
 
         # ---- driver-level SWDOWN = GSW/(1-ALBEDO) (driver line 2877) --
         swdown = cp.empty(ncol, dtype=cp.float32)

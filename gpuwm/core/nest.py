@@ -20,41 +20,65 @@ not know about the store would:
 * under ``feedback=1``, write the parent's prognostics into arrays the next
   sweep re-reads from the store, so two-way feedback is silently discarded.
 
-Both are repaired by asking :func:`gpuwm.core.streaming.domain_store`
-whether a state is a window onto something else -- ``None`` for every
+Both are repaired by reading and writing the domain's STORE rather than its
+state.  Which door does that depends on how the state is marked; the two
+sections below are the two doors.
+
+BOUNDED OPERANDS: EVERY ``StreamedDomain``, PARENT OR CHILD
+-----------------------------------------------------------
+A ``StreamedDomain`` built on a state marks it (``state._streamed_domain``),
+and every streamed domain a route builds is one, so this is the path a
+streamed domain takes in a forecast.  When EITHER endpoint of an edge
+carries the marker, ``force`` and ``feedback_commit`` take bounded operands
+from :class:`gpuwm.core.nest_operands.NestWindowSource`, which reads the
+owner's store directly: FORCE assembles the rolling tables from child
+boundary chunks and the exact SINT donor rectangles
+(``nest_interp.window_registration``, the stencil's own two-cell halo
+included), and feedback restricts child chunks straight into the parent
+owner through ``NestWindowSource.write``.  A marked parent runs the same
+smoother kernels with one explicitly reported host J-pass scratch
+rectangle, then re-diagnoses the changed columns in bounded chunks.  None
+of this reads the frozen ``DomainState`` or needs a full-parent device
+field, which a tiled root whose store is filled from the preparation head
+(a :class:`gpuwm.core.streamed_state.CanonicalStoreState`) does not have.
+A resident child still diagnoses a mixed-scheme parent species on its own
+grid (:meth:`NestCoupler._mapped_child_field`) and restricts windows of
+that mapped field; a marked child drops those species at prepare, named
+once.
+
+MEASURED on a card: ``tilestream/test_nest.py`` (d01 192x192x49 dx 9 km
+streamed from a pinned host store at tile 64, d02 96x96x49 nested 3:1 and
+resident, 6 parent steps) and ``tilestream/test_nest_executor.py`` (the
+same shape through ``execute_experiment``) hold both domains bit-identical
+to the all-resident control at ``feedback=0`` and ``feedback=1``.  Their
+negative controls aim at this door: N serves every parent operand from
+the frozen attach-time state (d02 must move), W keeps the operands fresh
+only inside the halo-free child footprint so the SINT halo reads stale
+cells (d02 must move, d01 must not), and the write-back control drops the
+parent writes (d01 must move).  ``tilestream/test_streamed_child.py`` and
+``tests/test_both_streamed_nesting.py`` hold the streamed-child and
+both-streamed shapes.
+
+THE PUBLISHED-STORE SEAM: A STORE WITHOUT AN OWNER MARKER
+---------------------------------------------------------
+:func:`gpuwm.core.streaming.domain_store` answers ``None`` for every
 resident domain, which is every domain in a run that configures no
-``[tiles]`` -- and moving exactly the fields the transaction reads or
-writes.
+``[tiles]``.  A state that publishes a store with no ``StreamedDomain``
+marker (the CPU stand-ins in ``tests/test_nest_coupler.py`` and
+``tests/test_nest_streamed_transition_edge.py``) is coupled through the
+older seam: ``_sync_in`` pulls the footprint window
+(:func:`parent_footprint_window`) into the state's own arrays before the
+whole-field kernels run, and ``_sync_out`` pushes the feedback write-back.
+That seam is what ``tilestream/test_nest.py`` first measured: with the
+store not consulted d02 differed in 89 of 155 carriers by up to 1.04e+08
+while d01 stayed bit-exact.  The gates above disarm it as well as the
+bounded operands, so each control fires whichever door the coupler takes.
 
-MEASURED, ``tilestream/test_nest.py``: d01 192x192x49 dx 9 km STREAMED from
-a pinned host store at tile 64 (3x3, exact) with halo 16 from
-``harness.halo_radius``, d02 96x96x49 nested 3:1 and resident,
-full(real74)+KF, 6 parent steps and 18 child steps.  With the store
-consulted, both domains are bit-identical to the all-resident control --
-0 of 155 carriers differ on each -- at ``feedback=0`` and at ``feedback=1``.
-With it not consulted, which is the code path before this paragraph existed,
-d01 is still bit-exact (streaming itself was never the problem) and d02
-differs in 89 of 155 carriers with a worst absolute difference of 1.04e+08.
-The two feedback controls fire too: ``feedback=1`` differs from
-``feedback=0`` on the resident control, and disarming ONLY the write-back
-leaves the parent's store without the child's mass.
-
-BOUNDED OPERANDS FOR A CANONICAL STREAMED CHILD
----------------------------------------------
-An actual ``_streamed_domain`` owner now selects bounded operands from
-``nest_operands``. FORCE assembles the same rolling tables from child
-boundary chunks and exact SINT donor rectangles. Feedback restricts child
-chunks directly into the parent owner. A streamed parent runs the same
-smoother kernels with one explicitly reported host J-pass scratch rectangle,
-then diagnoses changed columns in bounded chunks. These paths need no
-resident child field or full-child F16 scratch. The ordinary resident route
-and the older published-store correctness seam remain intact.
-
-This closes operand ownership, not admission: allocator pool retention,
-the host smoothing scratch, rolling tables and simultaneous tiled buffers
-still need inclusion in the route's capacity proof. Mixed microphysics and
-optional inflow hooks retain their separate contracts. No admission guard is
-relaxed by this implementation.
+The bounded operands close operand ownership, not admission: allocator
+pool retention, the host smoothing scratch, rolling tables and
+simultaneous tiled buffers still need inclusion in the route's capacity
+proof. Mixed microphysics and optional inflow hooks retain their separate
+contracts. No admission guard is relaxed by this implementation.
 """
 
 from __future__ import annotations
@@ -456,6 +480,12 @@ class NestCoupler:
     def _coupled_parent_field(self, kind: str):
         """Couple every readable footprint cell in F16's full-parent arena.
 
+        The whole-field FORCE arm, taken only when neither endpoint carries
+        a ``StreamedDomain`` marker: a resident parent, or a CPU stand-in
+        that publishes a store without one (the module docstring's second
+        door).  A marked parent never reaches this method; ``force`` sends
+        it through :meth:`_force_windowed`'s bounded donor rectangles.
+
         ``couple_nest_field`` reads exactly two things that MOVE: the field
         itself and ``mup`` (the coupling mass, read at neighbouring points
         for the u/v face averages).  Everything else it touches -- ``mub2d``,
@@ -489,9 +519,12 @@ class NestCoupler:
             # pull is two windows, not two fields -- O(child footprint) per
             # kind per parent step where it was O(parent).  The coupled
             # values OUTSIDE the window are left untouched. The donor maps
-            # cannot reach past the stencil the halo bounds.
-            # ``tilestream/test_nest_executor.py`` holds the
-            # bitwise proof and the halo-starved negative control.
+            # cannot reach past the stencil the halo bounds.  A streamed
+            # parent a ``StreamedDomain`` marks never comes here; its bounded
+            # donor rectangles carry the SINT halo themselves.  The halo-
+            # starved control in ``tilestream/test_nest_executor.py`` (W)
+            # zeroes this halo AND starves those rectangles, so it fires on
+            # whichever door runs.
             self.force_sync_bytes += _sync_in(
                 parent_state, ("mup", _state_attr(kind)),
                 window=parent_footprint_window(self.child_node.cfg))
@@ -745,29 +778,33 @@ class NestCoupler:
             )
         return result
 
+    def _transaction_chunk_shape(self):
+        """Bound operands by the admitted streamed endpoint's tile size."""
+        from gpuwm.core.nest_operands import streamed_chunk_shape
+
+        node = self.child_node
+        state = (node.state if self._feedback_child_is_bounded()
+                 else node.parent.state)
+        return streamed_chunk_shape(state)
+
     def _force_windowed(self, kind, out, parent_source, child_source):
         """Build rolling strips from bounded canonical operands."""
         from gpuwm.core.nest_interp import bdy_width, window_registration
-        from gpuwm.core.nest_operands import boundary_windows, streamed_chunk_shape
+        from gpuwm.core.nest_operands import boundary_windows
 
         node = self.child_node
         reg = self.registrations[_STAGGER.get(kind, "m")]
         run = node.cfg.run
         width = bdy_width(run.spec_zone, run.relax_zone, run.spec_bdy_width)
-        mapped_parent = None
-        if transition_handles_field(self.microphysics_transition, kind):
-            # Streamed and resident parents take the same mapper; the pull
-            # that makes the streamed one correct lives in
-            # ``_coupled_parent_field``, windowed like every other FORCE read.
-            mapped_parent = self._coupled_parent_field(kind)
+        transition = transition_handles_field(self.microphysics_transition, kind)
         for side, window, destination in boundary_windows(
-                reg, width, streamed_chunk_shape(node.state)):
+                reg, width, self._transaction_chunk_shape()):
             cropped, donor = window_registration(reg, window)
-            if mapped_parent is None:
+            if not transition:
                 parent_field = parent_source.coupled(kind, donor)
             else:
-                import cupy as cp
-                parent_field = cp.ascontiguousarray(mapped_parent[(...,) + donor])
+                parent_field = parent_source.transitioned(
+                    self.microphysics_transition, kind, donor)
             child_field = child_source.coupled(kind, window)
             tables = bdy_interp1(
                 parent_field, child_field, cropped,
@@ -779,11 +816,10 @@ class NestCoupler:
                 target[destination] = value
             del tables, parent_field, child_field, cropped
 
-    def _restrict_windowed(self, kind, source, parent_source):
+    def _restrict_windowed(self, kind, source, parent_source, mapped=None):
         """Restrict canonical child chunks directly into their parent owner."""
         import cupy as cp
         from gpuwm.core.nest_interp import feedback_child_window
-        from gpuwm.core.nest_operands import streamed_chunk_shape
 
         node = self.child_node
         reg = self.registrations[_STAGGER.get(kind, "m")]
@@ -791,7 +827,7 @@ class NestCoupler:
         attr = _state_attr(kind)
         field = parent_source.array(attr)
         ilo, ihi, jlo, jhi = feedback_parent_bounds(reg, spec_zone=run.spec_zone)
-        sy, sx = streamed_chunk_shape(node.state)
+        sy, sx = self._transaction_chunk_shape()
         # A parent cell reads at most one ratio-sized child footprint.
         py, px = max(1, sy // reg.nrj), max(1, sx // reg.nri)
         for j in range(jlo, jhi+1, py):
@@ -799,7 +835,8 @@ class NestCoupler:
                 window = (slice(j, min(j+py, jhi+1)),
                           slice(i, min(i+px, ihi+1)))
                 donor = feedback_child_window(reg, window, spec_zone=run.spec_zone)
-                child = source.raw(kind, donor)
+                child = (source.raw(kind, donor) if mapped is None else
+                         source.device_array(mapped, donor))
                 target = field[(...,) + window]
                 result = cp.empty(target.shape, dtype=cp.float32)
                 copy_fcn(result, child, reg, spec_zone=run.spec_zone,
@@ -843,13 +880,14 @@ class NestCoupler:
         self.force_sync_bytes += transfer_parent_ozone(node, self.registrations["m"])
         fields = {}
         run = node.cfg.run
-        bounded_child = getattr(node.state, "_streamed_domain", None) is not None
-        if bounded_child:
+        bounded_operands = (getattr(node.state, "_streamed_domain", None) is not None
+                            or getattr(parent.state, "_streamed_domain", None) is not None)
+        if bounded_operands:
             from gpuwm.core.nest_operands import NestWindowSource
             parent_source = NestWindowSource(parent.state)
             child_source = NestWindowSource(node.state)
         for kind in nest_field_kinds(run):
-            if bounded_child:
+            if bounded_operands:
                 out = self._rolling_out(kind)
                 self._force_windowed(kind, out, parent_source, child_source)
                 fields[_APPLICATION_NAME.get(kind, kind)] = out
@@ -866,7 +904,7 @@ class NestCoupler:
                 spec_bdy_width=run.spec_bdy_width, out=out)
             fields[_APPLICATION_NAME.get(kind, kind)] = out
 
-        if bounded_child:
+        if bounded_operands:
             self.force_sync_bytes += (parent_source.host_to_device_bytes
                                       + child_source.host_to_device_bytes)
 
@@ -1001,18 +1039,21 @@ class NestCoupler:
         self._bind_geometry()
 
         # A STREAMED parent is mutated here from outside dycore.step, so the
-        # transaction has to start from the store and end in it.  Pulled in:
-        # every field ``copy_fcn`` WRITES on the parent side -- it fills
-        # only the feedback rectangle, so the cells outside it have to be
-        # the store's own -- plus the four inputs ``feedback_finalize``'s
-        # whole-parent update_diagnostics consumes.  Pushed back out below:
-        # everything written.  This is O(the fields the transaction
-        # touches) per parent step, which is the accurate cost of a
-        # whole-domain finalize; see the module docstring.
+        # transaction has to start from the store and end in it.  A parent
+        # a ``StreamedDomain`` marks (``canonical_parent``) does that through
+        # bounded operands: each restricted window is read from and written
+        # into the owner's store by ``NestWindowSource``, and nothing below
+        # touches its frozen state.  A store published without that marker
+        # takes the older seam: pulled in, every field ``copy_fcn`` WRITES on
+        # the parent side -- it fills only the feedback rectangle, so the
+        # cells outside it have to be the store's own -- plus the four
+        # inputs ``feedback_finalize``'s update_diagnostics consumes; pushed
+        # back out below, everything written.  See the module docstring.
         streamed_parent = _is_streamed(parent.state)
         bounded_child = self._feedback_child_is_bounded()
-        canonical_parent = bounded_child and getattr(
+        canonical_parent = getattr(
             parent.state, "_streamed_domain", None) is not None
+        bounded_operands = bounded_child or canonical_parent
         written = ["mup"]
         if streamed_parent and not canonical_parent:
             _sync_in(parent.state,
@@ -1025,7 +1066,7 @@ class NestCoupler:
         # straight into the exact parent overlap and nothing else is
         # touched.  MU is no different from the rest; it leads only because
         # the smoother and finalize below read the updated mass.
-        if bounded_child:
+        if bounded_operands:
             from gpuwm.core.nest_operands import NestWindowSource
             child_source = NestWindowSource(node.state)
             parent_source = NestWindowSource(parent.state)
@@ -1047,19 +1088,23 @@ class NestCoupler:
                 continue
             stagger = _STAGGER.get(kind, "m")
             reg = self.registrations[stagger]
-            if bounded_child:
-                # The windowed restriction reads the child's own array BY
-                # NAME, chunk by chunk out of the store, so it is only ever
-                # taken where no conversion is owed.  ``feedback_prepare``
-                # dropped every species the reverse edge handles from a
-                # bounded child's transaction and said so once; this reads
-                # the same predicate rather than trusting that, so a
-                # mixed-scheme species cannot be restricted unconverted
-                # even if the child became bounded after the prepare.
-                if reverse is not None and transition_handles_field(
+            if bounded_operands:
+                # A streamed child's reverse-edge policy remains the one
+                # feedback_prepare declared. A resident child can diagnose
+                # its reverse species into the existing arena, then restrict
+                # windows of that mapped field into the canonical parent.
+                # Only that diagnosed arm hands over a mapped field; every
+                # other kind is restricted from the child's own array by
+                # name, so a streamed child is never offered one.
+                if bounded_child and reverse is not None and transition_handles_field(
                         reverse, kind):
                     continue
-                self._restrict_windowed(kind, child_source, parent_source)
+                if kind in diagnosed:
+                    self._restrict_windowed(
+                        kind, child_source, parent_source,
+                        mapped=self._mapped_child_field(kind))
+                else:
+                    self._restrict_windowed(kind, child_source, parent_source)
                 written.append(_state_attr(kind))
                 continue
             # A species the reverse edge handles is DIAGNOSED on the child
@@ -1123,7 +1168,7 @@ class NestCoupler:
                         _clip_nonnegative(window)
         if streamed_parent and not canonical_parent:
             _sync_out(parent.state, tuple(dict.fromkeys(written)))
-        if bounded_child:
+        if bounded_operands:
             self.feedback_sync_bytes += (
                 child_source.host_to_device_bytes + parent_source.host_to_device_bytes
                 + parent_source.device_to_host_bytes)
@@ -1171,8 +1216,7 @@ class NestCoupler:
                 cj_lo = min(cj_lo, j0)
                 cj_hi = max(cj_hi, j0 + njw - 1)
         window = (cj_lo, ci_lo, cj_hi - cj_lo + 1, ci_hi - ci_lo + 1)
-        if (getattr(node.state, "_streamed_domain", None) is not None
-                and getattr(parent.state, "_streamed_domain", None) is not None):
+        if getattr(parent.state, "_streamed_domain", None) is not None:
             from gpuwm.core.nest_operands import (
                 NestWindowSource, diagnose_canonical_parent, streamed_chunk_shape)
             source = NestWindowSource(parent.state)

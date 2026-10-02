@@ -115,7 +115,11 @@ def expected_at(source: str, cycle: datetime, lead: int) -> datetime:
 
     cycle = _utc(cycle)
     hours = grid(source).delay(cycle, int(lead))
-    return cycle + timedelta(hours=hours)
+    from gpuwm import fetch_endpoints
+
+    return (cycle + timedelta(hours=hours)
+            + timedelta(minutes=fetch_endpoints.policy_posting_delay_minutes(
+                source, int(lead))))
 
 
 def late_after_minutes(source: str, override: float | None = None, *,
@@ -179,6 +183,11 @@ def lead_rows(source: str, cycle: datetime, leads: Iterable[int], *,
             "fetched_at": None,
             "endpoint": None,
             "state": SCHEDULED,
+            # The host's last answer about the lead once the fetch has
+            # asked (``posted``, ``not_posted``, ``not_heard``,
+            # ``failed_verification``), so a wait on it can say a host
+            # that cannot be heard instead of a publisher that is late.
+            "last_answer": None,
         })
     return rows
 

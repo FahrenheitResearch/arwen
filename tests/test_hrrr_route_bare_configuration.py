@@ -68,9 +68,9 @@ def _experiment(config):
 
 
 def _moist_cq_the_namelists_cannot_state(raw):
-    """moist_cq opposite to what the route derives for this suite."""
+    """The explicit verification opt-out has no WRF namelist spelling."""
 
-    raw["shared"]["moist_cq"] = not raw["shared"]["moist_cq"]
+    raw["shared"]["moist_cq"] = False
 
 
 def _drive_chain(plan, config, exp, monkeypatch, observer=None):

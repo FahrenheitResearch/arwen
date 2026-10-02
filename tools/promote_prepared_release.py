@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+from datetime import datetime, timezone
 import email
 import fnmatch
 import hashlib
@@ -781,6 +782,108 @@ def finish(args) -> None:
         "immutable": release.get("immutable", False), "rebuilt": False})
 
 
+#: The workflow whose result on the published commit gates publication.
+CI_WORKFLOW = "ci.yml"
+#: These events check out head_sha itself. A pull-request run checks out a
+#: synthetic merge commit, so its success cannot qualify the release commit.
+CI_CHECKOUT_EVENTS = frozenset({"push", "workflow_dispatch"})
+
+
+def _release_ci_runs(runs: list[dict], commit: str) -> list[dict]:
+    selected = [run for run in runs if run.get("head_sha") == commit
+                and run.get("event") in CI_CHECKOUT_EVENTS]
+    for run in selected:
+        require(type(run.get("id")) is int and run["id"] > 0,
+                "GitHub CI run has no positive run id; cannot order release checks")
+    return selected
+
+
+def _ci_attempt_order(run: dict) -> tuple[datetime, int]:
+    """Order attempts, including a later retry retaining an earlier run id."""
+    attempt = run.get("run_attempt")
+    require(type(attempt) is int and attempt > 0,
+            "GitHub CI run has no positive attempt number; cannot order release checks")
+    # The list retains the original created_at and id on a rerun, but
+    # run_started_at names the current attempt. Before a retry starts,
+    # updated_at records its queued/waiting state while started_at can still
+    # name the old attempt. That pending retry must supersede an older pass.
+    if attempt > 1 and run.get("status") not in {"completed", "in_progress"}:
+        value = run.get("updated_at")
+    else:
+        value = run.get("run_started_at") or run.get("created_at")
+    try:
+        timestamp = datetime.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        timestamp = None
+    require(timestamp is not None and timestamp.tzinfo is not None,
+            "GitHub CI attempt has no valid timezone-qualified timestamp; cannot order release checks")
+    return timestamp.astimezone(timezone.utc), run["id"]
+
+
+def judge_ci_runs(runs: list[dict], commit: str) -> tuple[str, str]:
+    """``("passed" | "pending" | "refused", why)`` for ci's runs of one commit.
+
+    THE BREAKAGE THIS PREVENTS: ci failed on the public repository for
+    2.7.6, 2.7.7 and 2.8.0 while publish succeeded on all three, because
+    nothing in publish read ci.  A run on another commit never counts.
+    """
+    runs = _release_ci_runs(runs, commit)
+    if not runs:
+        return "pending", f"no push or workflow_dispatch {CI_WORKFLOW} run exists for {commit} yet"
+    # A successful retry supersedes an earlier failed run on the same bytes.
+    # Conversely, an older success must not hide a newer unfinished or failed
+    # check. The API returns the current attempt of each run id.
+    latest = max(runs, key=_ci_attempt_order)
+    identity = f"{CI_WORKFLOW} run {latest['id']} on {commit}"
+    if latest.get("status") != "completed":
+        return "pending", f"{identity} has not finished"
+    if latest.get("conclusion") != "success":
+        return "refused", f"{identity} did not pass: {latest['id']}={latest.get('conclusion')}"
+    return "passed", f"{identity} succeeded"
+
+
+def _ci_workflow_runs(client: GitHub, commit: str) -> list[dict]:
+    """Read the bounded workflow inventory without dropping later pages."""
+    result = []
+    for page in range(1, 11):
+        payload = client.json(f"/actions/workflows/{CI_WORKFLOW}/runs?head_sha={commit}&per_page=100&page={page}")
+        rows = payload.get("workflow_runs") if isinstance(payload, dict) else None
+        require(isinstance(rows, list) and all(isinstance(row, dict) for row in rows),
+                "GitHub workflow runs response has no valid run list")
+        result.extend(rows)
+        if len(rows) < 100:
+            return result
+        total = payload.get("total_count")
+        if type(total) is int and total <= len(result):
+            return result
+    raise PublicationError("CI run inventory exceeds the bounded pagination limit; cannot prove its latest release check")
+
+
+def ci_passed(args, *, sleep: Callable[[float], None] = time.sleep,
+              clock: Callable[[], float] = time.monotonic) -> None:
+    """Wait, bounded, for ci on the commit being published; refuse unless it passed."""
+    require(bool(COMMIT.fullmatch(args.commit)), "ci check requires one 40-hex commit")
+    require(args.timeout >= 0 and args.interval > 0, "ci check requires a nonnegative timeout and positive polling interval")
+    client = GitHub(args.repository)
+    deadline = clock() + args.timeout
+    while True:
+        runs = _ci_workflow_runs(client, args.commit)
+        verdict, why = judge_ci_runs(runs, args.commit)
+        print(why, flush=True)
+        if verdict == "passed":
+            write_json(args.out, {"schema": "gpuwm.publication-ci-gate.v1", "status": "PASS",
+                                  "workflow": CI_WORKFLOW, "commit": args.commit, "detail": why,
+                                  "runs": [{"id": run.get("id"), "event": run.get("event"),
+                                            "head_branch": run.get("head_branch"),
+                                            "run_attempt": run.get("run_attempt"),
+                                            "conclusion": run.get("conclusion")}
+                                           for run in _release_ci_runs(runs, args.commit)]})
+            return
+        require(verdict == "pending", why)
+        require(clock() < deadline, f"{why}; gave up after {args.timeout:.0f} s")
+        sleep(min(args.interval, max(0.0, deadline - clock())))
+
+
 def output_values(values: dict[str, str]) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
     for key, value in values.items():
@@ -839,6 +942,13 @@ def main(argv=None) -> int:
     command.add_argument("--timeout", type=float, default=300)
     command.add_argument("--out", type=Path, required=True)
     command.set_defaults(function=wait_index)
+    command = commands.add_parser("ci-passed")
+    command.add_argument("--repository", required=True)
+    command.add_argument("--commit", required=True)
+    command.add_argument("--timeout", type=float, default=3 * 3600)
+    command.add_argument("--interval", type=float, default=60)
+    command.add_argument("--out", type=Path, required=True)
+    command.set_defaults(function=ci_passed)
     command = commands.add_parser("finish")
     command.add_argument("--proof", type=Path, required=True)
     command.add_argument("--timeout", type=float, default=300)

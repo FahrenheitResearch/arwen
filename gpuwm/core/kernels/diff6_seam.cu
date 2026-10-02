@@ -11,11 +11,9 @@
 // out of the main kernel's output and these kernels recompute it with
 // honest unwrapped reads: 0-based, u face i = nx-3 and v face j = ny-3.
 //
-// The arithmetic is the same WRF transcription as diff6.cu (Xue eq. 3
-// fluxes, the diff_6th_opt=2 up-gradient zeroing, the diff_6th_slopeopt
-// taper, the u/v hybrid face-mass averages); every non-seam face keeps
-// the main kernel's untouched binary, so the fix is bit-neutral off the
-// seam by construction (pinned in tests/test_diff6_boundary_face.py).
+// The arithmetic uses WRF's REAL operation order and tendency map factors,
+// as in diff6.cu. The compiled Fortran oracle grades these boundary faces
+// word for word in tests/test_diff6_wrf471_parity.py.
 //
 // diff6_seam_u writes rows h0..h1 of the fixed face column: WRF's
 // j bounds jds+3..jde-4 (0-based 3..ny-4) when y is also non-periodic
@@ -35,6 +33,7 @@ void diff6_seam_u(const real* __restrict__ f,     // (nlev, ny, nx+1)
                   const real* __restrict__ phb,   // (>=nlev, ny, nx)
                   const real* __restrict__ msfu,  // (ny, nx+1)
                   const real* __restrict__ msfv,  // (ny+1, nx)
+                  const real* __restrict__ msft,  // (ny, nx), unused for u
                   real coef, int mono, int slopeopt,
                   real dzthr_x, real dzthr_y,
                   int nlev, int ny, int nx,
@@ -53,16 +52,16 @@ void diff6_seam_u(const real* __restrict__ f,     // (nlev, ny, nx+1)
 #define FX(m) f[I3S(k, j, i + (m), ny, nxs)]
 #define FY(m) f[I3S(k, JR(m), i, ny, nxs)]
 #define MU(jj, ii) mut[(size_t)(jj) * nx + (ii)]
-#define CM(jj, ii) (c1[k] * MU(jj, ii) + c2[k])
+#define CM(jj, ii) (__fmul_rn(c1[k], MU(jj, ii)) + c2[k])
 #define PHB(jj, ii) phb[I3(k, jj, ii, ny, nx)]
 #define MSFX(jj, ii) msfu[(size_t)(jj) * (nx + 1) + (ii)]
 #define MSFY(jj, ii) msfv[(size_t)(bndc ? (jj) : PERIODIC(jj, ny)) * nx \
                           + (ii)]
 
     // ---- diffusion in x (Fortran :6461-6533, 'u' branch) ----
-    real dflux_x_p0 = 10.0f * (FX(0) - FX(-1)) - 5.0f * (FX(1) - FX(-2))
+    real dflux_x_p0 = __fmul_rn(10.0f, (FX(0) - FX(-1))) - __fmul_rn(5.0f, (FX(1) - FX(-2)))
                       + (FX(2) - FX(-3));
-    real dflux_x_p1 = 10.0f * (FX(1) - FX(0)) - 5.0f * (FX(2) - FX(-1))
+    real dflux_x_p1 = __fmul_rn(10.0f, (FX(1) - FX(0))) - __fmul_rn(5.0f, (FX(2) - FX(-1)))
                       + (FX(3) - FX(-2));         // FX(3) = u(ide)
     if (mono == 2) {
         if (dflux_x_p0 * (FX(0) - FX(-1)) <= 0.0f) dflux_x_p0 = 0.0f;
@@ -75,17 +74,18 @@ void diff6_seam_u(const real* __restrict__ f,     // (nlev, ny, nx+1)
         real dz0 = fmaxf(a0, fabsf(PHB(j, i - 1) - PHB(j, i - 2))
                              * MSFX(j, i - 1));
         real dz1 = fmaxf(a1, a0);
-        sdx_p0 = fmaxf(1.0f - dz0 / dzthr_x, 0.0f);
-        sdx_p1 = fmaxf(1.0f - dz1 / dzthr_x, 0.0f);
+        sdx_p0 = fmaxf(1.0f - __fdiv_rn(dz0, dzthr_x), 0.0f);
+        sdx_p1 = fmaxf(1.0f - __fdiv_rn(dz1, dzthr_x), 0.0f);
     }
-    real tendency_x = coef
-        * (sdx_p1 * CM(j, i) * dflux_x_p1
-           - sdx_p0 * CM(j, i - 1) * dflux_x_p0);
+    real mapped_coef = __fmul_rn(coef, MSFX(j, i));
+    real tendency_x = __fmul_rn(mapped_coef,
+        (__fmul_rn(__fmul_rn(sdx_p1, CM(j, i)), dflux_x_p1)
+           - __fmul_rn(__fmul_rn(sdx_p0, CM(j, i - 1)), dflux_x_p0)));
 
     // ---- diffusion in y (Fortran :6543-6616, 'u' branch) ----
-    real dflux_y_p0 = 10.0f * (FY(0) - FY(-1)) - 5.0f * (FY(1) - FY(-2))
+    real dflux_y_p0 = __fmul_rn(10.0f, (FY(0) - FY(-1))) - __fmul_rn(5.0f, (FY(1) - FY(-2)))
                       + (FY(2) - FY(-3));
-    real dflux_y_p1 = 10.0f * (FY(1) - FY(0)) - 5.0f * (FY(2) - FY(-1))
+    real dflux_y_p1 = __fmul_rn(10.0f, (FY(1) - FY(0))) - __fmul_rn(5.0f, (FY(2) - FY(-1)))
                       + (FY(3) - FY(-2));
     if (mono == 2) {
         if (dflux_y_p0 * (FY(0) - FY(-1)) <= 0.0f) dflux_y_p0 = 0.0f;
@@ -99,17 +99,17 @@ void diff6_seam_u(const real* __restrict__ f,     // (nlev, ny, nx+1)
                              * MSFY(JR(0), i - 1));
         real dz1 = fmaxf(b1, fabsf(PHB(JR(1), i - 1) - PHB(JR(0), i - 1))
                              * MSFY(JR(1), i - 1));
-        sdy_p0 = fmaxf(1.0f - dz0 / dzthr_y, 0.0f);
-        sdy_p1 = fmaxf(1.0f - dz1 / dzthr_y, 0.0f);
+        sdy_p0 = fmaxf(1.0f - __fdiv_rn(dz0, dzthr_y), 0.0f);
+        sdy_p1 = fmaxf(1.0f - __fdiv_rn(dz1, dzthr_y), 0.0f);
     }
     real mu_y_p0 = 0.25f * (CM(JR(-1), i - 1) + CM(JR(-1), i)
                             + CM(JR(0), i - 1) + CM(JR(0), i));
     real mu_y_p1 = 0.25f * (CM(JR(0), i - 1) + CM(JR(0), i)
                             + CM(JR(1), i - 1) + CM(JR(1), i));
-    real tendency_y = coef
-        * (sdy_p1 * mu_y_p1 * dflux_y_p1 - sdy_p0 * mu_y_p0 * dflux_y_p0);
+    real tendency_y = __fmul_rn(mapped_coef,
+        (__fmul_rn(__fmul_rn(sdy_p1, mu_y_p1), dflux_y_p1) - __fmul_rn(__fmul_rn(sdy_p0, mu_y_p0), dflux_y_p0)));
 
-    tend[I3S(k, j, i, ny, nxs)] += tendency_x + tendency_y;
+    tend[I3S(k, j, i, ny, nxs)] = (tend[I3S(k, j, i, ny, nxs)] + tendency_x) + tendency_y;
 
 #undef JR
 #undef FX
@@ -130,6 +130,7 @@ void diff6_seam_v(const real* __restrict__ f,     // (nlev, ny+1, nx)
                   const real* __restrict__ phb,   // (>=nlev, ny, nx)
                   const real* __restrict__ msfu,  // (ny, nx+1)
                   const real* __restrict__ msfv,  // (ny+1, nx)
+                  const real* __restrict__ msft,  // (ny, nx), unused for v
                   real coef, int mono, int slopeopt,
                   real dzthr_x, real dzthr_y,
                   int nlev, int ny, int nx,
@@ -148,16 +149,16 @@ void diff6_seam_v(const real* __restrict__ f,     // (nlev, ny+1, nx)
 #define FX(m) f[I3S(k, j, IC(m), nys, nx)]
 #define FY(m) f[I3S(k, j + (m), i, nys, nx)]
 #define MU(jj, ii) mut[(size_t)(jj) * nx + (ii)]
-#define CM(jj, ii) (c1[k] * MU(jj, ii) + c2[k])
+#define CM(jj, ii) (__fmul_rn(c1[k], MU(jj, ii)) + c2[k])
 #define PHB(jj, ii) phb[I3(k, jj, ii, ny, nx)]
 #define MSFX(jj, ii) msfu[(size_t)(jj) * (nx + 1) \
                           + (bndc ? (ii) : PERIODIC(ii, nx))]
 #define MSFY(jj, ii) msfv[(size_t)(jj) * nx + (ii)]
 
     // ---- diffusion in x (Fortran :6461-6533, 'v' branch) ----
-    real dflux_x_p0 = 10.0f * (FX(0) - FX(-1)) - 5.0f * (FX(1) - FX(-2))
+    real dflux_x_p0 = __fmul_rn(10.0f, (FX(0) - FX(-1))) - __fmul_rn(5.0f, (FX(1) - FX(-2)))
                       + (FX(2) - FX(-3));
-    real dflux_x_p1 = 10.0f * (FX(1) - FX(0)) - 5.0f * (FX(2) - FX(-1))
+    real dflux_x_p1 = __fmul_rn(10.0f, (FX(1) - FX(0))) - __fmul_rn(5.0f, (FX(2) - FX(-1)))
                       + (FX(3) - FX(-2));
     if (mono == 2) {
         if (dflux_x_p0 * (FX(0) - FX(-1)) <= 0.0f) dflux_x_p0 = 0.0f;
@@ -171,20 +172,21 @@ void diff6_seam_v(const real* __restrict__ f,     // (nlev, ny+1, nx)
                              * MSFX(j - 1, IC(0)));
         real dz1 = fmaxf(a1, fabsf(PHB(j - 1, IC(1)) - PHB(j - 1, IC(0)))
                              * MSFX(j - 1, IC(1)));
-        sdx_p0 = fmaxf(1.0f - dz0 / dzthr_x, 0.0f);
-        sdx_p1 = fmaxf(1.0f - dz1 / dzthr_x, 0.0f);
+        sdx_p0 = fmaxf(1.0f - __fdiv_rn(dz0, dzthr_x), 0.0f);
+        sdx_p1 = fmaxf(1.0f - __fdiv_rn(dz1, dzthr_x), 0.0f);
     }
     real mu_x_p0 = 0.25f * (CM(j - 1, IC(-1)) + CM(j - 1, IC(0))
                             + CM(j, IC(-1)) + CM(j, IC(0)));
     real mu_x_p1 = 0.25f * (CM(j - 1, IC(0)) + CM(j - 1, IC(1))
                             + CM(j, IC(0)) + CM(j, IC(1)));
-    real tendency_x = coef
-        * (sdx_p1 * mu_x_p1 * dflux_x_p1 - sdx_p0 * mu_x_p0 * dflux_x_p0);
+    real mapped_coef = __fmul_rn(coef, MSFY(j, i));
+    real tendency_x = __fmul_rn(mapped_coef,
+        (__fmul_rn(__fmul_rn(sdx_p1, mu_x_p1), dflux_x_p1) - __fmul_rn(__fmul_rn(sdx_p0, mu_x_p0), dflux_x_p0)));
 
     // ---- diffusion in y (Fortran :6543-6616, 'v' branch) ----
-    real dflux_y_p0 = 10.0f * (FY(0) - FY(-1)) - 5.0f * (FY(1) - FY(-2))
+    real dflux_y_p0 = __fmul_rn(10.0f, (FY(0) - FY(-1))) - __fmul_rn(5.0f, (FY(1) - FY(-2)))
                       + (FY(2) - FY(-3));
-    real dflux_y_p1 = 10.0f * (FY(1) - FY(0)) - 5.0f * (FY(2) - FY(-1))
+    real dflux_y_p1 = __fmul_rn(10.0f, (FY(1) - FY(0))) - __fmul_rn(5.0f, (FY(2) - FY(-1)))
                       + (FY(3) - FY(-2));         // FY(3) = v(jde)
     if (mono == 2) {
         if (dflux_y_p0 * (FY(0) - FY(-1)) <= 0.0f) dflux_y_p0 = 0.0f;
@@ -199,14 +201,13 @@ void diff6_seam_v(const real* __restrict__ f,     // (nlev, ny+1, nx)
         real dz0 = fmaxf(b0, fabsf(PHB(j - 1, i) - PHB(j - 2, i))
                              * MSFY(j - 1, i));
         real dz1 = fmaxf(b1, b0);
-        sdy_p0 = fmaxf(1.0f - dz0 / dzthr_y, 0.0f);
-        sdy_p1 = fmaxf(1.0f - dz1 / dzthr_y, 0.0f);
+        sdy_p0 = fmaxf(1.0f - __fdiv_rn(dz0, dzthr_y), 0.0f);
+        sdy_p1 = fmaxf(1.0f - __fdiv_rn(dz1, dzthr_y), 0.0f);
     }
-    real tendency_y = coef
-        * (sdy_p1 * CM(j, i) * dflux_y_p1 - sdy_p0 * CM(j - 1, i)
-           * dflux_y_p0);
+    real tendency_y = __fmul_rn(mapped_coef,
+        (__fmul_rn(__fmul_rn(sdy_p1, CM(j, i)), dflux_y_p1) - __fmul_rn(__fmul_rn(sdy_p0, CM(j - 1, i)), dflux_y_p0)));
 
-    tend[I3S(k, j, i, nys, nx)] += tendency_x + tendency_y;
+    tend[I3S(k, j, i, nys, nx)] = (tend[I3S(k, j, i, nys, nx)] + tendency_x) + tendency_y;
 
 #undef IC
 #undef FX

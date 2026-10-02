@@ -5,6 +5,55 @@ import pytest
 from gpuwm import bridge_assets, bridges, netcdf_bridge
 
 
+@pytest.mark.parametrize("has_qv", [False, True])
+def test_wrfinput_metadata_detects_vapor_from_headers_without_decoding(
+        tmp_path, monkeypatch, has_qv):
+    from gpuwm.ingest import wrfinput as wi
+
+    class HeaderVariable:
+        def __getitem__(self, key):
+            raise AssertionError("metadata must not decode a field")
+
+    class HeaderDataset:
+        dimensions = {name: range(size) for name, size in (
+            ("west_east", 6), ("west_east_stag", 7),
+            ("south_north", 4), ("south_north_stag", 5),
+            ("bottom_top", 3), ("bottom_top_stag", 4),
+            ("soil_layers_stag", 4))}
+        variables = {name: HeaderVariable() for name in
+                     (("U", "QVAPOR") if has_qv else ("U",))}
+        attributes = {"GRID_ID": 1, "MP_PHYSICS": 0,
+                      "SF_SURFACE_PHYSICS": 0,
+                      "START_DATE": "2024-01-01_00:00:00"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def ncattrs(self):
+            return tuple(self.attributes)
+
+        def getncattr(self, name):
+            return self.attributes[name]
+
+    monkeypatch.setattr(netcdf_bridge, "open_dataset",
+                        lambda path: HeaderDataset())
+    metadata = wi.read_wrfinput_metadata(tmp_path / "wrfinput")
+    assert metadata.has_qv is has_qv
+    assert metadata.mp_physics == 0
+    assert (metadata.nx, metadata.ny, metadata.nz) == (6, 4, 3)
+
+
+def test_wrfinput_metadata_appends_optional_vapor_presence():
+    from pathlib import Path
+    from gpuwm.ingest.wrfinput import WrfinputMetadata
+
+    metadata = WrfinputMetadata(Path("wrfinput"), 1, {}, 0, 0, "", {})
+    assert metadata.has_qv is False
+
+
 def test_default_reader_rejects_numeric_only_artifact_before_opening_input(tmp_path, monkeypatch):
     old = tmp_path / "rw_netcdf"
     old.write_bytes(b"gpuwm-rw-netcdf-inventory-v1\tgpuwm-rw-netcdf-dump-v1")

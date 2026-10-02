@@ -1012,6 +1012,184 @@ def _head_cache_header(root_head) -> dict[str, object]:
             "identity": cache["identity"], "metadata": cache["metadata"]}
 
 
+_POSTED_TREE_SEAL_KEYS = ("provenance", "input_manifest_sha256", "posting")
+
+
+def _root_source_binding(*, paths, source_manifest, source_manifest_sha256,
+                         identity, root_head, root_preparation):
+    """Bind the source documents, or exactly the live root's plan placeholders."""
+
+    posted = (root_head or {}).get("basis", {}).get("as_posted")
+    if posted is not None:
+        from gpuwm.ingest.boundary_stream import as_posted_placeholder
+
+        placeholder = as_posted_placeholder(posted["input_plan_sha256"])
+        keys = posted.get("document_bound_identity_keys") or {}
+        if keys != {"bridge_manifest_sha256": "bridge",
+                    "source_manifest_sha256": "source_manifest"}:
+            raise ValueError("native HRRR root head lacks its document bindings")
+        if (source_manifest_sha256 != placeholder
+                or identity.get("source_manifest_sha256") != placeholder
+                or identity.get("bridge_manifest_sha256") != placeholder):
+            raise ValueError("native HRRR root head differs from its input plan")
+        document = posted["documents"]["source_manifest"]
+        if Path(source_manifest).resolve() != (
+                Path(root_preparation) / document["path"]).resolve():
+            raise ValueError("native HRRR source manifest differs from its root head")
+        return placeholder, placeholder
+    observed_source_sha = sha256_file(Path(source_manifest))
+    if (observed_source_sha != source_manifest_sha256
+            or identity.get("source_manifest_sha256") != observed_source_sha):
+        raise ValueError("source manifest differs from the root preparation")
+    bridge_sha = sha256_file(paths["bridge_manifest"])
+    if identity.get("bridge_manifest_sha256") != bridge_sha:
+        raise ValueError("HRRR bridge manifest differs from root preparation")
+    return observed_source_sha, bridge_sha
+
+
+def _posted_tree_head_inputs(root_head):
+    """The root's input plan and start-lead bindings, relayed into the tree."""
+
+    posted = root_head["basis"]["as_posted"]
+    return {
+        "input_plan": deepcopy(posted["input_plan"]),
+        "start_marker_sha256": dict(posted["start_marker_sha256"]),
+        "forcing_leads": list(posted["forcing_leads"]),
+        "seal_authored_proof_keys": _POSTED_TREE_SEAL_KEYS,
+        "manifest_path": str(posted["manifest_path"]),
+        "lead_role_prefix": str(posted["lead_role_prefix"]),
+        "derived_roles": tuple(posted.get("derived_roles") or ()),
+        "manifest_bound_identity_keys": tuple(
+            posted["manifest_bound_identity_keys"]),
+        "document_bound_identity_keys": dict(
+            posted["document_bound_identity_keys"]),
+        "documents": deepcopy(posted["documents"]),
+    }
+
+
+def _settled_source_manifest_sha(root_preparation, source_manifest, requested):
+    """Resolve a head's document placeholder if its root sealed before entry."""
+
+    from gpuwm.ingest.boundary_stream import (
+        is_as_posted_placeholder, read_head, verify_seal)
+
+    if not is_as_posted_placeholder(requested):
+        return requested
+    head = read_head(root_preparation)
+    _root_source_binding(
+        paths=_root_paths(Path(root_preparation)),
+        source_manifest=source_manifest, source_manifest_sha256=requested,
+        identity=head["basis"]["cache"]["identity"], root_head=head,
+        root_preparation=root_preparation)
+    verify_seal(root_preparation, head=head)
+    return sha256_file(Path(source_manifest))
+
+
+def _posted_start_snapshots(root_preparation, bridge, root_head, lead):
+    """Map the start lead only after its root interval binds its decoded bytes."""
+
+    from gpuwm.ingest.boundary_stream import (
+        StreamedIntervals, decoded_lead_record_sha256)
+    from gpuwm.ingest.hrrr import load_hrrr_pipeline_ready_window
+    from tools.hrrr_single_domain_benchmark import _decoded_lead_record
+
+    stream = StreamedIntervals(root_preparation, head=root_head)
+    # Its head already admitted the first two source leads.  The first
+    # interval's marker binds the decoded start snapshot we build children
+    # from, without reading or waiting for the sealed bridge manifest.
+    stream[0]
+    marker = stream.consumed_markers()[0]
+    def checked_snapshot(path):
+        record = _decoded_lead_record(path, lead)
+        if (marker.get("decoded_leads") or {}).get(str(int(lead))) \
+                != decoded_lead_record_sha256(record):
+            raise ValueError("native HRRR start snapshot differs from its root interval")
+        return load_hrrr_pipeline_ready_window(path, lead)
+
+    path = _posted_start_bridge(root_preparation, bridge)
+    try:
+        snapshots = (checked_snapshot(path),)
+    except FileNotFoundError:
+        # The decoder removes its retained staging after publishing the
+        # canonical bridge.  If it sealed between choosing that staging
+        # and mapping the snapshot, the canonical copy binds the same
+        # decoded record and can be read instead.
+        if path == Path(bridge) or not Path(bridge).is_dir():
+            raise
+        snapshots = (checked_snapshot(Path(bridge)),)
+    stream.release(0)
+    return snapshots
+
+
+def _posted_start_bridge(root_preparation, bridge):
+    """The root decoder's own retained staging, or its published bridge."""
+
+    from tools.hrrr_pipeline import _path_is_reparse_point, _read_tsv
+
+    bridge = Path(bridge)
+    if bridge.is_dir():
+        return bridge
+    receipt = _read_tsv(Path(root_preparation)
+                        / "native/pipeline-signals/preflight.ready")
+    staging = Path(receipt.get("staging_root", ""))
+    prefix = f".{bridge.name}.partial-"
+    pid = staging.name.removeprefix(prefix)
+    if (receipt.get("status") != "PASS"
+            or receipt.get("staging_retention") != "until_consumer_finish"
+            or Path(receipt.get("canonical_output", "")).resolve()
+            != bridge.resolve()
+            or not staging.name.startswith(prefix) or not pid.isdigit()
+            or int(pid) < 1
+            or staging.resolve().parent != bridge.resolve().parent
+            or _path_is_reparse_point(staging) or not staging.is_dir()):
+        if bridge.is_dir() and receipt.get("status") == "PASS" \
+                and Path(receipt.get("canonical_output", "")).resolve() \
+                == bridge.resolve():
+            return bridge
+        raise ValueError("native HRRR decoder staging differs from its root bridge")
+    return staging
+
+
+def _copy_posted_root_inputs(root_preparation, destination, root_head,
+                             sealed_root):
+    """Copy the documents whose bytes the root's completed seal verified."""
+
+    from gpuwm.ingest.boundary_stream import document_bound_digests
+
+    posted = root_head["basis"]["as_posted"]
+    source = Path(root_preparation)
+    manifest_path = str(posted["manifest_path"])
+    names = [manifest_path, *(str(document["path"])
+                              for document in posted["documents"].values())]
+    for name in names:
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("native HRRR input document leaves its prepared bundle")
+        target = Path(destination) / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source / relative, target)
+    manifest = _json(Path(destination) / manifest_path)
+    digest = sha256_file(Path(destination) / manifest_path)
+    if digest != sealed_root["as_posted"]["input_manifest_sha256"]:
+        raise ValueError("native HRRR input manifest changed after its root seal")
+    documents = document_bound_digests(posted, manifest)
+    for key, role in posted["document_bound_identity_keys"].items():
+        path = Path(destination) / posted["documents"][role]["path"]
+        if sha256_file(path) != documents[key]:
+            raise ValueError("native HRRR input document changed after its root seal")
+    return digest, documents
+
+
+def _relay_root_wait(writer, report):
+    """A tree waiting on its root names the same source lead on its heartbeat."""
+
+    cause = None if report is None else report.get("cause")
+    if isinstance(cause, Mapping) and cause.get("on") == "source":
+        writer.waiting_for_source(cause)
+    else:
+        writer.source_arrived()
+
+
 def _require_root_preparation_report(path: Path, *, identity,
                                      content_sha256) -> None:
     """The root preparation's report passed and binds its sealed cache."""
@@ -1123,6 +1301,7 @@ def _chained_hierarchy_tail(c) -> dict[str, object]:
 
     exp = c.export_exp
     staging = c.staging
+    posted = c.root_head["basis"].get("as_posted")
     writer = None
     try:
         head_started = time.perf_counter()
@@ -1183,6 +1362,8 @@ def _chained_hierarchy_tail(c) -> dict[str, object]:
                if corridor_receipt is not None else {}),
             **_aerosol_entry(c.cache_header, c.native_exp, c.paths),
         }
+        if posted is not None:
+            proof_head.pop("provenance")
         cache_name = f"{HIERARCHY_HEAD_DIRNAME}/domains/d01/prepared-cache"
         writer = PreparedTreeWriter(
             staging=staging, output_root=c.output_root,
@@ -1195,7 +1376,8 @@ def _chained_hierarchy_tail(c) -> dict[str, object]:
             surface=canonical_noah_surface(c.root_soil),
             metadata=dict(binding.metadata), lbc=root_lbc,
             proof_head=proof_head,
-            input_manifest_sha256=c.observed_source_sha,
+            input_manifest_sha256=(None if posted is not None
+                                   else c.observed_source_sha),
             forcing=SimpleNamespace(interval_host_bytes=_interval_host_bytes(
                 c.restored.boundaries.intervals[0])),
             tree=domain_tree_head_fields(
@@ -1210,7 +1392,9 @@ def _chained_hierarchy_tail(c) -> dict[str, object]:
             extra_head_payload_bytes=sum(
                 int(build.receipt["artifacts"]["prepared_cache"][
                     "payload_bytes"]) for build in child_builds),
-            seal_completes=("root_preparation",))
+            seal_completes=("root_preparation",),
+            as_posted=(None if posted is None
+                       else _posted_tree_head_inputs(c.root_head)))
         head_seconds = time.perf_counter() - head_started
         # Every start state is in the head now; none stays resident while
         # the root preparation builds its later hours.
@@ -1227,12 +1411,17 @@ def _chained_hierarchy_tail(c) -> dict[str, object]:
         # d01's boundary intervals: the root preparation's, as it writes
         # them, each checked against its segment marker on the way.
         relay_started = time.perf_counter()
-        root_stream = StreamedIntervals(c.root_preparation, head=c.root_head)
+        root_stream = StreamedIntervals(
+            c.root_preparation, head=c.root_head,
+            start_time=c.native_exp.start_time,
+            on_wait=(None if posted is None else
+                     lambda report: _relay_root_wait(writer, report)))
         count = len(root_stream)
         for k in range(count):
             built = time.perf_counter()
             interval = root_stream[k]
-            writer.write_segment(k, interval)
+            writer.write_segment(k, interval, **({} if posted is None else {
+                "relay_marker": root_stream.consumed_markers()[k]}))
             root_stream.release(k)
             del interval
             writer.note_build_seconds(time.perf_counter() - built)
@@ -1245,7 +1434,8 @@ def _chained_hierarchy_tail(c) -> dict[str, object]:
         # The root preparation's seal, held to the head this tree was
         # built on, then the checks the one-shot tree makes up front.
         seal_started = time.perf_counter()
-        sealed_root = verify_seal(c.root_preparation, head=c.root_head)
+        sealed_root = verify_seal(c.root_preparation, head=c.root_head,
+                                  consumed=root_stream.consumed_markers())
         root_content = str(sealed_root["content_sha256"])
         root_header = _json(c.paths["prepared_cache"] / "header.json")
         if (root_header.get("schema") != "gpuwm-prepared-real-cache-v1"
@@ -1253,11 +1443,55 @@ def _chained_hierarchy_tail(c) -> dict[str, object]:
                 or root_header.get("content_sha256") != root_content):
             raise ValueError("root preparation cache is not READY")
         _require_root_preparation_report(
-            c.paths["preparation_report"], identity=c.identity,
+            c.paths["preparation_report"], identity=root_header["identity"],
             content_sha256=root_content)
-        tree_root_content = str(writer.seal_cache(completed_metadata={
-            "root_preparation": _root_preparation_record(root_content),
-        })["content_sha256"])
+        seal_arguments = {}
+        if posted is not None:
+            from gpuwm.ingest.boundary_stream import (
+                POSTED_LEADS_NAME, stream_dir)
+
+            manifest_digest, documents = _copy_posted_root_inputs(
+                c.root_preparation, writer.root, c.root_head, sealed_root)
+            c.bridge_sha = documents["bridge_manifest_sha256"]
+            c.observed_source_sha = documents["source_manifest_sha256"]
+            c.expected_identity = _expected_root_cache_identity(
+                root_header["identity"], root_domain=c.native_exp.root,
+                bridge_manifest_sha256=c.bridge_sha,
+                source_manifest_sha256=c.observed_source_sha,
+                static_cache_sha256=c.expected_identity["static_cache_sha256"],
+                forcing_hours=c.forcing_hours)
+            c.provenance = {
+                **c.provenance, "bridge_manifest_sha256": c.bridge_sha,
+                "source_manifest_sha256": c.observed_source_sha}
+            lead_records = _json(stream_dir(c.root_preparation)
+                                 / POSTED_LEADS_NAME)
+            writer.write_posted_leads(
+                {int(lead): row["marker"]
+                 for lead, row in lead_records["leads"].items()},
+                route_table_sha256=lead_records["route_table_sha256"],
+                decoded={int(lead): row["decoded"]
+                         for lead, row in lead_records["leads"].items()})
+            sealed_binding = root_domain_artifact_binding(
+                exp=exp, static_cache_sha256=root_static_receipt["sha256"],
+                bridge_manifest_sha256=c.bridge_sha,
+                source_manifest_sha256=c.observed_source_sha,
+                namelist_sha256=c.namelist_sha, forcing_hours=c.forcing_hours,
+                source_identity=c.hierarchy_source_identity,
+                valid_time=exp.start_time,
+                root_metadata=_root_preparation_metadata(None))
+            seal_arguments = {
+                "identity": sealed_binding.identity,
+                "manifest_sha256": manifest_digest,
+                "document_sha256": documents}
+            proof_head = {
+                **proof_head, "provenance": c.provenance,
+                "input_manifest_sha256": manifest_digest,
+                "posting": deepcopy(_json(
+                    c.root_preparation / "proof.json")["posting"])}
+        tree_root_content = str(writer.seal_cache(
+            completed_metadata={
+                "root_preparation": _root_preparation_record(root_content)},
+            **seal_arguments)["content_sha256"])
         root_reader = PreparedCacheReader(
             c.paths["prepared_cache"], expected_identity=c.expected_identity)
         if root_reader.verify_all().get("content_sha256") != root_content:
@@ -1295,7 +1529,10 @@ def _chained_hierarchy_tail(c) -> dict[str, object]:
                 "../hierarchy-artifacts/domain-artifacts.json"),
             stock_wrf_export="optional")
         start_states.require_sealed_is_head(
-            result.artifacts.receipt, root_content_sha256=tree_root_content)
+            result.artifacts.receipt, root_content_sha256=tree_root_content,
+            **({} if posted is None else {"as_posted": {
+                "root": writer.root, "head": writer.head,
+                "manifest_sha256": manifest_digest}}))
         verify_overlay_sequence(c.snapshots)
         if corridor_receipt is not None:
             copy_statics_corridor_set(
@@ -1377,11 +1614,17 @@ def prepare_hrrr_hierarchy(
     # Its preparation report is written at the root's seal, so it is
     # checked there.
     root_head = chained_root_head(Path(root_preparation))
+    posted = (root_head or {}).get("basis", {}).get("as_posted")
+    if root_head is None:
+        source_manifest_sha256 = _settled_source_manifest_sha(
+            root_preparation, source_manifest, source_manifest_sha256)
     required = (
         root_domain_spec, wps_namelist, namelist_input,
-        stock_wrf_namelist_input, geog_root, source_manifest, cpu_bridge,
+        stock_wrf_namelist_input, geog_root, cpu_bridge,
+        *((source_manifest,) if posted is None else ()),
         *(path for key, path in paths.items()
-          if root_head is None or key != "preparation_report"),
+          if (root_head is None or key != "preparation_report")
+          and (posted is None or key not in {"bridge", "bridge_manifest"})),
     )
     for path in required:
         if not Path(path).exists():
@@ -1463,13 +1706,11 @@ def prepare_hrrr_hierarchy(
     if static_highres is not None and static_highres.enabled:
         require_prepared_highres(static_receipt, target.grid(), config=static_highres,
                                  domain_id=1, case_date=native_exp.start_time.date())
-    observed_source_sha = sha256_file(Path(source_manifest))
-    if (observed_source_sha != source_manifest_sha256
-            or identity.get("source_manifest_sha256") != observed_source_sha):
-        raise ValueError("source manifest differs from the root preparation")
-    bridge_sha = sha256_file(paths["bridge_manifest"])
-    if identity.get("bridge_manifest_sha256") != bridge_sha:
-        raise ValueError("HRRR bridge manifest differs from root preparation")
+    observed_source_sha, bridge_sha = _root_source_binding(
+        paths=paths, source_manifest=source_manifest,
+        source_manifest_sha256=source_manifest_sha256,
+        identity=identity, root_head=root_head,
+        root_preparation=root_preparation)
     static_sha = sha256_file(paths["static_cache"])
     if identity.get("static_cache_sha256") != static_sha:
         raise ValueError("static cache differs from root preparation identity")
@@ -1551,9 +1792,12 @@ def prepare_hrrr_hierarchy(
         restore_seconds = time.perf_counter() - restore_started
 
         snapshots_started = time.perf_counter()
-        snapshots = load_hrrr_native_series(
-            paths["bridge"], sealed_source_leads(identity, forcing_hours)[:1],
-            expected_manifest_sha256=bridge_sha)
+        source_leads = sealed_source_leads(identity, forcing_hours)
+        snapshots = (_posted_start_snapshots(
+            Path(root_preparation), paths["bridge"], root_head, source_leads[0])
+            if posted is not None else load_hrrr_native_series(
+                paths["bridge"], source_leads[:1],
+                expected_manifest_sha256=bridge_sha))
         from gpuwm.ingest.water_overlay import (
             load_bound_water_overlay, overlay_snapshot_sequence, verify_overlay_sequence)
         water_overlay, water_binding = load_bound_water_overlay(

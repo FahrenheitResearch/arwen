@@ -432,6 +432,98 @@ def test_two_packaged_profiles_are_told_apart_by_their_own_authorities(
         assert stage_cli.resolve_bundle(root)["source"] == source
 
 
+def _mapped_posted_head(root: Path, *, source: str = "rap",
+                        packaged: bool = True) -> dict:
+    """The source seam of a digest-bound head, before its manifest exists."""
+
+    import time
+
+    from gpuwm.ingest import boundary_stream
+    from gpuwm.prepared_single_domain_forecast import (
+        _MAPPED_PACKAGED_PROFILE, _PROOF_SCHEMA, _SOURCE_SCHEMA)
+
+    schema = _SOURCE_SCHEMA[source]
+    _mapped_evidence(
+        root, schema=schema,
+        profile=_MAPPED_PACKAGED_PROFILE[source] if packaged else None)
+    (root / "source-evidence" / "input-manifest.json").unlink()
+    head = {"schema": boundary_stream.HEAD_SCHEMA, "basis": {
+        "proof_head": {"schema": _PROOF_SCHEMA[source]},
+        "as_posted": {"input_plan": {"manifest": {"schema": schema}}}}}
+    head["head_sha256"] = boundary_stream.head_sha256(head)
+    stream = root / "boundary-stream"
+    stream.mkdir()
+    (stream / "head.json").write_text(json.dumps(head), encoding="utf-8")
+    (stream / "producer.json").write_text(
+        json.dumps({"updated_epoch": time.time()}), encoding="utf-8")
+    return head
+
+
+def test_a_packaged_as_posted_head_keeps_the_sealed_sources_identity(tmp_path):
+    """A head binds its planned manifest before the seal writes its copy."""
+
+    from gpuwm.prepared_single_domain_forecast import (
+        _MAPPED_PACKAGED_PROFILE, _SOURCE_SCHEMA)
+
+    config, wps = _authority(tmp_path / "authority")
+    for source, profile in _MAPPED_PACKAGED_PROFILE.items():
+        root = tmp_path / source
+        head = _mapped_posted_head(root, source=source)
+        assert not (root / "proof.json").exists()
+        assert not (root / "source-evidence" / "input-manifest.json").exists()
+        bundle = stage_cli.resolve_head_bundle(root, head["head_sha256"])
+        assert bundle["source"] == source
+        command = stage_cli.sim_command(
+            bundle, experiment_config=config, wps_namelist=wps,
+            outdir=tmp_path / "run")
+        assert command[command.index("--source") + 1] == source
+        # Once its manifest exists, the same authorities still name it.
+        _single_domain_bundle(root, source=source)
+        _mapped_evidence(root, schema=_SOURCE_SCHEMA[source], profile=profile)
+        assert stage_cli.resolve_bundle(root)["source"] == bundle["source"]
+
+
+def test_a_callers_as_posted_head_keeps_its_generic_mapped_identity(tmp_path):
+    root = tmp_path / "custom"
+    head = _mapped_posted_head(root, packaged=False)
+    bundle = stage_cli.resolve_head_bundle(root, head["head_sha256"])
+    assert bundle["source"] == "mapped"
+
+
+@pytest.mark.parametrize("changed", ["mapping", "composition", "schema"])
+def test_a_head_claims_no_packaged_source_when_its_authorities_differ(
+        tmp_path, changed):
+    from gpuwm.ingest import boundary_stream
+
+    root = tmp_path / "changed"
+    head = _mapped_posted_head(root)
+    if changed == "schema":
+        head["basis"]["as_posted"]["input_plan"]["manifest"]["schema"] = "unknown"
+        head["head_sha256"] = boundary_stream.head_sha256(head)
+        (root / "boundary-stream" / "head.json").write_text(
+            json.dumps(head), encoding="utf-8")
+    else:
+        evidence = root / "source-evidence" / f"{changed}.json"
+        authority = json.loads(evidence.read_bytes())
+        if changed == "mapping":
+            authority["target"]["target_vertical_levels"] += 1
+        else:
+            authority["name"] = "custom"
+        evidence.write_text(json.dumps(authority), encoding="utf-8")
+    bundle = stage_cli.resolve_head_bundle(root, head["head_sha256"])
+    assert bundle["source"] == "mapped"
+
+
+def test_a_changed_head_plan_is_refused_before_its_source_is_resolved(tmp_path):
+    root = tmp_path / "changed-plan"
+    head = _mapped_posted_head(root)
+    head["basis"]["as_posted"]["input_plan"]["manifest"]["schema"] = "unknown"
+    (root / "boundary-stream" / "head.json").write_text(
+        json.dumps(head), encoding="utf-8")
+    with pytest.raises(stage_cli.StageRefusal, match="fails its own head digest"):
+        stage_cli.resolve_head_bundle(root, head["head_sha256"])
+
+
 def test_an_earlier_release_s_preparation_keeps_its_packaged_source(tmp_path):
     """A166: an admission-only mapping change does not relabel a bundle.
 

@@ -153,8 +153,18 @@ def test_the_estimate_asks_the_fetchs_own_archive_question(monkeypatch):
 
 
 def _ef4_layout(hours: int = 15):
+    from gpuwm.config import RunConfig
+
+    # A190 replaces the full-history constant with writer inventory. This
+    # saved moist forecast must retain its actual physics in the fixture.
     domain = SimpleNamespace(grid_id=1, history_interval_s=3600.0,
-                             run=SimpleNamespace(nx=386, ny=374, nz=49, spec_bdy_width=5))
+                             run=RunConfig(nx=386, ny=374, nz=49, spec_bdy_width=5,
+                                           dx=3000, dy=3000, ztop=20000, dt=15,
+                                           run_seconds=hours * 3600,
+                                           moist=True, mp_physics=8,
+                                           sf_sfclay_physics=91, sf_surface_physics=2,
+                                           bl_pbl_physics=1, ra_lw_physics=4,
+                                           ra_sw_physics=4, nwp_diagnostics=1))
     return SimpleNamespace(run_seconds=hours * 3600.0, restart_interval_s=3600.0, domains=(domain,))
 
 

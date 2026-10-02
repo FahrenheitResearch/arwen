@@ -38,6 +38,7 @@ real compiler behind them.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import subprocess
@@ -51,6 +52,47 @@ from gpuwm.core import preflight as pf
 
 ROOT = Path(__file__).resolve().parents[1]
 KERNEL_DIR = ROOT / "gpuwm" / "core" / "kernels"
+
+
+@pytest.mark.parametrize("relative_path,names", [
+    ("gpuwm/core/preflight.py", {"KERNEL_MAX_LOCAL_SIZE_BYTES"}),
+    ("gpuwm/core/kernel_frame_recordings.py", None),
+    ("tests/test_kernel_source_freeze_per_module.py",
+     {"BASELINE_PINNED", "PINNED_HEADERS"}),
+])
+def test_kernel_bookkeeping_has_no_shadowed_literal_keys(relative_path, names):
+    """A duplicate source key silently discards a pin or frame measurement."""
+    tree = ast.parse((ROOT / relative_path).read_text(encoding="utf-8-sig"))
+    if names is None:
+        roots = [tree]
+    else:
+        roots = []
+        found = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            else:
+                continue
+            matched = {target.id for target in targets
+                       if isinstance(target, ast.Name)} & names
+            if matched:
+                found.update(matched)
+                roots.append(node.value)
+        assert found == names, (relative_path, names - found)
+    for root in roots:
+        for node in ast.walk(root):
+            if not isinstance(node, ast.Dict):
+                continue
+            seen = {}
+            for key in node.keys:
+                if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                    continue
+                assert key.value not in seen, (
+                    f"{relative_path}:{key.lineno}: duplicate {key.value!r}; "
+                    f"first recorded at line {seen.get(key.value)}")
+                seen[key.value] = key.lineno
 
 
 def test_every_recording_names_the_box_and_the_compiler_that_made_it():

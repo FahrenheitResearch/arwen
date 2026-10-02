@@ -309,6 +309,8 @@ _STAMP_SOURCES = {
     # file rather than exempting it: the artifact was provable and simply
     # unmapped here.
     "rw_mpas_lbc": "crates/rw-mpas/src/bin/rw_mpas_lbc.rs",
+    # The ML dataset exporter: its own crate, its own build.rs.
+    "rw_mlexport": "crates/rw-mlexport/src/bin/rw_mlexport.rs",
     # The GDT-101 remapper, added to BUNDLED_ARTIFACTS by the icon-global
     # lane.  It lives in the bridge crate, so `tools/grib1_bridge/build.rs`
     # stamps it with its five siblings, and its `main` black_boxes the
@@ -337,6 +339,7 @@ _STAMP_BUILDS = {
     bridges.RUSTWX_CRATE_RELATIVE: ("crates/rw-fetch/build.rs",
                                     "crates/rw-wrfbatch/build.rs",
                                     "crates/rw-mpas/build.rs",
+                                    "crates/rw-mlexport/build.rs",
                                     "crates/rw-nexrad/build.rs",
                                     "crates/rw-odim/build.rs",
                                     # rw-obs builds four bins from one

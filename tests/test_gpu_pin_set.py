@@ -18,6 +18,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 import pytest
+from _dycore_oracle_routes import DYCORE_PARITY_FILES
 
 ROOT = Path(__file__).resolve().parents[1]
 HEAD = "0123456789abcdef0123456789abcdef01234567"
@@ -27,6 +28,17 @@ REMOTE = "/tmp/precut-gpu-control"
 #: under tests/data/receipts/omega-column-scan/.
 REQUIRED = {"tests/test_coriolis_map.py", "tests/test_mp8_frozen.py",
             "tests/test_omega_column_scan.py"}
+#: Compiled WRF diffusion fixtures and every full-output device word pin
+#: must stay in the release card stage. Dropping one retires a routine's
+#: independent Fortran comparison while leaving its source tests green.
+WRF_DIFFUSION_REQUIRED = {
+    "tests/test_diff6_wrf471_parity.py",
+    "tests/test_deformation_wrf471_parity.py",
+    "tests/test_horizontal_diffusion_wrf471_parity.py",
+    "tests/test_vertical_diffusion_wrf471_parity.py",
+    "tests/test_constant_diffusion_wrf471_parity.py",
+    "tests/test_diffusion_drivers_wrf471_parity.py",
+}
 #: The pins the enlarged set found on the release node after the stage's
 #: first run: three of them red there (the Shin-Hong ULP row and the bl=1
 #: run-state hash keyed by an NVRTC build nobody had recorded, and the SASE
@@ -147,6 +159,41 @@ def test_the_declared_set_names_the_pins_that_shipped_red():
     assert EQUALITY_ULP_TABLES <= entries, sorted(EQUALITY_ULP_TABLES - entries)
     assert NTIEDTKE_DEVICE_BITWISE <= entries, sorted(
         NTIEDTKE_DEVICE_BITWISE - entries)
+
+
+def test_the_declared_set_keeps_every_compiled_wrf_diffusion_oracle():
+    files = set(gate.pin_files(gate.pin_set(ROOT)))
+    assert WRF_DIFFUSION_REQUIRED <= files, sorted(WRF_DIFFUSION_REQUIRED - files)
+
+
+def test_the_declared_set_keeps_every_compiled_wrf_dycore_oracle():
+    files = set(gate.pin_files(gate.pin_set(ROOT)))
+    assert DYCORE_PARITY_FILES <= files, sorted(DYCORE_PARITY_FILES - files)
+
+
+def test_compiled_wrf_dycore_cpu_fixture_rows_remain_selectable():
+    """A CuPy import in a helper must not retire the CPU fixture checks."""
+    import ast
+    from conftest import _cupy_scope
+
+    for file in sorted(DYCORE_PARITY_FILES):
+        path = ROOT / file
+        whole, _functions = _cupy_scope(str(path))
+        assert not whole, f"{file}: a device import marks every CPU fixture row GPU"
+        source = path.read_text(encoding="utf-8")
+        fixture_rows = []
+        for node in ast.parse(source).body:
+            if not isinstance(node, ast.FunctionDef) or not node.name.startswith("test_"):
+                continue
+            decorators = [ast.get_source_segment(source, value) or ""
+                          for value in node.decorator_list]
+            is_device = "requires_gpu" in decorators
+            is_marked = "pytest.mark.gpu" in decorators
+            if is_device:
+                assert is_marked, f"{file}::{node.name}: device row survives the CPU marker selection"
+            elif not is_marked:
+                fixture_rows.append(node.name)
+        assert fixture_rows, f"{file}: no CPU fixture checks remain"
 
 
 def test_every_ntiedtke_device_row_in_the_tree_is_classified():

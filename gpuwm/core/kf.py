@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import IntEnum
 from functools import lru_cache
+from gpuwm.core.device_cache import cuda_cache
 from pathlib import Path
 
 import numpy as np
@@ -243,10 +244,18 @@ def load_kf_table() -> KFTable:
     return KFTable(**arrays, **scalars)
 
 
-@lru_cache(maxsize=None)
+@cuda_cache(maxsize=None, ready=True)
 def _device_table_on(_device: int):
     """The KF_LUTAB on ONE card.  The argument is the cache key and nothing
     else -- it is the CURRENT device, which is what ``cp.asarray`` uploads to.
+
+    Shared by every slab on the card, so it is published with its upload
+    event (``device_cache.cuda_cache(ready=True)``): a slab stepping on
+    another stream waits for the upload instead of reading the table before
+    its bytes land.  MEASURED without it (lane 282-multigpu, one card split
+    into 2x2 slabs, HRRR West Texas Kain-Fritsch suite): one of two runs
+    stopped at its first step on "cumulus rthcuten contains a non-finite
+    value", the other was byte-identical to the unsplit run.
 
     Keyed on the device because the alternative was measured to be fatal: a
     process-wide ``lru_cache`` handed every card the pointers of whichever
@@ -508,11 +517,15 @@ class KainFritsch:
         # substeps: NIC/TIMEC rounding and the NCA durations stay on WRF's
         # 60 s granularity.
         clock_dt = _model_clock_dt(cfg)
-        steps = (1 if cfg.cudt_minutes <= 0.0 else
-                 max(int(np.floor(cfg.cudt_minutes * 60.0 / clock_dt + 0.5)),
-                     1))
-        cudt = (clock_dt if cfg.cudt_minutes <= 0.0
-                else steps * clock_dt)
+        if bool(getattr(cfg, "use_adaptive_time_step", False)):
+            from gpuwm.core.physics import _physics_period_seconds
+            cudt = _physics_period_seconds(cfg.cudt_minutes, cfg)
+        else:
+            steps = (1 if cfg.cudt_minutes <= 0.0 else
+                     max(int(np.floor(cfg.cudt_minutes * 60.0 / clock_dt + 0.5)),
+                         1))
+            cudt = (clock_dt if cfg.cudt_minutes <= 0.0
+                    else steps * clock_dt)
         # Documented deviation (Task 6b audit): the verified scheme derives
         # environmental density internally as p/(Rd*Tv) with
         # Tv = T*(1+0.608*qenv) (kf.cu:291-293; npref.py np_kf_column),

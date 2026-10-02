@@ -1406,13 +1406,38 @@ def urban_held_item_names(run) -> frozenset:
     return frozenset(f"fields/{name}" for name in urban_held_array_shapes(run))
 
 
-def urban_held_bytes(run) -> int:
-    """Device bytes of :func:`urban_held_item_names` for one domain."""
+def bem_workspace_bound_note(estimate) -> str | None:
+    """What a configuration-door price says beside a BEP+BEM workspace.
+
+    The configuration door (``gpuwm check CONFIG``, ``gpuwm go``'s gate
+    before the fetch) runs before the land cover exists, so it prices
+    BEP+BEM's column workspace at every column urban, the upper bound; the
+    prepared doors read the land cover and price the plan the run builds
+    (:func:`gpuwm.core.urban_state.prepared_urban_columns`, A176).  Said
+    beside the figure, so a refusal here is read as the bound it is.
+    ``None`` when the estimate holds no such workspace.
+    """
+    total = sum(item.nbytes for domain in estimate.domains
+                for item in domain.items
+                if item.name == "fields/bem_column_workspace")
+    if not total:
+        return None
+    return (f"the BEP+BEM column workspace is priced here at every column "
+            f"urban ({total / GIB:.2f} GiB of it), because the land cover "
+            "does not exist before preparation; a prepared run (gpuwm go "
+            "--prepared-root, gpuwm sim) prices it from the prepared land "
+            "cover's urban columns, which is tighter")
+
+
+def urban_held_bytes(run, *, urban_columns: int | None = None) -> int:
+    """Device bytes of :func:`urban_held_item_names` for one domain, at
+    the domain's urban column count where it is known (A176)."""
     if int(getattr(run, "sf_urban_physics", 0) or 0) <= 0:
         return 0
     from gpuwm.core.urban_state import urban_held_array_shapes
     total = 0
-    for shape in urban_held_array_shapes(run).values():
+    for shape in urban_held_array_shapes(
+            run, urban_columns=urban_columns).values():
         n = 4
         for extent in shape:
             n *= int(extent)
@@ -1739,12 +1764,11 @@ def read_compile_platform() -> tuple[str, str] | None:
 #: under-pricing is what put a run 1,630 MiB over; the bound is stated, not
 #: silently tightened.
 KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
-    # Added with this box's recording; all three are 0 B and none
-    # was in the ceiling before. 'ntiedtke' is what cu_physics = 16
-    # needs to be priceable at all.
+    # Test-only math grading unit, read on sm_89 and sm_120, NVRTC 13.4.59.
+    "portable_libm64_grade": 48,
+    # Added with this box's recording at 0 B. 'ntiedtke' is what
+    # cu_physics = 16 needs to be priceable at all.
     'ntiedtke': 0,
-    'mynn_dmp_sibling': 0,
-    'mynn_scalar_mix': 0,
     "acoustic": 544,
     "advection": 0,
     "coriolis_map": 0,
@@ -1975,6 +1999,15 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "shinhong": 0,
     "shinhong_validation": 0,
     "smag2d": 0,
+    # Coordinate horizontal diffusion: both exports read 0 B on sm_120
+    # through the production loader at all five recorded NVRTC builds.
+    # The frame recordings name the RTX 5090-only measurement.
+    "diff_opt1": 0,
+    # Merged bandwidth and native cold-start leaf modules: every raw export
+    # reads 0 B on RTX 5090 at the same five sm_120 compiler builds.
+    "bandwidth_glue": 0,
+    "noah_init": 0,
+    "wrf_cold_start_w": 0,
     "spec_bdy": 0,
     "thompson": 11264,
     # mp_physics=28 translation units, measured 2026-07-31 the same way on
@@ -1999,6 +2032,9 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # on any row that moved.
     "thompson_aerosol_cold": 0,
     "thompson_aerosol_probe": 0,
+    # 0 B on sm_89 and sm_120 at NVRTC 13.4.59 and 13.4.92; 48 B on sm_120
+    # at NVRTC 12.9.86 (SM120_NVRTC_12_9_86, read 2026-10-01).
+    "thompson_cold_start": 48,
     "thompson_aerosol_sat": 0,
     "thompson_aerosol_sed": 9216,
     # RE-MEASURED 2026-08-03 on the reference RTX 5090: 40, not 48.  The
@@ -2022,6 +2058,13 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # is its binary64 scalars at 255 registers: 3,184 B on sm_89 and 864 B
     # on sm_120, both at NVRTC 13.4.92 (kernel_frame_recordings).
     "uwpbl": 3184,
+    # Fused preparation interpolation, 16 B on sm_89 and sm_120, NVRTC 13.4.92.
+    # Portable binary64 RH kernel is 0 B; regular interpolation remains 16 B.
+    "horizontal": 16,
+    # Device initialize_real: real_init 0 B on sm_89 and sm_120; real_init_math
+    # 0 B on sm_120 and 48 B on sm_89 (real_thermo), NVRTC 13.4.92.
+    "real_init": 0,
+    "real_init_math": 48,
     "vert_interp": 768,
     # WDM6 (mp_physics=16).  MEASURED 2026-08-10 on the reference RTX 5090
     # the same NVRTC + driver way as every other row: the module's one
@@ -2391,7 +2434,10 @@ UNMEASURED_KERNEL_MODULES = frozenset({
     "rrtmg_lw_taugb06_09", "rrtmg_lw_taugb13_16",
     # BEP+BEM's column kernel needs urban_bem.cuh and the glibc headers
     # gpuwm/core/urban_bem.py composes; priced as urban_bem_composed.
-    "urban_bep_bem"})
+    "urban_bep_bem",
+    # The drag unit borrows glibc helpers from the composed source in
+    # gpuwm.core.terrain_drag.module_source(); it cannot compile alone.
+    "terrain_drag"})
 # face_mass, held_heating, rk_bookkeeping and surface_w (the dycore-host
 # speed lane's point-local units, 66af318bc) sat in this set on
 # 2026-09-30 under the same "no measurement platform in this lane"
@@ -2534,6 +2580,12 @@ CHAINED_TRANSLATION_UNIT_FRAMES: dict[str, ChainedTranslationUnitFrame] = {
         module="noah_mosaic_ucm_unit",
         max_local_size_bytes=1040,
         covers=frozenset()),
+    # Production loader, NVRTC 13.4.59 on sm_89 and sm_120: topo_wind
+    # and the SASE top helper 0 B, KIM 640 B, GSL 1,184 B on both cards.
+    "terrain_drag_composed": ChainedTranslationUnitFrame(
+        module="terrain_drag_composed",
+        max_local_size_bytes=1184,
+        covers=frozenset({"terrain_drag"})),
 }
 
 _seen_covers: set[str] = set()
@@ -2559,10 +2611,10 @@ del _seen_covers, _tu_name, _tu
 #: output diagnostics.  Their maximum local frame is 768 B (``vert_interp``),
 #: below the default stack limit, so this set reserves nothing at all.
 CORE_KERNEL_MODULES = frozenset({
-    "acoustic", "advection", "coriolis_map", "diagnostics", "diff6",
+    "acoustic", "advection", "bandwidth_glue", "coriolis_map", "diagnostics", "diff6",
     "diffusion", "dycore", "health", "lbc_flow", "lbc_state", "lbc_time", "nest",
     "nest_microphysics", "openbc", "pd_advection", "saxpy", "smag2d",
-    "spec_bdy", "tke_budget", "vert_interp"})
+    "spec_bdy", "tke_budget", "vert_interp", "wrf_cold_start_w"})
 
 #: ``mp_physics`` -> the kernel modules that scheme launches.  Keys are
 #: exactly ``gpuwm/config.py``'s accepted set (0, 1, 6, 8, 9, 10, 16, 18,
@@ -2950,6 +3002,15 @@ def domain_kernel_modules(dc: DomainConfig, *,
         else:
             modules.update(table[value])
     modules.update(_urban_kernel_modules(dc.run, dc.grid_id))
+    if int(getattr(dc.run, "diff_opt", 2)) == 1:
+        modules.add("diff_opt1")
+    if int(dc.run.sf_surface_physics) == 2:
+        # Native Noah starts initialize SH2O through its own module.  It
+        # remains a possible cold-start load under the mosaic forecast.
+        modules.add("noah_init")
+    if (int(getattr(dc.run, "topo_wind", 0) or 0)
+            or int(getattr(dc.run, "gwd_opt", 0) or 0)):
+        modules.add("terrain_drag_composed")
     if int(getattr(dc.run, "zadvect_implicit", 0) or 0) > 0:
         modules.add("ieva")                    # A158, gpuwm/core/ieva.py
     mp_physics = int(dc.run.mp_physics)
@@ -3714,8 +3775,8 @@ def sase_workspace_phases(cfg: RunConfig
     # Single-sourced with the device define through the closure's own
     # compile-time tier, so this transcription's block count cannot
     # drift from the block size the kernels are actually compiled at.
-    from gpuwm.core.sase import _DEFINE_VALUES as _SASE_DEFINES
-    tpb = _SASE_DEFINES["SASE_TPB"]
+    from gpuwm.core.sase_limits import THREADS_PER_BLOCK
+    tpb = THREADS_PER_BLOCK
     nblocks = (ncell + tpb - 1) // tpb
     partials = ((5, nblocks), 8)              # FP64 in-kernel reductions
 
@@ -3925,7 +3986,9 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
     return tuple(union)
 
 
-def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False) -> dict[str, tuple[int, ...]]:
+def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False,
+                         urban_columns: int | None = None
+                         ) -> dict[str, tuple[int, ...]]:
     """``PhysicsDriver`` persistents per selected scheme (physics.py).
 
     Includes the surface/Noah ``fields`` dict, held family tendencies, a
@@ -3933,6 +3996,9 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False) -> dict[str
     positive-cadence raw YSU retention, radiative heating rates, mp=0 output
     placeholders, KF W0AVG/LUT, and RRTMGP setup grids.  Active microphysics
     diagnostics and KF ``cu_*`` persistence live in the scratch registry.
+    ``urban_columns`` is the domain's urban column count where a prepared
+    door has read its land cover
+    (:func:`gpuwm.core.urban_state.urban_array_shapes`).
     """
     # The runtime-free inventory module, NOT gpuwm.core.physics: that
     # module's body imports cupy, and this estimator is what `gpuwm
@@ -4020,8 +4086,12 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False) -> dict[str
         # stacks run to thousands of words per column, so leaving them out
         # would admit a run that cannot allocate.
         from gpuwm.core.urban_state import urban_array_shapes
-        for name, shape in urban_array_shapes(cfg).items():
+        for name, shape in urban_array_shapes(
+                cfg, urban_columns=urban_columns).items():
             shapes[f"fields/{name}"] = shape
+
+    from gpuwm.core.physics_inventory import terrain_drag_array_shapes
+    shapes.update(terrain_drag_array_shapes(cfg))
 
     stacks = ["pbl_tendencies", "radiation_tendencies", "cumulus_tendencies"]
     reuse_pbl = physics_reuses_pbl_composition(cfg)
@@ -4309,7 +4379,8 @@ def scratch_slot_registry(cfg: RunConfig, *,
                      ieva_mut_old=s2, ieva_mut_new=s2)
     # advection.py:161-163.
     slots.update(adv_ru=xs, adv_rv=ys, adv_rw=fl)
-    # acoustic.py:115-116, :223-226.
+    # Acoustic coefficients also stage horizontal w diffusion primitives.
+    # Diffusion completes before calc_coefs rewrites every consumed element.
     slots.update(acoustic_mu_pp_old=s2, acoustic_th_pp_old=m,
                  acoustic_c2a=m, acoustic_a=fl, acoustic_alpha=fl,
                  acoustic_gamma=fl)
@@ -4622,6 +4693,9 @@ def scratch_slot_registry(cfg: RunConfig, *,
 
     if cfg.km_opt in (2, 3, 4):
         slots.update(smag_km=m, smag_kh=m)
+        if cfg.diff_opt == 1:
+            slots.update(diff1_theta_initial=m, diff1_theta_work=m,
+                         smag_mut=s2)
     if cfg.km_opt in (2, 3):
         # These closures carry the vertical exchange-coefficient pair; BN2
         # borrows the diff6_x face-workspace prefix and needs no slot.
@@ -4716,8 +4790,8 @@ def scratch_slot_registry(cfg: RunConfig, *,
                              "qnh", "qnn", "qvolg", "qvolh"):
                     slots["smag_r" + name] = m
     if cfg.km_opt in (2, 3, 4) or cfg.diff_6th_opt:
-        # Smagorinsky reuses the x/y face workspaces for u/v staging and
-        # metric scalar fluxes (km_opt=3 additionally stages BN2 in the
+        # Smagorinsky reuses the x/y face workspaces for u/v staging,
+        # W stresses and metric scalar fluxes (km_opt=3 stages BN2 in the
         # diff6_x prefix during the K computation); sixth-order diffusion
         # subsequently overwrites them.  z/m are required only by diff6.
         slots.update(diff6_x=xs, diff6_y=ys)
@@ -5020,6 +5094,17 @@ class ScratchSlotLifetime:
 # proves that every arena-admitted row is write-before-read classified.
 SCRATCH_SLOT_LIFETIME_AUDIT = (
     ScratchSlotLifetime(
+        ("diff1_theta_initial",), "carrying",
+        "gpuwm/core/dycore.py:initialize_coordinate_reference; "
+        "gpuwm/io/restart.py:SERIALIZED_SCRATCH_SLOTS",
+        "the original thermal reference persists across steps, restart "
+        "and streamed slabs and cannot share a sequential-domain arena"),
+    ScratchSlotLifetime(
+        ("diff1_theta_work",), "write_before_read",
+        "gpuwm/core/dycore.py:_compute_coordinate_tendencies",
+        "the reconstructed WRF thermal field is filled before each "
+        "coordinate flux launch"),
+    ScratchSlotLifetime(
         ("rk_ww", "rk_ru", "rk_rv", "rk_ru_m", "rk_rv_m", "rk_ww_m"),
         "write_before_read",
         "gpuwm/core/dycore.py:102-113,154-161,1373-1414; "
@@ -5037,8 +5122,11 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
          "acoustic_cqu", "acoustic_cqv", "acoustic_cqw",
          "openbc_upp_faces", "openbc_vpp_faces"),
         "write_before_read",
-        "gpuwm/core/acoustic.py:115-190,223-235; gpuwm/core/dycore.py:1360-1395",
-        "substep histories/coefficient/filter slots are seeded in their stage"),
+        "gpuwm/core/acoustic.py:115-190,223-235; gpuwm/core/dycore.py:1452-1464",
+        "substep histories/coefficient/filter slots are seeded in their stage; "
+        "the W primitive path borrows acoustic_a/acoustic_c2a before the "
+        "RK loop, and calc_coefs rewrites every consumed coefficient before "
+        "the first substep; acoustic_a row zero is not consumed"),
     ScratchSlotLifetime(
         ("smag_km", "smag_kh", "smag_ru", "smag_rv", "smag_rw",
          "smag_rth", "smag_rqv", "smag_rqc", "smag_rqr", "smag_rqi",
@@ -5116,8 +5204,8 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "write_before_read", "gpuwm/core/dycore.py:prepare_fixed_tendencies; "
         "gpuwm/core/dycore.py:apply_diff6",
         "the diff6 target loops consume one temporary at a time; however, "
-        "km_opt=4 uses x/y simultaneously for momentum staging and for "
-        "scalar face fluxes, so every Smagorinsky configuration retains "
+        "Smagorinsky uses x/y simultaneously for momentum staging, W "
+        "stress faces and scalar fluxes, so every configuration retains "
         "two distinct face backings"),
     ScratchSlotLifetime(
         ("moist_pd_q0", "moist_rq_t", "moist_absent_mass",
@@ -5659,7 +5747,8 @@ def shared_scratch_arena_shapes(
 
 
 def shared_scratch_arena_aliases(
-        domains: tuple[DomainConfig, ...]) -> dict[str, str]:
+        domains: tuple[DomainConfig, ...],
+        tree_domains: tuple[DomainConfig, ...] | None = None) -> dict[str, str]:
     """Disjoint-lifetime arena aliases admitted by the reviewed audit.
 
     FORCE occurs between complete domain steps.  All three RK backings are
@@ -5682,9 +5771,13 @@ def shared_scratch_arena_aliases(
     gamma from scratch before its first acoustic read, and no stage reads K.
     The two mass-point K arrays can therefore borrow prefixes of those two
     independent full-level coefficient backings.
+
+    ``tree_domains`` supplies the complete tree when only resident domains
+    share the arena. Alias capacity uses the same parent-aware shapes as
+    the allocation and byte estimate, including a streamed parent.
     """
     aliases = {}
-    shapes = shared_scratch_arena_shapes(domains)
+    shapes = shared_scratch_arena_shapes(domains, tree_domains)
     # The standalone advection-only adv_* path and the acoustic RK path are
     # mutually exclusive inside dycore.step.  cq overwrites all three faces
     # once per RK stage before calc_coefs/advance_uv/advance_w reads them.
@@ -5752,7 +5845,7 @@ def shared_scratch_arena_bytes(
         domains: tuple[DomainConfig, ...],
         tree: tuple[DomainConfig, ...] | None = None) -> int:
     shapes = shared_scratch_arena_shapes(domains, tree)
-    aliases = shared_scratch_arena_aliases(domains)
+    aliases = shared_scratch_arena_aliases(domains, tree)
     return sum(4 * math.prod(shape) for slot, shape in shapes.items()
                if slot not in aliases)
 
@@ -6373,6 +6466,7 @@ def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
                     column_chunk: int = DEFAULT_COLUMN_CHUNK,
                     boundary_species=(),
                     tile_buffer: bool = False,
+                    urban_columns: int | None = None,
                     ) -> DomainMemoryEstimate:
     """Itemized :class:`DomainMemoryEstimate` for one domain.
 
@@ -6381,7 +6475,11 @@ def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
     default from the domain's own RunConfig / to zero intervals for a
     bare single-domain estimate.  ``tile_buffer`` prices ``dc`` as one
     streamed tile buffer, whose MYNN workspace is its own
-    (:func:`mynn_pbl_column_chunk`).
+    (:func:`mynn_pbl_column_chunk`).  ``urban_columns`` is the domain's
+    urban column count read off its prepared land cover
+    (:func:`gpuwm.core.urban_state.prepared_urban_columns`); ``None``, the
+    configuration door, prices BEP+BEM's column workspace at every
+    column urban (A176).
     """
     run = dc.run
     width = run.spec_bdy_width if spec_bdy_width is None else spec_bdy_width
@@ -6392,7 +6490,7 @@ def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
         (HeldMemoryItem if name in held else MemoryItem)(
             name, "physics", tuple(shape), 4)
         for name, shape in physics_array_shapes(
-            run, cam_ozone=cam_ozone).items())
+            run, cam_ozone=cam_ozone, urban_columns=urban_columns).items())
     from gpuwm.core.cfl_inventory import (
         WRF_CFL_SHAPE, wrf_cfl_recording_requested)
     if wrf_cfl_recording_requested(run, adaptive=cfl_recording):
@@ -6426,6 +6524,8 @@ def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
         items += _nest_items(shapes, nest_slot_dtypes(dc, width, parent))
     items += _items("transient", atmosphere_transient_shapes(run, cam_ozone=cam_ozone))
     items += _items("transient", ysu_output_transient_shapes(run))
+    from gpuwm.core.physics_inventory import terrain_drag_transient_shapes
+    items += _items("transient", terrain_drag_transient_shapes(run))
     items += _items("transient", shinhong_output_transient_shapes(run))
     items += _items("transient", myj_output_transient_shapes(run))
     items += _items("transient", uwpbl_output_transient_shapes(run))
@@ -7917,6 +8017,7 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
                     preprocess_backend: str | None = None,
                     boundary_source=_SAME_AS_SOURCE,
                     preparation_route: str | None = None,
+                    urban_columns=None,
                     ) -> PhaseMemoryEstimate:
     """Price every phase of ``exp`` and say which one binds the card.
 
@@ -7963,7 +8064,8 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
         exp, column_chunk=column_chunk, forcing_intervals=forcing_intervals,
         forcing_interval_seconds=forcing_interval_seconds,
         vram_gib=vram_gib, profile=profile,
-        boundary_species=source_boundary_species(boundary_source))
+        boundary_species=source_boundary_species(boundary_source),
+        urban_columns=urban_columns)
     key = None if source is None else str(source).strip().lower()
     ingest = None
     if key in SOURCE_ANALYSIS_LEVELS or analysis_shapes_by_domain is not None:
@@ -8004,7 +8106,8 @@ def estimate_phases(exp: ExperimentConfig, *, source: str,
             tree_road = tree_road_plan(
                 exp, machine=machine,
                 resident_estimate=admission_estimate(
-                    exp, machine=machine, source=boundary_source),
+                    exp, machine=machine, source=boundary_source,
+                    urban_columns=urban_columns),
                 forcing_interval_seconds=forcing_interval_seconds,
                 forcing_intervals=forcing_intervals, source=boundary_source)
         except Exception:            # a gate never dies on its estimate
@@ -8068,6 +8171,12 @@ def _workspace_total_bytes(nz: int, column_chunk: int,
                rrtmgp_workspace_shapes(nz, column_chunk, p_top).values())
 
 
+def estimate_devices(exp, **kwargs):
+    """The resident per-card rank admission, imported only for a split."""
+    from gpuwm.core.devices_memory import estimate_devices as estimate
+    return estimate(exp, **kwargs)
+
+
 def estimate_experiment(
         exp: ExperimentConfig, *,
         column_chunk: int | None = None,
@@ -8077,6 +8186,7 @@ def estimate_experiment(
         vram_gib: float | None = None,
         profile: DeviceLocalMemoryProfile | None = None,
         boundary_species=(),
+        urban_columns=None,
 ) -> ExperimentMemoryEstimate:
     """Sum the per-domain itemizations; count the lru_cache-shared
     k-distribution tables ONCE (rrtmgp.py:324/:436 -- baseline behavior,
@@ -8085,7 +8195,12 @@ def estimate_experiment(
     adapter-consumed shared chunk workspace; apply the 15% allocator-headroom
     factor. The result is compared against the
     MEASURED budget (free VRAM at startup minus the configured reserve --
-    never nominal 32 GiB)."""
+    never nominal 32 GiB).
+
+    ``urban_columns`` maps grid id to the domain's urban column count, the
+    prepared doors' reading of their land cover
+    (:func:`gpuwm.core.urban_state.prepared_urban_columns`); a domain it
+    does not name is priced at every column urban (A176)."""
     column_chunk = (exp.column_chunk if column_chunk is None
                     else column_chunk)
     if (isinstance(column_chunk, bool)
@@ -8112,7 +8227,8 @@ def estimate_experiment(
             lateral_boundaries=(lateral_boundaries if dc.parent_id == 0 else None),
             boundary_species=(boundary_species if dc.parent_id == 0 else ()),
             p_top=exp.vertical.p_top,
-            column_chunk=column_chunk)
+            column_chunk=column_chunk,
+            urban_columns=(urban_columns or {}).get(int(dc.grid_id)))
         for dc in exp.domains)
     from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
     variants = {rrtmg_variant(dc.run) for dc in exp.domains
@@ -8220,8 +8336,8 @@ def estimate_experiment(
     )
 
 
-def admission_estimate(exp: ExperimentConfig, *, machine=None, source=None
-                       ) -> ExperimentMemoryEstimate:
+def admission_estimate(exp: ExperimentConfig, *, machine=None, source=None,
+                       urban_columns=None) -> ExperimentMemoryEstimate:
     """THE estimate a tree's ``[tiles]`` admission is judged from.
 
     ONE function, called with the same arguments wherever the question is
@@ -8277,12 +8393,21 @@ def admission_estimate(exp: ExperimentConfig, *, machine=None, source=None
     envelopes again.  ``None`` (a source
     the caller does not know, or one that publishes none) prices water
     vapour only, which is what such a run holds.
+
+    THE LAND COVER IS THE ONE PREPARED READING.  ``urban_columns`` (grid
+    id to urban columns, :func:`gpuwm.core.urban_state
+    .prepared_urban_columns`) is what a prepared door reads off the static
+    it is about to restore, and it prices BEP+BEM's column workspace at
+    the plan the run builds.  The configuration has no land cover, so the
+    review prices every column urban, the upper bound: a prepared door can
+    admit what the review refused, never the other way (A176).
     """
     from gpuwm.boundary_fields import source_boundary_species
     return estimate_experiment(
         exp, column_chunk=exp.column_chunk,
         profile=getattr(machine, "device_profile", None),
-        boundary_species=source_boundary_species(source))
+        boundary_species=source_boundary_species(source),
+        urban_columns=urban_columns)
 
 
 # ---------------------------------------------------------------------------
@@ -9054,8 +9179,123 @@ def _load_experiment_any(path: Path) -> ExperimentConfig:
             return exp
         exp, _case_data = load_experiment_case(path)
         return exp
-    return experiment_from_run_config(load_config(path),
-                                      datetime(1970, 1, 1))
+    from dataclasses import replace
+    from gpuwm.config import load_device_options
+    return replace(experiment_from_run_config(load_config(path),
+                                              datetime(1970, 1, 1)),
+                   devices=load_device_options(path))
+
+
+@dataclass(frozen=True)
+class PreparedCheckInputs:
+    """A check's forecast price, bound to the artifacts the runner restores."""
+
+    experiment: ExperimentConfig
+    prepared_root: Path
+    source: str
+    boundary_source: object
+    forcing_interval_seconds: float
+    forcing_intervals: int
+    urban_columns: Mapping[int, int] | None
+    prepared_head_sha256: str | None = None
+
+
+def _prepared_check_inputs(args) -> PreparedCheckInputs | None:
+    """Verify a sealed bundle or live head before using its land-cover price."""
+    root = getattr(args, "prepared_root", None)
+    if root is None:
+        return None
+    cached = getattr(args, "_prepared_check_inputs", None)
+    if cached is not None:
+        return cached
+    from gpuwm import stage_cli
+    from gpuwm import prepared_domain_tree_forecast as tree
+    from gpuwm import prepared_single_domain_forecast as single
+
+    root = Path(root).resolve()
+    config = Path(args.config).resolve()
+    try:
+        bundle = stage_cli.resolve_bundle(root)
+    except stage_cli.StageRefusal:
+        bundle = stage_cli.unsealed_head_bundle(root)
+        if bundle is None:
+            raise
+    head_digest = bundle.get("head_sha256")
+    prepared = Path(bundle.get("root", bundle["document"].parent))
+    if bundle["layout"] == "tree":
+        digests = stage_cli.tree_digests(bundle, config)
+        inputs = tree.preflight_prepared_tree(
+            prepared_root=prepared,
+            **({"prepared_head_sha256": head_digest} if head_digest else
+               {"preparation_receipt_sha256": digests["preparation_receipt"]}),
+            experiment_config=config,
+            experiment_config_sha256=digests["experiment_config"])
+        reader = tree._root_bundle(inputs).cache_reader
+        counts = tree.tree_urban_columns(inputs)
+    else:
+        wps = getattr(args, "wps_namelist", None)
+        if wps is None:
+            candidates = (config.with_suffix(".namelist.wps"),
+                          config.parent / "namelist.wps")
+            wps = next((path for path in candidates if path.is_file()), None)
+        if wps is None:
+            raise ValueError("a prepared single-domain check requires "
+                             "--wps-namelist: the runner binds that namelist "
+                             "to prevent restoring a different prepared grid")
+        if head_digest:
+            binding = {
+                "prepared_head_sha256": head_digest,
+                "source_manifest_sha256": bundle.get("source_manifest_sha256")}
+        else:
+            digests = stage_cli.single_domain_digests(bundle)
+            binding = {
+                "proof_sha256": digests["proof"],
+                "source_manifest_sha256": digests["source_manifest"],
+                "prepared_content_sha256": digests["prepared_content"]}
+        exp = _load_experiment_any(config)
+        inputs = single.preflight_prepared_forecast(
+            source=bundle["source"], prepared_root=prepared,
+            **binding,
+            experiment_config=config, wps_namelist=Path(wps),
+            physics_profile=None, run_seconds=float(exp.run_seconds),
+            history_interval_seconds=float(exp.root.history_interval_s))
+        reader = inputs.cache_reader
+        counts = single.single_urban_columns(inputs)
+    retained = 1 if head_digest else single._retained_interval_count(reader)
+    if retained is None:
+        raise ValueError("the prepared cache records no retained boundary "
+                         "interval count, so its memory cannot be priced")
+    boundary_source = single._priced_boundary_source(reader, inputs.source)
+    if head_digest:
+        from gpuwm.boundary_fields import sealed_boundary_species
+
+        inventory = inputs.stream_head["basis"]["cache"]["lbc"]
+        carried = sealed_boundary_species([inventory])
+        if carried is not None:
+            boundary_source = carried
+    result = PreparedCheckInputs(
+        experiment=inputs.experiment, prepared_root=prepared,
+        source=inputs.source,
+        boundary_source=boundary_source,
+        forcing_interval_seconds=float(inputs.boundary_interval_seconds),
+        forcing_intervals=int(retained), urban_columns=counts,
+        prepared_head_sha256=head_digest)
+    args._prepared_check_inputs = result
+    return result
+
+
+def _check_bem_basis(estimate, prepared, *, alloc: bool = False) -> str | None:
+    if prepared is None:
+        return bem_workspace_bound_note(estimate)
+    if alloc:
+        note = bem_workspace_bound_note(estimate)
+        return (None if note is None else
+                "the allocation probe constructs synthetic all-urban land "
+                "cover, so its BEP+BEM workspace keeps the every-column "
+                "bound; omit --alloc to price the verified prepared land cover")
+    from gpuwm.core.urban_state import urban_columns_line
+
+    return urban_columns_line(prepared.urban_columns)
 
 
 def _recorded_source_forcing_interval(raw: dict) -> float | None:
@@ -9705,8 +9945,13 @@ def _required_memory_without_kernels(exp, args, *,
     the probe read a platform and from the ceiling when it did not, and
     the basis says which (:func:`non_pool_basis`).
     """
-    configured_interval, forcing_intervals = config_forcing_schedule(
-        args.config, exp, input_catalog=getattr(args, "input_catalog", None))
+    prepared = _prepared_check_inputs(args)
+    urban_columns = (None if prepared is None or args.alloc
+                     else prepared.urban_columns)
+    configured_interval, forcing_intervals = (
+        (prepared.forcing_interval_seconds, prepared.forcing_intervals)
+        if prepared is not None else config_forcing_schedule(
+            args.config, exp, input_catalog=getattr(args, "input_catalog", None)))
     explicit_interval = args.forcing_interval_s
     if (explicit_interval is not None and forcing_intervals is not None
             and configured_interval is not None
@@ -9768,12 +10013,15 @@ def _required_memory_without_kernels(exp, args, *,
     # --free-gib/--vram-gib follow-up printed for the same file.
     from gpuwm.boundary_fields import source_boundary_species
 
-    recorded = config_forcing_source(args.config, priced_only=False)
+    recorded = (prepared.boundary_source if prepared is not None else
+                config_forcing_source(args.config, priced_only=False))
     estimate = estimate_experiment(
         exp, column_chunk=args.column_chunk, forcing_intervals=forcing_intervals,
         forcing_interval_seconds=interval, vram_gib=vram_gib,
-        profile=profile, boundary_species=source_boundary_species(recorded))
-    source = recorded if recorded in SOURCE_ANALYSIS_LEVELS else None
+        profile=profile, boundary_species=source_boundary_species(recorded),
+        urban_columns=urban_columns)
+    source = (None if prepared is not None else
+              recorded if recorded in SOURCE_ANALYSIS_LEVELS else None)
     ingest = (estimate_ingest(
         exp, source=source, forcing_interval_seconds=interval,
         forcing_intervals=forcing_intervals,
@@ -9795,6 +10043,9 @@ def _required_memory_without_kernels(exp, args, *,
         "k_tables_bytes": estimate.k_tables_bytes,
         "alloc_estimate_bytes": estimate.alloc_estimate_bytes,
         "resident_forecast_peak_envelope_bytes": estimate.peak_envelope_bytes,
+        "bem_column_workspace_basis": _check_bem_basis(
+            estimate, prepared, alloc=getattr(args, "alloc", False)),
+        "prepared_urban_columns": urban_columns,
         # THE DEVICE BESIDE THE FIGURE: which card the non-pool terms
         # were priced on and whether it is the one in this machine, so
         # this figure and the estimate document's can be told apart by
@@ -9901,12 +10152,31 @@ def check_main(args) -> int:
                          "a whole number of MiB, 1 or more")
     if args.alloc and declared_memory:
         raise ValueError("--alloc measures this GPU; omit --free-gib and --budget-gib")
-    exp = _load_experiment_any(args.config)
+    prepared = _prepared_check_inputs(args)
+    exp = (prepared.experiment if prepared is not None
+           else _load_experiment_any(args.config))
+    urban_columns = (None if prepared is None or args.alloc
+                     else prepared.urban_columns)
+    from gpuwm.output_disk import forecast_projection
+
+    if getattr(args, "devices", None) is not None:
+        # ``gpuwm go --devices N``'s count, priced the way the run will be:
+        # one card's envelope for a domain the split exists for is a
+        # refusal the run itself would not give.  MEASURED: a 2560 x 1440
+        # x 55 domain checked at 158.66 GiB on one card (refused) while
+        # `gpuwm go --devices 2` admitted it at 86.1 and 85.2 GiB per card.
+        from dataclasses import replace as _replace
+        from gpuwm.core.devices import override_device_count
+        exp = _replace(exp, devices=override_device_count(
+            exp.devices, args.devices,
+            log=lambda line: print(line, file=sys.stderr)))
+    output_disk = forecast_projection(exp)
     import tomllib
     from gpuwm.config_authority import read_config_authority
     from gpuwm.runplan import drivability_for
     hints = tomllib.loads(read_config_authority(args.config).payload.decode("utf-8")).get("fetch") or {}
-    if drivability_for(hints.get("source")).get("requires_source_root"):
+    if (prepared is None and
+            drivability_for(hints.get("source")).get("requires_source_root")):
         from gpuwm.local_preparation import review_local_inputs
         review_local_inputs(hints, base_dir=Path(args.config).resolve().parent)
     if (target_hardware and target_machine is None
@@ -9921,7 +10191,8 @@ def check_main(args) -> int:
 
     companion_root()
     _warn_unstaged_physics_tables(exp)
-    _warn_unmet_run_preparation(exp)
+    if prepared is None:
+        _warn_unmet_run_preparation(exp)
     # Declared-budget sizing is deliberately portable and needs no GPU.
     # A check of this machine must prove kernels can run before allocating
     # a forecast or claiming its measured memory budget is usable.
@@ -9937,6 +10208,10 @@ def check_main(args) -> int:
         if checked.status != "verified":
             command = ["gpuwm", "check", str(args.config), "--free-gib", "FREE_GIB",
                        "--vram-gib", "CAPACITY_GIB"]
+            if prepared is not None:
+                command += ["--prepared-root", str(prepared.prepared_root)]
+                if getattr(args, "wps_namelist", None) is not None:
+                    command += ["--wps-namelist", str(args.wps_namelist)]
             planning = {"command": command,
                         "inputs": "Replace FREE_GIB and CAPACITY_GIB with the target GPU's declared free memory and capacity in GiB.",
                         "scope": "CPU-only estimate; does not verify local GPU readiness"}
@@ -9956,10 +10231,14 @@ def check_main(args) -> int:
                 print(json.dumps({"config": str(args.config),
                                   "gpu_readiness": readiness,
                                   "required_memory": required,
-                                  "cpu_planning": planning}, indent=2, allow_nan=False))
+                                  "cpu_planning": planning,
+                                  "output_disk": output_disk}, indent=2, allow_nan=False))
             else:
                 label = "FAILED" if checked.status == "missing" else "UNVERIFIED"
                 print(f"gpuwm GPU readiness: {label}. {checked.brief or checked.detail}.")
+                print(f"Forecast output disk: {output_disk['total_bytes'] / GIB:.2f} GiB "
+                      "for configured history and checkpoints; "
+                      "source downloads and preparation excluded.")
                 print(f"  Next: {checked.action or 'gpuwm doctor --explain'}")
                 if required["status"] == "estimated":
                     # The card beside the figure: the one read in this
@@ -9990,8 +10269,10 @@ def check_main(args) -> int:
                     if checked.remedy:
                         print(checked.remedy)
             return 1 if checked.status == "missing" else 2
-    configured_interval, forcing_intervals = config_forcing_schedule(
-        args.config, exp, input_catalog=getattr(args, "input_catalog", None))
+    configured_interval, forcing_intervals = (
+        (prepared.forcing_interval_seconds, prepared.forcing_intervals)
+        if prepared is not None else config_forcing_schedule(
+            args.config, exp, input_catalog=getattr(args, "input_catalog", None)))
     explicit_interval = args.forcing_interval_s
     if (explicit_interval is not None and forcing_intervals is not None
             and configured_interval is not None
@@ -10064,7 +10345,8 @@ def check_main(args) -> int:
     #: product at all" at a reader looking at the one they wrote.
     #: :func:`estimate_phases` keys off the same table either way, so an
     #: unpriceable name still leaves the ingest term absent.
-    ingest_source = config_forcing_source(args.config, priced_only=False)
+    ingest_source = (prepared.source if prepared is not None else
+                     config_forcing_source(args.config, priced_only=False))
     #: THE TABLES THE RUN HOLDS.  The root's boundary tables carry the
     #: analysed hydrometeors the recorded source publishes (its table row,
     #: :func:`gpuwm.boundary_fields.source_boundary_species`), and
@@ -10080,16 +10362,96 @@ def check_main(args) -> int:
     #: peak envelope priced with the hydrometeors.
     from gpuwm.boundary_fields import source_boundary_species
 
-    boundary_species = source_boundary_species(ingest_source)
+    priced_boundary_source = (prepared.boundary_source if prepared is not None
+                              else ingest_source)
+    boundary_species = source_boundary_species(priced_boundary_source)
     # The retention term is a fraction OF the estimate, so the estimate is
     # formed first.  It is pure arithmetic and the runners re-derive it from
     # the same inputs, so there is no second source of truth.
+    if getattr(getattr(exp, "devices", None), "enabled", False):
+        from gpuwm.core.devices import probe_devices, validate_device_count
+        from gpuwm.core.devices_memory import devices_gate, include_preparation
+        if args.alloc:
+            raise ValueError("[devices] --alloc is not wired into the ranked road; "
+                             "refused to prevent allocating a one-card reference domain")
+        measured = None if declared_memory else probe_devices()
+        if measured is not None:
+            validate_device_count(exp.devices, measured["visible_count"])
+        profiles = (None if measured is None else
+                    {int(dev): profile_from_device_probe(row)
+                     for dev, row in measured["cards"].items()})
+        if len(exp.domains) > 1:
+            # A split tree: each grid on the cards it runs on, the pricing
+            # the `gpuwm go` gate and the tree runner use.
+            from gpuwm.core.devices_memory import estimate_devices_tree
+            estimate = estimate_devices_tree(
+                exp, forcing_intervals=forcing_intervals,
+                forcing_interval_seconds=forcing_interval, vram_gib=card_total_gib,
+                profile=profile, source=priced_boundary_source, profiles=profiles)
+        else:
+            estimate = estimate_devices(
+                exp, forcing_intervals=forcing_intervals,
+                forcing_interval_seconds=forcing_interval, vram_gib=card_total_gib,
+                profile=profile, source=priced_boundary_source, profiles=profiles)
+        declared_budget = args.budget_gib if args.budget_gib is not None else declared_free_gib
+        budgets = ({dev: int(declared_budget * GIB) for dev in exp.devices.device_ids()}
+                   if declared_budget is not None else None if measured is None else
+                   {int(dev): int(row["free_bytes"])
+                    for dev, row in measured["cards"].items()})
+        gate = devices_gate(estimate, budgets=budgets, host_budget=host_available_bytes())
+        if prepared is None:
+            include_preparation(
+                gate, exp, source=ingest_source, budgets=budgets, host_budget=host_available_bytes(),
+                forcing_intervals=forcing_intervals, forcing_interval_seconds=forcing_interval,
+                ingest_forcing_interval_seconds=ingest_interval,
+                vram_gib=card_total_gib, profile=profile)
+        else:
+            gate["preparation"] = {
+                "priced": False, "already_completed": True,
+                "reason": "verified prepared forecast inputs; preparation already completed"}
+        gate["forcing_interval_seconds"] = forcing_interval
+        gate["retained_forcing_intervals"] = forcing_intervals
+        gate["boundary_species"] = list(boundary_species or ())
+        if urban_columns is not None:
+            gate["bem_column_workspace_basis"] = (
+                "rank pricing keeps the conservative every-column BEP+BEM bound; "
+                "prepared_urban_columns records verified full-grid counts, "
+                "not their distribution among rank halos")
+        unmeasured = [int(row["card"]) for row in estimate["cards"]
+                      if budgets is None or budgets.get(row["card"]) is None]
+        exit_code = 4 if gate["refuse"] else 2 if unmeasured else 0
+        gate["evaluable"] = not unmeasured
+        gate["unmeasured_cards"] = unmeasured
+        gate["check_exit_code"] = exit_code
+        if unmeasured:
+            gate["refuse"] = True
+            gate["verdict"] += (
+                f"\nREFUSED: no declared or measured VRAM budget for card(s) "
+                f"{unmeasured}; the split estimate cannot be verified.")
+        from gpuwm.core.devices import describe_split
+        sentence = "go: " + describe_split(exp, halo=estimate["halo"])
+        if args.json:
+            print(json.dumps({**gate, "plan": sentence,
+                              "output_disk": output_disk,
+                              "prepared_urban_columns": urban_columns}, indent=2))
+        else:
+            print(sentence)
+            print(gate["verdict"])
+            print(f"Forecast output disk: {output_disk['total_bytes'] / GIB:.2f} GiB "
+                  "for configured history and checkpoints; "
+                  "source downloads and preparation excluded.")
+        if exit_code == 2:
+            print("gpuwm check: REFUSED (exit 2, fail-closed): no declared "
+                  f"or measured VRAM budget for card(s) {unmeasured}. "
+                  "Declare the card budget and re-run with "
+                  "--budget-gib <N> --vram-gib <card GiB>.", file=sys.stderr)
+        return exit_code
     reserve = ReservePolicy.n0_alloc(
         exp, profile=profile, estimate_bytes=estimate_experiment(
             exp, forcing_intervals=forcing_intervals, column_chunk=chunk,
             forcing_interval_seconds=forcing_interval,
             vram_gib=card_total_gib, profile=profile,
-            boundary_species=boundary_species
+            boundary_species=boundary_species, urban_columns=urban_columns
         ).alloc_estimate_bytes)
     if args.reserve_gib is not None:
         # Flat controller-ratified reserve replacing the proposed stack.
@@ -10132,7 +10494,7 @@ def check_main(args) -> int:
             exp, forcing_intervals=forcing_intervals, column_chunk=chunk,
             forcing_interval_seconds=forcing_interval,
             vram_gib=card_total_gib, profile=profile,
-            boundary_species=boundary_species)
+            boundary_species=boundary_species, urban_columns=urban_columns)
         measured_used = None
         free = None
         if declared_memory:
@@ -10250,11 +10612,13 @@ def check_main(args) -> int:
     #: number of valid times the decoder will hold.  ``None`` whenever this
     #: command has no catalog to read them off, and the ingest section then
     #: prices no host bytes and says so.
-    host_geometry = ingest_host_geometry(args)
+    host_geometry = None if prepared is not None else ingest_host_geometry(args)
     from gpuwm.core.streaming import planner_machine
 
     phases = estimate_phases(
-        exp, source=ingest_source, column_chunk=chunk,
+        exp, source=None if prepared is not None else ingest_source,
+        column_chunk=chunk, boundary_source=priced_boundary_source,
+        urban_columns=urban_columns,
         preparation_route=config_preparation_route(args.config),
         forcing_intervals=forcing_intervals,
         ingest_forcing_interval_seconds=ingest_interval,
@@ -10299,6 +10663,13 @@ def check_main(args) -> int:
     #: is what gets reported now (:func:`unpriced_ingest_note`), which is
     #: the gap that is real.
     ingest_priced = phases.ingest_priced
+    ingest_note = (
+        "preparation is still producing boundary intervals; this check "
+        "prices the verified prepared-head forecast only"
+        if prepared is not None and prepared.prepared_head_sha256 else
+        "preprocessing already completed; this check prices the verified "
+        "prepared forecast only" if prepared is not None else
+        unpriced_ingest_note(args.config, ingest_source))
     #: The envelope every verdict below compares: the largest phase, not
     #: whichever phase happens to be modelled.
     envelope = phases.peak_envelope_bytes
@@ -10318,6 +10689,13 @@ def check_main(args) -> int:
     #: that emits a config and the door that verifies it cannot disagree.
     envelope_budget = (None if free is None
                        else max(0, int(free) - EXTERNAL_MARGIN_BYTES))
+    phase_verdict = (
+        phases._budget_tail(
+            f"the verified prepared forecast needs {envelope / GIB:.2f} "
+            f"GiB peak envelope; {ingest_note}",
+            envelope_budget)
+        if prepared is not None and not phases.streamed_forecast else
+        phases.verdict(envelope_budget))
     #: The report's own prose says this configuration may not fit.  It is
     #: read here, before either renderer, because the exit code has to
     #: carry it whether or not anybody reads the text.
@@ -10444,6 +10822,7 @@ def check_main(args) -> int:
     if args.json:
         payload = {
             "config": str(args.config), "experiment": exp.name,
+            "output_disk": output_disk,
             "preprocess_backend": phases.preprocess_backend,
             "gpu_readiness": readiness,
             "column_chunk": estimate.column_chunk,
@@ -10491,6 +10870,15 @@ def check_main(args) -> int:
             "envelope_pool_slack_fraction": 0.0,
             "forecast_pool_headroom": estimate.headroom,
             "held_exact_bytes": estimate.held_exact_bytes,
+            "bem_column_workspace_basis": _check_bem_basis(
+                estimate, prepared, alloc=args.alloc),
+            "prepared_root": (None if prepared is None else
+                              str(prepared.prepared_root)),
+            "prepared_head_sha256": (None if prepared is None else
+                                     prepared.prepared_head_sha256),
+            "prepared_urban_columns": urban_columns,
+            "forcing_interval_seconds": forcing_interval,
+            "retained_forcing_intervals": forcing_intervals,
             "forecast_peak_ratio_measured": FORECAST_PEAK_RATIO_MEASURED,
             "forecast_peak_ratio_safety": FORECAST_PEAK_RATIO_SAFETY,
             "envelope_legacy_radiation": estimate.uses_legacy_radiation,
@@ -10628,11 +11016,10 @@ def check_main(args) -> int:
         # that the envelope carries as its intercept.  This field said
         # otherwise while the printed line beside it said this, which is
         # one report giving two answers about one card (task 206).
-        payload["phase_verdict"] = phases.verdict(envelope_budget)
+        payload["phase_verdict"] = phase_verdict
         if not ingest_priced:
             payload["ingest"] = None
-            payload["ingest_not_priced_reason"] = unpriced_ingest_note(
-                args.config, ingest_source)
+            payload["ingest_not_priced_reason"] = ingest_note
         else:
             ingest = phases.ingest
             payload["ingest"] = {
@@ -10799,6 +11186,9 @@ def check_main(args) -> int:
                  f"arrays held at their allocated size"
                  if estimate.held_exact_bytes else "")
               + f"): {_format_bytes(estimate.alloc_estimate_bytes)}")
+        bem_note = _check_bem_basis(estimate, prepared, alloc=args.alloc)
+        if bem_note is not None:
+            print(f"  NOTE: {bem_note}")
         print(f"  TIER 2  pool-held projection: "
               f"{_format_bytes(estimate.held_projection_bytes)}"
               f"   TIER 3 device-footprint projection: "
@@ -10879,7 +11269,7 @@ def check_main(args) -> int:
               f"; {estimate.envelope_basis}): "
               f"{_format_bytes(forecast_envelope)} -- {provenance}.")
         if not ingest_priced:
-            print("  " + unpriced_ingest_note(args.config, ingest_source))
+            print("  " + ingest_note)
         else:
             ingest = phases.ingest
             backend_label = ", backend cpu, host RAM" if ingest.preprocess_backend == "cpu" else ""
@@ -10982,7 +11372,7 @@ def check_main(args) -> int:
         # names the STREAMED forecast term -- and the tiling that
         # produced it -- was withheld from exactly the configs whose
         # envelope the streaming replaced.
-        print(f"  BINDING PHASE: {phases.verdict(envelope_budget)}.")
+        print(f"  BINDING PHASE: {phase_verdict}.")
         if streamed_alloc_gate:
             # The gate leg below prices this run as it will actually be
             # allocated, and it compares a different budget from the one
@@ -11314,7 +11704,8 @@ def check_main(args) -> int:
             if frames is not None:
                 print(f"Noah-MP frame basis: {frames.sentence()}")
         if not ingest_priced:
-            print("Forcing preparation GPU memory: not priced for this source")
+            print(ingest_note if prepared is not None else
+                  "Forcing preparation GPU memory: not priced for this source")
         if host_forcing_bytes is None:
             print(f"Host RAM: {_format_bytes(host_available).strip()} available; forcing decode memory not priced")
         else:
@@ -11330,6 +11721,10 @@ def check_main(args) -> int:
         for advisory in check_advisories(exp, args.config, streamed=phases.streamed, tree_road=phases.tree_road):
             print(f"Note: {advisory}")
         print("Use --explain for the full memory breakdown and remedies; --alloc measures allocations on the target GPU.")
+    if not args.json:
+        print(f"Forecast output disk: {output_disk['total_bytes'] / GIB:.2f} GiB "
+              "for configured history and checkpoints; "
+              "source downloads and preparation excluded.")
     evaluable = [leg for leg in gates.values() if leg is not None]
     # WHICH CODE THIS COMMAND IS ABOUT TO RETURN.  1, 2 and 3 outrank the
     # host refusal and return before it, so a paragraph printed ahead of
@@ -11476,6 +11871,13 @@ def register_cli(subparsers) -> None:
     p.add_argument("config", type=Path, metavar="CONFIG",
                    help="experiment TOML (or legacy RunConfig TOML, "
                         "wrapped as a one-domain experiment)")
+    p.add_argument("--prepared-root", type=Path, default=None, metavar="DIR",
+                   help="verify prepared forecast inputs and price their "
+                        "land cover and retained boundary tables; "
+                        "bind a finished bundle or its live prepared head")
+    p.add_argument("--wps-namelist", type=Path, default=None, metavar="FILE",
+                   help="WPS namelist bound by a single-domain prepared "
+                        "bundle (otherwise the config's sibling namelist)")
     p.add_argument("--alloc", action="store_true",
                    help="construct every persistent allocation on the "
                         "device, zero steps, report measured vs estimate "
@@ -11518,6 +11920,12 @@ def register_cli(subparsers) -> None:
                         "MemAvailable is a reading of this second, and a "
                         "busy box can be momentarily short of RAM a run "
                         "would have had")
+    p.add_argument("--devices", type=int, default=None, metavar="N",
+                   help="price the run split into N resident slabs, one per "
+                        "card (or as [devices] ids places them): replaces "
+                        "[devices] count the way `gpuwm go --devices N` "
+                        "does, and reports the memory envelope of every "
+                        "card and of the pinned host store")
     p.add_argument("--json", action="store_true",
                    help="machine-readable report")
     p.set_defaults(func=check_main)
@@ -11582,7 +11990,8 @@ __all__ = [
     "ENVELOPE_AFFINE_BASIS", "ENVELOPE_A163_BASIS", "ENVELOPE_PER_NEST_FRACTION",
     "FORECAST_PEAK_RATIO_MEASURED", "FORECAST_PEAK_RATIO_SAFETY",
     "FORECAST_POOL_HEADROOM", "FORECAST_PEAK_BATTERY",
-    "HeldMemoryItem", "forecast_pool_estimate_bytes", "urban_held_bytes",
+    "HeldMemoryItem", "bem_workspace_bound_note",
+    "forecast_pool_estimate_bytes", "urban_held_bytes",
     "urban_held_item_names",
     "ENVELOPE_UNMODELLED_BYTES", "ENVELOPE_WDDM_BASIS",
     "WDDM_POOL_SLACK_FRACTION", "CARD_CLASS_MULTIPROCESSORS",

@@ -68,7 +68,9 @@ def test_bundle_tables_key_consumed_values_and_device(monkeypatch):
         uploads.append(result)
         return result
 
-    monkeypatch.setattr(gpu.cp.cuda.runtime, "getDevice", lambda: device[0])
+    from types import SimpleNamespace
+    monkeypatch.setattr(gpu.cp.cuda, "Device",
+                        lambda: SimpleNamespace(id=device[0]))
     monkeypatch.setattr(gpu, "_upload_tables", upload)
     monkeypatch.setattr(gpu, "_BUNDLE_DEVICE_TABLES", {})
     dataset = "MODIFIED_IGBP_MODIS_NOAH"

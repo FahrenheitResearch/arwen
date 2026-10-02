@@ -196,7 +196,9 @@ def test_a_chain_that_composes_nothing_stages_no_stream_and_an_unknown_source_is
 def _regional_layout(nx: int, ny: int, dx: float, lat: float, lon: float):
     projection = SimpleNamespace(map_proj="lambert", ref_lat=lat, ref_lon=lon,
                                  truelat1=38.5, truelat2=38.5, stand_lon=lon)
-    run = SimpleNamespace(nx=nx, ny=ny, nz=49, dx=dx, spec_bdy_width=5)
+    from test_history_disk_layout import priced_run
+
+    run = priced_run(nx, ny, 49, dx=dx, dy=dx, spec_bdy_width=5)
     domain = SimpleNamespace(grid_id=1, history_interval_s=3600.0, run=run)
     return SimpleNamespace(run_seconds=6 * 3600.0, restart_interval_s=0.0, domains=(domain,),
                            projection=projection, root=domain)

@@ -1,8 +1,9 @@
 //! Unit-sphere geometry, spelled to match `gpuwm/verify/obs/regrid.py`.
 //!
 //! Every operation here is a transcription of the Python reference with
-//! the SAME arithmetic in the SAME order, because the parity contract on
-//! this port is bit-identical float64, not "close enough".  Where the
+//! the SAME arithmetic in the SAME order.  The remap fields retain
+//! bitwise parity; the distance diagnostic's platform-trig exception is
+//! documented and bounded in `tests/parity.rs`.  Where the
 //! Python spells `np.deg2rad(x)`, this spells `x * (PI / 180.0)`, which
 //! is what numpy's ufunc computes (measured, not assumed: the probe in
 //! `golden/gen_regrid_goldens.py` checks the identity bitwise before it

@@ -18,13 +18,16 @@
 //! swaths with an explicit validity field and a reverse-assignment
 //! cell average.  Those are written here, against the Python.
 //!
-//! **The parity contract is bitwise.**  Every value this crate produces
-//! is compared against goldens extracted from the real scipy/numpy path
-//! on real observation and model grids, and the comparison is on IEEE
-//! bit patterns, not a tolerance.  The single documented divergence is
-//! nearest-neighbour tie-breaking, which scipy leaves to traversal
-//! order and this crate defines as lowest-index-wins; see [`kdtree`] for
-//! the measurements and the breakage that rule prevents.
+//! **Remap parity is bitwise.**  Indices, reachability, validity and
+//! remapped values are compared against goldens extracted from the real
+//! scipy/numpy path on real observation and model grids, using IEEE bit
+//! patterns.  The distance diagnostic is also bitwise when the platform's
+//! unit vectors match the reference; otherwise its comparison uses the
+//! propagated scalar-trig error bound documented in `tests/parity.rs`.
+//! The documented mapping divergence is nearest-neighbour tie-breaking,
+//! which scipy leaves to traversal order and this crate defines as
+//! lowest-index-wins; see [`kdtree`] for the measurements and the breakage
+//! that rule prevents.
 //!
 //! Three properties carried over from the Python module verbatim,
 //! because they are the reasons it exists:

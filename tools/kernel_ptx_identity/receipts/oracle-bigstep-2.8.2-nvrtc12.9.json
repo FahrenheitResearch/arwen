@@ -1,0 +1,201 @@
+{
+ "tool": "tools/kernel_ptx_identity/compare.py",
+ "trees": [
+  "bigstep_tip_a4c70a270",
+  "integrate_17dabc53e"
+ ],
+ "nvrtc_version": [
+  12,
+  9
+ ],
+ "assembly": "gpuwm.core.kernels.module_source(name) in a child process per tree; GPUWM_WRF_EXACT* removed, CUDA_VISIBLE_DEVICES empty",
+ "compile": "gpuwm.nvrtc_cache_key.compile_program(source, options + (-arch=<arch>,), target=ptx)",
+ "option_sets": {
+  "load_module": [
+   "-std=c++17"
+  ],
+  "rawmodule": [
+   "-std=c++17",
+   "-ftz=true"
+  ]
+ },
+ "archs": [
+  "compute_89",
+  "compute_90",
+  "compute_120"
+ ],
+ "modules": {
+  "dycore": {
+   "file_sha256": {
+    "bigstep_tip_a4c70a270": "450bb509eee224d0f5ab358fa2e1f2821cdd4e89992e278a32fd81781187a536",
+    "integrate_17dabc53e": "0180c4b960f6198f6bc4972d69ee3f0853922dfdb0398fb9ec5fa0d1809d7ab3"
+   },
+   "assembled_source_sha256": {
+    "bigstep_tip_a4c70a270": "e318baa17488a74e76c642bd0848ed7ecdf0cacaa1593f9fc38dd8786463de02",
+    "integrate_17dabc53e": "0bf6ab99e59a108fad385ef03de28f6b4bd96e8beff8ac212486fb46f11f90c7"
+   },
+   "entries": [
+    "slow_buoyancy",
+    "slow_geopotential",
+    "slow_geopotential_faces",
+    "slow_geopotential_vertical",
+    "slow_pgf",
+    "small_step_finish_column",
+    "small_step_finish_uv",
+    "small_step_init_column",
+    "small_step_init_uv"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "bigstep_tip_a4c70a270": "cd846790ea0d4554ae5f40de0155eac65c530dbc4fbe3092a7304c6852af6aa5",
+      "integrate_17dabc53e": "cd846790ea0d4554ae5f40de0155eac65c530dbc4fbe3092a7304c6852af6aa5"
+     },
+     "entry_compared": 9,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "bigstep_tip_a4c70a270": "d2a23ecb0bde0677b106cfbf522abe86e2c4af76a53e35e4a646b575e3656623",
+      "integrate_17dabc53e": "d2a23ecb0bde0677b106cfbf522abe86e2c4af76a53e35e4a646b575e3656623"
+     },
+     "entry_compared": 9,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "bigstep_tip_a4c70a270": "8a0672dc40736bdab0a76d0cf90d4d2c5faf3c6ae627f02b3683a9ab88df6428",
+      "integrate_17dabc53e": "8a0672dc40736bdab0a76d0cf90d4d2c5faf3c6ae627f02b3683a9ab88df6428"
+     },
+     "entry_compared": 9,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "bigstep_tip_a4c70a270": "657ba9f17faa4f31badd15514d579216369f58298ae496e17c4240c29b021d65",
+      "integrate_17dabc53e": "657ba9f17faa4f31badd15514d579216369f58298ae496e17c4240c29b021d65"
+     },
+     "entry_compared": 9,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "bigstep_tip_a4c70a270": "629a17a2d9de465aded513bfd8081a315e947a61c0a8f6285dc84d4644e83e1a",
+      "integrate_17dabc53e": "629a17a2d9de465aded513bfd8081a315e947a61c0a8f6285dc84d4644e83e1a"
+     },
+     "entry_compared": 9,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "bigstep_tip_a4c70a270": "401c3cab0e5f1318ecef169fec15ca3d1872d8ab131d36b3515275216635fe6f",
+      "integrate_17dabc53e": "401c3cab0e5f1318ecef169fec15ca3d1872d8ab131d36b3515275216635fe6f"
+     },
+     "entry_compared": 9,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  },
+  "coriolis_map": {
+   "file_sha256": {
+    "bigstep_tip_a4c70a270": "53fc37398d086dcf54c317917872e5d8d473b83d6d217697335d5ae6bc96d143",
+    "integrate_17dabc53e": "671c4b5652e6de0d17572a3e48299703e8ec217e90690940ad2c3e96810294ee"
+   },
+   "assembled_source_sha256": {
+    "bigstep_tip_a4c70a270": "7981384362444c8e782abb80efb29cbf61d0a3183cc0c316799b3bf9f3c43671",
+    "integrate_17dabc53e": "27e16185445ec70c90532321fbccb65f96a9742796f4d4529c0d3d5616c22426"
+   },
+   "entries": [
+    "coriolis_curvature"
+   ],
+   "funcs": [],
+   "readings": {
+    "load_module | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "bigstep_tip_a4c70a270": "0b6fd227574495a2d7fe7ead49a5c7d9ae44c548b47fdf084968b8bb4fd9149e",
+      "integrate_17dabc53e": "0b6fd227574495a2d7fe7ead49a5c7d9ae44c548b47fdf084968b8bb4fd9149e"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "bigstep_tip_a4c70a270": "1d8a1077deb010d832beeb209196c944553f6b760cdb1448dc48cc657ba8e6cf",
+      "integrate_17dabc53e": "1d8a1077deb010d832beeb209196c944553f6b760cdb1448dc48cc657ba8e6cf"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "load_module | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "bigstep_tip_a4c70a270": "7bff62dadb81def5c2ca81a2a36c9ac7368c06df94650460bc9dcb0a69e87a80",
+      "integrate_17dabc53e": "7bff62dadb81def5c2ca81a2a36c9ac7368c06df94650460bc9dcb0a69e87a80"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_89": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "bigstep_tip_a4c70a270": "2953e8d9cfca50c857c5239a07773ea3942b0815827e0cdf472f8318a5bf6384",
+      "integrate_17dabc53e": "2953e8d9cfca50c857c5239a07773ea3942b0815827e0cdf472f8318a5bf6384"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_90": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "bigstep_tip_a4c70a270": "398bef3300dfac7eb9c416d92befeaa14639da5406685858a21a7fc94cf92583",
+      "integrate_17dabc53e": "398bef3300dfac7eb9c416d92befeaa14639da5406685858a21a7fc94cf92583"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "rawmodule | compute_120": {
+     "ptx_identical": true,
+     "ptx_sha256": {
+      "bigstep_tip_a4c70a270": "2a70aa02b09ba0611fe02d43ff3417d7f3a4181487faacba0059d55c6df96257",
+      "integrate_17dabc53e": "2a70aa02b09ba0611fe02d43ff3417d7f3a4181487faacba0059d55c6df96257"
+     },
+     "entry_compared": 1,
+     "entry_different": [],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  }
+ }
+}

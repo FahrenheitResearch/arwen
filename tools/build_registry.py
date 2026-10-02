@@ -88,6 +88,10 @@ IMPLEMENTED: dict[str, dict] = {
     "khdif": {"type": "number", "minimum": 0.0, "default": 0.0},
     "kvdif": {"type": "number", "minimum": 0.0, "default": 0.0},
     "c_s": {"type": "number", "minimum": 0.0, "default": 0.25},
+    "diff_opt": {"type": "integer", "enum": [1, 2], "default": 2,
+                 "description": "1: coordinate-surface diffusion for km_opt=2/4; 2: metric stress/scalar diffusion."},
+    "mix_full_fields": {"type": "boolean", "default": True,
+                        "description": "WRF logical retained under coordinate diffusion; that operator always mixes theta relative to its initial field."},
     "diff_6th_thresh": {"type": "number", "minimum": 0.0, "default": 0.10},
     # upper-level damping
     "damp_opt": {"type": "integer", "enum": [0, 3], "default": 0},
@@ -139,6 +143,11 @@ IMPLEMENTED: dict[str, dict] = {
     # (gpuwm.core.topo_radiation, lane 281-namelist-gaps), off by default.
     "slope_rad": {"type": "integer", "enum": [0, 1], "default": 0},
     "topo_shading": {"type": "integer", "enum": [0, 1], "default": 0},
+    # WRF v4.7.1 sub-grid terrain drag (gpuwm.core.terrain_drag, lane
+    # 282-terrain-drag), off by default: topo_wind under YSU, gwd_opt under
+    # every PBL scheme.
+    "topo_wind": {"type": "integer", "enum": [0, 1, 2], "default": 0},
+    "gwd_opt": {"type": "integer", "enum": [0, 1, 3], "default": 0},
     "o3input": {
         "type": "integer", "enum": [0, 2], "default": 2,
         "warnings": [
@@ -380,7 +389,7 @@ TIGHTEN: dict[str, dict] = {
     "diff_6th_factor": {"type": "number", "minimum": 0.0, "maximum": 1.0,
                         "default": 0.12},
     "moist": {"type": "boolean", "default": False},
-    "moist_cq": {"type": "boolean", "default": False},
+    "moist_cq": {"type": "boolean", "default": True},
     # WRF's own &dynamics switch (Registry.EM_COMMON:2889, max_domains,
     # default .false.), consumed by gpuwm.core.dycore.diff6_exempt_slots.
     # Declared here because it is divergence-ledger entry L4: an ArWen
@@ -842,11 +851,6 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "Updating deep-soil temperature needs a running/calendar mean "
         "algorithm, lower-boundary history, restart state, and ownership "
         "across ingest and LSM cadence; gpuwm carries a fixed analysis TMN."),
-    "topo_wind": (
-        "c",
-        "Topographic wind correction needs terrain-subgrid static fields and "
-        "the associated momentum-adjustment subsystem; gpuwm has neither the "
-        "inputs nor a runtime operator."),
     "ua_phys": (
         "c",
         "Noah unified-atmosphere coupling is a separate physics path with "
@@ -5487,6 +5491,94 @@ def build(registry: dict) -> dict:
         if "bl_pbl_physics" in constraints.get("required_settings", {}):
             constraints["required_settings_reasons"] = {
                 "bl_pbl_physics": reason}
+    # Coordinate diffusion has no tke_rhs or metric vertical operator.
+    # WRF permits its horizontal TKE coefficients alongside a PBL scheme.
+    tke_constraints = turbulence_options["tke-1.5-order"]["constraints"]
+    for table, key in (("required_settings", "bl_pbl_physics"),
+                       ("required_settings_reasons", "bl_pbl_physics"),
+                       ("requires_components", "pbl"),
+                       ("requires_components_reasons", "pbl")):
+        tke_constraints.get(table, {}).pop(key, None)
+    tke_constraints["refused_when"] = [{
+        "settings": {"diff_opt": [2]},
+        "components": {"pbl": sorted(set(pbl_options) - {"off"})},
+        "reason": ("diff_opt=2: " + _turbulence_reasons["tke-1.5-order"]
+                   + "; diff_opt=1 instead selects WRF coordinate-surface mixing"),
+        "remedy_label": "Set bl_pbl_physics=0 for metric TKE closure.",
+        "remedy_settings": {"bl_pbl_physics": 0},
+    }]
+    # The two diffusion selectors' own refusals (gpuwm.config
+    # validate_km_opt), stated on every closure so plan review and the
+    # front ends refuse what the run door refuses: tests/
+    # test_authority_agreement.py measured both as "registry says
+    # LAUNCHABLE, validate_run_config REFUSES".  Each closure's list is
+    # assigned whole, after its own rules, so a rebuild is a fixpoint.
+    non_ysu_pbl = sorted(
+        option_id for option_id, option in pbl_options.items()
+        if option.get("selectors", {}).get("bl_pbl_physics") != 1)
+    no_pbl = sorted(
+        option_id for option_id, option in pbl_options.items()
+        if option.get("selectors", {}).get("bl_pbl_physics") == 0)
+    for option_id, option in sorted(turbulence_options.items()):
+        if option.get("implemented") is not True:
+            continue
+        km_opt = option["selectors"]["km_opt"]
+        rules = [rule for rule in
+                 option.get("constraints", {}).get("refused_when", [])
+                 if not {"topo_wind", "gwd_opt"}.intersection(
+                     rule.get("settings", {}))
+                 and ("diff_opt" not in rule.get("settings", {})
+                      or "components" in rule)]
+        if km_opt not in (2, 4):
+            rules.append({
+                "settings": {"diff_opt": [1]},
+                "reason": (
+                    f"diff_opt=1 (WRF coordinate-surface diffusion) is "
+                    f"implemented for km_opt=2 and 4, which supply its "
+                    f"exchange coefficients; km_opt={km_opt} does not, so "
+                    f"the run would carry no coordinate operator"),
+                "remedy_label": (
+                    "Set diff_opt=2 for the metric operator this closure "
+                    "runs."),
+                "remedy_settings": {"diff_opt": 2},
+            })
+        rules.append({
+            "settings": {"diff_opt": [2], "mix_full_fields": [False]},
+            "reason": (
+                "mix_full_fields=false selects WRF's perturbation mixing (the "
+                "base-state profile subtracted before mixing), which the "
+                "diff_opt=2 metric operator does not implement: the run "
+                "would mix full fields while its configuration says "
+                "otherwise"),
+            "remedy_label": "Set mix_full_fields=true.",
+            "remedy_settings": {"mix_full_fields": True},
+        })
+        # Every plan selects a turbulence option.  Its existing constraint
+        # object carries this PBL coupling without creating a new empty
+        # physics-identity wrapper for PBL off.  No sources clause: the
+        # preflight re-checks this configuration-only admission rule.
+        rules.append({
+            "settings": {"topo_wind": [1, 2]},
+            "components": {"pbl": non_ysu_pbl},
+            "reason": (
+                "topo_wind acts only through YSU's surface drag "
+                "(bl_pbl_physics=1); a non-YSU PBL does not consume its "
+                "ctopo coefficients, so the run would name a terrain-wind "
+                "correction without applying one"),
+            "remedy_label": "Set topo_wind=0.",
+            "remedy_settings": {"topo_wind": 0},
+        })
+        rules.append({
+            "settings": {"gwd_opt": [1, 3]},
+            "components": {"pbl": no_pbl},
+            "reason": (
+                "gwd_opt adds its drag inside the PBL driver, which a run "
+                "with bl_pbl_physics=0 never calls, and reads the PBL "
+                "height and top level an active PBL scheme writes"),
+            "remedy_label": "Set gwd_opt=0.",
+            "remedy_settings": {"gwd_opt": 0},
+        })
+        option.setdefault("constraints", {})["refused_when"] = rules
     sase_constraints = pbl_options["sase"]["constraints"]
     sase_constraints["required_settings_reasons"] = {
         "km_opt": (
@@ -6114,6 +6206,13 @@ def build(registry: dict) -> dict:
     # whatever this one leaves behind.
     for template in registry["templates"].values():
         template["components"]["urban"] = "none"
+    # Retire the disabled CQ guard in old registry seeds after every
+    # microphysics option is registered. WRF applies calc_cq to every
+    # active moist package, including passive vapor. The off option keeps
+    # moist=False; dry states bypass the driver.
+    for option_id in ("off", "kessler-mp1", "wsm6-mp6"):
+        registry["components"]["microphysics"]["options"][option_id][
+            "parameters"]["moist_cq"] = True
     _phase2c_route_declarations(registry)
     _every_served_source_declares_a_template_list(registry)
     _phase2c_soil_geometry(registry)

@@ -16,13 +16,15 @@ from gpuwm import disk_budget, runplan
 
 
 def _projection(tmp_path, *, products, route="experiment", intent=None):
+    from test_history_disk_layout import priced_run
+
     plan = SimpleNamespace(
         run_options={"render_products": products, "keep_checkpoints": 1},
         route=route, config_intent=intent, run_dir=tmp_path)
     exp = SimpleNamespace(
         run_seconds=24 * 3600.0, restart_interval_s=3600.0,
         domains=[SimpleNamespace(grid_id=1, history_interval_s=3600.0,
-                                 run=SimpleNamespace(nx=32, ny=32, nz=49))])
+                                 run=priced_run(32, 32, 49))])
     return runplan._disk_projection(plan, exp, raw={}, data=None,
                                     fetch_arguments=None)
 

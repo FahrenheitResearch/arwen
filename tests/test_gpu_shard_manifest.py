@@ -30,6 +30,9 @@ from __future__ import annotations
 import pathlib
 
 import pytest
+from _dycore_oracle_routes import (
+    DYCORE_PARITY_FILES, DEVICE_ORACLE_IMPORTS, adapter_path,
+)
 
 REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parents[1]
 MANIFEST = REPOSITORY_ROOT / "tools" / "battery" / "gpu_shard_files.txt"
@@ -138,6 +141,35 @@ def test_every_entry_is_actually_gpu_bound(entry: str) -> None:
     from conftest import _cupy_scope
 
     whole, functions = _cupy_scope(str(REPOSITORY_ROOT / entry))
+    if entry in DEVICE_ORACLE_IMPORTS:
+        # The compiled-WRF suites call device adapters transitively. Keep
+        # CPU provenance rows selectable and verify the imported adapter's
+        # real CuPy use instead of adding module-scope imports to the tests.
+        import ast
+        source = (REPOSITORY_ROOT / entry).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        module = DEVICE_ORACLE_IMPORTS[entry]
+        names = {alias.asname or alias.name
+                 for node in ast.walk(tree)
+                 if isinstance(node, ast.ImportFrom) and node.module == module
+                 for alias in node.names}
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        imported_call = any(
+            isinstance(node.func, ast.Name) and node.func.id in names
+            or isinstance(node.func, ast.Subscript)
+            and isinstance(node.func.value, ast.Name) and node.func.value.id in names
+            for node in calls)
+        dynamic_import = any(
+            isinstance(node.func, ast.Attribute) and node.func.attr == "import_module"
+            and node.args and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == module for node in calls)
+        assert imported_call or dynamic_import, (
+            f"{entry} no longer calls its device oracle adapter {module}")
+        adapter_whole, adapter_functions = _cupy_scope(
+            str(REPOSITORY_ROOT / adapter_path(module)))
+        assert adapter_whole or adapter_functions, (
+            f"{entry}: oracle adapter {module} no longer opens CUDA")
+        return
     if entry == "tests/test_streamed_lifecycle_restart.py":
         # The lifecycle witness executes five actual CUDA trajectories through
         # the shared nesting helper. Pin that import and call, and require the
@@ -222,6 +254,14 @@ def test_the_wrf_reader_conformance_file_is_on_the_per_cut_shard() -> None:
     """
 
     assert "tests/test_wrfout_conformance.py" in _entries("shard1")
+
+
+def test_compiled_wrf_dycore_device_oracles_remain_on_the_per_cut_shard() -> None:
+    """A CPU fixture pass cannot replace an executed output-word pin."""
+    missing = sorted(DYCORE_PARITY_FILES - set(_entries("shard1")))
+    assert not missing, (
+        f"{missing} are absent from GPU shard 1; a cut would omit these "
+        "compiled WRF device comparisons")
 
 
 #: The filename prefixes of the cumulus leaf-port families the weekly shard

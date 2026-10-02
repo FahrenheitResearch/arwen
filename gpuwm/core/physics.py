@@ -47,12 +47,14 @@ from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
                           radiation_enabled, radiation_scheme_ids,
                           soil_layer_count)
 from gpuwm.core import constants as c
+from gpuwm.io.history_layout import _OUTPUT_FIELDS, _SASE_FLUX_DIAG_OUTPUT
 # Configuration-only predicates and name tables live in the
 # runtime-free inventory module so the VRAM estimator (and every
 # other caller that must stay importable without cupy) can ask them
 # without paying for this module's body.  Re-exported here so every
 # existing `from gpuwm.core.physics import ...` keeps resolving.
 from gpuwm.core.physics_inventory import (
+    PHYSICS_SLOT_DISPATCH,
     MYJ_PBL_STATE_3D, MYJ_SFCLAY_FIELDS_2D,
     PBL_RQI_MICROPHYSICS,
     UWPBL_DIAGNOSTICS_2D, UWPBL_DIAGNOSTICS_FULL, UWPBL_HELD_3D,
@@ -67,7 +69,7 @@ from gpuwm.core.physics_inventory import (
     physics_reuses_pbl_composition,
 )
 from gpuwm.core import (cumulus_clock, health_ledger, noah_forcing,
-                        noah_sfcdiags, tendency_coupling)
+                        noah_sfcdiags, surface_humidity, tendency_coupling)
 from gpuwm.core.noah import (_F2D as NOAH_FIELDS_2D,
                              _F3D as NOAH_FIELDS_3D,
                              launch_noah, load_tables, pack_params)
@@ -338,12 +340,6 @@ def _sr_roundoff_envelope(
     return np.float32(1.0), 0, 0
 
 
-_OUTPUT_FIELDS = {
-    "TSK": "tsk", "T2": "t2", "TH2": "th2", "Q2": "q2",
-    "U10": "u10", "V10": "v10", "UST": "ust", "HFX": "hfx",
-    "QFX": "qfx", "LH": "lh", "PBLH": "pblh",
-    "GRDFLX": "grdflx", "PSIM": "psim", "PSIH": "psih",
-}
 
 
 class UnroutedPhysicsSelectorError(NotImplementedError):
@@ -369,67 +365,6 @@ class UnroutedPhysicsSelectorError(NotImplementedError):
             "(gpuwm/core/physics.py) naming the PhysicsDriver method that "
             "runs that exact scheme.")
 
-
-#: WRF selector value -> the ``PhysicsDriver`` method that runs THAT scheme.
-#: Zero means the slot is off and maps to ``None``.  Every dispatch in
-#: :meth:`PhysicsDriver.compute` goes through this table; a value that is
-#: absent raises :class:`UnroutedPhysicsSelectorError` instead of falling
-#: through to whichever scheme happens to be wired.  ``_run_sfclay``
-#: additionally re-dispatches on the exact value internally, so the two
-#: MM5 spellings and MYNN cannot be confused with each other either.
-PHYSICS_SLOT_DISPATCH: dict[str, dict[int, str | None]] = {
-    "sf_sfclay_physics": {
-        0: None,
-        1: "_run_sfclay",     # revised MM5
-        # Eta similarity (WRF v4.6.1 module_sf_myjsfc.F).  It gets its OWN
-        # runner rather than a fourth _run_sfclay arm because it publishes
-        # a different set: AKHS/AKMS/THZ0/QZ0/UZ0/VZ0 and no MOL, ZOL,
-        # PSIM/PSIH, REGIME, GZ1OZ0 or WSPD.  gpuwm.config.
-        # validate_myj_pairing refuses it with any PBL but MYJ for exactly
-        # that reason.
-        2: "_run_myj_sfclay",
-        5: "_run_sfclay",     # MYNN surface layer
-        91: "_run_sfclay",    # classic MM5
-    },
-    "sf_surface_physics": {
-        0: None,
-        2: "_run_noah",       # Noah LSM
-        3: "_run_ruc",        # RUC LSM
-        4: "_run_noahmp",     # Noah-MP LSM
-    },
-    "bl_pbl_physics": {
-        0: None,
-        1: "_run_ysu",        # YSU
-        # MYJ (WRF v4.6.1 module_bl_myjpbl.F), Mellor-Yamada level 2.5 as
-        # extended by Janjic.  Unlike every other row here the scheme does
-        # its OWN implicit vertical diffusion, so _run_myj_pbl receives
-        # finished tendencies rather than diffusivities.  Its surface
-        # pairing is enforced in gpuwm.config.validate_myj_pairing, which
-        # is WRF's own fatal at module_physics_init.F:3770-3772.
-        2: "_run_myj_pbl",
-        5: "_run_mynn_pbl",   # MYNN EDMF
-        # Shin-Hong scale-aware (WRF v4.6.1 module_bl_shinhong.F).  The
-        # scheme has NO RunConfig knobs on purpose: WRF's
-        # shinhong_tke_diag namelist is deliberately not imported.  The
-        # TKE chain is a pure passenger diagnostic -- the tendencies
-        # never read it, proven on the pinned source (the case-27/case-1
-        # oracle pair in tests/test_shinhong_wrf461_parity.py pins
-        # OFF/ON bitwise-identical tendencies) -- so ArWen computes it
-        # every step under scheme 11 (_run_shinhong passes tke_diag=1
-        # unconditionally) and publishes it as state.e_sgs, the field
-        # the D1 gray-zone instrument scores.
-        11: "_run_shinhong",
-        # UW moist turbulence (WRF v4.7.1 module_bl_camuwpbl_driver.F,
-        # CAMUWPBLSCHEME).  Like MYJ it performs its own implicit
-        # diffusion and returns finished tendencies; unlike every other
-        # row it computes in binary64 (CAM's real(r8)) and reads the
-        # radiation step's held RTHRATENLW and CLDFRA.
-        UW_PBL_SCHEME: "_run_uwpbl",
-        # SASE: not a WRF scheme and deliberately outside WRF's selector
-        # namespace, so it can never collide with one WRF adds later.
-        SASE_PBL_SCHEME: "_run_sase",
-    },
-}
 
 #: Land-surface schemes after which WRF's surface driver calls the ordinary
 #: ``SFCDIAGS`` (module_surface_driver.F:2983-2998).  RUC instead calls
@@ -507,17 +442,6 @@ MYJ_TKE_COLD_START = 0.2
 #: (nz+1, ny, nx) plane per frame.
 _SASE_FLUX_DIAG_ROWS = {"dqv": ("fqv_diff", 1.0),
                         "dtheta": ("fth_diff", float(SASE_CP_AIR))}
-
-#: SPLIT SUBGRID-FLUX DIAGNOSTIC history names -> buffer key.  Both
-#: channels are z-FACE fields on the mass column (stagger "Z", like W),
-#: POSITIVE UPWARD, and share the deposit's lowest-level moist density
-#: rho1 so that
-#:   (F_vent[k]-F_vent[k+1] + F_diff[k]-F_diff[k+1])*dt/(rho1*thick_k)
-#: reproduces the model's own scalar increment.
-_SASE_FLUX_DIAG_OUTPUT = {"SASE_FQV_VENT": "fqv_vent",
-                          "SASE_FQV_DIFF": "fqv_diff",
-                          "SASE_FTH_VENT": "fth_vent",
-                          "SASE_FTH_DIFF": "fth_diff"}
 
 def _cumulus_optional_tendency_components(
         cfg: RunConfig) -> tuple[str, ...]:
@@ -711,6 +635,13 @@ def _physics_interval_seconds(minutes: float, dt: float) -> float:
     return steps * float(dt)
 
 
+def _physics_period_seconds(minutes: float, cfg) -> float:
+    """The requested adaptive period or WRF's fixed-clock rounded interval."""
+    if bool(getattr(cfg, "use_adaptive_time_step", False)) and minutes > 0.0:
+        return float(Fraction(str(minutes)) * 60)
+    return _physics_interval_seconds(minutes, _model_clock_dt(cfg))
+
+
 def _physics_interval_steps(minutes: float, dt: float | Fraction) -> int:
     """WRF ``MAX(NINT(minutes*60/dt), 1)`` interval in model steps.
 
@@ -754,8 +685,11 @@ def _cumulus_step_due(itimestep: int, stepcu: int,
 
 
 def _surface_pbl_step_due(itimestep: int, stepbl: int,
-                          bldt_minutes: float) -> bool:
+                          bldt_minutes: float,
+                          due_override: bool | None = None) -> bool:
     """Shared WRF surface/PBL fixed-step predicate, which is modulo zero."""
+    if due_override is not None:
+        return bool(due_override)
     return (itimestep == 1 or bldt_minutes == 0.0 or stepbl == 1
             or itimestep % stepbl == 0)
 
@@ -1831,6 +1765,10 @@ class PhysicsDriver:
     #: runs WRF's slope_rad (initialize_physics attaches it); ``None``
     #: keeps every other domain's radiation and land calls untouched.
     topo_shortwave: object | None = None
+    #: :class:`gpuwm.core.terrain_drag.TerrainDrag` when this domain runs
+    #: WRF's topo_wind or gwd_opt (initialize_physics attaches it); ``None``
+    #: keeps every other domain's PBL call untouched.
+    terrain_drag: object | None = None
 
     #: CLASS DEFAULTS for the three bookkeeping slots the hot path reads
     #: every step, on exactly the argument the ``sase_active`` default
@@ -1876,6 +1814,9 @@ class PhysicsDriver:
         # WRF's slope_rad carrier; initialize_physics attaches it where
         # WRF would adjust the surface shortwave (restart: rebuilt).
         self.topo_shortwave = None
+        # WRF's topo_wind / gwd_opt; initialize_physics attaches it where
+        # either is on (restart: rebuilt from the prepared statics).
+        self.terrain_drag = None
         self.o3rad = None
         self.fields = fields
         # Where this domain's downward longwave came from; see the class
@@ -2121,6 +2062,9 @@ class PhysicsDriver:
         #: dt below.  gpuwm.core.adaptive_clock decides on elapsed model
         #: time and puts the answer here.  None on every fixed-clock run.
         self.cumulus_due_override = None
+        #: The adaptive clock's exact surface/PBL deadline. None keeps
+        #: the fixed-step WRF predicate unchanged.
+        self.surface_pbl_due_override = None
         if self.sase_active:
             self.call_counts["sase"] = 0
             # SPLIT SUBGRID-FLUX DIAGNOSTIC (cfg.sase_flux_diag,
@@ -2178,8 +2122,12 @@ class PhysicsDriver:
         self.noah_opt_thcnd = int(cfg.opt_thcnd)
         self.stepra = _physics_interval_steps(self.radt_minutes, cfg.dt)
         self.stepcu = _physics_interval_steps(self.cudt_minutes, cfg.dt)
-        self.radt_seconds = self.stepra * float(cfg.dt)
-        self.cudt_seconds = self.stepcu * float(cfg.dt)
+        if cfg.use_adaptive_time_step:
+            self.radt_seconds = _physics_period_seconds(self.radt_minutes, cfg)
+            self.cudt_seconds = _physics_period_seconds(self.cudt_minutes, cfg)
+        else:
+            self.radt_seconds = self.stepra * float(cfg.dt)
+            self.cudt_seconds = self.stepcu * float(cfg.dt)
         surface_shape = state.mup.shape
 
         def zero_surface():
@@ -3273,6 +3221,7 @@ class PhysicsDriver:
     def _couple_pbl_slot(self, cfg: RunConfig,
                          rates: Mapping[str, cp.ndarray],
                          state: DomainState | None = None,
+                         *, atmosphere: Mapping[str, cp.ndarray] | None = None,
                          ) -> PhysicsTendencies:
         """Mass-couple a PBL slot's raw rates AND retain GF's forcing lanes.
 
@@ -3293,6 +3242,14 @@ class PhysicsDriver:
         that a PBL scheme added later cannot be wired up correctly and
         still silently starve the cumulus scheme.
         """
+        # WRF's gwd_opt (gpuwm.core.terrain_drag): the orographic drag joins
+        # RUBLTEN/RVBLTEN right after the PBL scheme, in the PBL driver
+        # (module_pbl_driver.F:2129-2185), on the same pre-PBL winds and
+        # with the PBL height and top level the scheme just wrote -- so it
+        # rides the shared slot, under every PBL scheme, before coupling.
+        drag = self.terrain_drag
+        if drag is not None and drag.gwd_opt:
+            self._apply_gwd(drag, cfg, rates, atmosphere)
         # Raw, PRE-coupling, copied into the persistent carrier buffers.
         # Rebinding to a producer's temporary arrays would leave a tile's
         # gather/scatter views pointing at the previous PBL call's storage.
@@ -3307,6 +3264,53 @@ class PhysicsDriver:
             target[...] = 0.0 if source is None else source
         return couple_ysu_tendencies(
             self.state if state is None else state, cfg, rates)
+
+    def _refuse_terrain_drag_on_tile(self) -> None:
+        if getattr(self.state, "_tile_buffer", False):
+            raise ValueError(
+                "topo_wind / gwd_opt reached a streamed tile: the terrain "
+                "drag's statistics are held for the resident domain's "
+                "columns and are not gathered per tile, so a tile would drag "
+                "with another column's terrain.  Run the domain resident "
+                "(no [tiles]).")
+
+    def _apply_gwd(self, drag, cfg: RunConfig,
+                   rates: Mapping[str, cp.ndarray],
+                   atmosphere: Mapping[str, cp.ndarray] | None) -> None:
+        """Add gwd_opt's drag to the PBL slot's A-grid momentum rates."""
+        self._refuse_terrain_drag_on_tile()
+        if atmosphere is None:
+            raise RuntimeError(
+                f"gwd_opt = {drag.gwd_opt} reached the PBL coupling seam "
+                "without the step's phy_prep atmosphere; the PBL scheme's "
+                "caller must hand it over")
+        f = self.fields
+        targets = []
+        for name in ("du", "dv"):
+            rate = rates[name]
+            if (rate.dtype != DTYPE or not rate.flags.c_contiguous):
+                raise TypeError(
+                    f"gwd_opt adds into the PBL slot's {name} in place, which "
+                    "must be a C-contiguous float32 array")
+            targets.append(rate)
+        pblh, kpbl = f["pblh"], f["kpbl"]
+        if drag.gwd_opt == 3 and self.sase_active:
+            # SASE diagnoses its BL height from bulk Richardson number,
+            # but deliberately leaves the surface-layer PBLH at its cold
+            # start value.  GSL needs the current height and its one-based
+            # upper-bracket level, not that constant and the unwritten
+            # KPBL=0.  Diagnose on the same pre-PBL atmosphere the closure
+            # consumes, without changing the surface-layer feed.
+            from gpuwm.core.terrain_drag import pbl_top_from_height
+            pblh = launch_bulk_richardson_zi(
+                atmosphere["u"], atmosphere["v"], atmosphere["theta"],
+                dz_col=atmosphere["dz"])
+            kpbl = pbl_top_from_height(atmosphere["dz"], pblh)
+        drag.apply_gwd(
+            atmosphere, targets[0], targets[1], sina=self.state.sina,
+            cosa=self.state.cosa, xland=f["xland"], br=f["br"],
+            pblh=pblh, kpbl=kpbl, dx=float(cfg.dx),
+            dt=float(self.bldt_seconds))
 
     def _run_myj_pbl(self, atmosphere: Mapping[str, cp.ndarray],
                      cfg: RunConfig) -> None:
@@ -3385,7 +3389,8 @@ class PhysicsDriver:
         f["mixht"][...] = out["mixht"]
         f["exch_h"][...] = out["exch_h"]
         f["el_myj"][...] = out["el_myj"]
-        self.pbl_tendencies = self._couple_pbl_slot(cfg, out)
+        self.pbl_tendencies = self._couple_pbl_slot(
+            cfg, out, atmosphere=atmosphere)
         pbl_components = (
             _composed_optional_tendency_components(cfg)
             if physics_reuses_pbl_composition(cfg)
@@ -3685,6 +3690,9 @@ class PhysicsDriver:
             # they are part of the provider that reruns.
             self.urban_coupler.after_surface_diagnostics(
                 self.fields, atmosphere, self._urban_cfg)
+        surface_humidity.cap_land_q2(
+            self.fields["q2"], atmosphere["qv"][0],
+            self.fields["xland"], xp=cp)
         return True
 
     def _refresh_surface_diagnostics(self, atmosphere) -> None:
@@ -3760,6 +3768,19 @@ class PhysicsDriver:
     def _run_ysu(self, atmosphere: Mapping[str, cp.ndarray],
                  cfg: RunConfig) -> None:
         f = self.fields
+        # WRF's topo_wind (gpuwm.core.terrain_drag): bl_ysu.F90's
+        # ctopo-present arm and the hill-top 10 m blend, which the kernel
+        # writes beside the surface layer's U10/V10 and which then replaces
+        # them, as WRF's YSU overwrites its intent(inout) u10/v10.  Passed
+        # ONLY when topo_wind is on, so every other call is the historical
+        # one.
+        topo_kw = {}
+        drag = self.terrain_drag
+        if drag is not None and drag.topo_wind:
+            self._refuse_terrain_drag_on_tile()
+            topo_kw = {"topo": (drag.ctopo, drag.ctopo2),
+                       "u10_out": cp.empty_like(f["u10"]),
+                       "v10_out": cp.empty_like(f["v10"])}
         out = launch_ysu(
             atmosphere["u"], atmosphere["v"], atmosphere["theta"],
             atmosphere["qv"], atmosphere["qc"], atmosphere["qi"],
@@ -3783,7 +3804,11 @@ class PhysicsDriver:
             # drag, so the fraction travels with the terms.
             **({} if self.urban is None or self.urban.pbl_terms is None
                else {"bep": self.urban.pbl_terms,
-                     "frc_urb2d": f["frc_urb2d"]}))
+                     "frc_urb2d": f["frc_urb2d"]}),
+            **topo_kw)
+        if topo_kw:
+            f["u10"][...] = topo_kw["u10_out"]
+            f["v10"][...] = topo_kw["v10_out"]
         try:
             # The forensic set is exactly what the scheme CONSUMES and
             # another component PRODUCED: the surface-layer/LSM coupling
@@ -3806,7 +3831,8 @@ class PhysicsDriver:
         # GF's RTHBLTEN/RQVBLTEN lanes are retained inside the shared
         # coupling seam, so YSU gets them on exactly the same terms as
         # every other scheme in the PBL slot.
-        self.pbl_tendencies = self._couple_pbl_slot(cfg, out)
+        self.pbl_tendencies = self._couple_pbl_slot(
+            cfg, out, atmosphere=atmosphere)
         pbl_components = (
             _composed_optional_tendency_components(cfg)
             if physics_reuses_pbl_composition(cfg)
@@ -3878,7 +3904,8 @@ class PhysicsDriver:
             bl_mynn_tkeadvect=cfg.bl_mynn_tkeadvect,
             icloud_bl=cfg.icloud_bl)
         validate_mynn_tendencies(out)
-        self.pbl_tendencies = self._couple_pbl_slot(cfg, out)
+        self.pbl_tendencies = self._couple_pbl_slot(
+            cfg, out, atmosphere=atmosphere)
         if cfg.bl_mynn_mixscalars == 1:
             # WRF couples RQN*BLTEN through the same calculate_phy_tend
             # multiply and add_a2a bounds as every other A-grid scalar
@@ -4056,7 +4083,8 @@ class PhysicsDriver:
         # The scheme's own subgrid energy, written back in place so the
         # restart alias and every diagnostic reader see the same array.
         self.state.e_sgs[...] = out["tke"]
-        self.pbl_tendencies = self._couple_pbl_slot(cfg, out)
+        self.pbl_tendencies = self._couple_pbl_slot(
+            cfg, out, atmosphere=atmosphere)
         pbl_components = (
             _composed_optional_tendency_components(cfg)
             if physics_reuses_pbl_composition(cfg)
@@ -4160,7 +4188,8 @@ class PhysicsDriver:
         f["exch_m"][...] = f["uw_kvm"][:nz]
         for name in UWPBL_DIAGNOSTICS_FULL + UWPBL_DIAGNOSTICS_2D:
             f[name][...] = out[name]
-        self.pbl_tendencies = self._couple_pbl_slot(cfg, out)
+        self.pbl_tendencies = self._couple_pbl_slot(
+            cfg, out, atmosphere=atmosphere)
         if ice is not None:
             # RQNIBLTEN joins the ice-number scalar through the same
             # calculate_phy_tend multiply and add_a2a bounds as every
@@ -4798,7 +4827,8 @@ class PhysicsDriver:
         # has no ice species. Do not publish a held category for it.
         coupled_rates = {name: value for name, value in rates.items()
                          if name != "dqi" or getattr(state, "qi", None) is not None}
-        pbl = self._couple_pbl_slot(cfg, {**coupled_rates, "dw": dw}, state=state)
+        pbl = self._couple_pbl_slot(cfg, {**coupled_rates, "dw": dw},
+                                    state=state, atmosphere=atmosphere)
         pbl.rw = couple_sase_w_tendency(state, cfg, dw)
         self.pbl_tendencies = pbl
         self.last_sase_ledger = ledger
@@ -4904,7 +4934,9 @@ class PhysicsDriver:
         # WRF fixed-dt surface/PBL cadence: the mandatory ITIMESTEP=1 call
         # is followed by calls where MOD(ITIMESTEP, STEPBL) == 0.
         if (self.surface_enabled
-                and _surface_pbl_step_due(itimestep, self.stepbl, cfg.bldt)):
+                and _surface_pbl_step_due(
+                    itimestep, self.stepbl, cfg.bldt,
+                    getattr(self, "surface_pbl_due_override", None))):
             if atmosphere is None:
                 atmosphere = _prepare_atmosphere(state)
             # WRF surface_driver refreshes PSFC from P8W(kts) before its
@@ -5034,6 +5066,13 @@ class PhysicsDriver:
                 self.call_counts["noah"] += 1
                 if topo_save is not None:
                     self.topo_shortwave.after_land(topo_save)
+            if dispatch["sf_sfclay_physics"] is not None:
+                # WRF's common post-surface writer, after LSM/urban Q2 and
+                # before the PBL (module_surface_driver.F:4443-4457).
+                # Omitting it published the uncapped Noah flux inversion.
+                surface_humidity.cap_land_q2(
+                    self.fields["q2"], atmosphere["qv"][0],
+                    self.fields["xland"], xp=cp)
             # SURFACE-MOISTURE LEDGER (opt-in, off by default).  Placed here
             # because this is the instant after the FINAL writer of Q2 has
             # run and before the PBL scheme can touch the column, which is
@@ -5219,78 +5258,9 @@ class PhysicsDriver:
         than a placeholder: gpuwm implements no shallow-cumulus scheme, and
         zero is what WRF writes for ``shcu_physics=0``.
         """
-        output = {name: self.fields[field]
-                  for name, field in _OUTPUT_FIELDS.items()}
-        # Per-level radiative heating, output-only.  Both are live 3D
-        # arrays (allocated :1869-1870, populated :2297-2300) that the
-        # step consumes and then discards; the theta budget cannot be
-        # closed by level without them.  Presence-guarded so a run with
-        # radiation off carries the same inventory it always did.
-        for _name, _attr in (("RTHRATLW", "rthratenlw"),
-                             ("RTHRATSW", "rthratensw")):
-            _value = getattr(self, _attr, None)
-            if _value is not None:
-                output[_name] = _value
-        if self.sase_active:
-            # Each scheme supplies its own boundary-layer height.  YSU
-            # refreshes fields['pblh'] on every due call; SASE has no such
-            # field of its own, so it computes its per-column
-            # bulk-Richardson z_i here without touching the surface-layer
-            # feed (whose convective-velocity term was calibrated against
-            # the initialize_physics constant).
-            output["PBLH"] = self._sase_output_pblh()
-            if self.sase_flux_diag is not None:
-                # SPLIT SUBGRID-FLUX DIAGNOSTIC (cfg.sase_flux_diag).  The
-                # buffers hold the most recent due PBL call flux,
-                # retained between calls at a positive PBL cadence.
-                # This is the producer's instantaneous flux, not
-                # a history-interval mean.  Zeros at the t=0 frame,
-                # before any SASE step has run.
-                output.update(
-                    {name: self.sase_flux_diag[key]
-                     for name, key in _SASE_FLUX_DIAG_OUTPUT.items()})
-        if self.hmix_k_diag is not None:
-            if not self.sase_active:
-                # The km_opt = 4 producer's own buffers live in the
-                # dycore's persistent scratch (prepare_fixed_tendencies
-                # fills smag_km/smag_kh once per model step from the
-                # time-t fields, which is the state WRF's
-                # module_first_rk_step_part2 evaluates them at).  Copied
-                # HERE rather than aliased so the published frame keeps a
-                # constant schema from frame 0, when no step has run yet
-                # and the slots do not exist.  READ-ONLY in the scratch.
-                km = self.state.existing_scratch("smag_km")
-                kh = self.state.existing_scratch("smag_kh")
-                if km is not None and kh is not None:
-                    self.hmix_k_diag["XKMH"][...] = km
-                    self.hmix_k_diag["XKHH"][...] = kh
-            output.update(self.hmix_k_diag)
-        if self.radiation_active:
-            output.update(SWDOWN=self.fields["swdown"],
-                          GLW=self.fields["glw"])
-            # WRF's SWNORM, written only where slope_rad runs.
-            if self.topo_shortwave is not None:
-                output["SWNORM"] = self.fields["swnorm"]
-            # OLR rides the same "only while radiation is running" rule as
-            # SWDOWN/GLW, and additionally only while the LONGWAVE half is
-            # a scheme that computes a top-of-atmosphere flux.  WRF's own
-            # OLR row is core (``misc``, so stock WRF writes it in every
-            # run); gpuwm's radiation diagnostics are absent rather than
-            # zero when nothing produced them, and this follows that.
-            if self.olr is not None:
-                output["OLR"] = self.olr
-        output["RAINC"] = (self._zero_accumulator() if self.rainc is None
-                           else self.rainc)
-        output["RAINSH"] = self._zero_accumulator()
-        microphysics = self.microphysics if self.mp_physics else None
-        for name, attribute in (("RAINNC", "rainnc"), ("SNOWNC", "snownc"),
-                                ("GRAUPELNC", "graupelnc"),
-                                ("HAILNC", "hailnc")):
-            value = (None if microphysics is None
-                     else getattr(microphysics, attribute, None))
-            output[name] = (self._zero_accumulator() if value is None
-                            else value)
-        return output
+        from gpuwm.io.history_layout import physics_history_fields
+
+        return physics_history_fields(self)
 
 
 def _resolve_initial_glw(glw, *, ra_lw_physics: int, radiation_active: bool,
@@ -5459,6 +5429,41 @@ def _attach_urban(driver: PhysicsDriver, state: DomainState,
         latitude_deg=lat, longitude_deg=lon, module=module)
 
 
+def _attach_terrain_drag(state, cfg, fields, static):
+    """The domain's :class:`gpuwm.core.terrain_drag.TerrainDrag`.
+
+    ``static`` is the domain's prepared static field set; the orographic
+    statistics the options read ride it when the preparation's static build
+    added them (gpuwm.static.orographic).  Refused by name when the route
+    hands none, or hands a field set for other columns than this state's.
+    """
+    from gpuwm.core.terrain_drag import build_terrain_drag
+
+    options = (f"topo_wind = {int(cfg.topo_wind)}, "
+               f"gwd_opt = {int(cfg.gwd_opt)}")
+    if static is None:
+        raise ValueError(
+            f"{options} on grid_id = {cfg.grid_id}: this initialization "
+            "route hands the physics no static field set, so the sub-grid "
+            "orographic statistics the terrain drag reads have nowhere to "
+            "come from.  The prepared single-domain forecast carries them "
+            "(gpuwm prep with the option set, then gpuwm sim prep).")
+    shape = tuple(state.mup.shape)
+    hgt = static.get("HGT_M") if hasattr(static, "get") else None
+    if hgt is None or tuple(np.shape(hgt)) != shape:
+        raise ValueError(
+            f"{options} on grid_id = {cfg.grid_id}: the static field set "
+            f"handed to the physics is {None if hgt is None else np.shape(hgt)}"
+            f" where this state's columns are {shape} (a streamed slab or a "
+            "corridor), and the terrain drag reads its statistics column for "
+            "column, so it would drag the wrong columns.  Run the domain "
+            "resident (no [tiles]).")
+    return build_terrain_drag(
+        topo_wind=int(cfg.topo_wind), gwd_opt=int(cfg.gwd_opt),
+        static=static, ht=state.ht, xland=fields["xland"],
+        znu=state.znu)
+
+
 def initialize_physics(
         state: DomainState, cfg: RunConfig, *, landmask=1.0, tsk=300.0,
         soil_temperature=285.0, soil_moisture=0.30, liquid_moisture=None,
@@ -5472,7 +5477,7 @@ def initialize_physics(
         radiation_longitude=None,
         noahmp_start_time=None, noahmp_latitude=None,
         noahmp_longitude=None, cam_ozone=None,
-        frc_urb2d=None) -> PhysicsDriver:
+        frc_urb2d=None, terrain_drag_static=None) -> PhysicsDriver:
     """Allocate and attach persistent physics state and scheme callables.
 
     An mp-only configuration also receives a driver: microphysics itself is
@@ -5524,6 +5529,16 @@ def initialize_physics(
     if not physics_driver_required(cfg) and cam_ozone is None:
         raise ValueError("initialize_physics requires at least one enabled "
                          "physics scheme")
+    # Direct API callers can construct RunConfig without passing through
+    # an experiment door.  The same refusal prevents an inert topo_wind
+    # under another PBL scheme or a drag carrier with no PBL caller.
+    from gpuwm.config import terrain_drag_refusal
+    terrain_drag_why = terrain_drag_refusal(
+        topo_wind=cfg.topo_wind, gwd_opt=cfg.gwd_opt,
+        bl_pbl_physics=cfg.bl_pbl_physics,
+        sf_urban_physics=cfg.sf_urban_physics)
+    if terrain_drag_why is not None:
+        raise ValueError(terrain_drag_why)
     ra_lw_physics, ra_sw_physics = radiation_scheme_ids(cfg)
     if ra_lw_physics not in (0, 1, 4, 90):
         raise ValueError("ra_lw_physics must be 0, 1, 4, or 90")
@@ -6037,9 +6052,8 @@ def initialize_physics(
             # never updated -- so a multi-hour Noah-MP run computed its
             # canopy radiative transfer against its first minute's sun.
             from gpuwm.core.dudhia import wrf_solar_geometry
-            interval = _physics_interval_seconds(
-                cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes,
-                _model_clock_dt(cfg))
+            interval = _physics_period_seconds(
+                cfg.radt if cfg.radt > 0.0 else cfg.radt_minutes, cfg)
             coszen, _ = wrf_solar_geometry(
                 noahmp_geometry.start_time,
                 noahmp_geometry.latitude_deg,
@@ -6180,6 +6194,13 @@ def initialize_physics(
             state=state, cfg=cfg, fields=f, latitude=radiation_latitude,
             longitude=radiation_longitude, start_time=radiation_start_time)
         request_surface_diffuse(driver.radiation_callable)
+    # WRF's topo_wind / gwd_opt (gpuwm.core.terrain_drag): the topo_wind
+    # coefficients from this domain's terrain (start_em.F:1539-1626) and the
+    # gwd_opt statistics, on the device once.  Only where either is on, so
+    # every other driver is built exactly as before.
+    if int(getattr(cfg, "topo_wind", 0) or 0)             or int(getattr(cfg, "gwd_opt", 0) or 0):
+        driver.terrain_drag = _attach_terrain_drag(
+            state, cfg, f, terrain_drag_static)
     state.physics = driver
     # WRF's mp_init, ONCE per domain, exactly where phy_init runs it:
     # module_physics_init.F:1635 calls mp_init as the last physics

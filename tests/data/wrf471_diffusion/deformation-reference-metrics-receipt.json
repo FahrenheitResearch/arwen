@@ -1,0 +1,3761 @@
+{
+  "cases": {
+    "deformation-evolved_map_extremes.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 95,
+          "max_ulp": 192,
+          "max_absolute": 6.402842700481415e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f836e930c9cbc7d1088b7749c5a32c7b417d0ec406cc238193449baaca243d34"
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 74,
+          "max_ulp": 159,
+          "max_absolute": 4.656612873077393e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5995fb883985536f2deb0740cf318d85520d4b4d1f866bf721d07d1398b265b5"
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 94,
+          "max_ulp": 507,
+          "max_absolute": 1.3969838619232178e-09,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e31f8fc219db25ef39116b0ff93df361806011eb20f98a5e9289906c14ead631"
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "58586a79215d1e6ba37a06d616a3e8b87c48b37b65be1f96da0c179c5b7dfb50"
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 4787,
+          "max_ulp": 517,
+          "max_absolute": 1.862645149230957e-09,
+          "nonfinite_words": 0,
+          "gpu_sha256": "52f6753e8f354c9a7fdf2931c67fda900452a33097658c783166ab033ad54bd9"
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "dc2194a7bbf7b1a1c3f8a4e4acbe07455d877e1374c25ff50bd0b5a6538628a3"
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f8778bc64435e965e182deb09ff34ab1326c5094533606ed1c1276e99b9c18ce"
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 2581,
+          "max_ulp": 20,
+          "max_absolute": 0.009765625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "beeb473c651d1778060a2b1422e8caa979a16c3f00a2f182229060bbd0219fd4"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2581,
+          "max_ulp": 20,
+          "max_absolute": 0.009765625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "beeb473c651d1778060a2b1422e8caa979a16c3f00a2f182229060bbd0219fd4"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2428,
+          "max_ulp": 15,
+          "max_absolute": 0.03125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "60eda67fedad35b6274e26aa8e3ffedbf408a54ac7a6b931ad9f02e2ce452873"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 1372,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "131ca1b057bb38e1a0f7aed7151bf756c11af2042a30668a0361527ede904a8b"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 96,
+          "max_ulp": 87,
+          "max_absolute": 2.0742416381835938e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5ab528b88e905c8abc0662633ebb3b9bf4afa48fb977a02c4a2dd3541f8216fd"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 980,
+          "max_ulp": 2,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "47e52071304f3d453985bc1fcfd00a4e31e4a56799e3ecefc2d04e1cc2bc3b4c"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 96,
+          "max_ulp": 104,
+          "max_absolute": 2.47955322265625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "64c31960924fbb87dcf8047e8df521cff37cbe15dd864e7e9bc4a5d711196cc5"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 205,
+          "max_ulp": 2,
+          "max_absolute": 3.0517578125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9ab650a4446db23fbb1e00238fe73a0e21c610cdf542f01a66f3ba9ac6008d24"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 205,
+          "max_ulp": 2,
+          "max_absolute": 3.0517578125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9ab650a4446db23fbb1e00238fe73a0e21c610cdf542f01a66f3ba9ac6008d24"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 287,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3783fb35971ac9171453bb5eba79d3150680543f6537ccda936797be5870c792"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 280,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "fce6498f69d4edc9dc69a83cc3344b6053d6f083bcbba725d0a37a9cb6804449"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 3249,
+          "max_ulp": 6,
+          "max_absolute": 0.0234375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6d536e091162faa86831b8b323d99a53fd190675740894599282c1e726517b71"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2755,
+          "max_ulp": 11,
+          "max_absolute": 8.392333984375e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "64cdf66c6165c5d2168487f1393e3c395fe8c4cfb55f901c349a17ce81e01cfa"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3246,
+          "max_ulp": 9,
+          "max_absolute": 0.078125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e6fe91bf1348749ae42bb7d16c86f03698901ae5c42f093c02a0b76855bc169c"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 2258,
+          "max_ulp": 9,
+          "max_absolute": 0.000274658203125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "15faec256229ceab392a7770a144a9bb0a2ea622d06d5400c479d2d069c3ae90"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 4219,
+          "max_ulp": 11,
+          "max_absolute": 0.0009765625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ab0ed19849571093d45cc8a6ac54d41344a0632d0247564c00ff843b41152ddb"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 4136,
+          "max_ulp": 11,
+          "max_absolute": 0.00067138671875,
+          "nonfinite_words": 0,
+          "gpu_sha256": "76d3b9263376cce9b978ab0426803f34ddad5e46ef5aae803c30c843e115591b"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3815,
+          "max_ulp": 8,
+          "max_absolute": 0.0029296875,
+          "nonfinite_words": 0,
+          "gpu_sha256": "67e96b5168cccc562abb6439412962741ea2bc6dbcdbac8b7d129059829d1d7e"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 3671,
+          "max_ulp": 8,
+          "max_absolute": 0.001953125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "af4e557c18b316b49524ffb6bfa7c47addbf80ff134bcfd3844835d9b0b5faef"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      }
+    },
+    "deformation-evolved_near_zero_flow.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 142,
+          "max_ulp": 400,
+          "max_absolute": 2.5637979419682884e-30,
+          "nonfinite_words": 0,
+          "gpu_sha256": "46fe131bc2a33dbe7edf910550805ef3c67e2f223e2cdce810298a5e5142bfbe"
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 76,
+          "max_ulp": 52,
+          "max_absolute": 7.888609052210118e-31,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a03d90836abc886915dd1f9a15686e226c8d3c364a2fbd191a318fd695c2d105"
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 129,
+          "max_ulp": 430,
+          "max_absolute": 5.32481111024183e-30,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c1a88ad1706876c16e9985c3e9c6efb5d283e24e3fcbbe4be06f732d2fd070ce"
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e4aa7566746e2eb929af67e87fbb5cbe79b875cdd86b417a8187e152a4a3f857"
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 5433,
+          "max_ulp": 1238,
+          "max_absolute": 4.338734978715565e-30,
+          "nonfinite_words": 0,
+          "gpu_sha256": "694cd6fd0f602cbbeb55a49d07b961c2b56c124796a362fd4128d7e8cc27609c"
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2b826fc90037aecf0a298d32e8bb12fc71bcdd446614462242249618108d21b9"
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "efa49e242e8a61c2d56dfdbe7acfaae4bafe95fb825d53c758d38aef47df73c7"
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 1078,
+          "max_ulp": 3,
+          "max_absolute": 2.86102294921875e-06,
+          "nonfinite_words": 0,
+          "gpu_sha256": "36415bb1ae6b6cf59bd9a519ac048960d7c843f0770a2284ec69767ba9515cf5"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "14ffc2a34674ac6934b5241de83679efd819567d3a5e754845e67d8aefe496f8"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 1078,
+          "max_ulp": 4,
+          "max_absolute": 7.62939453125e-06,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71648b99a6df58df824cff1df24c5d7fb4ebc5c5048295ada09bbdc03538b506"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f4a5375ab7dd1b718cf478a18d57b6fb0c46f128acd8d2eef978df2785079f2a"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 1632,
+          "max_ulp": 3,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3ea9ae11bfd8a544d339a9fc6970eb82bf20c72e5be727e932b5e78c687e4154"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 1632,
+          "max_ulp": 3,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3ea9ae11bfd8a544d339a9fc6970eb82bf20c72e5be727e932b5e78c687e4154"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 1591,
+          "max_ulp": 4,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2db8196f9eef5b58eaa4039565907d5057d827a05dde0154b50806925a3f16a3"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 1591,
+          "max_ulp": 4,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2db8196f9eef5b58eaa4039565907d5057d827a05dde0154b50806925a3f16a3"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 3984,
+          "max_ulp": 4,
+          "max_absolute": 0.00390625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3bdc891fa5fa740d9c362835b281acb0590b1c973426cf5d5c45d52dbe1f86ec"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2871,
+          "max_ulp": 2,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "89986bc6791fe06d7b7d47b8608e9d345bd8fcf8f65f0a35e592986841e90ec6"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3984,
+          "max_ulp": 4,
+          "max_absolute": 0.01171875,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4285d245e5172ca088316afe9104f300da0db657c7f0aa83e590d0eda8373396"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 2356,
+          "max_ulp": 2,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3dbd062a23f0f9d3fa328002fdd6fd045293fcbea500dddd4b9da9085b572a60"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 4193,
+          "max_ulp": 4,
+          "max_absolute": 0.000244140625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a957f3a4a01c2cb0a06532ff7c09182aa76b628d46aa4dd8f89ca4d3ffb6fce3"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 4065,
+          "max_ulp": 4,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "259eac331c8d06eee3a53b07869b87900756cb830e69c32606f528ae85c44229"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3772,
+          "max_ulp": 6,
+          "max_absolute": 0.000732421875,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d9e436380d5c8eeaa09bc23967d6cc19d2c2504ff2ef29abac4eb1df7d59a924"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 3610,
+          "max_ulp": 6,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8889ae913ae7bf37482576835e83b64c154a76d598e4a2edd2a7604fdb2193ab"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      }
+    },
+    "deformation-evolved_real_open.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 134,
+          "max_ulp": 184,
+          "max_absolute": 1.4551915228366852e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "be364ddce70c9c78295de7cb047b9fdf59a4ddba2845d0584164931577d24b08"
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 80,
+          "max_ulp": 736,
+          "max_absolute": 8.36735125631094e-11,
+          "nonfinite_words": 0,
+          "gpu_sha256": "36fd6aba37a2567dd4f8b1130e8cf83604191a7f89421f38eb624ef3a9c4aaf3"
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 131,
+          "max_ulp": 368,
+          "max_absolute": 2.764863893389702e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c9b58c958ec07c1165343954a49e9e9aba11929632a7dbfd8a8956dfb925ac4d"
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "58586a79215d1e6ba37a06d616a3e8b87c48b37b65be1f96da0c179c5b7dfb50"
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 5550,
+          "max_ulp": 570,
+          "max_absolute": 1.3096723705530167e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "070e34511936cb7fcdc21508177deba0569c3715f042cd6834aaa35aa153e5c2"
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a5bd6d0584cd92e5789ae28246827ba6f410a56e862842a52ea17e1187efc408"
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5b14b533536cfe54c8d93bec99ff3349b20e8b90715de0021bcee173af247911"
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 1537,
+          "max_ulp": 23,
+          "max_absolute": 7.62939453125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d442122fb8a2e1a7260b40ee257a59f77eac2a9008dc19413e9656c8b3395038"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 1537,
+          "max_ulp": 23,
+          "max_absolute": 7.62939453125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d442122fb8a2e1a7260b40ee257a59f77eac2a9008dc19413e9656c8b3395038"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 1452,
+          "max_ulp": 17,
+          "max_absolute": 0.000244140625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "828e63c4088bb82288fce14886d737e1bf03c7e29aa1cc4771ee4669703c91e5"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 735,
+          "max_ulp": 1,
+          "max_absolute": 3.0517578125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "09b952e737c40d07d577bcd6086c1ea696e11a0bd4e83e5727d8bb7f8baf6c25"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 65,
+          "max_ulp": 87,
+          "max_absolute": 2.0742416381835938e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d3696b72e254233b14450c879aa4d776575243ee707c91e8c66e8c1ee1050065"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 735,
+          "max_ulp": 2,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "dbce8358b5d28b3bd8476ab1e4e3154188b3d63bc8a28da1764db878563fc1a6"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 65,
+          "max_ulp": 104,
+          "max_absolute": 2.47955322265625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5aa7bd2252f3d880931328c0a88f76787e8396a8e30086245e0ee799b54817e9"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 148,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0b508fa78b934952fb83350676d556beb43ff87f5f8c2597aa6831e6d1b7bc32"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 148,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0b508fa78b934952fb83350676d556beb43ff87f5f8c2597aa6831e6d1b7bc32"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 167,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ad59e85f084549f8c6a6b14eb6a9e2681acdb0e7e36e4802c3e7a85e3f2275e6"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 167,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ad59e85f084549f8c6a6b14eb6a9e2681acdb0e7e36e4802c3e7a85e3f2275e6"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 2501,
+          "max_ulp": 4,
+          "max_absolute": 0.005859375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d4a15c0f6e939d6f25993008b338acfbf216ad79337e20489f543f343be42ce2"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2037,
+          "max_ulp": 2,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9470c71b10264a48a0b9c6efaf8989aefe91651422913f9af0ab13c5cc5542f1"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2501,
+          "max_ulp": 5,
+          "max_absolute": 0.01953125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "01a316d2c769417ecf7387c0f982df8eb154cb1fa7fbc4d64bf47d40bd165a2c"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 1662,
+          "max_ulp": 2,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ae039858f30c4559e9f32a7a0373223c9bb238ea971aef1246c1221c18c236f9"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 3032,
+          "max_ulp": 4,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "756c19ea1fc821bbe2c6e0085ced573462886d5d04107ba6bafaa3ab144e587e"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2933,
+          "max_ulp": 4,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "980a42b8bf254be432efa8b17b8178a75cbc69ef534124c24232e457d9573691"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2725,
+          "max_ulp": 5,
+          "max_absolute": 0.0009765625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bd87c6a0573c44317a3763eab63def2b77ededb47bfac266e7438d7138bc08a4"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 2598,
+          "max_ulp": 5,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "7752db474c8d7fc3dee6ddc783c3cc585aba3dd9c50c275e890e72cdc07b330f"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      }
+    },
+    "deformation-evolved_real_periodic.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 132,
+          "max_ulp": 184,
+          "max_absolute": 2.1827872842550278e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6def035e902d7d2bac94246530a445a19a9b59a09457fb5926c00315e5ec99dc"
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 81,
+          "max_ulp": 115,
+          "max_absolute": 1.1641532182693481e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "07191bf0a9b871260f21c199ee27e495e22234a826eac7de234d9c8777d6b0ad"
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 133,
+          "max_ulp": 368,
+          "max_absolute": 4.3655745685100555e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8d60335d7b1de394838c8f0eaf400033191016203f60e37b803290bb678a3cb6"
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "58586a79215d1e6ba37a06d616a3e8b87c48b37b65be1f96da0c179c5b7dfb50"
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 5407,
+          "max_ulp": 570,
+          "max_absolute": 2.3283064365386963e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "154efceb3ea771b1741a995a432fed92b5249143c02b7c489b5c95faa9b65ae4"
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0b24e92d5a080e73c3fb7d0426b61a902c88fe88581fcbc5e334e8b9b9eb0495"
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4fc42e8d913a1459028640c26a72152c8b71e25b8b76e11d9b8db2eddf1ea9d5"
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 2274,
+          "max_ulp": 23,
+          "max_absolute": 0.000244140625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "00bc62a84612abd935a7cd60c5366d49aa23ca5161677076b7eca0194aef113b"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2274,
+          "max_ulp": 23,
+          "max_absolute": 0.000244140625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "00bc62a84612abd935a7cd60c5366d49aa23ca5161677076b7eca0194aef113b"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2152,
+          "max_ulp": 19,
+          "max_absolute": 0.000732421875,
+          "nonfinite_words": 0,
+          "gpu_sha256": "68b3494195f3e14bf7e298e6cba8755d9edcae4cd7457b22dafbc4e87b473cb2"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 931,
+          "max_ulp": 1,
+          "max_absolute": 3.0517578125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "358ae72c6b2d186c00c1cef34a07402f6bc52f0ff05552fbe71dbb78352b9b76"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 96,
+          "max_ulp": 87,
+          "max_absolute": 2.0742416381835938e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5ab528b88e905c8abc0662633ebb3b9bf4afa48fb977a02c4a2dd3541f8216fd"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 931,
+          "max_ulp": 2,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "528d3e4ae367db03588b3ad1e1dbc0a10489a404c5065e227d388c03b4da9606"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 96,
+          "max_ulp": 104,
+          "max_absolute": 2.47955322265625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "64c31960924fbb87dcf8047e8df521cff37cbe15dd864e7e9bc4a5d711196cc5"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 195,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "dfce459f1ec08bc4a545cd75d5f0a46d70920673ef7f4b4f3ccf75abab4f5454"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 195,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "dfce459f1ec08bc4a545cd75d5f0a46d70920673ef7f4b4f3ccf75abab4f5454"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 223,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ea92ac4edbe0127558f36465ce1192b6858196a04d36cd1c33deb09f0c16c7f1"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 223,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ea92ac4edbe0127558f36465ce1192b6858196a04d36cd1c33deb09f0c16c7f1"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 3926,
+          "max_ulp": 4,
+          "max_absolute": 0.005859375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "624adc6db87438f867782ad716a23aecc87f1d372a9bb5a5b65c61e36e4909de"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2793,
+          "max_ulp": 2,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5c6097809c535e6fe00230030f5d3da54b8e1ba0f446e3bb5439c9a0bbbf0534"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3926,
+          "max_ulp": 5,
+          "max_absolute": 0.01953125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ab18561d902aa2a1f8a1e78e90bda6f341e8b5f7a9accacaad1600753b60e17b"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 2284,
+          "max_ulp": 2,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "202493c532d981823cc685bae2b61daa758d7fe39deacb16fb2030dfac834558"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 4145,
+          "max_ulp": 4,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0ec8dceb6c8e8456a6bc2fc94a217ea7a674f7f5fd5c1bd07f6a03246303c940"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 4011,
+          "max_ulp": 4,
+          "max_absolute": 0.000244140625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "614c399e3aaeaffc075963d3327e874820bdc8c21140d72d577db6b11fa5f8d9"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3722,
+          "max_ulp": 5,
+          "max_absolute": 0.00146484375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0fcea9c07d22a800ac9555fc1eda0edb59c3a7a481cb8db6b89ee877435aade3"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 3557,
+          "max_ulp": 5,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "694299184b6f79d902abe2a1e441c16b01f66ff0d59503c808e86bc0dc75ae48"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      }
+    },
+    "deformation-evolved_southern_open.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 124,
+          "max_ulp": 48,
+          "max_absolute": 1.1641532182693481e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f82fd4b0c8fa32a5d7fba2c20c8a2c570733e9dc429201a6fa21f1c3ee1b1800"
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 80,
+          "max_ulp": 736,
+          "max_absolute": 8.36735125631094e-11,
+          "nonfinite_words": 0,
+          "gpu_sha256": "36fd6aba37a2567dd4f8b1130e8cf83604191a7f89421f38eb624ef3a9c4aaf3"
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 131,
+          "max_ulp": 368,
+          "max_absolute": 2.764863893389702e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4fd821f24305fbc774211fc1df9d384b9d704a6d3e30561be859af924aa3ea52"
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "58586a79215d1e6ba37a06d616a3e8b87c48b37b65be1f96da0c179c5b7dfb50"
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 5799,
+          "max_ulp": 1103,
+          "max_absolute": 1.3096723705530167e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5c3029eccdd942e01100e8c6b7804729bbe79ac1135fd8d8273e8361a62e9dfa"
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a5bd6d0584cd92e5789ae28246827ba6f410a56e862842a52ea17e1187efc408"
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "04c87e6f7868d0acce476afeda1f3ba03f5201b5e930603b34f63d63c2748f0f"
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 1642,
+          "max_ulp": 37,
+          "max_absolute": 6.866455078125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5fc83a050fcdc4a524d7bb94d6937ae7b8bf79562fdcfd2c9a484df4faf71ca5"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 1642,
+          "max_ulp": 37,
+          "max_absolute": 6.866455078125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5fc83a050fcdc4a524d7bb94d6937ae7b8bf79562fdcfd2c9a484df4faf71ca5"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 1529,
+          "max_ulp": 38,
+          "max_absolute": 0.000213623046875,
+          "nonfinite_words": 0,
+          "gpu_sha256": "048df3c1e723a02b27e875d84432d707729dce1c4524b548e374730e4e46c503"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 735,
+          "max_ulp": 1,
+          "max_absolute": 3.0517578125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "09b952e737c40d07d577bcd6086c1ea696e11a0bd4e83e5727d8bb7f8baf6c25"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 65,
+          "max_ulp": 87,
+          "max_absolute": 2.0742416381835938e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d3696b72e254233b14450c879aa4d776575243ee707c91e8c66e8c1ee1050065"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 735,
+          "max_ulp": 2,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "dbce8358b5d28b3bd8476ab1e4e3154188b3d63bc8a28da1764db878563fc1a6"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 65,
+          "max_ulp": 104,
+          "max_absolute": 2.47955322265625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5aa7bd2252f3d880931328c0a88f76787e8396a8e30086245e0ee799b54817e9"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 148,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0b508fa78b934952fb83350676d556beb43ff87f5f8c2597aa6831e6d1b7bc32"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 148,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0b508fa78b934952fb83350676d556beb43ff87f5f8c2597aa6831e6d1b7bc32"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 167,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ad59e85f084549f8c6a6b14eb6a9e2681acdb0e7e36e4802c3e7a85e3f2275e6"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 167,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ad59e85f084549f8c6a6b14eb6a9e2681acdb0e7e36e4802c3e7a85e3f2275e6"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 2502,
+          "max_ulp": 4,
+          "max_absolute": 0.005859375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "7b376e7f3319334f801a9525deb85359e835fd4da240c36c8968ac092c6650db"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2038,
+          "max_ulp": 2,
+          "max_absolute": 4.76837158203125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6640b2caa960f9c38e8d482ac125e542f0a5daac8ebef665a93f13bc654ec504"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2502,
+          "max_ulp": 5,
+          "max_absolute": 0.01953125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4ac4910dc95d0df418b562f5f8a501832a2d9af82a8e804067d81560a1109e9e"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 1662,
+          "max_ulp": 2,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e34c16e1194a9b9b0d3e03bc7cc8228530418323e17604a0b419bf9b4c68a214"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 3032,
+          "max_ulp": 4,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6d040a5f0ebda4f3e243f9c1fec2326bcc357fc34c89524242732c9587dbc186"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2934,
+          "max_ulp": 4,
+          "max_absolute": 0.000244140625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "fba8bfd8ff1714fe48bb938f66e46b101e3d0b7312d1c01afd6542471a2a6da9"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2725,
+          "max_ulp": 5,
+          "max_absolute": 0.00146484375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6c52d15c478b37dc424dfb227aede2ac94f49574b1e71f0f870849d2e058e89d"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 2599,
+          "max_ulp": 5,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1f2e6994fc02cb8bb3f3730bf772590a38a1e9557505de087675c3eab0f0f090"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      }
+    },
+    "deformation-evolved_steep_open.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 158,
+          "max_ulp": 180,
+          "max_absolute": 6.51925802230835e-09,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d2f7a9b46826ad8fe535c9e396089b5292669151658c92f79d464c888258393b"
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 119,
+          "max_ulp": 11536,
+          "max_absolute": 2.6193447411060333e-09,
+          "nonfinite_words": 0,
+          "gpu_sha256": "302e0eded35691f069d0c0bbd0dbb75f3a6b1adc6ea19d113e5dab57f72f0714"
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 133,
+          "max_ulp": 38,
+          "max_absolute": 1.30385160446167e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5db98fa1ded5496ac18ebc7c7a4eee86fb0e097497ddef1635df87b1cfc9cfb2"
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0dae7139d84a5d1ab0f9c5911adf0fa2678dd5fc8b25c24531c74b51f8fb2221"
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 5579,
+          "max_ulp": 6401,
+          "max_absolute": 2.561137080192566e-09,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ba979843d4a1855ed6ef2c80ceaf81f9d217424b55c5f905fbf1ae25ff63d1a3"
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "58097b3ef35674cba133fa70b1312cb091a014e8a180da0b4f3a0be4f7108bbd"
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1501a68cae13ab77b84cd3e6b2955e6360c556d275da97cda63c522049e04594"
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 1767,
+          "max_ulp": 17,
+          "max_absolute": 0.00030517578125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "40f4805da6eb34cff3db7f24bb1757a48feae3fc766c8ccc19be2cdcd6f82a29"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 1767,
+          "max_ulp": 17,
+          "max_absolute": 0.00030517578125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "40f4805da6eb34cff3db7f24bb1757a48feae3fc766c8ccc19be2cdcd6f82a29"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 1660,
+          "max_ulp": 22,
+          "max_absolute": 0.0009765625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a0a1c64a4a372a36bfda22356dbe63156ae140aea81f48b977b2e9ea22ccd93d"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74"
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 735,
+          "max_ulp": 1,
+          "max_absolute": 3.0517578125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "09b952e737c40d07d577bcd6086c1ea696e11a0bd4e83e5727d8bb7f8baf6c25"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 73,
+          "max_ulp": 85,
+          "max_absolute": 2.0265579223632812e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ed83e510388df98718e453368442d130f9d81c918bd843b2b14914532eeea328"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 735,
+          "max_ulp": 2,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "dbce8358b5d28b3bd8476ab1e4e3154188b3d63bc8a28da1764db878563fc1a6"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 73,
+          "max_ulp": 101,
+          "max_absolute": 2.4080276489257812e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "606829dba5ca43e5326cec445002e91ac0b0580db78fd13bfb21247f0e08a4cc"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74"
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 129,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4ff945c67f076e38c2142757124e8c0a49240bacbee668126b104d7e77f7a5f9"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 129,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4ff945c67f076e38c2142757124e8c0a49240bacbee668126b104d7e77f7a5f9"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 152,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4dc5b5e1efab5c2e821c11493d0b22e52ffdac85951698048147da8a8a1e155c"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 147,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "356e264495e92e7932c50e903e36d3f4c568bf2f6064e0e253dfb93756a8e171"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74"
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 2508,
+          "max_ulp": 4,
+          "max_absolute": 0.0078125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "32f0bde91eb8d06b25886534e77fe128905c7c8f6d1c7d97fd43609439183c36"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2100,
+          "max_ulp": 2,
+          "max_absolute": 9.5367431640625e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6237aefe950bda96f25bcde69655169c68f7688ff9a8dbab584afd1b4d18cea7"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2508,
+          "max_ulp": 5,
+          "max_absolute": 0.0234375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "63b2cf870501d8df57a7b7d0c075f1dbd81710c7220242faa7c87bf69ea723f3"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 1739,
+          "max_ulp": 2,
+          "max_absolute": 1.9073486328125e-06,
+          "nonfinite_words": 0,
+          "gpu_sha256": "df059b7d044178fea903205201a71974cc969017c35b1d88ed899fd22e83a362"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74"
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 2947,
+          "max_ulp": 4,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "519fcffab924ef2e1207f84b174b04f1b6d0a54aff55c170b7425ca6e30824c7"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2848,
+          "max_ulp": 4,
+          "max_absolute": 0.000244140625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2120f12e6cecc2e888797ab7271f8a64784ad5e13d0a6dc1bd719fc1871bb108"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2644,
+          "max_ulp": 5,
+          "max_absolute": 0.00146484375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8971d124b4916d3bf3c9740079797ccc9f2f81237a3d031e2d9fbabe7e242b2d"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 2534,
+          "max_ulp": 5,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "351f9e6180a76c83aecd69d58eded0f9e5786a7b57e92f44bfa4353d61016e14"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74"
+        }
+      }
+    },
+    "deformation-evolved_zero_flow.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "7c4ee06f7f537a4df23bdfe1eb83b94dc8cc1a07f6a0fe98eb1edb0fdff31c49"
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "010cd87ef9ffed7aa03f5e4ddd5fa30b58c289dff286762c4d7003e029ad16a2"
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d5b5fb615b455c203606145a24742b837d28c0e1ee97c1e5f85ad90e262e5acb"
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c1cf102263c3f553b38f23c6dde928b66443e419ffa4caa4106283d04c5a5f3c"
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "78ffe35598baf1045eec3b22a6be97de66f5a7d365e163dfd595e2fe1394443b"
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "223055ce5f8a601d8b37bb5bc9c7927cb3a3e91f5591b8434c2fe0dbd09fd446"
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 1078,
+          "max_ulp": 3,
+          "max_absolute": 2.86102294921875e-06,
+          "nonfinite_words": 0,
+          "gpu_sha256": "36415bb1ae6b6cf59bd9a519ac048960d7c843f0770a2284ec69767ba9515cf5"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "14ffc2a34674ac6934b5241de83679efd819567d3a5e754845e67d8aefe496f8"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 1078,
+          "max_ulp": 4,
+          "max_absolute": 7.62939453125e-06,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71648b99a6df58df824cff1df24c5d7fb4ebc5c5048295ada09bbdc03538b506"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f4a5375ab7dd1b718cf478a18d57b6fb0c46f128acd8d2eef978df2785079f2a"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 1632,
+          "max_ulp": 3,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3ea9ae11bfd8a544d339a9fc6970eb82bf20c72e5be727e932b5e78c687e4154"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 1632,
+          "max_ulp": 3,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3ea9ae11bfd8a544d339a9fc6970eb82bf20c72e5be727e932b5e78c687e4154"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 1591,
+          "max_ulp": 4,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2db8196f9eef5b58eaa4039565907d5057d827a05dde0154b50806925a3f16a3"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 1591,
+          "max_ulp": 4,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2db8196f9eef5b58eaa4039565907d5057d827a05dde0154b50806925a3f16a3"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 3984,
+          "max_ulp": 4,
+          "max_absolute": 0.00390625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3bdc891fa5fa740d9c362835b281acb0590b1c973426cf5d5c45d52dbe1f86ec"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2871,
+          "max_ulp": 2,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "89986bc6791fe06d7b7d47b8608e9d345bd8fcf8f65f0a35e592986841e90ec6"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3984,
+          "max_ulp": 4,
+          "max_absolute": 0.01171875,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4285d245e5172ca088316afe9104f300da0db657c7f0aa83e590d0eda8373396"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 2356,
+          "max_ulp": 2,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3dbd062a23f0f9d3fa328002fdd6fd045293fcbea500dddd4b9da9085b572a60"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 4193,
+          "max_ulp": 4,
+          "max_absolute": 0.000244140625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a957f3a4a01c2cb0a06532ff7c09182aa76b628d46aa4dd8f89ca4d3ffb6fce3"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 4065,
+          "max_ulp": 4,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "259eac331c8d06eee3a53b07869b87900756cb830e69c32606f528ae85c44229"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3772,
+          "max_ulp": 6,
+          "max_absolute": 0.000732421875,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d9e436380d5c8eeaa09bc23967d6cc19d2c2504ff2ef29abac4eb1df7d59a924"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 3610,
+          "max_ulp": 6,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8889ae913ae7bf37482576835e83b64c154a76d598e4a2edd2a7604fdb2193ab"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      }
+    },
+    "deformation-map_extremes.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 100,
+          "max_ulp": 79,
+          "max_absolute": 9.022187441587448e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "58c0a6bcff01b8ffc34f80d564ca8cc38c482b638b12fe051e7efed894c91c8f"
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 100,
+          "max_ulp": 268,
+          "max_absolute": 4.0745362639427185e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e0b17adee9701ee2b1917881d7dea98b0ad241f790fa860a6e869e7deaf31af3"
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 91,
+          "max_ulp": 14450,
+          "max_absolute": 1.7462298274040222e-09,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d4e9f0e22341e8271036ba0c512ad5ae132c5290dc9f1d82ace6cda65e5d78c7"
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 4846,
+          "max_ulp": 2672,
+          "max_absolute": 3.725290298461914e-09,
+          "nonfinite_words": 0,
+          "gpu_sha256": "20d3e613c50a0ea7f21e3b672b27b7995400da503408de4d06dd2ccb8efe6472"
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2577dc9e8c3bc4d8d8f5dbc884e813265f3d7603c64dca2ade5d7025fe2f3aec"
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "366ddb408a856c331a44b91b49b567e54a948b8e21ba17fc15dcfa726ad8f5a8"
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 2553,
+          "max_ulp": 38,
+          "max_absolute": 0.0078125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "23e90d50b764504830f9fd0dbbe4f2aff7522003b09a063aaf405294c0eb0fba"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2553,
+          "max_ulp": 38,
+          "max_absolute": 0.0078125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "23e90d50b764504830f9fd0dbbe4f2aff7522003b09a063aaf405294c0eb0fba"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2381,
+          "max_ulp": 57,
+          "max_absolute": 0.0234375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f71ff852078c8a9ffdb2c20ce20f568e5f6e5282f839af3b2e6d2b4c04cb7c52"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 1372,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "131ca1b057bb38e1a0f7aed7151bf756c11af2042a30668a0361527ede904a8b"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 96,
+          "max_ulp": 87,
+          "max_absolute": 2.0742416381835938e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5ab528b88e905c8abc0662633ebb3b9bf4afa48fb977a02c4a2dd3541f8216fd"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 980,
+          "max_ulp": 2,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "47e52071304f3d453985bc1fcfd00a4e31e4a56799e3ecefc2d04e1cc2bc3b4c"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 96,
+          "max_ulp": 104,
+          "max_absolute": 2.47955322265625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "64c31960924fbb87dcf8047e8df521cff37cbe15dd864e7e9bc4a5d711196cc5"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 205,
+          "max_ulp": 2,
+          "max_absolute": 3.0517578125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9ab650a4446db23fbb1e00238fe73a0e21c610cdf542f01a66f3ba9ac6008d24"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 205,
+          "max_ulp": 2,
+          "max_absolute": 3.0517578125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9ab650a4446db23fbb1e00238fe73a0e21c610cdf542f01a66f3ba9ac6008d24"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 287,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3783fb35971ac9171453bb5eba79d3150680543f6537ccda936797be5870c792"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 280,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "fce6498f69d4edc9dc69a83cc3344b6053d6f083bcbba725d0a37a9cb6804449"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 3244,
+          "max_ulp": 30,
+          "max_absolute": 0.0234375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "19b925b1b41686ed003fb5f0025b778a570937d772ea39a3aaf22a94ffe90f00"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2746,
+          "max_ulp": 29,
+          "max_absolute": 0.000110626220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "35e0b2e0052911a8cee8c77e1feed7480a821d39fbd9d8953d49282c910dacb8"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3243,
+          "max_ulp": 23,
+          "max_absolute": 0.0625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "80790dce85b72eb83dccb45612450843e2b0d08fd926c9d4af6f944efd69340c"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 2250,
+          "max_ulp": 22,
+          "max_absolute": 0.000335693359375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d8aba6dcd82c4fc14f1a1e0afcb90eca3712bb4349e3be58ee0b8735be6b7bc2"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 4213,
+          "max_ulp": 28,
+          "max_absolute": 0.00146484375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a6a07af3c0cf6a725817d59caca2562375a41c3c901712f05a3cf587d3556231"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 4130,
+          "max_ulp": 28,
+          "max_absolute": 0.00054931640625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "85f3b82beb6e2fa7baab278654bf0bbb3608a2005e5b7eccd8a299390bcfe54f"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3809,
+          "max_ulp": 21,
+          "max_absolute": 0.0048828125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "54090c29ae7c57a76d82e9cff62a10986de872a2035f0dbb7a34f4d831ca15ab"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 3663,
+          "max_ulp": 21,
+          "max_absolute": 0.001708984375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "30c6b18469b3577122b35dd160bdd15d5337ea8084d2d48a64d6e93904ea10d2"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      }
+    },
+    "deformation-near_zero_flow.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 168,
+          "max_ulp": 18944,
+          "max_absolute": 1.8119148916795115e-30,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a3508d6f583234023a83b2ce1cbdf2ee063cb69239cb7c70a82ce66dc4635a01"
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 139,
+          "max_ulp": 1503,
+          "max_absolute": 1.1401505270772436e-30,
+          "nonfinite_words": 0,
+          "gpu_sha256": "fa7147f2924a847fa9f00f2b09d2e44b0dc40e670094bf1ca2d5765db90eb8eb"
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 138,
+          "max_ulp": 133478,
+          "max_absolute": 3.6854595415794145e-30,
+          "nonfinite_words": 0,
+          "gpu_sha256": "fa91bbd2e4dc3743e794b175608a4ec31c7d17e89f34a6b89cfcc0f31ab6a267"
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 5390,
+          "max_ulp": 27449,
+          "max_absolute": 5.32481111024183e-30,
+          "nonfinite_words": 0,
+          "gpu_sha256": "41e43c0bbed0676ecc461f036aa5f24e98026ca3ea9ee7489ab2481ce42be1a8"
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9f265b8fe54a7d8f188621788e614b6661a2522f7f2398dcde3972ce146d8614"
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b379c3cccb37d9f3bba3e894af00a9fa4eb8d11f6dfb839f3cff723f6e9a67b9"
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 1078,
+          "max_ulp": 3,
+          "max_absolute": 2.86102294921875e-06,
+          "nonfinite_words": 0,
+          "gpu_sha256": "36415bb1ae6b6cf59bd9a519ac048960d7c843f0770a2284ec69767ba9515cf5"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "14ffc2a34674ac6934b5241de83679efd819567d3a5e754845e67d8aefe496f8"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 1078,
+          "max_ulp": 4,
+          "max_absolute": 7.62939453125e-06,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71648b99a6df58df824cff1df24c5d7fb4ebc5c5048295ada09bbdc03538b506"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f4a5375ab7dd1b718cf478a18d57b6fb0c46f128acd8d2eef978df2785079f2a"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 1632,
+          "max_ulp": 3,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3ea9ae11bfd8a544d339a9fc6970eb82bf20c72e5be727e932b5e78c687e4154"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 1632,
+          "max_ulp": 3,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3ea9ae11bfd8a544d339a9fc6970eb82bf20c72e5be727e932b5e78c687e4154"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 1591,
+          "max_ulp": 4,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2db8196f9eef5b58eaa4039565907d5057d827a05dde0154b50806925a3f16a3"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 1591,
+          "max_ulp": 4,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2db8196f9eef5b58eaa4039565907d5057d827a05dde0154b50806925a3f16a3"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 3984,
+          "max_ulp": 4,
+          "max_absolute": 0.00390625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3bdc891fa5fa740d9c362835b281acb0590b1c973426cf5d5c45d52dbe1f86ec"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2871,
+          "max_ulp": 2,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "89986bc6791fe06d7b7d47b8608e9d345bd8fcf8f65f0a35e592986841e90ec6"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3984,
+          "max_ulp": 4,
+          "max_absolute": 0.01171875,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4285d245e5172ca088316afe9104f300da0db657c7f0aa83e590d0eda8373396"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 2356,
+          "max_ulp": 2,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3dbd062a23f0f9d3fa328002fdd6fd045293fcbea500dddd4b9da9085b572a60"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 4193,
+          "max_ulp": 4,
+          "max_absolute": 0.000244140625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a957f3a4a01c2cb0a06532ff7c09182aa76b628d46aa4dd8f89ca4d3ffb6fce3"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 4065,
+          "max_ulp": 4,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "259eac331c8d06eee3a53b07869b87900756cb830e69c32606f528ae85c44229"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3772,
+          "max_ulp": 6,
+          "max_absolute": 0.000732421875,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d9e436380d5c8eeaa09bc23967d6cc19d2c2504ff2ef29abac4eb1df7d59a924"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 3610,
+          "max_ulp": 6,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8889ae913ae7bf37482576835e83b64c154a76d598e4a2edd2a7604fdb2193ab"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      }
+    },
+    "deformation-real_open.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 163,
+          "max_ulp": 19648,
+          "max_absolute": 1.3960743672214448e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6235f1aa612b5965fd9f7a646d91be2c537a169dbd91b3133d67077a0ac59e1a"
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 123,
+          "max_ulp": 629,
+          "max_absolute": 6.912159733474255e-11,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c4531ec613dbed1a9da94187e363e04089d290ea4211fc6ef3ddfa2f2f295700"
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 133,
+          "max_ulp": 133479,
+          "max_absolute": 2.7921487344428897e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "60b2b944a1c8b3c84dfc66fca2aa8e4d33f5c354a262f5d3ec50d4fa900929ce"
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 5675,
+          "max_ulp": 1096,
+          "max_absolute": 1.6552803572267294e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5d50ee3515a6f02ed084767115bd60cd37f0776fb285422251c07cb5279b3251"
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6703b985af2383a214f562ce043b897532ef3ac45784a95ab8c616c787f91fe6"
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8ad12823cd2402b8a750b5ff7c28cac0319822252d3962065520e51c4c805985"
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 1750,
+          "max_ulp": 1010,
+          "max_absolute": 8.20159912109375e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c08fcb450fff5049bacd9874a84d14af7033f6241e00891017e2d490ce9831fe"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 1750,
+          "max_ulp": 1010,
+          "max_absolute": 8.20159912109375e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c08fcb450fff5049bacd9874a84d14af7033f6241e00891017e2d490ce9831fe"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 1647,
+          "max_ulp": 758,
+          "max_absolute": 0.0002460479736328125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4bd7ae4b7aa82e56278e4a43ac9abc67fc1b19a2445fa257e170907ed128dbfc"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 735,
+          "max_ulp": 1,
+          "max_absolute": 3.0517578125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "09b952e737c40d07d577bcd6086c1ea696e11a0bd4e83e5727d8bb7f8baf6c25"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 65,
+          "max_ulp": 87,
+          "max_absolute": 2.0742416381835938e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d3696b72e254233b14450c879aa4d776575243ee707c91e8c66e8c1ee1050065"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 735,
+          "max_ulp": 2,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "dbce8358b5d28b3bd8476ab1e4e3154188b3d63bc8a28da1764db878563fc1a6"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 65,
+          "max_ulp": 104,
+          "max_absolute": 2.47955322265625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5aa7bd2252f3d880931328c0a88f76787e8396a8e30086245e0ee799b54817e9"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 148,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0b508fa78b934952fb83350676d556beb43ff87f5f8c2597aa6831e6d1b7bc32"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 148,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0b508fa78b934952fb83350676d556beb43ff87f5f8c2597aa6831e6d1b7bc32"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 167,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ad59e85f084549f8c6a6b14eb6a9e2681acdb0e7e36e4802c3e7a85e3f2275e6"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 167,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ad59e85f084549f8c6a6b14eb6a9e2681acdb0e7e36e4802c3e7a85e3f2275e6"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 2498,
+          "max_ulp": 4,
+          "max_absolute": 0.005859375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8f247e7d5040d0f4e181e456d8cc4cf2635a1416fd8372e607663df633602125"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2032,
+          "max_ulp": 2,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9d2ef26e51f962215b6a820f880ea7ec5b202e56306e524944e99325b358702d"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2498,
+          "max_ulp": 5,
+          "max_absolute": 0.01953125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "546adf9c471d9404bf624b11459d4a6e08180b15cb770176d276e7b1b0c38322"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 1659,
+          "max_ulp": 2,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "31a7fa5f057ba5daeb2f4a75a544146cbf4209a7ab6b11dba1e802980876827a"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 3035,
+          "max_ulp": 4,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "500c210413941a5ea6187919cb6ebabd2c81503a488954fbd83026ab7b403151"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2934,
+          "max_ulp": 4,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "33753b81b330d6b0df379a808bbdd768fedcfb6a9437c95fe34a960fe09f45bf"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2729,
+          "max_ulp": 5,
+          "max_absolute": 0.001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2fd1c437fb6fb396545ee77b8edf259f416f2f6ba0cb6d3e5e60b36a5d4a4223"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 2599,
+          "max_ulp": 5,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2ab099790988bd1bfb80b7a7fe9be93b972a7b602bcb3e96aea96912cdc48db4"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      }
+    },
+    "deformation-real_periodic.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 164,
+          "max_ulp": 19648,
+          "max_absolute": 2.764863893389702e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "7712cf15697959f945b91848bdd4953d93fd851972ec89c5b986ab12962878fe"
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 124,
+          "max_ulp": 629,
+          "max_absolute": 6.912159733474255e-11,
+          "nonfinite_words": 0,
+          "gpu_sha256": "7929502fa44b1a54ba1224abb650bdc7f95d77e1d98b20a1f89c4377fe9fef74"
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 133,
+          "max_ulp": 133479,
+          "max_absolute": 5.456968210637569e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "64fa6dac95b33f7d3a56704660044a45ce26583cf9953a510ba114a4b3d83a30"
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 5419,
+          "max_ulp": 1096,
+          "max_absolute": 3.92901711165905e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "22b2059aacfe7039e664b9e48520407e90030c13412d7456e8b6721ec4aca15e"
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2577dc9e8c3bc4d8d8f5dbc884e813265f3d7603c64dca2ade5d7025fe2f3aec"
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "366ddb408a856c331a44b91b49b567e54a948b8e21ba17fc15dcfa726ad8f5a8"
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 2550,
+          "max_ulp": 1010,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e0598458d38e7ad92d4198bfb2975b2c172b89a1365a4957ebb16c36bf954525"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2550,
+          "max_ulp": 1010,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e0598458d38e7ad92d4198bfb2975b2c172b89a1365a4957ebb16c36bf954525"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2399,
+          "max_ulp": 758,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "33ecf779850fc98be63324a843c2da8a59fbb3c8b65ef8eef87f9fe3801de9b4"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 931,
+          "max_ulp": 1,
+          "max_absolute": 3.0517578125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "358ae72c6b2d186c00c1cef34a07402f6bc52f0ff05552fbe71dbb78352b9b76"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 96,
+          "max_ulp": 87,
+          "max_absolute": 2.0742416381835938e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5ab528b88e905c8abc0662633ebb3b9bf4afa48fb977a02c4a2dd3541f8216fd"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 931,
+          "max_ulp": 2,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "528d3e4ae367db03588b3ad1e1dbc0a10489a404c5065e227d388c03b4da9606"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 96,
+          "max_ulp": 104,
+          "max_absolute": 2.47955322265625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "64c31960924fbb87dcf8047e8df521cff37cbe15dd864e7e9bc4a5d711196cc5"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 195,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "dfce459f1ec08bc4a545cd75d5f0a46d70920673ef7f4b4f3ccf75abab4f5454"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 195,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "dfce459f1ec08bc4a545cd75d5f0a46d70920673ef7f4b4f3ccf75abab4f5454"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 223,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ea92ac4edbe0127558f36465ce1192b6858196a04d36cd1c33deb09f0c16c7f1"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 223,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ea92ac4edbe0127558f36465ce1192b6858196a04d36cd1c33deb09f0c16c7f1"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 3921,
+          "max_ulp": 4,
+          "max_absolute": 0.005859375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4df3c46caec10ba22ffcefed32dfd1b9dcb360e13c2a473baab4c46f967b1cc8"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2788,
+          "max_ulp": 2,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f55cd50e72348250b028a55582f57e8c5b5c3fcde50653a47681fe12318358ab"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3921,
+          "max_ulp": 5,
+          "max_absolute": 0.01953125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "65b0e197fd72e0d01b52ca2ecdb5fdf4a45e85859f32e0d04b1a6a623c01763c"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 2281,
+          "max_ulp": 2,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "01f75c1eecad9e1cf587d0e156b39f9867be7e2c2daabae19542ddc5e63d1a5c"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 4146,
+          "max_ulp": 4,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "680b0ef3696c9beb6fb4edbaf3518b8563473bed7efd6b48f9633312a537c1ad"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 4010,
+          "max_ulp": 4,
+          "max_absolute": 0.000244140625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1c02e6f9b2eef560c89168d7d21f9388930b43a5fb14bd385e8631e1b2168878"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3725,
+          "max_ulp": 5,
+          "max_absolute": 0.001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f7abee6a2bb98dd2148e622936db4d3b81c14df6b6023fcfb9be07d46059d79c"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 3556,
+          "max_ulp": 5,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ba3ec2ac88d656cdeed13a2c8d947fca8e8c4b813affcfd812e7d460f7a9aca0"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b58b602de4bc92127394a84e4c4926573ae920a47d135b2496674f5c28c11aad"
+        }
+      }
+    },
+    "deformation-southern_open.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 166,
+          "max_ulp": 5468,
+          "max_absolute": 1.4006218407303095e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "cbc1286f3e6cf6f0f58722e931d144391da49ff9c10b97eaefd83f31616731b3"
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 123,
+          "max_ulp": 629,
+          "max_absolute": 6.912159733474255e-11,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c4531ec613dbed1a9da94187e363e04089d290ea4211fc6ef3ddfa2f2f295700"
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 133,
+          "max_ulp": 133479,
+          "max_absolute": 2.7921487344428897e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e9d17e0851cdea77f9d73cd59211dc7521fbb719283fbd864b2a0849566df426"
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 5553,
+          "max_ulp": 991,
+          "max_absolute": 1.837179297581315e-10,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1f3f844a71fb8a0336754079e4991e4bee03d813594fa9227bc51019e8abbf53"
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6703b985af2383a214f562ce043b897532ef3ac45784a95ab8c616c787f91fe6"
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "efd246aefc4de84645c07d85ac4887aa524db4069d3129d54f88559c003dff32"
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 2026,
+          "max_ulp": 85,
+          "max_absolute": 5.817413330078125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9bc15fdaf57f861e3d108b0ec703476bae1d679ae61542b548287341c6f7aac8"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2026,
+          "max_ulp": 85,
+          "max_absolute": 5.817413330078125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9bc15fdaf57f861e3d108b0ec703476bae1d679ae61542b548287341c6f7aac8"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 1882,
+          "max_ulp": 74,
+          "max_absolute": 0.00017547607421875,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b1ceae8836e4599eaac242d4c4ce46f45a5bfa1b1b9504e95908e947bfb7bfdf"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 735,
+          "max_ulp": 1,
+          "max_absolute": 3.0517578125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "09b952e737c40d07d577bcd6086c1ea696e11a0bd4e83e5727d8bb7f8baf6c25"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 65,
+          "max_ulp": 87,
+          "max_absolute": 2.0742416381835938e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d3696b72e254233b14450c879aa4d776575243ee707c91e8c66e8c1ee1050065"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 735,
+          "max_ulp": 2,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "dbce8358b5d28b3bd8476ab1e4e3154188b3d63bc8a28da1764db878563fc1a6"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 65,
+          "max_ulp": 104,
+          "max_absolute": 2.47955322265625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "5aa7bd2252f3d880931328c0a88f76787e8396a8e30086245e0ee799b54817e9"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 148,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0b508fa78b934952fb83350676d556beb43ff87f5f8c2597aa6831e6d1b7bc32"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 148,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0b508fa78b934952fb83350676d556beb43ff87f5f8c2597aa6831e6d1b7bc32"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 167,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ad59e85f084549f8c6a6b14eb6a9e2681acdb0e7e36e4802c3e7a85e3f2275e6"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 167,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ad59e85f084549f8c6a6b14eb6a9e2681acdb0e7e36e4802c3e7a85e3f2275e6"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 2498,
+          "max_ulp": 4,
+          "max_absolute": 0.005859375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "24eac8224ebc3e7e18e7735dd58d848de87a94fc4e43800a3b88efd273eca0e4"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2032,
+          "max_ulp": 2,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d7ed72987e34b759043013e04f138c459cf860e43c7bab2fbccd69ce837704cd"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2498,
+          "max_ulp": 5,
+          "max_absolute": 0.01953125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c796caa3cec7bfb5e1d8d46465af5787fa88651b726a4218f901f3370f0638f3"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 1659,
+          "max_ulp": 2,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "fd230a0b2bb23ce8fec0f04e0eb41525f941ad607499a2ab2ba7f7b58a2c2ccb"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 3033,
+          "max_ulp": 4,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "fc774dce2f90e35412a4cf7df60386db5cb36641917049030803e0136e34dec0"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2934,
+          "max_ulp": 4,
+          "max_absolute": 0.000244140625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "dbb51ccb6b1cb3fd41571a8b88194138a3ded3c2f00b978ec7322d1e9e1252a2"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2725,
+          "max_ulp": 5,
+          "max_absolute": 0.001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1ae0a0ec50371175e33f0534ae2868bef980d18c5c3d00ef514c70f1e22d3888"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 2599,
+          "max_ulp": 5,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4d7c65763c1e8677f6bc747c85f9880640778f9f901fd92987b4a37fc1bd23db"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "bdb5eb639c5d0671b5deb117048f5df682393ee68afd6c58c486e770012b154c"
+        }
+      }
+    },
+    "deformation-steep_open.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 155,
+          "max_ulp": 14336,
+          "max_absolute": 4.773028194904327e-09,
+          "nonfinite_words": 0,
+          "gpu_sha256": "db509458ff122fa5ad52dfc895ca9e95ccf3757b8b421204dc8dd5948b479d29"
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 123,
+          "max_ulp": 2570,
+          "max_absolute": 2.2482709027826786e-09,
+          "nonfinite_words": 0,
+          "gpu_sha256": "9fc1dc21526f3ac523da922ce7ba7441a423ba3463036ad1b1084253a8125df1"
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 134,
+          "max_ulp": 3067,
+          "max_absolute": 9.546056389808655e-09,
+          "nonfinite_words": 0,
+          "gpu_sha256": "6b92d50999f4b643671410486c9ccf96573f139e41cc3adeaa7edea0a1d22df9"
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 5518,
+          "max_ulp": 699,
+          "max_absolute": 4.0745362639427185e-09,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ec5d042435a2d070e1addeed84ad8e9c2f7c12157174270453371a113e0fc3ea"
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c3bb7d6584dd31d02e74d1b09f2f9cafaff6aada6719cda926f0b161006c2495"
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4ae8bacd3f23c9c20c380efede741c278df7baec2db8cdfdeb6dd0c7c222353d"
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 1813,
+          "max_ulp": 81,
+          "max_absolute": 0.000335693359375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "cb721f6fac8fc1d93dd043cbf95942eae11665461539e69d5bb937957e049b75"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 1813,
+          "max_ulp": 81,
+          "max_absolute": 0.000335693359375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "cb721f6fac8fc1d93dd043cbf95942eae11665461539e69d5bb937957e049b75"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 1704,
+          "max_ulp": 121,
+          "max_absolute": 0.001007080078125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "1175744e78cc9e5861810745c0b49c1fa3dc22c023f530f8fa18ffc0833ac2e0"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74"
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 735,
+          "max_ulp": 1,
+          "max_absolute": 3.0517578125e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "09b952e737c40d07d577bcd6086c1ea696e11a0bd4e83e5727d8bb7f8baf6c25"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 73,
+          "max_ulp": 85,
+          "max_absolute": 2.0265579223632812e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "ed83e510388df98718e453368442d130f9d81c918bd843b2b14914532eeea328"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 735,
+          "max_ulp": 2,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "dbce8358b5d28b3bd8476ab1e4e3154188b3d63bc8a28da1764db878563fc1a6"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 73,
+          "max_ulp": 101,
+          "max_absolute": 2.4080276489257812e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "606829dba5ca43e5326cec445002e91ac0b0580db78fd13bfb21247f0e08a4cc"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74"
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 129,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4ff945c67f076e38c2142757124e8c0a49240bacbee668126b104d7e77f7a5f9"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 129,
+          "max_ulp": 2,
+          "max_absolute": 1.52587890625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4ff945c67f076e38c2142757124e8c0a49240bacbee668126b104d7e77f7a5f9"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 152,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4dc5b5e1efab5c2e821c11493d0b22e52ffdac85951698048147da8a8a1e155c"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 147,
+          "max_ulp": 2,
+          "max_absolute": 6.103515625e-05,
+          "nonfinite_words": 0,
+          "gpu_sha256": "356e264495e92e7932c50e903e36d3f4c568bf2f6064e0e253dfb93756a8e171"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74"
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 2502,
+          "max_ulp": 4,
+          "max_absolute": 0.005859375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0793c0d76574f0863f1083560d00a8113426a89c03b0facac9f173c5d3fe9eb8"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2093,
+          "max_ulp": 2,
+          "max_absolute": 4.76837158203125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3b50f92f2452d471f27382a6b86ba32a02074ad74734c8d22cc5331a41b9c0a3"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2502,
+          "max_ulp": 5,
+          "max_absolute": 0.01953125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "7f01b05e546029804455972de8e539a32263647f8c71c059c87496eb32a21303"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 1734,
+          "max_ulp": 2,
+          "max_absolute": 1.9073486328125e-06,
+          "nonfinite_words": 0,
+          "gpu_sha256": "66e9a85af494d2a9dfdfe7b5497b960d62e973b0e969f447e498d3c8ad9a6e3e"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74"
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 2940,
+          "max_ulp": 4,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "b9870580644365528ae4479408e16b2d3dee2f2cf5ff735f70a2fb39358fb053"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2846,
+          "max_ulp": 4,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "e4d4ae1f957bbcaa24b7afebfa98186d0fb067f7201fb4ba6fd1eea088d21d80"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 2633,
+          "max_ulp": 5,
+          "max_absolute": 0.00146484375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "36ef2d0f5898ffd043f8cbb47f5b69fd5b24eb5f40fc7a647da6c54862001669"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 2533,
+          "max_ulp": 5,
+          "max_absolute": 0.00048828125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "abee573b69a9eff4128abb6bbeabf8904dd2c6de4a2b8309c34c385b450738bf"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71599d68773410758f04e1337424b91136fc4c88b96423ca1c0de65bf6a45d74"
+        }
+      }
+    },
+    "deformation-zero_flow.npz": {
+      "km4_iso0": {
+        "div": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "d11": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "50eae5d7bd680f88bfa2ad79b4f58ae69bc0074460579ab8954e7b3271e6e8e6"
+        },
+        "d22": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d178320629ec53aa9df199b5f5fa3b6c1b64ba6b499a4df3956ffb2b5aa802dc"
+        },
+        "d33": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "d12": {
+          "words": 10829,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "c1cf102263c3f553b38f23c6dde928b66443e419ffa4caa4106283d04c5a5f3c"
+        },
+        "d13": {
+          "words": 10200,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "78ffe35598baf1045eec3b22a6be97de66f5a7d365e163dfd595e2fe1394443b"
+        },
+        "d23": {
+          "words": 10400,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f8643286558afff25fc3e1c88ede0efbbf396ea354e7f7cf63d9529f4de260f9"
+        },
+        "kmh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "064472034d4d30eef4b30d1f71db4d142ab7f646582e44e062fe897d0b5b7e23"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km2_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 1078,
+          "max_ulp": 3,
+          "max_absolute": 2.86102294921875e-06,
+          "nonfinite_words": 0,
+          "gpu_sha256": "36415bb1ae6b6cf59bd9a519ac048960d7c843f0770a2284ec69767ba9515cf5"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "14ffc2a34674ac6934b5241de83679efd819567d3a5e754845e67d8aefe496f8"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 1078,
+          "max_ulp": 4,
+          "max_absolute": 7.62939453125e-06,
+          "nonfinite_words": 0,
+          "gpu_sha256": "71648b99a6df58df824cff1df24c5d7fb4ebc5c5048295ada09bbdc03538b506"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "f4a5375ab7dd1b718cf478a18d57b6fb0c46f128acd8d2eef978df2785079f2a"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km2_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 1632,
+          "max_ulp": 3,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3ea9ae11bfd8a544d339a9fc6970eb82bf20c72e5be727e932b5e78c687e4154"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 1632,
+          "max_ulp": 3,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3ea9ae11bfd8a544d339a9fc6970eb82bf20c72e5be727e932b5e78c687e4154"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 1591,
+          "max_ulp": 4,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2db8196f9eef5b58eaa4039565907d5057d827a05dde0154b50806925a3f16a3"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 1591,
+          "max_ulp": 4,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "2db8196f9eef5b58eaa4039565907d5057d827a05dde0154b50806925a3f16a3"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km3_iso0": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 3984,
+          "max_ulp": 4,
+          "max_absolute": 0.00390625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3bdc891fa5fa740d9c362835b281acb0590b1c973426cf5d5c45d52dbe1f86ec"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 2871,
+          "max_ulp": 2,
+          "max_absolute": 2.9802322387695312e-08,
+          "nonfinite_words": 0,
+          "gpu_sha256": "89986bc6791fe06d7b7d47b8608e9d345bd8fcf8f65f0a35e592986841e90ec6"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3984,
+          "max_ulp": 4,
+          "max_absolute": 0.01171875,
+          "nonfinite_words": 0,
+          "gpu_sha256": "4285d245e5172ca088316afe9104f300da0db657c7f0aa83e590d0eda8373396"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 2356,
+          "max_ulp": 2,
+          "max_absolute": 1.1920928955078125e-07,
+          "nonfinite_words": 0,
+          "gpu_sha256": "3dbd062a23f0f9d3fa328002fdd6fd045293fcbea500dddd4b9da9085b572a60"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      },
+      "km3_iso1": {
+        "kmh": {
+          "words": 9408,
+          "different_words": 4193,
+          "max_ulp": 4,
+          "max_absolute": 0.000244140625,
+          "nonfinite_words": 0,
+          "gpu_sha256": "a957f3a4a01c2cb0a06532ff7c09182aa76b628d46aa4dd8f89ca4d3ffb6fce3"
+        },
+        "kmv": {
+          "words": 9408,
+          "different_words": 4065,
+          "max_ulp": 4,
+          "max_absolute": 0.0001220703125,
+          "nonfinite_words": 0,
+          "gpu_sha256": "259eac331c8d06eee3a53b07869b87900756cb830e69c32606f528ae85c44229"
+        },
+        "khh": {
+          "words": 9408,
+          "different_words": 3772,
+          "max_ulp": 6,
+          "max_absolute": 0.000732421875,
+          "nonfinite_words": 0,
+          "gpu_sha256": "d9e436380d5c8eeaa09bc23967d6cc19d2c2504ff2ef29abac4eb1df7d59a924"
+        },
+        "khv": {
+          "words": 9408,
+          "different_words": 3610,
+          "max_ulp": 6,
+          "max_absolute": 0.0003662109375,
+          "nonfinite_words": 0,
+          "gpu_sha256": "8889ae913ae7bf37482576835e83b64c154a76d598e4a2edd2a7604fdb2193ab"
+        },
+        "bn2": {
+          "words": 9408,
+          "different_words": 0,
+          "max_ulp": 0,
+          "max_absolute": 0.0,
+          "nonfinite_words": 0,
+          "gpu_sha256": "0bed362f2403e43496bc1cd37b7fd2a9802a37426e53390a0a7d5a1e5407918f"
+        }
+      }
+    }
+  },
+  "cupy": "14.2.0",
+  "device": "b'NVIDIA GeForce RTX 5090'",
+  "kernel_source_sha256": "27bcd8b663a10d06b57396185ec0b8508068cf06eafe60bc5f4756e27a2960fc",
+  "diagnostic_no_fma": true,
+  "diagnostic_reference_metrics": true
+}

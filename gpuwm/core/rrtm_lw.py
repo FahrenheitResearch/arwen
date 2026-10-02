@@ -152,7 +152,15 @@ _DEVICE_CONSTANT_CACHE: dict[tuple, object] = {}
 
 def _device_constant(xp, dtype, key, build):
     """Return ``xp.asarray(build(), dtype)`` cached per process."""
-    cache_key = (*key, xp.__name__, np.dtype(dtype).str)
+    # PER CARD for CuPy: a table uploaded on one card is not readable on
+    # another, and the [devices] split steps slabs on several cards in one
+    # process.  The host (NumPy) key is unchanged.
+    device = (int(xp.cuda.Device().id) if xp.__name__ == "cupy" else None)
+    cache_key = (*key, xp.__name__, np.dtype(dtype).str, device)
+    if device is not None:
+        from gpuwm.core.device_cache import cached_ready
+        return cached_ready(xp, _DEVICE_CONSTANT_CACHE, cache_key,
+                            lambda: xp.asarray(build(), dtype=dtype))
     value = _DEVICE_CONSTANT_CACHE.get(cache_key)
     if value is None:
         value = xp.asarray(build(), dtype=dtype)

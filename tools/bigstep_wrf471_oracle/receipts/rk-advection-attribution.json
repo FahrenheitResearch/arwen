@@ -1,0 +1,106 @@
+{
+  "production": {
+    "real-specified-rk1": {
+      "max_ulp": 2023142134,
+      "differing_words": 5673,
+      "words": 18000,
+      "max_abs": 0.2144012451171875,
+      "actual_sha256": "2c43d7d4d7f838ddb6b85fa10f845fb6248a888ddd4445979d13fffbf1153338",
+      "reference_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4"
+    },
+    "real-specified-rk2": {
+      "max_ulp": 2023142134,
+      "differing_words": 5673,
+      "words": 18000,
+      "max_abs": 0.2144012451171875,
+      "actual_sha256": "2c43d7d4d7f838ddb6b85fa10f845fb6248a888ddd4445979d13fffbf1153338",
+      "reference_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4"
+    },
+    "southern-rotation": {
+      "max_ulp": 2023142134,
+      "differing_words": 5673,
+      "words": 18000,
+      "max_abs": 0.2144012451171875,
+      "actual_sha256": "2c43d7d4d7f838ddb6b85fa10f845fb6248a888ddd4445979d13fffbf1153338",
+      "reference_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4"
+    }
+  },
+  "no_fma": {
+    "real-specified-rk1": {
+      "max_ulp": 2023161856,
+      "differing_words": 5374,
+      "words": 18000,
+      "max_abs": 0.130401611328125,
+      "actual_sha256": "00ad6eff9b3c1bd4e6fa0fbe2293802e0ce1986e7f11c2ac3abea916d41145e4",
+      "reference_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4"
+    },
+    "real-specified-rk2": {
+      "max_ulp": 2023161856,
+      "differing_words": 5374,
+      "words": 18000,
+      "max_abs": 0.130401611328125,
+      "actual_sha256": "00ad6eff9b3c1bd4e6fa0fbe2293802e0ce1986e7f11c2ac3abea916d41145e4",
+      "reference_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4"
+    },
+    "southern-rotation": {
+      "max_ulp": 2023161856,
+      "differing_words": 5374,
+      "words": 18000,
+      "max_abs": 0.130401611328125,
+      "actual_sha256": "00ad6eff9b3c1bd4e6fa0fbe2293802e0ce1986e7f11c2ac3abea916d41145e4",
+      "reference_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4"
+    }
+  },
+  "wrf_flux_order_no_fma": {
+    "real-specified-rk1": {
+      "max_ulp": 24576,
+      "differing_words": 2634,
+      "words": 18000,
+      "max_abs": 0.000244140625,
+      "actual_sha256": "5ccc1210989dc5b93ebc7cf1c9b7d3071d833adbedd38537ab3c69fb9527754a",
+      "reference_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4"
+    },
+    "real-specified-rk2": {
+      "max_ulp": 24576,
+      "differing_words": 2634,
+      "words": 18000,
+      "max_abs": 0.000244140625,
+      "actual_sha256": "5ccc1210989dc5b93ebc7cf1c9b7d3071d833adbedd38537ab3c69fb9527754a",
+      "reference_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4"
+    },
+    "southern-rotation": {
+      "max_ulp": 24576,
+      "differing_words": 2634,
+      "words": 18000,
+      "max_abs": 0.000244140625,
+      "actual_sha256": "5ccc1210989dc5b93ebc7cf1c9b7d3071d833adbedd38537ab3c69fb9527754a",
+      "reference_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4"
+    }
+  },
+  "wrf_flux_and_accumulation_order_no_fma": {
+    "real-specified-rk1": {
+      "max_ulp": 0,
+      "differing_words": 0,
+      "words": 18000,
+      "max_abs": 0.0,
+      "actual_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4",
+      "reference_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4"
+    },
+    "real-specified-rk2": {
+      "max_ulp": 0,
+      "differing_words": 0,
+      "words": 18000,
+      "max_abs": 0.0,
+      "actual_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4",
+      "reference_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4"
+    },
+    "southern-rotation": {
+      "max_ulp": 0,
+      "differing_words": 0,
+      "words": 18000,
+      "max_abs": 0.0,
+      "actual_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4",
+      "reference_sha256": "eeb2469fd795d8d3dd9197c9a4a9aeb1b4fe0e4e2688c61b440d3e8d9216b7f4"
+    }
+  }
+}

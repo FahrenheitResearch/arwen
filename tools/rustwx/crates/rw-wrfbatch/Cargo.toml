@@ -54,6 +54,9 @@ rustwx-products = { path = "../rustwx-products" }
 rusty-weather = { path = "../rusty-weather" }
 rw-ingest = { path = "../rw-ingest" }
 rw-store = { path = "../rw-store" }
+# The log-pressure column walk the pressure-level charts interpolate with,
+# shared with the ML exporter.
+rw-isobaric = { path = "../rw-isobaric" }
 # The vendored WSR-88D site table.  `rw_obsgrid` labels an observation
 # file's radars by POSITION against it, because the two id-carrying fields
 # a `gpuwm-obs.radar-grid` file has are both unreadable through this

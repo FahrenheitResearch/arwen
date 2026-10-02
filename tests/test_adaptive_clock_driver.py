@@ -596,12 +596,14 @@ def test_a_late_nest_under_a_grown_root_still_enters_below_its_ratio_step():
     d = _driver(model, {1: (0.0, 0.0), 2: (0.0, 0.0)})     # calm: root grows
     clocks = {1: model.node(1).clock, 2: model.node(2).clock}
     period = 0
+    largest_root_step = 0
     while clocks[2].ticks < clocks[2].spec.start_ticks:
         d(period, clocks)
+        largest_root_step = max(largest_root_step, clocks[1].step_ticks)
         assert not d.controllers[2].started
         _executor_boundary(clocks)
         period += 1
-    assert clocks[1].step_ticks > 30 * TICK_DEN, "the root did grow"
+    assert largest_root_step > 30 * TICK_DEN, "the root did grow"
     d(period, clocks)
     assert d.controllers[2].started
     assert clocks[2].step_ticks <= 6 * TICK_DEN

@@ -33,6 +33,7 @@ from gpuwm.physics_compat import (
     physics_selection_differences,
     single_domain_physics_selection,
     single_domain_runtime_switches,
+    validate_physics_capabilities,
     validate_single_domain_physics_profile,
 )
 from gpuwm.config import RunConfig
@@ -84,6 +85,33 @@ _URBAN = (
     "the urban canopy models (sf_urban_physics), a component 2.8.0 did not "
     "have, off at its none option in every template (f21eedce3)")
 PHYSICS_CHANGES_SINCE_280 = {
+    "parameters.moist_cq": (
+        "moisture pressure correction now defaults on whenever a vapor "
+        "state exists, including passive vapor with microphysics off"),
+    "components.microphysics.options.off": (
+        "passive vapor retains WRF's moisture pressure correction; dry "
+        "states bypass the enabled policy"),
+    "components.microphysics.options.kessler-mp1": (
+        "Kessler profiles apply WRF's moisture pressure correction "
+        "instead of the retired launch guard"),
+    "components.microphysics.options.wsm6-mp6": (
+        "WSM6 profiles apply WRF's moisture pressure correction "
+        "instead of the retired launch guard"),
+    "templates.p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1": (
+        "its explicit CQ-on setting now equals the enabled default, "
+        "so template identity normalization removes that redundant pin"),
+    "parameters.diff_opt": (
+        "coordinate-surface and terrain-aware mixing are implemented "
+        "choices at 1 and 2; default 2 retains the prior route"),
+    "parameters.mix_full_fields": (
+        "the WRF logical is retained under coordinate diffusion; that "
+        "operator mixes theta relative to its initial field for either value"),
+    "parameters.topo_wind": (
+        "YSU terrain-wind correction, implemented at options 1 and 2, "
+        "off at 0 (12d03dd6c)"),
+    "parameters.gwd_opt": (
+        "orographic drag, implemented at options 1 and 3, off at 0 "
+        "(12d03dd6c)"),
     "components.pbl.options.uw": (
         "the UW PBL, a new option no 2.8.0 suite selects (51693ec76)"),
     "components.microphysics.options.wdm6-mp16": (
@@ -121,6 +149,15 @@ PHYSICS_CHANGES_SINCE_280 = {
     "parameters.mosaic_urban_canopy": (
         "where Noah mosaic runs the urban canopy, a knob 2.8.0 did not "
         "have, off at WRF's rule \"dominant\" (c517106a8)"),
+    "parameters.diff_opt": (
+        "WRF's horizontal diffusion form, a knob 2.8.0 did not have "
+        "(lane/282-namelist-tolerance, 679a5f5fe): 1 selects coordinate-"
+        "surface diffusion for km_opt 2 and 4, and it is off at 2, the "
+        "metric form every earlier build ran"),
+    "parameters.mix_full_fields": (
+        "WRF's full-field mixing logical, a knob 2.8.0 did not have "
+        "(679a5f5fe), off at true, the full-field mixing every earlier "
+        "build ran"),
 }
 
 _WDM6_SUITE = "wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1"
@@ -131,11 +168,45 @@ _WDM6_SUITE = "wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1"
 #: is a real physics change, named with its cause in
 #: :data:`PHYSICS_CHANGES_SINCE_280`.
 EXPECTED_280_REFUSALS: dict[tuple[str, str], list[str]] = {
-    (_WDM6_SUITE, spelling): [
-        "registry physics of components.microphysics.options.wdm6-mp16 "
-        "(changed)"]
+    (row["profile"], spelling): sorted([
+        "registry physics of parameters.moist_cq (changed)",
+        *([f"registry physics of components.microphysics.options.{option} "
+           "(changed)"] if (option := {
+               1: "kessler-mp1", 6: "wsm6-mp6", 16: "wdm6-mp16",
+           }.get(row["switches"]["mp_physics"])) else []),
+        *(["registry physics of templates.p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1 "
+           "(changed)"] if spelling == "named" and
+          row["switches"]["mp_physics"] == 50 else []),
+    ])
+    for row in json.loads(RECEIPTS_2492999CD.read_text())["receipts"]
     for spelling in ("named", "unnamed")
 }
+
+# The recorded inputs remain CQ-off. These names cannot be recomputed as
+# their corrected CQ-on profiles; unnamed explicit controls still resolve.
+CQ_OFF_280_NAMED_PROFILES = frozenset({
+    "wsm6-ysu-mm5-noah-no-radiation-v1",
+    "kessler-mp1-ysu-mm5-noah-dudhia-v1",
+    "wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1",
+    "wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1",
+    "wsm6-ysu-mm5-ruc-no-radiation-implemented-unverified-v1",
+    "wsm6-mynn-mynn-ruc-no-radiation-implemented-unverified-v1",
+    "wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1",
+    "wsm6-ysu-mm5-noahmp-no-radiation-expert-only-v1",
+    "wsm6-mynn-mynn-noahmp-no-radiation-expert-only-v1",
+    "wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1",
+    "20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1",
+    "wsm6-sase-revised-mm5-noah-closure-supplied-v1",
+    "wsm6-pbl-off-mm5-noah-tke-1-5-order-v1",
+    "wsm6-pbl-off-mm5-noah-smagorinsky-3d-v1",
+    "wsm6-pbl-off-mm5-noah-constant-k-v1",
+})
+
+
+def _legacy_expected(row, spelling, *additional):
+    """Known default correction plus the mutation an individual test makes."""
+    return sorted({*EXPECTED_280_REFUSALS[(row["profile"], spelling)],
+                   *additional})
 
 
 def _loaded_config(switches) -> RunConfig:
@@ -212,10 +283,10 @@ def _move_citation(text: str, old: str, new: str) -> str:
     (("components", "pbl", "options", "shinhong", "warnings", 1),
      "kernels/shinhong.cu:1429", "kernels/shinhong.cu:1371"),
     (("components", "turbulence", "options", "tke-1.5-order", "warnings", 0),
-     "gpuwm/core/dycore.py:1218", "gpuwm/core/dycore.py:1041"),
+     "gpuwm/core/dycore.py:1247", "gpuwm/core/dycore.py:1041"),
     (("components", "turbulence", "options", "smagorinsky-3d", "warnings",
       0),
-     "gpuwm/core/dycore.py:1308", "gpuwm/core/dycore.py:1131"),
+     "gpuwm/core/dycore.py:1341", "gpuwm/core/dycore.py:1131"),
 ])
 def test_a_citation_edit_keeps_the_physics_identity(path, old, new):
     registry = physics_registry()
@@ -540,6 +611,103 @@ def test_a_config_an_admission_edit_no_longer_admits_is_refused(monkeypatch):
         differences
 
 
+def _tke_refusal_rule(registry):
+    return registry["components"]["turbulence"]["options"][
+        "tke-1.5-order"]["constraints"]["refused_when"][0]
+
+
+def test_a_conditional_refusal_the_preflight_evaluates_is_admission():
+    """lane/282-namelist-tolerance moved the 1.5-order TKE closure's PBL-off
+    requirement out of ``required_settings`` (admission) into a
+    ``refused_when`` rule on ``diff_opt = 2``.  Bound by its kind, that
+    rule refused every 2.8.0 and 2.8.1 preparation of the closure as
+    "registry physics ... (changed)" though the closure computes what it
+    did.  The preflight's recomputation evaluates a rule with no
+    ``sources`` clause, so it is admission like ``required_settings``:
+    widening it keeps the identity, and the configuration it refuses is
+    still refused by the recomputation, naming the rule.  A ``sources``
+    clause puts the same rule out of the recomputation's reach, and then
+    the identity is the only place a change to it is seen."""
+    registry = physics_registry()
+    options = {**_default_options(registry), "turbulence": "tke-1.5-order"}
+    rule = _tke_refusal_rule(registry)
+    assert "sources" not in rule and rule["settings"] == {"diff_opt": [2]}
+    rule["components"]["pbl"].remove("ysu")
+    assert registry_sha256(registry) != registry_sha256()
+    assert registry_physics_sha256(registry) == registry_physics_sha256()
+    assert registry_physics_parts(registry, options=options) \
+        == registry_physics_parts(options=options)
+
+    pbl_on = _loaded_config({"km_opt": 2, "bl_pbl_physics": 1,
+                             "sf_sfclay_physics": 1})
+    with pytest.raises(PhysicsCapabilityError, match=r"tke-1\.5-order is "
+                       r"refused here: diff_opt=2"):
+        validate_physics_capabilities(pbl_on)
+    assert validate_physics_capabilities(
+        dataclasses.replace(pbl_on, diff_opt=1))["turbulence"] \
+        == "tke-1.5-order"
+
+    rule["sources"] = ["hrrr"]
+    assert registry_physics_parts(registry, options=options) \
+        != registry_physics_parts(options=options)
+
+
+def test_terrain_wind_admission_preserves_every_physics_part():
+    """Configuration-only terrain refusals change no prepared physics,
+    including PBL off, whose option carries no constraint object."""
+    registry = physics_registry()
+    without = deepcopy(registry)
+    removed = []
+    for option in without["components"]["turbulence"]["options"].values():
+        rules = option.get("constraints", {}).get("refused_when", [])
+        removed.extend(rule for rule in rules
+                       if {"topo_wind", "gwd_opt"}.intersection(
+                           rule.get("settings", {})))
+        option["constraints"]["refused_when"] = [
+            rule for rule in rules
+            if not {"topo_wind", "gwd_opt"}.intersection(
+                rule.get("settings", {}))]
+    assert removed and all("sources" not in rule for rule in removed)
+    assert registry_sha256(without) != registry_sha256(registry)
+    assert registry_physics_parts(without) == registry_physics_parts(registry)
+    assert registry_physics_sha256(without) == registry_physics_sha256(registry)
+    removed[0]["sources"] = ["hrrr"]
+    a_closure = next(iter(without["components"]["turbulence"][
+        "options"].values()))
+    a_closure["constraints"]["refused_when"].append(removed[0])
+    assert registry_physics_sha256(without) != registry_physics_sha256(registry)
+
+
+@pytest.mark.parametrize("pbl,surface", [
+    (0, 1), (1, 1), (2, 2), (5, 5), (9, 1), (11, 1), (900, 1),
+])
+@pytest.mark.parametrize("topo", [1, 2])
+def test_preflight_rechecks_terrain_wind_without_source_identity(
+        pbl, surface, topo):
+    settings = {"bl_pbl_physics": pbl, "sf_sfclay_physics": surface,
+                "topo_wind": topo}
+    if pbl == 900:
+        settings.update(km_opt=0, khdif=0.0, kvdif=0.0, moist=True)
+    config = _loaded_config(settings)
+    assert validate_physics_capabilities(dataclasses.replace(config, topo_wind=0))
+    if pbl == 1:
+        assert validate_physics_capabilities(config)["pbl"] == "ysu"
+    else:
+        with pytest.raises(PhysicsCapabilityError, match="topo_wind.*YSU"):
+            validate_physics_capabilities(config)
+
+
+@pytest.mark.parametrize("gwd", [1, 3])
+def test_preflight_rechecks_drag_requires_an_active_pbl(gwd):
+    config = _loaded_config({"bl_pbl_physics": 0, "sf_sfclay_physics": 1,
+                             "gwd_opt": gwd})
+    assert validate_physics_capabilities(dataclasses.replace(config, gwd_opt=0))
+    with pytest.raises(PhysicsCapabilityError, match="gwd_opt.*PBL driver"):
+        validate_physics_capabilities(config)
+    assert validate_physics_capabilities(dataclasses.replace(
+        config, bl_pbl_physics=1))["pbl"] == "ysu"
+
+
 def test_another_schemes_change_leaves_this_selection_alone():
     """WDM6's restart identity moving must not refuse a Thompson run."""
     registry = physics_registry()
@@ -610,16 +778,25 @@ def _expected_for(row, spelling, config=None):
 def test_a_receipt_written_at_2492999cd_resolves_where_physics_is_unchanged(
         row, spelling):
     """Every shipped suite, both receipt spellings, prepared at 2.8.0's
-    registry: refused only as :data:`EXPECTED_280_REFUSALS` says, which at
-    this head is WDM6's suite alone, for WDM6's changed physics.  The
+    registry: refused only for the declared default and option changes.
+    Old CQ-off named profiles are refused during recomputation; unnamed
+    explicit controls retain their saved values and bind the changed parts. The
     urban component, its knobs and the two radiation knobs implemented
     since resolve, because the 2.8.0 TOML loaded here leaves them off.
     """
     config = _loaded_config(row["switches"])
+    if spelling == "named" and row["profile"] in CQ_OFF_280_NAMED_PROFILES:
+        assert row["switches"]["moist_cq"] is False
+        with pytest.raises(ValueError,
+                           match="selected physics differs from profile") as error:
+            _expected_for(row, spelling, config)
+        assert ("settings={'moist_cq': {'selected': False, 'expected': True}}"
+                in str(error.value))
+        return
     expected = _expected_for(row, spelling, config)
     assert physics_selection_differences(
         row[spelling], expected, settings=config) \
-        == EXPECTED_280_REFUSALS.get((row["profile"], spelling), [])
+        == _legacy_expected(row, spelling)
 
 
 def test_an_unknown_registry_document_is_refused_by_name():
@@ -643,9 +820,9 @@ def test_a_legacy_receipt_names_the_part_that_changed(monkeypatch):
     config = _loaded_config(row["switches"])
     expected = validate_single_domain_physics_profile(PROFILE, config=config)
     assert physics_selection_differences(
-        row["named"], expected, settings=config) == [
+        row["named"], expected, settings=config) == _legacy_expected(row, "named",
         "registry physics of components.microphysics.options.thompson-mp8 "
-        "(changed)"]
+        "(changed)")
 
 
 def test_record_only_fields_are_the_prose_ones_and_the_rest_still_bind():
@@ -698,7 +875,7 @@ def test_a_legacy_receipt_resolves_knobs_added_at_their_off_value(
                              mosaic_cat=3, mosaic_urban_canopy="dominant")):
         assert physics_selection_differences(
             row[spelling], _expected_for(row, spelling, settings),
-            settings=settings) == []
+            settings=settings) == _legacy_expected(row, spelling)
 
 
 @pytest.mark.parametrize("spelling", ["named", "unnamed"])
@@ -716,9 +893,9 @@ def test_a_legacy_receipt_names_an_added_knob_set_on(
     settings = _loaded_settings(row["switches"], **stated)
     assert physics_selection_differences(
         row[spelling], _expected_for(row, spelling, settings),
-        settings=settings) == [
+        settings=settings) == _legacy_expected(row, spelling, *[
         f"registry physics of parameters.{knob} (absent from the prepared "
-        "registry)" for knob in named]
+        "registry)" for knob in named])
 
 
 #: A tile count set while the tiles are off: a WRF namelist carrying
@@ -746,7 +923,7 @@ def test_a_legacy_receipt_resolves_a_knob_its_configuration_does_not_read(
     settings = _loaded_settings(row["switches"], **stated)
     assert physics_selection_differences(
         row[spelling], _expected_for(row, spelling, settings),
-        settings=settings) == []
+        settings=settings) == _legacy_expected(row, spelling)
 
 
 def test_the_read_condition_is_the_knobs_registry_row(monkeypatch):
@@ -770,14 +947,14 @@ def test_the_read_condition_is_the_knobs_registry_row(monkeypatch):
     for spelling in ("named", "unnamed"):
         assert physics_selection_differences(
             row[spelling], _expected_for(row, spelling, settings),
-            settings=settings) == []
+            settings=settings) == _legacy_expected(row, spelling)
     registry["parameters"]["mosaic_cat"].pop("read_when")
     for spelling in ("named", "unnamed"):
         assert physics_selection_differences(
             row[spelling], _expected_for(row, spelling, settings),
-            settings=settings) == [
+            settings=settings) == _legacy_expected(row, spelling,
             "registry physics of parameters.mosaic_cat (absent from the "
-            "prepared registry)"]
+            "prepared registry)")
 
 
 @pytest.mark.parametrize("settings,read", [
@@ -795,17 +972,20 @@ def test_a_read_condition_holds_only_at_its_value(settings, read):
 
 def test_without_the_configuration_an_added_knob_is_named(monkeypatch):
     """Unknown values cannot be shown off: name every knob added or
-    implemented since 2.8.0, including A179's registered IEVA knob."""
+    implemented since 2.8.0, including A179's registered IEVA knob,
+    lane/282-namelist-tolerance's diff_opt and mix_full_fields, and terrain
+    drag."""
     row = next(row for row in _receipts_2492999cd()
                if row["profile"] == PROFILE)
     _added_knobs(monkeypatch)
     assert physics_selection_differences(
-        row["named"], _expected_for(row, "named")) == [
+        row["named"], _expected_for(row, "named")) == _legacy_expected(row, "named", *[
         f"registry physics of parameters.{knob} (absent from the prepared "
         "registry)"
-        for knob in ("mosaic_cat", "mosaic_urban_canopy",
+        for knob in ("diff_opt", "gwd_opt", "mix_full_fields", "mosaic_cat",
+                     "mosaic_urban_canopy",
                      "sf_surface_mosaic", "slope_rad", "topo_shading",
-                     "zadvect_implicit")]
+                      "topo_wind", "zadvect_implicit")])
 
 
 def test_a_new_receipt_resolves_to_its_own_parts():
@@ -830,7 +1010,7 @@ def test_parts_in_another_identity_schema_resolve_through_the_document():
         "parts": {"parameters": "0" * 64}}
     assert physics_selection_differences(
         recorded, expected, settings=config) \
-        == EXPECTED_280_REFUSALS.get((PROFILE, "named"), [])
+        == _legacy_expected(row, "named")
     recorded["registry_sha256"] = "e" * 64
     assert "cannot be established" in physics_selection_differences(
         recorded, expected, settings=config)[0]
@@ -899,7 +1079,7 @@ def test_a_280_receipt_resolves_where_added_physics_is_left_off(spelling):
         settings = _loaded_settings(row["switches"], **stated)
         assert physics_selection_differences(
             row[spelling], _expected_for(row, spelling, settings),
-            settings=settings) == [], stated
+            settings=settings) == _legacy_expected(row, spelling), stated
 
 
 @pytest.mark.parametrize("spelling", ["named", "unnamed"])
@@ -910,9 +1090,9 @@ def test_a_280_receipt_names_a_knob_implemented_since_and_set_on(
     settings = _loaded_settings(row["switches"], **{knob: 1})
     assert physics_selection_differences(
         row[spelling], _expected_for(row, spelling, settings),
-        settings=settings) == [
+        settings=settings) == _legacy_expected(row, spelling,
         f"registry physics of parameters.{knob} (absent from the prepared "
-        "registry)"]
+        "registry)")
 
 
 def test_a_280_receipt_names_a_component_added_since_and_selected():

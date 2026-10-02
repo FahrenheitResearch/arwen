@@ -1,5 +1,7 @@
 # Tiling a domain that does not fit on the card
 
+[`[devices]`](MULTIGPU.md) is the resident split across cards; `[tiles]` is the single-card stream.
+
 **This page is not [Streaming: forecasts that run as their source posts](STREAMING.md).** That page
 is about when a forecast starts and waits against a source still posting its
 cycle, and the `gpuwm stream PLAN.toml` controller. This page is the `[tiles]` table, which runs

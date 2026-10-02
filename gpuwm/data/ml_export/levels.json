@@ -1,0 +1,24 @@
+{
+  "schema": "ml-export.levels/v1",
+  "note": "Level sets for --levels. A pressure set lists hPa in the order the dataset carries them; levels above the model lid are left out per dataset and listed in its levels_dropped_above_model_top attribute. The model set keeps the run's own mass levels (1 at the bottom) with no vertical interpolation. A new set is a new row.",
+  "default": "wb13",
+  "sets": [
+    {
+      "id": "wb13",
+      "kind": "pressure",
+      "hpa": [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000],
+      "note": "WeatherBench 2's 13 levels, the set GraphCast and Pangu-Weather train on"
+    },
+    {
+      "id": "era5-37",
+      "kind": "pressure",
+      "hpa": [1, 2, 3, 5, 7, 10, 20, 30, 50, 70, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 775, 800, 825, 850, 875, 900, 925, 950, 975, 1000],
+      "note": "ERA5's full set of 37 pressure levels"
+    },
+    {
+      "id": "model",
+      "kind": "model",
+      "note": "the run's own mass levels, no vertical interpolation; adds pressure. model:1-20 or model:1,2,4,8 keeps a subset"
+    }
+  ]
+}

@@ -132,6 +132,19 @@ AS_POSTED_IDENTITY_KEYS = frozenset({
 })
 #: The prefix of :func:`as_posted_placeholder`.
 AS_POSTED_PLACEHOLDER_PREFIX = "as-posted:"
+#: How a document an as-posted seal writes is held to what the head and
+#: its segments bound, row by row (``basis.as_posted.documents``).  A
+#: route whose identity carries another document's digest (native HRRR:
+#: ``bridge_manifest_sha256`` is the decoded bridge's SHA256SUMS,
+#: ``source_manifest_sha256`` the fetch's) declares those keys
+#: document-bound: the head carries the plan's placeholder, the seal writes
+#: exactly the digest the sealed input manifest names for that document,
+#: and every row of the document must equal a per-lead record bound as
+#: the lead was read.  ``posted_objects``: each row is an object a lead's
+#: posted marker named (name and digest), and every such object has a row.
+#: ``decoded_leads``: the rows outside ``fixed_rows`` are exactly the
+#: union of the per-lead decoded-file records each segment bound.
+DOCUMENT_ROW_RULES = ("posted_objects", "decoded_leads")
 
 #: ``head.layout`` for a prepared domain tree (a single domain omits it).
 LAYOUT_DOMAIN_TREE = "domain_tree"
@@ -186,7 +199,7 @@ SOURCE_BEHIND_FIELDS = ("source", "cycle", "lead", "valid_time",
 #: not asked for yet, or posted and still downloading.
 WAITING_FOR_FIELDS = ("source", "cycle", "lead", "valid_time",
                       "expected_at", "late_at", "since_utc", "state",
-                      "first_seen_at")
+                      "first_seen_at", "last_answer")
 #: How often a source wait is said again on the event stream while it
 #: lasts: nothing else moves in the stream during a wait, and a reader
 #: that only tails it cannot otherwise tell a wait from a hang.
@@ -226,15 +239,20 @@ def _fetch_knows(cause: Mapping[str, object]) -> str:
     backlog), so whether it is posted is not known.  Otherwise
     ``not_posted`` (``waiting``: the fetch announced it as not posted
     yet), which is also the word for a record with no state, as before
-    the fetch said one.  The breakage this prevents: a seam wait said
+    the fetch said one.  ``unheard`` when the fetch's last answer about
+    the lead (the row's ``last_answer``) is that its host could not be
+    heard.  The breakage this prevents: a seam wait said
     "gfs f060 is not posted yet" for a lead the fetch had seen posted 23 s
-    earlier and was downloading, and "not posted" for a lead the fetch had
-    not asked about at all (DESIGN A136 3.6: something the engine could
+    earlier and was downloading, "not posted" for a lead the fetch had
+    not asked about at all, and "not posted" or "not fetched" for a lead
+    whose host did not answer (DESIGN A136 3.6: something the engine could
     not see is never reported as the publisher being late).
     """
 
     if cause.get("first_seen_at") or cause.get("state") == "posted":
         return "posted"
+    if cause.get("last_answer") == "not_heard":
+        return "unheard"
     if cause.get("state") == "scheduled":
         return "unasked"
     return "not_posted"
@@ -248,7 +266,9 @@ def lead_wait_words(cause: Mapping[str, object]) -> str:
         seen = cause.get("first_seen_at")
         return ("posted" + (f" at {_clock_words(seen)}" if seen else "")
                 + ", still downloading")
-    words = "not fetched yet" if known == "unasked" else "not posted yet"
+    words = {"unasked": "not fetched yet",
+             "unheard": "not fetched; its host cannot be heard"}.get(
+                 known, "not posted yet")
     if cause.get("expected_at"):
         words += (" (scheduled from about "
                   f"{_clock_words(cause.get('expected_at'))})")
@@ -259,9 +279,9 @@ def source_wait_reason(cause: Mapping[str, object]) -> str:
     """The reason a run waiting on a source lead gives, from that lead's record.
 
     ``cause`` names ``source``, ``lead``, ``expected_at`` and ``late_at``
-    and, when the fetch has said them, ``state`` and ``first_seen_at`` (a
-    producer's ``waiting_for``, or the fetch's schedule row for a start
-    need; :func:`_fetch_knows`).  One wording for the seam wait and the
+    and, when the fetch has said them, ``state``, ``first_seen_at`` and
+    ``last_answer`` (a producer's ``waiting_for``, or the fetch's schedule
+    row for a start need; :func:`_fetch_knows`).  One wording for the seam wait and the
     start wait, so the two cannot describe the same lead differently.
     """
 
@@ -276,6 +296,9 @@ def source_wait_reason(cause: Mapping[str, object]) -> str:
                 + " and is still downloading")
     if known == "unasked":
         return f"{lead} is not fetched yet; the fetch has not reached it ({when})"
+    if known == "unheard":
+        return (f"{lead} is not fetched: its host cannot be heard, so whether "
+                f"it is posted is not known ({when})")
     return f"{lead} is not posted yet ({when})"
 
 
@@ -709,6 +732,7 @@ def check_as_posted_identity(head_identity, sealed_identity, *,
                              plan_sha256: str,
                              manifest_sha256: str,
                              manifest_bound=("input_manifest_sha256",),
+                             document_bound: Mapping[str, str] | None = None,
                              ) -> list[str]:
     """Refuse any sealed identity change an as-posted head does not allow.
 
@@ -721,7 +745,11 @@ def check_as_posted_identity(head_identity, sealed_identity, *,
     key the ruling does not name changes only to that same digest.  A
     placeholder left anywhere in the sealed identity is refused: the seal
     would publish a cache no one-shot preparation of the same bytes can
-    name.  Returns the dotted paths that changed.
+    name.  ``document_bound`` maps an identity key that carries another
+    document's digest to the digest the sealed input manifest names for
+    that document (:data:`DOCUMENT_ROW_RULES`); each such key may change
+    from the placeholder only to exactly that digest.  Returns the dotted
+    paths that changed.
     """
 
     if not _is_sha256(manifest_sha256):
@@ -730,6 +758,12 @@ def check_as_posted_identity(head_identity, sealed_identity, *,
             f"digest its identity carries; {manifest_sha256!r} is not one")
     placeholder = as_posted_placeholder(plan_sha256)
     bound = set(manifest_bound) | {"input_manifest_sha256"}
+    documents = dict(document_bound or {})
+    for key, digest in documents.items():
+        if not _is_sha256(digest):
+            raise BoundaryStreamError(
+                f"an as-posted seal names the document whose digest identity "
+                f"key {key!r} carries, and {digest!r} is not a digest")
     # Compared as the header will hold them (a tuple and a list of the
     # same values are one identity).
     head_identity = json.loads(_canonical(head_identity))
@@ -743,13 +777,20 @@ def check_as_posted_identity(head_identity, sealed_identity, *,
                 f"the sealed cache identity adds or drops {after} at {where}, "
                 "which an as-posted head does not allow")
         key = path[-1] if path else None
-        if ((key not in AS_POSTED_IDENTITY_KEYS and key not in bound)
+        if ((key not in AS_POSTED_IDENTITY_KEYS and key not in bound
+             and key not in documents)
                 or before != placeholder or not _is_sha256(after)):
             raise BoundaryStreamError(
                 f"the sealed cache identity differs from the as-posted head "
                 f"at {where}, which only a manifest or composition-receipt "
                 "digest may")
-        if key in bound and after != manifest_sha256:
+        if key in documents:
+            if after != documents[key]:
+                raise BoundaryStreamError(
+                    f"the sealed cache identity names {after} at {where}, "
+                    f"not the document the sealed input manifest names there "
+                    f"({documents[key]})")
+        elif key in bound and after != manifest_sha256:
             raise BoundaryStreamError(
                 f"the sealed cache identity names manifest {after} at "
                 f"{where}, not the sealed input manifest {manifest_sha256}")
@@ -761,6 +802,120 @@ def check_as_posted_identity(head_identity, sealed_identity, *,
             f"placeholder at {', '.join(left)}; the seal writes the digest "
             "there, or the cache names inputs no preparation read")
     return changed
+
+
+def decoded_lead_record_sha256(record: Mapping[str, str]) -> str:
+    """The digest a segment binds one lead's decoded-file record by."""
+
+    return hashlib.sha256(_canonical(dict(record)).encode("utf-8")).hexdigest()
+
+
+def document_bound_digests(posted: Mapping[str, object],
+                           manifest: Mapping[str, object]) -> dict[str, str]:
+    """``{identity key: digest}`` an as-posted seal's document-bound keys take.
+
+    ``posted`` is a head's ``basis.as_posted``; each of its
+    ``document_bound_identity_keys`` names the input-manifest role of the
+    document whose digest the key carries, and ``manifest`` is the sealed
+    input manifest, which names that document's digest.
+    """
+
+    files = manifest.get("files") if isinstance(manifest, Mapping) else None
+    digests = {}
+    for key, role in dict(posted.get("document_bound_identity_keys")
+                          or {}).items():
+        spec = (files or {}).get(role)
+        digest = spec.get("sha256") if isinstance(spec, Mapping) else None
+        if not _is_sha256(digest):
+            raise BoundaryStreamError(
+                f"the sealed input manifest names no {role} digest, which the "
+                f"as-posted head's identity key {key!r} is bound to")
+        digests[str(key)] = str(digest)
+    return digests
+
+
+def _sum_rows(path: Path) -> dict[str, str]:
+    """``{name: sha256}`` of a ``sha256sum`` document, refusing a malformed one."""
+
+    rows = {}
+    for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        digest, separator, name = line.partition("  ")
+        if not separator or not _is_sha256(digest) or not name \
+                or name in rows:
+            raise BoundaryStreamError(
+                f"{path} line {number} is not one sha256sum row")
+        rows[name] = digest
+    return rows
+
+
+def hold_document_rows(root, *, posted: Mapping[str, object],
+                       manifest: Mapping[str, object],
+                       markers: Mapping[str, Mapping[str, object]],
+                       decoded: Mapping[str, Mapping[str, str]]) -> None:
+    """Hold each document an as-posted seal wrote to its per-lead records.
+
+    ``posted`` is the head's ``basis.as_posted``; its ``documents`` map an
+    input-manifest role to ``{path, lead_rows, fixed_rows}``
+    (:data:`DOCUMENT_ROW_RULES`).  The file must be the digest the sealed
+    manifest names for that role; ``markers`` and ``decoded`` are the
+    posted-lead markers and decoded-file records the seal recorded, by
+    lead.  The breakage this prevents: a seal that writes a document (and
+    so an identity digest) for bytes no lead's marker or decode named.
+    """
+
+    files = manifest.get("files") or {}
+    for role, document in sorted(dict(posted.get("documents") or {}).items()):
+        path = Path(root) / str(document["path"])
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as error:
+            raise BoundaryStreamError(
+                f"the as-posted seal wrote no {role} document at {path}: "
+                f"{error}") from None
+        named = (files.get(role) or {}).get("sha256")
+        if digest != named:
+            raise BoundaryStreamError(
+                f"{path} is {digest}, not the {role} digest the sealed input "
+                f"manifest names ({named})")
+        rows = _sum_rows(path)
+        fixed = {str(name) for name in document.get("fixed_rows") or ()}
+        rule = document.get("lead_rows")
+        if rule == "posted_objects":
+            expected = {}
+            for lead, marker in markers.items():
+                for item in marker.get("objects") or ():
+                    expected[str(item.get("name"))] = item.get("sha256")
+            lead_rows = {name: value for name, value in rows.items()
+                         if name not in fixed}
+            if lead_rows != expected:
+                differ = sorted(set(lead_rows.items()) ^ set(expected.items()))
+                raise BoundaryStreamError(
+                    f"{path} rows are not the objects the leads' posted "
+                    f"markers named (first difference {differ[:1]})")
+        elif rule == "decoded_leads":
+            expected = {}
+            for lead, record in decoded.items():
+                expected.update(dict(record))
+            lead_rows = {name: value for name, value in rows.items()
+                         if name not in fixed}
+            if lead_rows != expected:
+                differ = sorted(set(lead_rows.items()) ^ set(expected.items()))
+                raise BoundaryStreamError(
+                    f"{path} rows are not the files each lead's decode "
+                    f"recorded as it was read (first difference "
+                    f"{differ[:1]})")
+        else:
+            raise BoundaryStreamError(
+                f"the as-posted head names row rule {rule!r} for {role}, "
+                f"not one of {DOCUMENT_ROW_RULES}")
+        missing = sorted(fixed - set(rows))
+        if missing:
+            raise BoundaryStreamError(
+                f"{path} has no row for {missing}, which the head named as "
+                "its fixed rows")
 
 
 def _leaves_named(identity, key, path=()) -> list[tuple[tuple, object]]:
@@ -985,15 +1140,38 @@ def _measure_card() -> tuple[int, int] | None:
         return None
 
 
+def prepared_head_urban_columns(experiment, root_static, *, child_results=()):
+    """The prepared head's urban count, using the runner's land-cover price."""
+    if not forecast_installed():
+        return None
+    from gpuwm.core.urban_state import bem_workspace_counted
+
+    if not any(bem_workspace_counted(dc.run) for dc in experiment.domains):
+        return None
+    from types import SimpleNamespace
+    from gpuwm.prepared_domain_tree_forecast import tree_urban_columns
+
+    domains = [SimpleNamespace(grid_id=int(experiment.root.grid_id),
+                               static_fields=root_static)]
+    domains.extend(SimpleNamespace(grid_id=int(result.domain.grid_id),
+                                   static_fields=getattr(result, "static_fields", None))
+                   for result in child_results
+                   if getattr(result, "domain", None) is not None)
+    return tree_urban_columns(SimpleNamespace(experiment=experiment,
+                                              domains=domains))
+
+
 def chained_admission(*, experiment, backend: str,
                       device_bytes: int | None = None,
                       card: tuple[int, int] | None = None,
-                      source=None) -> dict:
+                      source=None, urban_columns=None) -> dict:
     """Whether a forecast may run beside this producer; see ``admit``.
 
     ``source`` is what the producer prepares from (a registered name, or
     the mapping document a mapped route reads), so the forecast is priced
     with the analysed hydrometeor tables that source puts on its boundary.
+    ``urban_columns`` is the prepared head's land-cover count; an unknown
+    domain retains the configuration's BEP+BEM workspace upper bound.
 
     The forecast is priced at its whole-process PEAK ENVELOPE, the number
     ``gpuwm check`` and the resident door refuse on (A163: one figure on
@@ -1017,8 +1195,11 @@ def chained_admission(*, experiment, backend: str,
                           "forecast's card is not shared"}
     from gpuwm.core.preflight import EXTERNAL_MARGIN_BYTES, admission_estimate
 
+    pricing = {"source": source}
+    if urban_columns is not None:
+        pricing["urban_columns"] = urban_columns
     forecast_bytes = int(admission_estimate(
-        experiment, source=source).peak_envelope_bytes)
+        experiment, **pricing).peak_envelope_bytes)
     card = _measure_card() if card is None else card
     if card is None or device_bytes is None:
         return {"admitted": False, "device": "cuda",
@@ -1661,7 +1842,7 @@ class PreparedTreeWriter:
     def admit(self, *, experiment, backend: str,
               device_bytes: int | None = None,
               card: tuple[int, int] | None = None,
-              source=None) -> dict:
+              source=None, urban_columns=None) -> dict:
         """Admit the forecast and this producer on one machine, or decline.
 
         The breakage this prevents is both processes out of memory mid-run:
@@ -1686,7 +1867,8 @@ class PreparedTreeWriter:
             return dict(self._decision)
         decision = chained_admission(
             experiment=experiment, backend=backend,
-            device_bytes=device_bytes, card=card, source=source)
+            device_bytes=device_bytes, card=card, source=source,
+            urban_columns=urban_columns)
         if self.chained and not decision["admitted"]:
             self.decline_chaining(decision["reason"])
         self._decision = {"chained": self.chained, **decision}
@@ -1730,7 +1912,10 @@ class PreparedTreeWriter:
         :func:`input_plan` of the manifest the seal will write;
         ``start_markers`` maps each lead the head's own decode read (the
         start lead, and on a backlog the leads posted with it) to its posted
-        marker, whose digest the head binds; ``forcing_leads`` is the lead
+        marker, whose digest the head binds. A tree relaying a root head
+        may instead pass ``start_marker_sha256``, its already bound lead
+        digest map; the seal holds those digests to the complete markers.
+        The two forms are mutually exclusive. ``forcing_leads`` is the lead
         of each forcing time in order, so interval k's segment marker binds
         the markers of leads ``forcing_leads[k]`` and ``[k + 1]``
         (:meth:`bind_posted_leads`); and ``seal_authored_proof_keys`` are
@@ -1765,14 +1950,37 @@ class PreparedTreeWriter:
                     f"leads for {len(lbc['schedule'])} boundary intervals; "
                     "each interval's segment binds the leads of its two "
                     "times")
+            if "start_marker_sha256" in as_posted:
+                if "start_markers" in as_posted:
+                    raise ValueError(
+                        "an as-posted head takes start markers or their "
+                        "bound digests, never both")
+                start_digests = {}
+                for lead, digest in dict(as_posted[
+                        "start_marker_sha256"]).items():
+                    if isinstance(lead, bool) or not (
+                            isinstance(lead, int) and lead >= 0
+                            or isinstance(lead, str) and lead.isdecimal()):
+                        raise ValueError(
+                            "an as-posted head's start-marker digest names "
+                            f"a nonnegative integer lead, not {lead!r}")
+                    key = str(int(lead))
+                    if key in start_digests or not _is_sha256(digest):
+                        raise ValueError(
+                            "an as-posted head binds each start lead once "
+                            f"to its marker's SHA-256 digest, not {lead!r}: "
+                            f"{digest!r}")
+                    start_digests[key] = str(digest)
+            else:
+                start_digests = {
+                    str(int(lead)): posted_lead_marker_sha256(marker)
+                    for lead, marker
+                    in sorted(dict(as_posted["start_markers"]).items())}
             posted_block = {
                 "schema": AS_POSTED_SCHEMA,
                 "input_plan": plan,
                 "input_plan_sha256": input_plan_sha256(plan),
-                "start_marker_sha256": {
-                    str(int(lead)): posted_lead_marker_sha256(marker)
-                    for lead, marker
-                    in sorted(dict(as_posted["start_markers"]).items())},
+                "start_marker_sha256": start_digests,
                 "forcing_leads": forcing_leads,
                 "seal_authored_proof_keys": keys,
                 "manifest_path": str(as_posted["manifest_path"]),
@@ -1793,6 +2001,34 @@ class PreparedTreeWriter:
             if as_posted.get("proof_manifest_key") is not None:
                 posted_block["proof_manifest_key"] = str(
                     as_posted["proof_manifest_key"])
+            # Named only by a route whose identity carries other documents'
+            # digests (native HRRR), so every other head's block, and its
+            # digest, is what it was (DOCUMENT_ROW_RULES).
+            if as_posted.get("document_bound_identity_keys"):
+                posted_block["document_bound_identity_keys"] = {
+                    str(key): str(role) for key, role in dict(
+                        as_posted["document_bound_identity_keys"]).items()}
+                documents = {}
+                for role, document in dict(as_posted["documents"]).items():
+                    rule = str(document["lead_rows"])
+                    if rule not in DOCUMENT_ROW_RULES:
+                        raise ValueError(
+                            f"an as-posted document's row rule is one of "
+                            f"{DOCUMENT_ROW_RULES}, not {rule!r}")
+                    documents[str(role)] = {
+                        "path": str(document["path"]), "lead_rows": rule,
+                        "fixed_rows": sorted(str(name) for name in
+                                             document.get("fixed_rows") or ())}
+                unknown = sorted(set(posted_block[
+                    "document_bound_identity_keys"].values()) - set(documents))
+                if unknown:
+                    raise ValueError(
+                        f"an as-posted head binds identity keys to documents "
+                        f"{unknown} it does not say how to hold")
+                posted_block["documents"] = documents
+                posted_block["decoded_rows"] = any(
+                    document["lead_rows"] == "decoded_leads"
+                    for document in documents.values())
             if as_posted.get("posted_user_metadata"):
                 keys = sorted(str(key) for key in
                               as_posted["posted_user_metadata"])
@@ -1921,6 +2157,38 @@ class PreparedTreeWriter:
 
         self._posted_markers = markers
 
+    #: An as-posted head's decoded-file records by lead
+    #: (:meth:`bind_decoded_leads`); ``None`` for any other head.
+    _decoded_records: Mapping[int, Mapping[str, str]] | None = None
+
+    def bind_decoded_leads(self, records: Mapping[int, Mapping[str, str]]
+                           ) -> None:
+        """Hand the writer each lead's decoded-file record as the route reads it.
+
+        ``records`` maps a lead to ``{row name: sha256}`` of the files its
+        decode wrote, filled when the lead is taken; each segment then binds
+        the records of the two leads it spans beside their posted markers,
+        and the seal holds the decoded document's rows to them
+        (``decoded_leads``, :data:`DOCUMENT_ROW_RULES`).
+        """
+
+        self._decoded_records = records
+
+    def _segment_decoded(self, index: int) -> dict | None:
+        posted = (self.head or {}).get("basis", {}).get("as_posted")
+        if posted is None or not posted.get("decoded_rows"):
+            return None
+        bound = {}
+        for lead in posted["forcing_leads"][int(index):int(index) + 2]:
+            record = (self._decoded_records or {}).get(int(lead))
+            if record is None:
+                raise RuntimeError(
+                    f"interval {index} spans lead {lead}, whose decoded files "
+                    "this preparation has not recorded; an as-posted segment "
+                    "binds the decoded record of each lead it was built from")
+            bound[str(int(lead))] = decoded_lead_record_sha256(record)
+        return bound
+
     def _segment_leads(self, index: int) -> dict | None:
         posted = (self.head or {}).get("basis", {}).get("as_posted")
         if posted is None:
@@ -1938,13 +2206,63 @@ class PreparedTreeWriter:
             bound[str(int(lead))] = posted_lead_marker_sha256(marker)
         return bound
 
-    def write_segment(self, index: int, interval) -> dict:
-        """Write interval ``index``'s arrays, then its ready marker."""
+    def write_segment(self, index: int, interval, *,
+                      relay_marker: Mapping[str, object] | None = None) -> dict:
+        """Write interval ``index``'s arrays, then its ready marker.
+
+        ``relay_marker`` is a root interval's marker already checked by
+        :class:`StreamedIntervals`. A tree carries its posted and decoded
+        lead digests into its own marker before the root's seal supplies
+        the complete records. The caller holds the root seal to those
+        consumed markers; this tree's seal holds the relayed digests to
+        the records it copies from that seal.
+        """
 
         if self.head is None:
             raise RuntimeError("a segment needs its head first")
         self.check_stop()
-        leads = self._segment_leads(index)
+        if relay_marker is None:
+            leads = self._segment_leads(index)
+            decoded = self._segment_decoded(index)
+        else:
+            if (relay_marker.get("schema") != SEGMENT_SCHEMA
+                    or relay_marker.get("index") != int(index)
+                    or relay_marker.get("start_seconds")
+                    != float(interval.start_seconds)
+                    or relay_marker.get("end_seconds")
+                    != float(interval.end_seconds)
+                    or sorted(relay_marker.get("fields") or ())
+                    != sorted(interval.fields)):
+                raise BoundaryStreamError(
+                    f"relayed segment {index} is not the root interval this "
+                    "tree read, so its source records cannot bind it")
+            posted = self.head["basis"].get("as_posted")
+            expected = (set() if posted is None else {
+                str(int(lead)) for lead in posted["forcing_leads"][
+                    int(index):int(index) + 2]})
+            records = {}
+            for name, needed in (
+                    ("posted_leads", posted is not None),
+                    ("decoded_leads", bool(posted and
+                                           posted.get("decoded_rows")))):
+                value = relay_marker.get(name)
+                if needed:
+                    if (not isinstance(value, Mapping)
+                            or set(value) != expected
+                            or any(not _is_sha256(digest)
+                                   for digest in value.values())):
+                        raise BoundaryStreamError(
+                            f"relayed segment {index}'s {name} does not bind "
+                            f"exactly leads {sorted(expected, key=int)} to "
+                            "their record digests, so it cannot name the "
+                            "inputs this interval read")
+                    records[name] = dict(value)
+                elif value is not None:
+                    raise BoundaryStreamError(
+                        f"relayed segment {index} carries {name} this tree's "
+                        "head did not bind")
+            leads = records.get("posted_leads")
+            decoded = records.get("decoded_leads")
         segment = self._cache.write_segment(int(index), interval)
         marker = {
             "schema": SEGMENT_SCHEMA,
@@ -1954,6 +2272,9 @@ class PreparedTreeWriter:
         if leads is not None:
             # Only as posted, so every other segment marker is unchanged.
             marker["posted_leads"] = leads
+        if decoded is not None:
+            # Only for a head that holds a decoded document's rows.
+            marker["decoded_leads"] = decoded
         _write_json_atomic(segment_marker_path(self.root, index), marker)
         self._segments_written += 1
         return marker
@@ -2008,7 +2329,8 @@ class PreparedTreeWriter:
     def seal_cache(self, *, identity=None,
                    manifest_sha256: str | None = None,
                    completed_metadata: Mapping[str, object] | None
-                   = None) -> dict:
+                   = None,
+                   document_sha256: Mapping[str, str] | None = None) -> dict:
         """Write ``header.json``; return the one-shot writer's receipt.
 
         ``identity`` is the one-shot identity an as-posted head's seal
@@ -2017,6 +2339,8 @@ class PreparedTreeWriter:
         is not as posted seals the identity it was written under.
         ``completed_metadata`` completes the user metadata the head named
         in ``seal_completes`` (checked by :func:`verify_seal`).
+        ``document_sha256`` is ``{identity key: digest}`` for the head's
+        document-bound keys (:func:`document_bound_digests`).
         """
 
         # Named only when a route completes metadata at its seal, so every
@@ -2029,11 +2353,17 @@ class PreparedTreeWriter:
         if posted is None:
             raise RuntimeError(
                 "only an as-posted head's seal writes another identity")
+        if set(document_sha256 or {}) != set(
+                posted.get("document_bound_identity_keys") or {}):
+            raise RuntimeError(
+                "an as-posted seal names the digest of every document its "
+                "head bound an identity key to, and only those")
         check_as_posted_identity(
             self.head["basis"]["cache"]["identity"], identity,
             plan_sha256=posted["input_plan_sha256"],
             manifest_sha256=manifest_sha256,
-            manifest_bound=posted["manifest_bound_identity_keys"])
+            manifest_bound=posted["manifest_bound_identity_keys"],
+            document_bound=document_sha256)
         keys = posted.get("posted_user_metadata") or ()
         if keys:
             # Each is the digest the sealed identity carries under the
@@ -2044,7 +2374,9 @@ class PreparedTreeWriter:
         return self._cache.seal(identity=identity, **completes)
 
     def write_posted_leads(self, markers: Mapping[int, Mapping[str, object]],
-                           *, route_table_sha256: str) -> dict:
+                           *, route_table_sha256: str,
+                           decoded: Mapping[int, Mapping[str, str]] | None
+                           = None) -> dict:
         """Record every lead this preparation consumed, as its marker named it.
 
         ``markers`` maps a lead to its posted marker
@@ -2052,7 +2384,9 @@ class PreparedTreeWriter:
         digest the head and the segments bound; ``route_table_sha256`` is
         the route table the fetch's schedule names at the seal.  Written
         beside the head, so a verifier holds the sealed manifest to these
-        rows without the fetch folder.
+        rows without the fetch folder.  ``decoded`` (a head with a
+        ``decoded_leads`` document) is each lead's decoded-file record,
+        kept whole beside its marker for the same reason.
         """
 
         record = {
@@ -2067,6 +2401,13 @@ class PreparedTreeWriter:
                 for lead, marker in sorted(dict(markers).items())
             },
         }
+        for lead, value in sorted(dict(decoded or {}).items()):
+            row = record["leads"].get(str(int(lead)))
+            if row is None:
+                raise RuntimeError(
+                    f"lead {lead} has a decoded record and no posted marker")
+            row["decoded"] = {str(name): str(digest)
+                              for name, digest in sorted(dict(value).items())}
         _write_json_atomic(self.stream_path / POSTED_LEADS_NAME, record)
         return record
 
@@ -2335,7 +2676,8 @@ class PostedLeads:
                 "expected_at": row.get("expected_at"),
                 "late_at": row.get("late_at"), "since_utc": None,
                 "state": row.get("state"),
-                "first_seen_at": row.get("first_seen_at")}
+                "first_seen_at": row.get("first_seen_at"),
+                "last_answer": row.get("last_answer")}
 
     def wait(self, lead: int) -> dict:
         """Block until lead ``lead`` is fetched and verified; its marker."""
@@ -2377,12 +2719,14 @@ class PostedLeads:
                          f"{lead_wait_words(cause)}")
                     if self.writer is not None:
                         self.writer.waiting_for_source(cause)
-                elif row and ((row.get("state"), row.get("first_seen_at"))
-                              != (cause["state"], cause["first_seen_at"])):
+                elif row and ((row.get("state"), row.get("first_seen_at"),
+                               row.get("last_answer"))
+                              != (cause["state"], cause["first_seen_at"],
+                                  cause["last_answer"])):
                     # The fetch's word on the lead changed (asked, posted):
                     # the heartbeat says it, so the seam's reason does.
                     cause = self._waiting_for(lead, row)
-                    if _fetch_knows(cause) == "posted":
+                    if _fetch_knows(cause) in ("posted", "unheard"):
                         _say(f"prepare: {self.source} {_lead_words(lead)} "
                              f"of the {self.cycle} cycle "
                              f"{lead_wait_words(cause)}")
@@ -3465,6 +3809,14 @@ def verify_as_posted_seal(root, *, head: Mapping[str, object],
                     f"sealed manifest row {role} ({spec.get('name')}, "
                     f"{spec.get('sha256')}) is not the object lead {lead}'s "
                     "posted marker named")
+    decoded = {}
+    if posted.get("documents") is not None:
+        for lead, row in (record.get("leads") or {}).items():
+            if posted.get("decoded_rows") and isinstance(row, Mapping) \
+                    and isinstance(row.get("decoded"), Mapping):
+                decoded[str(lead)] = dict(row["decoded"])
+        hold_document_rows(root, posted=posted, manifest=manifest,
+                           markers=markers, decoded=decoded)
     digests = {lead: row["marker_sha256"]
                for lead, row in (record.get("leads") or {}).items()}
     for lead, digest in (posted.get("start_marker_sha256") or {}).items():
@@ -3482,11 +3834,22 @@ def verify_as_posted_seal(root, *, head: Mapping[str, object],
                 f"segment {k} was built from lead markers "
                 f"{segment.get('posted_leads')}, not the ones the seal "
                 f"records for leads {sorted(spans, key=int)}")
+        if posted.get("decoded_rows"):
+            records = {str(int(lead)): (
+                None if str(int(lead)) not in decoded
+                else decoded_lead_record_sha256(decoded[str(int(lead))]))
+                for lead in forcing_leads[k:k + 2]}
+            if segment.get("decoded_leads") != records:
+                raise BoundaryStreamError(
+                    f"segment {k} was built from decoded leads "
+                    f"{segment.get('decoded_leads')}, not the records the "
+                    f"seal holds for leads {sorted(records, key=int)}")
     changed = check_as_posted_identity(
         head["basis"]["cache"]["identity"], header.get("identity"),
         plan_sha256=posted["input_plan_sha256"],
         manifest_sha256=manifest_sha256,
-        manifest_bound=posted["manifest_bound_identity_keys"])
+        manifest_bound=posted["manifest_bound_identity_keys"],
+        document_bound=document_bound_digests(posted, manifest))
     left = _placeholders_left(proof)
     if left:
         # The sealed proof is the one-shot proof of the same bytes; a
@@ -3518,8 +3881,9 @@ def verify_as_posted_tree_children(root, *, head: Mapping[str, object],
     child must be its head twin (``hierarchy-head/domains/dNN``, whose
     receipt the head digest binds, and whose cache header must carry its
     own content digest and be the cache that receipt records) in
-    everything but that: the same array table and payload, the same cache
-    metadata, the same static cache and geometry receipt, a header whose
+    everything but that: the same array table and payload, cache metadata
+    completed only where the head named a posted identity digest, the
+    same static cache and geometry receipt, a header whose
     content digest is its own, the identity changed only as
     :func:`check_as_posted_identity` allows, and no placeholder left
     anywhere in the sealed header or receipt.  The breakage this prevents:
@@ -3533,6 +3897,22 @@ def verify_as_posted_tree_children(root, *, head: Mapping[str, object],
 
     root = Path(root)
     posted = head["basis"]["as_posted"]
+    document_digests = {}
+    if posted.get("document_bound_identity_keys"):
+        manifest_path = root / posted["manifest_path"]
+        try:
+            manifest_bytes = manifest_path.read_bytes()
+            manifest = json.loads(manifest_bytes.decode("utf-8"))
+        except (OSError, ValueError) as error:
+            raise BoundaryStreamError(
+                "the as-posted tree's child identities require the readable "
+                f"sealed input manifest at {manifest_path}: {error}") from None
+        observed = hashlib.sha256(manifest_bytes).hexdigest()
+        if observed != manifest_sha256:
+            raise BoundaryStreamError(
+                f"the as-posted tree's input manifest is {observed}, not "
+                f"the sealed input manifest {manifest_sha256}")
+        document_digests = document_bound_digests(posted, manifest)
     tree = head["basis"].get("tree")
     if not isinstance(tree, Mapping):
         raise BoundaryStreamError(
@@ -3581,9 +3961,27 @@ def verify_as_posted_tree_children(root, *, head: Mapping[str, object],
             raise BoundaryStreamError(
                 f"the head's {label} prepared cache is not the one its "
                 "receipt records")
+        head_metadata = json.loads(_canonical(head_header.get("metadata")))
+        posted_user = posted.get("posted_user_metadata") or ()
+        user = (head_metadata.get("user")
+                if isinstance(head_metadata, Mapping) else None)
+        if isinstance(user, Mapping):
+            user = dict(user)
+            for name in posted_user:
+                if name not in user:
+                    continue
+                if user[name] != as_posted_placeholder(
+                        posted["input_plan_sha256"]):
+                    raise BoundaryStreamError(
+                        f"the as-posted head's {label} user metadata "
+                        f"{name!r} is not the plan's placeholder")
+                user[name] = posted_identity_leaf(sealed_header["identity"],
+                                                   name)
+            head_metadata["user"] = user
+        expected_header = {**head_header, "metadata": head_metadata}
         differing = [key for key in ("schema", "metadata", "arrays",
                                      "payload_bytes")
-                     if head_header.get(key) != sealed_header.get(key)]
+                     if expected_header.get(key) != sealed_header.get(key)]
         for name in ("native-static.npz", "geometry-receipt.json"):
             try:
                 same = (hashlib.sha256((head_dir / name).read_bytes())
@@ -3606,7 +4004,8 @@ def verify_as_posted_tree_children(root, *, head: Mapping[str, object],
             head_header["identity"], sealed_header["identity"],
             plan_sha256=posted["input_plan_sha256"],
             manifest_sha256=manifest_sha256,
-            manifest_bound=posted["manifest_bound_identity_keys"])
+            manifest_bound=posted["manifest_bound_identity_keys"],
+            document_bound=document_digests)
         left = (_placeholders_left(sealed_header)
                 + _placeholders_left(sealed_receipt))
         if left:
@@ -3761,6 +4160,8 @@ __all__ = [
     "hold_composition_rows", "posted_identity_leaf",
     "POSTED_LEADS_NAME", "POSTED_LEADS_SCHEMA", "as_posted_placeholder",
     "check_as_posted_identity", "input_plan", "input_plan_sha256",
+    "DOCUMENT_ROW_RULES", "decoded_lead_record_sha256",
+    "document_bound_digests", "hold_document_rows",
     "is_as_posted_placeholder", "SEALED_HIERARCHY_DIRNAME",
     "lead_payload_lead", "verify_as_posted_seal",
     "verify_as_posted_tree_children",

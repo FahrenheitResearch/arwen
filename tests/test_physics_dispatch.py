@@ -119,9 +119,14 @@ def _cpu_driver(monkeypatch, *, sf_sfclay_physics, sf_surface_physics,
     import gpuwm.core.physics as physics
 
     monkeypatch.setattr(physics, "cp", np)
+    # The lowest-level vapour and the land mask feed WRF's final land Q2
+    # cap (module_surface_driver.F:4443-4457), which compute() applies
+    # after every surface layer since lane/282-wrf-exact (f6eb30981);
+    # production's _prepare_atmosphere and fields always carry both.
     atmosphere = {
         "p_interface": np.array(
             [[[100000.0, 90000.0]], [[95000.0, 85000.0]]], np.float32),
+        "qv": np.full((1, 1, 2), 0.01, np.float32),
     }
     monkeypatch.setattr(
         physics, "_prepare_atmosphere", lambda state: atmosphere)
@@ -138,7 +143,7 @@ def _cpu_driver(monkeypatch, *, sf_sfclay_physics, sf_surface_physics,
         for name, value in {
             "psfc": -123.0, "tsk": 290.0, "hfx": 0.0, "qfx": 0.0,
             "qsfc": 0.0, "chs2": 0.0, "cqs2": 0.0,
-            "t2": -999.0, "q2": -999.0, "th2": -999.0,
+            "t2": -999.0, "q2": -999.0, "th2": -999.0, "xland": 1.0,
         }.items()
     }
     driver.surface_enabled = True

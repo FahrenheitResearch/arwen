@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import socket
 import subprocess
 import sys
 
@@ -810,10 +811,15 @@ def _hrrr_fetch_plan(monkeypatch, argv, *, backbone: Path | None,
     """
 
     seen: dict[str, object] = {}
+    reached: list[object] = []
 
     def capture(**kwargs):
         seen.update(kwargs)
         raise _StopBeforeTransfer
+
+    def no_network(*args, **kwargs):
+        reached.append(args)
+        raise OSError("a fetch plan test does not reach the network")
 
     monkeypatch.setattr(rustwx_fetch, "find_fetch_bin", lambda: backbone)
     monkeypatch.setattr(rustwx_fetch, "probe_fetch_bin",
@@ -825,12 +831,21 @@ def _hrrr_fetch_plan(monkeypatch, argv, *, backbone: Path | None,
                         lambda *args, **kwargs: None)
     monkeypatch.setattr(fetch, "resolve_hrrr_transport",
                         lambda cycle, requested, **kwargs: resolved_transport)
+    # The default fetch runs as posted, and its posting loop asks each
+    # lead's host before the transfer moves it.  Every lead answers
+    # posted here, and a socket that tries to leave this process is
+    # refused and counted, so these tests (not marked network) never
+    # wait on a real host's HEAD.
+    monkeypatch.setattr(fetch, "_head_answer", lambda url: True)
+    monkeypatch.setattr(socket, "getaddrinfo", no_network)
+    monkeypatch.setattr(socket.socket, "connect", no_network)
     parser = cli.build_parser()
     args = parser.parse_args(argv)
     try:
         fetch.fetch_main(args)
     except _StopBeforeTransfer:
         pass
+    assert reached == [], f"the fetch plan reached the network: {reached}"
     return seen
 
 
@@ -944,6 +959,35 @@ def test_a_pinned_transport_is_not_second_guessed(tmp_path, monkeypatch,
                      backbone=tmp_path / "rw_fetch",
                      resolved_transport="nomads")
     assert "paces whole-file transfers" not in capsys.readouterr().out
+
+
+def test_an_as_posted_fetch_names_the_cost_once_before_its_first_nomads_prefix():
+    """As posted, the host is chosen for each verified prefix.
+
+    The cost is said before the first prefix the operational server
+    serves and not again for later ones; a prefix the archive serves, an
+    unresolved ``auto``, a named host, a subset transfer and a cached
+    window say nothing.
+    """
+
+    said: list[str] = []
+    advise = fetch._hrrr_pacing_advice(pinned=None, mode="full-file",
+                                       cached=False, say=said.append)
+    advise("auto")
+    advise("s3")
+    assert said == []
+    advise("nomads")
+    assert len(said) == 1 and "paces whole-file transfers" in said[0]
+    advise("nomads")
+    advise("s3")
+    assert len(said) == 1
+
+    for quiet in ({"pinned": "nomads", "mode": "full-file", "cached": False},
+                  {"pinned": None, "mode": "idx-subset", "cached": False},
+                  {"pinned": None, "mode": "full-file", "cached": True}):
+        silent: list[str] = []
+        fetch._hrrr_pacing_advice(**quiet, say=silent.append)("nomads")
+        assert silent == [], quiet
 
 
 # ---------------------------------------------------------------------------

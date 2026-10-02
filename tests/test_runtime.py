@@ -948,6 +948,13 @@ def test_cli_experiment_commands_route_through_runtime(
     import gpuwm.cli as cli
     import gpuwm.case_data as case_data_module
     import gpuwm.supervisor as supervisor
+    from gpuwm import capabilities
+
+    # The runtime and supervisor below are CPU stand-ins.  Their dispatch
+    # contract must not depend on whether the runner installed a GPU extra.
+    installed = capabilities.is_installed
+    monkeypatch.setattr(capabilities, "is_installed",
+                        lambda module: module == "cupy" or installed(module))
 
     exp_sentinel = SimpleNamespace(name="stub")
     data_sentinel = SimpleNamespace()

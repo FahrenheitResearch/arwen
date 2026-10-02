@@ -415,7 +415,13 @@ def validate_native_static_fields(
     missing = sorted(NATIVE_STATIC_REQUIRED - set(fields))
     if missing:
         raise KeyError(f"native static fields are missing {missing}")
-    retained = NATIVE_STATIC_REQUIRED | (_NATIVE_STATIC_GEOMETRY & set(fields))
+    from gpuwm.static.orographic import OROGRAPHIC_ROWS
+    # The sub-grid orographic statistics ride the same cache when a domain's
+    # terrain-drag options asked the build for them (gpuwm.static.orographic);
+    # a cache without them is every other domain's, unchanged.
+    retained = (NATIVE_STATIC_REQUIRED
+                | (_NATIVE_STATIC_GEOMETRY & set(fields))
+                | (set(OROGRAPHIC_ROWS) & set(fields)))
     result = {
         name: np.asarray(fields[name], dtype=np.float64)
         for name in sorted(retained)
@@ -436,6 +442,7 @@ def validate_native_static_fields(
         "E": (ny, nx),
         "SINALPHA": (ny, nx),
         "COSALPHA": (ny, nx),
+        **{name: (ny, nx) for name in OROGRAPHIC_ROWS},
     }
     for name, value in result.items():
         expected = expected_shapes[name]

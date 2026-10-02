@@ -23,7 +23,8 @@ Two of them, and the second is the one that lasts.
 
 So the lane being wide is worth nothing on its own; what is worth something
 is that narrowing it has to be a deliberate, reviewable edit to a gated
-property.  These tests are those properties: the CPU lane names DIRECTORIES,
+property. These tests are those properties: the CPU lane reads the complete
+maintained release Stage 1 list and retains the publication controls,
 the oracle lane reads its decks from the manifest rather than from a copy,
 and the GPU lane throws the switch the bundle gates have always documented
 and nothing ever threw.
@@ -37,6 +38,7 @@ import re
 import pytest
 
 from tools.battery.no_silent_skip import parse_manifest
+from tools.battery import run_must_run_gates, run_stage1
 from tools.ci_test_replay import parse_test_job
 
 REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -129,12 +131,11 @@ def test_the_repository_has_a_lane_that_runs_the_model_s_own_code() -> None:
 
 
 def test_the_cpu_lane_is_not_a_hand_typed_file_list() -> None:
-    """THE PROPERTY THAT KEEPS xc-06-01 CLOSED.
+    """The release manifest, rather than a smaller copied CI list, selects CPU coverage.
 
-    A directory argument means a test file joins the lane by existing.  A
-    filename list means it joins the lane when somebody remembers, which is
-    the state this workflow was added to leave -- and the state a
-    well-meaning "trim CI wall clock" commit restores in one edit.
+    Public snapshots exclude private campaign inputs. Directory collection
+    cannot qualify those absent campaigns. Every maintained release-list
+    file still runs, including tilestream, with the existing census guards.
     """
 
     body = _step_run("cpu", "the CPU-runnable estate")
@@ -142,13 +143,16 @@ def test_the_cpu_lane_is_not_a_hand_typed_file_list() -> None:
     assert not named, (
         f"the CPU lane names individual test files ({named}).  That is the "
         "shape publish.yml's `test` job has and the reason it runs 3.1% of "
-        "the tree: a list only grows when somebody remembers.  Pass the "
-        "testpaths directories and let the marker expression do the "
-        "selecting.")
-    for directory in ("tests", "tilestream"):
-        assert re.search(rf"(^|\s){directory}(\s|$)", body, re.MULTILINE), (
-            f"the CPU lane does not run {directory}/, which is one of "
-            "pyproject.toml's two testpaths")
+        "the tree. Read the maintained release manifest instead.")
+    assert "python tools/battery/run_stage1.py --manifest tools/battery/stage1_files.txt" in body
+    assert "--native-manifest tools/battery/stage1_native_files.txt --platform ${{ matrix.platform }} --minimum 389 --" in body
+    assert '--basetemp="$RUNNER_TEMP/b"' in body
+    assert run_stage1.MANIFEST == "tools/battery/stage1_files.txt"
+    selected = set(run_stage1.selected_files(REPOSITORY_ROOT, platform="linux"))
+    stage1 = run_stage1.listed_files(REPOSITORY_ROOT)
+    assert len(stage1) >= 389 and set(stage1) <= selected
+    assert any(name.startswith("tilestream/") for name in stage1)
+    assert "-n ${{ matrix.workers }} --dist loadfile" in body
 
 
 def test_the_cpu_lane_removes_only_what_it_declares() -> None:
@@ -173,16 +177,40 @@ def test_the_cpu_lane_covers_everything_the_packaging_job_covers() -> None:
     publish.yml keeps its 17-file packaging gate -- it is the root of the
     publish chain and seven test files parse that file by hand.  What must
     stay true is that the wide lane is a superset: every file the narrow one
-    names lives under a directory the wide one runs.
+    names is selected by the release runner as well.
     """
 
     _marker, packaging = parse_test_job(PUBLISH.read_text(encoding="utf-8"))
-    body = _step_run("cpu", "the CPU-runnable estate")
-    for name in packaging:
-        root = name.split("/", 1)[0]
-        assert re.search(rf"(^|\s){root}(\s|$)", body, re.MULTILINE), (
-            f"publish.yml's test job runs {name}, and the CPU lane does not "
-            f"run {root}/ at all")
+    for platform in ("linux", "windows"):
+        selected = set(run_stage1.selected_files(REPOSITORY_ROOT, platform=platform))
+        for name in packaging:
+            assert name in selected, (
+                f"publish.yml's test job runs {name}, and the {platform} CPU lane does not "
+                "run that file")
+
+
+def test_the_platform_partition_preserves_all_release_stage1_coverage():
+    stage1 = set(run_stage1.listed_files(REPOSITORY_ROOT))
+    native = run_stage1.native_files(REPOSITORY_ROOT)
+    linux = set(run_stage1.selected_files(REPOSITORY_ROOT, platform="linux"))
+    windows = set(run_stage1.selected_files(REPOSITORY_ROOT, platform="windows"))
+    assert len(native) >= 30 and all(native.values())
+    assert set(native) <= stage1 <= linux
+    assert linux - windows == set(native)
+    assert stage1 <= linux | windows
+    assert "tests/test_obs_radar_grid.py" in native and "tests/test_obs_radar_grid_v2.py" in native
+    assert not set(native).intersection(run_stage1.publication_files(REPOSITORY_ROOT))
+
+
+def test_the_static_marker_split_still_executes_the_separate_exact_qualification():
+    workflow = "\n".join(_lines())
+    assert "static_qualification job, which executes and reports those exact tests" in workflow
+    assert "tools/battery/run_static_qualification.py" in "\n".join(_job("static_qualification"))
+
+
+def test_the_cpu_manifest_cannot_select_release_cut_drivers_on_windows():
+    assert not [name for name in run_stage1.selected_files(REPOSITORY_ROOT)
+                if name.startswith("tools/release/cut/")]
 
 
 def test_the_oracle_lane_reads_its_decks_from_the_manifest() -> None:
@@ -196,7 +224,10 @@ def test_the_oracle_lane_reads_its_decks_from_the_manifest() -> None:
 
     body = _step_run("oracles", "bitwise oracle decks whose fixtures ship, "
                                 "skips forbidden")
-    assert "must_run_gates.txt" in body, body
+    assert "python tools/battery/run_must_run_gates.py --minimum 20 --" in body, body
+    assert run_must_run_gates.MANIFEST == "tools/battery/must_run_gates.txt"
+    assert run_must_run_gates.listed_decks(REPOSITORY_ROOT) == list(parse_manifest(
+        MANIFEST.read_text(encoding="utf-8")))
     assert "tools.battery.no_silent_skip" in body, (
         "the oracle lane does not arm tools/battery/no_silent_skip.py, so a "
         "deck that skips every one of its tests exits 0 -- which is the "
@@ -236,9 +267,10 @@ def test_every_must_run_gate_is_reachable_from_the_oracle_lane(
     assert (REPOSITORY_ROOT / entry).is_file()
     body = _step_run("oracles", "bitwise oracle decks whose fixtures ship, "
                                 "skips forbidden")
-    assert "parse_manifest" in body, (
-        "the oracle lane no longer builds its argument list with the "
-        f"manifest's own parser, so {entry} is not provably on it")
+    assert "python tools/battery/run_must_run_gates.py --minimum 20 --" in body, body
+    assert entry in run_must_run_gates.listed_decks(REPOSITORY_ROOT), (
+        "the oracle runner no longer builds its argument list with the "
+        f"manifest's own parser, so {entry} is not reachable")
 
 
 def test_the_import_lane_sweeps_the_whole_package() -> None:
@@ -435,11 +467,34 @@ def test_hosted_lanes_cover_both_supported_operating_systems(lane):
 def test_native_integration_lanes_build_the_bridges_before_testing(lane):
     job = "\n".join(_job(lane))
     assert "uses: ./.github/actions/build-native" in job
-    assert job.index("uses: ./.github/actions/build-native") < job.index("python -m pytest")
+    command = ({"oracles": "python tools/battery/run_must_run_gates.py",
+                "cpu": "python tools/battery/run_stage1.py"}.get(lane, "python -m pytest"))
+    assert job.index("uses: ./.github/actions/build-native") < job.index(command)
+    if lane == "cpu":
+        assert "if: matrix.platform == 'linux'" in job
+        assert "separate Windows native Rust job remains" in job
     native = (REPOSITORY_ROOT / ".github/actions/build-native/action.yml").read_text(encoding="utf-8")
     for workspace in ("grib1_bridge", "rustwx", "region_global_dealias", "rw_wps"):
         assert f"tools/{workspace}" in native
     assert "cargo build --release --locked --offline" in native
+
+
+@pytest.mark.parametrize("lane", ["cpu", "oracles"])
+def test_hosted_validation_stages_declared_external_tables_before_testing(lane):
+    """Bare clones lack freezeH2O.dat, which Thompson validation requires.
+
+    Table acquisition already checks the packaged sizes and hashes and keeps
+    matching staged files. Tests must run after that real path, rather than
+    silently depending on tables left by another installation.
+    """
+    job = "\n".join(_job(lane))
+    stage = _step_run(lane, "stage the declared external Thompson tables")
+    assert stage == "python -m gpuwm.cli fetch-tables"
+    test_command = ("python tools/battery/run_must_run_gates.py" if lane == "oracles"
+                    else "python tools/battery/run_stage1.py")
+    install = 'python -m pip install -e ./gpuwm-data -e ".[dev]"'
+    assert job.index(install) < job.index(stage) < job.index(test_command)
+    assert job.index("uses: ./.github/actions/build-native") < job.index(stage)
 
 
 def test_rust_tests_run_the_battery_manifest_without_in_tree_target_mutation():

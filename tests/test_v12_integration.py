@@ -693,7 +693,7 @@ def stubbed_runtime(monkeypatch, tmp_path):
     dc = types.SimpleNamespace(run=run, history_interval_s=60.0, grid_id=1)
     exp = types.SimpleNamespace(domains=[dc], run_seconds=120.0,
                                 start_time=None, restart_interval_s=60.0,
-                                domain=lambda gid: dc)
+                                domain=lambda gid: dc, auto_epssm=())
     data = types.SimpleNamespace(output_title="t", output_domain=1)
     prepared = types.SimpleNamespace(
         initial_result=types.SimpleNamespace(state=state))
@@ -790,7 +790,7 @@ def _stub_runtime(monkeypatch, integrate, *, state=None):
     dc = types.SimpleNamespace(run=run, history_interval_s=60.0, grid_id=1)
     exp = types.SimpleNamespace(domains=[dc], run_seconds=120.0,
                                 start_time=None, restart_interval_s=60.0,
-                                domain=lambda gid: dc)
+                                domain=lambda gid: dc, auto_epssm=())
     data = types.SimpleNamespace(output_title="t", output_domain=1)
     prepared = types.SimpleNamespace(
         initial_result=types.SimpleNamespace(state=state))

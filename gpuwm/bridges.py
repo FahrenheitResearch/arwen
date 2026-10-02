@@ -264,6 +264,14 @@ BRIDGE_ABI_MARKERS = {
     # literal which changes exactly when the tape contract changes.
     "rw_mpas_convert": (
         b"gpuwm-rw-mpas-convert-v1\tCONVERTED\tWINDOW\tWEIGHTS\tFINISHED"),
+    # The ML dataset exporter behind `gpuwm ml-export`.  The marker is the
+    # request schema, the modes and the progress grammar, the literal that
+    # changes when the contract does: a build predating it would read a
+    # request it does not speak.  Spelled to match
+    # gpuwm.ml_export.ABI_MARKER and rw_mlexport::ABI; a test binds them.
+    "rw_mlexport": (
+        b"rw_mlexport --request REQUEST.json schema=ml-export.request/v1 "
+        b"modes=run,append,finalize progress=jsonl"),
 }
 
 #: True when the shell a remedy will be pasted into is Windows

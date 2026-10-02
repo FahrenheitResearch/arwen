@@ -208,13 +208,16 @@ URBAN_PER_CALL_ARRAYS = frozenset({"bep_column_workspace",
                                    "bep_class_scratch"})
 
 
-def urban_held_array_shapes(cfg) -> dict[str, tuple[int, ...]]:
+def urban_held_array_shapes(cfg, *, urban_columns: int | None = None
+                            ) -> dict[str, tuple[int, ...]]:
     """The :func:`urban_array_shapes` entries held for the whole run."""
-    return {name: shape for name, shape in urban_array_shapes(cfg).items()
+    return {name: shape for name, shape in urban_array_shapes(
+                cfg, urban_columns=urban_columns).items()
             if name not in URBAN_PER_CALL_ARRAYS}
 
 
-def urban_array_shapes(cfg) -> dict[str, tuple[int, ...]]:
+def urban_array_shapes(cfg, *, urban_columns: int | None = None
+                       ) -> dict[str, tuple[int, ...]]:
     """Every array ``init_urban_state`` allocates for ``cfg``, by name.
 
     For the memory checks (``gpuwm.core.preflight.physics_array_shapes``),
@@ -223,6 +226,11 @@ def urban_array_shapes(cfg) -> dict[str, tuple[int, ...]]:
     is loaded.  BEM's arrays are large -- ``tw1/tw2_urb4d`` alone are 5,400
     words per column -- which is why an unpriced option 3 would pass the
     admission check and then fail to allocate.
+
+    ``urban_columns`` is the domain's urban column count where its land
+    cover is known (:func:`prepared_urban_columns`, the prepared doors);
+    ``None`` prices BEP+BEM's column workspace at every column urban
+    (:func:`_column_workspace_shapes`).
     """
     option = int(getattr(cfg, "sf_urban_physics", 0))
     if option == 0:
@@ -252,26 +260,35 @@ def urban_array_shapes(cfg) -> dict[str, tuple[int, ...]]:
              if int(cfg.sf_surface_physics) == 2 else NOAHMP_RURAL_FIELDS)
     for name in rural:
         shapes[f"rural_{name}"] = (ny, nx)
-    shapes.update(_column_workspace_shapes(option, ny * nx, nz))
+    shapes.update(_column_workspace_shapes(option, ny * nx, nz,
+                                           urban_columns=urban_columns))
     return shapes
 
 
-def _column_workspace_shapes(option: int, ncol: int,
-                             nz: int) -> dict[str, tuple[int, ...]]:
+def _column_workspace_shapes(option: int, ncol: int, nz: int, *,
+                             urban_columns: int | None = None
+                             ) -> dict[str, tuple[int, ...]]:
     """The device scratch the BEP and BEP+BEM column kernels allocate at
-    run time, at its largest for this grid.
+    run time, for this grid.
 
     Neither lives in ``fields``, and neither is small: BEP holds up to
     ``urban_bep.BEP_WORKSPACE_BYTES`` (256 MiB) of column scratch per call
     plus its class tables' 11 x 8,192 x 32-word scratch, and a BEP+BEM plan
-    holds up to ``urban_bem.FORECAST_WORKSPACE_BYTES`` (1 GiB).  Priced at
-    every grid column being urban, because the admission check runs before
-    FRC_URB2D is on the card; a real city holds less.  For BEP+BEM the
-    price IS the allocation once a domain has ``FORECAST_WORKSPACE_BYTES /
-    workspace_bytes_per_column(nz)`` urban columns (4,792 at 59 levels):
-    the plan is capped there, which a 750 m city nest passes.  Below that
-    it over-prices by the domain's rural columns, never under.  The model
-    modules import NumPy only, so this stays CPU-safe.
+    holds up to ``urban_bem.FORECAST_WORKSPACE_BYTES`` (1 GiB).
+
+    BEP+BEM's plan (``urban_bem.ColumnPlan``) holds ``min(urban columns,
+    FORECAST_WORKSPACE_BYTES / workspace_bytes_per_column(nz))`` columns'
+    workspace (4,792 at 59 levels) and an error word per column of that
+    chunk, and no workspace at all on a domain with no urban column.  With
+    ``urban_columns`` (the count :func:`urban_column_count` reads off the
+    domain's land cover, the columns the plan is built from) that is its
+    price, exactly.  Without it, the configuration door's case, the land
+    cover does not exist yet, so the price is the upper bound of every
+    column urban: the allocation once a domain holds 4,792 urban columns,
+    which a 750 m city nest does, and over by the rural columns below
+    that (A176: up to 1 GiB per domain; a prepared door prices tighter).
+    BEP's per-call scratch keeps its every-column price either way.  The
+    model modules import NumPy only, so this stays CPU-safe.
     """
     shapes: dict[str, tuple[int, ...]] = {}
     if option == 2 and urban_model_in_build(2):
@@ -289,10 +306,99 @@ def _column_workspace_shapes(option: int, ncol: int,
         from gpuwm.core import urban_bem as bem
 
         per_column = bem.workspace_bytes_per_column(nz)
-        chunk = max(1, min(ncol, bem.FORECAST_WORKSPACE_BYTES // per_column))
-        shapes["bem_column_workspace"] = (chunk * (per_column // 4),)
+        urban = (ncol if urban_columns is None
+                 else max(0, min(int(urban_columns), ncol)))
+        chunk = max(1, min(urban, bem.FORECAST_WORKSPACE_BYTES // per_column))
+        shapes["bem_column_workspace"] = (
+            (chunk if urban else 0) * (per_column // 4),)
         shapes["bem_column_errors"] = (chunk,)
     return shapes
+
+
+def urban_column_count(ivgtyp, *, categories: UrbanCategories,
+                       use_wudapt_lcz: int, frc_urb_tbl,
+                       frc_urb2d=None) -> int:
+    """The urban columns the urban model runs on, read off a land cover.
+
+    The columns :func:`urban_fraction` leaves above 0, the very set
+    ``urban_bem.ColumnPlan`` lists (``frc_urb2d > 0``).  Read off the
+    PREPARED land use, before ``initialize_landuse`` has folded lakes and
+    sea ice into water and ice, so it is the runtime's count or more,
+    never fewer.
+    """
+    utype = urban_types(ivgtyp, categories, use_wudapt_lcz)
+    _validate_urban_types(utype, use_wudapt_lcz, table_bounds_only=True)
+    frc = (np.zeros(utype.shape, np.float32) if frc_urb2d is None
+           else frc_urb2d)
+    return int(np.count_nonzero(urban_fraction(utype, frc, frc_urb_tbl) > 0))
+
+
+def urban_categories_for(cfg, landuse_dataset: str) -> UrbanCategories:
+    """The urban categories ``gpuwm.core.physics._attach_urban`` gives a
+    domain of ``cfg`` on ``landuse_dataset``, without a card.
+
+    Noah-MP reads them from its own land-use identity (MPTABLE's ISURBAN,
+    NATURAL and LCZ_1..11 for the dataset, ``NoahmpRuntimeParameters``);
+    Noah reads NATURAL and the LCZ rows from VEGPARM.TBL beside the same
+    ISURBAN (:func:`gpuwm.core.urban_tables.urban_category_set`).
+    """
+    from gpuwm.core.noahmp import load_noahmp_parameters
+    from gpuwm.core.urban_tables import urban_category_set
+
+    _, veg = load_noahmp_parameters().vegetation_groups(str(landuse_dataset))
+    if int(cfg.sf_surface_physics) == 4:
+        return UrbanCategories(
+            isurban=int(veg.scalar("ISURBAN")),
+            natural=int(veg.scalar("NATURAL")),
+            lcz=tuple(int(veg.scalar(f"LCZ_{n}")) for n in range(1, 12)))
+    return urban_category_set(str(landuse_dataset),
+                              isurban=int(veg.scalar("ISURBAN")))
+
+
+def bem_workspace_counted(cfg) -> bool:
+    """Whether a domain's urban column count moves its memory price.
+
+    Only BEP+BEM's column workspace (``sf_urban_physics`` 3) is priced by
+    the count (:func:`_column_workspace_shapes`); every other urban array
+    is a full plane.  A door asks this before it reads any land-use
+    attribute, so a domain that runs no BEP+BEM reads nothing.
+    """
+    return int(getattr(cfg, "sf_urban_physics", 0) or 0) == 3
+
+
+def prepared_urban_columns(cfg, lu_index, *, landuse_dataset: str,
+                           frc_urb2d=None) -> int | None:
+    """A prepared domain's urban column count, for the memory price.
+
+    ``None`` where the count does not move a price: no BEP+BEM
+    (``sf_urban_physics`` 3, whose column workspace is
+    :func:`_column_workspace_shapes`'s only count-priced array), or no
+    land use to read.  ``lu_index`` is the prepared static's LU_INDEX and
+    ``frc_urb2d`` the input's own urban fraction where it carries one (a
+    wrfinput), exactly what the domain's urban cold start reads.
+    """
+    if not bem_workspace_counted(cfg) or lu_index is None:
+        return None
+    from gpuwm.core.urban_tables import load_urban_params
+
+    lcz = int(getattr(cfg, "use_wudapt_lcz", 0) or 0)
+    params = load_urban_params(3, lcz)
+    return urban_column_count(
+        lu_index, categories=urban_categories_for(cfg, landuse_dataset),
+        use_wudapt_lcz=lcz, frc_urb_tbl=params.FRC_URB_TBL,
+        frc_urb2d=frc_urb2d)
+
+
+def urban_columns_line(counts) -> str | None:
+    """The one line a prepared door prints when it prices the urban column
+    workspace from the land cover rather than the configuration's bound."""
+    if not counts:
+        return None
+    named = ", ".join(f"d{gid:02d} {count:,}"
+                      for gid, count in sorted(counts.items()))
+    return ("BEP+BEM column workspace priced from the land cover's urban "
+            f"columns ({named}), not at every column urban as the "
+            "configuration check prices it")
 
 
 def _layers(row, dims: Mapping[str, int], num_urban_hi: int) -> int:
@@ -324,6 +430,52 @@ def load_model_module(option: int):
 # ---------------------------------------------------------------------------
 # urban_var_init, on the host
 # ---------------------------------------------------------------------------
+
+def urban_types(ivgtyp, categories: UrbanCategories,
+                use_wudapt_lcz: int) -> np.ndarray:
+    """``urban_var_init``'s UTYPE_URB2D for each column (int32, 0 = not
+    urban; module_sf_urban.F:2748-2786)."""
+    ivgtyp = np.asarray(ivgtyp).astype(np.int64)
+    lookup = categories.utype_lookup(use_wudapt_lcz)
+    inside = (ivgtyp >= 0) & (ivgtyp < lookup.size)
+    utype = np.where(inside, lookup[np.clip(ivgtyp, 0, lookup.size - 1)], 0)
+    return utype.astype(np.int32)
+
+
+def urban_fraction(utype, frc_urb2d, frc_urb_tbl) -> np.ndarray:
+    """FRC_URB2D as ``urban_var_init`` leaves it (float32, a new array).
+
+    An input fraction in (0, 1] is kept on an urban column, any other takes
+    ``FRC_URB_TBL(UTYPE)`` (module_sf_urban.F:2767-2777), and a column that
+    is not urban holds 0 (:2785-2799).  The columns it leaves above 0 are
+    the ones every urban model runs on: BEP+BEM's ``ColumnPlan`` is built
+    from exactly them, so :func:`urban_column_count` reads this same rule.
+    """
+    utype = np.asarray(utype)
+    frc = np.array(frc_urb2d, dtype=np.float32)
+    switch = utype > 0
+    keep = (frc > 0.0) & (frc <= 1.0)
+    from_table = switch & ~keep
+    frc[from_table] = np.asarray(frc_urb_tbl)[utype[from_table] - 1]
+    frc[~switch] = 0.0
+    return frc
+
+
+def _validate_urban_types(utype, use_wudapt_lcz: int, *,
+                          table_bounds_only: bool = False) -> None:
+    """Refuse a land-cover legend whose urban types have no table rows."""
+    # module_physics_init.F:3349-3356: validate before indexing FRC_URB_TBL.
+    max_utype = int(utype.max()) if utype.size else 0
+    if int(use_wudapt_lcz) == 0 and max_utype > 3:
+        raise ValueError("USING 10 WUDAPT LCZ WITHOUT URBPARM_LCZ.TBL. SET "
+                         "USE_WUDAPT_LCZ=1 (WRF's fatal: LCZ types 4-11 have "
+                         "no row in URBPARM.TBL)")
+    if (not table_bounds_only and int(use_wudapt_lcz) == 1
+            and max_utype <= 3):
+        raise ValueError("USING URBPARM_LCZ.TBL WITH OLD 3 URBAN CLASSES. SET "
+                         "USE_WUDAPT_LCZ=0 (WRF's fatal: the LCZ table's rows "
+                         "1-3 are not the three NLCD urban classes)")
+
 
 def urban_var_init_host(*, option: int, use_wudapt_lcz: int,
                         params: UrbanParams, categories: UrbanCategories,
@@ -359,24 +511,13 @@ def urban_var_init_host(*, option: int, use_wudapt_lcz: int,
                              dtype=dtype)
     if frc_urb2d is not None:
         out["frc_urb2d"][...] = np.asarray(frc_urb2d, dtype=f4)
-    lookup = categories.utype_lookup(use_wudapt_lcz)
-    inside = (ivgtyp >= 0) & (ivgtyp < lookup.size)
-    utype = np.where(inside, lookup[np.clip(ivgtyp, 0, lookup.size - 1)], 0)
-    utype = utype.astype(np.int32)
+    utype = urban_types(ivgtyp, categories, use_wudapt_lcz)
     switch = utype > 0
     # module_physics_init.F:3349-3356, WRF's own fatals.  WRF raises them
     # AFTER urban_var_init, which has by then read FRC_URB_TBL(UTYPE) past
     # the end of a 3-row table for an LCZ type above 3 -- undefined in WRF,
     # so the refusal comes first here.
-    max_utype = int(utype.max()) if utype.size else 0
-    if int(use_wudapt_lcz) == 0 and max_utype > 3:
-        raise ValueError("USING 10 WUDAPT LCZ WITHOUT URBPARM_LCZ.TBL. SET "
-                         "USE_WUDAPT_LCZ=1 (WRF's fatal: LCZ types 4-11 have "
-                         "no row in URBPARM.TBL)")
-    if int(use_wudapt_lcz) == 1 and max_utype <= 3:
-        raise ValueError("USING URBPARM_LCZ.TBL WITH OLD 3 URBAN CLASSES. SET "
-                         "USE_WUDAPT_LCZ=0 (WRF's fatal: the LCZ table's rows "
-                         "1-3 are not the three NLCD urban classes)")
+    _validate_urban_types(utype, use_wudapt_lcz)
     # :2716-2719 and :2725
     for name in ("sh_urb2d", "lh_urb2d", "g_urb2d", "rn_urb2d"):
         out[name][...] = 0.0
@@ -392,12 +533,8 @@ def urban_var_init_host(*, option: int, use_wudapt_lcz: int,
         out["lf_urb2d"][:, zero_morph] = 0.0
     else:
         out["hi_urb2d"][:, zero_morph] = 0.0
-    frc = out["frc_urb2d"]
-    keep = (frc > 0.0) & (frc <= 1.0)
-    table_frc = params.FRC_URB_TBL
-    from_table = switch & ~keep
-    frc[from_table] = table_frc[utype[from_table] - 1]
-    frc[~switch] = 0.0
+    out["frc_urb2d"][...] = urban_fraction(utype, out["frc_urb2d"],
+                                           params.FRC_URB_TBL)
     if "qc_urb2d" in out:
         out["qc_urb2d"][...] = f4(0.01)          # :2801, even on restart
     if not restart:
@@ -581,7 +718,11 @@ __all__ = [
     "BEM_SPEC", "BEP_SPEC", "COMMON_SPEC", "NOAHMP_RURAL_FIELDS",
     "NOAH_RURAL_FIELD_SOURCES", "NOAH_RURAL_KERNEL_FIELDS", "PBL_TERM_NAMES",
     "UCM_SPEC", "UrbanSolar", "UrbanState", "WRF_URBAN_DIMENSIONS",
+    "bem_workspace_counted",
     "init_urban_state", "load_model_module", "option_spec",
     "URBAN_PER_CALL_ARRAYS", "urban_array_shapes", "urban_held_array_shapes",
-    "resolve_dimensions", "urban_maps", "urban_var_init_host",
+    "prepared_urban_columns", "resolve_dimensions", "urban_categories_for",
+    "urban_column_count", "urban_columns_line", "urban_fraction",
+    "urban_maps", "urban_types",
+    "urban_var_init_host",
 ]

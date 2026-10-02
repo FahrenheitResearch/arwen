@@ -39,6 +39,11 @@ use crate::projection::{wps32_for, ProjectedGrid, ProjectionKind};
 use crate::types::{Grid2, Stack3};
 use crate::{GCELL_RATIO, M_PER_DEG};
 
+/// Fortran NINT for default REAL, including either side of a half-integer.
+pub(crate) fn wps_nint_real(value: f32) -> i64 {
+    value.round() as i64
+}
+
 // -- float helpers (numpy semantics) ------------------------------------
 
 /// `np.spacing` for float32: the ULP in the away-from-zero direction
@@ -328,6 +333,73 @@ pub struct DomainSampler<'g> {
 }
 
 impl<'g> DomainSampler<'g> {
+    /// WPS default-REAL sampling for the newly introduced orographic fields.
+    /// Existing static fields keep their established sampler and arithmetic.
+    pub fn orographic_continuous(
+        &self, ds: &GeogDataset, win: &GeogWindow, z: usize,
+        seq: &[InterpOp], fill: f64, gcell: bool, active: Option<&[bool]>,
+    ) -> Result<Grid2> {
+        let grid = self.grid.ok_or_else(|| StaticError::Invalid(
+            "orographic sampling needs a projected grid".into()))?;
+        let projection = crate::projection::orographic::OrographicProjection::new(grid)?;
+        let n = self.nxe*self.nye;
+        let mut out = vec![f32::NAN;n];
+        let s=&grid.spec;
+        let average_gcell = 4.0f32*(ds.index.dx as f32).max(ds.index.dy as f32)*111.0
+            <= (s.dx as f32).max(s.dy as f32)/1000.0;
+        if gcell && average_gcell {
+            let vals = win.values_real(z);
+            let mut sum = vec![0.0f32;n];
+            let mut count = vec![0.0f32;n];
+            let idx=&ds.index;
+            for (k,&value) in vals.iter().enumerate() {
+                if value.is_nan() {continue;}
+                let source_x=win.x0+(k%win.nx) as i64;
+                if ds.wraps_x && k%win.nx >= ds.nx_global as usize {continue;}
+                let source_x=if ds.wraps_x {(source_x-1).rem_euclid(ds.nx_global)+1} else {source_x};
+                let lat=idx.known_lat as f32+((win.y0+(k/win.nx) as i64) as f32-idx.known_y as f32)*idx.dy as f32;
+                let lon=idx.known_lon as f32+(source_x as f32-idx.known_x as f32)*idx.dx as f32;
+                let (gx,gy)=projection.latlon_to_ij(grid,lat,lon);
+                let (i,j)=(wps_nint_real(gx)+self.halo as i64-1,wps_nint_real(gy)+self.halo as i64-1);
+                if i>=0 && j>=0 && i<self.nxe as i64 && j<self.nye as i64 {
+                    let cell=j as usize*self.nxe+i as usize;
+                    sum[cell] += value;
+                    count[cell] += 1.0;
+                }
+            }
+            for k in 0..n { if count[k] > 0.0 { out[k]=sum[k]/count[k]; } }
+        }
+        let idx = &ds.index;
+        let nx_source = (360.0f32/idx.dx as f32).round();
+        let mut groups: BTreeMap<(i64,i64),Vec<(usize,f32,f32)>> = BTreeMap::new();
+        for k in 0..n {
+            if active.is_some_and(|a| !a[k]) { out[k]=fill as f32; continue; }
+            if !out[k].is_nan() { continue; }
+            let i = (1-self.halo as i64+(k%self.nxe) as i64) as f32;
+            let j = (1-self.halo as i64+(k/self.nxe) as i64) as f32;
+            let (lat,lon) = projection.for_grid(grid,i,j);
+            let mut x = (lon-idx.known_lon as f32)/idx.dx as f32+idx.known_x as f32;
+            let y = (lat-idx.known_lat as f32)/idx.dy as f32+idx.known_y as f32;
+            if x < 0.5 { x += nx_source; }
+            if x >= nx_source+0.5 { x -= nx_source; }
+            let xs = ((x-0.5)/idx.tile_x as f32).floor() as i64*idx.tile_x+1;
+            let ys = ((y-0.5)/idx.tile_y as f32).floor() as i64*idx.tile_y+1;
+            groups.entry((xs,ys)).or_default().push((k,x,y));
+        }
+        for ((xs,ys),points) in groups {
+            let Some(tile) = ds.read_tile_window(xs,ys)? else { continue; };
+            let values = tile.values_real(z);
+            for (k,x,y) in points {
+                for op in seq {
+                    let got = crate::interp::orographic_real(&tile,&values,x,y,*op);
+                    if !got.is_nan() { out[k]=got; break; }
+                }
+            }
+        }
+        Ok(Grid2 {ny:self.nye,nx:self.nxe,data:out.into_iter().map(|v|
+            if v.is_nan() {fill} else {(v*idx.scale_factor as f32) as f64}).collect()})
+    }
+
     /// Build the sampler for a projected grid: f32 twin + public f64
     /// transforms over the extended and corner meshes, assembled by
     /// [`SamplerMesh::from_twin_outputs`].  LANE 2 (transforms are
@@ -1216,6 +1288,46 @@ struct CoverageReceipt {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn orographic_nint_matches_fortran_at_half_integer_neighbors() {
+        let data=include_bytes!("../golden/orographic/nint-real.bin");
+        for pair in data.chunks_exact(8) {
+            let value=f32::from_le_bytes(pair[..4].try_into().unwrap());
+            let expected=i32::from_le_bytes(pair[4..].try_into().unwrap()) as i64;
+            assert_eq!(super::wps_nint_real(value),expected,"Fortran NINT({value:?})");
+        }
+    }
+
+    #[test]
+    fn orographic_positive_gcell_matches_fortran_mean() {
+        use crate::projection::{GridSpec,ProjectedGrid,ProjectionKind};
+        use crate::geog::GeogDataset;
+        use crate::interp::InterpOp;
+        let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir=std::env::temp_dir().join(format!("static-fields-orographic-gcell-{}-{stamp}",std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let index=dir.join("index");
+        let tile=dir.join("00001-00021.00001-00021");
+        std::fs::write(&index,include_bytes!("../golden/orographic/gcell-index")).unwrap();
+        let raw:Vec<u8>=(0..21).flat_map(|j|(0..21).flat_map(move |i|(31+20*i+100*j as u16).to_be_bytes())).collect();
+        std::fs::write(&tile,raw).unwrap();
+        let ds=GeogDataset::open(&dir,None).unwrap();
+        let grid=ProjectedGrid::new(GridSpec{kind:ProjectionKind::Lambert,
+            ref_lat:35.0,ref_lon:-90.0,truelat1:30.0,truelat2:60.0,stand_lon:-90.0,
+            dx:100000.0,dy:100000.0,e_we:4,e_sn:4,known_x:2.0,known_y:2.0,
+            moad_cen_lat:35.0,moad_cen_lon:-90.0,lat_deg:vec![],lon0_deg:0.0,dlon_deg:0.0}).unwrap();
+        let dom=super::DomainSampler::new(&grid,0).unwrap();
+        let win=ds.read_window(1,21,1,21).unwrap();
+        let got=dom.orographic_continuous(&ds,&win,0,&[InterpOp::FourPt,InterpOp::Average4Pt],0.0,true,None).unwrap();
+        std::fs::remove_file(&tile).unwrap();
+        std::fs::remove_file(&index).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        let data=include_bytes!("../golden/orographic/gcell-real.bin");
+        for (k,&value) in got.data.iter().enumerate() {
+            let expected=u32::from_le_bytes(data[(18+k)*4..(19+k)*4].try_into().unwrap());
+            assert_eq!((value as f32).to_bits(),expected,"WPS gcell {k}");
+        }
+    }
     use super::*;
     use crate::testsupport::{
         assert_bits_f32, assert_bits_f64, golden_dir, json, load_package,

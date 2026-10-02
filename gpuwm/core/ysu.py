@@ -96,7 +96,10 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                psfc, znt, ust, hfx, qfx, wspd, br, psim, psih, xland,
                u10, v10, dt: float, ysu_topdown_pblmix: int = 1,
                bep: Mapping[str, cp.ndarray] | None = None,
-               frc_urb2d: cp.ndarray | None = None):
+               frc_urb2d: cp.ndarray | None = None,
+               topo: tuple[cp.ndarray, cp.ndarray] | None = None,
+               u10_out: cp.ndarray | None = None,
+               v10_out: cp.ndarray | None = None):
     """Launch YSU for a batch of device columns and return device outputs.
 
     Three-dimensional inputs have shape ``(nz, ny, nx)`` except
@@ -113,6 +116,14 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
     all of it (a declared divergence, ``kernels/ysu.cu`` and
     ``tests/test_ysu_bep_rural_drag.py``).  ``bep=None`` launches
     ``ysu_column`` exactly as before.
+
+    ``topo`` (WRF ``topo_wind`` = 1 or 2) is ``(ctopo, ctopo2)``, the two
+    (ny, nx) coefficients of :func:`gpuwm.core.terrain_drag.topo_wind_coefficients`:
+    the kernel then takes WRF's ctopo-present arm (``ysu_column_topo``,
+    bl_ysu.F90:1254-1314) and writes the blended 10 m wind of :1402-1408
+    into ``u10_out``/``v10_out``, which the caller supplies; ``u10``/``v10``
+    are read, never written, so the returned dict keeps its layout.  It
+    does not combine with ``bep``.
     """
     columns = {"u": u, "v": v, "theta": theta, "qv": qv, "qc": qc,
                "qi": qi, "p": p, "exner": exner, "dz": dz}
@@ -182,6 +193,23 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
         bep_args = tuple(bep[name] for name in YSU_BEP_TERMS) + (frc_urb2d,)
     elif frc_urb2d is not None:
         raise ValueError("frc_urb2d is only read with bep")
+    topo_args = ()
+    if topo is not None:
+        if bep_args:
+            raise ValueError(
+                "topo_wind does not combine with the BEP arm: ysu_column_bep "
+                "removes YSU's whole own surface drag (the declared rural-drag "
+                "divergence), the drag ctopo scales")
+        ctopo, ctopo2 = topo
+        for name, arr in (("ctopo", ctopo), ("ctopo2", ctopo2),
+                          ("u10_out", u10_out), ("v10_out", v10_out)):
+            if (not isinstance(arr, cp.ndarray) or arr.shape != (ny, nx)
+                    or arr.dtype != DTYPE or not arr.flags.c_contiguous):
+                raise ValueError(f"topo_wind needs {name}, a C-contiguous "
+                                 f"float32 CuPy array with shape {(ny, nx)}")
+        topo_args = (ctopo, ctopo2, u10_out, v10_out)
+    elif u10_out is not None or v10_out is not None:
+        raise ValueError("u10_out/v10_out are only written with topo")
 
     out = {name: cp.empty_like(theta) for name in _YSU_3D_FLOAT_OUTPUTS}
     out.update(hpbl=cp.empty((ny, nx), dtype=DTYPE),
@@ -192,7 +220,8 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                wstar3_2=cp.empty((ny, nx), dtype=DTYPE),
                cloudflg=cp.empty((ny, nx), dtype=cp.int32))
     ncol = ny * nx
-    kernel = get_kernel("ysu", "ysu_column_bep" if bep_args else "ysu_column")
+    kernel = get_kernel("ysu", "ysu_column_bep" if bep_args
+                        else "ysu_column_topo" if topo_args else "ysu_column")
     # The column arrays live in a global workspace sized to the threads in
     # flight, not in the per-thread local frame (which CUDA prices at the
     # card's whole resident-thread capacity).  Columns therefore go in
@@ -220,7 +249,8 @@ def launch_ysu(u, v, theta, qv, qc, qi, p, p_interface, exner, dz,
                     out["cloudflg"],
                     np.int32(int(ysu_topdown_pblmix)),
                     np.int32(nz), np.int32(ny), np.int32(nx),
-                    ws, np.int32(wskp), np.int32(lo)) + bep_args)
+                    ws, np.int32(wskp), np.int32(lo)) + bep_args
+                   + topo_args)
     finally:
         del ws
     return out

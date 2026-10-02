@@ -26,6 +26,7 @@ pub mod npmath;
 pub mod polar;
 pub(crate) mod portable;
 pub mod wps32;
+pub(crate) mod orographic;
 
 pub use wps32::{DEG32, RAD32};
 

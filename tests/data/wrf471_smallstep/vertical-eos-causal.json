@@ -1,0 +1,1344 @@
+{
+  "cases": {
+    "dry_loading": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "flat_unity_map": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "implicit_damper": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 12,
+          "max_abs": 3.0517578125e-05,
+          "max_ulp": 1,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "map_extremes": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "periodic_rows": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 56
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 56
+        },
+        "ph": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "real_evolved": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "real_initial": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "rigid_lid": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 56,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "southern_hemisphere": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "steep_terrain": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    },
+    "zero_near_zero": {
+      "advance_w": {
+        "muave_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "muts_workspace": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 30
+        },
+        "ph": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "t_2ave": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "w": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_coef_w": {
+        "a": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "alpha": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "gamma": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        }
+      },
+      "calc_p_rho": {
+        "al": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "history_weighted_p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "p": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "ph_unchanged": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2800
+        },
+        "reference_pm1_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        },
+        "reference_pm1_history_copy": {
+          "differing_words": 0,
+          "max_abs": 0.0,
+          "max_ulp": 0,
+          "nonfinite_equal": true,
+          "nonfinite_words": 0,
+          "words": 2744
+        }
+      }
+    }
+  },
+  "correct_pi": false,
+  "environment": {
+    "compute_capability": [
+      12,
+      0
+    ],
+    "cupy": "14.2.0",
+    "gpu": "NVIDIA GeForce RTX 5090",
+    "runtime_version": 13020
+  },
+  "format_version": 1,
+  "kernel_source_sha256": "d790562d35f30576dc36624675db3fe991f7e50c7b44f60fdb3956e6f82af378",
+  "library_sha256": "5a26272a63f17b93fb752226a1db9ff5d461c193dc7d574bc75b05fccf95a086",
+  "no_fma": true,
+  "preserve_subnormals": true,
+  "theta_offset": 0.0,
+  "wrf_eos_order": true,
+  "wrf_phi_order": true,
+  "wrf_top_order": true,
+  "wrf_update_order": true
+}

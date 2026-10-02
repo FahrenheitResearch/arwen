@@ -23,14 +23,17 @@ they put in:
   (module_big_step_utilities_em.F:6509/:6522/:6531 for x and
   :6599/:6605/:6614 for y) and ``rk_addtend_dry`` divides it straight back
   out, so WRF's net diff6 contribution to the dry tendencies carries no
-  map factor at all -- and kernels/diff6.cu omits both operations to the
-  same end (its header: "map factors 1 on the tendency").
+  map factor at all.  kernels/diff6.cu multiplies too since the compiled
+  WRF v4.7.1 diffusion oracle (83fde6032); before it, it omitted both.
 
 gpuwm shares ONE carrying buffer between the two packages
-(``prepare_fixed_tendencies``), so the division is taken on the mixing
-half alone.  Dividing the sum instead under-applies the dry 6th-order
-filter by exactly the map factor; dividing neither leaves the mixing rows
-msf times WRF's.  Both errors are measured here, and neither is visible
+(``prepare_fixed_tendencies``), so the division is taken once over their
+sum, after diff6 has accumulated, as WRF takes it.  Dividing before diff6
+accumulates (the order that was right while diff6.cu omitted the
+multiply) leaves the dry 6th-order filter msf times WRF's: 5 to 18 percent
+on this file's grid, found when the oracle merged into 2.8.2.  Dividing
+neither leaves the mixing rows msf times WRF's.  Both errors are measured
+here, and neither is visible
 on an unmapped grid or with only one of the two packages switched on --
 which is why every gate below runs the operators on a mapped grid and two
 of them run both packages at once.
@@ -242,11 +245,12 @@ def test_the_diff6_rows_reach_the_tendency_with_no_map_factor():
     """diff_6th_opt=2 alone on a mapped grid: the delivered dry tendency
     must carry NO map factor, because WRF multiplies by msf inside
     ``sixth_order_diffusion`` and divides it back out in
-    ``rk_addtend_dry`` -- and diff6.cu omits both.
+    ``rk_addtend_dry``, and gpuwm now does both.
 
     Graded against gpuwm's own float64 diff6 mirror, so the number is
-    WRF's operator and not this module's premise.  A ``1/msf`` applied to
-    the shared carrying buffer shows up here as an 8-20% deficit.
+    WRF's operator and not this module's premise.  A missing ``1/msf``
+    shows up here as a 5-18% excess (measured at the 2.8.2 merge), an
+    extra one as a deficit of the same size.
     """
     import cupy as cp
 

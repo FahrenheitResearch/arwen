@@ -118,8 +118,15 @@ headroom. A GPU preparation must also fit the card: the forecast's
 estimate plus the memory the start time's build took, with 10%
 headroom. Otherwise the preparation prints the numbers and publishes at
 the seal, and the run starts after it, as before. A single native HRRR
-domain chains: its head waits for the decoder to seal every source hour,
-since the portable bundle binds that seal. Met_em, the `gpuwm run`
+domain and a native HRRR domain tree chain. Run as posted (`gpuwm go` and `gpuwm run-plan`, unless
+`--whole-cycle`), its decoder reads each hour once the fetch has verified
+it, and its head is published on the window's first two hours; the
+decoded bridge's and the fetch's SHA256SUMS are written at the seal, each
+row held to the hour it was read from. With the window already fetched,
+its head waits for the decoder to seal every source hour. A native HRRR
+run with a PMSL donor fetches the whole window
+before it prepares and says so: the donor is bound into the source
+manifest before any hour is decoded. Met_em, the `gpuwm run`
 experiment route, the downscale route and a
 native HRRR or ERA5 preparation with a water-temperature overlay (its
 receipt covers every forcing time and is part of the cache identity)
@@ -136,10 +143,10 @@ root's head exists, passes each root interval on as the root writes it,
 and seals after the root seals. A tree whose nests follow a storm (a `gpuwm cyclone-setup`
 configuration included) has its statics corridor built into the head, so
 it starts there too, and a moving nest waits only at the root's intervals.
-A tree whose root streams from a host store under `[tiles]` starts after
-the seal: always with `mode = "on"`, and with `auto` only when the root
-does not fit the card, which the forecast asks of the card as it binds
-the head. A
+A tree whose root streams from a host store under `[tiles]` also starts
+at the head: the store loads the start state there and takes each later
+boundary interval at its seam. This holds for `mode = "on"` and for
+`auto` when the planner streams the root. A
 time step derived from the terrain reads the root's boundary winds over
 the whole run, so a later interval can move it; the forecast so far is
 then kept in `streamed-attempt/` and the forecast runs again on the

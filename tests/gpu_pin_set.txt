@@ -18,7 +18,8 @@
 #   tests/test_openbc.py::test_advection_periodic_path_bitwise_regression: the
 #     advection kernels bitwise against tests/data/advection_periodic_regression.npz.
 #   tests/test_diff6_boundary_face.py, the two bitwise rows: the diff6 periodic
-#     path against the 4d2ce99 capture, and the forced path off the seam faces.
+#     path and forced seam faces against compiled WRF v4.7.1. The older
+#     device capture predates the projection-factor correction.
 #   tests/test_mynn_noah_surface_identity.py and
 #   tests/test_surface_certified_identity.py: byte identity of surface
 #     trajectories against committed JSON fixtures.
@@ -109,8 +110,24 @@ tests/test_coriolis_map.py
 tests/test_mp8_frozen.py
 tests/test_omega_column_scan.py
 tests/test_openbc.py::test_advection_periodic_path_bitwise_regression
-tests/test_diff6_boundary_face.py::test_periodic_path_bitwise_identical_to_base
-tests/test_diff6_boundary_face.py::test_forced_path_changes_only_the_seam_faces
+tests/test_diff6_boundary_face.py::test_periodic_path_is_compiled_wrf_words
+tests/test_diff6_boundary_face.py::test_forced_path_including_seams_is_compiled_wrf_words
+tests/test_diff6_wrf471_parity.py
+tests/test_deformation_wrf471_parity.py
+tests/test_horizontal_diffusion_wrf471_parity.py
+tests/test_vertical_diffusion_wrf471_parity.py
+tests/test_constant_diffusion_wrf471_parity.py
+tests/test_diffusion_drivers_wrf471_parity.py
+# Compiled WRF v4.7.1 advection, acoustic and bigstep output words and exact
+# discrepancy tables are device result pins, alongside the diffusion pins.
+tests/test_advect_wrf471_parity.py
+tests/test_smallstep_bookkeeping_wrf471_parity.py
+tests/test_smallstep_horizontal_wrf471_parity.py
+tests/test_smallstep_vertical_wrf471_parity.py
+tests/test_bigstep_coupling_wrf471_parity.py
+tests/test_bigstep_momentum_wrf471_parity.py
+tests/test_bigstep_prep_wrf471_parity.py
+tests/test_bigstep_rk_wrf471_parity.py
 tests/test_mynn_noah_surface_identity.py
 tests/test_surface_certified_identity.py
 tests/test_shinhong_runtime.py::test_off_path_bl1_micro_run_state_hash_is_pinned

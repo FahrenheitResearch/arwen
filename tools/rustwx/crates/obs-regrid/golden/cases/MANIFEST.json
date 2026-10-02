@@ -52,6 +52,7 @@
       "method": "nearest",
       "max_distance_m": "0x40c7700000000000",
       "max_used_distance_m": "0x40c74457f4702c86",
+      "unit_vectors_fnv1a64": "0xb68cdbcd26ad5a63",
       "source_shape": [
         67,
         100
@@ -117,6 +118,7 @@
       "method": "cell_average",
       "max_distance_m": "0x40c7700000000000",
       "max_used_distance_m": "0x40c0c1ef30d59cfb",
+      "unit_vectors_fnv1a64": "0xb68cdbcd26ad5a63",
       "source_shape": [
         67,
         100
@@ -182,6 +184,7 @@
       "method": "nearest",
       "max_distance_m": "0x40c7700000000000",
       "max_used_distance_m": "0x40c0c1ef30d59cfb",
+      "unit_vectors_fnv1a64": "0xba51bb8a6da4af8f",
       "source_shape": [
         100,
         120
@@ -247,6 +250,7 @@
       "method": "nearest",
       "max_distance_m": "0x4097700000000000",
       "max_used_distance_m": "0x4097694aa03ca957",
+      "unit_vectors_fnv1a64": "0xb68cdbcd26ad5a63",
       "source_shape": [
         67,
         100
@@ -312,6 +316,7 @@
       "method": "nearest",
       "max_distance_m": "0x40db25b148a2f4fe",
       "max_used_distance_m": "0x0000000000000000",
+      "unit_vectors_fnv1a64": "0x01884690277d91bd",
       "source_shape": [
         1,
         2
@@ -359,6 +364,7 @@
       "method": "nearest",
       "max_distance_m": "0x40db25b148a2f4ff",
       "max_used_distance_m": "0x40db25b148a2f500",
+      "unit_vectors_fnv1a64": "0x01884690277d91bd",
       "source_shape": [
         1,
         2
@@ -406,6 +412,7 @@
       "method": "nearest",
       "max_distance_m": "0x40e86a0000000000",
       "max_used_distance_m": "0x0000000000000000",
+      "unit_vectors_fnv1a64": "0x006a6d6362b52025",
       "source_shape": [
         1,
         2
@@ -452,6 +459,7 @@
       "method": "nearest",
       "max_distance_m": "0x40e86a0000000000",
       "max_used_distance_m": "0x0000000000000000",
+      "unit_vectors_fnv1a64": "0xd274bf23217674e5",
       "source_shape": [
         1,
         2

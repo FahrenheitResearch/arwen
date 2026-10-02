@@ -91,7 +91,13 @@ def test_constants_reuse_and_invalidate_by_object_and_device(monkeypatch):
     def upload(a):
         uploads.append(a)
         return np.array(a, copy=True)
+    stream = SimpleNamespace(ptr=0, wait_event=lambda event: None)
+    synchronized = []
     cp = SimpleNamespace(asarray=upload, cuda=SimpleNamespace(
+        Device=lambda: SimpleNamespace(
+            id=device[0], synchronize=lambda: synchronized.append(device[0])),
+        get_current_stream=lambda: stream,
+        Event=lambda **kw: SimpleNamespace(record=lambda: None, done=True),
         runtime=SimpleNamespace(getDevice=lambda: device[0])))
     monkeypatch.setattr(lw, "_LW_CONST_CACHE", {})
     monkeypatch.setattr(lw, "gpu_band_tabs", lambda band, C: ([], SimpleNamespace(data=SimpleNamespace(ptr=band))))
@@ -102,6 +108,9 @@ def test_constants_reuse_and_invalidate_by_object_and_device(monkeypatch):
     assert len(uploads) == count
     other = defaultdict(lambda: np.ones(1, dtype=np.float32))
     assert lw._lw_dev_consts(cp, other) is not a
+    # The replaced copy may still be read on another stream of the card, so
+    # the replacement waits for the card first (lane 282-multigpu).
+    assert synchronized == [0]
     device[0] = 1
     assert lw._lw_dev_consts(cp, other) is not lw._LW_CONST_CACHE[0][1]
 

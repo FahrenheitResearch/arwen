@@ -40,13 +40,15 @@ deriving child physics or time step. A restart from another nest is refused.
 The child duration must also fit entirely inside the archived forcing window;
 both `--point --hours` and a supplied child config are checked on `--dry-run`.
 
-**2. For a full-physics child, nothing extra -- but a child-grid file
-raises the fidelity.** Land identity and the soil warm start have to come
-from somewhere, and `gpuwm downscale` now resolves that itself: with no
-`--child-surface-from`, it takes them off the parent's own history frame
-and puts them on the child grid through WRF's nest-birth operators, the
-same route WRF uses for a nest with `input_from_file = .false.`. It says
-so, once:
+**2. For a full-physics child, nothing extra.** A child builds its own
+terrain, land use and soil at its own spacing (next section) and puts the
+parent's land-surface state on them. The rest of this item describes the
+older route a child takes with `--parent-terrain`, where the land identity
+comes from the parent. On that route, with no `--child-surface-from`,
+`gpuwm downscale` takes land identity and the soil warm start off the
+parent's own history frame and puts them on the child grid through WRF's
+nest-birth operators, the same route WRF uses for a nest with
+`input_from_file = .false.`. It says so, once:
 
 ```
 gpuwm downscale: child surface derived from RUN/wrfout_d01_... (21 fields, MODIFIED_IGBP_MODIS_NOAH)
@@ -73,6 +75,68 @@ allowing float32/projection differences up to one percent of a child cell
 (at least 2 m), and checks `DX`/`DY` when present. A same-shaped surface from
 another location is refused before preprocessing. The plan records the
 measured coordinate separation and tolerance.
+
+## The child's own terrain
+
+A child runs on its **own** static geography by default: terrain, land use
+and soil category built at the child's spacing by the same static builder a
+standalone run of that grid uses, with Copernicus GLO-30 terrain at 1 km or
+finer (the engine's high-resolution default). A 1 km child of a 3 km parent
+therefore sees the passes, canyons and ridges its spacing resolves, not its
+parent's 3 km ridges interpolated. The parent's atmosphere is moved onto that
+terrain the way WRF's `ndown` moves it (WRF v4.7.1 `main/ndown_em.F`):
+
+1. Every parent frame is interpolated onto the child grid and, with
+   `--child-levels`, remapped onto the child's own levels.
+2. The parent's interpolated terrain and the child's own are blended across
+   the child's edges (WRF's `blend_terrain`): the specified and relaxation
+   rows keep the parent's terrain, so the boundary data are applied on the
+   terrain they were made on; the next 5 rows blend; the interior is the
+   child's own.
+3. The state is rebalanced onto the blended terrain (WRF's `rebalance`): the
+   base state is rebuilt on it, each level's potential temperature keeps its
+   departure from the reference atmosphere, the column's dry-mass
+   perturbation is kept, and pressure and geopotential are integrated
+   hydrostatically down and up the new column.
+
+The initial state and every boundary frame take the same steps. The land
+surface is the child's own land use and soil, with the parent's land state
+(skin, soil temperature and moisture, snow) put on it by WRF's masked
+interpolator and moved to the child's terrain with `real.exe`'s soil lapse
+(-6.5 K per km). `--child-surface-from` still wins for the land surface when
+it is given.
+
+Both steps match WRF v4.7.1's own Fortran on column checks
+(`tools/ndown_wrf471_oracle`, `tests/test_offline_child_geography.py`).
+
+The plan and the run say which terrain the child is on:
+
+```
+gpuwm downscale: child terrain: its own static geography at 1000 m, built from WPS_GEOG with copernicus-dem-glo30 terrain, blended into the parent's across the boundary zone (--parent-terrain keeps the parent's)
+```
+
+and the derived child config carries it in a `[static]` table:
+
+```toml
+[static]
+terrain = "own"            # or "parent"
+# geog_root = "/data/WPS_GEOG"     the WPS_GEOG tree (default: the staged one)
+# geog_data_res = "default"        WPS geog_data_res tokens
+# smooth_option = "1-2-1"          terrain smoothing, as [[domain]] static takes it
+# smooth_passes = 1
+# [static.highres]                 high-resolution terrain or land cover, as an experiment takes it
+```
+
+Flags win over the file: `--parent-terrain` runs the child on its parent's
+interpolated terrain, land use and soil (the route every child ran before
+children had their own geography), and `--geog-root DIR` names the WPS_GEOG
+tree. A child whose own geography cannot be built (no WPS_GEOG tree, or a
+parent whose stored coordinates contradict its projection) is refused before
+anything is reserved, naming `--parent-terrain`; `--dry-run` prints the same
+reason and continues so the plan can be read.
+
+A downscaled run is itself a parent, and its grandchild builds its own
+terrain the same way.
 
 ## Which route builds your parent -- ask the registry
 

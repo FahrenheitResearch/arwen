@@ -1,6 +1,11 @@
 # tests/test_diff6_boundary_face.py
 """Sixth-order diffusion: the WRF-computed high-side staggered faces.
 
+The compiled WRF v4.7.1 oracle now supersedes the historical GPU golden:
+the old golden retained missing tendency map factors and different REAL
+rounding. The periodic and forced replay tests below grade compiled Fortran
+words. The older captures and their generator remain historical evidence.
+
 Oracle: WRF v4.6.1 (reference bundle) ``sixth_order_diffusion``,
 dyn_em/module_big_step_utilities_em.F --
   bounds    :6332-6444: for ``specified .or. nested`` (:6333-6334) the
@@ -878,58 +883,41 @@ def _card_capture():
 @requires_gpu
 @pytest.mark.gpu
 @pytest.mark.parametrize("row", _capture_cases(), ids=lambda r: r[0])
-def test_periodic_path_bitwise_identical_to_base(row):
-    """Periodic configs never set the boundary flags: the kernel's output
-    for the identical periodic request must be bit-identical to the
-    4d2ce99 capture (the fix may not perturb non-forced domains)."""
+def test_periodic_path_is_compiled_wrf_words(row):
+    """The old GPU capture preserved the missing-map and contraction defects.
+
+    Real periodic states now face WRF's compiled routine with explicit
+    three-cell periodic halos and a nonzero accumulated tendency.
+    """
+    from test_diff6_wrf471_parity import oracle, inputs, launch
     key, stagger, opt, slope_kw = row
-    data = _card_capture()
-    f, mut, c1, c2 = _periodic_case(stagger)
-    got = _periodic_tend(f, mut, c1, c2, opt, stagger, **slope_kw)
-    np.testing.assert_array_equal(got, data["per_" + key], err_msg=key)
+    metadata,fixture=oracle()
+    name={"":"t","x":"u","y":"v","z":"w"}[stagger]
+    selected=[r for r in metadata["cases"] if r["scenario"]=="real_periodic_halos"
+              and r["name"]==name and r["opt"]==opt and r["slopeopt"]==bool(slope_kw)]
+    assert len(selected)==1,key
+    settings=selected[0];values=inputs(fixture,settings["case"])
+    np.testing.assert_array_equal(launch(settings,values).view(np.uint32),values["reference"].view(np.uint32),err_msg=key)
 
 
 @requires_gpu
 @pytest.mark.gpu
 @pytest.mark.parametrize("row", _capture_cases(), ids=lambda r: r[0])
-def test_forced_path_changes_only_the_seam_faces(row):
-    """On the forced path, every face OTHER than the two newly-computed
-    seam sets must be bit-identical to the 4d2ce99 capture; the seam sets
-    themselves must be nonzero (u east / v north) or empty (mass/w).
+def test_forced_path_including_seams_is_compiled_wrf_words(row):
+    """Compiled WRF supersedes the pre-fix GPU golden on every face.
 
-    RED at 4d2ce99: launch_diff6 has no boundary-awareness to request
-    (TypeError on the bnd kwargs, recorded as fix-introduced-symbol RED
-    evidence per house convention)."""
+    The hybrid-transition case discriminates coupling before face averaging,
+    and the full output includes the boundary seam and zeroed strips.
+    """
+    from test_diff6_wrf471_parity import oracle, inputs, launch
     key, stagger, opt, slope_kw = row
-    data = _card_capture()
-    cfg = _forced_cfg(specified=True)
-    f, mut, c1, c2 = _forced_case(stagger)
-    if slope_kw:
-        import cupy as cp
-        slope_kw = dict(slope_kw)
-        for name in ("phb", "msfu", "msfv"):
-            slope_kw[name] = cp.asarray(slope_kw[name], cp.float32)
-    got = _production_masked_tend(f, mut, c1, c2, opt, stagger, cfg,
-                                  **slope_kw)
-    base = data["forced_" + key]
-    seam = _seam_mask(stagger, f.shape)
-    np.testing.assert_array_equal(got[~seam], base[~seam], err_msg=key)
-    assert (base[seam] == 0.0).all()            # what 4d2ce99 shipped
-    if stagger in ("x", "y") and opt == 1:
-        assert np.abs(got[seam]).min() > 0.0    # now WRF-computed
-    if stagger in ("x", "y"):
-        # And the computed values are WRF's: seam faces vs the oracle.
-        host_slope = {}
-        if slope_kw:
-            import cupy as cp
-            host_slope = dict(slope_kw)
-            for name in ("phb", "msfu", "msfv"):
-                host_slope[name] = cp.asnumpy(host_slope[name])
-        want = wrf_sixth_order_diffusion(
-            f, mut, c1, c2, FACTOR, DT, opt, _STAG_NAME[stagger],
-            **host_slope)
-        np.testing.assert_allclose(got[seam], want[seam], rtol=1e-4,
-                                   atol=1e-8, err_msg=key)
+    metadata,fixture=oracle()
+    name={"":"t","x":"u","y":"v","z":"w"}[stagger]
+    selected=[r for r in metadata["cases"] if r["scenario"]=="hybrid_transition"
+              and r["name"]==name and r["opt"]==opt and r["slopeopt"]==bool(slope_kw)]
+    assert len(selected)==1,key
+    settings=selected[0];values=inputs(fixture,settings["case"])
+    np.testing.assert_array_equal(launch(settings,values).view(np.uint32),values["reference"].view(np.uint32),err_msg=key)
 
 
 if __name__ == "__main__":

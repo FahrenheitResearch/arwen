@@ -1682,6 +1682,7 @@ def describe_fit(resolved: dict[str, Any], draft: dict[str, Any]) -> dict[str, A
         "start_time": experiment.get("start_time"),
         "words": " ".join(words),
         "warnings": warnings,
+        "disk": resolved.get("disk"),
     }
 
 

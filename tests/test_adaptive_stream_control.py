@@ -22,10 +22,12 @@ def config(**changes):
 def test_control_replaces_each_tile_cadence_including_cleared_override(due):
     source = NS(stepra=7, stepcu=5, stepbl=3, radt_seconds=15.,
                 cudt_seconds=12., bldt_seconds=9.,
-                radiation_due_override=due, cumulus_due_override=due)
+                radiation_due_override=due, cumulus_due_override=due,
+                surface_pbl_due_override=due)
     control = PhysicsStepControl.from_driver(source)
     for old in (True, False, None):
-        tile = NS(physics=NS(radiation_due_override=old, cumulus_due_override=old))
+        tile = NS(physics=NS(radiation_due_override=old, cumulus_due_override=old,
+                             surface_pbl_due_override=old))
         control.apply(tile)
         assert vars(tile.physics) == vars(source)
     source.radt_seconds = 1000.

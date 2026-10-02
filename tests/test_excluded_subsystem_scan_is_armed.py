@@ -77,6 +77,32 @@ def _object_present(rev: str) -> bool:
     return result.returncode == 0
 
 
+def _single_commit_public_source_export(root: pathlib.Path) -> bool:
+    """A cut source export omits its private builder and its source history.
+
+    An archived private tree still carries the builder, so a missing base
+    there remains a failure.  A full public clone has more than the one
+    snapshot commit and must also retain its approved public baseline.
+    """
+
+    if (root / "work" / "build_release_snapshot.py").is_file():
+        return False
+    result = subprocess.run(
+        ["git", "rev-list", "--count", "HEAD"], cwd=root,
+        capture_output=True, text=True)
+    return result.returncode == 0 and result.stdout.strip() == "1"
+
+
+def _skip_only_a_public_export_without_baseline_history() -> None:
+    if not _object_present(scan.CLEAN_BASE) and \
+            _single_commit_public_source_export(scan.ROOT):
+        pytest.skip(
+            "the public source snapshot omits private preparation history "
+            "and contains only its snapshot commit; this history guard "
+            "requires an approved private or public baseline ancestor and "
+            "still runs in repositories carrying that history")
+
+
 def test_the_clean_base_is_present_in_this_clone() -> None:
     """F15.  Three of the five scans skip themselves without it.
 
@@ -87,6 +113,7 @@ def test_the_clean_base_is_present_in_this_clone() -> None:
     module so that it cannot itself be skipped by the same missing object.
     """
 
+    _skip_only_a_public_export_without_baseline_history()
     assert _object_present(scan.CLEAN_BASE), (
         f"tests/test_excluded_subsystem_absent.py pins CLEAN_BASE = "
         f"{scan.CLEAN_BASE} and this clone does not contain that commit.  "
@@ -101,6 +128,7 @@ def test_the_clean_base_is_present_in_this_clone() -> None:
 def test_the_clean_base_is_an_ancestor_of_head() -> None:
     """A base that resolves but is off this history diffs the wrong thing."""
 
+    _skip_only_a_public_export_without_baseline_history()
     if not _object_present(scan.CLEAN_BASE):
         pytest.fail("CLEAN_BASE is absent; see the test above")
     result = subprocess.run(
@@ -111,6 +139,31 @@ def test_the_clean_base_is_an_ancestor_of_head() -> None:
         "`git diff CLEAN_BASE..HEAD` then reports the difference between two "
         "unrelated tips rather than what this branch added, and the "
         "branch-diff scan is measuring the wrong thing while passing.")
+
+
+@pytest.mark.parametrize("private_builder, commit_count, returncode, expected", [
+    (True, "1", 0, False),
+    (False, "1", 0, True),
+    (False, "2", 0, False),
+    (False, "", 128, False),
+])
+def test_only_a_single_commit_public_source_export_omits_history(
+        tmp_path, monkeypatch, private_builder, commit_count, returncode,
+        expected):
+    from types import SimpleNamespace
+
+    if private_builder:
+        driver = tmp_path / "work" / "build_release_snapshot.py"
+        driver.parent.mkdir()
+        driver.write_text("# private release source\n", encoding="utf-8")
+
+    def run(command, **kwargs):
+        assert command == ["git", "rev-list", "--count", "HEAD"]
+        assert kwargs["cwd"] == tmp_path
+        return SimpleNamespace(returncode=returncode, stdout=commit_count)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert _single_commit_public_source_export(tmp_path) is expected
 
 
 @pytest.mark.parametrize("available, expected", [

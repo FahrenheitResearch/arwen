@@ -569,7 +569,9 @@ def confirmed_latest(document: dict, *, now: datetime | None = None, probe=None)
                                      probe=_head_ok if probe is None else probe)
     except (RuntimeError, ValueError):
         return candidate
-    return _stamp(min(cycle, parse_cycle(candidate)))
+    from gpuwm import fetch_endpoints
+    return _stamp(cycle if fetch_endpoints.policy_uses_aws(document["source_id"])
+                  else min(cycle, parse_cycle(candidate)))
 
 
 def verdict(document: dict, cycle: str, *, now: datetime | None = None,
@@ -1045,7 +1047,10 @@ def page_latest(document: dict, *, now: datetime | None = None, session: ProbeSe
         held = _answered_complete(source, cycles, last_hour, now, session)
         if held is not None and (cycle is None or held > cycle):
             cycle = held
-    found = None if cycle is None else min(cycle, parse_cycle(candidate))
+    from gpuwm import fetch_endpoints
+    found = (None if cycle is None else cycle
+             if fetch_endpoints.policy_uses_aws(source)
+             else min(cycle, parse_cycle(candidate)))
     newer = [start for start in walk if found is None or start > found]
     # A host not heard was asked about a start newer than the one found (or no start was found): said as unchecked,
     # so it is asked again.  Every host answered: each newer start was answered not whole.  Otherwise only the ones
@@ -1084,9 +1089,17 @@ def resolve_latest(source: str, hours: float, *, now: datetime | None = None,
     # analysis_window_reference); applying it here as well subtracted the
     # window twice, and the cycle selected for a 240-hour era5 request
     # landed ten days before this document's own latest_candidate.
+    from gpuwm import fetch_endpoints
     cycle = resolve_latest_cycle(document["source_id"], document["last_hour"],
                                  now=now, probe=record_probe, cadence=cadence,
-                                 **({"as_posted": True} if posted else {}))
+                                 **({"as_posted": posted} if fetch_endpoints.aws_fetch_policy()
+                                    else {"as_posted": True} if posted else {}))
+    if (fetch_endpoints.policy_uses_aws(document["source_id"])
+            and document.get("latest_candidate")
+            and cycle > parse_cycle(document["latest_candidate"])):
+        # The AWS probe, including its required start objects, is stronger
+        # evidence than the table's publication estimate.
+        document["latest_candidate"] = _stamp(cycle)
     validate_cycle(document, _stamp(cycle))
     document["selected_cycle"] = _stamp(cycle)
     document["resolution"] = {

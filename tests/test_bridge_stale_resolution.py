@@ -102,6 +102,10 @@ def estate(tmp_path, monkeypatch):
     monkeypatch.setenv(bridge_assets.ASSET_URL_BASE_ENV,
                        mirror.resolve().as_uri())
     monkeypatch.delenv(bridge_assets.STALE_POLICY_ENV, raising=False)
+    # This fixture measures the staged release pin.  An inherited build
+    # override selects another artifact and correctly reports only info.
+    from gpuwm import mpas_mesh
+    monkeypatch.delenv(mpas_mesh.MESH.env_var, raising=False)
     monkeypatch.setattr(bridges, "_REFRESH_ATTEMPTED", False)
     monkeypatch.setattr(bridges, "_REFRESH_FAILURE", None)
     monkeypatch.setattr(bridges, "_STALE_ALLOWED", set())
@@ -379,10 +383,23 @@ def test_doctor_reports_the_verdict_the_doors_act_on(estate, monkeypatch):
 
     from gpuwm import doctor
 
+    # The shared native build can supply an environment override or an
+    # earlier checkout/package rung.  This test owns a synthetic staged
+    # estate, so every earlier rung must be empty for doctor to inspect it.
+    empty = estate["tmp"] / "no-checkout-build"
+    empty.mkdir()
+    artifact = next(item for item in bridge_assets.BUNDLED_ARTIFACTS
+                    if item.name == _ARTIFACT)
+    monkeypatch.delenv(artifact.env_var, raising=False)
+    monkeypatch.setattr(bridges, "crate_dir", lambda: empty)
+    monkeypatch.setattr(bridges, "_package_parent", lambda: empty)
+    monkeypatch.setattr(bridges, "packaged_bridge_dir", lambda: empty)
     monkeypatch.setattr(bridges, "default_bridge_dir",
                         lambda: estate["staged"])
-    monkeypatch.setattr("gpuwm.mpas_mesh.default_bridge_dir",
-                        lambda: estate["staged"])
+
+    with bridges.inspection_only():
+        assert bridges.find_artifact(artifact.env_var, estate["filename"]) == \
+            estate["path"]
 
     def forbidden(**kwargs):
         raise AssertionError("doctor must not repair what it measures")

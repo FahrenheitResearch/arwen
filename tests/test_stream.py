@@ -1655,14 +1655,35 @@ def test_node_budget_accepts_enforced_source_envelope_and_refuses_below_bound(
         observations=observed)
     required = receipt["conservative_retained_requirement_bytes"]
 
+    # A190 retires the 64/48-field history assumption and takes history out
+    # of the blanket 2x factor, which still doubles the retained
+    # preparation/checkpoint reservation. Reprice the fixed proof geometry
+    # independently from the stream controller: four retained preparations
+    # and their 14/44 history frames per cycle, with four activation frames
+    # lacking output-due reflectivity.
+    from gpuwm import disk_budget
+    from gpuwm.io.history_selection import resolve
+
+    preparation = sum(
+        domain.run.nx * domain.run.ny * (domain.run.nz * 4 * 192 + 4 * 96)
+        for domain in plan.experiment.domains)
+    history = 0
+    for domain, frames in zip(plan.experiment.domains, (14, 44), strict=True):
+        selection = resolve(plan.experiment.output, domain.output)
+        mature = disk_budget.history_frame_bytes(domain.run, selection)
+        activation = disk_budget.history_frame_bytes(
+            domain.run, selection, include_reflectivity=False)
+        history += frames * mature - 4 * (mature - activation)
+    expected_generation = 2 * (4 * 2 * preparation + history)
+
     assert receipt["status"] == "PASS"
     assert receipt["free_bytes_observed"] == node_free
     assert receipt["projected_source_output_bytes"] == 85_899_345_920
     assert receipt["projected_cache_copy_bytes"] == 85_899_345_920
-    assert receipt["projected_generation_bytes"] == 25_126_871_040
+    assert receipt["projected_generation_bytes"] == expected_generation == 9_492_086_896
     assert receipt["fixed_margin_bytes"] == 2_147_483_648
-    assert required == 199_073_046_528
-    assert receipt["free_bytes_after_requirement"] == 47_043_371_008
+    assert required == 183_438_262_384
+    assert receipt["free_bytes_after_requirement"] == 62_678_155_152
     assert receipt["volume_layout"]["kind"] == \
         "shared-work-cache-volume"
     assert receipt["work_volume"]["required_bytes"] == required
@@ -1670,13 +1691,22 @@ def test_node_budget_accepts_enforced_source_envelope_and_refuses_below_bound(
     assert receipt["work_volume"]["free_bytes_observed"] == node_free
     assert receipt["cache_volume"]["free_bytes_observed"] == node_free
     assert receipt["projected_generation_bytes"] / 1024 ** 3 == \
-        pytest.approx(23.401222229)
+        pytest.approx(expected_generation / 1024 ** 3)
     assert receipt["basis"]["history_cadence_seconds"] == {
         "d01": 3600.0,
         "d02": 900.0,
     }
     assert receipt["basis"]["full_file_hour_reservation_cap_bytes"] == \
         8 * 1024 ** 3
+
+    exact_root = tmp_path / "exact-space-work"
+    exact_plan = dataclasses.replace(plan, work_root=exact_root)
+    exact = stream._disk_capacity_gate(
+        exact_root / "disk-capacity.json", plan=exact_plan,
+        backend=FixedDisk(required), cycle=cycle, lead=1,
+        observations=observed)
+    assert exact["status"] == "PASS"
+    assert exact["free_bytes_after_requirement"] == 0
 
     low_root = tmp_path / "low-space-work"
     low_plan = dataclasses.replace(plan, work_root=low_root)

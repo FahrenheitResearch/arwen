@@ -208,6 +208,41 @@ def test_a_lane_names_its_own_product_instead_of_unclassified(tmp_path):
     assert summary["rendered_families"] == [{"name": "refl-ens-mean", "count": 1}]
 
 
+def test_absolute_product_keys_follow_the_same_filesystem_spelling_as_images(
+        tmp_path, monkeypatch):
+    """A path alias must preserve a named product in the actual receipt.
+
+    Windows adds a long-path prefix to receipt paths.  A hard-linked alias
+    provides the same identity with a different canonical spelling on every
+    platform, so this regression also exercises that lookup on Linux.
+    """
+    from gpuwm import render_layout
+
+    image = tmp_path / "panel.png"
+    image.write_bytes(b"owned renderer-result metadata fixture panel")
+    canonical = tmp_path / "filesystem-panel.png"
+    canonical.hardlink_to(image)
+    assert canonical.samefile(image)
+    original_fs_path = render_layout.fs_path
+    image_fs = Path(original_fs_path(image, descend=True)).resolve()
+
+    def filesystem_path(value, *, descend=False):
+        result = original_fs_path(value, descend=descend)
+        if Path(result).resolve() == image_fs:
+            return original_fs_path(canonical, descend=descend)
+        return result
+
+    monkeypatch.setattr(render_layout, "fs_path", filesystem_path)
+    names = {str(image.resolve()): "diagnostic_panel"}
+    summary = receipts.publish_invocation(
+        root=tmp_path, engine="rust", requested_spec="diagnostic_panel",
+        written=[image], failures=[], skipped=[], layout="flat", families=names)
+    assert summary["rendered_png_count"] == 1
+    assert summary["rendered_families"] == [{"name": "diagnostic_panel", "count": 1}]
+    assert receipts.read_summary(tmp_path) == summary
+    assert names == {str(image.resolve()): "diagnostic_panel"}
+
+
 def test_a_frame_that_reached_the_reader_by_a_lesser_route_is_recorded(tmp_path):
     """The layout degradation used to exist only on stderr."""
     image = _png(tmp_path, "temperature", "one")

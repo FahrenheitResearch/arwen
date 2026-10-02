@@ -304,6 +304,7 @@ def run_member(*, base_config, member_dir, index: int, seed: int,
         output_title=data.output_title, domain_id=data.output_domain,
         run_seconds=length, history_interval_s=dc.history_interval_s,
         restart_interval_s=exp.restart_interval_s, restart_path=restart,
+        auto_epssm=exp.auto_epssm,
         write_final_output=True,
         preserved_forcing_prefix=bool(getattr(prepared, 'preserved_forcing_prefix', False)),
         progress_callback=progress_callback)

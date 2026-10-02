@@ -1282,7 +1282,11 @@ def extract_lateral_side(snapshot: Mapping[str, object], side: str,
         raise ValueError("lateral side width must be positive")
     result = {}
     for name in sorted(snapshot):
-        value = _host(snapshot[name])
+        # Select on the owner's array module before any device readback.
+        # Slicing keeps the same elements, including reversed east/north.
+        value = snapshot[name]
+        if not hasattr(value, "ndim"):
+            value = _host(value)
         if value.ndim == 2:
             value = value[None]
         if value.ndim != 3:
@@ -1302,7 +1306,7 @@ def extract_lateral_side(snapshot: Mapping[str, object], side: str,
             selected = value[..., :width, :]
         else:
             selected = value[..., -width:, :][..., ::-1, :]
-        result[name] = np.ascontiguousarray(selected)
+        result[name] = np.ascontiguousarray(_host(selected))
     if not result:
         raise ValueError("boundary snapshot field inventory is empty")
     return MappingProxyType(result)
@@ -1451,6 +1455,9 @@ class StateBoundaryFrames:
         self.spec_bdy_width = int(spec_bdy_width)
         self.spec_zone = int(spec_zone)
         self.relax_zone = int(relax_zone)
+        from gpuwm.ingest.preparation_setup import PreparationSetup
+        self._setup = PreparationSetup()
+        self._setup.activate()
         self._frames: dict[int, Mapping[str, Mapping[str, np.ndarray]]] = {}
         self._inventory: frozenset[str] | None = None
         #: None until the first add fixes which addressing this
@@ -1562,7 +1569,27 @@ class StateBoundaryFrames:
         position in the forcing sequence when the caller is not building
         them in time order.
         """
-        self.add_snapshot(domain_boundary_snapshot(state), index=index)
+        snapshot = _coupled_device_fields(state)
+        names = frozenset(snapshot)
+        if not names:
+            raise ValueError("boundary snapshot field inventory is empty")
+        if self._inventory is None:
+            self._inventory = names
+        elif names != self._inventory:
+            raise ValueError("boundary snapshot field inventories differ")
+        width = self.spec_bdy_width
+        for value in snapshot.values():
+            if value.ndim not in (2, 3):
+                raise ValueError(
+                    "boundary fields must be matching 2-D or 3-D arrays")
+            if min(value.shape[-2:]) < 2 * width:
+                raise ValueError(
+                    "domain is too small for the requested boundary width")
+        position = self._position(index)
+        self._frames[position] = MappingProxyType({
+            side: extract_lateral_side(snapshot, side, width)
+            for side in ("west", "east", "south", "north")
+        })
 
     def build(self, times: Sequence[datetime | float]) -> LateralBoundaries:
         """Assemble the intervals from the accumulated perimeter frames."""
@@ -1612,10 +1639,13 @@ class StateBoundaryFrames:
                 + (f" ({released} were released after their intervals "
                    "were written)" if released else "")
                 + f", so boundary interval {index} cannot be built")
-        return build_lateral_interval_from_sides(
+        result = build_lateral_interval_from_sides(
             self._frames[index], self._frames[index + 1],
             start_seconds=float(seconds[index]),
             end_seconds=float(seconds[index + 1]))
+        if index == len(seconds) - 2:
+            self._setup.close()
+        return result
 
     def release(self, index: int) -> None:
         """Drop frame ``index`` once every interval that reads it exists.

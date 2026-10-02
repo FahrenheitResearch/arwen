@@ -947,6 +947,13 @@ matplotlib engine uses.
 Do not edit anything under `vendor/crates-io` -- each crate carries a
 `.cargo-checksums.json` that cargo validates at build time.
 
+Recorded reader correction for ML exports (2026-10-01): `wrf-core/src/file.rs`
+keeps the existing T-volume dimension probe and falls back to other mass
+volumes, then the XLAT plane for surface-only history selections. The
+vendored checksum records these bytes. Surface-only and unavailable-volume
+export fixtures exercise the fallback; histories carrying T keep the same
+dimension path.
+
 ## crates/static-fields lane-3 decode dependencies (2026-08-17)
 
 The high-resolution raster substrate (`crates/static-fields`
@@ -1238,3 +1245,33 @@ The breakage it answers: `rw_mpas_static` read only the cgroup mount root's
 worker it read no limit and admitted a build against none.  It now reads
 the smallest limit on the path from its own cgroup up to the mount
 (`cgroup_memory_limit`), held to the same case table.
+
+## crates/rw-isobaric: one column walk for charts and datasets (2026-10-01)
+
+A new crate of THIS project, not vendored, with no dependencies.  `bracket`
+and `lerp`, the log-pressure walk `crates/rw-wrfbatch/src/wrf_volumes.rs`
+put its pressure-level charts on, moved here whole; the renderer imports
+them from here, so a 500 hPa chart and a 500 hPa training sample read off
+one history file cannot disagree about where 500 hPa is.  Beside them, the
+ECMWF below-ground rules (Trenberth, Berry and Buja 1993, NCAR/TN-396,
+equations 15 and 16) with the constants NCL's `vinth2p_ecmwf` and GeoCAT's
+`interp_hybrid_to_pressure` use (Rd 287.04, g 9.80616), which nothing else
+in the workspace carried.
+The move changed no picture: the twelve 200 to 850 hPa height and
+temperature charts drawn from one fixed history file by the renderer built
+before and after the move are byte-identical PNGs.
+
+## crates/rw-mlexport: history files as ML datasets (2026-10-01)
+
+A new crate of THIS project, not vendored: the binary `rw_mlexport` behind
+`gpuwm ml-export`.  It reads wrfout-shaped history files with the pinned
+wrf-core reader, puts the fields on pressure levels with `rw-isobaric`,
+regrids through `static-fields`' transcription of WRF's projections, and
+writes Zarr format 2 with its own Blosc (Zstandard, byte shuffle) frame
+encoder and a STORED ZIP64 writer.  No crate joins the lockfile: zstd,
+crc32fast, flate2 and sha2 were already vendored for other members, and
+the Zarr writer is written here rather than vendoring a Zarr library,
+because format 2 on a file system is two JSON documents per array and a
+chunk per file, and the one codec the datasets use is the Blosc frame,
+which numcodecs decodes under zarr-python 2.18 and 3 (the proof opened
+every export with both).

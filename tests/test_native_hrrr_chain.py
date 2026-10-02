@@ -558,7 +558,10 @@ def test_the_one_shot_receipt_carries_the_root_seal_outside_its_provenance():
     tail = inspect.getsource(hierarchy._chained_hierarchy_tail)
     assert 'proof_name=RECEIPT_NAME' in tail
     assert 'seal_completes=("root_preparation",)' in tail
-    assert "verify_seal(c.root_preparation, head=c.root_head)" in tail
+    # A posted tree relays each root marker before the root seals, so the
+    # seal must also hold the exact markers the relay consumed.
+    assert "verify_seal(c.root_preparation, head=c.root_head," in tail
+    assert "consumed=root_stream.consumed_markers())" in tail
 
 
 def test_the_tree_chain_starts_the_hierarchy_on_the_root_head(

@@ -160,7 +160,7 @@ def trajectory_fingerprint(identity, name) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def write_leg_restart(model, directory, *, valid_time) -> Path:
+def write_leg_restart(model, directory, *, valid_time, auto_epssm=None) -> Path:
     """Write a trajectory's tree checkpoint set at the end of its leg.
 
     The restart owner's own writer, on the model the leg just integrated:
@@ -174,7 +174,8 @@ def write_leg_restart(model, directory, *, valid_time) -> Path:
     """
     from gpuwm.io.restart import write_tree_restart
 
-    return write_tree_restart(Path(directory), model, valid_time)
+    return write_tree_restart(Path(directory), model, valid_time,
+                              auto_epssm=auto_epssm)
 
 
 def restore_leg_restart(model, path, *, expected_seconds: float):
@@ -1875,6 +1876,12 @@ def cycle(stages: list) -> int:
         nest_child_dc = nested_forecast.nest_domain_config(
             exp, nest_geometry,
             acknowledgements=tuple(args.nest_acknowledge))
+        # The acoustic rule the nest's own ground needs (A181), read off
+        # the terrain it integrates before any leg is wired: every leg's
+        # child is derived from this configuration.
+        nest_child_dc, nest_acoustic = nested_forecast.nest_acoustics(
+            exp, nest_child_dc, parent_terrain=inputs.static["HGT_M"],
+            parent_grid=inputs.grid)
         nest_admissibility = nested_forecast.validate_nest_admissibility(
             nest_child_dc.run, parent_run=cfg,
             acknowledgements=tuple(args.nest_acknowledge))
@@ -1891,6 +1898,8 @@ def cycle(stages: list) -> int:
             nest_members=nest_members)
         report["nest"]["trajectories"] = [str(name)
                                           for name in nest_trajectories]
+        from gpuwm.acoustic_adaptation import acoustic_receipt
+        report["nest"]["acoustic_substeps"] = acoustic_receipt(nest_acoustic)
         child_run = nest_child_dc.run
         print(f"nest: d{nest_child_dc.grid_id:02d} {child_run.nx}x"
               f"{child_run.ny}x{child_run.nz} dx={child_run.dx:g} "
@@ -2497,6 +2506,9 @@ def cycle(stages: list) -> int:
             restart_root = stage.directory(leg_number(leg), name)
             restarts[name] = write_leg_restart(
                 model, restart_root,
+                auto_epssm=(nested_forecast.nested_experiment(
+                    exp, nest_child_dc).auto_epssm
+                    if len(model.nodes_by_grid_id) > 1 else exp.auto_epssm),
                 valid_time=exp.start_time + timedelta(seconds=float(
                     node.clock.ticks / node.clock.tick_den)))
             written_members = tree_restart_members(restarts[name])

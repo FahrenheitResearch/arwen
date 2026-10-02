@@ -118,6 +118,22 @@ def test_the_builder_reproduces_the_tracked_registry_byte_for_byte(
             "change together.")
 
 
+def test_the_builder_retires_the_old_moisture_cq_disabled_rows(tmp_path):
+    """Rebuilding from an old seed must not bring the CQ guard back."""
+    import json
+
+    registry = json.loads(REGISTRY_PATH.read_text())
+    registry["parameters"]["moist_cq"]["default"] = False
+    for option in ("off", "kessler-mp1", "wsm6-mp6"):
+        registry["components"]["microphysics"]["options"][option][
+            "parameters"]["moist_cq"] = False
+    seed = tmp_path / "old.json"
+    seed.write_text(json.dumps(registry))
+    generated = tmp_path / "physics_registry_v2.json"
+    _run(str(BUILDER_PATH), "--registry", str(seed), "--out", str(generated))
+    assert generated.read_bytes() == REGISTRY_PATH.read_bytes()
+
+
 def test_the_builder_reproduces_the_consumer_export_byte_for_byte(
     tmp_path: Path,
 ) -> None:
@@ -366,10 +382,15 @@ def test_a_remedy_label_names_exactly_the_edit_its_remedy_settings_makes(
                     option_id, label)
                 named = {name for name in parameters if name in label}
                 assert named <= set(settings), (option_id, label)
-    # No tracked rule carries a remedy today: the one that did, Milbrandt-Yau
-    # against RTE+RRTMGP, retired with the defect it described.  The guard
-    # itself is measured, non-vacuously, by the test below.
-    assert checked == 0
+    # Coordinate TKE retains the metric operator's PBL-off refusal as
+    # one conditional rule with a machine-applicable remedy, and the run
+    # door's two diffusion-selector refusals are stated on the closures:
+    # diff_opt=1 on the three that supply no coordinate coefficients
+    # (km_opt 0, 1, 3) and mix_full_fields=false under diff_opt=2 on all
+    # five.  Terrain admission adds one topo_wind and one gwd_opt remedy
+    # on each of those five closures; their labels name only the selector
+    # their edit sets to zero.  1 + 3 + 5 + 5 + 5.
+    assert checked == 19
 
 
 def test_the_builder_refuses_a_remedy_label_that_promises_a_second_edit(

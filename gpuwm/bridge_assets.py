@@ -12,11 +12,11 @@ carries no binaries at all.  Before either existed, the only way to get
 the GRIB decoders, the CPU preprocessing library, the fetch backbone,
 the batch renderer, the two radar front doors, the MRMS, Stage-IV,
 surface, GOES and European-composite front doors, the NetCDF decoder,
-the mapped decode engine, the Zarr reader, the observation remap and the
-terminal workspace onto a wheel install was to clone the repository and run
-``cargo build`` -- a
+the mapped decode engine, the Zarr reader, the observation remap, the ML
+dataset exporter and the terminal workspace onto a wheel install was to
+clone the repository and run ``cargo build`` -- a
 Rust toolchain, a 2.5 GB checkout and a few minutes of compiling, for
-twenty-nine files.
+thirty files.
 ``gpuwm fetch-bridges`` is the same trade :mod:`gpuwm.table_assets`
 already makes for the externalized physics tables: the artifacts are
 published as versioned GitHub release assets, their exact size and
@@ -25,7 +25,7 @@ byte is verified against those pins *before* anything is installed.
 
 What is staged, and where
 -------------------------
-One bundle per platform, holding the twenty-nine artifacts of
+One bundle per platform, holding the thirty artifacts of
 :data:`BUNDLED_ARTIFACTS`, staged into :func:`gpuwm.bridges
 .default_bridge_dir` (``~/.gpuwm/bridges``) -- the last rung of the
 resolution ladder every consumer already searches, so nothing else in
@@ -516,6 +516,15 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "rw_mpas_lbc", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_MPAS_LBC",
         "MPAS lateral boundaries for a limited-area mesh"),
+    # The ML dataset exporter.  Every array operation `gpuwm ml-export`
+    # performs happens in it (the history read, the vertical interpolation,
+    # the regrid, the Zarr and ZIP writing), so a bundle without it is an
+    # install whose `ml-export` can only refuse.  Environment variable
+    # spelled to match gpuwm.ml_export.BINARY_ENV; a test binds the two.
+    BundledArtifact(
+        "rw_mlexport", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_MLEXPORT",
+        "machine-learning dataset export (gpuwm ml-export)"),
     BundledArtifact(
         "arwen-tui", "executable", "tools/arwen-tui",
         "GPUWM_TUI_BIN", "the Rust terminal workspace (gpuwm tui)"),
@@ -975,7 +984,7 @@ def verify_source_revision(payload: bytes, *, expected: str,
 #: What it is for.  A release cut reuses a binary built at an earlier
 #: commit when every path listed for its crate is byte-identical (the
 #: same git object) at the commit being released, so a release that
-#: changed one Python file does not recompile twenty-nine unchanged
+#: changed one Python file does not recompile thirty unchanged
 #: binaries.  A path missing from this table is a binary that could be
 #: reused while carrying a stale copy of that file, so
 #: ``tests/test_native_build_inputs.py`` re-derives the outside inputs

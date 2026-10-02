@@ -44,3 +44,28 @@ at all ("only double precision is supported") -- and glibc carried the line
 "Conversion to float by Ian Lance Taylor, Cygnus Support" until it stripped
 those headers in commit 30891f35. Cygnus attached no separate condition;
 Sun's notice above is the one with conditions, and it is the one preserved.
+
+gpuwm/core/kernels/portable_libm64.cuh also transcribes the double exp,
+log, log1p and pow algorithms through Rust libm 0.2.16. Their notices
+are preserved in that header. The additional original forms are:
+
+/*
+ * ====================================================
+ * Copyright (C) 2004 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */

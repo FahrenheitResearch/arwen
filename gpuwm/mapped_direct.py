@@ -42,6 +42,7 @@ from gpuwm.ingest.boundary_stream import (
     TreeStartStates,
     chained_enabled,
     domain_tree_head_fields,
+    prepared_head_urban_columns,
     producer_device_bytes,
     remove_unfinished_tree,
 )
@@ -646,8 +647,11 @@ class _PostedMappedSource:
     its marker names), every object the route fetched with the first lead
     group but that belongs to no lead (a cycle-invariant field, step-0
     statics), and every input the route does not plan (a donor analysis
-    fetched before the first lead).  A supplement role that is the primary
-    inventory itself (a source whose own files carry its surface) follows
+    fetched before the first lead).  Where the route concatenated parts
+    into the window's first lead's file alone (the cycle's step-0 statics),
+    a batch without that lead decodes it again and keeps only its own
+    times (:meth:`_needs_first_lead`).  A supplement role drawn from the
+    primary inventory (a source whose own files carry its surface) follows
     the batch; any other supplement is read whole by every batch and must
     be there when the first batch is decoded.
 
@@ -709,6 +713,13 @@ class _PostedMappedSource:
         self.lead_of: dict[Path, int | None] = {}
         #: A posted object's ``(bytes, sha256)`` as its marker names it.
         self.expected: dict[Path, tuple] = {}
+        #: A posted object's route role, as its marker names it.
+        self.role_of: dict[Path, object] = {}
+        #: The parts the route concatenated into each lead's file(s).
+        self.parts_of: dict[int, tuple[Path, ...]] = {}
+        #: Whether a later batch decoded the first lead's file again
+        #: (:meth:`_needs_first_lead`), so more than one batch read it.
+        self.carried_any = False
         self.planned: set[Path] = set()
         self.batches: list = []
         self.batch_leads: list[tuple[int, ...]] = []
@@ -730,6 +741,13 @@ class _PostedMappedSource:
             own = item.get("lead", lead)
             self.lead_of[path] = int(lead) if own == lead else None
             self.expected[path] = (item.get("bytes"), item.get("sha256"))
+            if "role" in item:
+                self.role_of[path] = item.get("role")
+        self.parts_of[int(lead)] = tuple(
+            (self.fetch_root / str(part)).resolve()
+            for item in (marker.get("composed") or ())
+            if isinstance(item, Mapping)
+            for part in (item.get("parts") or ()))
 
     def _read_plan(self) -> None:
         path = self.fetch_root / _FETCH_MANIFEST_NAME
@@ -808,16 +826,47 @@ class _PostedMappedSource:
             self._decode_batch(self._next, end)
             self._next = end + 1
 
+    def _needs_first_lead(self, leads) -> bool:
+        """Whether a batch without the window's first lead decodes it again.
+
+        A route that concatenates the cycle's step-0 objects into the
+        window's first lead's file only (roles composed into no other
+        lead's file) carries cycle-invariant fields there, and the decode
+        binds such a field from the earliest time that carries it to every
+        other time, naming that record as each frame's source.  A batch
+        without that lead decoded its times without them: a 3-lead GDPS
+        window as posted was refused at f003 with "mapped frame at
+        2026-10-01 03:00:00 lacks required fields ['land_fraction']".
+        Reading only those parts filled the arrays but named another file
+        as their source, so the frame headers and the composition receipt
+        differed from one decode of the window.  Decoding the first lead's
+        file again binds the same records the whole window binds; the
+        batch keeps only its own times (:meth:`_decode_batch`).
+        """
+
+        first = self.leads[0]
+        if first in leads:
+            return False
+        roles = {self.role_of.get(path)
+                 for lead in leads for path in self.parts_of.get(lead, ())}
+        return any(self.role_of.get(path) not in roles
+                   for path in self.parts_of.get(first, ()))
+
     def _batch_inventory(self, leads):
         primary = tuple(path for path in self.primary
                         if self._in_batch(path, leads))
-        chosen = set(primary)
+        chosen = {path.resolve() for path in primary}
         whole_primary = {path.resolve() for path in self.primary}
         supplements = {}
         for role, paths in self.supplements.items():
-            if {path.resolve() for path in paths} == whole_primary:
+            if {path.resolve() for path in paths} <= whole_primary:
+                # Drawn from the primary inventory (the source's own files
+                # carry its surface: all of them, or one file per lead such
+                # as RRFS's 2dfld): it follows the batch.  Read whole, a
+                # live RRFS window was refused at its first batch, because
+                # the later leads' 2dfld files had not posted.
                 supplements[role] = tuple(
-                    path for path in paths if path in chosen)
+                    path for path in paths if path.resolve() in chosen)
                 continue
             late = [str(path) for path in paths if not self._available(path)]
             if late:
@@ -833,7 +882,11 @@ class _PostedMappedSource:
         from gpuwm.mapped_authoring import author_input_manifest
 
         leads = self.leads[start:end + 1]
-        primary, supplements = self._batch_inventory(set(leads))
+        # The first lead decoded again, ahead of the batch's own times, where
+        # its file alone carries the cycle's step-0 statics.
+        again = 1 if self._needs_first_lead(set(leads)) else 0
+        primary, supplements = self._batch_inventory(
+            {*leads, *self.leads[:again]})
         started = time.perf_counter()
         self._scratch.mkdir(parents=True, exist_ok=True)
         authored = author_input_manifest(
@@ -876,14 +929,22 @@ class _PostedMappedSource:
         frames = bundle.frames
         decoded = tuple(getattr(frames, "valid_times", None)
                         or (frame.valid_time for frame in frames))
-        if decoded != self.valid_times[start:end + 1]:
+        if decoded != (self.valid_times[:again]
+                       + self.valid_times[start:end + 1]):
             bundle.close()
             raise ValueError(
                 f"the lead batch {', '.join(f'f{lead:03d}' for lead in leads)} "
                 f"decoded valid times {[str(value) for value in decoded]}, not "
                 "the ones the posting schedule names for those leads")
         for local, index in enumerate(range(start, end + 1)):
-            self._where[index] = (frames, local)
+            self._where[index] = (frames, local + again)
+        if again:
+            from gpuwm.mapped_composition import without_earlier_batch_times
+
+            # The first lead's time is the first batch's: one decode of the
+            # window lists it once in every alignment time list.
+            self.carried_any = True
+            bundle = without_earlier_batch_times(bundle, self.batches[0])
         self.frames.add_part(frames)
         self.batches.append(bundle)
         self.batch_leads.append(tuple(leads))
@@ -933,7 +994,8 @@ class _PostedMappedSource:
                 f"the as-posted seal's input manifest landed at {path}, not "
                 f"at {self.input_manifest}, because a manifest sealed with "
                 "other mapping, composition or decoder bytes is there")
-        shared = any(owner is None for owner in self.lead_of.values())
+        shared = (self.carried_any
+                  or any(owner is None for owner in self.lead_of.values()))
         bundle = posted_composition_bundle(
             self.batches, self.frames, input_manifest_path=path,
             input_manifest_sha256=digest,
@@ -1615,7 +1677,12 @@ def prepare_mapped_wrf(
     with prep_stage("root_static", label="Prepare root static fields"):
         static_started = time.perf_counter()
         if prebuilt_static is None:
-            static = build_static(grid, geog_root, selection=selection)
+            # WRF's topo_wind / gwd_opt read sub-grid orographic statistics
+            # geogrid writes; the build adds them only when either is on.
+            from gpuwm.static.orographic import with_terrain_drag_statics
+            static = build_static(
+                grid, geog_root,
+                selection=with_terrain_drag_statics(selection, cfg))
             root_static_provider = "native-wps-geog"
             # The terrain-smoothing root seam reads this attestation.
             from gpuwm.static.terrain_smoothing import smoothing_receipt
@@ -2269,7 +2336,8 @@ def prepare_mapped_wrf(
         writer.admit(
             experiment=exp, backend=str(preprocess_receipt["backend"]),
             device_bytes=producer_device_bytes(str(preprocess_receipt["backend"])),
-            source=mapping_contract)
+            source=mapping_contract,
+            urban_columns=prepared_head_urban_columns(exp, static))
         as_posted_head = None
         if posted_source is not None:
             as_posted_head = {
@@ -2619,7 +2687,9 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
         writer.admit(
             experiment=exp, backend=backend,
             device_bytes=producer_device_bytes(backend),
-            source=c.mapping_contract)
+            source=c.mapping_contract,
+            urban_columns=prepared_head_urban_columns(
+                exp, c.static, child_results=tree_head.child_results))
         with prep_stage("prepared_head", label="Publish prepared head"):
             head_started = time.perf_counter()
             writer.write_head(

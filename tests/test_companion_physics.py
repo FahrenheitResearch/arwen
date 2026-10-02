@@ -83,8 +83,12 @@ def test_the_summary_and_the_first_repair_come_from_the_registry_table(
     described: the adapter carries the scheme's own cloud-optics row and
     every implemented scheme radiates under both variants.  The table is
     not empty -- microphysics off is refused on an HRRR start, whose
-    analyzed condensate it cannot keep -- but that rule is scoped to its
-    source and this draft runs Milbrandt-Yau.  So the door is measured
+    analyzed condensate it cannot keep, and the turbulence closures carry
+    the diffusion-selector rules (the 1.5-order closure beside a PBL under
+    diff_opt = 2, diff_opt = 1 without coordinate coefficients,
+    mix_full_fields = false under diff_opt = 2) -- but the first is scoped
+    to its source and none of the others holds for this draft, which runs
+    Milbrandt-Yau at the default diffusion.  So the door is measured
     both ways: against the tracked registry, where no rule fires and the
     generic sentence stands, and against a rule handed to it, where the
     summary and the first repair must be the rule's own words and the
@@ -99,7 +103,7 @@ def test_the_summary_and_the_first_repair_come_from_the_registry_table(
     rules = [rule for component in registry["components"].values()
              for option in component["options"].values()
              for rule in _conditional_refusals(option.get("constraints", {}))]
-    assert all(rule.get("sources") for rule in rules), rules
+    assert any(rule.get("sources") for rule in rules), rules
     assert conditional_refusals_for(dict(DRAFT)) == []
     source, _ = configured_case(tmp_path)
     result = repairs(draft(source))

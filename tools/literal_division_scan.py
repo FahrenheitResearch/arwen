@@ -24,6 +24,11 @@ A divisor that reaches a division through a local variable, an integer
 literal or a helper inlined with a literal argument is invisible here; the
 compiler census (tools/literal_division_census.py, which needs NVRTC) sees
 those.
+
+Every entry point takes the repository root of the tree it scans and reads
+sources only under it (A193), so a gpuwm imported from another tree (an
+installed wheel beside a source tests tree) never stands in for the sources
+being gated.
 """
 from __future__ import annotations
 
@@ -35,11 +40,14 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-KDIR = ROOT / "gpuwm" / "core" / "kernels"
+
+def kernel_dir(root) -> Path:
+    """The kernel source directory of the tree at ``root``."""
+    return Path(root) / "gpuwm" / "core" / "kernels"
+
 
 #: Kernel sources compiled only through ``compile_using_nvrtc`` with
-#: ``--ftz=false`` (the RRTMG routes): the rewrite needs ``-ftz=true``, so a
+#: ``--ftz=false`` (RRTMG and terrain drag): the rewrite needs ``-ftz=true``, so a
 #: constant division there is still ``div.rn``.  A file moving onto a
 #: ``-ftz=true`` route must leave this list.
 FTZ_FALSE_SOURCES = frozenset({
@@ -47,6 +55,10 @@ FTZ_FALSE_SOURCES = frozenset({
     "rrtmg_lw_taugb02_10_11_12.cu", "rrtmg_lw_taugb03_05.cu",
     "rrtmg_lw_taugb06_09.cu", "rrtmg_lw_taugb13_16.cu",
     "rrtmg_lw_zbatched.cu",
+    # Production terrain_drag._module uses direct NVRTC, with its options
+    # tied to this exception by test_literal_division_source_gate.py and
+    # both-card bit oracles in test_terrain_drag_wrf471_parity.py.
+    "terrain_drag.cu",
 })
 
 _NUMBER = r"(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?"
@@ -349,33 +361,43 @@ def literal_divisions(text: str, extra_names=(), extra_values=None
 
 def header_constants(path: Path) -> tuple[set[str], dict[str, float]]:
     """Constant names and float values the loader prepends to ``path``'s
-    unit (common.cuh and the unit's extra headers)."""
+    unit (common.cuh and the unit's extra headers), read beside ``path``
+    in the same tree."""
     from gpuwm.core.kernels import EXTRA_HEADERS
+    path = Path(path)
     headers = ["common.cuh"] + list(EXTRA_HEADERS.get(path.stem, ()))
     names: set[str] = set()
     values: dict[str, float] = {}
     for header in headers:
         if header != path.name:
-            code = code_only((KDIR / header).read_text(encoding="utf-8"))
+            code = code_only((path.parent / header).read_text(
+                encoding="utf-8"))
             hv, hn = _float_constants(code)
             names |= hn
             values.update(hv)
     return names, values
 
 
-def ftz_true_sources() -> list[Path]:
-    return sorted(p for p in list(KDIR.glob("*.cu")) + list(KDIR.glob("*.cuh"))
+def ftz_true_sources(root) -> list[Path]:
+    """Every -ftz=true kernel source of the tree at ``root``."""
+    kdir = kernel_dir(root)
+    if not (kdir / "common.cuh").is_file():
+        # An empty glob would pass the gate on no sources at all.
+        raise FileNotFoundError(f"{root} holds no gpuwm kernel tree at {kdir}")
+    return sorted(p for p in list(kdir.glob("*.cu")) + list(kdir.glob("*.cuh"))
                   if p.name not in FTZ_FALSE_SOURCES)
 
 
-def kernel_file_offenders() -> list[str]:
-    """``path:line divides by C`` for every -ftz=true kernel source."""
+def kernel_file_offenders(root) -> list[str]:
+    """``path:line divides by C`` for every -ftz=true kernel source of the
+    tree at ``root``."""
+    root = Path(root).resolve()
     offenders = []
-    for path in ftz_true_sources():
+    for path in ftz_true_sources(root):
         names, values = header_constants(path)
         for line, token in literal_divisions(
                 path.read_text(encoding="utf-8"), names, values):
-            offenders.append(f"{path.relative_to(ROOT).as_posix()}:{line} "
+            offenders.append(f"{path.relative_to(root).as_posix()}:{line} "
                              f"divides by {token}")
     return offenders
 
@@ -408,9 +430,12 @@ def inline_kernel_strings(source: str):
             yield node.lineno, node.value
 
 
-def inline_kernel_offenders(root: Path = ROOT) -> list[str]:
-    """The same scan over the CUDA source strings of every ``gpuwm`` module."""
-    common_names, common_values = header_constants(KDIR / "common.cu")
+def inline_kernel_offenders(root) -> list[str]:
+    """The same scan over the CUDA source strings of every ``gpuwm`` module
+    of the tree at ``root``."""
+    root = Path(root).resolve()
+    common_names, common_values = header_constants(
+        kernel_dir(root) / "common.cu")
     offenders = []
     for path in sorted((root / "gpuwm").rglob("*.py")):
         text = path.read_text(encoding="utf-8")

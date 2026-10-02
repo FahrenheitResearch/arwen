@@ -4,8 +4,21 @@
 //! `gpuwm.verify.obs.regrid` -- the shipped `scipy.spatial.cKDTree` plan
 //! build and the shipped `numpy.add.at` apply -- run on real staged
 //! observation and model bytes by `golden/gen_regrid_goldens.py`.  The
-//! comparison here is on IEEE bit patterns, not a tolerance: a float
-//! that differs in the last bit fails.
+//! remapped values, indices and masks are compared on IEEE bit patterns:
+//! a remapped float that differs in the last bit fails.
+//!
+//! One field is bitwise only where it can be: `max_used_distance_m` is
+//! built from the platform's `sin`, `cos` and `asin`, whose last bits can
+//! differ between libraries.  The goldens were written on Windows
+//! (UCRT); glibc 2.43 disagrees on 4,361 of the 56,100 unit-vector
+//! components of the real cases' grids, by up to 2 ULP, and the chord of
+//! two vectors 1.35e-3 apart magnifies that to 227 ULP of the metre
+//! distance (8579.868677808428 against 8579.868677808841, 4.1e-10 m),
+//! which failed the public CI's Linux job on 2.7.6, 2.7.7 and 2.8.0.  So
+//! the manifest records a hash of the reference's unit vectors: where this
+//! platform's vectors hash the same the distance is compared to the bit,
+//! and where they differ it is held to `trig_disagreement_bound_m`.
+//! Every other field stays bitwise on every platform.
 //!
 //! One case is exempt from index parity and says so out loud:
 //! `synthetic_tie_degenerate`, where two source cells sit at the same
@@ -107,6 +120,7 @@ struct CaseSpec {
     method: Method,
     max_distance_m: f64,
     max_used_distance_m: f64,
+    unit_vectors_fnv1a64: Option<u64>,
     source_shape: (usize, usize),
     destination_shape: (usize, usize),
     unreachable_destination_cells: usize,
@@ -115,6 +129,10 @@ struct CaseSpec {
 fn hex_float(text: &str) -> f64 {
     let digits = text.trim().trim_start_matches("0x");
     f64::from_bits(u64::from_str_radix(digits, 16).expect("hex float"))
+}
+
+fn hex_u64(text: &str) -> u64 {
+    u64::from_str_radix(text.trim().trim_start_matches("0x"), 16).expect("hex u64")
 }
 
 fn field<'a>(block: &'a str, key: &str) -> &'a str {
@@ -161,6 +179,9 @@ fn read_manifest() -> Vec<CaseSpec> {
             method,
             max_distance_m: hex_float(field(block, "max_distance_m")),
             max_used_distance_m: hex_float(field(block, "max_used_distance_m")),
+            unit_vectors_fnv1a64: block
+                .contains("\"unit_vectors_fnv1a64\":")
+                .then(|| hex_u64(field(block, "unit_vectors_fnv1a64"))),
             source_shape: shape(block, "source_shape"),
             destination_shape: shape(block, "destination_shape"),
             unreachable_destination_cells: field(block, "unreachable_destination_cells")
@@ -175,6 +196,48 @@ fn read_manifest() -> Vec<CaseSpec> {
 // --------------------------------------------------------------------------
 // the parity run
 // --------------------------------------------------------------------------
+
+/// FNV-1a 64 over this platform's unit vectors, source then destination,
+/// each component's little-endian bytes: the same hash
+/// `golden/gen_regrid_goldens.py` records from the reference's vectors.
+fn unit_vectors_fnv1a64(source: &[[f64; 3]], destination: &[[f64; 3]]) -> u64 {
+    let mut value: u64 = 0xcbf2_9ce4_8422_2325;
+    for point in source.iter().chain(destination.iter()) {
+        for component in point {
+            for byte in component.to_le_bytes() {
+                value = (value ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+    }
+    value
+}
+
+/// The diagnostic's precision contract when platform unit vectors differ.
+///
+/// This bound permits 2 ULP of scalar sin/cos disagreement, the largest
+/// measured disagreement between glibc 2.43 and the UCRT on these vectors.
+/// glibc's x86_64 accuracy table reports measured scalar sin/cos errors
+/// of 1 ULP; UCRT documents results usually within 1 ULP of the correctly
+/// rounded value, with possible larger errors.  Neither is a universal
+/// accuracy guarantee:
+/// this gate deliberately rejects disagreement beyond the propagated bound.
+/// See sourceware.org/glibc/manual/2.39/html_node/Errors-in-Math-Functions.html
+/// and learn.microsoft.com/cpp/c-runtime-library/floating-point-support.
+/// A unit-vector component is `cos * cos`, `cos * sin`
+/// or `sin`, at most 1 in magnitude, so it can disagree by 4 ULP of the
+/// trig values plus one rounding of the product: 5 * 2^-53.  Each axis of
+/// the difference of two vectors takes two such components and the chord
+/// is the length of three axes, so it moves by at most
+/// sqrt(3) * 10 * 2^-53; `2 R asin(chord / 2)` scales that by
+/// `R / sqrt(1 - chord^2 / 4)`.  `asin` itself (2 ULP of a value near
+/// chord / 2) and the final multiplications add a few ULP of the distance.
+fn trig_disagreement_bound_m(distance_m: f64) -> f64 {
+    let unit = f64::EPSILON / 2.0; // 2^-53
+    let half_chord = (distance_m / obs_regrid::EARTH_RADIUS_M / 2.0).sin();
+    let slope = obs_regrid::EARTH_RADIUS_M / (1.0 - half_chord * half_chord).sqrt();
+    let ulp = f64::from_bits(distance_m.abs().to_bits() + 1) - distance_m.abs();
+    slope * 3f64.sqrt() * 10.0 * unit + 8.0 * ulp
+}
 
 /// The one case whose SOURCE INDEX is exempt, and the reason.
 const TIE_EXEMPT: &str = "synthetic_tie_degenerate";
@@ -221,14 +284,39 @@ fn every_golden_case_matches_the_real_python_bit_for_bit() {
             "{}: the receipt's unreachable count differs",
             spec.name
         );
-        assert_eq!(
-            plan.max_used_distance_m.to_bits(),
-            spec.max_used_distance_m.to_bits(),
-            "{}: max_used_distance_m differs in its bits ({} vs {})",
-            spec.name,
-            plan.max_used_distance_m,
-            spec.max_used_distance_m
-        );
+        let same_trig = spec.unit_vectors_fnv1a64.is_some_and(|recorded| {
+            let source = obs_regrid::unit_vectors(&source_latitude, &source_longitude).unwrap();
+            let destination =
+                obs_regrid::unit_vectors(&destination_latitude, &destination_longitude).unwrap();
+            unit_vectors_fnv1a64(&source, &destination) == recorded
+        });
+        if same_trig {
+            assert_eq!(
+                plan.max_used_distance_m.to_bits(),
+                spec.max_used_distance_m.to_bits(),
+                "{}: max_used_distance_m differs in its bits ({} vs {}) although this \
+                 platform's unit vectors are the reference's to the bit",
+                spec.name,
+                plan.max_used_distance_m,
+                spec.max_used_distance_m
+            );
+        } else {
+            let apart = (plan.max_used_distance_m - spec.max_used_distance_m).abs();
+            let bound = trig_disagreement_bound_m(spec.max_used_distance_m);
+            assert!(
+                apart <= bound,
+                "{}: max_used_distance_m {} is {apart:e} m from the reference's {}, more than \
+                 the {bound:e} m two C libraries' sin and cos can explain",
+                spec.name,
+                plan.max_used_distance_m,
+                spec.max_used_distance_m
+            );
+            println!(
+                "{}: this platform's sin/cos differ from the reference's; \
+                 max_used_distance_m {apart:e} m apart, bound {bound:e} m",
+                spec.name
+            );
+        }
 
         if spec.name == TIE_EXEMPT {
             // The DOCUMENTED divergence, asserted rather than skipped:
@@ -297,6 +385,25 @@ fn every_golden_case_matches_the_real_python_bit_for_bit() {
             "the golden set is missing {required}; regenerate it"
         );
     }
+}
+
+#[test]
+fn every_case_records_the_reference_unit_vectors_and_the_bound_stays_small() {
+    // Without the hash the distance is never compared to the bit, so a
+    // regeneration that dropped it would quietly move every platform to the
+    // bounded comparison.
+    for spec in read_manifest() {
+        assert!(
+            spec.unit_vectors_fnv1a64.is_some(),
+            "{}: the manifest records no unit_vectors_fnv1a64; regenerate with \
+             golden/gen_regrid_goldens.py",
+            spec.name
+        );
+    }
+    // The bound is nanometres: a remap that picked a different neighbour
+    // moves the distance by a grid spacing, metres to kilometres.
+    let bound = trig_disagreement_bound_m(8579.868677808428);
+    assert!(bound > 4.2e-10 && bound < 2.0e-8, "bound {bound:e} m");
 }
 
 #[test]

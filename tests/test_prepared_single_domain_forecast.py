@@ -2529,10 +2529,28 @@ def _write_280_receipt(fixture):
     return proof
 
 
+# Real physics changes since the 2.8.0 preparation, written out just as
+# EXPECTED_280_REFUSALS is in test_registry_physics_identity.py. The CQ
+# corrections e13fa45c0 / 59f7e280f change WSM6 physics. The named receipt
+# records CQ=False; the synthetic unnamed receipt keeps the current resolved
+# settings, but still carries the old registry's physical operators.
+_EXPECTED_280_PREFLIGHT_REFUSALS = {
+    runner.PHYSICS_PROFILE: [
+        "resolved.moist_cq (prepared False, this build True)",
+        "registry physics of components.microphysics.options.wsm6-mp6 (changed)",
+        "registry physics of parameters.moist_cq (changed)",
+    ],
+    None: [
+        "registry physics of components.microphysics.options.wsm6-mp6 (changed)",
+        "registry physics of parameters.moist_cq (changed)",
+    ],
+}
+
+
 @pytest.mark.parametrize("physics_profile", [runner.PHYSICS_PROFILE, None])
 def test_a_proof_prepared_under_the_280_registry_resolves_at_preflight(
         tmp_path, monkeypatch, physics_profile):
-    """A153: a preparation 2.8.0 wrote runs here, by the real preflight.
+    """A153: the real preflight distinguishes metadata from changed physics.
 
     2.8.0's receipts carry the registry DOCUMENT digest and no
     ``registry_physics``.  Two citation-only registry commits since moved
@@ -2542,8 +2560,10 @@ def test_a_proof_prepared_under_the_280_registry_resolves_at_preflight(
     knobs and two radiation knobs implemented off at 0 refused them again
     by name.  The registry history resolves 2.8.0's document to its
     physics, and what was added since is off in the configuration this
-    build loads, so the proof is admitted; a document the history does not
-    hold is refused, naming it.
+    build loads. The later CQ corrections (e13fa45c0 / 59f7e280f) change
+    WSM6's physical result, so these two historical preparations now
+    refuse with exactly the recorded CQ differences. An unknown registry
+    document still refuses separately, naming it.
     """
 
     fixture = _prepared_fixture(tmp_path, "gfs",
@@ -2551,20 +2571,31 @@ def test_a_proof_prepared_under_the_280_registry_resolves_at_preflight(
     _bind_synthetic_preflight_geometry(monkeypatch, hierarchy=False)
     proof = _write_280_receipt(fixture)
 
-    inputs = _preflight_fixture(fixture, physics_profile=physics_profile)
-    assert inputs.proof["physics"]["registry_sha256"] \
+    assert proof["physics"]["registry_sha256"] \
         == _REGISTRY_DOCUMENT_280
-    assert "urban" not in json.dumps(inputs.proof["physics"])
+    assert "urban" not in json.dumps(proof["physics"])
+    with pytest.raises(ValueError) as caught:
+        _preflight_fixture(fixture, physics_profile=physics_profile)
+    prefix = "physics selection differs from the hash-bound experiment/profile: "
+    assert prefix in str(caught.value)
+    assert str(caught.value).split(prefix, 1)[1] \
+        == "; ".join(_EXPECTED_280_PREFLIGHT_REFUSALS[physics_profile])
 
     for receipt in (proof["physics"], proof["export"]["physics"]):
         receipt["registry_sha256"] = "e" * 64
     _write_json(fixture.proof, proof)
-    with pytest.raises(
-            ValueError,
-            match=(r"physics selection differs from the hash-bound "
-                   r"experiment/profile: registry physics: the preparation "
-                   r"names registry document eeeeeeeeeeee")):
+    with pytest.raises(ValueError) as caught:
         _preflight_fixture(fixture, physics_profile=physics_profile)
+    assert prefix in str(caught.value)
+    expected_unknown = [
+        "registry physics: the preparation names registry document "
+        "eeeeeeeeeeee, which is not in this build's registry history, so its "
+        "physics cannot be established; prepare again",
+    ]
+    if physics_profile is not None:
+        expected_unknown.insert(0,
+            "resolved.moist_cq (prepared False, this build True)")
+    assert str(caught.value).split(prefix, 1)[1] == "; ".join(expected_unknown)
 
 
 @pytest.mark.parametrize("physics_profile", [runner.PHYSICS_PROFILE, None])
@@ -4198,6 +4229,34 @@ def test_hash_bound_history_cadence_warns_on_cli_mismatch(capsys):
     nonstep = _retime_single_domain(base, cadence_seconds=71.0)
     with pytest.raises(ValueError, match="whole number of exact model time steps"):
         runner._validate_hash_bound_history_cadence(nonstep, 71.0)
+
+
+def test_adaptive_prepared_cadence_reaches_exact_offgrid_output_schedule():
+    base = load_experiment(ROOT / "configs" / "gfs_wrf_direct_proof.toml")
+    exp = _retime_single_domain(base, cadence_seconds=71.0)
+    root = replace(exp.root, run=replace(exp.root.run, use_adaptive_time_step=True),
+                   history_begin_s=17.0, history_end_s=200.0)
+    exp = replace(exp, domains=(root,))
+    receipt = runner._validate_hash_bound_history_cadence(exp, 71.0)
+    assert receipt["adaptive_event_landing"] is True
+    assert receipt["exact_model_steps_per_interval"] is None
+    assert receipt["history_begin_seconds"] == 17.0
+    assert receipt["expected_frame_count"] == 3
+    begin, end = runner._root_history_window(exp)
+    schedule = runner._history_output_schedule(
+        start_time=exp.start_time, run_seconds=exp.run_seconds,
+        cadence_seconds=71.0, begin_seconds=begin, end_seconds=end)
+    assert [record[0] for record in schedule] == [17.0, 88.0, 159.0]
+
+
+def test_adaptive_prepared_history_can_be_shorter_than_nominal_step():
+    base = load_experiment(ROOT / "configs" / "gfs_wrf_direct_proof.toml")
+    exp = _retime_single_domain(base, cadence_seconds=1.0, run_seconds=120.0)
+    root = replace(exp.root, run=replace(exp.root.run, use_adaptive_time_step=True))
+    receipt = runner._validate_hash_bound_history_cadence(
+        replace(exp, domains=(root,)), 1.0)
+    assert receipt["expected_frame_count"] == 121
+    assert receipt["last_scheduled_equals_run_end"]
 
 
 def test_cli_requires_explicit_source_physics_run_and_history_output_contract():

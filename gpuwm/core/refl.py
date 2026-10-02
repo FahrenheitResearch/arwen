@@ -84,6 +84,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 from functools import lru_cache
+from gpuwm.core.device_cache import cuda_cache
 
 import numpy as np
 
@@ -351,7 +352,7 @@ def radar_init_wdm6(hail_opt: int = 0) -> RadarInit:
         xoamg=1.0 / xam_g, xocmg=(1.0 / xam_g) ** (1.0 / 3.0))
 
 
-@lru_cache(maxsize=1)
+@cuda_cache(maxsize=None, ready=True)
 def _device_tables():
     """Packed float64 device copy of the radar_init bin/weight tables:
     [xxDs | xdts | xxDg | xdtg | simpson], each NRBINS long."""

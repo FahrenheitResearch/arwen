@@ -555,6 +555,7 @@ def readiness(source: str, cycle: datetime | str, hours: int, *,
     from gpuwm import fetch
 
     checked = _naive(now) if now is not None else _utc_now()
+    transport = fetch_endpoints.policy_transport(source, transport)
     basis = "named"
     try:
         if isinstance(cycle, str):
@@ -688,7 +689,9 @@ def readiness(source: str, cycle: datetime | str, hours: int, *,
         document.update(state="ready", ready=True)
         return document, READY_EXIT
     retry = poll
-    if ready_at is not None and ready_at - ASK_AHEAD > checked:
+    if (ready_at is not None and ready_at - ASK_AHEAD > checked
+            and (no_probe or not any(fetch_endpoints.policy_uses_aws(need.source)
+                                     for need in needs))):
         retry = max(poll, (ready_at - ASK_AHEAD - checked).total_seconds())
     document.update(state="waiting", ready=False,
                     retry_after_seconds=round(float(retry), 1))
@@ -770,6 +773,17 @@ def resolve_startable_cycle(source: str, *, start_hour: int = 0, hours: int,
     probe = fetch._head_ok if probe is None else probe
     grid, _route, cadence, candidates = _candidates(
         source, start_hour=start_hour, hours=hours, cadence=cadence, now=now)
+    if fetch_endpoints.policy_uses_aws(source):
+        # Predictions date the deadline; an already posted AWS start must
+        # not be excluded because the mirror's predicted lag has not passed.
+        newest = grid.snap(now)
+        candidates = []
+        candidate = newest
+        while newest - candidate <= timedelta(hours=grid.search_hours):
+            if (grid.horizon(candidate) is None
+                    or start_hour + hours <= grid.horizon(candidate)):
+                candidates.append(candidate)
+            candidate = grid.snap(candidate - timedelta(hours=1))
     windows: list[Window] = []
     errors: list[str] = []
     for cycle in candidates:

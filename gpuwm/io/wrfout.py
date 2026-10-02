@@ -30,6 +30,7 @@ import numpy as np
 import netCDF4
 
 from gpuwm import perf_timing, progress_log, render_layout
+from gpuwm.wrf_exact import ENABLED as _WRF_EXACT, DIAGNOSTICS_ENABLED
 from gpuwm.config import NO_LAND_SURFACE_SOIL_LAYERS, soil_layer_count
 from gpuwm.io.classic_tape import (ClassicDim, ClassicTape, ClassicVariable,
                                    classic_attr_value)
@@ -41,6 +42,12 @@ from gpuwm.io.wrf_output_schema import (
 from gpuwm.supervisor import (_fsync_directory, fsync_file, quarantine_file,
                               replace_file_with_retry, unique_temp_path,
                               writing_progress)
+
+from gpuwm.io.history_layout import (
+    CORE_DIRECT_STATE_FIELDS, MOISTURE_STATE_FIELDS,
+    _Z_STAGGERED_MASS_FIELDS,
+    live_state_history_fields as _live_state_history_fields,
+)
 
 from gpuwm.io.netcdf_serialization import NETCDF4_IO_LOCK
 
@@ -175,9 +182,7 @@ _SNSO_LAYER_FIELDS = frozenset({SCHEME_OUTPUT_FIELDS["zsnsoxy"].netcdf_name})
 #: zero, so a reader that knows WRF's EL_PBL shape receives WRF's EL_PBL
 #: shape -- rather than an ``nz``-level array under a name whose declared
 #: schema says ``nz + 1``.
-_Z_STAGGERED_MASS_FIELDS = frozenset(
-    SCHEME_OUTPUT_FIELDS[key].netcdf_name
-    for key in ("el_pbl", "exch_h", "exch_m"))
+
 
 #: Every history field whose leading extent is the SOIL axis.  TSLB, SMOIS and
 #: SH2O are generic; SMFR3D and KEEPFR3DFLAG are RUC's own Registry package
@@ -655,239 +660,6 @@ def wrf_time_str(t_s: float) -> str:
     return f"{valid.year:04d}-" + valid.strftime("%m-%d_%H:%M:%S")
 
 
-def _live_state_history_fields(state) -> dict[str, object]:
-    """Map live model arrays to their WRF Registry history names.
-
-    The mapping is intentionally device/host agnostic.  Both frame builders
-    consume it, preventing the asynchronous path from silently carrying a
-    smaller scientific inventory than the synchronous writer.
-    """
-    fields: dict[str, object] = {}
-    for output_name, state_name in (
-            ("QICE", "qi"), ("QSNOW", "qs"), ("QGRAUP", "qg"),
-            ("QNCLOUD", "nc"), ("QNRAIN", "nr"), ("QNICE", "ni"),
-            ("QNSNOW", "ns"), ("QNGRAUPEL", "ng"),
-            # Aerosol-aware Thompson's two transported aerosol scalars
-            # (Registry/registry.new3d_wif:87/:89).  Presence-guarded like
-            # every row above, and mp=28 is the only scheme that allocates
-            # them, so no other run's inventory changes.  QNCLOUD is NOT a
-            # new row here -- it has been mapped to state.nc since Morrison
-            # landed; under mp=28 it simply starts carrying a PROGNOSTIC
-            # droplet number instead of Morrison's diagnostic one, which is
-            # a change in the values WRF also makes, not in the inventory.
-            ("QNWFA", "nwfa"), ("QNIFA", "nifa"),
-            # P3's rime mass and rime volume (mp_physics=50 only, and
-            # presence-guarded like every row above).  WRF gives both the
-            # history ``h`` in Registry.EM_COMMON:555-558.  th_old/qv_old
-            # are deliberately NOT here: their IO string is ``rusd``
-            # (:1598-1599) -- restart, no history -- so WRF does not
-            # publish them either, and gpuwm follows.
-            ("QIR", "qir"), ("QIB", "qib"),
-            # WDM6's CCN reservoir (Registry.EM_COMMON:3031 declares
-            # scalar:qnn,qnc,qnr for wdm6scheme).  It publishes under the
-            # same QNCCN name NSSL's qnn does further down, and that is
-            # safe rather than a collision: mp=16 allocates ``nn`` and mp=18
-            # allocates ``qnn``, never both, so at most one row can fire on
-            # any state.  QNCLOUD/QNRAIN need no new rows -- WDM6's nc/nr
-            # are already mapped above, and under mp=16 they simply carry a
-            # double-moment warm-rain pair instead of Morrison's.
-            ("QNCCN", "nn"),
-            # Milbrandt-Yau's hail NUMBER moment (Registry.EM_COMMON:3025
-            # declares scalar:qh,qnc,qnr,qni,qns,qng,qnh for
-            # milbrandt2mom).  QHAIL is already published by the NSSL-facing
-            # loop below -- it is presence-guarded on state.qh, which mp=9
-            # allocates -- but nothing published ``nh``, so an mp=9 parent
-            # wrote eleven of its twelve transported species and the
-            # offline-child lane's completeness check would fail on a
-            # history file ArWen itself had written (audit R-017).  The row
-            # is safe by the same never-both argument QNCCN above makes:
-            # mp=9 allocates ``nh`` and mp=18 allocates ``qnh``, never both.
-            ("QNHAIL", "nh")):
-        value = getattr(state, state_name, None)
-        if value is not None:
-            fields[output_name] = value
-    # The two 2-D surface aerosol emission rates.  Separate loop because
-    # they are (ny, nx), not (nz, ny, nx): _dims_for routes them by shape,
-    # and grouping them with the volume fields above would only obscure
-    # that.  WRF's microphysics never writes either -- both are declared
-    # OPTIONAL, INTENT(IN) on mp_gt_driver
-    # (module_mp_thompson.F:1098) and are only READ, at :1247 and
-    # :1320-1321.  So what a wrfout carries is thompson_init's derived
-    # nwfa2d (:510) and the exactly-zero nifa2d nothing in
-    # module_mp_thompson.F ever fills.
-    for output_name, state_name in (
-            ("QNWFA2D", "nwfa2d"), ("QNIFA2D", "nifa2d")):
-        value = getattr(state, state_name, None)
-        if value is not None:
-            fields[output_name] = value
-    for output_name, state_name in (
-            ("QHAIL", "qh"), ("QNDROP", "qndrop"),
-            ("QNRAIN", "qnr"), ("QNICE", "qni"),
-            ("QNSNOW", "qns"), ("QNGRAUPEL", "qng"),
-            ("QNHAIL", "qnh"), ("QNCCN", "qnn"),
-            ("QVGRAUPEL", "qvolg"), ("QVHAIL", "qvolh")):
-        value = getattr(state, state_name, None)
-        if value is not None:
-            fields[output_name] = value
-    # The published subgrid energy, present only on a state whose PBL
-    # closure owns one (SASE's prognostic e, or Shin-Hong's per-step TKE
-    # diagnostic).  Scheme-qualified on purpose: WRF's ``TKE_PBL`` is a
-    # Z-staggered MYJ/MYNN field on a different stagger, and the frame's
-    # 2-D ``E`` is the Coriolis cosine term, not a turbulence quantity.
-    # Named for the PRODUCER through the driver's own dispatch receipt,
-    # so a Shin-Hong run can never publish its TKE under the SASE name;
-    # a state without an attached driver keeps the historical SASE
-    # label, which is the only producer such states ever had.
-    e_sgs = getattr(state, "e_sgs", None)
-    if e_sgs is not None:
-        dispatch = getattr(getattr(state, "physics", None),
-                           "scheme_dispatch", None)
-        runner = (dispatch or {}).get("bl_pbl_physics")
-        fields["TKE_SHINHONG" if runner == "_run_shinhong"
-               else "TKE_SASE"] = e_sgs
-
-    p_top = getattr(state, "p_top", None)
-    if p_top is not None:
-        fields["P_TOP"] = np.asarray(p_top, dtype=np.float32)
-    for output_name, state_name in (("ZNU", "znu"), ("ZNW", "znw")):
-        value = getattr(state, state_name, None)
-        if value is not None:
-            fields[output_name] = value
-
-    # UP_HELI_MAX rides in every frame of a run that carries the
-    # accumulator (allocated eagerly under nwp_diagnostics = 1), keeping
-    # the async writer's frame schema constant.  The post-write reset is
-    # the call sites' duty (gpuwm.core.uh_diag.reset_up_heli_max), never
-    # this read-only builder's.
-    existing_scratch = getattr(state, "existing_scratch", None)
-    if existing_scratch is not None:
-        up_heli_max = existing_scratch("up_heli_max")
-        if up_heli_max is not None:
-            fields["UP_HELI_MAX"] = up_heli_max
-
-    physics = getattr(state, "physics", None)
-    if physics is None:
-        return fields
-    microphysics = getattr(physics, "microphysics", None)
-    if microphysics is not None:
-        for output_name, field_name in (
-                ("RAINNC", "rainnc"), ("SNOWNC", "snownc"),
-                ("GRAUPELNC", "graupelnc"), ("HAILNC", "hailnc")):
-            value = getattr(microphysics, field_name, None)
-            if value is not None:
-                fields[output_name] = value
-    # Gate on "a land-surface scheme is routed", not on Noah's parameter
-    # bundle: ``noah_params`` is scheme-2 state, so keying the snow/soil
-    # history on it would silently drop TSLB/SMOIS/SH2O for any other LSM.
-    # ``scheme_dispatch`` is the driver's own resolved routing, and
-    # PhysicsDriver refuses to build when a selector value is unrouted.
-    dispatch = getattr(physics, "scheme_dispatch", None)
-    live_surface = getattr(physics, "fields", {})
-    # MYNN's ten carried 3-D arrays and its four plume diagnostics exist only
-    # under bl_pbl_physics=5, and wrfout does not auto-walk ``fields`` the way
-    # the health collector does, so each emitted field is listed explicitly.
-    # The gate is the driver's own resolved routing, for the same reason the
-    # land-surface gate below is: a scheme that did not run must not appear to
-    # have written state.  The listed keys are the scheme's *runtime* keys and
-    # the emitted names come from the output schema, so no name here is
-    # spelled twice and a key with no schema row raises rather than shipping
-    # an anonymous float32.  ``exch_h``/``exch_m``/``rmol``/``kpbl`` are named
-    # individually because they are shared EM_COMMON rows rather than members
-    # of MYNN's own runtime inventories.
-    if dispatch is not None:
-        from gpuwm.core.physics import PHYSICS_SLOT_DISPATCH
-
-        mynn_runner = PHYSICS_SLOT_DISPATCH["bl_pbl_physics"][5]
-        if dispatch.get("bl_pbl_physics") == mynn_runner:
-            from gpuwm.core.mynn_pbl_runtime import (
-                MYNN_PBL_DIAGNOSTICS_2D, MYNN_PBL_DIAGNOSTICS_INT_2D,
-                MYNN_PBL_STATE_3D,
-            )
-            for field_name in (*MYNN_PBL_STATE_3D, *MYNN_PBL_DIAGNOSTICS_2D,
-                               *MYNN_PBL_DIAGNOSTICS_INT_2D,
-                               "exch_h", "exch_m", "rmol", "kpbl"):
-                if field_name in live_surface:
-                    fields[SCHEME_OUTPUT_FIELDS[field_name].netcdf_name] = \
-                        live_surface[field_name]
-    # Noah-MP's carried state and published diagnostics, on the same terms:
-    # they exist only under sf_surface_physics=4, wrfout does not auto-walk
-    # ``fields``, and the gate is the resolved routing.  The output names come
-    # from the schema, which carries WRF's *external* names.  They used to be
-    # the runtime keys upper-cased, which is not the same thing and was wrong
-    # for every Noah-MP field but two: WRF writes ``TV``/``ISNOW``/``ZSNSO``,
-    # never ``TVXY``/``ISNOWXY``/``ZSNSOXY``, so no WRF-name consumer could
-    # find Noah-MP state in a gpuwm wrfout at all.
-    if dispatch is not None:
-        from gpuwm.core.physics import PHYSICS_SLOT_DISPATCH
-
-        noahmp_runner = PHYSICS_SLOT_DISPATCH["sf_surface_physics"][4]
-        if dispatch.get("sf_surface_physics") == noahmp_runner:
-            from gpuwm.core.noahmp_runtime import (
-                NOAHMP_DIAGNOSTICS_2D, NOAHMP_STATE_2D, NOAHMP_STATE_INT_2D,
-                NOAHMP_STATE_SNOWSOIL_3D, NOAHMP_STATE_SNOW_3D,
-            )
-            for field_name in (*NOAHMP_STATE_2D, *NOAHMP_STATE_INT_2D,
-                               *NOAHMP_STATE_SNOW_3D,
-                               *NOAHMP_STATE_SNOWSOIL_3D,
-                               *NOAHMP_DIAGNOSTICS_2D):
-                if field_name in live_surface:
-                    fields[SCHEME_OUTPUT_FIELDS[field_name].netcdf_name] = \
-                        live_surface[field_name]
-    # RUC's carried state and its four published driver locals, on the same
-    # terms: they exist only under sf_surface_physics=3, wrfout does not
-    # auto-walk ``fields``, and the gate is the resolved routing.  RUC's
-    # external names happen to be its symbols upper-cased, but they are taken
-    # from the schema anyway so that the coincidence is not essential; the
-    # four ruc_* driver locals have no Registry counterpart and keep their
-    # prefix so nothing mistakes them for WRF output.
-    if dispatch is not None:
-        from gpuwm.core.physics import PHYSICS_SLOT_DISPATCH
-
-        ruc_runner = PHYSICS_SLOT_DISPATCH["sf_surface_physics"][3]
-        if dispatch.get("sf_surface_physics") == ruc_runner:
-            from gpuwm.core.ruc_runtime import (
-                RUC_DIAGNOSTICS_2D, RUC_STATE_2D, RUC_STATE_3D,
-            )
-            for field_name in (*RUC_STATE_2D, *RUC_STATE_3D,
-                               *RUC_DIAGNOSTICS_2D):
-                if field_name in live_surface:
-                    fields[SCHEME_OUTPUT_FIELDS[field_name].netcdf_name] = \
-                        live_surface[field_name]
-    if dispatch is not None:
-        land_surface_active = dispatch.get("sf_surface_physics") is not None
-    else:
-        land_surface_active = getattr(physics, "noah_params", None) is not None
-    if not land_surface_active:
-        return fields
-    for output_name, field_name in (
-            ("SNOW", "snow"), ("SNOWH", "snowh"),
-            ("SNOWC", "snowc"), ("TSLB", "tslb"),
-            ("SMOIS", "smois"), ("SH2O", "sh2o"),
-            # The land/soil IDENTITY the five rows above are the STATE of.
-            # Same gate, same dict, same presence guard -- and the reason
-            # they are here rather than left in memory is that a wrfout is
-            # this product's boundary: gpuwm's own offline child reads a
-            # child-grid history file back as its --child-surface-from
-            # source and requires ISLTYP, TMN and VEGFRA among the nine
-            # fields it will not fabricate (gpuwm.offline_child
-            # ._SURFACE_REQUIRED_FIELDS).  Without these rows gpuwm's
-            # history could not seed gpuwm's own child, which is how this
-            # was found: on a real 12 km parent, and again on a nested d02.
-            #
-            # IVGTYP and SEAICE ride the same commit because they are the
-            # same class and the same fix -- WRF core `misc` land identity
-            # this driver has always carried and never published.  SEAICE
-            # in particular closes a silent hole on the reader side: the
-            # child's surface reader treats it as optional and substitutes
-            # ZEROS when absent, so an ice-covered child was being warm-
-            # started ice-free with nothing said.
-            ("ISLTYP", "isltyp"), ("IVGTYP", "ivgtyp"),
-            ("TMN", "tmn"), ("VEGFRA", "vegfra"), ("SEAICE", "xice")):
-        if field_name in live_surface:
-            fields[output_name] = live_surface[field_name]
-    return fields
-
-
 def _driver_refreshes_psfc(state) -> bool:
     """Is ``state.physics.fields["psfc"]`` a computed surface pressure?
 
@@ -936,12 +708,10 @@ def state_frame(
         phb = np.ascontiguousarray(
             np.broadcast_to(phb[:, None, None], (phb.size, ny, nx)))
     fields = {
-        "T": cp.asnumpy(state.total_theta()) - np.float32(300.0),
-        "U": cp.asnumpy(state.u),
-        "V": cp.asnumpy(state.v),
-        "W": cp.asnumpy(state.w),
-        "PH": cp.asnumpy(state.php),
-        "MU": cp.asnumpy(state.mup),
+        "T": (cp.asnumpy(state.thp) if _WRF_EXACT
+              else cp.asnumpy(state.total_theta()) - np.float32(300.0)),
+        **{name: cp.asnumpy(getattr(state, attribute))
+           for name, attribute in CORE_DIRECT_STATE_FIELDS.items()},
         "PHB": phb,
         "MUB": cp.asnumpy(state.mub2d),
         "HGT": cp.asnumpy(state.ht),
@@ -949,7 +719,8 @@ def state_frame(
     if include_diagnostic_pressure:
         pb = state.pb
         pb3 = pb if pb.ndim == 3 else pb[:, None, None]
-        fields["P"] = cp.asnumpy(state.p - pb3)
+        fields["P"] = cp.asnumpy(state.p_perturbation if DIAGNOSTICS_ENABLED
+                                 else state.p - pb3)
         # Broadcast on the host: a state prepared on the CPU carries numpy
         # arrays, and cp.broadcast_to refuses those where cp.asnumpy does
         # not.  Same bytes for a device state.
@@ -972,9 +743,8 @@ def state_frame(
             fields["PSFC"] = cp.asnumpy(
                 w1 * state.p[0] + (1.0 - w1) * state.p[1])
     if state.qv is not None:
-        fields["QVAPOR"] = cp.asnumpy(state.qv)
-        fields["QCLOUD"] = cp.asnumpy(state.qc)
-        fields["QRAIN"] = cp.asnumpy(state.qr)
+        fields.update({name: cp.asnumpy(getattr(state, attribute))
+                       for name, attribute in MOISTURE_STATE_FIELDS.items()})
     for name, array in _live_state_history_fields(state).items():
         if isinstance(array, np.ndarray):
             fields[name] = np.array(array, copy=True, order="C")
@@ -1734,15 +1504,17 @@ def _device_state_frame(state, *, include_diagnostic_pressure: bool = True):
     if phb.ndim == 1:
         phb = cp.broadcast_to(phb[:, None, None], (phb.size, ny, nx))
     fields = {
-        "T": state.total_theta() - cp.float32(300.0),
-        "U": state.u, "V": state.v, "W": state.w,
-        "PH": state.php, "MU": state.mup,
+        "T": (state.thp if _WRF_EXACT
+              else state.total_theta() - cp.float32(300.0)),
+        **{name: getattr(state, attribute)
+           for name, attribute in CORE_DIRECT_STATE_FIELDS.items()},
         "PHB": phb, "MUB": state.mub2d, "HGT": state.ht,
     }
     if include_diagnostic_pressure:
         pb = state.pb
         pb3 = pb if pb.ndim == 3 else pb[:, None, None]
-        fields["P"] = state.p - pb3
+        fields["P"] = (state.p_perturbation if DIAGNOSTICS_ENABLED
+                       else state.p - pb3)
         fields["PB"] = cp.broadcast_to(pb3, state.p.shape)
         if _driver_refreshes_psfc(state):
             fields["PSFC"] = state.physics.fields["psfc"]
@@ -1755,7 +1527,8 @@ def _device_state_frame(state, *, include_diagnostic_pressure: bool = True):
             w1 = (z_if[0] - z_mid[1]) / (z_mid[0] - z_mid[1])
             fields["PSFC"] = w1 * state.p[0] + (1.0 - w1) * state.p[1]
     if state.qv is not None:
-        fields.update(QVAPOR=state.qv, QCLOUD=state.qc, QRAIN=state.qr)
+        fields.update({name: getattr(state, attribute)
+                       for name, attribute in MOISTURE_STATE_FIELDS.items()})
     fields.update(_live_state_history_fields(state))
     if getattr(state, "physics", None) is not None:
         fields.update(state.physics.output_fields())
@@ -1786,6 +1559,30 @@ class _AsyncFrame:
     #: fields still exist, so the writer can say how much it has left to
     #: write after the worker has released them.
     nbytes: int = 0
+    #: A frame whose members are still on their way to the host (the
+    #: ranked road's ``tilestream.output.DeferredStoreFrame``), with the
+    #: selection and the extra rows it is composed with; the WORKER
+    #: assembles it, after its download lands.  ``None`` for every other
+    #: frame, whose ``fields`` are complete at admission.
+    deferred: object = None
+
+
+def _compose_host_frame(frame_items, refl, extra) -> dict:
+    """A host frame's fields in THE order: frame rows, REFL_10CM, extras.
+
+    One function for the admitted frame and the deferred one, because the
+    order is the file: HDF5 lays its name heap out in variable-creation
+    order, and the same numbers in another order hash differently.
+    ``extra`` rows never replace a frame row (prognostic and state-derived
+    fields win, notably a child's blended HGT over the static HGT_M).
+    """
+    fields = dict(frame_items)
+    if refl is not None:
+        fields["REFL_10CM"] = refl
+    for name, value in extra.items():
+        if name not in fields:
+            fields[name] = value
+    return fields
 
 
 def _frame_nbytes(fields) -> int:
@@ -1965,7 +1762,9 @@ class AsyncDomainWrfoutWriter:
 
     def _admit(self, ticket: _AsyncFrame) -> None:
         """Admit one staged frame with bounded, liveness-aware waits."""
-        ticket.nbytes = _frame_nbytes(ticket.fields)
+        ticket.nbytes = (int(ticket.deferred["frame"].nbytes)
+                         if ticket.deferred is not None
+                         else _frame_nbytes(ticket.fields))
         with self._condition:
             self._pending += 1
             self._pending_bytes += ticket.nbytes
@@ -2166,12 +1965,14 @@ class AsyncDomainWrfoutWriter:
         """
         import cupy as cp
 
-        frame = dict(frame)
+        deferred = frame if getattr(frame, "deferred", False) else None
+        frame = {} if deferred is not None else dict(frame)
         # Same [output] selection, same place in the order: before any
         # staging.  A streamed domain's carriers are already on the host,
         # but REFL_10CM may still be a live device array, and a dropped
         # name must not be copied, borrowed or declared either way.
-        produced = list(frame)
+        produced = (list(deferred.names) if deferred is not None
+                    else list(frame))
         if refl_field is not None and "REFL_10CM" not in produced:
             produced.append("REFL_10CM")
         produced.extend(name for name in (extra_fields or ())
@@ -2184,17 +1985,18 @@ class AsyncDomainWrfoutWriter:
         ready.record(producer)
         self.stream.wait_event(ready)
         with self.stream:
-            for name, value in frame.items():
-                if name not in keep:
-                    continue
-                host_fields[name] = self._host_or_staged(
-                    value, device_refs, pinned_refs)
+            staged = [(name, self._host_or_staged(value, device_refs,
+                                                  pinned_refs))
+                      for name, value in frame.items() if name in keep]
+            refl = None
             if refl_field is not None and "REFL_10CM" in keep:
-                host_fields["REFL_10CM"] = self._host_or_staged(
+                refl = self._host_or_staged(
                     refl_field, device_refs, pinned_refs)
-            for name, value in (extra_fields or {}).items():
-                if name not in host_fields and name in keep:
-                    host_fields[name] = np.ascontiguousarray(value)
+            extra = {name: np.ascontiguousarray(value)
+                     for name, value in (extra_fields or {}).items()
+                     if name in keep}
+            if deferred is None:
+                host_fields = _compose_host_frame(staged, refl, extra)
             done = cp.cuda.Event()
             done.record(self.stream)
         producer.wait_event(done)
@@ -2205,7 +2007,10 @@ class AsyncDomainWrfoutWriter:
             device_refs=tuple(device_refs),
             pinned_refs=tuple(pinned_refs),
             valid_time=valid_time,
-            global_attrs=self._frame_attrs(global_attrs, history_attrs)))
+            global_attrs=self._frame_attrs(global_attrs, history_attrs),
+            deferred=(None if deferred is None else
+                      {"frame": deferred, "keep": keep, "refl": refl,
+                       "extra": extra})))
 
     def _host_or_staged(self, value, device_refs, pinned_refs) -> np.ndarray:
         """A host array for one field, staging it off the device if needed."""
@@ -2245,6 +2050,16 @@ class AsyncDomainWrfoutWriter:
                 # until NetCDF has finished reading the host field views.
                 with self.stream:
                     ticket.device_refs = ()
+                if ticket.deferred is not None:
+                    # Assembled HERE, off the stepping thread: waits for the
+                    # frame's own download, then the same host derivation
+                    # and the same field order as an admitted frame.
+                    held, ticket.deferred = ticket.deferred, None
+                    ticket.fields = _compose_host_frame(
+                        ((name, value) for name, value
+                         in held["frame"].materialize().items()
+                         if name in held["keep"]),
+                        held["refl"], held["extra"])
                 with _NETCDF4_IO_LOCK:
                     if self._abort_event.is_set():
                         continue
@@ -2828,9 +2643,11 @@ class PerDomainWrfoutWriters:
             # everything queued plus this frame, written and read back.
             with self._write_beat(phase, self.pending_work_bytes):
                 frame = streamed.history_fields()
+                deferred = bool(getattr(frame, "deferred", False))
+                frame_bytes = (int(frame.nbytes) if deferred
+                               else _frame_nbytes(frame))
                 with self._write_beat(
-                        phase, self.pending_work_bytes
-                        + 2 * _frame_nbytes(frame)):
+                        phase, self.pending_work_bytes + 2 * frame_bytes):
                     writer.submit(
                         path, valid_time, None, frame=frame,
                         extra_fields=self._metadata_by_grid_id[
@@ -2843,7 +2660,14 @@ class PerDomainWrfoutWriters:
                     # for the complete record.
                     consume_staging = getattr(writer, "drain_staging",
                                               writer.drain)
-                    consume_staging()
+                    if deferred:
+                        # The ranked road: no sweep writes the store, so the
+                        # model steps on while the writer downloads and
+                        # writes; the next write INTO the store waits here
+                        # first (tilestream.ranks.RankedRun.add_store_guard).
+                        streamed.add_store_guard(consume_staging)
+                    else:
+                        consume_staging()
             return
         # A resident frame is staged device to host and queued; this thread
         # waits only for room in the queue, behind the frames already in it.

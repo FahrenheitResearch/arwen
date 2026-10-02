@@ -420,7 +420,7 @@
       "need_gib": 9.33,
       "budget_gib": 10.75
      },
-     "disk_gib": 41.0,
+     "disk_gib": 40.9,
      "disk_budget_gib": 50,
      "output": {
       "history_interval_s": 3600,
@@ -615,14 +615,14 @@
       "need_gib": 13.49,
       "budget_gib": 14.54
      },
-     "disk_gib": 46.5,
+     "disk_gib": 46.4,
      "disk_budget_gib": 60,
      "output": {
       "history_interval_s": 10800,
       "nest_history_interval_s": 7200,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 0.4 GiB of ERA5 files for 11 forcing times; the preparation, 0.1 GiB; the history files, 36.7 GiB, written every 3 hours on the outer grid and every 2 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 5.5 GiB; the rendered pictures, 3.9 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 60 GiB disk budget",
+     "disk_basis": "the download, 0.4 GiB of ERA5 files for 11 forcing times; the preparation, 0.1 GiB; the history files, 36.6 GiB, written every 3 hours on the outer grid and every 2 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 5.5 GiB; the rendered pictures, 3.9 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 60 GiB disk budget",
      "download": {
       "bytes": 461983500,
       "transfer_bytes": 6061000000,
@@ -795,14 +795,14 @@
       "need_gib": 13.49,
       "budget_gib": 22.06
      },
-     "disk_gib": 60.5,
+     "disk_gib": 60.4,
      "disk_budget_gib": 80,
      "output": {
       "history_interval_s": 3600,
       "nest_history_interval_s": 7200,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 0.4 GiB of ERA5 files for 11 forcing times; the preparation, 0.1 GiB; the history files, 47.7 GiB, written every hour on the outer grid and every 2 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 5.5 GiB; the rendered pictures, 6.9 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 80 GiB disk budget",
+     "disk_basis": "the download, 0.4 GiB of ERA5 files for 11 forcing times; the preparation, 0.1 GiB; the history files, 47.6 GiB, written every hour on the outer grid and every 2 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 5.5 GiB; the rendered pictures, 6.9 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 80 GiB disk budget",
      "download": {
       "bytes": 461983500,
       "transfer_bytes": 6061000000,
@@ -992,14 +992,14 @@
       "need_gib": 24.04,
       "budget_gib": 29.58
      },
-     "disk_gib": 79.1,
+     "disk_gib": 78.9,
      "disk_budget_gib": 100,
      "output": {
       "history_interval_s": 10800,
       "nest_history_interval_s": 10800,
       "keep_checkpoints": 1
      },
-     "disk_basis": "the download, 0.4 GiB of ERA5 files for 11 forcing times; the preparation, 0.1 GiB; the history files, 61.6 GiB, written every 3 hours on the outer grid and every 3 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 12.2 GiB; the rendered pictures, 4.8 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 100 GiB disk budget",
+     "disk_basis": "the download, 0.4 GiB of ERA5 files for 11 forcing times; the preparation, 0.1 GiB; the history files, 61.4 GiB, written every 3 hours on the outer grid and every 3 hours on the nests; the one checkpoint the run keeps (two while a new one is written), 12.2 GiB; the rendered pictures, 4.8 GiB; as the engine projects them (gpuwm/disk_budget.py, gpuwm/download_budget.py) from sizes measured on real runs; within this card's 100 GiB disk budget",
      "download": {
       "bytes": 448687800,
       "transfer_bytes": 6061000000,

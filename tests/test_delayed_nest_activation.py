@@ -667,7 +667,8 @@ def test_a_delayed_child_config_loads_instead_of_refusing(tmp_path):
     assert exp.domain_start_offset_exact(2) == 1800
 
 
-def test_the_shipped_run_door_accepts_a_delayed_child(tmp_path, capsys):
+def test_the_shipped_run_door_accepts_a_delayed_child(tmp_path, capsys,
+                                                    monkeypatch):
     """The exit code, not just the exception.  This config exited 2 with
     the categorical refusal in 2.5.0; it now passes the load gate and is
     refused only by what it genuinely lacks here -- a [case_data] table.
@@ -678,7 +679,13 @@ def test_the_shipped_run_door_accepts_a_delayed_child(tmp_path, capsys):
     passing for a message that had been reduced to naming a failure.
     """
     import gpuwm.cli as cli
+    from gpuwm import capabilities
     from test_experiment import _write
+
+    # No model runs: the real loader must refuse the absent case-data table.
+    installed = capabilities.is_installed
+    monkeypatch.setattr(capabilities, "is_installed",
+                        lambda module: module == "cupy" or installed(module))
 
     path = _write(tmp_path, d02="start_time = 1974-04-03T12:30:00")
     assert cli.main(["run", str(path)]) == 2

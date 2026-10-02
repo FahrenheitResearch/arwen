@@ -4,11 +4,13 @@
 ``top_lid = False`` and attribution-only ``moist_cq = True``;
 ``load_config()`` and the legacy
 ``[grid]``/``[dynamics]``/``[run]`` tables are untouched.  These pins
-prove the guarantee: every existing legacy TOML under ``configs/`` and
-every frozen-case constructed RunConfig re-resolves IDENTICALLY --
+keep every existing legacy TOML under ``configs/`` and every frozen-case
+constructed RunConfig fixed except for declared default corrections --
 ``dataclasses.asdict`` compared field-for-field against the golden
 snapshot captured from the pre-change code plus explicitly reviewed new
-configuration fields (``tests/data/config_freeze_golden.json``).
+configuration fields (``tests/data/config_freeze_golden.json``). The CQ
+defect fix intentionally enables the formerly disabled default; that one
+declared difference is checked separately without rewriting the old snapshot.
 
 Freeze discipline: a legacy TOML added to ``configs/`` without a golden
 entry FAILS here -- new files are pinned consciously, never implicitly.
@@ -48,6 +50,16 @@ def _frozen_constructors():
 def test_new_fields_are_reviewed_defaults_appended_last():
     """New fields remain appended, preserving positional construction."""
     names = [f.name for f in dataclasses.fields(RunConfig)]
+    # The drag selectors follow the integrated diffusion and mosaic fields.
+    # Removing their zero defaults leaves the existing positional sequence.
+    assert names[-2:] == ["topo_wind", "gwd_opt"]
+    assert RunConfig.__dataclass_fields__["topo_wind"].default == 0
+    assert RunConfig.__dataclass_fields__["gwd_opt"].default == 0
+    names = names[:-2]
+    assert names[-2:] == ["diff_opt", "mix_full_fields"]
+    assert RunConfig.__dataclass_fields__["diff_opt"].default == 2
+    assert RunConfig.__dataclass_fields__["mix_full_fields"].default is True
+    names = names[:-2]
     # RE-BASELINED AGAIN (lane/281-mosaic-town, merged after A165 below):
     # THREE fields, ``sf_surface_mosaic`` and ``mosaic_cat``,
     # WRF's Noah mosaic land-use pair (Registry.EM_COMMON:2536-2537), and
@@ -396,11 +408,10 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     assert RunConfig.__dataclass_fields__["opt_thcnd"].default == 1
     assert RunConfig.__dataclass_fields__["nested"].default is False
     assert RunConfig.__dataclass_fields__["grid_id"].default == 1
-    # Stability defaults (2026-07-18): rigid lid + no cq until the open-top
-    # and cq production defects have stability + falsification receipts
-    # (see config.py field comments and the iso-* probe records).
+    # The rigid-lid stability policy is independent of moisture loading.
+    # CQ follows WRF whenever a vapor state exists; dry states bypass it.
     assert RunConfig.__dataclass_fields__["top_lid"].default is True
-    assert RunConfig.__dataclass_fields__["moist_cq"].default is False
+    assert RunConfig.__dataclass_fields__["moist_cq"].default is True
     # Morrison's scalar Registry default is hail; explicit 0 retains the
     # graupel branch (Registry.EM_COMMON:2663-2666).
     assert RunConfig.__dataclass_fields__["morr_rimed_ice"].default == 1
@@ -537,11 +548,16 @@ def test_every_existing_legacy_toml_resolves_identically():
             "tests/data/config_freeze_golden.json consciously.")
         cfg = load_config(path)
         actual = dataclasses.asdict(cfg)
+        assert actual.pop("diff_opt") == 2
+        assert actual.pop("mix_full_fields") is True
         assert actual.pop("adaptive_nest_lattice") is False
         assert actual.pop("zadvect_implicit") == 0
         assert actual.pop("w_crit_cfl") == 1.0
+        assert actual.pop("topo_wind") == 0 and actual.pop("gwd_opt") == 0
         assert _pop_topo_radiation_defaults(actual)
-        assert actual == GOLDEN[key], key
+        # These legacy files omit CQ. Its default-on defect fix is the
+        # only approved change from the recorded field dictionary.
+        assert actual == dict(GOLDEN[key], moist_cq=True), key
         assert cfg.nested is False and cfg.grid_id == 1, key
 
 
@@ -553,11 +569,16 @@ def test_frozen_case_constructed_configs_resolve_identically():
         cfg = ctor()
         assert key in GOLDEN, key
         actual = dataclasses.asdict(cfg)
+        assert actual.pop("diff_opt") == 2
+        assert actual.pop("mix_full_fields") is True
         assert actual.pop("adaptive_nest_lattice") is False
         assert actual.pop("zadvect_implicit") == 0
         assert actual.pop("w_crit_cfl") == 1.0
+        assert actual.pop("topo_wind") == 0 and actual.pop("gwd_opt") == 0
         assert _pop_topo_radiation_defaults(actual)
-        assert actual == GOLDEN[key], key
+        # The constructors omit CQ too. Dry cases remain numerically
+        # unchanged because their qv=None bypass does no CQ work.
+        assert actual == dict(GOLDEN[key], moist_cq=True), key
         assert cfg.nested is False and cfg.grid_id == 1, key
 
 

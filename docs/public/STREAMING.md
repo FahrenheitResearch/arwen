@@ -1,11 +1,11 @@
 # Streaming: forecasts that run as their source posts
 
-**This page is not [Tiling a domain that does not fit on the card](TILES.md).**
-That page is the `[tiles]` table, which runs one domain out of core by
-cycling it through the card a tile at a time. This page is about when a
-forecast starts and waits against a data source that is still posting its
-cycle. The two share no configuration and no code path, and either can be
-used without the other.
+[Tiling a domain that does not fit on the card](TILES.md) describes the
+`[tiles]` table, which cycles a domain through the card a tile at a time.
+This page describes when a forecast starts and waits against a source
+that is still posting its cycle. Both can be used together: in a domain
+tree, a tiled root loads its host store from the preparation head and
+takes later boundary intervals as the model reaches each seam.
 
 A source such as GFS, GEFS, HRRR or ICON posts a cycle one forecast hour at a
 time, over one to three hours. A forecast that runs as the source posts
@@ -26,11 +26,24 @@ Two things decide how early a forecast can start.
    prepared on the CPU or the card: the nests, including nests that start
    later and nests that follow a storm (a `gpuwm cyclone-setup`
    configuration), are prepared into the head, and the forecast waits only
-   at the root's intervals. A GFS tree also prepares as its hours post.
-   The other routes [Pipeline stages](PIPELINE-STAGES.md) lists are
-   prepared whole before their forecast starts, and a `[tiles]` run whose
-   outermost domain streams from a host store starts at the seal, because
-   that store is read from the sealed preparation.
+   at the root's intervals. A GFS domain or tree, a native `hrrr` single
+   domain or tree, and a single domain from `hrrr-prs`, `rap`, `rrfs`,
+   `icon-eu` or `gem-gdps` also prepare as their hours post, through
+   `gpuwm go` and `gpuwm run-plan` alike; a mapped tree, `gefs` (its member
+   is checked over every file first) and ICON's global and D2 meshes (their
+   files are normalized whole) are prepared once the whole window is
+   fetched.
+   In a domain tree, a `[tiles]` root follows the same chain, including
+   `mode = "auto"` when the planner places it in host memory. Its start
+   state loads from the head, each later boundary interval is checked at
+   its seam, and the complete preparation is verified against the head at
+   the end. Checkpoints taken before the seal bind the boundary prefix
+   already prepared. A single `[tiles]` domain that builds its host store
+   directly (`--stream-init store`, or `auto` when the resident state does
+   not fit the card) still starts at the seal, because that road reads the
+   sealed preparation. The other routes
+   [Pipeline stages](PIPELINE-STAGES.md) lists are prepared whole before
+   their forecast starts.
 2. **Fetching as the source posts.** An engine that fetches each hour as the
    source posts it answers the readiness question (`--readiness` on
    `gpuwm go`, `gpuwm fetch` and `gpuwm run-plan`) and takes
@@ -118,7 +131,8 @@ four places:
 
 - **Events** (`events.jsonl`, relayed by `gpuwm go` and emitted by
   `gpuwm run-plan`): `source_wait_started`, `source_wait_progress` every 60 s
-  and `source_wait_finished` when a source hour is not posted yet, each with
+  and `source_wait_finished` when a source hour is not posted yet (or its
+  host cannot be heard, which is said as such), each with
   the source, cycle, lead, its expected and late times and the model time
   reached; `boundary_wait_started` and `boundary_wait_finished` with
   `cause: "preparation"` when the hour is posted and its interval is still

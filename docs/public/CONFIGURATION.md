@@ -76,7 +76,7 @@ wrote.
 | `output_domain` | which domain's history the run publishes. |
 | `source_orography` | a NetCDF file supplying source orography; without it the forcing catalog's invariant geopotential is used. |
 | `source_orography_variable` | the variable to read out of `source_orography`. |
-| `co2_vmr` | Positive CO₂ mole fraction consumed by the selected classic RRTM, legacy RRTMG or RRTMGP absorption; e.g. `0.000420` for 420 ppm. Off, analytic and Dudhia-only radiation retain it as inactive input authority. |
+| `co2_vmr` | Positive COâ‚‚ mole fraction consumed by the selected classic RRTM, legacy RRTMG or RRTMGP absorption; e.g. `0.000420` for 420 ppm. Off, analytic and Dudhia-only radiation retain it as inactive input authority. |
 | `water_temperature_overlay` | a water-temperature overlay file ([water-temperature-overlay](../water-temperature-overlay.md)). |
 | `water_temperature_policy` | how that overlay is applied. |
 | `preprocess_backend` | where the root domain's preparation runs: `"cuda"`, `"cpu"` or `"auto"`. Absent is `auto`, which prepares on the CPU when the card reads busy or cannot hold the preparation, so two runs you compare could start from different preparations; naming it pins both. `gpuwm run --preprocess-backend` overrides it. Nests prepare on the card either way. |
@@ -93,6 +93,8 @@ list.
 
 | TOML key | WRF equivalent | default | allowed | note |
 |---|---|---|---|---|
+| `diff_opt` | `diff_opt` | 2 | 1, 2, per domain | 1 selects model-coordinate horizontal diffusion with `km_opt = 2` or 4; 2 selects terrain-aware metric stress and scalar diffusion. |
+| `mix_full_fields` | `mix_full_fields` | true | bool, per domain | WRF logical retained under coordinate diffusion. That operator mixes theta relative to its initial field for either value. |
 | `name` | -- | required | non-empty string | run identity |
 | `start_time` | `&time_control start_*` | required | TOML datetime, offset-free | |
 | `run_seconds` | `run_days/hours/minutes/seconds` or `end_*` | required | > 0 | |
@@ -291,30 +293,23 @@ consumed `RunConfig` field -- the knob-parity battery
 consuming kernel/module rather than being decorative -- and every one
 is importable from a WRF namelist.
 
-**Which keys a `[[domain]]` table may override.** Exactly these 65,
+**Which keys a `[[domain]]` table may override.** Exactly these 69,
 and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
 
-    cu_physics  cudt_minutes  clos_choice  ishallow
-    radt  radt_minutes  bldt
-    ra_physics  ra_lw_physics  ra_sw_physics  ra_rrtmg_variant  slope_rad  topo_shading
-    wrf_rrtmg_compatibility  o3input  use_mp_re  swrad_scat
-    diff_6th_factor  diff_6th_opt  epssm  spec_exp  mp_physics  moist
-    moist_cq  nest_microphysics_transition
-    km_opt  bl_pbl_physics  sf_sfclay_physics  isfflx  c_s  c_k
-    mix_isotropic  mix_upper_bound  tke_heat_flux
-    tke_drag_coefficient  tke_upper_bound
-    moist_mix6_off
-    diff_6th_slopeopt  diff_6th_thresh  dampcoef  zdamp
-    emdiv  smdiv  khdif  kvdif  h_sca_adv_order  moist_adv_opt
-    tke_budget
-    sase_flux_diag  hmix_k_diag
-    inflow_perturbation  inflow_perturbation_seed
-    inflow_perturbation_amplitude_scale  inflow_perturbation_faces
-    target_cfl  target_hcfl  max_step_increase_pct
-    starting_time_step  starting_time_step_den
-    max_time_step  max_time_step_den  min_time_step  min_time_step_den
-    min_time_step_sound
-    mosaic_urban_canopy
+    cu_physics  cudt_minutes  clos_choice  ishallow  radt  radt_minutes  bldt
+    ra_physics  ra_lw_physics  ra_sw_physics  ra_rrtmg_variant
+    wrf_rrtmg_compatibility  o3input  use_mp_re  swrad_scat  diff_6th_factor  epssm
+    spec_exp  mp_physics  moist  moist_cq  nest_microphysics_transition  km_opt
+    bl_pbl_physics  sf_sfclay_physics  c_s  c_k  moist_mix6_off  diff_6th_opt
+    mix_isotropic  mix_upper_bound  isfflx  tke_heat_flux  tke_drag_coefficient
+    tke_upper_bound  diff_6th_slopeopt  diff_6th_thresh  dampcoef  zdamp  emdiv
+    smdiv  khdif  kvdif  diff_opt  mix_full_fields  h_sca_adv_order  moist_adv_opt
+    tke_budget  sase_flux_diag  hmix_k_diag  inflow_perturbation
+    inflow_perturbation_seed  inflow_perturbation_amplitude_scale
+    inflow_perturbation_faces  target_cfl  target_hcfl  max_step_increase_pct
+    starting_time_step  starting_time_step_den  max_time_step  max_time_step_den
+    min_time_step  min_time_step_den  min_time_step_sound  slope_rad  topo_shading
+    mosaic_urban_canopy  topo_wind  gwd_opt
 
 `clos_choice` and `ishallow` configure the Grell-Freitas cumulus scheme
 (`cu_physics = 3`): which closure the deep scheme uses (0, the default,
@@ -367,14 +362,14 @@ PBL-off LES child (see `docs/public/LES.md`).  The four
 `inflow_perturbation*` keys seed an LES nest child's inflow turbulence
 transition (default off; deterministic, seeded, and gated
 byte-identical to a build without the mechanism when off); they are
-per domain because the mechanism is per nest edge — it perturbs one
-child's parent-forced boundary tables — and, like per-domain
+per domain because the mechanism is per nest edge â€” it perturbs one
+child's parent-forced boundary tables â€” and, like per-domain
 `isfflx`, they have no WRF namelist spelling, so a config using them
 cannot round-trip to a namelist.  `inflow_perturbation = true` needs a
 parent that runs a PBL scheme: the perturbation's depth is the parent's
 diagnosed PBLH, so a child under a `bl_pbl_physics = 0` parent is
 refused at load, by name, with the domain to change.  That is the
-mesoscale-to-LES edge and only that edge — a PBL-off parent is itself
+mesoscale-to-LES edge and only that edge â€” a PBL-off parent is itself
 LES, and its resolved eddies already are the child's inflow turbulence.
 
 Only `gpuwm domain`'s own emission and hand-written TOML reach some of
@@ -417,7 +412,7 @@ wrong answer reported as a success. Put them in `[shared]`.
 | `h_sca_adv_order` | `h_sca_adv_order` | 2 (ArWen legacy) | 2, 5 | **feeds the geopotential equation only**; transported-scalar stencils are fixed 5th/3rd order, so the importer accepts only the Registry default 5 |
 | `moist_adv_opt` | `moist_adv_opt` | 1 | 0, 1 in TOML; import pins 1 | PD limiter; `scalar_adv_opt` must match (WRF option 1 on both) |
 | `top_lid` | `top_lid` | **true** (ArWen) | bool | WRF Registry default is false (open top); ArWen defaults to the rigid lid after the 2026-07-18 open-top NaN probes -- imports emit the Registry value explicitly, flip back only with a stability receipt |
-| `moist_cq` | -- (WRF always applies cq) | **false** (ArWen) | bool | imported WRF experiments pin `true` explicitly |
+| `moist_cq` | -- (WRF derives cq from its moist state) | **true** | bool | applies whenever water vapor exists, including passive vapor with microphysics off; dry states bypass it. Explicit `false` is a verification counterfactual |
 | `spec_zone`, `relax_zone`, `spec_exp` | `&bdy_control` | 1, 4, 0.0 | | `spec_exp` acts on the root (specified) branch only, exactly as in WRF's `lbc_fcx_gcx`; nonzero on a nested child is refused. `gpuwm downscale --point` sets `relax_zone` to two parent cells and `spec_exp` to 0 |
 | `relax_timescale_s` | -- (ArWen) | 0.0 | >= 0 | Davies relaxation time scale in seconds on the first relaxed row: `fcx = ramp / relax_timescale_s`, `gcx = ramp / (5 relax_timescale_s)`. 0 is WRF's recipe (`0.1/dt`, `1/(50 dt)`, a time scale of 10 of the domain's own steps). A nest reads it in WRF's nested operation order. `gpuwm downscale --point` sets it to the time a 20 m/s flow takes to cross one child cell, never shorter than 10 child steps |
 | `relax_w` | -- (ArWen) | false | bool | a specified domain relaxes `w` toward its boundary table and takes the table's `w` on the specified rows, as a WRF nest does. False is WRF's root rule: `w` is not relaxed and the specified rows copy the first interior row. Needs a `w` table (an offline child's parent history carries `W`); without one the run stops at its first step saying so. `gpuwm downscale --point` sets it |
@@ -662,10 +657,10 @@ wif_input_opt = 1     # the use_wif_input package
 ```
 
 With both set, `initialize_real` reads the dataset, interpolates it to
-your grid and your case's valid date exactly as `real.exe` does —
+your grid and your case's valid date exactly as `real.exe` does â€”
 metgrid `four_pt` horizontally, `monthly_interp_to_date` temporally
 (integer julian-day weighting between month middles), `vert_interp`
-linear in `log(p)` onto the dry eta pressure — and writes `QNWFA`,
+linear in `log(p)` onto the dry eta pressure â€” and writes `QNWFA`,
 `QNIFA`, `QNWFA2D` and `QNIFA2D`. The nonzero fields are themselves the
 signal WRF's `MAXVAL` presence tests
 (`phys/module_mp_thompson.F:493/:531`) read to **skip** the synthetic
@@ -680,9 +675,9 @@ climatology does not come from the driving model, so the derivation is
 identical for every input source.
 
 **Staging the dataset.** It is a fixed 225,443,520-byte external file
-that never changes. ArWen does **not** redistribute it — that is over
+that never changes. ArWen does **not** redistribute it â€” that is over
 PyPI's 100 MB per-file cap and GitHub's 100 MiB blob limit, the same
-reason `freezeH2O.dat` is externalized — so it joins the same command:
+reason `freezeH2O.dat` is externalized â€” so it joins the same command:
 
 ```
 gpuwm fetch-tables --wif --wif-only --from /path/to/WRF/run
@@ -704,7 +699,7 @@ with the acquisition route in the message. It never falls back to the
 synthetic profile: that is a different, valid configuration
 (`aer_init_opt = 0`) and a silent demotion would leave a run whose
 receipt says "monthly climatology" and whose aerosol came from an
-analytic curve. `wif_input_opt = 2` stays refused by name — it
+analytic curve. `wif_input_opt = 2` stays refused by name â€” it
 additionally allocates the black-carbon scalar `qnbca`
 (`Registry/registry.new3d_wif:82`), which has no consumer here.
 
@@ -720,8 +715,8 @@ delta against an ordinary 3 km real-data configuration, with the staging
 command and the receipt in its header.
 
 **The receipt.** `RealInitResult.aerosol_initialization` carries a
-`wif_climatology` entry — dataset path, the two month indices and their
-weights, the operators used — and sets `awaiting_profile_fill` to
+`wif_climatology` entry â€” dataset path, the two month indices and their
+weights, the operators used â€” and sets `awaiting_profile_fill` to
 `false`.
 
 ## Fixed by ArWen (WRF has a knob; ArWen has one implemented value)
@@ -740,8 +735,6 @@ pins differ from what WRF assumes for an omitted key.
 | `h_mom_adv_order` | 5 | WRF flux5 stencil hardcoded, `gpuwm/core/kernels/advection.cu` |
 | `v_mom_adv_order`, `v_sca_adv_order` | 3 | WRF flux3 stencil, same kernel |
 | `momentum_adv_opt` | 1 | standard (non-PD) momentum advection |
-| `diff_opt` | 2 | the only mixing form behind `km_opt` |
-| `mix_full_fields` | .true. | full-field mixing only (must be explicit: WRF's omitted default is false) |
 | `non_hydrostatic` | .true. | nonhydrostatic-only |
 | `use_theta_m` | 0 | the engine evolves dry theta and has no moist-theta branch; every import door (`import-namelist`, `run --wrfinput` and `run --met-em`) admits a namelist's `use_theta_m = 1` (WRF's omitted default) as a DECLARED DIVERGENCE announced at the terminal and recorded under "Physics substitutions" in the import receipt: the initial and boundary state is recovered exactly (moist wrfbdy THM/QV/MU converted at each forcing time; metgrid TT is physical temperature; native initialization builds dry theta from physical temperature) but the integration is dry theta, so it differs from a `use_theta_m = 1` WRF run |
 | `scalar_adv_opt` | 1 | must match `moist_adv_opt` |
@@ -762,7 +755,7 @@ pins differ from what WRF assumes for an omitted key.
 | `kf_edrates` | 0 | no KF rate diagnostics |
 | `sst_update`, `sst_skin`, `tmn_update` | 0 | single-analysis case runs |
 | `use_aero_icbc`, `use_rap_aero_icbc` | .false. | synthetic fallback identity; imported `use_aero_icbc .true.` with `wif_input_opt 1` selects the monthly WIF dataset. A generic GOCART reader and the RAP source are unavailable |
-| `wif_input_opt` | 0 | synthetic fallback identity; the imported monthly WIF route accepts value 1 with `num_wif_levels = 30`. Value 2 requires unimplemented black carbon. At 0, `num_wif_levels` is inert. **WRF's `real.exe` FATALs `mp_physics = 28` at this value** (`dyn_em/module_initialize_real.F:2734-2736`) while ArWen runs it, taking WRF's own internal fallback — the synthetic CCN/IN profile `thompson_init` installs — as the aerosol initial condition. So an ArWen mp=28 run and a WIF-initialised WRF mp=28 run are **not** directly comparable; see D9a/D9b in [PROVENANCE.md](../../PROVENANCE.md) |
+| `wif_input_opt` | 0 | synthetic fallback identity; the imported monthly WIF route accepts value 1 with `num_wif_levels = 30`. Value 2 requires unimplemented black carbon. At 0, `num_wif_levels` is inert. **WRF's `real.exe` FATALs `mp_physics = 28` at this value** (`dyn_em/module_initialize_real.F:2734-2736`) while ArWen runs it, taking WRF's own internal fallback â€” the synthetic CCN/IN profile `thompson_init` installs â€” as the aerosol initial condition. So an ArWen mp=28 run and a WIF-initialised WRF mp=28 run are **not** directly comparable; see D9a/D9b in [PROVENANCE.md](../../PROVENANCE.md) |
 | `qna_update` | 0 | no auxiliary `wrfqnainp` input stream |
 | `wif_fire_emit`, `wif_fire_inj` | .false. / unused | no biomass-burning aerosol emission inventory |
 | `dust_emis` | 0 | no non-chem dust source; `nifa2d` stays exactly zero, matching `thompson_init` |
@@ -783,6 +776,13 @@ the whole real.exe vertical-interpolation policy set
 preprocessing provenance contract. `sfcp_to_sfcp` is the one
 real-init policy that is a knob (`[case_data]`, and `false` is
 fail-loud unimplemented).
+
+## Sub-grid terrain drag
+
+`topo_wind` accepts 0, 1 and 2; `gwd_opt` accepts 0, 1 and 3. Both default
+to 0. They are selected in `[shared]` or on a domain and imported from
+WRF namelists. See [Terrain drag](TERRAIN-DRAG.md) for the schemes, required
+WPS geography and preparation command.
 
 ## Terrain smoothing (`[[domain]] static`)
 

@@ -132,7 +132,12 @@ void couple_faces(const float* mass_u, const float* mass_v,
     }
     if (has_msf) {
         const bool closed = !(mask_ring || open_y) && g == ny;
+#if GPUWM_WRF_EXACT_C_BIGSTEP
+        value = __fmul_rn(value,
+            __fdiv_rn(1.0f, msfv[(closed ? 0 : g) * nx + i]));
+#else
         value = __fdiv_rn(value, msfv[(closed ? 0 : g) * nx + i]);
+#endif
     }
     rv[t] = value;
 }

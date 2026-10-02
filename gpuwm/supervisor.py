@@ -2228,7 +2228,8 @@ def _bind_attempt_heartbeat(
     return effective_worker_pid, None
 
 
-def priced_reservation_bytes(configuration, *, source=None) -> int | None:
+def priced_reservation_bytes(configuration, *, source=None,
+                             urban_columns=None) -> int | None:
     """This run's priced peak envelope, or None when it cannot be priced.
 
     The same number plan review prices a configuration from
@@ -2253,6 +2254,8 @@ def priced_reservation_bytes(configuration, *, source=None) -> int | None:
     the analysed hydrometeor tables that source puts on the boundary are
     in the reservation (``gpuwm stream`` runs HRRR); a configuration read
     from its file alone names none and prices water vapour only.
+    ``urban_columns`` is a prepared door's reading of its land cover;
+    configuration callers leave it unknown and keep the workspace bound.
     """
 
     try:
@@ -2263,7 +2266,10 @@ def priced_reservation_bytes(configuration, *, source=None) -> int | None:
             from gpuwm.experiment import load_experiment
 
             experiment = load_experiment(configuration)
-        estimate = admission_estimate(experiment, source=source)
+        pricing = {"source": source}
+        if urban_columns is not None:
+            pricing["urban_columns"] = urban_columns
+        estimate = admission_estimate(experiment, **pricing)
         value = int(estimate.peak_envelope_bytes)
     except Exception:  # noqa: BLE001 - pricing is advisory, never a gate
         return None

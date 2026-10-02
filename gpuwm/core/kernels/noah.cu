@@ -1600,7 +1600,9 @@ void noah_column_body(const int* __restrict__ ivgtyp,
     }
 }
 
-extern "C" __global__
+// Keep the ordinary-land column below the register-allocation step that
+// would remove resident column blocks. The scalar arithmetic is unchanged.
+extern "C" __global__ __launch_bounds__(64, 8)
 void noah_column(const int* __restrict__ ivgtyp,
                  const int* __restrict__ isltyp,
                  const real* __restrict__ psfc_a,

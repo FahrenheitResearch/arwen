@@ -254,6 +254,17 @@ pub struct GeogWindow {
 }
 
 impl GeogWindow {
+    /// WPS reads integer words into default REAL. Index scaling happens
+    /// after interpolation, in `process_tile_module::calc_field`.
+    pub(crate) fn values_real(&self, z: usize) -> Vec<f32> {
+        let n = self.ny * self.nx;
+        let local_z = z - self.first_plane;
+        self.raw[local_z*n..(local_z+1)*n].iter().map(|&raw| {
+            if self.index.missing_value == Some(raw as f64) { f32::NAN }
+            else { raw as f32 }
+        }).collect()
+    }
+
     /// Last covered x index, inclusive (`GeogWindow.x1`).
     pub fn x1(&self) -> i64 {
         self.x0 + self.nx as i64 - 1

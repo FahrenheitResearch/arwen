@@ -80,12 +80,14 @@ ROUTE_TABLE_SHA256 = (
     # which named --wait-for on every default as-posted fetch.  Moved by
     # A159: hrrr-prs, rap, rrfs and icon-d2 offer cadences 1, 3 and 6,
     # every one a spacing their hourly ladders publish and their mappings
-    # take.  Then A154: the measured publication_lag rows name the posting
+    # take.  Hosted AWS endpoint allowances also date deadlines from the
+    # 2026-10-02 metadata comparisons without delaying positive probes.
+    # Then A154: the measured publication_lag rows name the posting
     # watch without the private machine it ran on (a host name in a wheel).
     # Moved by A173: every row's cadences list is retired (it refused
     # spacings the publisher posts and the decode takes, naming no
     # breakage), and cadence_note states the grammar that replaces it.
-    "4d6d6661e3b790ff11bed9a48179d562e8785f8d8f2b58c8dd3ed39063292427"
+    "1164db39f71e3f5e87ce8c67340bfbfdfcee8e5dd4f914ee0f1e21e15e5f07ed"
 )
 
 #: Sources whose acquisition predates the route table and keeps its own
@@ -1755,6 +1757,7 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
     """Everything a fetch will do, decided before a single byte moves."""
 
     route = route_for(source)
+    host = fetch_endpoints.policy_transport(route.source_id, host)
     if area is not None:
         raise ValueError(
             f"--area/--point: --source {route.source_id} publishes whole "
@@ -2760,7 +2763,8 @@ def _write_sha256sums(out: Path, entries: Sequence[Mapping[str, object]],
 # --------------------------------------------------------------------------
 
 def write_handoff(plan: FetchPlan, out: Path, *,
-                  donor_files: Mapping[str, Path] | None = None
+                  donor_files: Mapping[str, Path] | None = None,
+                  posting: Path | None = None
                   ) -> tuple[Path, Path]:
     """Write the ordered ``--input-list`` and the bound prep command.
 
@@ -2771,6 +2775,12 @@ def write_handoff(plan: FetchPlan, out: Path, *,
     rather than left for a reader to reconstruct -- and the
     ``--input-list`` spelling is what keeps a field-per-file source's
     hundreds of inputs inside the 32 KB Windows command line.
+
+    ``posting`` is the as-posted fetch's ``posting/`` folder: the handoff
+    is then written before the window's leads move (every path in it is
+    a table fact, the donors are in), so a preparation can start beside
+    the fetch and wait on each lead's marker there (DESIGN A136 2.3
+    step 2).
     """
 
     out = _io_path(Path(out))
@@ -2818,7 +2828,8 @@ def write_handoff(plan: FetchPlan, out: Path, *,
         cycle=plan.cycle, tokens=tokens,
         unbound_roles=[donor.role for donor in unfetched],
         member=plan.member, member_set=verification_set,
-        member_prep=member_step, member_verification=member_verification)
+        member_prep=member_step, member_verification=member_verification,
+        posting=posting)
 
     header = [
         f"# {plan.route.label}",
@@ -2874,8 +2885,14 @@ def write_prep_arguments(out: Path, *, source: str, prep_source: str,
                          member: str | None = None,
                          member_set: str | None = None,
                          member_prep: Mapping[str, object] | None = None,
-                         member_verification: Mapping[str, object] | None = None) -> Path:
-    """Publish the bound preparation arguments from any acquisition path."""
+                         member_verification: Mapping[str, object] | None = None,
+                         posting: Path | None = None) -> Path:
+    """Publish the bound preparation arguments from any acquisition path.
+
+    ``posting``: the window is fetched as posted, and its lead markers land
+    in that folder; the document says so (``as_posted``, ``posting``) so a
+    chain preparing beside the fetch knows where to wait.
+    """
     document = {
         "schema": PREP_ARGUMENTS_SCHEMA,
         "source": source,
@@ -2892,6 +2909,9 @@ def write_prep_arguments(out: Path, *, source: str, prep_source: str,
         document["member_prep"] = dict(member_prep)
     if member_verification is not None:
         document["member_verification"] = dict(member_verification)
+    if posting is not None:
+        document["as_posted"] = True
+        document["posting"] = str(Path(posting).resolve())
     path = _io_path(Path(out)) / PREP_ARGUMENTS_NAME
     _write_json(path, document)
     return path

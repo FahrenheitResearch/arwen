@@ -110,6 +110,7 @@ from gpuwm.checkpoint_identity import (
     SHORTWAVE_ALGORITHM_IDENTITIES,
     SURFACE_LAYER_ALGORITHM_IDENTITIES,
     URBAN_ALGORITHM_IDENTITIES,
+    drop_default_diffusion_selectors,
     require_identifiable_checkpoint_schemes,
     unidentifiable_checkpoint_schemes,
 )
@@ -462,13 +463,21 @@ STATE_REBUILT_ATTRS = frozenset({
 #: rebuilt by attach/prepare (LBC device mirrors, host caches).
 STATE_INFRA_ATTRS = frozenset({
     # Cached launch descriptors are rebuilt from the live state buffers.
-    "_rk_copy_launch", "_rk_zero_launch",
+    "_rk_copy_launch", "_rk_zero_launch", "_glue_add_launch",
     # Used only by analysis snapshot producers. The published LBC field
     # names/bytes, not this preparation selector, own forecast forcing and
     # are already covered by setup_fingerprint/lateral prefix identity.
     "_external_scalar_boundary_fields",
     "_scratch", "_scratch_arena", "_phb_host", "_dz_min",
     "_host_setup_state",
+    # CanonicalStoreState borrows full host carriers and geography instead
+    # of owning a resident DomainState. These references and proxy caches
+    # hold no independent prognostics: store carriers and setup fingerprints
+    # cover their arrays, while dimensions are rebuilt from the validated
+    # configuration. Unknown facade attributes still use the ordinary guard.
+    "_template_metadata", "_canonical_arrays", "_view_cache",
+    "_canonical_store", "_canonical_geography", "_canonical_scalars",
+    "_scratch_allocator", "cfg", "nx", "ny", "nz",
     "physics", "lateral_boundaries", "_lateral_boundary_device",
     "elapsed_seconds", "_nest_restart_classification",
     # The domain's ACTIVATION EPOCH in seconds, published beside
@@ -548,6 +557,8 @@ STATE_INFRA_ATTRS = frozenset({
 #: and the KF driver persistence
 #: (NCA timers, PRATEC/RAINCV, stored per-column rates, RAINC).
 SERIALIZED_SCRATCH_SLOTS = frozenset({
+    # WRF diff_opt=1 keeps the original thermal reference after restart.
+    "diff1_theta_initial",
     "mp_rainnc", "mp_rainncv", "mp_snownc", "mp_snowncv",
     "mp_graupelnc", "mp_graupelncv", "mp_sr", "mp_kessler_sr",
     "mp_hailnc", "mp_hailncv",
@@ -661,6 +672,7 @@ RESTART_ONLY_DRIVER_SLOTS = frozenset({
 #: rebuilds are EXACT names only — a future accumulator slot under those
 #: prefixes must be classified explicitly instead of silently dropping.
 REBUILT_SCRATCH_SLOTS = frozenset({
+    "diff1_theta_work",
     "mp_th", "mp_rho", "mp_pii", "mp_z", "mp_dz8w", "mp_z8w",
     "mp_thompson_temperature",
     "mp_thompson_frozen_reference_density",
@@ -920,6 +932,11 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # checkpoint's values.  Unclassified, it ended every slope_rad run's
     # forecast at the final state digest (first real run of the port).
     "topo_shortwave",
+    # WRF's topo_wind / gwd_opt (gpuwm.core.terrain_drag): initialize_physics
+    # rebuilds it from the resumed RunConfig and the prepared statics; it
+    # holds only static coefficients and statistics, never a value a step
+    # writes, so the rebuilt carrier is the one the checkpoint ran with.
+    "terrain_drag",
     # SASE: the active flag and the kernel-module tuple are re-derived
     # from the resumed RunConfig at driver init; the ledger is a
     # per-step diagnostic replaced before any consumer reads it; the
@@ -940,6 +957,8 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # time before every solve, absent on every fixed-dt driver, and
     # "absent" is what the predicate it feeds reads as "decide normally".
     "cumulus_due_override",
+    # Exact adaptive surface/PBL deadline, recomputed before every solve.
+    "surface_pbl_due_override",
     # The horizontal eddy-viscosity diagnostic, on the SAME terms as the
     # flux-diagnostic buffers beside it: output-only, never read back by
     # the physics, and refilled by the first step after a resume (the
@@ -2323,7 +2342,21 @@ TOPO_RADIATION_RUN_DEFAULTS = {"slope_rad": 0, "topo_shading": 0,
                                "shadlen": 25000.0}
 
 
+#: WRF's topo_wind / gwd_opt (gpuwm.core.terrain_drag) on the same
+#: absent-stays-absent rule: off, a checkpoint is byte-identical to one
+#: written before the two fields existed; on, they bind like any other
+#: trajectory setting.
+TERRAIN_DRAG_RUN_DEFAULTS = {"topo_wind": 0, "gwd_opt": 0}
+
+
+def _drop_inert_terrain_drag(values: dict) -> None:
+    for name, default in TERRAIN_DRAG_RUN_DEFAULTS.items():
+        if values.get(name, default) == default:
+            values.pop(name, None)
+
+
 def _drop_inert_topo_radiation(values: dict) -> None:
+    _drop_inert_terrain_drag(values)
     if not values.get("slope_rad", 0):
         for name in TOPO_RADIATION_RUN_DEFAULTS:
             values.pop(name, None)
@@ -2347,6 +2380,56 @@ def _mosaic_checkpoint_config(config: Mapping) -> dict:
     """Keep pre-mosaic headers and comparisons byte-identical when off."""
     values = dict(config)
     _drop_inert_mosaic(values)
+    drop_default_diffusion_selectors(values)
+    return values
+
+
+def _drop_default_off_run_keys(values: dict) -> None:
+    """Drop every default-off RunConfig key that older headers omit.
+
+    At its default none of these keys is read, so a checkpoint written with
+    it there echoes and digests exactly as one written before the field
+    existed; moved, it stays and binds like any other trajectory setting.
+    The checkpoint echo (:func:`configuration_echo`) and the configuration
+    digest (:func:`_configuration_digest_values`) both drop through here,
+    so every writer drops each key the same way.  A new default-off field
+    joins this list, naming the commit that added it.
+    """
+    # adaptive_nest_lattice (9a2f3fa63): off is the original root clock.
+    if not values.get("adaptive_nest_lattice", False):
+        values.pop("adaptive_nest_lattice", None)
+    # zadvect_implicit (A158, e9300fa4a): 0 is the explicit vertical
+    # advection every header written before the field describes.
+    if not values.get("zadvect_implicit", 0):
+        values.pop("zadvect_implicit", None)
+    # w_crit_cfl (A165, c0d566414): 1.0 is the w_damp every header written
+    # before the field ran.
+    if float(values.get("w_crit_cfl", 1.0)) == 1.0:
+        values.pop("w_crit_cfl", None)
+    # slope_rad, topo_shading and shadlen (db6e9eae5), and inside it
+    # topo_wind and gwd_opt (12d03dd6c, _drop_inert_terrain_drag).
+    _drop_inert_topo_radiation(values)
+    # sf_surface_mosaic and mosaic_cat (fa2e5efd8), mosaic_urban_canopy
+    # (c517106a8).
+    _drop_inert_mosaic(values)
+    # diff_opt and mix_full_fields (679a5f5fe): diff_opt 2 with full-field
+    # mixing is the metric operator every earlier header ran.
+    drop_default_diffusion_selectors(values)
+
+
+def configuration_echo(cfg) -> dict:
+    """The run-configuration echo of every checkpoint header.
+
+    The resident writer (:func:`_write_restart`), the streamed writer
+    (``tilestream.restart_stream.write_streamed_restart``) and the
+    out-of-core store writer (``tilestream.checkpoint.store_restart_header``)
+    all call this one function, so one run's checkpoint describes its
+    configuration the same way whichever road wrote it (A191: the streamed
+    writer echoed nine default keys the resident writer drops, and two
+    checkpoints of one state compared unequal with identical arrays).
+    """
+    values = dataclasses.asdict(cfg)
+    _drop_default_off_run_keys(values)
     return values
 
 
@@ -2360,15 +2443,8 @@ def _configuration_digest_values(config: Mapping) -> dict:
     values = {key: value for key, value in dict(config).items()
               if key not in CONFIG_RUN_LENGTH_FIELDS
               and key not in _DIGEST_DROPPED_DIAGNOSTIC_FIELDS}
-    if not values.get("adaptive_nest_lattice", False):
-        values.pop("adaptive_nest_lattice", None)
-    if not values.get("zadvect_implicit", 0):
-        values.pop("zadvect_implicit", None)
-    if float(values.get("w_crit_cfl", 1.0)) == 1.0:
-        values.pop("w_crit_cfl", None)
-    _drop_inert_topo_radiation(values)
     # New default-off options must not move existing checkpoint digests.
-    _drop_inert_mosaic(values)
+    _drop_default_off_run_keys(values)
     for key in CONFIG_DIAGNOSTIC_FIELDS - _DIGEST_DROPPED_DIAGNOSTIC_FIELDS:
         if key in values:
             values[key] = _run_config_default(key)
@@ -3295,6 +3371,9 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
                    extra_scratch_slots=(),
                    sealed_forcing_extension: bool = False,
                    preserved_forcing_prefix: bool = False) -> Path:
+    if cfg.diff_opt == 1:
+        from gpuwm.core.dycore import initialize_coordinate_reference
+        initialize_coordinate_reference(state, cfg)
     path = Path(path)
     # A root whose boundaries still stream from an unsealed preparation is
     # checkpointed over its prepared intervals, under the preserved-prefix
@@ -3347,18 +3426,7 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
         arrays[key] = host
         array_manifest[key] = {"shape": list(host.shape),
                                "dtype": str(host.dtype)}
-    config_echo = dataclasses.asdict(cfg)
-    if not config_echo.get("adaptive_nest_lattice", False):
-        config_echo.pop("adaptive_nest_lattice", None)
-    # zadvect_implicit (A158) at its default is the explicit advection every
-    # header written before the field describes, so it is echoed only on.
-    if not config_echo.get("zadvect_implicit", 0):
-        config_echo.pop("zadvect_implicit", None)
-    # w_crit_cfl (A165) at its default 1.0 is the w_damp every header
-    # written before the field ran, so it is echoed only when moved.
-    if float(config_echo.get("w_crit_cfl", 1.0)) == 1.0:
-        config_echo.pop("w_crit_cfl", None)
-    _drop_inert_topo_radiation(config_echo)
+    config_echo = configuration_echo(cfg)
     header = {
         "format_version": RESTART_FORMAT_VERSION,
         "case": cfg.case,
@@ -3377,7 +3445,7 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
             RESIDENT_WRITTEN_MODE, cfg),
         "elapsed_seconds": _admissible_elapsed_seconds(
             state.elapsed_seconds, "restart write"),
-        "config": _mosaic_checkpoint_config(config_echo),
+        "config": config_echo,
         "setup_fingerprint": setup_fingerprint(view),
         "physics_setup": physics_setup,
         "physics_setup_fingerprint": physics_setup_sha256,
@@ -3556,6 +3624,10 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             continue
         stored = stored_config.get(key, absent)
         live = live_config.get(key, absent)
+        if key in ("diff_opt", "mix_full_fields") and stored is absent:
+            # Checkpoints from before the coordinate selector existed used
+            # exactly the metric operator with full-field scalar mixing.
+            stored = 2 if key == "diff_opt" else True
         if key == "adaptive_nest_lattice":
             # Older checkpoints used the original clock. A flipped mode
             # must refuse because it changes the integration trajectory.
@@ -3571,6 +3643,12 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             # value is refused, because it changes the trajectory.
             stored = 1.0 if stored is absent else stored
             live = 1.0 if live is absent else live
+        if key in TERRAIN_DRAG_RUN_DEFAULTS:
+            # Absent is the default (_drop_inert_terrain_drag); a moved
+            # topo_wind/gwd_opt still refuses below.
+            default = TERRAIN_DRAG_RUN_DEFAULTS[key]
+            stored = default if stored is absent else stored
+            live = default if live is absent else live
         if key in TOPO_RADIATION_RUN_DEFAULTS:
             # Absent is the default (_drop_inert_topo_radiation); a
             # flipped slope/shadow setting still refuses below.
@@ -4265,6 +4343,26 @@ def tree_fingerprint_mismatch_reason(gid: int, header, model) -> str:
     return reason
 
 
+#: Provenance on a domain's member, written ``true`` and only where that
+#: domain's ``epssm`` was the model's choice (``ExperimentConfig
+#: .auto_epssm``: unset or ``"auto"``).  The value that ran is in
+#: ``config``, where it binds; this says who chose it, so a child derived
+#: from the checkpoint (``gpuwm downscale --point``) leaves its own
+#: ``epssm`` to the model on its own ground instead of carrying its
+#: parent's as a written value (A181).  Absent everywhere else, so every
+#: explicit run's member keeps the keys it always had, and no identity
+#: reads it.
+AUTO_EPSSM_HEADER_KEY = "auto_epssm"
+
+
+def auto_epssm_header(grid_id: int, labels) -> dict:
+    """``{AUTO_EPSSM_HEADER_KEY: True}`` for a labelled domain, else ``{}``."""
+
+    if int(grid_id) in {int(gid) for gid in (labels or ())}:
+        return {AUTO_EPSSM_HEADER_KEY: True}
+    return {}
+
+
 #: Where the nest-lifecycle state lives in a tree checkpoint: the ROOT
 #: member's ``tree_header``, beside the fingerprint and the domain set.
 #: The root is the set's commit marker, so it is the one member a
@@ -4826,8 +4924,13 @@ def _node_placement(node):
 
 def write_tree_restart(directory, model, valid_time: datetime, *,
                        run_trackers_by_grid_id=None,
-                       sealed_forcing_extension: bool = False) -> Path:
+                       sealed_forcing_extension: bool = False,
+                       auto_epssm=None) -> Path:
     """Publish one immutable generation per domain, with d01 last.
+
+    ``auto_epssm`` is the grid_ids whose ``epssm`` the model chose
+    (:data:`AUTO_EPSSM_HEADER_KEY`); ``None`` reads them off the tree's
+    declared experiment, which a door that publishes none passes itself.
 
     Every generation has UUID-qualified member names.  Publishing the root
     last makes it the set's commit marker: a crash while writing children
@@ -4852,6 +4955,9 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
     nodes = tuple(model.walk_parent_first())
     ids = sorted(int(node.cfg.grid_id) for node in nodes)
     trackers = dict(run_trackers_by_grid_id or {})
+    if auto_epssm is None:
+        auto_epssm = getattr(getattr(model, "_declared_experiment", None),
+                             "auto_epssm", ())
     paths: dict[int, Path] = {}
     # A checkpoint written after a nest relocation says so ON ITSELF, and
     # states the posture it actually has -- which is no longer "a restart
@@ -5062,6 +5168,7 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
                 # reads it could never fire.
                 **({} if relocation_header is None
                    else {"relocation": relocation_header}),
+                **auto_epssm_header(gid, auto_epssm),
             }
             # D3, closed: the posture block was computed and never
             # attached, so the crossed-move warning in
@@ -6007,6 +6114,11 @@ def _validate_restart(path, state, cfg, *,
     """Load one archive and perform all refusal checks without mutation."""
     path = Path(path)
     header, stored = _load_restart(path, with_arrays=True)
+    if cfg.diff_opt == 1 and "scratch/diff1_theta_initial" not in stored:
+        raise RestartMismatchError(
+            "diff_opt=1 restart is missing its original thermal reference "
+            "scratch/diff1_theta_initial; reconstructing it from evolved "
+            "theta would change coordinate diffusion")
     required_header = {
         "format_version", "config", "setup_fingerprint",
         "physics_setup", "physics_setup_fingerprint",

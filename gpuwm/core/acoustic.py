@@ -16,6 +16,7 @@ from __future__ import annotations
 import numpy as np
 
 from gpuwm.config import RunConfig
+from gpuwm.wrf_exact import ENABLED as WRF_EXACT
 from gpuwm.core.kernels import (get_kernel, get_kernel_int_defines,
                                 module_source, module_source_int_defines)
 from gpuwm.core.state import DTYPE, DomainState
@@ -237,7 +238,9 @@ def acoustic_substep_explicit(state: DomainState, cfg: RunConfig,
                  state.mup, state.mu_pp, mu_old, state.rmu_t,
                  mudf_arg, write_mudf,
                  state.thp, state.thb, state.th_pp, th_old, state.rth_t,
-                 state.ww_pp, state.p_pp, state.p_pp_old,
+                 state.ww_pp,
+                 *((state.scratch((nz + 1, ny, nx), "rk_ww"),) if WRF_EXACT else ()),
+                 state.p_pp, state.p_pp_old,
                  state.dnw, state.rdnw, state.fnm, state.fnp,
                 state.c1h, state.c2h, state.mub2d,
                 state.msft, state.msfu, state.msfv,
@@ -245,6 +248,7 @@ def acoustic_substep_explicit(state: DomainState, cfg: RunConfig,
                 _base3d(state), np.int32(nz), np.int32(ny), np.int32(nx),
                 np.int32(_boundary_x(cfg)), np.int32(_boundary_y(cfg)),
                 np.int32(_mass_w_boundary_zone(cfg))))
+
     else:
         kernel = get_kernel("acoustic", "advance_mu_th")
         kernel((blocks,), (_THREADS,),
@@ -252,13 +256,23 @@ def acoustic_substep_explicit(state: DomainState, cfg: RunConfig,
                  state.mup, state.mu_pp, mu_old, state.rmu_t,
                  mudf_arg, write_mudf,
                  state.thp, state.thb, state.th_pp, th_old, state.rth_t,
-                 state.ww_pp, state.p_pp, state.p_pp_old,
+                 state.ww_pp,
+                 *((state.scratch((nz + 1, ny, nx), "rk_ww"),) if WRF_EXACT else ()),
+                 state.p_pp, state.p_pp_old,
                  state.dnw, state.rdnw, state.fnm, state.fnp,
                 state.c1h, state.c2h, state.mub2d,
                 DTYPE(1.0 / cfg.dx), DTYPE(1.0 / cfg.dy), DTYPE(dtau),
                 _base3d(state), np.int32(nz), np.int32(ny), np.int32(nx),
                 np.int32(_boundary_x(cfg)), np.int32(_boundary_y(cfg)),
                 np.int32(_mass_w_boundary_zone(cfg))))
+
+    if WRF_EXACT and _mass_w_boundary_zone(cfg):
+        get_kernel("acoustic", "advance_exact_frame_mu_t")(
+            (blocks,), (_THREADS,),
+            (state.mu_pp, state.th_pp, state.rmu_t, state.rth_t,
+             DTYPE(dtau), np.int32(_mass_w_boundary_zone(cfg)),
+             np.int32(not _boundary_x(cfg)), np.int32(nz),
+             np.int32(ny), np.int32(nx)))
 
 
 #: ``WPHI_MAX_LEV`` tiers ``kernels/acoustic.cu`` is compiled at, ascending.
@@ -438,13 +452,25 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
         state.mup, state.mu_pp, mu_old, state.rmu_t,
         mudf_arg, write_mudf,
         state.thp, state.thb, state.th_pp, th_old, state.rth_t,
-        state.ww_pp, state.p_pp, state.p_pp_old,
+        state.ww_pp,
+                 *((state.scratch((nz + 1, ny, nx), "rk_ww"),) if WRF_EXACT else ()),
+                 state.p_pp, state.p_pp_old,
         state.dnw, state.rdnw, state.fnm, state.fnp,
         state.c1h, state.c2h, state.mub2d,
     ) + mu_map_args + (
         rdx, rdy, dtau_arg, base3d, nz_arg, ny_arg, nx_arg,
         boundary_x, boundary_y, mass_w_zone,
     )
+
+    exact_frame_kernel = None
+    exact_frame_args = None
+    if WRF_EXACT and int(mass_w_zone):
+        exact_frame_kernel = get_kernel("acoustic", "advance_exact_frame_mu_t")
+        exact_frame_args = (
+            state.mu_pp, state.th_pp, state.rmu_t, state.rth_t,
+            dtau_arg, mass_w_zone, np.int32(not int(boundary_x)),
+            nz_arg, ny_arg, nx_arg,
+        )
 
     dampmag = dtau * cfg.dampcoef if cfg.damp_opt == 3 else 0.0
     w_name = "advance_w_phi_msf" if state.has_msf else "advance_w_phi"
@@ -518,6 +544,8 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
                                     + dtau_arg * state.rv_t[:, -1, :])
 
         mu_kernel(column_grid, block, mu_args)
+        if exact_frame_kernel is not None:
+            exact_frame_kernel(column_grid, block, exact_frame_args)
         w_kernel(column_grid, block, w_args)
         if frame_kernel is not None:
             frame_kernel(column_grid, block, frame_args)

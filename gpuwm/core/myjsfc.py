@@ -20,6 +20,7 @@ against the WRF Fortran has been run.
 from __future__ import annotations
 
 from functools import lru_cache
+from gpuwm.core.device_cache import cuda_cache
 
 import cupy as cp
 import numpy as np
@@ -42,7 +43,7 @@ _SURFACE_INPUTS = ("u1", "v1", "t1", "th1", "qv1", "qc1", "p1", "psfc",
                    "tsk", "xland", "mavail", "z0base")
 
 
-@lru_cache(maxsize=1)
+@cuda_cache(maxsize=None, ready=True)
 def _device_tables():
     """Upload the MYJSFCINIT tables once per process.
 

@@ -569,9 +569,11 @@ def np_flux_div_w(w, ru, rv, rw, coord, dx, dy, open_x=False, open_y=False,
     ``advect_w``'s msftx weighting of the horizontal divergence; the
     vertical Omega term is unweighted, tech note eqn 2.25).
 
-    Returns shape ``(nz+1, ny, nx)``; boundary w-levels k = 0 and k = nz get
-    zero tendency (their w is set by the rigid-lid/flat-bottom BCs).  The
-    vertical flux of w lives at mass levels; divergence uses ``coord.rdn``.
+    Returns shape ``(nz+1, ny, nx)``. The surface has zero tendency; the
+    model top retains WRF's horizontal flux extrapolation and its vertical
+    lid contribution (``advect_w``:4854-4859, 6025-6028). The vertical flux
+    of w lives at mass levels; divergence uses ``coord.rdn``. A rigid-lid
+    update applies its boundary condition after this tendency calculation.
 
     ``open_x``/``open_y`` transcribe WRF v4.6.1 ``advect_w``: the same
     open-boundary structure as :func:`np_flux_div_scalar` (degraded
@@ -630,6 +632,45 @@ def np_flux_div_w(w, ru, rv, rw, coord, dx, dy, open_x=False, open_y=False,
     rdn = np.asarray(coord.rdn, dtype=np.float64)[1:nz, None, None]
     tz = -(fzm[1:] - fzm[:-1]) * rdn
     out[1:nz] = tx + ty + tz
+    # WRF includes k=ktf+1: extrapolate horizontal advecting fluxes from
+    # the final two mass levels, then add the one-sided vertical lid term.
+    wtop = w[nz:nz + 1]
+    fnm_top = np.asarray(coord.fnm, dtype=np.float64)[nz - 1]
+    fnp_top = np.asarray(coord.fnp, dtype=np.float64)[nz - 1]
+    velx_top = ((2.0 - fnm_top) * ru[nz - 1]
+                - fnp_top * ru[nz - 2])[None]
+    if open_x:
+        fx_top = _open_cell_fluxes(wtop, velx_top, axis=2)
+        tx_top = m * (-(fx_top[:, :, 1:] - fx_top[:, :, :-1]) / dx)
+        if spec:
+            tx_top[:, :, 0] = tx_top[:, :, -1] = 0.0
+        else:
+            tx_top[:, :, 0], tx_top[:, :, -1] = _open_cell_term(
+                wtop, velx_top, dx, axis=2)
+    else:
+        xf_top = np.arange(nx + 1)
+        wx_top = lambda off: wtop[:, :, (xf_top + off) % nx]
+        fx_top = _flux5(wx_top(-3), wx_top(-2), wx_top(-1), wx_top(0),
+                        wx_top(1), wx_top(2), velx_top)
+        tx_top = m * (-(fx_top[:, :, 1:] - fx_top[:, :, :-1]) / dx)
+    vely_top = ((2.0 - fnm_top) * rv[nz - 1]
+                - fnp_top * rv[nz - 2])[None]
+    if open_y:
+        fy_top = _open_cell_fluxes(wtop, vely_top, axis=1)
+        ty_top = m * (-(fy_top[:, 1:, :] - fy_top[:, :-1, :]) / dy)
+        if spec:
+            ty_top[:, 0, :] = ty_top[:, -1, :] = 0.0
+        else:
+            ty_top[:, 0, :], ty_top[:, -1, :] = _open_cell_term(
+                wtop, vely_top, dy, axis=1)
+    else:
+        yf_top = np.arange(ny + 1)
+        wy_top = lambda off: wtop[:, (yf_top + off) % ny, :]
+        fy_top = _flux5(wy_top(-3), wy_top(-2), wy_top(-1), wy_top(0),
+                        wy_top(1), wy_top(2), vely_top)
+        ty_top = m * (-(fy_top[:, 1:, :] - fy_top[:, :-1, :]) / dy)
+    out[nz] = (tx_top + ty_top)[0] + (
+        2.0 * np.asarray(coord.rdn, dtype=np.float64)[nz - 1] * fzm[nz - 1])
     return out
 
 
@@ -3515,7 +3556,7 @@ W_DAMP_BETA = 1.0
 W_CRIT_CFL = 1.0
 
 
-def np_open_u_radiative(ru_t, u, mut, coord, dx, cb=OPEN_CB):
+def np_open_u_radiative(ru_t, u, mut, coord, dx, cb=OPEN_CB, msfu=None):
     """Mirror of ``open_u_radiative`` (gpuwm/core/kernels/openbc.cu).
 
     WRF open (gravity-wave radiative) lateral BC for the boundary-normal
@@ -3532,9 +3573,12 @@ def np_open_u_radiative(ru_t, u, mut, coord, dx, cb=OPEN_CB):
     open-aware advection bounds excluded the x-advection at those faces
     and the radiative term stands in for it; the retained contributions
     (e.g. vertical advection when only x is open) remain in the sum.
-    ``ru_b = (c1h*mut + c2h)*u`` couples the boundary-face u with the
+    ``ru_b = (c1h*mut + c2h)*u/msfu`` couples the boundary-face u with the
     boundary CELL's column mass (WRF's muu under the zero-gradient mu ghost
-    copy).  Interior faces are untouched.  Returns a new float64 array.
+    copy). Optional ``msfu`` is WRF's staggered ``msfuy``; its division
+    applies to ``ru_b`` and leaves ``cb*(c1h*mut+c2h)`` unchanged. Omitting
+    it preserves the map-factor-one expressions. Interior faces are
+    untouched. Returns a new float64 array.
     """
     ru_t = np.asarray(ru_t, dtype=np.float64).copy()
     u = np.asarray(u, dtype=np.float64)
@@ -3543,18 +3587,27 @@ def np_open_u_radiative(ru_t, u, mut, coord, dx, cb=OPEN_CB):
     c1h = np.asarray(coord.c1h, dtype=np.float64)[:, None]
     c2h = np.asarray(coord.c2h, dtype=np.float64)[:, None]
     mw = c1h * mut[None, :, 0] + c2h                     # (nz, ny)
-    ub = np.minimum(mw * u[:, :, 0] - cb * mw, 0.0)
+    if msfu is None:
+        ub = np.minimum(mw * u[:, :, 0] - cb * mw, 0.0)
+    else:
+        msfu = np.broadcast_to(np.asarray(msfu, dtype=np.float64), (ny, nxp1))
+        ub = np.minimum((mw * u[:, :, 0]) / msfu[None, :, 0] - cb * mw, 0.0)
     ru_t[:, :, 0] += -(1.0 / dx) * ub * (u[:, :, 1] - u[:, :, 0])
     me = c1h * mut[None, :, -1] + c2h
-    ub = np.maximum(me * u[:, :, -1] + cb * me, 0.0)
+    if msfu is None:
+        ub = np.maximum(me * u[:, :, -1] + cb * me, 0.0)
+    else:
+        ub = np.maximum((me * u[:, :, -1]) / msfu[None, :, -1] + cb * me, 0.0)
     ru_t[:, :, -1] += -(1.0 / dx) * ub * (u[:, :, -1] - u[:, :, -2])
     return ru_t
 
 
-def np_open_v_radiative(rv_t, v, mut, coord, dy, cb=OPEN_CB):
+def np_open_v_radiative(rv_t, v, mut, coord, dy, cb=OPEN_CB, msfv=None):
     """Mirror of ``open_v_radiative``: y analogue of
     :func:`np_open_u_radiative` (WRF ``advect_v`` ``open_ys``/``open_ye``;
-    additive per module_advect_em.F:2721/2736)."""
+    additive per module_advect_em.F:2721/2736). Optional ``msfv`` is WRF's
+    staggered ``msfvx`` and divides only the coupled meridional momentum.
+    Omitting it preserves the map-factor-one expressions."""
     rv_t = np.asarray(rv_t, dtype=np.float64).copy()
     v = np.asarray(v, dtype=np.float64)
     nz, nyp1, nx = v.shape
@@ -3562,10 +3615,17 @@ def np_open_v_radiative(rv_t, v, mut, coord, dy, cb=OPEN_CB):
     c1h = np.asarray(coord.c1h, dtype=np.float64)[:, None]
     c2h = np.asarray(coord.c2h, dtype=np.float64)[:, None]
     ms = c1h * mut[None, 0, :] + c2h                     # (nz, nx)
-    vb = np.minimum(ms * v[:, 0, :] - cb * ms, 0.0)
+    if msfv is None:
+        vb = np.minimum(ms * v[:, 0, :] - cb * ms, 0.0)
+    else:
+        msfv = np.broadcast_to(np.asarray(msfv, dtype=np.float64), (nyp1, nx))
+        vb = np.minimum((ms * v[:, 0, :]) / msfv[None, 0, :] - cb * ms, 0.0)
     rv_t[:, 0, :] += -(1.0 / dy) * vb * (v[:, 1, :] - v[:, 0, :])
     mn = c1h * mut[None, -1, :] + c2h
-    vb = np.maximum(mn * v[:, -1, :] + cb * mn, 0.0)
+    if msfv is None:
+        vb = np.maximum(mn * v[:, -1, :] + cb * mn, 0.0)
+    else:
+        vb = np.maximum((mn * v[:, -1, :]) / msfv[None, -1, :] + cb * mn, 0.0)
     rv_t[:, -1, :] += -(1.0 / dy) * vb * (v[:, -1, :] - v[:, -2, :])
     return rv_t
 
@@ -3755,8 +3815,8 @@ def np_rhs_ph_hadv(meta, cfg):
     WRF ``rhs_ph`` horizontal advection of the FULL geopotential ph+phb
     with the ``h_sca_adv_order`` stencil
     (module_big_step_utilities_em.F:1435).  Order 2 is the frozen <=2
-    two-face branch (:1516-1584) with the open/specified zero-gradient
-    boundary-normal faces; order 5 is the <=6 branch's 1/60-weighted
+    two-face branch (:1516-1584), excluding the entire normal-direction
+    contribution on outer open/specified rows; order 5 is the <=6 branch's 1/60-weighted
     7-point centered stencil (:1786-1795 y / :1949-1959 x) applied
     everywhere when periodic and with WRF's specified narrowing
     otherwise — y rows 1/ny-2 2nd order (:1882-1906), rows 2/ny-3 4th
@@ -3806,7 +3866,10 @@ def np_rhs_ph_hadv(meta, cfg):
         fxp = np.roll(fx, -1, axis=2)
         if open_x:
             fxp[:, :, -1] = 0.0
-        out[1:nz + 1] -= hcoef * rdx * (fxp + fx) / msft
+        hx = hcoef * rdx * (fxp + fx) / msft
+        if open_x:
+            hx[:, :, (0, -1)] = 0.0
+        out[1:nz + 1] -= hx
         dphy = ph_i - np.roll(ph_i, 1, axis=1)
         if open_y:
             dphy[:, 0, :] = 0.0
@@ -3814,7 +3877,10 @@ def np_rhs_ph_hadv(meta, cfg):
         fyp = np.roll(fy, -1, axis=1)
         if open_y:
             fyp[:, -1, :] = 0.0
-        out[1:nz + 1] -= hcoef * rdy * (fyp + fy) / msft
+        hy = hcoef * rdy * (fyp + fy) / msft
+        if open_y:
+            hy[:, (0, -1), :] = 0.0
+        out[1:nz + 1] -= hy
         return out
 
     if order != 5:

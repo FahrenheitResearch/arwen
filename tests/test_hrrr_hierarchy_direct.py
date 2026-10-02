@@ -694,7 +694,7 @@ class _Run:
     spec_zone: int = 1
     relax_zone: int = 4
     moist: bool = True
-    moist_cq: bool = False
+    moist_cq: bool = True
     nest_microphysics_transition: str = "same-scheme-only"
     output_interval_s: float = 3600.0
     restart_interval_s: float = 0.0

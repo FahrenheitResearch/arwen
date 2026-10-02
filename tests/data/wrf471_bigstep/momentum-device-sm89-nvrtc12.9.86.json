@@ -1,0 +1,26 @@
+{
+    "cupy":  "14.2.0",
+    "device":  "NVIDIA GeForce RTX 4090",
+    "runtime":  12090,
+    "driver":  13030,
+    "kernel_source_sha256":  {
+                                 "dycore":  "433ab4ba2ae49a20dc1c3abcf83753fd6d831f6267639bc1c9bbf812977fbdaf",
+                                 "coriolis_map":  "505e5ce3a03a28482fc4d520dd60b82682e290885c1ffeb1920b87b1b18fb67e"
+                             },
+    "launch_paths":  [
+                         "gpuwm.core.dycore._launch_slow_pgf",
+                         "gpuwm.core.dycore.launch_coriolis_curvature"
+                     ],
+    "compile_platform":  {
+                             "nvrtc_build":  "12.9.86",
+                             "nvrtc_build_id":  "CL-36037853",
+                             "nvrtc_library_sha256":  "7c67c6b51ea0e0279634cebd676ff7efda1674806444520c84430ad5c35fe625",
+                             "cuda_driver_version":  "13030",
+                             "device_compute_capability":  "89",
+                             "cupy_version":  "14.2.0"
+                         },
+    "compute_capability_evidence":  "nvidia-smi --query-gpu=compute_cap --format=csv,noheader: 8.9",
+    "compiler_probe":  "CPU-only NVRTC empty-program banner and loaded-library hash; GPU outputs are from the completed OWNER hold",
+    "measurement_sha256":  "46762bcfaf78ba735f9226d0f4805134e9432e52caaa6826ce44414e8098dc8a",
+    "diagnostic_sha256":  "644564c02a45579cfc4a2b39cd35657e0138848e207ae35db9a0e5996820a8e8"
+}

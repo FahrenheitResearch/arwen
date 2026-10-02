@@ -160,6 +160,49 @@ def wrfinput_window_seconds(run, run_seconds):
         source='gpuwm run --wrfinput', last_valid_time=run.coverage.end)
 
 
+def wrfinput_urban_columns(run) -> dict[int, int] | None:
+    """Read only the urban land-cover planes before reserving a shared card.
+
+    The complete WRF restore remains in the worker.  Unknown land cover
+    keeps the configuration bound; malformed supplied planes are refused
+    by the same numeric and geometry checks as that restore.
+    """
+    from gpuwm import netcdf_bridge
+    from gpuwm.core.urban_state import (bem_workspace_counted,
+                                        prepared_urban_columns)
+    from gpuwm.ingest.wrfinput import (_read_numeric,
+                                       _validate_wrfinput_geometry)
+
+    counts = {}
+    metadata = getattr(run, 'metadata', {}) or {}
+    for domain in getattr(run.experiment, 'domains', ()):
+        cfg = domain.run
+        if not bem_workspace_counted(cfg):
+            continue
+        item = metadata.get(int(domain.grid_id))
+        attrs = getattr(item, 'global_attributes', {})
+        if attrs.get('MMINLU') is None:
+            continue
+        expected = {'west_east': int(cfg.nx), 'south_north': int(cfg.ny)}
+        with netcdf_bridge.open_dataset(item.path) as dataset:
+            if 'LU_INDEX' not in dataset.variables:
+                continue
+            planes = {}
+            for name in ('LU_INDEX', 'FRC_URB2D'):
+                if name not in dataset.variables:
+                    continue
+                variable = dataset.variables[name]
+                value = _read_numeric(variable)
+                _validate_wrfinput_geometry(name, variable, expected, value)
+                planes[name] = value
+        count = prepared_urban_columns(
+            cfg, planes['LU_INDEX'], landuse_dataset=str(attrs['MMINLU']),
+            frc_urb2d=planes.get('FRC_URB2D'))
+        if count is not None:
+            counts[int(domain.grid_id)] = count
+    return counts or None
+
+
 def prepare_wrf_run(run, directory: Path, *, run_seconds: float | None = None,
                     soil_source=None) -> WrfTreeInputs:
     """Validate the complete CPU handoff and bind the exact input bytes."""
@@ -545,13 +588,17 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
             if render_dir is not None:
                 command += ['--render-dir', str(Path(render_dir).resolve())]
             command += ProgressOptions.worker_flags(progress_options)
+            urban_columns = wrfinput_urban_columns(run)
+            pricing = ({} if urban_columns is None else
+                       {'urban_columns': urban_columns})
             with GPUFileLock(gpu.uuid, run_id=f'wrf-input-{os.getpid()}'):
                 # Priced against THIS run's reservation through the same
                 # function `gpuwm run` prices from, so a co-tenant admitted
                 # at one door is admitted at the other.
                 preflight_exclusive_gpu(gpu.uuid, approved_pids={os.getpid()},
                                         allow_shared_gpu=allow_shared_gpu,
-                                        reservation_bytes=priced_reservation_bytes(run.experiment))
+                                        reservation_bytes=priced_reservation_bytes(
+                                            run.experiment, **pricing))
                 return worker_exit_status(subprocess.run(
                     command, env=dict(os.environ, CUDA_VISIBLE_DEVICES=gpu.uuid),
                     check=False).returncode)

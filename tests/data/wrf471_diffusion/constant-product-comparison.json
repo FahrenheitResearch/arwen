@@ -1,0 +1,2886 @@
+{
+  "gpu": "NVIDIA GeForce RTX 5090",
+  "rows": [
+    {
+      "case": 0,
+      "scenario": "real_flat_uniform",
+      "name": "u",
+      "stagger": "x",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1890,
+      "different_words": 1553,
+      "max_ulp": 4332,
+      "max_absolute": 1.1920928955078125e-07,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0xbeec48b7",
+          "wrf_word": "0xbeec48b6"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0xbea67478",
+          "wrf_word": "0xbea67477"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0xbe9e0756",
+          "wrf_word": "0xbe9e0754"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0xbe9b45b0",
+          "wrf_word": "0xbe9b45af"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0xbe963d58",
+          "wrf_word": "0xbe963d57"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xbe8f51c2",
+          "wrf_word": "0xbe8f51c1"
+        }
+      ]
+    },
+    {
+      "case": 1,
+      "scenario": "real_flat_uniform",
+      "name": "u",
+      "stagger": "x",
+      "op": 1,
+      "routine": "vertical_diffusion_u",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1890,
+      "different_words": 1524,
+      "max_ulp": 1077703226,
+      "max_absolute": 2.944471836090088,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x3e846665",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x3e4caa96",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x3e0bfb5d",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x3d9146bb",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x3c0382d3",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xbd414df0",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 2,
+      "scenario": "real_flat_uniform",
+      "name": "v",
+      "stagger": "y",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1904,
+      "different_words": 1904,
+      "max_ulp": 2076482352,
+      "max_absolute": 0.6102337017655373,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x3d8aa239",
+          "wrf_word": "0xbd0508cf"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x3e6f3ee8",
+          "wrf_word": "0x3c9d2987"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x3e9f91fb",
+          "wrf_word": "0x3d00508d"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x3e17fb5b",
+          "wrf_word": "0xbb90a0a4"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0xbd63f474",
+          "wrf_word": "0xbcc8603f"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xbe00aa24",
+          "wrf_word": "0xbc8461d6"
+        }
+      ]
+    },
+    {
+      "case": 3,
+      "scenario": "real_flat_uniform",
+      "name": "v",
+      "stagger": "y",
+      "op": 1,
+      "routine": "vertical_diffusion_v",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1904,
+      "different_words": 1687,
+      "max_ulp": 1086945625,
+      "max_absolute": 6.29606294631958,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x40b23359",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x40aedca1",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x40a83c6a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x40a5682c",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x40a03214",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0x409b39c6",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 4,
+      "scenario": "real_flat_uniform",
+      "name": "w",
+      "stagger": "z",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 2040,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 5,
+      "scenario": "real_flat_uniform",
+      "name": "w",
+      "stagger": "z",
+      "op": 1,
+      "routine": "vertical_diffusion",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 2040,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 6,
+      "scenario": "real_flat_uniform",
+      "name": "m",
+      "stagger": "",
+      "op": 0,
+      "routine": "horizontal_diffusion_3dmp",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1785,
+      "different_words": 1492,
+      "max_ulp": 862,
+      "max_absolute": 2.384185791015625e-07,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0xbf81345e",
+          "wrf_word": "0xbf81345d"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0xbf785132",
+          "wrf_word": "0xbf785131"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0xbf6ccb05",
+          "wrf_word": "0xbf6ccb04"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xbef0a111",
+          "wrf_word": "0xbef0a10f"
+        },
+        {
+          "index": [
+            0,
+            0,
+            6
+          ],
+          "gpu_word": "0xbefc06ad",
+          "wrf_word": "0xbefc06ac"
+        },
+        {
+          "index": [
+            0,
+            0,
+            7
+          ],
+          "gpu_word": "0xbf3dfd1a",
+          "wrf_word": "0xbf3dfd19"
+        }
+      ]
+    },
+    {
+      "case": 7,
+      "scenario": "real_flat_uniform",
+      "name": "m",
+      "stagger": "",
+      "op": 1,
+      "routine": "vertical_diffusion_3dmp",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1785,
+      "different_words": 1597,
+      "max_ulp": 1088973272,
+      "max_absolute": 7.262920379638672,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0xc0ad19b0",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0xc0a86d10",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0xc08fda10",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0xc09d68d6",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0xc097acff",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xc0920726",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 8,
+      "scenario": "real_flat_stretched",
+      "name": "u",
+      "stagger": "x",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1890,
+      "different_words": 1553,
+      "max_ulp": 4332,
+      "max_absolute": 1.1920928955078125e-07,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0xbeec48b7",
+          "wrf_word": "0xbeec48b6"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0xbea67478",
+          "wrf_word": "0xbea67477"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0xbe9e0756",
+          "wrf_word": "0xbe9e0754"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0xbe9b45b0",
+          "wrf_word": "0xbe9b45af"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0xbe963d58",
+          "wrf_word": "0xbe963d57"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xbe8f51c2",
+          "wrf_word": "0xbe8f51c1"
+        }
+      ]
+    },
+    {
+      "case": 9,
+      "scenario": "real_flat_stretched",
+      "name": "u",
+      "stagger": "x",
+      "op": 1,
+      "routine": "vertical_diffusion_u",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1890,
+      "different_words": 1658,
+      "max_ulp": 1094158776,
+      "max_absolute": 11.471122741699219,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x40b964be",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x408f4ad9",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x40440297",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x3fcb6c73",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x3e382615",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xbf87566e",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 10,
+      "scenario": "real_flat_stretched",
+      "name": "v",
+      "stagger": "y",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1904,
+      "different_words": 1904,
+      "max_ulp": 2076482352,
+      "max_absolute": 0.6102337017655373,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x3d8aa239",
+          "wrf_word": "0xbd0508cf"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x3e6f3ee8",
+          "wrf_word": "0x3c9d2987"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x3e9f91fb",
+          "wrf_word": "0x3d00508d"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x3e17fb5b",
+          "wrf_word": "0xbb90a0a4"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0xbd63f474",
+          "wrf_word": "0xbcc8603f"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xbe00aa24",
+          "wrf_word": "0xbc8461d6"
+        }
+      ]
+    },
+    {
+      "case": 11,
+      "scenario": "real_flat_stretched",
+      "name": "v",
+      "stagger": "y",
+      "op": 1,
+      "routine": "vertical_diffusion_v",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1904,
+      "different_words": 1749,
+      "max_ulp": 1124929197,
+      "max_absolute": 141.0573272705078,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x42f986a6",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x42f4d9d3",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x42eb92b2",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x42e79c93",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x42e05080",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0x42d95af4",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 12,
+      "scenario": "real_flat_stretched",
+      "name": "w",
+      "stagger": "z",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 2040,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 13,
+      "scenario": "real_flat_stretched",
+      "name": "w",
+      "stagger": "z",
+      "op": 1,
+      "routine": "vertical_diffusion",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 2040,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 14,
+      "scenario": "real_flat_stretched",
+      "name": "m",
+      "stagger": "",
+      "op": 0,
+      "routine": "horizontal_diffusion_3dmp",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1785,
+      "different_words": 1492,
+      "max_ulp": 862,
+      "max_absolute": 2.384185791015625e-07,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0xbf81345e",
+          "wrf_word": "0xbf81345d"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0xbf785132",
+          "wrf_word": "0xbf785131"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0xbf6ccb05",
+          "wrf_word": "0xbf6ccb04"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xbef0a111",
+          "wrf_word": "0xbef0a10f"
+        },
+        {
+          "index": [
+            0,
+            0,
+            6
+          ],
+          "gpu_word": "0xbefc06ad",
+          "wrf_word": "0xbefc06ac"
+        },
+        {
+          "index": [
+            0,
+            0,
+            7
+          ],
+          "gpu_word": "0xbf3dfd1a",
+          "wrf_word": "0xbf3dfd19"
+        }
+      ]
+    },
+    {
+      "case": 15,
+      "scenario": "real_flat_stretched",
+      "name": "m",
+      "stagger": "",
+      "op": 1,
+      "routine": "vertical_diffusion_3dmp",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1785,
+      "different_words": 1596,
+      "max_ulp": 1126348807,
+      "max_absolute": 162.71885681152344,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0xc2f26263",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0xc2ebd6d0",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0xc2c96dd3",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0xc2dc69c6",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0xc2d4626e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xc2cc79e1",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 16,
+      "scenario": "linear_shear",
+      "name": "u",
+      "stagger": "x",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1890,
+      "different_words": 1214,
+      "max_ulp": 3314379,
+      "max_absolute": 1.7881393432617188e-07,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x3e5b4391",
+          "wrf_word": "0x3e5b438e"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x3e37d1b4",
+          "wrf_word": "0x3e37d1b3"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x3e37d1b6",
+          "wrf_word": "0x3e37d1b3"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x3e37d1b6",
+          "wrf_word": "0x3e37d1b3"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x3e37d1b4",
+          "wrf_word": "0x3e37d1b3"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0x3e37d1b6",
+          "wrf_word": "0x3e37d1b3"
+        }
+      ]
+    },
+    {
+      "case": 17,
+      "scenario": "linear_shear",
+      "name": "u",
+      "stagger": "x",
+      "op": 1,
+      "routine": "vertical_diffusion_u",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1890,
+      "different_words": 1418,
+      "max_ulp": 1094812486,
+      "max_absolute": 12.094549179077148,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 18,
+      "scenario": "linear_shear",
+      "name": "v",
+      "stagger": "y",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1904,
+      "different_words": 1298,
+      "max_ulp": 2065835334,
+      "max_absolute": 0.1795093417733824,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x3e5b4391",
+          "wrf_word": "0x3d0dc97b"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x3e37d1b4",
+          "wrf_word": "0x36037a85"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x3e37d1b6",
+          "wrf_word": "0x36037a85"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x3e37d1b6",
+          "wrf_word": "0x36037a85"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x3e37d1b4",
+          "wrf_word": "0x360382b6"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0x3e37d1b6",
+          "wrf_word": "0x36036cde"
+        }
+      ]
+    },
+    {
+      "case": 19,
+      "scenario": "linear_shear",
+      "name": "v",
+      "stagger": "y",
+      "op": 1,
+      "routine": "vertical_diffusion_v",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1904,
+      "different_words": 1455,
+      "max_ulp": 1094812486,
+      "max_absolute": 12.094549179077148,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 20,
+      "scenario": "linear_shear",
+      "name": "w",
+      "stagger": "z",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 2040,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 21,
+      "scenario": "linear_shear",
+      "name": "w",
+      "stagger": "z",
+      "op": 1,
+      "routine": "vertical_diffusion",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 2040,
+      "different_words": 765,
+      "max_ulp": 2163690537,
+      "max_absolute": 8.796035051345825,
+      "first_differences": [
+        {
+          "index": [
+            3,
+            0,
+            0
+          ],
+          "gpu_word": "0xc03ba617",
+          "wrf_word": "0xc03ba618"
+        },
+        {
+          "index": [
+            3,
+            0,
+            1
+          ],
+          "gpu_word": "0xc03ba617",
+          "wrf_word": "0xc03ba618"
+        },
+        {
+          "index": [
+            3,
+            0,
+            2
+          ],
+          "gpu_word": "0xc03ba617",
+          "wrf_word": "0xc03ba618"
+        },
+        {
+          "index": [
+            3,
+            0,
+            3
+          ],
+          "gpu_word": "0xc03ba617",
+          "wrf_word": "0xc03ba618"
+        },
+        {
+          "index": [
+            3,
+            0,
+            4
+          ],
+          "gpu_word": "0xc03ba617",
+          "wrf_word": "0xc03ba618"
+        },
+        {
+          "index": [
+            3,
+            0,
+            5
+          ],
+          "gpu_word": "0xc03ba617",
+          "wrf_word": "0xc03ba618"
+        }
+      ]
+    },
+    {
+      "case": 22,
+      "scenario": "linear_shear",
+      "name": "m",
+      "stagger": "",
+      "op": 0,
+      "routine": "horizontal_diffusion_3dmp",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1785,
+      "different_words": 1146,
+      "max_ulp": 3314379,
+      "max_absolute": 1.7881393432617188e-07,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x3e5b4391",
+          "wrf_word": "0x3e5b438e"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x3e37d1b4",
+          "wrf_word": "0x3e37d1b3"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x3e37d1b6",
+          "wrf_word": "0x3e37d1b3"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x3e37d1b6",
+          "wrf_word": "0x3e37d1b3"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x3e37d1b4",
+          "wrf_word": "0x3e37d1b3"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0x3e37d1b6",
+          "wrf_word": "0x3e37d1b3"
+        }
+      ]
+    },
+    {
+      "case": 23,
+      "scenario": "linear_shear",
+      "name": "m",
+      "stagger": "",
+      "op": 1,
+      "routine": "vertical_diffusion_3dmp",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1785,
+      "different_words": 1575,
+      "max_ulp": 1066187920,
+      "max_absolute": 1.0995044708251953,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0x3f8cbc8e",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 24,
+      "scenario": "zero",
+      "name": "u",
+      "stagger": "x",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1890,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 25,
+      "scenario": "zero",
+      "name": "u",
+      "stagger": "x",
+      "op": 1,
+      "routine": "vertical_diffusion_u",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1890,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 26,
+      "scenario": "zero",
+      "name": "v",
+      "stagger": "y",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1904,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 27,
+      "scenario": "zero",
+      "name": "v",
+      "stagger": "y",
+      "op": 1,
+      "routine": "vertical_diffusion_v",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1904,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 28,
+      "scenario": "zero",
+      "name": "w",
+      "stagger": "z",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 2040,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 29,
+      "scenario": "zero",
+      "name": "w",
+      "stagger": "z",
+      "op": 1,
+      "routine": "vertical_diffusion",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 2040,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 30,
+      "scenario": "zero",
+      "name": "m",
+      "stagger": "",
+      "op": 0,
+      "routine": "horizontal_diffusion_3dmp",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1785,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 31,
+      "scenario": "zero",
+      "name": "m",
+      "stagger": "",
+      "op": 1,
+      "routine": "vertical_diffusion_3dmp",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1785,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 32,
+      "scenario": "near_zero",
+      "name": "u",
+      "stagger": "x",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1890,
+      "different_words": 1650,
+      "max_ulp": 2,
+      "max_absolute": 5.421010862427522e-20,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0xa94d4eaa",
+          "wrf_word": "0xa94d4ea8"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x2980b749",
+          "wrf_word": "0x2980b748"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0xa980b749",
+          "wrf_word": "0xa980b748"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x2980b749",
+          "wrf_word": "0x2980b748"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0xa980b749",
+          "wrf_word": "0xa980b748"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0x2980b749",
+          "wrf_word": "0x2980b748"
+        }
+      ]
+    },
+    {
+      "case": 33,
+      "scenario": "near_zero",
+      "name": "u",
+      "stagger": "x",
+      "op": 1,
+      "routine": "vertical_diffusion_u",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1890,
+      "different_words": 540,
+      "max_ulp": 711626650,
+      "max_absolute": 2.083319682131407e-13,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x2a6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0xaa6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x2a6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0xaa6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x2a6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xaa6a8f9a",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 34,
+      "scenario": "near_zero",
+      "name": "v",
+      "stagger": "y",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1904,
+      "different_words": 1904,
+      "max_ulp": 23727294,
+      "max_absolute": 4.76182068494084e-13,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0xa94d4eaa",
+          "wrf_word": "0xa8508158"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x2980b749",
+          "wrf_word": "0x28d0807d"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0xa980b749",
+          "wrf_word": "0xa8d0807d"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x2980b749",
+          "wrf_word": "0x28d0807d"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0xa980b749",
+          "wrf_word": "0xa8d0807d"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0x2980b749",
+          "wrf_word": "0x28d0807d"
+        }
+      ]
+    },
+    {
+      "case": 35,
+      "scenario": "near_zero",
+      "name": "v",
+      "stagger": "y",
+      "op": 1,
+      "routine": "vertical_diffusion_v",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1904,
+      "different_words": 544,
+      "max_ulp": 711626650,
+      "max_absolute": 2.083319682131407e-13,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x2a6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0xaa6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x2a6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0xaa6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x2a6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xaa6a8f9a",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 36,
+      "scenario": "near_zero",
+      "name": "w",
+      "stagger": "z",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 2040,
+      "different_words": 1305,
+      "max_ulp": 2,
+      "max_absolute": 5.421010862427522e-20,
+      "first_differences": [
+        {
+          "index": [
+            1,
+            0,
+            0
+          ],
+          "gpu_word": "0xa9cd4eaa",
+          "wrf_word": "0xa9cd4ea8"
+        },
+        {
+          "index": [
+            1,
+            0,
+            1
+          ],
+          "gpu_word": "0x2a00b749",
+          "wrf_word": "0x2a00b748"
+        },
+        {
+          "index": [
+            1,
+            0,
+            2
+          ],
+          "gpu_word": "0xaa00b749",
+          "wrf_word": "0xaa00b748"
+        },
+        {
+          "index": [
+            1,
+            0,
+            3
+          ],
+          "gpu_word": "0x2a00b749",
+          "wrf_word": "0x2a00b748"
+        },
+        {
+          "index": [
+            1,
+            0,
+            4
+          ],
+          "gpu_word": "0xaa00b749",
+          "wrf_word": "0xaa00b748"
+        },
+        {
+          "index": [
+            1,
+            0,
+            5
+          ],
+          "gpu_word": "0x2a00b749",
+          "wrf_word": "0x2a00b748"
+        }
+      ]
+    },
+    {
+      "case": 37,
+      "scenario": "near_zero",
+      "name": "w",
+      "stagger": "z",
+      "op": 1,
+      "routine": "vertical_diffusion",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 2040,
+      "different_words": 255,
+      "max_ulp": 711626649,
+      "max_absolute": 2.0833195466061355e-13,
+      "first_differences": [
+        {
+          "index": [
+            6,
+            0,
+            0
+          ],
+          "gpu_word": "0x0",
+          "wrf_word": "0xaa6a8f99"
+        },
+        {
+          "index": [
+            6,
+            0,
+            1
+          ],
+          "gpu_word": "0x0",
+          "wrf_word": "0x2a6a8f99"
+        },
+        {
+          "index": [
+            6,
+            0,
+            2
+          ],
+          "gpu_word": "0x0",
+          "wrf_word": "0xaa6a8f99"
+        },
+        {
+          "index": [
+            6,
+            0,
+            3
+          ],
+          "gpu_word": "0x0",
+          "wrf_word": "0x2a6a8f99"
+        },
+        {
+          "index": [
+            6,
+            0,
+            4
+          ],
+          "gpu_word": "0x0",
+          "wrf_word": "0xaa6a8f99"
+        },
+        {
+          "index": [
+            6,
+            0,
+            5
+          ],
+          "gpu_word": "0x0",
+          "wrf_word": "0x2a6a8f99"
+        }
+      ]
+    },
+    {
+      "case": 38,
+      "scenario": "near_zero",
+      "name": "m",
+      "stagger": "",
+      "op": 0,
+      "routine": "horizontal_diffusion_3dmp",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1785,
+      "different_words": 1560,
+      "max_ulp": 2,
+      "max_absolute": 5.421010862427522e-20,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0xa94d4eaa",
+          "wrf_word": "0xa94d4ea8"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x2980b749",
+          "wrf_word": "0x2980b748"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0xa980b749",
+          "wrf_word": "0xa980b748"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x2980b749",
+          "wrf_word": "0x2980b748"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0xa980b749",
+          "wrf_word": "0xa980b748"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0x2980b749",
+          "wrf_word": "0x2980b748"
+        }
+      ]
+    },
+    {
+      "case": 39,
+      "scenario": "near_zero",
+      "name": "m",
+      "stagger": "",
+      "op": 1,
+      "routine": "vertical_diffusion_3dmp",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1785,
+      "different_words": 255,
+      "max_ulp": 711626650,
+      "max_absolute": 2.083319682131407e-13,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x2a6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0xaa6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x2a6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0xaa6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x2a6a8f9a",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xaa6a8f9a",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 40,
+      "scenario": "variable_mass",
+      "name": "u",
+      "stagger": "x",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1890,
+      "different_words": 1889,
+      "max_ulp": 1840055790,
+      "max_absolute": 0.001070857048034668,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0xbeec48b7",
+          "wrf_word": "0xbeecb1cf"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0xbea4c077",
+          "wrf_word": "0xbea4c21d"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0xbe9ca098",
+          "wrf_word": "0xbe9ca193"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0xbe9a1b6f",
+          "wrf_word": "0xbe9a1bf3"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0xbe955139",
+          "wrf_word": "0xbe955191"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xbe8ea291",
+          "wrf_word": "0xbe8ea2e4"
+        }
+      ]
+    },
+    {
+      "case": 41,
+      "scenario": "variable_mass",
+      "name": "u",
+      "stagger": "x",
+      "op": 1,
+      "routine": "vertical_diffusion_u",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1890,
+      "different_words": 1854,
+      "max_ulp": 1077829590,
+      "max_absolute": 2.9745993614196777,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x3e846665",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x3e4a927e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x3e0abd97",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x3d902fad",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x3c02b423",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xbd4061a6",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 42,
+      "scenario": "variable_mass",
+      "name": "v",
+      "stagger": "y",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1904,
+      "different_words": 1904,
+      "max_ulp": 2076605138,
+      "max_absolute": 0.6176088452339172,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x3d891ee2",
+          "wrf_word": "0xbd03fde7"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x3e6cf603",
+          "wrf_word": "0x3c9b7d9e"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x3e9e439a",
+          "wrf_word": "0x3cfea3e9"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x3e16f1f5",
+          "wrf_word": "0xbb8e97f3"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0xbd62b601",
+          "wrf_word": "0xbcc72ea0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xbe002355",
+          "wrf_word": "0xbc83f78c"
+        }
+      ]
+    },
+    {
+      "case": 43,
+      "scenario": "variable_mass",
+      "name": "v",
+      "stagger": "y",
+      "op": 1,
+      "routine": "vertical_diffusion_v",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1904,
+      "different_words": 1897,
+      "max_ulp": 1086801519,
+      "max_absolute": 6.2273478507995605,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0x40b04175",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0x40ad3123",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0x40a6dbe1",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0x40a44755",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0x409f5249",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0x409a9723",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 44,
+      "scenario": "variable_mass",
+      "name": "w",
+      "stagger": "z",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 2040,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 45,
+      "scenario": "variable_mass",
+      "name": "w",
+      "stagger": "z",
+      "op": 1,
+      "routine": "vertical_diffusion",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 2040,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 46,
+      "scenario": "variable_mass",
+      "name": "m",
+      "stagger": "",
+      "op": 0,
+      "routine": "horizontal_diffusion_3dmp",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1785,
+      "different_words": 1785,
+      "max_ulp": 1855745338,
+      "max_absolute": 0.0051070451736450195,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0xbf7f96be",
+          "wrf_word": "0xbf802dec"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0xbf75f220",
+          "wrf_word": "0xbf75f336"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0xbf74030e",
+          "wrf_word": "0xbf7405a8"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0xbf6b2d86",
+          "wrf_word": "0xbf6b3122"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0xbf17deb0",
+          "wrf_word": "0xbf17e248"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xbeefa4f3",
+          "wrf_word": "0xbeefa854"
+        }
+      ]
+    },
+    {
+      "case": 47,
+      "scenario": "variable_mass",
+      "name": "m",
+      "stagger": "",
+      "op": 1,
+      "routine": "vertical_diffusion_3dmp",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 3000.0,
+      "dy": 1750.0,
+      "words": 1785,
+      "different_words": 1769,
+      "max_ulp": 1088807036,
+      "max_absolute": 7.183652877807617,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0xc0ab360d",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0xc0a6d14e",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0xc08eaca0",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0xc09c55f6",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0xc096d91b",
+          "wrf_word": "0x0"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xc0916e26",
+          "wrf_word": "0x0"
+        }
+      ]
+    },
+    {
+      "case": 48,
+      "scenario": "pure_meridional_checker",
+      "name": "u",
+      "stagger": "x",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 2048.0,
+      "dy": 2048.0,
+      "words": 1890,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 49,
+      "scenario": "pure_meridional_checker",
+      "name": "u",
+      "stagger": "x",
+      "op": 1,
+      "routine": "vertical_diffusion_u",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 2048.0,
+      "dy": 2048.0,
+      "words": 1890,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 50,
+      "scenario": "pure_meridional_checker",
+      "name": "v",
+      "stagger": "y",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 2048.0,
+      "dy": 2048.0,
+      "words": 1904,
+      "different_words": 1904,
+      "max_ulp": 138661671,
+      "max_absolute": 8.7379789352417,
+      "first_differences": [
+        {
+          "index": [
+            0,
+            0,
+            0
+          ],
+          "gpu_word": "0xc08bcf27",
+          "wrf_word": "0xb8480000"
+        },
+        {
+          "index": [
+            0,
+            0,
+            1
+          ],
+          "gpu_word": "0xc08bcf27",
+          "wrf_word": "0xb8480000"
+        },
+        {
+          "index": [
+            0,
+            0,
+            2
+          ],
+          "gpu_word": "0xc08bcf27",
+          "wrf_word": "0xb8480000"
+        },
+        {
+          "index": [
+            0,
+            0,
+            3
+          ],
+          "gpu_word": "0xc08bcf27",
+          "wrf_word": "0xb8480000"
+        },
+        {
+          "index": [
+            0,
+            0,
+            4
+          ],
+          "gpu_word": "0xc08bcf27",
+          "wrf_word": "0xb8480000"
+        },
+        {
+          "index": [
+            0,
+            0,
+            5
+          ],
+          "gpu_word": "0xc08bcf27",
+          "wrf_word": "0xb8480000"
+        }
+      ]
+    },
+    {
+      "case": 51,
+      "scenario": "pure_meridional_checker",
+      "name": "v",
+      "stagger": "y",
+      "op": 1,
+      "routine": "vertical_diffusion_v",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 2048.0,
+      "dy": 2048.0,
+      "words": 1904,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 52,
+      "scenario": "pure_meridional_checker",
+      "name": "w",
+      "stagger": "z",
+      "op": 0,
+      "routine": "horizontal_diffusion",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 2048.0,
+      "dy": 2048.0,
+      "words": 2040,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 53,
+      "scenario": "pure_meridional_checker",
+      "name": "w",
+      "stagger": "z",
+      "op": 1,
+      "routine": "vertical_diffusion",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 2048.0,
+      "dy": 2048.0,
+      "words": 2040,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 54,
+      "scenario": "pure_meridional_checker",
+      "name": "m",
+      "stagger": "",
+      "op": 0,
+      "routine": "horizontal_diffusion_3dmp",
+      "kh": 20.0,
+      "kv": 0.0,
+      "dx": 2048.0,
+      "dy": 2048.0,
+      "words": 1785,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    },
+    {
+      "case": 55,
+      "scenario": "pure_meridional_checker",
+      "name": "m",
+      "stagger": "",
+      "op": 1,
+      "routine": "vertical_diffusion_3dmp",
+      "kh": 0.0,
+      "kv": 5.0,
+      "dx": 2048.0,
+      "dy": 2048.0,
+      "words": 1785,
+      "different_words": 0,
+      "max_ulp": 0,
+      "max_absolute": 0.0,
+      "first_differences": []
+    }
+  ],
+  "summary": [
+    {
+      "routine": "horizontal_diffusion",
+      "cases": 21,
+      "words": 40838,
+      "different_words": 19982,
+      "max_ulp": 2076605138,
+      "status": "DIFFERENT"
+    },
+    {
+      "routine": "vertical_diffusion_u",
+      "cases": 7,
+      "words": 13230,
+      "different_words": 6994,
+      "max_ulp": 1094812486,
+      "status": "DIFFERENT"
+    },
+    {
+      "routine": "vertical_diffusion_v",
+      "cases": 7,
+      "words": 13328,
+      "different_words": 7332,
+      "max_ulp": 1124929197,
+      "status": "DIFFERENT"
+    },
+    {
+      "routine": "vertical_diffusion",
+      "cases": 7,
+      "words": 14280,
+      "different_words": 1020,
+      "max_ulp": 2163690537,
+      "status": "DIFFERENT"
+    },
+    {
+      "routine": "horizontal_diffusion_3dmp",
+      "cases": 7,
+      "words": 12495,
+      "different_words": 7475,
+      "max_ulp": 1855745338,
+      "status": "DIFFERENT"
+    },
+    {
+      "routine": "vertical_diffusion_3dmp",
+      "cases": 7,
+      "words": 12495,
+      "different_words": 6792,
+      "max_ulp": 1126348807,
+      "status": "DIFFERENT"
+    }
+  ],
+  "fixture_sha256": {
+    "constant-wrf471.npz": "42d5bd80f2d86c01cdcb57d1481a03c2a2715e8f21a2438bb291d63f8a523e46",
+    "constant-wrf471.json": "b0b9e13628cff4ace8bec9e815c917e23d7f9c0c2bd76e4918b73db05dfe2088"
+  },
+  "assembled_cuda_sha256": "f4958de3298bfcd764a5fd848aedfbb13938043ab91132db419408951c0a061e",
+  "cuda_options": [
+    "-std=c++17"
+  ],
+  "normalization": "GPU primitive output multiplied by field face mass, matching the WRF coupled tendency; every stored output word remains compared"
+}

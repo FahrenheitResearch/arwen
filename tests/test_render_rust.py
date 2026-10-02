@@ -2122,32 +2122,47 @@ def test_render_without_wrfouts_or_pair_is_exit_2(capsys):
 # ---------------------------------------------------------------------------
 
 def test_doctor_reports_the_rust_renderer():
-    from gpuwm.doctor import _rust_renderer_check
+    from gpuwm.doctor import _renderer_tree_check, _rust_renderer_check
+    from gpuwm.provenance_gate import bridge_tree_match
 
+    renderer = rustwx.find_renderer()
     check = _rust_renderer_check()
     assert check.name.startswith("renderer rw_wrfbatch")
-    if RENDERER is None:
+    if renderer is None:
         # Not built: an info line with the build one-liner, never a gap
         # (matplotlib remains the documented fallback).
         assert check.status in ("info", "missing")
         assert check.remedy and "cargo build" in check.remedy
         return
-    assert str(RENDERER) in check.detail
-    if _RENDERER_USABLE:
+    assert str(renderer) in check.detail
+    # Doctor reports launch/ABI and source identity in separate rows.  The
+    # collection-time renderer gate combines those two questions; its cached
+    # answer cannot decide which doctor row must report a refusal.
+    contract_ok, _ = rustwx.probe_renderer(renderer)
+    if contract_ok:
         assert check.status == "verified"
         assert "basemap" in check.detail
         assert "--abi matches the render contract" in check.detail
     else:
-        # Task #106.  This branch used to be unreachable, because the
-        # condition above was `RENDERER is not None` -- the file existing.
-        # A resolved binary from another checkout was therefore REQUIRED
-        # by this test to report `verified`, which is the defect written
-        # down as an assertion.  A renderer that resolves but is not this
-        # tree's is reported, with the remedy, and does not block:
-        # matplotlib is still the documented fallback.
+        # A resolved binary with a broken launch/ABI is reported with its
+        # rebuild remedy; file existence cannot satisfy this check.
         assert check.status == "missing"
         assert check.blocking is False
         assert check.remedy and "cargo build" in check.remedy
+
+    match = bridge_tree_match(renderer, env_var=rustwx.RENDERER_ENV)
+    tree_check = _renderer_tree_check()
+    if match.matched:
+        assert tree_check.status == "verified"
+        assert match.verdict in tree_check.detail
+    else:
+        # Task #106: an ABI-compatible foreign renderer must still be named
+        # and refused by the source-identity row that the render door reads.
+        assert tree_check.status == "missing"
+        assert str(renderer) in tree_check.detail
+        assert "from another tree" in tree_check.detail
+        assert tree_check.blocking is False
+        assert tree_check.remedy and "cargo build" in tree_check.remedy
 
 
 def test_doctor_env_override_naming_missing_file_is_hard(monkeypatch):

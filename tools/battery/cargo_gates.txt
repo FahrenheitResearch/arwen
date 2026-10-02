@@ -309,6 +309,29 @@ cpu  tools/rustwx  rw-wrfbatch  114
 # refusal-by-name doors).
 cpu  tools/rustwx  rw-mpas  418
 
+# rw-isobaric: THIS project's crate.  The log-pressure column walk the
+# renderer's pressure-level charts and the ML exporter both interpolate
+# with, and the ECMWF below-ground rules ERA5's pressure levels are filled
+# with.  A wrong weight here moves every 500 hPa chart and every exported
+# level at once, so its arithmetic is gated as arithmetic: the bracket's
+# first-pair and NaN rules, the lapse-rate limit of the temperature rule,
+# each branch of both rules against its hand computation.  Floor is its
+# first green run, 2026-10-01: 12 across the lib.
+cpu  tools/rustwx  rw-isobaric  12
+
+# rw-mlexport: THIS project's crate, the binary behind `gpuwm ml-export`.
+# A training dataset is read by code nobody here watches, so a wrong
+# number does not crash, it trains a model on it.  The suite writes
+# wrfout files whose columns are linear in ln(p), exports them and checks
+# every level against the formula (temperature, geopotential, the rotated
+# wind, the ECMWF fill and the below-ground mask), the Blosc frames, the
+# STORED ZIP, the frame-by-frame append against the one-call run byte for
+# byte, the lattice of the latitude-longitude regrid, a moving nest's
+# per-time coordinates, an area-mean regrid holding each cell's true area
+# mean, and the refusals.  Floor is its green run of 2026-10-01: 27 lib +
+# 11 in tests/export_roundtrip.rs.
+cpu  tools/rustwx  rw-mlexport  38
+
 # Static-fields functional tests stay required on both operating systems:
 # builder/interpolation, GeoTIFF safety, highres parity and the C-ABI seam.
 # Measured 43 passes; the two lane1 refusal/cropping controls also stay here.
