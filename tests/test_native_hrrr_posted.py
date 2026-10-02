@@ -162,17 +162,21 @@ def _native_posted(tmp_path, *, bridge_rows=None, source_rows=None,
     if source_rows is None:
         source_rows = {item["name"]: item["sha256"]
                        for lead in LEADS for item in _objects(lead)}
+    # The seal writes its documents as LF bytes and binds the digest of the
+    # file it wrote (seal_hrrr_posted_inputs, _seal_posted_bridge).  A
+    # text-mode write here put CRLF on disk on Windows while the proof named
+    # the LF text's digest, so every seal below was refused there.
     for relative, rows in ((BRIDGE, bridge_rows), (SOURCE, source_rows)):
         (root / relative).parent.mkdir(parents=True, exist_ok=True)
-        (root / relative).write_text(_sums(rows), encoding="utf-8")
+        (root / relative).write_bytes(_sums(rows).encode("utf-8"))
     bridge_sha = _sha((root / BRIDGE).read_bytes())
     source_sha = _sha((root / SOURCE).read_bytes())
     manifest = _plan_manifest()
     manifest["files"]["bridge"]["sha256"] = bridge_sha
     manifest["files"]["source_manifest"]["sha256"] = source_sha
     text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-    (root / "source-input-manifest.json").write_text(text, encoding="utf-8")
-    manifest_sha = _sha(text.encode())
+    (root / "source-input-manifest.json").write_bytes(text.encode("utf-8"))
+    manifest_sha = _sha((root / "source-input-manifest.json").read_bytes())
     writer.write_posted_leads(markers, route_table_sha256=ROUTE_TABLE,
                               decoded=sealed_records)
     receipt = writer.seal_cache(
@@ -454,14 +458,23 @@ def test_a_decoder_that_failed_ends_the_wait_for_a_lead_not_posted(tmp_path):
                 raise RuntimeError("pipeline producer exited 1")
 
     decoder = Decoder()
-    assert _await_admitted(admitter, decoder, 6, poll_seconds=0.01)         == _marker(6)
-    decoder.failed = True
-    checks = decoder.checks
-    # f007 has no marker and none is coming: only the decoder ends the wait.
-    with pytest.raises(RuntimeError, match="exited 1"):
-        _await_admitted(admitter, decoder, 7, poll_seconds=0.01)
-    assert decoder.checks == checks + 1
-    admitter.stop()
+    # f007 never posts, so the admitter's own thread would wait for it for
+    # the life of the process; stop() ends that wait and joins the thread,
+    # whatever the assertions below find.
+    try:
+        assert _await_admitted(admitter, decoder, 6, poll_seconds=0.01)             == _marker(6)
+        decoder.failed = True
+        checks = decoder.checks
+        # f007 has no marker and none is coming: only the decoder ends the wait.
+        with pytest.raises(RuntimeError, match="exited 1"):
+            _await_admitted(admitter, decoder, 7, poll_seconds=0.01)
+        assert decoder.checks == checks + 1
+    finally:
+        admitter.stop()
+    # Stopped means stopped: no thread is left reading the posting folder.
+    assert not admitter._thread.is_alive()
+    with pytest.raises(BoundaryStreamError, match="stopped by its owner"):
+        admitter.wait(7)
 
 
 def test_built_intervals_are_written_while_the_next_lead_is_awaited(tmp_path):
@@ -490,10 +503,12 @@ def test_built_intervals_are_written_while_the_next_lead_is_awaited(tmp_path):
             (folder / "f008.json").write_text(json.dumps(_marker(8)),
                                               encoding="utf-8")
 
-    assert _await_admitted(admitter, Decoder(), 8, poll_seconds=0.01,
-                           between=between) == _marker(8)
-    assert len(collected) >= 3
-    admitter.stop()
+    try:
+        assert _await_admitted(admitter, Decoder(), 8, poll_seconds=0.01,
+                               between=between) == _marker(8)
+        assert len(collected) >= 3
+    finally:
+        admitter.stop()
     source = Path(__file__).resolve().parents[1] / "tools"         / "hrrr_single_domain_benchmark.py"
     text = source.read_text(encoding="utf-8")
     # The posted build loop awaits each lead with the collection between.

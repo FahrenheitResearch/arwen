@@ -1775,6 +1775,10 @@ name = "rw-isobaric"
 version = "0.1.0"
 
 [[package]]
+name = "rw-libm"
+version = "0.1.0"
+
+[[package]]
 name = "rw-mlexport"
 version = "0.1.0"
 dependencies = [
@@ -2086,6 +2090,7 @@ dependencies = [
  "libm",
  "miniz_oxide",
  "rayon",
+ "rw-libm",
  "serde",
  "serde_json",
  "sha2",

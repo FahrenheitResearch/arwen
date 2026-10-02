@@ -12,8 +12,10 @@ their texts; section 5 covers the locked terminal workspace dependencies
 from tools/arwen-ui-vendor.  The second
 is ArWen's OWN crates, several of which port third-party code into
 themselves: the Py-ART dealiaser, the MPAS initialisation and static chain
-behind the five rw_mpas_* binaries, and the NumPy float32 kernels inside
-static_fields.  A first-party crate carrying third-party expression belongs
+behind the five rw_mpas_* binaries, the NumPy float32 kernels inside
+static_fields, and the Arm optimized-routines and CORE-MATH libm functions
+(rw-libm) inside static_fields.  A first-party crate carrying third-party
+expression belongs
 to no dependency tree, which is exactly why MPAS and NumPy went unnotified
 until the 2.6.6 development lane, included in 2.7.0. Section 2 covers
 that second kind, and it is maintained by
@@ -338,6 +340,70 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+2.5  Arm optimized-routines and CORE-MATH  (the libm inside static_fields)
+
+The static_fields library in this bundle contains the first-party crate
+tools/rustwx/crates/rw-libm, which the WPS orographic projection calls
+instead of the platform C library so that its results are glibc 2.43's on
+every platform.  It transcribes Arm's optimized-routines sinf, cosf,
+expf, logf and powf (math/sinf.c, math/cosf.c, math/sincosf.h,
+math/sincosf_data.c, math/expf.c, math/exp2f_data.c, math/logf.c,
+math/logf_data.c, math/powf.c, math/powf_log2_data.c) and CORE-MATH's
+correctly rounded tanf, atanf, atan2f, log10f, asin and acos (revision
+284b3b0e198042c38f5c30316f696786b10816b0).  The rw_mpas_* executables and
+rw_mlexport link that library, so this notice covers them too.  Both are
+MIT; the texts follow.
+
+Arm optimized-routines:
+
+Copyright (c) 2017-2018, Arm Limited.
+Copyright (c) 2018-2024, Arm Limited.
+Copyright (c) 2018-2019, Arm Limited.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+CORE-MATH (https://core-math.gitlabpages.inria.fr/):
+
+Copyright (c) 2022-2025 Alexei Sibidanov.
+Copyright (c) 2022-2025 Alexei Sibidanov and Paul Zimmermann.
+Copyright (c) 2022-2026 Alexei Sibidanov <sibid@uvic.ca>.
+Copyright (c) 2024-2025 Alexei Sibidanov.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 
 ==============================================================================
@@ -12459,8 +12525,8 @@ All LICENSE, LICENCE, COPYING, COPYRIGHT and NOTICE files at each
 resolved vendored package root are reproduced, deduplicated by raw SHA-256.
 The TUI itself uses the repository Apache-2.0 licence.
 
-tools/arwen-tui/Cargo.toml sha256 25cb4e557730769b9bf5880f50abfb6fde4371785d8fd7b61ae2b93ad6e7f472
-tools/arwen-tui/Cargo.lock sha256 8d57bdaaef15a31d1bebfe2b4f310db4eba325abb196ba4bf7764d17285eab62
+tools/arwen-tui/Cargo.toml sha256 1d262aa8b3068d3c6098412141e89b82bba2611e7390c4038ed616cf7efd15f8
+tools/arwen-tui/Cargo.lock sha256 b48218023c818898560440a6ca65193ecb50b034b6af4f7a14040653508486ff
 x86_64-unknown-linux-gnu: 70 external packages
 x86_64-pc-windows-msvc: 67 external packages
 

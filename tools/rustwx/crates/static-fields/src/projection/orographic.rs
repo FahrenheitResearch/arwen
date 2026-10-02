@@ -3,8 +3,17 @@
 //! The established terrain sampler retains its qualified arithmetic.
 //! Orographic source stencils use WPS's scalar single-precision map state,
 //! including its single-precision PI constants, without NumPy ULP nudges.
+//!
+//! Every transcendental here comes from rw-libm, never from the platform C
+//! library: glibc 2.39, glibc 2.43 and the Windows UCRT return different
+//! last bits for the same `f32::powf` or `f32::cos`, and the Lambert
+//! inverse's cancellation turned one such bit into hundreds of ULP, so these
+//! terrain-drag statics differed by platform (public CI run 37036982597).
+//! rw-libm returns glibc 2.43's bits, the library the WPS oracle was built
+//! against, on every platform.
 use super::{ProjectedGrid, ProjectionKind};
 use crate::error::{Result, StaticError};
+use rw_libm::{acos, asin, atan2f, atanf, cosf, expf, log10f, logf, powf, sinf, tanf};
 
 const PI: f32 = std::f32::consts::PI;
 const RAD: f32 = PI / 180.0;
@@ -227,11 +236,11 @@ impl<'g> OrographicProjection<'g> {
         match s.kind {
             ProjectionKind::Lambert => {
                 p.cone = if (tl1 - tl2).abs() > 0.1 {
-                    ((tl1 * RAD).cos().log10() - (tl2 * RAD).cos().log10())
-                        / (((45.0 - tl1.abs() / 2.0) * RAD).tan().log10()
-                            - ((45.0 - tl2.abs() / 2.0) * RAD).tan().log10())
+                    (log10f(cosf(tl1 * RAD)) - log10f(cosf(tl2 * RAD)))
+                        / (log10f(tanf((45.0 - tl1.abs() / 2.0) * RAD))
+                            - log10f(tanf((45.0 - tl2.abs() / 2.0) * RAD)))
                 } else {
-                    (tl1.abs() * RAD).sin()
+                    sinf(tl1.abs() * RAD)
                 };
                 let mut dl = s.ref_lon as f32 - s.stand_lon as f32;
                 if dl > 180.0 {
@@ -240,29 +249,31 @@ impl<'g> OrographicProjection<'g> {
                 if dl < -180.0 {
                     dl += 360.0;
                 }
-                p.rsw = re * (tl1 * RAD).cos() / p.cone
-                    * (((90.0 * h - s.ref_lat as f32) * RAD / 2.0).tan()
-                        / ((90.0 * h - tl1) * RAD / 2.0).tan())
-                    .powf(p.cone);
+                p.rsw = re * cosf(tl1 * RAD) / p.cone
+                    * powf(
+                        tanf((90.0 * h - s.ref_lat as f32) * RAD / 2.0)
+                            / tanf((90.0 * h - tl1) * RAD / 2.0),
+                        p.cone,
+                    );
                 let a = p.cone * (dl * RAD);
-                p.polei = h * s.known_x as f32 - h * p.rsw * a.sin();
-                p.polej = h * s.known_y as f32 + p.rsw * a.cos();
+                p.polei = h * s.known_x as f32 - h * p.rsw * sinf(a);
+                p.polej = h * s.known_y as f32 + p.rsw * cosf(a);
             }
             ProjectionKind::Mercator => {
-                p.dlon = s.dx as f32 / (6_370_000.0f32 * (RAD * tl1).cos());
+                p.dlon = s.dx as f32 / (6_370_000.0f32 * cosf(RAD * tl1));
                 if s.ref_lat != 0.0 {
                     p.rsw =
-                        (0.5 * ((s.ref_lat as f32 + 90.0) * RAD)).tan().ln()
+                        logf(tanf(0.5 * ((s.ref_lat as f32 + 90.0) * RAD)))
                             / p.dlon;
                 }
             }
             ProjectionKind::Polar => {
-                let top = 1.0 + h * (tl1 * RAD).sin();
+                let top = 1.0 + h * sinf(tl1 * RAD);
                 let a = s.ref_lat as f32 * RAD;
-                p.rsw = re * a.cos() * top / (1.0 + h * a.sin());
+                p.rsw = re * cosf(a) * top / (1.0 + h * sinf(a));
                 let a = (s.ref_lon as f32 - (s.stand_lon as f32 + 90.0)) * RAD;
-                p.polei = s.known_x as f32 - p.rsw * a.cos();
-                p.polej = s.known_y as f32 - h * p.rsw * a.sin();
+                p.polei = s.known_x as f32 - p.rsw * cosf(a);
+                p.polej = s.known_y as f32 - h * p.rsw * sinf(a);
             }
             ProjectionKind::Rows => {
                 return Err(StaticError::Invalid(
@@ -286,19 +297,20 @@ impl<'g> OrographicProjection<'g> {
                 }
                 let r = r2.sqrt() / self.rebydx;
                 let mut lon = (s.stand_lon as f32
-                    + DEG * (h * xx).atan2(yy) / self.cone
+                    + DEG * atan2f(h * xx, yy) / self.cone
                     + 360.0)
                     % 360.0;
                 let c1 = (90.0 - h * s.truelat1 as f32) * RAD;
                 let c2 = (90.0 - h * s.truelat2 as f32) * RAD;
                 let chi = if c1 == c2 {
-                    2.0 * ((r / c1.tan()).powf(1.0 / self.cone)
-                        * (c1 * 0.5).tan())
-                    .atan()
+                    2.0 * atanf(
+                        powf(r / tanf(c1), 1.0 / self.cone) * tanf(c1 * 0.5),
+                    )
                 } else {
-                    2.0 * ((r * self.cone / c1.sin()).powf(1.0 / self.cone)
-                        * (c1 * 0.5).tan())
-                    .atan()
+                    2.0 * atanf(
+                        powf(r * self.cone / sinf(c1), 1.0 / self.cone)
+                            * tanf(c1 * 0.5),
+                    )
                 };
                 if lon > 180.0 {
                     lon -= 360.0;
@@ -310,9 +322,7 @@ impl<'g> OrographicProjection<'g> {
             }
             ProjectionKind::Mercator => {
                 let lat = 2.0
-                    * (self.dlon * (self.rsw + y - s.known_y as f32))
-                        .exp()
-                        .atan()
+                    * atanf(expf(self.dlon * (self.rsw + y - s.known_y as f32)))
                     * DEG
                     - 90.0;
                 let mut lon =
@@ -336,14 +346,14 @@ impl<'g> OrographicProjection<'g> {
                     return (h * 90.0, reflon);
                 }
                 let scale =
-                    self.rebydx * (1.0 + h * (s.truelat1 as f32 * RAD).sin());
-                let gi2 = scale.powf(2.0) as f64;
-                let lat = ((DEG * h) as f64 * ((gi2 - r2) / (gi2 + r2)).asin())
+                    self.rebydx * (1.0 + h * sinf(s.truelat1 as f32 * RAD));
+                let gi2 = powf(scale, 2.0) as f64;
+                let lat = ((DEG * h) as f64 * asin((gi2 - r2) / (gi2 + r2)))
                     as f32;
                 // WPS clamps with REAL(HIGH) literals, so ACOS is evaluated
                 // in double precision and assigned back to default REAL.
                 let a =
-                    ((xx as f64) / r2.sqrt()).clamp(-1.0, 1.0).acos() as f32;
+                    acos(((xx as f64) / r2.sqrt()).clamp(-1.0, 1.0)) as f32;
                 let mut lon = if yy > 0.0 {
                     reflon + DEG * a
                 } else {
@@ -387,15 +397,17 @@ impl<'g> OrographicProjection<'g> {
                 if dl < -180.0 {
                     dl += 360.0;
                 }
-                let rm = self.rebydx * (s.truelat1 as f32 * RAD).cos()
+                let rm = self.rebydx * cosf(s.truelat1 as f32 * RAD)
                     / self.cone
-                    * (((90.0 * h - lat) * RAD / 2.0).tan()
-                        / ((90.0 * h - s.truelat1 as f32) * RAD / 2.0).tan())
-                    .powf(self.cone);
+                    * powf(
+                        tanf((90.0 * h - lat) * RAD / 2.0)
+                            / tanf((90.0 * h - s.truelat1 as f32) * RAD / 2.0),
+                        self.cone,
+                    );
                 let a = self.cone * (dl * RAD);
                 (
-                    h * (self.polei + h * rm * a.sin()),
-                    h * (self.polej - rm * a.cos()),
+                    h * (self.polei + h * rm * sinf(a)),
+                    h * (self.polej - rm * cosf(a)),
                 )
             }
             ProjectionKind::Mercator => {
@@ -409,18 +421,18 @@ impl<'g> OrographicProjection<'g> {
                 (
                     s.known_x as f32 + dl / (self.dlon * DEG),
                     s.known_y as f32
-                        + (0.5 * ((lat + 90.0) * RAD)).tan().ln() / self.dlon
+                        + logf(tanf(0.5 * ((lat + 90.0) * RAD))) / self.dlon
                         - self.rsw,
                 )
             }
             ProjectionKind::Polar => {
                 let a = lat * RAD;
                 let rm = self.rebydx
-                    * a.cos()
-                    * (1.0 + h * (s.truelat1 as f32 * RAD).sin())
-                    / (1.0 + h * a.sin());
+                    * cosf(a)
+                    * (1.0 + h * sinf(s.truelat1 as f32 * RAD))
+                    / (1.0 + h * sinf(a));
                 let a = (lon - (s.stand_lon as f32 + 90.0)) * RAD;
-                (self.polei + rm * a.cos(), self.polej + h * rm * a.sin())
+                (self.polei + rm * cosf(a), self.polej + h * rm * sinf(a))
             }
             ProjectionKind::Rows => unreachable!(),
         };

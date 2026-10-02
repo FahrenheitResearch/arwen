@@ -184,6 +184,16 @@ impl Drop for OnDisk {
     }
 }
 
+/// The name an unpacked history file takes in `scratch`.  WRF spells
+/// history files `..._HH:MM:SS`, and a ZIP made on Linux (the run page's
+/// download) carries that spelling in its member names; a colon is not a
+/// legal Windows file-name character, so unpacking such a member failed on
+/// Windows with os error 123.  The copy takes the `HH_MM_SS` spelling, which
+/// names the same domain and time to [`parse_history_name`].
+fn scratch_name(name: &str) -> String {
+    name.replace(':', "_")
+}
+
 /// Put `candidate` on disk, unpacking it into `scratch` when it is
 /// compressed or archived.
 pub fn materialize(candidate: &Candidate, scratch: &Path) -> Result<OnDisk> {
@@ -191,7 +201,7 @@ pub fn materialize(candidate: &Candidate, scratch: &Path) -> Result<OnDisk> {
         Source::File(path) => Ok(OnDisk { path: path.clone(), temporary: false }),
         Source::Gz(path) => {
             std::fs::create_dir_all(scratch)?;
-            let dest = scratch.join(&candidate.name);
+            let dest = scratch.join(scratch_name(&candidate.name));
             let guard = OnDisk { path: dest.clone(), temporary: true };
             let input = File::open(path).map_err(|e| fail(format!("could not open {}: {e}", path.display())))?;
             let mut decoder = flate2::read::MultiGzDecoder::new(BufReader::with_capacity(8 << 20, input));
@@ -207,7 +217,7 @@ pub fn materialize(candidate: &Candidate, scratch: &Path) -> Result<OnDisk> {
         }
         Source::Zip { archive, entry } => {
             std::fs::create_dir_all(scratch)?;
-            let dest = scratch.join(&candidate.name);
+            let dest = scratch.join(scratch_name(&candidate.name));
             let guard = OnDisk { path: dest.clone(), temporary: true };
             let mut out = BufWriter::with_capacity(8 << 20, File::create(&dest)?);
             archive.extract(entry, &mut out)?;

@@ -653,6 +653,12 @@ _OPTIONAL_STAGED_IMPORTS = {
     ("gpuwm/core/streaming.py", "gpuwm.io.restart"):
         "live forecast tile builder inventories restart tracker slots; "
         "standalone preparation constructs no tile stepper",
+    ("gpuwm/input_cycle.py", "gpuwm.io.restart"):
+        "the checkpoint clock (read_restart_header and "
+        "_admissible_elapsed_seconds), imported inside verify only when a "
+        "--restart checkpoint is the run's input.  This package resumes no "
+        "checkpoint and does not stage the restart reader, so a --cycle "
+        "check here reads a prepared bundle's or declared forcing's start",
     ("gpuwm/core/streaming.py", "gpuwm.core.streamed_relocation"):
         "forecast-only replacement/adoption of a child store after a move",
     ("gpuwm/core/streaming.py", "gpuwm.core.physics_step_control"):

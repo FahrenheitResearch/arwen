@@ -1,0 +1,21 @@
+# The C library's elementary functions, transcribed so that a float result
+# is the same bits on every platform: glibc 2.43's own code for each function
+# (Arm optimized-routines for sinf, cosf, expf, logf and powf; CORE-MATH for
+# tanf, atanf, atan2f and log10f) and CORE-MATH's correctly rounded binary64
+# asin and acos.
+#
+# Rust's f32/f64 `sin`, `powf`, `atan2` and friends call the platform C
+# library.  glibc 2.43, glibc 2.39 and the Windows UCRT return different
+# last bits for the same argument, so code graded bit for bit against an
+# oracle passed on one machine and failed on another (the terrain-drag
+# orographic projection, public CI run 37036982597).
+#
+# The licence notices for the transcribed code are at the top of
+# src/lib.rs and in the repository NOTICE.  No dependencies.
+[package]
+name = "rw-libm"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true

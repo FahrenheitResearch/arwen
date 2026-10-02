@@ -1212,6 +1212,9 @@ _RUN_OPTION_DEFAULTS: dict[str, Any] = {
     # site schedule names it rather than launching `latest` (DESIGN A136
     # 3.7).
     "cycle": None,
+    # A concrete assertion for supplied inputs, checked after acquisition.
+    # Unlike cycle, this never retimes a config or changes a fetch request.
+    "input_cycle": None,
 }
 
 
@@ -1271,11 +1274,11 @@ def _run_option(key: str, value: object, base: Path) -> Any:
         if value is not None and not isinstance(value, bool):
             raise PlanError(f"{label} must be true or false")
         return value
-    if key == "cycle":
+    if key in ("cycle", "input_cycle"):
         if value is None:
             return None
         text = _nonempty_string(value, label)
-        if text.lower() == "latest":
+        if key == "cycle" and text.lower() == "latest":
             return "latest"
         try:
             datetime.strptime(text, "%Y-%m-%dT%H")
@@ -7141,6 +7144,20 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
         if missing:
             raise missing_inputs_refusal(missing)
 
+        cycle_receipt = None
+        if plan.run_options.get("input_cycle") is not None:
+            from gpuwm.input_cycle import verify
+            from gpuwm.supervisor import atomic_write_json
+
+            cycle_receipt = verify(
+                plan.run_options["input_cycle"],
+                prepared_root=plan.run_options.get("prepared_root"),
+                restart=plan.run_options.get("restart"), data=data,
+                launch_start=exp.start_time)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["input_cycle"] = cycle_receipt
+            atomic_write_json(manifest_path, manifest)
+
         # The route is handed a config that is a FILE.  `gpuwm go` takes
         # a path, the prepared chain binds that path's digest into every
         # stage, and an inline config has nowhere to be one -- so it is
@@ -7165,6 +7182,8 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
             summary = ROUTES[plan.route].execute(
                 plan, exp=exp, data=data, config_path=config_path,
                 observer=observer)
+        if cycle_receipt is not None:
+            summary = {**summary, "input_cycle": cycle_receipt}
 
         stage = "finalize"
         observer.enter_stage("finalize")

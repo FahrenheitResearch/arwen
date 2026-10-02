@@ -1,0 +1,26 @@
+# rw-libm verification, node-2: ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43, Intel(R) Core(TM) Ultra 7 270K Plus, 2026-10-02T18:39Z
+# columns: rust = rw-libm; cref = CORE-MATH C at 284b3b0 built -ffp-contract=off (nofma) and -O3 -march=native (fma);
+# glibc = the running libm.so.6; mpfr = MPFR 4.2.2, consulted on every disagreement and on every worst case
+glibc 2.43 threads 24
+sinf exhaustive 2^32       n=    4294967296 rust!=cref(nofma)=29362812 rust!=cref(fma)=29362812 rust!=glibc=0          mpfr-checked=29362812   rust-not-CR=29362812 glibc-not-CR=29362812
+cosf exhaustive 2^32       n=    4294967296 rust!=cref(nofma)=28209642 rust!=cref(fma)=28209642 rust!=glibc=0          mpfr-checked=28209642   rust-not-CR=28209642 glibc-not-CR=28209642
+tanf exhaustive 2^32       n=    4294967296 rust!=cref(nofma)=0      rust!=cref(fma)=0      rust!=glibc=0          mpfr-checked=0          rust-not-CR=0    glibc-not-CR=0
+atanf exhaustive 2^32      n=    4294967296 rust!=cref(nofma)=0      rust!=cref(fma)=0      rust!=glibc=0          mpfr-checked=0          rust-not-CR=0    glibc-not-CR=0
+expf exhaustive 2^32       n=    4294967296 rust!=cref(nofma)=170648 rust!=cref(fma)=170648 rust!=glibc=0          mpfr-checked=170648     rust-not-CR=170648 glibc-not-CR=170648
+logf exhaustive 2^32       n=    4294967296 rust!=cref(nofma)=416908 rust!=cref(fma)=416908 rust!=glibc=0          mpfr-checked=416908     rust-not-CR=416908 glibc-not-CR=416908
+log10f exhaustive 2^32     n=    4294967296 rust!=cref(nofma)=0      rust!=cref(fma)=0      rust!=glibc=0          mpfr-checked=0          rust-not-CR=0    glibc-not-CR=0
+examples:
+glibc 2.43 threads 24
+powf worst cases           n=        460544 rust!=cref(nofma)=77748  rust!=cref(fma)=77748  rust!=glibc=0          mpfr-checked=460544     rust-not-CR=77748 glibc-not-CR=77748
+powf special grid          n=       1175056 rust!=cref(nofma)=294    rust!=cref(fma)=294    rust!=glibc=0          mpfr-checked=1175056    rust-not-CR=412  glibc-not-CR=412
+powf random pairs          n=    1000000000 rust!=cref(nofma)=785543 rust!=cref(fma)=785543 rust!=glibc=0          mpfr-checked=11086628   rust-not-CR=785543 glibc-not-CR=785543
+atan2f worst cases         n=          4724 rust!=cref(nofma)=0      rust!=cref(fma)=0      rust!=glibc=0          mpfr-checked=4724       rust-not-CR=0    glibc-not-CR=0
+atan2f special grid        n=       1175056 rust!=cref(nofma)=0      rust!=cref(fma)=0      rust!=glibc=0          mpfr-checked=1175056    rust-not-CR=0    glibc-not-CR=0
+atan2f random pairs        n=    1000000000 rust!=cref(nofma)=0      rust!=cref(fma)=0      rust!=glibc=0          mpfr-checked=10309279   rust-not-CR=0    glibc-not-CR=0
+examples:
+glibc 2.43 threads 24
+asin worst cases (+/-)     n=        498268 rust!=cref(nofma)=0      rust!=cref(fma)=0      rust!=glibc=13912      mpfr-checked=498268     rust-not-CR=0    glibc-not-CR=13912
+asin random                n=    1000000000 rust!=cref(nofma)=0      rust!=cref(fma)=0      rust!=glibc=791374     mpfr-checked=11092577   rust-not-CR=0    glibc-not-CR=791374
+acos worst cases (+/-)     n=        528198 rust!=cref(nofma)=0      rust!=cref(fma)=0      rust!=glibc=25077      mpfr-checked=528198     rust-not-CR=0    glibc-not-CR=25077
+acos random                n=    1000000000 rust!=cref(nofma)=0      rust!=cref(fma)=0      rust!=glibc=496804     mpfr-checked=10800900   rust-not-CR=0    glibc-not-CR=496804
+polar casts: 999999984 draws, latitude differs 0 times, acos-angle differs 0 times

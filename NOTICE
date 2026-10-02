@@ -33,8 +33,9 @@ these licences ask for and what a reader looking at one file rather than
 at the whole distribution will find first. Each shipped Python module
 that carries transcribed work opens with the notice for what it carries;
 so do gpuwm/core/kernels/glibc_flt32.cuh,
-gpuwm/core/kernels/glibc_trig_flt32.cuh and
-gpuwm/core/kernels/thompson_aerosol_common.cuh. Other CUDA translation
+gpuwm/core/kernels/glibc_trig_flt32.cuh,
+gpuwm/core/kernels/thompson_aerosol_common.cuh and
+tools/rustwx/crates/rw-libm/src/lib.rs. Other CUDA translation
 units and prepended headers are covered by the source-freeze manifests
 checked by tests/test_mp8_frozen.py and
 tests/test_kernel_source_freeze_per_module.py; adding a notice comment
@@ -502,6 +503,58 @@ harness at tools/uwpbl_wrf471_oracle/libm64/upstream/. The two grants are
 scoped by routine: they cover exp, log, pow, cos and acos in
 glibc_flt64.cuh and nothing else in the UW kernel, whose remaining code is
 a transcription of WRF.
+
+--------------------------------------------------------------------------
+
+Portable libm in Rust -- Arm optimized-routines and CORE-MATH
+
+The WPS default-REAL orographic projection in the static_fields library
+(tools/rustwx/crates/static-fields/src/projection/orographic.rs, the
+terrain-drag statics) is graded bit for bit against a WPS oracle built
+with glibc 2.43, and the platform C library's single-precision
+transcendentals differ in the last bit between glibc 2.43, glibc 2.39 and
+the Windows UCRT.  It therefore calls its own transcriptions instead, in
+the first-party crate tools/rustwx/crates/rw-libm, whose
+src/lib.rs opens with the notice below.  Each function transcribes the
+code glibc 2.43 itself runs for it, so the results are glibc 2.43's on
+every platform. The crate is compiled into the static_fields library and
+into the executables that link it (the rw_mpas_* tools and rw_mlexport).
+
+The sinf, cosf, expf, logf and powf bodies and their tables are Arm's
+optimized-routines (math/sinf.c, math/cosf.c, math/sincosf.h,
+math/sincosf_data.c, math/expf.c, math/exp2f_data.c, math/logf.c,
+math/logf_data.c, math/powf.c, math/powf_log2_data.c), the same
+algorithms glibc 2.43 carries in sysdeps/ieee754/flt-32/, in the form of
+glibc's x86-64 FMA IFUNC variants.  Their source notices read
+"Copyright (c) 2017-2018, Arm Limited.", "Copyright (c) 2018-2024, Arm
+Limited." and "Copyright (c) 2018-2019, Arm Limited." under
+"SPDX-License-Identifier: MIT"; the MIT permission text is the one
+reproduced in the Arm section above and at
+licenses/LICENSE-Arm-optimized-routines-MIT.txt.
+
+The tanf, atanf, atan2f and log10f bodies (binary32) and the asin and acos
+bodies (binary64) are CORE-MATH's correctly rounded functions
+(https://core-math.gitlabpages.inria.fr/), transcribed from revision
+284b3b0e198042c38f5c30316f696786b10816b0 of
+https://gitlab.inria.fr/core-math/core-math (src/binary32/tan/tanf.c,
+src/binary32/atan/atanf.c, src/binary32/atan2/atan2f.c,
+src/binary32/log10/log10f.c, src/binary64/asin/asin.c,
+src/binary64/acos/acos.c).  glibc 2.43 distributes the binary32 four;
+glibc's own binary64 asin and acos are the IBM Accurate Mathematical
+Library under the LGPL and are NOT transcribed.  The copyright lines and
+the permission text are at licenses/LICENSE-CORE-MATH-rw-libm-MIT.txt:
+
+    Copyright (c) 2022-2025 Alexei Sibidanov.
+    Copyright (c) 2022-2025 Alexei Sibidanov and Paul Zimmermann.
+    Copyright (c) 2022-2026 Alexei Sibidanov <sibid@uvic.ca>.
+    Copyright (c) 2024-2025 Alexei Sibidanov.
+
+The two grants are scoped by routine: they cover the eleven functions
+named here and the tables they use, and nothing else in rw-libm or in
+static_fields.  The verification record (every binary32 argument for the
+univariate functions, a billion random pairs for powf and atan2f, and the
+CORE-MATH worst-case files) is tools/rw_libm_proof/verification.log, beside
+the harness that produced it.
 
 --------------------------------------------------------------------------
 

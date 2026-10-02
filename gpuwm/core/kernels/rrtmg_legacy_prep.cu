@@ -116,7 +116,12 @@ extern "C" __global__ void rp_prep(
         hv[b+nk] = hv[b+nk-1];
         hg[b+nk] = RP_AD(dzsum, RP_MU(0.5f, lastdz));
     } else {
-        float dp = rp_min(4.0f, RP_DV(pl[e+nk], (float)(nl-nk)));
+        // The final interface is overwritten with zero below. Only the
+        // preceding nl-nk-1 decrements must stay positive. Ordinary WRF
+        // tops retain their prescribed 4-hPa spacing.
+        float dp = 4.0f;
+        if (pl[e+nk] <= RP_MU(4.0f, (float)(nl-nk-1)))
+            dp = rp_min(4.0f, RP_DV(pl[e+nk], (float)(nl-nk)));
         for (int k=nk; k<nl; ++k) {
             pl[e+k+1] = RP_SU(pl[e+k], dp);
             pa[b+k] = RP_MU(0.5f, RP_AD(pl[e+k], pl[e+k+1]));

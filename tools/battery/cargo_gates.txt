@@ -332,6 +332,18 @@ cpu  tools/rustwx  rw-isobaric  12
 # 11 in tests/export_roundtrip.rs.
 cpu  tools/rustwx  rw-mlexport  38
 
+# rw-libm: THIS project's crate, the transcendentals the WPS orographic
+# projection uses in place of the platform C library.  f32::powf and
+# f32::cos return different last bits on glibc 2.43, glibc 2.39 and the
+# Windows UCRT, the Lambert inverse amplified one bit to hundreds of ULP,
+# and public CI run 37036982597 failed the static-fields oracle on both
+# operating systems.  The suite holds every function to digests of glibc
+# 2.43's own outputs (CORE-MATH's C for binary64 asin/acos) over 1.3
+# million arguments each, so a transcription edit or a platform whose
+# mul_add is not fused fails here by name.  Floor is its first green run,
+# 2026-10-02: 3 lib + 2 in tests/glibc_digest.rs.
+cpu  tools/rustwx  rw-libm  5
+
 # Static-fields functional tests stay required on both operating systems:
 # builder/interpolation, GeoTIFF safety, highres parity and the C-ABI seam.
 # Measured 43 passes; the two lane1 refusal/cropping controls also stay here.

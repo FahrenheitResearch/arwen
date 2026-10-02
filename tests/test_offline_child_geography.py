@@ -32,6 +32,7 @@ import netCDF4
 import numpy as np
 import pytest
 
+from conftest import requires_netcdf_bridge
 from gpuwm.cli import main as cli_main
 from gpuwm.config import load_config
 from gpuwm.core.grid import finalize_vertical_coord, make_vertical_coord
@@ -354,6 +355,15 @@ def test_only_the_child_route_reads_a_static_table(tmp_path):
 # ---------------------------------------------------------------------
 # The parent's projection, and the door
 # ---------------------------------------------------------------------
+#
+# Each case below hands gpuwm a parent wrfout and lets it READ the file,
+# which gpuwm decodes through the Rust rw_netcdf binary and nothing else
+# (NetcdfBridgeMissing otherwise).  The windows-2025 CPU job builds no
+# native tools, and all six died there on that refusal (2.8.2 public CI),
+# a red for a missing tool rather than a defect.  So each is gated on the
+# conftest capability probe, which names how to stage the bridge; the
+# rest of this deck writes or reads nothing through it and keeps running
+# everywhere, as test_downscale_cli.py gates its own deck per test.
 
 def _lambert_history(path, valid_time, *, ny=18, nx=20):
     """A fixture frame whose XLAT/XLONG ARE its projection's."""
@@ -369,6 +379,7 @@ def _lambert_history(path, valid_time, *, ny=18, nx=20):
         dataset.variables["XLONG"][0] = lon.astype(np.float32)
 
 
+@requires_netcdf_bridge
 def test_a_parent_whose_coordinates_are_its_projection_is_placed(tmp_path):
     frame = tmp_path / "wrfout_d01_1974-04-03_12_00_00"
     _lambert_history(frame, datetime(1974, 4, 3, 12))
@@ -378,6 +389,7 @@ def test_a_parent_whose_coordinates_are_its_projection_is_placed(tmp_path):
     assert max(evidence["lat_error_deg"], evidence["lon_error_deg"]) < 1e-5
 
 
+@requires_netcdf_bridge
 def test_a_downscaled_parent_is_placed_on_its_own_first_point(tmp_path):
     """A child's history carries its parent's CEN_LAT/CEN_LON, as WRF's
     ndown writes them (main/ndown_em.F:446,773); a grandchild still finds
@@ -392,6 +404,7 @@ def test_a_downscaled_parent_is_placed_on_its_own_first_point(tmp_path):
     assert max(evidence["lat_error_deg"], evidence["lon_error_deg"]) < 1e-5
 
 
+@requires_netcdf_bridge
 def test_a_parent_that_contradicts_its_projection_is_refused(tmp_path):
     frame = tmp_path / "wrfout_d01_1974-04-03_12_00_00"
     _lambert_history(frame, datetime(1974, 4, 3, 12))
@@ -424,6 +437,7 @@ def _plan(captured):
     return json.loads(captured.out[captured.out.index("{"):])
 
 
+@requires_netcdf_bridge
 def test_the_door_builds_the_childs_own_geography_by_default(
         tmp_path, capsys):
     missing = tmp_path / "no-geog"
@@ -441,6 +455,7 @@ def test_the_door_builds_the_childs_own_geography_by_default(
     assert '\n[static]\nterrain = "own"\n' in config
 
 
+@requires_netcdf_bridge
 def test_a_child_whose_geography_cannot_be_built_is_refused_first(
         tmp_path, capsys):
     rc = cli_main(_door(tmp_path, "--geog-root", str(tmp_path / "no-geog")))
@@ -452,6 +467,7 @@ def test_a_child_whose_geography_cannot_be_built_is_refused_first(
     assert not (tmp_path / "child-run").exists()
 
 
+@requires_netcdf_bridge
 def test_parent_terrain_keeps_the_route_every_child_ran_before(
         tmp_path, capsys):
     assert cli_main(_door(tmp_path, "--parent-terrain", "--dry-run")) == 0

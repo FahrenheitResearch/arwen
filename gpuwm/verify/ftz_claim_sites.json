@@ -11,10 +11,10 @@
   ],
   "attribution_note": "route/mechanism attribution is judgment across five measured routes and is not machine-derivable; unattributed records carry asserted_token: null and the gate requires only that a token, once written, agrees with the receipt",
   "anchoring_note": "a site is its file plus the exact text of its line (anchor, anchor_sha256), and identical lines in one file are counted; line is where the generator last found the site, a hint the check does not fail on, so lines added or removed above a claim leave the census valid",
-  "site_count": 2441,
+  "site_count": 2449,
   "site_count_by_kind": {
     "behavioural": 67,
-    "prose": 2374
+    "prose": 2382
   },
   "sites": [
     {
@@ -107,7 +107,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2955,
+      "line": 2957,
       "kind": "prose",
       "anchor": "1e-20 sentinel itself, subnormal operands, NaN donors and overflowing",
       "anchor_sha256": "df033327abd8d87b5c75c7aba9e952c97dca515ac1171af97cd1c5eeb9164b9a",
@@ -118,7 +118,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2960,
+      "line": 2962,
       "kind": "prose",
       "anchor": "which flushes subnormal operands; the projected entry uses the host",
       "anchor_sha256": "e3787394d238ab20ac55a8587e014fbbc6d303f32bb51a36b5790cd953b2bf54",
@@ -129,7 +129,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2963,
+      "line": 2965,
       "kind": "prose",
       "anchor": "point. They differ only when an operand is subnormal or infinite and",
       "anchor_sha256": "7733565a4cc90371b7e5a0fcaa86dc9992c235506c80b7adb7b0d2e7042bfcff",
@@ -140,7 +140,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2975,
+      "line": 2977,
       "kind": "prose",
       "anchor": "a subnormal countermeasure that emulated every FP32 operation through",
       "anchor_sha256": "85ed9c0b321942ac6708c466a97265b881d38894d01e35d643993fb1993dcf85",
@@ -151,7 +151,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2976,
+      "line": 2978,
       "kind": "prose",
       "anchor": "FP64: decode a possibly subnormal operand from its bits, do the work in",
       "anchor_sha256": "14dfde0e1ed0c25bc246cdb49f012050e53ceea0e0e25f71f142329ff67ed8ed",
@@ -162,7 +162,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2979,
+      "line": 2981,
       "kind": "prose",
       "anchor": "`sub.rn.f32` and `mul.rn.f32` written as inline PTX without the `.ftz`",
       "anchor_sha256": "b970d9e3b51fbb988c89325a44c9abc97cf299dfc3b3ad89eadb35990d82d0ca",
@@ -173,7 +173,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2991,
+      "line": 2993,
       "kind": "prose",
       "anchor": "how often it sees or makes a subnormal, and whether the PTX and FP64",
       "anchor_sha256": "0991b5df9dfe9ce6c5914e7d1474d902aea0bc53b97c9c5c160e7ebd1cf39e60",
@@ -184,7 +184,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2994,
+      "line": 2996,
       "kind": "prose",
       "anchor": "subnormal operand, 1,659,113 producing a subnormal result, and zero",
       "anchor_sha256": "50e90e32245a5af722f01f71a1689aac0704b2de0cc03d44367bd2cd7a9ea258",
@@ -195,7 +195,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 2995,
+      "line": 2997,
       "kind": "prose",
       "anchor": "mismatches between the two arms. The subnormals are real and they are",
       "anchor_sha256": "842948825d6fea956e6c40a776b10c65e7dd63adb5dea70450e3b9d67b6d9e7a",
@@ -206,7 +206,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3003,
+      "line": 3005,
       "kind": "prose",
       "anchor": "operand classes, an exhaustive sweep of the low-order subnormal range,",
       "anchor_sha256": "69ab17c770b5d52b7ffa3d353fd0a308ad08c4239ec79d1b7c856ac88c0cb778",
@@ -217,7 +217,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3004,
+      "line": 3006,
       "kind": "prose",
       "anchor": "a mantissa sweep that lands products on subnormal rounding ties, and a",
       "anchor_sha256": "6318a752c383867b3ee11478c2b9c7bb88d0a75fa71e3561f3a6fe84e39e975d",
@@ -228,7 +228,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3062,
+      "line": 3064,
       "kind": "prose",
       "anchor": "subnormals. `tools/ftz_receipt` measures that each of the six",
       "anchor_sha256": "5136f4e516381bf5655ae906aef6a53d3ab92f52b6e814fb4bef404cba119fec",
@@ -239,7 +239,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3064,
+      "line": 3066,
       "kind": "prose",
       "anchor": "`-ftz=true`, and that inline PTX without `.ftz` does not. The module",
       "anchor_sha256": "0edad2fe7c7f560883d32d9d4677add844431625d1dc78451088c63edbbce0ac",
@@ -250,7 +250,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 3070,
+      "line": 3072,
       "kind": "prose",
       "anchor": "instructions as PTX makes the subnormal contract a property of the",
       "anchor_sha256": "aa6b7fbbce8527a171f30d9ad9e52b697428a89a3080c32c587f3f4d45af8f02",
@@ -261,7 +261,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 5349,
+      "line": 5351,
       "kind": "prose",
       "anchor": "where FP32 subnormals are flushed in each of the six mechanisms the",
       "anchor_sha256": "960a8ffb3f9a06cdd308819aa0ad7db2d4a4d6702d9a1edc2444d043ed14db22",
@@ -272,7 +272,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 5351,
+      "line": 5353,
       "kind": "prose",
       "anchor": "whose cube is subnormal and flushes to zero, turning a quotient into",
       "anchor_sha256": "d16d72f334e8d30903c3d85abea785c1573abd77b9da707e1a4a5721f5997048",
@@ -283,7 +283,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 5609,
+      "line": 5611,
       "kind": "prose",
       "anchor": "FP32 subnormal flushing on sm_120 was described as a hardware property no",
       "anchor_sha256": "9845ca444fc2d1b5f5725fdb68f0b92434646fa1c15e917f719b3d7da391d204",
@@ -294,7 +294,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 5611,
+      "line": 5613,
       "kind": "prose",
       "anchor": "the same source built without an appended `-ftz=true` keeps full IEEE",
       "anchor_sha256": "2e9db2d996710d5597910bd049935b00c288546c51893027e4da7cb352f1b818",
@@ -305,7 +305,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 5612,
+      "line": 5614,
       "kind": "prose",
       "anchor": "subnormals on the same card. The CPU reference binary was described as an Intel",
       "anchor_sha256": "af90298485911dcdd5f05cf5efa704c8500e4a6f04ac8f3be6cd3da1092f68e1",
@@ -316,7 +316,7 @@
     },
     {
       "file": "CHANGELOG.md",
-      "line": 6714,
+      "line": 6716,
       "kind": "prose",
       "anchor": "functions, FP32 subnormal flushing), what each compared surface covers",
       "anchor_sha256": "2e3226a8e81d2f609a854e0ef0205ff199a9b03595eeb01dd045446a32e6cb6b",
@@ -2153,7 +2153,18 @@
     },
     {
       "file": "gpuwm/core/kernel_frame_recordings.py",
-      "line": 930,
+      "line": 816,
+      "kind": "prose",
+      "anchor": "# the production device-prep loader (--ftz=false), NVRTC 13.4.92,",
+      "anchor_sha256": "3e103ac70f35278f19d630768baa064784f3fd56f185a52cf92edc1a2bc1c52d",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "gpuwm/core/kernel_frame_recordings.py",
+      "line": 933,
       "kind": "prose",
       "anchor": "'ftz_probe': 0,",
       "anchor_sha256": "a1a9eb8246a47d262a99c056c9cfa0a5bce9eb78500d054222ef04380c6c150c",
@@ -2164,7 +2175,7 @@
     },
     {
       "file": "gpuwm/core/kernel_frame_recordings.py",
-      "line": 1101,
+      "line": 1104,
       "kind": "prose",
       "anchor": "'ftz_probe': 0,",
       "anchor_sha256": "a1a9eb8246a47d262a99c056c9cfa0a5bce9eb78500d054222ef04380c6c150c",
@@ -2175,7 +2186,7 @@
     },
     {
       "file": "gpuwm/core/kernel_frame_recordings.py",
-      "line": 1308,
+      "line": 1314,
       "kind": "prose",
       "anchor": "'ftz_probe': 0,",
       "anchor_sha256": "a1a9eb8246a47d262a99c056c9cfa0a5bce9eb78500d054222ef04380c6c150c",
@@ -2186,7 +2197,7 @@
     },
     {
       "file": "gpuwm/core/kernel_frame_recordings.py",
-      "line": 1504,
+      "line": 1510,
       "kind": "prose",
       "anchor": "\"urban_bep_bem.cu compiled as one unit with -fmad=false --ftz=false \"",
       "anchor_sha256": "045071aa817635adfff7559c2848d880406a2ec7f0a7c72331cca593e888f831",
@@ -2197,7 +2208,7 @@
     },
     {
       "file": "gpuwm/core/kernel_frame_recordings.py",
-      "line": 1527,
+      "line": 1533,
       "kind": "prose",
       "anchor": "\"with -fmad=false --ftz=false; terrain_drag.cu fails standalone. \"",
       "anchor_sha256": "bac2624eea795c4379e8946cd9d513873473329c9d7c2468285882f72c5a452d",
@@ -2208,7 +2219,7 @@
     },
     {
       "file": "gpuwm/core/kernel_frame_recordings.py",
-      "line": 1542,
+      "line": 1548,
       "kind": "prose",
       "anchor": "TERRAIN_DRAG_COMPOSED_OPTIONS = (\"-std=c++17\", \"-fmad=false\", \"--ftz=false\")",
       "anchor_sha256": "299d9dbc5730a2ebd290c006e60c308d70f7ce2e74750ef501fafe23462b56a9",
@@ -5178,7 +5189,7 @@
     },
     {
       "file": "gpuwm/core/rrtmg_legacy_prep.py",
-      "line": 1738,
+      "line": 1736,
       "kind": "behavioural",
       "anchor": "# the host: mixing ratios traverse the FP32 subnormal range on real",
       "anchor_sha256": "204eac9f90ed8db5f7eb57cf1541563348e35bfa5fa329bd9a7f3b60d0db3116",
@@ -5189,7 +5200,7 @@
     },
     {
       "file": "gpuwm/core/rrtmg_legacy_prep.py",
-      "line": 1739,
+      "line": 1737,
       "kind": "behavioural",
       "anchor": "# columns and every cupy-compiled device op flushes subnormals",
       "anchor_sha256": "70cc2401d577ce5c5b84f740570e65a02720509ebe9c2c551f98a0974d22e77d",
@@ -5200,7 +5211,7 @@
     },
     {
       "file": "gpuwm/core/rrtmg_legacy_prep.py",
-      "line": 2049,
+      "line": 2051,
       "kind": "behavioural",
       "anchor": "# Host block for the subnormal-hazard chain, exactly as in",
       "anchor_sha256": "26a31ef95d11a1c0cc8b6def3cc4e9c9ebda7c5fd0802a6e00c50fc203373bc1",
@@ -6311,7 +6322,7 @@
     },
     {
       "file": "pyproject.toml",
-      "line": 591,
+      "line": 598,
       "kind": "prose",
       "anchor": "# The FTZ claim census is a shipped register, not a development artifact: a",
       "anchor_sha256": "9f5a21205d5e0eaf496f9b613a8dca1c1214d7618b52cb75b6ed48a5b60c50d2",
@@ -6322,7 +6333,7 @@
     },
     {
       "file": "pyproject.toml",
-      "line": 592,
+      "line": 599,
       "kind": "prose",
       "anchor": "# reader who installs the wheel and finds an FTZ sentence in the docs needs",
       "anchor_sha256": "dcd6092069328db1ddbb6a36eba3013c20c72fc5360cee3982717985ca5cc0d9",
@@ -16442,7 +16453,7 @@
     },
     {
       "file": "tests/test_kernel_source_freeze_per_module.py",
-      "line": 618,
+      "line": 620,
       "kind": "prose",
       "anchor": "# WRF column oracle at every non-FTZ word",
       "anchor_sha256": "3e0b346ebd3c9373d111fd292b13931a5c2794a4eb90d89d17d0da08eaddcd53",
@@ -16453,7 +16464,7 @@
     },
     {
       "file": "tests/test_line_ending_stability.py",
-      "line": 505,
+      "line": 506,
       "kind": "prose",
       "anchor": "# `.sh` under `patches/`, `gpuwm/data/`, the FTZ receipt trees -- are",
       "anchor_sha256": "3f6570a9677f27685db505447470e4f43497aa21fc07444d1c5a40f6a1d34999",
@@ -20281,7 +20292,7 @@
     },
     {
       "file": "tests/test_terrain_smoothing.py",
-      "line": 314,
+      "line": 333,
       "kind": "prose",
       "anchor": "@pytest.mark.parametrize('name',['ridges_noise','coast_valley','spikes','near_subnormal'])",
       "anchor_sha256": "a27d0d9ed0f470a7b0512b9b00444396cec2e69b458cfacdf8d931e0b7e426f6",
@@ -21271,7 +21282,7 @@
     },
     {
       "file": "tools/battery/list_census.json",
-      "line": 662,
+      "line": 716,
       "kind": "prose",
       "anchor": "\"tests/test_ftz_claim_consistency.py\": 18,",
       "anchor_sha256": "1fe47ed9fb7bdf435e636bc98234552157c2bf06965c466b5dcd3f71a5a30214",
@@ -21282,7 +21293,7 @@
     },
     {
       "file": "tools/battery/list_census.json",
-      "line": 675,
+      "line": 729,
       "kind": "prose",
       "anchor": "\"tests/test_ftz_route_inventory.py\": 7,",
       "anchor_sha256": "3808b56acf1a7dd557d652f352237abc29221f7c5de9c1fdf2b8341fcfda364d",
@@ -21293,7 +21304,7 @@
     },
     {
       "file": "tools/battery/list_census.json",
-      "line": 687,
+      "line": 741,
       "kind": "prose",
       "anchor": "\"tests/test_ftz_render.py\": 29,",
       "anchor_sha256": "ae2462a82a3c7281a60c30cea7f3b20db068021596afe3fd00987cd07ce3fd0a",
@@ -21304,7 +21315,7 @@
     },
     {
       "file": "tools/battery/list_census.json",
-      "line": 1027,
+      "line": 1081,
       "kind": "prose",
       "anchor": "\"tests/test_uwpbl_ftz_wrf471_parity.py\": 11,",
       "anchor_sha256": "39942b014f872c0d0175fe10909dff70e95d74274173112dec763baa2ff382fd",
@@ -21315,7 +21326,7 @@
     },
     {
       "file": "tools/battery/list_census.json",
-      "line": 1122,
+      "line": 1179,
       "kind": "prose",
       "anchor": "\"tests/test_ftz_route_inventory.py\": 7,",
       "anchor_sha256": "3808b56acf1a7dd557d652f352237abc29221f7c5de9c1fdf2b8341fcfda364d",
@@ -21326,7 +21337,7 @@
     },
     {
       "file": "tools/battery/list_census.json",
-      "line": 1123,
+      "line": 1180,
       "kind": "prose",
       "anchor": "\"tests/test_ftz_claim_consistency.py\": 18,",
       "anchor_sha256": "1fe47ed9fb7bdf435e636bc98234552157c2bf06965c466b5dcd3f71a5a30214",
@@ -21337,7 +21348,7 @@
     },
     {
       "file": "tools/battery/list_census.json",
-      "line": 1124,
+      "line": 1181,
       "kind": "prose",
       "anchor": "\"tests/test_ftz_render.py\": 29,",
       "anchor_sha256": "ae2462a82a3c7281a60c30cea7f3b20db068021596afe3fd00987cd07ce3fd0a",
@@ -24405,6 +24416,50 @@
       "attribution": "unattributed"
     },
     {
+      "file": "tools/rustwx/crates/rw-libm/src/log10f.rs",
+      "line": 123,
+      "kind": "prose",
+      "anchor": "// subnormal",
+      "anchor_sha256": "e5fc5fc83700d11d250c07e333bf38675e8b5f7b4ab2509f36f9ffe1c5fc1941",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tools/rustwx/crates/rw-libm/src/logf.rs",
+      "line": 51,
+      "kind": "prose",
+      "anchor": "// subnormal: normalise",
+      "anchor_sha256": "2fd6856f8ac65decb85dc2fa75a597b498ac3bab27bfb97c29ac69ec23d512a2",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tools/rustwx/crates/rw-libm/src/powf.rs",
+      "line": 44,
+      "kind": "prose",
+      "anchor": "/// log2(x) for a normalised encoding (a subnormal has a negative exponent).",
+      "anchor_sha256": "e6e3ed21697c39fcb0d4c29bf4fb050812113e6d1d2cfabc000495a8fbddd3fc",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tools/rustwx/crates/rw-libm/src/powf.rs",
+      "line": 172,
+      "kind": "prose",
+      "anchor": "// normalise a subnormal x so its exponent becomes negative",
+      "anchor_sha256": "2e53c061038f4983483944b9062a6e68c62d44bb27d3865be15cf4161e3876c5",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
       "file": "tools/rustwx/crates/rw-mpas/src/bin/rw_mpas_init.rs",
       "line": 36,
       "kind": "prose",
@@ -24971,6 +25026,39 @@
       "kind": "prose",
       "anchor": "// mul_add; subnormals are kept.",
       "anchor_sha256": "847255bcc3be9b7c6312bbe53d4d071699b75478414b62f717051b9a4eb3e952",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tools/rw_libm_proof/mpref.c",
+      "line": 24,
+      "kind": "prose",
+      "anchor": "inex = mpfr_subnormalize(y, inex, MPFR_RNDN);",
+      "anchor_sha256": "fddc59bfc9ccea46918c8f71a5b1907cbb67d11367c71eddebd5e8f0dfd19398",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tools/rw_libm_proof/mpref.c",
+      "line": 41,
+      "kind": "prose",
+      "anchor": "inex = mpfr_subnormalize(r, inex, MPFR_RNDN);",
+      "anchor_sha256": "dcfcab12b893c6632c6c8489bac4bf7c5b3928ead9e65b84c62097cb78a7d0c8",
+      "route": null,
+      "mechanism": null,
+      "asserted_token": null,
+      "attribution": "unattributed"
+    },
+    {
+      "file": "tools/rw_libm_proof/mpref.c",
+      "line": 57,
+      "kind": "prose",
+      "anchor": "inex = mpfr_subnormalize(y, inex, MPFR_RNDN);",
+      "anchor_sha256": "fddc59bfc9ccea46918c8f71a5b1907cbb67d11367c71eddebd5e8f0dfd19398",
       "route": null,
       "mechanism": null,
       "asserted_token": null,

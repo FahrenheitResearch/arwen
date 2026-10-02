@@ -176,11 +176,12 @@ _BYTE_PRESERVED_PREFIXES = (
 #: the upstream rusty-weather workspace that `tools/rustwx/Cargo.toml`
 #: documents, vendored at an exact working-tree state.  `rw-host-memory`
 #: stamps no revision but is authored here: the host-memory walk moved out
-#: of rusty-weather into its own crate.
+#: of rusty-weather into its own crate.  So is `rw-libm`, the platform-
+#: independent libm the WPS orographic projection calls.
 _AUTHORED_RUSTWX_CRATES = (
     "rw-fetch", "rw-wrfbatch", "rw-nexrad", "rw-odim", "rw-obs",
     "rw-goes", "rw-netcdf", "rw-mpas", "rw-host-memory",
-    "rw-isobaric", "rw-mlexport",
+    "rw-isobaric", "rw-mlexport", "rw-libm",
 )
 
 #: The 62 files that already carried CR when this gate was widened,

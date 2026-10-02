@@ -1,0 +1,499 @@
+{
+  "schema": "wrf471-native-lw-extension-fixture/v2",
+  "scope": "Actual native driver dummies and rrtmg_lw entry arrays, captured read-only from an observer whose all seven complete 6-hour histories match the accepted executable. No engine-computed expected arrays.",
+  "array_file": "native_profile_50hpa.npz",
+  "array_sha256": "75e5329510a8c991fe318a753667333521bdc14859ae37d775abfa8a779af312",
+  "array_bytes": 11664,
+  "model_layers": 49,
+  "radiation_layers": 62,
+  "actual_top_hPa": 50.0,
+  "captured_point_ji_zero_based": [
+    100,
+    25
+  ],
+  "captured_step": 1,
+  "captured_rk": 1,
+  "source_parent": "native-capture/radiation/operator-native-v2/captured-native/rank-4/step-1-rk-1/point-100-25",
+  "raw_parents": {
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/p3d.bin": {
+      "bytes": 196,
+      "sha256": "9f0d30e1919399082c07fbea0275ddbda7699750bb638b9e034aa015870c2e5d",
+      "layout_sha256": "ff43a322adef4d9722c1f9154e840298a09fe904773892987e766c5469f26a40",
+      "layout_rank_and_extents": [
+        1,
+        49
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/p8w.bin": {
+      "bytes": 200,
+      "sha256": "342841a182185b8e9af46639a161b2537f5b539ed0542662ad920a73e9f08413",
+      "layout_sha256": "369abe32a86d52d624adba1e79b606f1225c1a5f6b8fbc4007764e99fa56ff72",
+      "layout_rank_and_extents": [
+        1,
+        50
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/t3d.bin": {
+      "bytes": 196,
+      "sha256": "8aa8b60e57ea636fe02045fd3e74c3e80f1579e5f1b67a402d9eb048c6891bb2",
+      "layout_sha256": "ff43a322adef4d9722c1f9154e840298a09fe904773892987e766c5469f26a40",
+      "layout_rank_and_extents": [
+        1,
+        49
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/t8w.bin": {
+      "bytes": 200,
+      "sha256": "ac267028ccf0e075ea2c096c3a2901c1d7e20472e3d2db01fb1eefb20dff9adc",
+      "layout_sha256": "369abe32a86d52d624adba1e79b606f1225c1a5f6b8fbc4007764e99fa56ff72",
+      "layout_rank_and_extents": [
+        1,
+        50
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/dz8w.bin": {
+      "bytes": 196,
+      "sha256": "f5571fa6e70f06bfe7319cbb9586d2e4ba07018c534c7c036f8248af6c21d844",
+      "layout_sha256": "ff43a322adef4d9722c1f9154e840298a09fe904773892987e766c5469f26a40",
+      "layout_rank_and_extents": [
+        1,
+        49
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/qv.bin": {
+      "bytes": 196,
+      "sha256": "7e33607b6774e79acdf7910d0c1c4b1832621673b94da5ee1755bec2ba612b73",
+      "layout_sha256": "ff43a322adef4d9722c1f9154e840298a09fe904773892987e766c5469f26a40",
+      "layout_rank_and_extents": [
+        1,
+        49
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/qc.bin": {
+      "bytes": 196,
+      "sha256": "d904e1f1e028ba9058a128a6fd724f0f9892ae8fe49c8f7dc2613183f7f8bbca",
+      "layout_sha256": "ff43a322adef4d9722c1f9154e840298a09fe904773892987e766c5469f26a40",
+      "layout_rank_and_extents": [
+        1,
+        49
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/qr.bin": {
+      "bytes": 196,
+      "sha256": "d904e1f1e028ba9058a128a6fd724f0f9892ae8fe49c8f7dc2613183f7f8bbca",
+      "layout_sha256": "ff43a322adef4d9722c1f9154e840298a09fe904773892987e766c5469f26a40",
+      "layout_rank_and_extents": [
+        1,
+        49
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/qi.bin": {
+      "bytes": 196,
+      "sha256": "d904e1f1e028ba9058a128a6fd724f0f9892ae8fe49c8f7dc2613183f7f8bbca",
+      "layout_sha256": "ff43a322adef4d9722c1f9154e840298a09fe904773892987e766c5469f26a40",
+      "layout_rank_and_extents": [
+        1,
+        49
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/qs.bin": {
+      "bytes": 196,
+      "sha256": "d904e1f1e028ba9058a128a6fd724f0f9892ae8fe49c8f7dc2613183f7f8bbca",
+      "layout_sha256": "ff43a322adef4d9722c1f9154e840298a09fe904773892987e766c5469f26a40",
+      "layout_rank_and_extents": [
+        1,
+        49
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/qg.bin": {
+      "bytes": 196,
+      "sha256": "d904e1f1e028ba9058a128a6fd724f0f9892ae8fe49c8f7dc2613183f7f8bbca",
+      "layout_sha256": "ff43a322adef4d9722c1f9154e840298a09fe904773892987e766c5469f26a40",
+      "layout_rank_and_extents": [
+        1,
+        49
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/cldfra3d.bin": {
+      "bytes": 196,
+      "sha256": "d904e1f1e028ba9058a128a6fd724f0f9892ae8fe49c8f7dc2613183f7f8bbca",
+      "layout_sha256": "ff43a322adef4d9722c1f9154e840298a09fe904773892987e766c5469f26a40",
+      "layout_rank_and_extents": [
+        1,
+        49
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/o33d.bin": {
+      "bytes": 196,
+      "sha256": "dfd38c9e24bf7a21e85df2dd1352d0d35f6b3444bbc64fb29559d862b12f3976",
+      "layout_sha256": "ff43a322adef4d9722c1f9154e840298a09fe904773892987e766c5469f26a40",
+      "layout_rank_and_extents": [
+        1,
+        49
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/re_cloud.bin": {
+      "bytes": 196,
+      "sha256": "3e44299bc81207b9b7ab0cef853bf18f831f7ff5a845995e63548f860ee8ef50",
+      "layout_sha256": "ff43a322adef4d9722c1f9154e840298a09fe904773892987e766c5469f26a40",
+      "layout_rank_and_extents": [
+        1,
+        49
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/re_ice.bin": {
+      "bytes": 196,
+      "sha256": "f0a626f2eede3e5dd4e40c7e81b5635cfdee2210ac8c668b268b6875cff3fd00",
+      "layout_sha256": "ff43a322adef4d9722c1f9154e840298a09fe904773892987e766c5469f26a40",
+      "layout_rank_and_extents": [
+        1,
+        49
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/re_snow.bin": {
+      "bytes": 196,
+      "sha256": "b4eece7d1e46f020a73dae299e2fcaf46db31bddfa322052fd014db690b1d4f7",
+      "layout_sha256": "ff43a322adef4d9722c1f9154e840298a09fe904773892987e766c5469f26a40",
+      "layout_rank_and_extents": [
+        1,
+        49
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/tsk.bin": {
+      "bytes": 4,
+      "sha256": "36d362f2d65af423bad91b6167c614bab4867498f954e3a439d4aba34087a052",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/emiss.bin": {
+      "bytes": 4,
+      "sha256": "6cd00ccbb89fc4145ef09d9250e8fcb9c61e06567d5cd499cb136cc0d35a4441",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/xland.bin": {
+      "bytes": 4,
+      "sha256": "e00e5eb9444182f352323374ef4e08ebcb784725fdd4fd612d7730540b3e0c8c",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/xice.bin": {
+      "bytes": 4,
+      "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/snow.bin": {
+      "bytes": 4,
+      "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/xlat.bin": {
+      "bytes": 4,
+      "sha256": "e0e958d9d854e15a86b5e85a72d3610469e8cbe037a666ab18396093a887677c",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/icloud.bin": {
+      "bytes": 4,
+      "sha256": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/warm_rain.bin": {
+      "bytes": 4,
+      "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/cldovrlp.bin": {
+      "bytes": 4,
+      "sha256": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/idcor.bin": {
+      "bytes": 4,
+      "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/o3input.bin": {
+      "bytes": 4,
+      "sha256": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/has_reqc.bin": {
+      "bytes": 4,
+      "sha256": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/has_reqi.bin": {
+      "bytes": 4,
+      "sha256": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/has_reqs.bin": {
+      "bytes": 4,
+      "sha256": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/f_qc.bin": {
+      "bytes": 4,
+      "sha256": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/f_qr.bin": {
+      "bytes": 4,
+      "sha256": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/f_qi.bin": {
+      "bytes": 4,
+      "sha256": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/f_qs.bin": {
+      "bytes": 4,
+      "sha256": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/f_qg.bin": {
+      "bytes": 4,
+      "sha256": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/yr.bin": {
+      "bytes": 4,
+      "sha256": "34a1de344f33ce445f92bafb9bc1bcd430fe13802865aa8572a7ede85e7ad87c",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/mp_physics.bin": {
+      "bytes": 4,
+      "sha256": "dc765660b06ee03dd16fd7ca5b957e8c805161ac2c4af28c5a100ab2ab432ca1",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/driver.before-lw/julian.bin": {
+      "bytes": 4,
+      "sha256": "4e6e219b8ea3e7604c516ab857dc3e79b10147d15cbfeeb2f03bbc3c9782f09a",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/lw.entry/nlay.bin": {
+      "bytes": 4,
+      "sha256": "fa802ed35611d044b14e2d95ce6619c2051b5c0d6645459658e1d67fa0af07c7",
+      "layout_sha256": "b8a96985aa2b584a1e4cf3f68f5d143373d058b3e49f6e451c54974c844149da",
+      "layout_rank_and_extents": [
+        0
+      ],
+      "dtype": "<i4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/lw.entry/plev.bin": {
+      "bytes": 252,
+      "sha256": "b556154a428e000b54e1ff00c26c038ab6e7583c20fdee0c0c94e239cd6074ca",
+      "layout_sha256": "127d7c01682574294da519819531fc9915ecadcf146efc16f35da7ede5b887b2",
+      "layout_rank_and_extents": [
+        2,
+        1,
+        63
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/lw.entry/play.bin": {
+      "bytes": 248,
+      "sha256": "ea196d6a9055877bf03f502dffb53e2c10de9093ba1edc5318d691ec64cba005",
+      "layout_sha256": "80d874abdcbcd1caa15cd34b63834fdf78a1f5f6916c47dab16ddaf672f6cfb6",
+      "layout_rank_and_extents": [
+        2,
+        1,
+        62
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/lw.entry/tlev.bin": {
+      "bytes": 252,
+      "sha256": "62e9e835dda03e198949ef6f5afb2c69169875c82bf2b2d38b508b4f81b86f4c",
+      "layout_sha256": "127d7c01682574294da519819531fc9915ecadcf146efc16f35da7ede5b887b2",
+      "layout_rank_and_extents": [
+        2,
+        1,
+        63
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/lw.entry/tlay.bin": {
+      "bytes": 248,
+      "sha256": "4ddbae6dda48e6c450843c02d55bb1517f14f5fd05699e12f0d7b304ebda4367",
+      "layout_sha256": "80d874abdcbcd1caa15cd34b63834fdf78a1f5f6916c47dab16ddaf672f6cfb6",
+      "layout_rank_and_extents": [
+        2,
+        1,
+        62
+      ],
+      "dtype": "<f4"
+    },
+    "captured-native/rank-4/step-1-rk-1/point-100-25/lw.entry/o3vmr.bin": {
+      "bytes": 248,
+      "sha256": "4f06757b5d5e40e1080d5f6c92086a4a963229a47e976a334863b72a16b74e21",
+      "layout_sha256": "80d874abdcbcd1caa15cd34b63834fdf78a1f5f6916c47dab16ddaf672f6cfb6",
+      "layout_rank_and_extents": [
+        2,
+        1,
+        62
+      ],
+      "dtype": "<f4"
+    }
+  },
+  "admission_receipts": {
+    "radiation/operator-native-v2/HISTORY-IDENTICAL": {
+      "sha256": "8653c3f7bcb21abc4bb7c1d25bdd655a761b6d2799dd3e825f3a28c62e2dd825",
+      "text": "All seven accepted and combined SW/LW operator-observer full histories byte-identical\n"
+    },
+    "radiation/operator-native-v2/OBSERVER.exit": {
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "text": "0\n"
+    },
+    "radiation/operator-native-v2/OBSERVER-EXECUTABLE.sha256": {
+      "sha256": "8f51b8ace5239f3797663ef8600e5c7e72c78f214c76eb9b5aa34c426c29867e",
+      "text": "ad8ba375990dde424f776cff37a6fe4c720810e768f2575f5d7991bea70677b7  wrf-radiation-observer.exe\n"
+    },
+    "radiation/operator-native-v2/ACCEPTED-BEFORE.sha256": {
+      "sha256": "78b1f07283c8974d98876c1e68de59ccb662d40ccc31112381467283f6ec0fb4",
+      "text": "7680ed5b3483c7ab3d90589707a15fb2bb524cecd7de78948619b4ce794c2de8  /accepted/main/wrf.exe\n0b86491edc1945445b6991289ac68821624a8a7789ba62825eca6211a48dec7b  /accepted/main/libwrflib.a\n3b7ae5cb8ceff98e71281d5e93e220c5eb218389739f71a4ddd6fce958c5aeb7  /accepted/phys/module_ra_rrtmg_sw.o\ne6b14efd9e3e0417a2c09327f092981f7bc7294e9e8752b5c249c725c85d158f  /accepted/phys/module_ra_rrtmg_lw.o\nd113fb30536d118a5d40fb524ac36605266f25e30fcf2678c677c6e717abdb33  /accepted/phys/module_radiation_driver.o\n"
+    },
+    "radiation/operator-native-v2/ACCEPTED-AFTER.log": {
+      "sha256": "767569f6cd223019ce867c9836c4b7f3e9d85263c43bb297f16260429bb2beb6",
+      "text": "/accepted/main/wrf.exe: OK\n/accepted/main/libwrflib.a: OK\n/accepted/phys/module_ra_rrtmg_sw.o: OK\n/accepted/phys/module_ra_rrtmg_lw.o: OK\n/accepted/phys/module_radiation_driver.o: OK\n"
+    },
+    "radiation/operator-native-v2/observer-run/inputs.sha256": {
+      "sha256": "99b7d78bceca1020206cf8b69019a0bf243a9a2f483070d1dd1d108ebef5b5d5",
+      "text": "be8d45363952affa5835e65afcf6f2260c9bf6cda9e1f7f38a2e2408856d56af  wrfinput_d01\n4a493bdf77f9b001804911983387005d8f8369c33b006c4acce6e3937ac6e54f  wrfbdy_d01\n5b152266c11ad0add64956ffabb74761fe79868d59e83e80f0993fec8e3609c3  namelist.input\nad8ba375990dde424f776cff37a6fe4c720810e768f2575f5d7991bea70677b7  wrf.exe\n"
+    },
+    "radiation/operator-native-v2/observer-run/outputs.sha256": {
+      "sha256": "e5275a2c7afed21c47cb0b92d2a621ecf35c3d0883264fd9cdeef49682fdfd8a",
+      "text": "dc4b4812394dd8ea12e2f1141fc9e505a246f5ad883307ad3f5fd854675d739a  wrfout_d01_2024-07-15_12:00:00\n3f9c08f777413aa793bde3c68d3f3ea847504041afd605ddaa77a9fcb9927f6b  wrfout_d01_2024-07-15_13:00:00\n7b8a5a692b1594e2ab0af1643f58a56320a1a4bf8634fe6dc5de467f47df0959  wrfout_d01_2024-07-15_14:00:00\nce04a696d165f9113b98028353a3594586f4189addbb3ac6065c804a9329c8ac  wrfout_d01_2024-07-15_15:00:00\ncd2712c23e76221f0cbe22de50a31cb5ee2164864f3e6793f1716579d9ea93d9  wrfout_d01_2024-07-15_16:00:00\n1ce1889c066d3ef1e357bf92948c502a263551a4d677bb0cd915de5ed06199d7  wrfout_d01_2024-07-15_17:00:00\n2be1d88fe89efed5c59dde4db2e4a5a85560b812a975049a616ca4dce73814b6  wrfout_d01_2024-07-15_18:00:00\n"
+    },
+    "capture/native-lw-operator/LW-HOOKS.json": {
+      "original_file_sha256": "604dd9f71fc078de4ddb72305d077eace2e89c75170b5ce458f7623d035ce948",
+      "path_normalized_text": "{\n  \"schema\": \"accepted-selected-native-lw-observer-source/v1\",\n  \"scope\": \"Owned reads only; history identity required before scientific use\",\n  \"parent_source_path\": \"wrf471-source/phys/module_ra_rrtmg_lw.f90\",\n  \"parent_source_sha256\": \"ee0bd4a482a3e1ea8fda403c5a50d467e0ad49c6503af040a25428f8b1c13a6a\",\n  \"observer_source_path\": \"native-capture/capture/native-lw-operator/module_ra_rrtmg_lw.f90\",\n  \"observer_source_sha256\": \"7e3fab6013428ebf598d339da80eb066d4ba373033f3bd08cd47c36435ea1429\",\n  \"helper_generator_sha256\": \"f36d40c443affa18f465552dc1c31b9686607cdbf88a7df8ec6cc7f26a694d3c\",\n  \"external_helper_module\": \"narrow_rrtmg_capture\",\n  \"context_module\": \"coastal_observer\",\n  \"selected_steps\": [\n    1,\n    301,\n    901,\n    1201\n  ],\n  \"selected_rk\": 1,\n  \"points_ji_zero_based\": [\n    [\n      100,\n      25\n    ],\n    [\n      100,\n      26\n    ],\n    [\n      99,\n      25\n    ],\n    [\n      99,\n      24\n    ],\n    [\n      94,\n      20\n    ]\n  ],\n  \"selection\": \"radcap_column(i,j) before actual McICA call; helper uses live native context\",\n  \"raw_layout\": \"Fortran order; layout is rank then extents; little-endian float32/int32\",\n  \"events\": {\n    \"lw.mcica.in\": [\n      {\n        \"name\": \"play\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"play\"\n      },\n      {\n        \"name\": \"plev\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"plev\"\n      },\n      {\n        \"name\": \"tlay\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"tlay\"\n      },\n      {\n        \"name\": \"tlev\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"tlev\"\n      },\n      {\n        \"name\": \"tsfc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"tsfc\"\n      },\n      {\n        \"name\": \"cldfrac\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"cldfrac\"\n      },\n      {\n        \"name\": \"ciwpth\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"ciwpth\"\n      },\n      {\n        \"name\": \"clwpth\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"clwpth\"\n      },\n      {\n        \"name\": \"cswpth\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"cswpth\"\n      },\n      {\n        \"name\": \"rei\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rei\"\n      },\n      {\n        \"name\": \"rel\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rel\"\n      },\n      {\n        \"name\": \"res\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"res\"\n      },\n      {\n        \"name\": \"taucld\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"taucld\"\n      },\n      {\n        \"name\": \"lat\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"lat\"\n      },\n      {\n        \"name\": \"hgt\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"hgt\",\n        \"guard\": \"idcor/=0; inactive height buffer excluded\"\n      },\n      {\n        \"name\": \"iplon\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"iplon\"\n      },\n      {\n        \"name\": \"ncol\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"ncol\"\n      },\n      {\n        \"name\": \"nlay\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"nlay\"\n      },\n      {\n        \"name\": \"icld\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"icld\"\n      },\n      {\n        \"name\": \"irng\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"irng\"\n      },\n      {\n        \"name\": \"permuteseed\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"permuteseed\"\n      },\n      {\n        \"name\": \"idcor\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"idcor\"\n      },\n      {\n        \"name\": \"juldat\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"juldat\"\n      }\n    ],\n    \"lw.wrapper.controls\": [\n      {\n        \"name\": \"julian\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"julian\"\n      },\n      {\n        \"name\": \"yr\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"yr\"\n      },\n      {\n        \"name\": \"mp_physics\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"mp_physics\"\n      },\n      {\n        \"name\": \"has_reqc\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"has_reqc\"\n      },\n      {\n        \"name\": \"has_reqi\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"has_reqi\"\n      },\n      {\n        \"name\": \"has_reqs\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"has_reqs\"\n      },\n      {\n        \"name\": \"inflglw\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"inflglw\"\n      },\n      {\n        \"name\": \"iceflglw\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"iceflglw\"\n      },\n      {\n        \"name\": \"liqflglw\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"liqflglw\"\n      },\n      {\n        \"name\": \"calc_clean_atm_diag\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"calc_clean_atm_diag\"\n      },\n      {\n        \"name\": \"bounds\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"[ids,ide,jds,jde,kds,kde,ims,ime,jms,jme,kms,kme,its,ite,jts,jte,kts,kte]\"\n      }\n    ],\n    \"lw.mcica.out\": [\n      {\n        \"name\": \"cldfmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"cldfmcl\"\n      },\n      {\n        \"name\": \"ciwpmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"ciwpmcl\"\n      },\n      {\n        \"name\": \"clwpmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"clwpmcl\"\n      },\n      {\n        \"name\": \"cswpmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"cswpmcl\"\n      },\n      {\n        \"name\": \"reicmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"reicmcl\"\n      },\n      {\n        \"name\": \"relqmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"relqmcl\"\n      },\n      {\n        \"name\": \"resnmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"resnmcl\"\n      },\n      {\n        \"name\": \"taucmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"taucmcl\"\n      }\n    ],\n    \"lw.mcica.seeds.initial\": [\n      {\n        \"name\": \"pmid\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"pmid\"\n      },\n      {\n        \"name\": \"irng\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"irng\"\n      },\n      {\n        \"name\": \"changeSeed\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"changeSeed\"\n      },\n      {\n        \"name\": \"seed1\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"seed1\"\n      },\n      {\n        \"name\": \"seed2\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"seed2\"\n      },\n      {\n        \"name\": \"seed3\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"seed3\"\n      },\n      {\n        \"name\": \"seed4\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"seed4\"\n      }\n    ],\n    \"lw.mcica.seeds.permuted\": [\n      {\n        \"name\": \"seed1\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"seed1\"\n      },\n      {\n        \"name\": \"seed2\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"seed2\"\n      },\n      {\n        \"name\": \"seed3\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"seed3\"\n      },\n      {\n        \"name\": \"seed4\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"seed4\"\n      }\n    ],\n    \"lw.entry\": [\n      {\n        \"name\": \"ncol\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"ncol\"\n      },\n      {\n        \"name\": \"nlay\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"nlay\"\n      },\n      {\n        \"name\": \"icld\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"icld\"\n      },\n      {\n        \"name\": \"inflglw\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"inflglw\"\n      },\n      {\n        \"name\": \"iceflglw\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"iceflglw\"\n      },\n      {\n        \"name\": \"liqflglw\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"liqflglw\"\n      },\n      {\n        \"name\": \"calc_clean_atm_diag\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"calc_clean_atm_diag\"\n      },\n      {\n        \"name\": \"play\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"play\"\n      },\n      {\n        \"name\": \"plev\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"plev\"\n      },\n      {\n        \"name\": \"tlay\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"tlay\"\n      },\n      {\n        \"name\": \"tlev\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"tlev\"\n      },\n      {\n        \"name\": \"tsfc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"tsfc\"\n      },\n      {\n        \"name\": \"h2ovmr\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"h2ovmr\"\n      },\n      {\n        \"name\": \"o3vmr\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"o3vmr\"\n      },\n      {\n        \"name\": \"co2vmr\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"co2vmr\"\n      },\n      {\n        \"name\": \"ch4vmr\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"ch4vmr\"\n      },\n      {\n        \"name\": \"n2ovmr\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"n2ovmr\"\n      },\n      {\n        \"name\": \"o2vmr\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"o2vmr\"\n      },\n      {\n        \"name\": \"cfc11vmr\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"cfc11vmr\"\n      },\n      {\n        \"name\": \"cfc12vmr\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"cfc12vmr\"\n      },\n      {\n        \"name\": \"cfc22vmr\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"cfc22vmr\"\n      },\n      {\n        \"name\": \"ccl4vmr\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"ccl4vmr\"\n      },\n      {\n        \"name\": \"emis\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"emis\"\n      },\n      {\n        \"name\": \"cldfmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"cldfmcl\"\n      },\n      {\n        \"name\": \"taucmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"taucmcl\"\n      },\n      {\n        \"name\": \"ciwpmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"ciwpmcl\"\n      },\n      {\n        \"name\": \"clwpmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"clwpmcl\"\n      },\n      {\n        \"name\": \"cswpmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"cswpmcl\"\n      },\n      {\n        \"name\": \"reicmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"reicmcl\"\n      },\n      {\n        \"name\": \"relqmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"relqmcl\"\n      },\n      {\n        \"name\": \"resnmcl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"resnmcl\"\n      },\n      {\n        \"name\": \"tauaer\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"tauaer\"\n      }\n    ],\n    \"lw.outputs\": [\n      {\n        \"name\": \"uflx\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"uflx\"\n      },\n      {\n        \"name\": \"dflx\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"dflx\"\n      },\n      {\n        \"name\": \"hr\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"hr\"\n      },\n      {\n        \"name\": \"uflxc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"uflxc\"\n      },\n      {\n        \"name\": \"dflxc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"dflxc\"\n      },\n      {\n        \"name\": \"hrc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"hrc\"\n      },\n      {\n        \"name\": \"uflxcln\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"uflxcln\"\n      },\n      {\n        \"name\": \"dflxcln\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"dflxcln\"\n      }\n    ],\n    \"lw.inatm\": [\n      {\n        \"name\": \"nlayers\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"nlayers\"\n      },\n      {\n        \"name\": \"iaer\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"iaer\"\n      },\n      {\n        \"name\": \"inflag\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"inflag\"\n      },\n      {\n        \"name\": \"iceflag\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"iceflag\"\n      },\n      {\n        \"name\": \"liqflag\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"liqflag\"\n      },\n      {\n        \"name\": \"pavel\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"pavel(:nlayers)\"\n      },\n      {\n        \"name\": \"tavel\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"tavel(:nlayers)\"\n      },\n      {\n        \"name\": \"coldry\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"coldry(:nlayers)\"\n      },\n      {\n        \"name\": \"wbrodl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"wbrodl(:nlayers)\"\n      },\n      {\n        \"name\": \"relqmc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"relqmc(:nlayers)\"\n      },\n      {\n        \"name\": \"reicmc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"reicmc(:nlayers)\"\n      },\n      {\n        \"name\": \"resnmc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"resnmc(:nlayers)\"\n      },\n      {\n        \"name\": \"pz\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"pz(0:nlayers)\"\n      },\n      {\n        \"name\": \"tz\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"tz(0:nlayers)\"\n      },\n      {\n        \"name\": \"tbound\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"tbound\"\n      },\n      {\n        \"name\": \"semiss\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"semiss\"\n      },\n      {\n        \"name\": \"pwvcm\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"pwvcm\"\n      },\n      {\n        \"name\": \"wkl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"wkl(:,:nlayers)\"\n      },\n      {\n        \"name\": \"wx\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"wx(:,:nlayers)\"\n      },\n      {\n        \"name\": \"cldfmc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"cldfmc(:,:nlayers)\"\n      },\n      {\n        \"name\": \"taucmc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"taucmc(:,:nlayers)\"\n      },\n      {\n        \"name\": \"ciwpmc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"ciwpmc(:,:nlayers)\"\n      },\n      {\n        \"name\": \"clwpmc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"clwpmc(:,:nlayers)\"\n      },\n      {\n        \"name\": \"cswpmc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"cswpmc(:,:nlayers)\"\n      },\n      {\n        \"name\": \"taua\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"taua(:nlayers,:)\"\n      }\n    ],\n    \"lw.cloud-optics\": [\n      {\n        \"name\": \"ncbands\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"ncbands\"\n      },\n      {\n        \"name\": \"taucmc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"taucmc(:,:nlayers)\"\n      }\n    ],\n    \"lw.setcoef\": [\n      {\n        \"name\": \"laytrop\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"laytrop\"\n      },\n      {\n        \"name\": \"jp\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"jp(:nlayers)\"\n      },\n      {\n        \"name\": \"jt\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"jt(:nlayers)\"\n      },\n      {\n        \"name\": \"jt1\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"jt1(:nlayers)\"\n      },\n      {\n        \"name\": \"indself\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"indself(:nlayers)\"\n      },\n      {\n        \"name\": \"indfor\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"indfor(:nlayers)\"\n      },\n      {\n        \"name\": \"indminor\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"indminor(:nlayers)\"\n      },\n      {\n        \"name\": \"colh2o\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"colh2o(:nlayers)\"\n      },\n      {\n        \"name\": \"colco2\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"colco2(:nlayers)\"\n      },\n      {\n        \"name\": \"colo3\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"colo3(:nlayers)\"\n      },\n      {\n        \"name\": \"coln2o\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"coln2o(:nlayers)\"\n      },\n      {\n        \"name\": \"colco\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"colco(:nlayers)\"\n      },\n      {\n        \"name\": \"colch4\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"colch4(:nlayers)\"\n      },\n      {\n        \"name\": \"colo2\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"colo2(:nlayers)\"\n      },\n      {\n        \"name\": \"colbrd\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"colbrd(:nlayers)\"\n      },\n      {\n        \"name\": \"fac00\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"fac00(:nlayers)\"\n      },\n      {\n        \"name\": \"fac01\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"fac01(:nlayers)\"\n      },\n      {\n        \"name\": \"fac10\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"fac10(:nlayers)\"\n      },\n      {\n        \"name\": \"fac11\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"fac11(:nlayers)\"\n      },\n      {\n        \"name\": \"selffac\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"selffac(:nlayers)\"\n      },\n      {\n        \"name\": \"selffrac\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"selffrac(:nlayers)\"\n      },\n      {\n        \"name\": \"forfac\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"forfac(:nlayers)\"\n      },\n      {\n        \"name\": \"forfrac\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"forfrac(:nlayers)\"\n      },\n      {\n        \"name\": \"minorfrac\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"minorfrac(:nlayers)\"\n      },\n      {\n        \"name\": \"scaleminor\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"scaleminor(:nlayers)\"\n      },\n      {\n        \"name\": \"scaleminorn2\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"scaleminorn2(:nlayers)\"\n      },\n      {\n        \"name\": \"rat_h2oco2\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rat_h2oco2(:nlayers)\"\n      },\n      {\n        \"name\": \"rat_h2oco2_1\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rat_h2oco2_1(:nlayers)\"\n      },\n      {\n        \"name\": \"rat_h2oo3\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rat_h2oo3(:nlayers)\"\n      },\n      {\n        \"name\": \"rat_h2oo3_1\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rat_h2oo3_1(:nlayers)\"\n      },\n      {\n        \"name\": \"rat_h2on2o\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rat_h2on2o(:nlayers)\"\n      },\n      {\n        \"name\": \"rat_h2on2o_1\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rat_h2on2o_1(:nlayers)\"\n      },\n      {\n        \"name\": \"rat_h2och4\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rat_h2och4(:nlayers)\"\n      },\n      {\n        \"name\": \"rat_h2och4_1\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rat_h2och4_1(:nlayers)\"\n      },\n      {\n        \"name\": \"rat_n2oco2\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rat_n2oco2(:nlayers)\"\n      },\n      {\n        \"name\": \"rat_n2oco2_1\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rat_n2oco2_1(:nlayers)\"\n      },\n      {\n        \"name\": \"rat_o3co2\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rat_o3co2(:nlayers)\"\n      },\n      {\n        \"name\": \"rat_o3co2_1\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rat_o3co2_1(:nlayers)\"\n      },\n      {\n        \"name\": \"planklay\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"planklay(:nlayers,:)\"\n      },\n      {\n        \"name\": \"planklev\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"planklev(0:nlayers,:)\"\n      },\n      {\n        \"name\": \"plankbnd\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"plankbnd\"\n      }\n    ],\n    \"lw.taumol\": [\n      {\n        \"name\": \"fracs\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"fracs(:nlayers,:)\"\n      },\n      {\n        \"name\": \"taug\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"taug(:nlayers,:)\"\n      }\n    ],\n    \"lw.rtrnmc.in\": [\n      {\n        \"name\": \"nlayers\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"nlayers\"\n      },\n      {\n        \"name\": \"istart\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"istart\"\n      },\n      {\n        \"name\": \"iend\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"iend\"\n      },\n      {\n        \"name\": \"iout\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"iout\"\n      },\n      {\n        \"name\": \"ncbands\",\n        \"dtype\": \"<i4\",\n        \"source_expression\": \"ncbands\"\n      },\n      {\n        \"name\": \"pz\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"pz(0:nlayers)\"\n      },\n      {\n        \"name\": \"semiss\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"semiss\"\n      },\n      {\n        \"name\": \"plankbnd\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"plankbnd\"\n      },\n      {\n        \"name\": \"pwvcm\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"pwvcm\"\n      },\n      {\n        \"name\": \"cldfmc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"cldfmc(:,:nlayers)\"\n      },\n      {\n        \"name\": \"taucmc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"taucmc(:,:nlayers)\"\n      },\n      {\n        \"name\": \"planklay\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"planklay(:nlayers,:)\"\n      },\n      {\n        \"name\": \"fracs\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"fracs(:nlayers,:)\"\n      },\n      {\n        \"name\": \"taut\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"taut(:nlayers,:)\"\n      },\n      {\n        \"name\": \"planklev\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"planklev(0:nlayers,:)\"\n      }\n    ],\n    \"lw.rtrnmc.out\": [\n      {\n        \"name\": \"totuflux\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"totuflux(0:nlayers)\"\n      },\n      {\n        \"name\": \"totdflux\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"totdflux(0:nlayers)\"\n      },\n      {\n        \"name\": \"fnet\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"fnet(0:nlayers)\"\n      },\n      {\n        \"name\": \"totuclfl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"totuclfl(0:nlayers)\"\n      },\n      {\n        \"name\": \"totdclfl\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"totdclfl(0:nlayers)\"\n      },\n      {\n        \"name\": \"fnetc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"fnetc(0:nlayers)\"\n      },\n      {\n        \"name\": \"htr\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"htr(0:nlayers-1)\"\n      },\n      {\n        \"name\": \"htrc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"htrc(0:nlayers-1)\"\n      }\n    ],\n    \"lw.wrapper.after\": [\n      {\n        \"name\": \"rthratenlw\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rthratenlw(i,kts:kte,j)\"\n      },\n      {\n        \"name\": \"rthratenlwc\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"rthratenlwc(i,kts:kte,j)\"\n      },\n      {\n        \"name\": \"glw\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"glw(i,j)\"\n      },\n      {\n        \"name\": \"olr\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"olr(i,j)\"\n      },\n      {\n        \"name\": \"lwcf\",\n        \"dtype\": \"<f4\",\n        \"source_expression\": \"lwcf(i,j)\"\n      }\n    ]\n  }\n}\n",
+      "path_normalized_text_sha256": "2f3fda3c15cc6d1f8d9cb726b4df670dd98032e12e30a1145e95dc57bcecacca"
+    },
+    "capture/native-lw-operator/LW-OBSERVER.sha256": {
+      "sha256": "831697b5999110f8f038a7551f372209ae090d80fc25ad0a95b52b7fa0a2aa9a",
+      "text": "7e3fab6013428ebf598d339da80eb066d4ba373033f3bd08cd47c36435ea1429  module_ra_rrtmg_lw.f90\n993a978af1af30ebdab3e33a6cbd462fa68b194af990fb0e2edeacaadc06b2c0  module_ra_rrtmg_lw.o\n604dd9f71fc078de4ddb72305d077eace2e89c75170b5ce458f7623d035ce948  LW-HOOKS.json\n"
+    },
+    "capture/native-lw-operator/ACCEPTED-UNCHANGED.log": {
+      "sha256": "6ddacb520f6de390c7ff000c007c57ee26fa4a6a50cbe9301c8b6c9b5845b051",
+      "text": "/accepted/main/wrf.exe: OK\n/accepted/main/libwrflib.a: OK\n/accepted/phys/module_ra_rrtmg_lw.o: OK\n"
+    }
+  },
+  "accepted_source_artifact_sha256": {
+    "phys/module_ra_rrtmg_lw.F": "c7a5238612aa8a4213c8d3af6708ec6a5248e6701e19758a80e563905d306de3",
+    "phys/module_ra_rrtmg_lw.f90": "ee0bd4a482a3e1ea8fda403c5a50d467e0ad49c6503af040a25428f8b1c13a6a",
+    "main/wrf.exe": "7680ed5b3483c7ab3d90589707a15fb2bb524cecd7de78948619b4ce794c2de8",
+    "main/libwrflib.a": "0b86491edc1945445b6991289ac68821624a8a7789ba62825eca6211a48dec7b"
+  },
+  "constants": {
+    "g": {
+      "value": 9.8100004196167,
+      "float32_word": "411cf5c3",
+      "provenance": "Accepted WRF module_model_constants g=9.81; the driver does not serialize this constant."
+    }
+  },
+  "logical_controls": "Native logical controls are recorded as original little-endian int32 words; Python prep flags use int/bool without numerical transformation.",
+  "path_display_policy": "Paths are portable artifact identifiers. Changed receipt text is labeled separately from the retained original file hash."
+}

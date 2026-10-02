@@ -1,6 +1,8 @@
 """Execute checkout installers with captured external commands, without installs.
 
-Both shells run the actual shipped script through the standalone clone route.
+Both shells run the actual shipped script through the standalone clone route;
+the PowerShell rows run on Windows, the only host install.ps1 installs on, and
+elsewhere pwsh proves the script's refusal instead.
 Only git, pip, cargo and doctor are substitutes; they enforce the dependency
 and executable prerequisites a clean checkout needs, and inject failures.
 """
@@ -87,8 +89,24 @@ elif kind == 'gpuwm' and args == ['doctor']:
 '''
 
 
+#: install.ps1 is the Windows installer (README: ``bash install.sh`` on Linux,
+#: ``install.ps1`` on Windows).  Off Windows it refuses before touching anything
+#: and names install.sh, which test_install_ps1_refuses_off_windows_and_names_install_sh
+#: proves under pwsh.  Its install-flow rows assert Windows steps
+#: (.venv\Scripts\python.exe, %USERPROFILE%\.cargo, ';'-joined Path); run under
+#: the ubuntu-24.04 runner's pwsh they reported twelve failures of a route the
+#: product does not offer there and now refuses by design.
+POWERSHELL_FLOW_OFF_WINDOWS = (
+    'install.ps1 refuses on a non-Windows host and points at install.sh; its Windows '
+    'install-flow assertions (.venv\\Scripts, USERPROFILE, ;-joined Path) would fail here '
+    'against a route the product refuses by design.  The refusal itself is covered by '
+    'test_install_ps1_refuses_off_windows_and_names_install_sh')
+
+
 def _shell(platform):
     if platform == 'powershell':
+        if os.name != 'nt':
+            pytest.skip(POWERSHELL_FLOW_OFF_WINDOWS)
         found = shutil.which('powershell') or shutil.which('pwsh')
     elif os.name == 'nt':
         found = next((str(path) for path in (
@@ -291,6 +309,58 @@ def test_a_pip_that_cannot_list_the_venv_stops_the_install(tmp_path, platform):
     # Nothing is installed over a CuPy nobody could see.
     assert not any(any(arg.startswith('.[') for arg in row['args']) for row in rows)
     assert done.cupy == ['cupy-cuda12x']
+
+
+@pytest.mark.parametrize('form', ['file', 'piped'])
+def test_install_ps1_refuses_off_windows_and_names_install_sh(tmp_path, form):
+    """Under pwsh on Linux install.ps1 ran its Windows steps: it cloned, sent
+    pip to a .venv\\Scripts\\python.exe that xdg-open could not open, and died
+    at Join-Path on the unset USERPROFILE.  Off Windows it now refuses first,
+    in both the file form and the piped (iwr | iex) form, changes nothing,
+    and names the installer that host has: install.sh."""
+    if os.name == 'nt':
+        pytest.skip('install.ps1 runs its install on Windows (the powershell rows above cover it); '
+                    'asserting the off-Windows refusal here would fail on the host the script supports')
+    pwsh = shutil.which('pwsh')
+    if not pwsh:
+        pytest.skip('pwsh is not installed on this non-Windows host, so install.ps1 cannot be '
+                    'started here and there is no refusal to observe')
+    stage = tmp_path / 'new checkout with spaces'
+    stage.mkdir()
+    # A git that records being called: the refusal must come before the clone,
+    # and a broken guard must not reach the network.
+    shims = tmp_path / 'shims'
+    shims.mkdir()
+    called = tmp_path / 'git-called'
+    git = shims / 'git'
+    git.write_text(f'#!/bin/sh\necho "$@" >> "{called.as_posix()}"\nexit 1\n', encoding='utf8')
+    git.chmod(0o755)
+    env = dict(os.environ)
+    env.update({'PATH': str(shims) + os.pathsep + env.get('PATH', ''),
+                'GPUWM_REPO_URL': 'https://example.invalid/local-source-fixture',
+                'GPUWM_INSTALL_TEST_SCRIPT': str(ROOT / 'install.ps1')})
+    if form == 'file':
+        args = [pwsh, '-NoProfile', '-File', str(ROOT / 'install.ps1'), '-Yes', '-NoFetchTables']
+    else:
+        # The catch reports the thrown message unwrapped; status 3 proves the
+        # piped form threw rather than calling `exit`.
+        args = [pwsh, '-NoProfile', '-Command',
+                'try { Get-Content -Raw -LiteralPath $env:GPUWM_INSTALL_TEST_SCRIPT | Invoke-Expression } '
+                'catch { [Console]::Out.WriteLine($_.Exception.Message); exit 3 }; exit 0']
+    done = subprocess.run(args, cwd=stage, env=env, capture_output=True, text=True, timeout=60)
+    output = done.stdout + done.stderr
+    if form == 'file':
+        # A file invocation exits with the refusal's own status.
+        assert done.returncode == 2, output
+        message = done.stderr
+    else:
+        # The piped form throws instead: `exit` would close the caller's console.
+        assert done.returncode == 3, output
+        message = done.stdout
+    assert 'is the Windows installer' in message, output
+    assert 'bash install.sh' in message, output
+    assert not called.exists(), called.read_text()
+    assert list(stage.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------

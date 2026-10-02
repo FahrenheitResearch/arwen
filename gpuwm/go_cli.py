@@ -4123,6 +4123,8 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
         value = getattr(args, key, None)
         if value is not None:
             options[key] = str(Path(value).resolve())
+    if getattr(args, "input_cycle", None) is not None:
+        options["input_cycle"] = args.input_cycle
     if getattr(args, "supplement", None):
         from gpuwm.launch_supplements import bindings
         options["supplement"] = bindings(args.supplement, base=Path.cwd())
@@ -4437,12 +4439,13 @@ def _posting_options(args) -> dict[str, object]:
 def _flag_cycle(args, payload: dict) -> str | None:
     """``gpuwm go --cycle``, checked: ``latest`` or a concrete cycle, or None.
 
-    Breakage the refusal prevents: a cycle on a run whose inputs are named
-    files, an existing prepared bundle or a checkpoint would be accepted
-    and read by nothing, and the run would start at those inputs' own
-    time while its command named another.
+    Existing inputs accept only an assertion of their actual initial time.
+    The assertion is rechecked after acquisition and recorded without retiming.
+    A different cycle is refused; ``gpuwm.input_cycle.refusal`` names the
+    breakage that refusal prevents.
     """
 
+    args.input_cycle = None
     value = getattr(args, "cycle", None)
     if value is None:
         return None
@@ -4453,11 +4456,29 @@ def _flag_cycle(args, payload: dict) -> str | None:
             or "case_data" in payload
             or any(getattr(args, key, None) is not None
                    for key in ("prepared_root", "restart", "wps_namelist"))):
-        raise GoRefusal(
-            f"--cycle {value} names the cycle a download route fetches, and "
-            "this run takes its inputs from [case_data], an existing "
-            "prepared bundle or a checkpoint, whose times a cycle cannot "
-            "move. Next: omit --cycle.")
+        from gpuwm import input_cycle
+        from gpuwm.case_data import optional_case_data_from_tables
+        from gpuwm.runplan import declared_forcing_fetch
+
+        try:
+            data = (None if getattr(args, "prepared_root", None) is not None else
+                    optional_case_data_from_tables(
+                        payload, source=str(args.config), base_dir=Path(args.config).parent))
+            input_cycle.verify(
+                value, prepared_root=getattr(args, "prepared_root", None),
+                restart=getattr(args, "restart", None), data=data,
+                launch_start=payload.get("experiment", {}).get("start_time"),
+                allow_pending=(data is not None
+                               and not getattr(args, "readiness", False)
+                               and not getattr(args, "no_probe", False)
+                               and declared_forcing_fetch(payload, data) is not None))
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError) as error:
+            message = str(error)
+            if input_cycle.refusal(value) not in message:
+                message = input_cycle.refusal(value) + f" Input-time check: {error}"
+            raise GoRefusal(message) from error
+        args.input_cycle = value
+        return None
     if value.lower() == "latest":
         return "latest"
     from gpuwm.fetch import parse_cycle

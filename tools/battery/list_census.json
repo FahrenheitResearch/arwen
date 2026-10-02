@@ -633,9 +633,63 @@
     "tests/test_kernel_frame_recordings.py": 12
    },
    "reason": "Actual focused collection after pinning cold-start and coordinate-diffusion sources, ratifying optional verification source digests, and closing the reused Noah loader-header census. No gate is skipped or weakened."
+  },
+  {
+   "recorded_on": "2026-10-02",
+   "leg": "stage1",
+   "source_revision": "0d4e20ad45cf5d6aa92b2213bc8e4bdf79f3ca2e plus LW battery registration",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": "",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1"
+   },
+   "counts": {
+    "tests/test_rrtmg_lw_buffer_grid.py": 14,
+    "tests/test_stage1_manifest.py": 932,
+    "tests/test_battery_list_census.py": 1967
+   },
+   "reason": "Actual focused collection through record_list_census._collect after registering the native LW extension guard regression in both CPU lists; includes the affected list-manifest and census parameterization counts. Existing full-record commit/date and all unrelated file counts remain unchanged. This is a partial measurement, not a full battery recollection."
+  },
+  {
+   "recorded_on": "2026-10-02",
+   "leg": "always",
+   "source_revision": "0d4e20ad45cf5d6aa92b2213bc8e4bdf79f3ca2e plus LW battery registration",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": "",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1"
+   },
+   "counts": {
+    "tests/test_rrtmg_lw_buffer_grid.py": 14,
+    "tests/test_stage1_manifest.py": 932,
+    "tests/test_battery_list_census.py": 1967
+   },
+   "reason": "Actual focused collection through record_list_census._collect after registering the native LW extension guard regression in both CPU lists; includes the affected list-manifest and census parameterization counts. Existing full-record commit/date and all unrelated file counts remain unchanged. This is a partial measurement, not a full battery recollection."
+  },
+  {
+   "recorded_at_commit": "675638da8cd4ee358bd4222b8e81eb2d6bb2641a",
+   "recorded_on": "2026-10-02",
+   "scope": "Actual node-2 collection of the added CPU portability regression; previous full census provenance remains unchanged.",
+   "counts": {
+    "tests/test_rrtmg_lw_buffer_grid.py": 15
+   },
+   "reason": "The native profile word test now refuses host exp/log/pow/trig calls, preventing platform-libm expected words from silently reaching the CPU public CI leg. Both recorded CPU leg expressions collect 15 native tests and exclude four GPU tests.",
+   "test_sha256": "3849617994214f32aa82ab9ec4f00e30958086f248704b9adb9838779f8cbfdc"
   }
  ],
- "recorded_at_commit": "fc07b1e4137a4c666e80854478d804f9f2ea6f44",
+ "recorded_at_commit": "d92d5eb9ab80289f1e53e9dac48afa8affb6df56",
  "recorded_on": "2026-10-02",
  "legs": {
   "stage1": {
@@ -644,7 +698,7 @@
    "environment": {
     "GPUWM_NO_LOCAL_GPU": "1"
    },
-   "collected_total": 17151,
+   "collected_total": 17242,
    "files": {
     "tests/test_runplan.py": 167,
     "tests/test_nest_spawn_soil.py": 20,
@@ -703,12 +757,12 @@
     "tests/test_tiles_distribution.py": 9,
     "tests/test_multigpu_specified_bc.py": 25,
     "tests/test_streamed_carrier_freshness.py": 16,
-    "tests/test_cargo_gate_manifest.py": 185,
+    "tests/test_cargo_gate_manifest.py": 189,
     "tests/test_verify_release_artifacts.py": 41,
     "tests/test_release_snapshot_front_door.py": 6,
     "tests/test_release_snapshot_machine_paths.py": 26,
     "tests/test_release_snapshot_modes.py": 3,
-    "tests/test_stage1_manifest.py": 930,
+    "tests/test_stage1_manifest.py": 938,
     "tests/test_publish_workflow_state_machine.py": 38,
     "tests/test_prepared_publication.py": 79,
     "tests/test_verify_source_bridge_pins.py": 9,
@@ -724,7 +778,7 @@
     "tests/test_v12_integration.py": 71,
     "tests/test_enprod_hardening.py": 44,
     "tests/test_module_skip_placement.py": 4,
-    "tests/test_fastfix_selector.py": 52,
+    "tests/test_fastfix_selector.py": 53,
     "tests/test_fastfix_runner.py": 18,
     "tests/test_hrrr_projected_operator.py": 29,
     "tests/test_fetch_engine_degrade_guard.py": 16,
@@ -830,7 +884,7 @@
     "tests/test_kernel_source_freeze_per_module.py": 146,
     "tests/test_cuda_libm_table_copies.py": 37,
     "tests/test_excluded_subsystem_scan_is_armed.py": 22,
-    "tests/test_battery_list_census.py": 1959,
+    "tests/test_battery_list_census.py": 1977,
     "tests/test_fastfix_batched_durations.py": 6,
     "tests/test_tracked_file_writers_keep_lf.py": 34,
     "tests/test_p3_legacy_rrtmg_radii.py": 6,
@@ -975,7 +1029,7 @@
     "tests/test_go_supplements.py": 9,
     "tests/test_hrrr_soil_choice.py": 4,
     "tests/test_static_platform_ci.py": 33,
-    "tests/test_install_scripts.py": 33,
+    "tests/test_install_scripts.py": 35,
     "tests/test_check_display.py": 8,
     "tests/test_cds_acquisition_readiness.py": 7,
     "tests/test_companion_domains.py": 153,
@@ -1096,7 +1150,11 @@
     "tests/test_wrfinput_reader_contract.py": 9,
     "tests/test_coordinate_reference_prime.py": 3,
     "tests/test_noah_initialization_guard.py": 1,
-    "tests/test_diff_opt1_wrf471.py": 2
+    "tests/test_diff_opt1_wrf471.py": 2,
+    "tests/test_rrtmg_lw_buffer_grid.py": 15,
+    "tests/test_go_cycle.py": 14,
+    "tests/test_input_cycle.py": 18,
+    "tests/test_gpu_runtime_floor.py": 11
    }
   },
   "always": {
@@ -1105,12 +1163,12 @@
    "environment": {
     "GPUWM_NO_LOCAL_GPU": "1"
    },
-   "collected_total": 3996,
+   "collected_total": 4041,
    "files": {
-    "tests/test_stage1_manifest.py": 930,
-    "tests/test_cargo_gate_manifest.py": 185,
+    "tests/test_stage1_manifest.py": 938,
+    "tests/test_cargo_gate_manifest.py": 189,
     "tests/test_tiles_gate_manifest.py": 41,
-    "tests/test_battery_list_census.py": 1959,
+    "tests/test_battery_list_census.py": 1977,
     "tests/test_line_ending_stability.py": 12,
     "tests/test_release_notes_are_public_facing.py": 23,
     "tests/test_case_token_leakage.py": 45,
@@ -1142,7 +1200,8 @@
     "tests/test_release_snapshot_machine_paths.py": 26,
     "tests/test_doc_anchors.py": 5,
     "tests/test_research_catalog.py": 161,
-    "tests/test_literal_division_source_gate.py": 5
+    "tests/test_literal_division_source_gate.py": 5,
+    "tests/test_rrtmg_lw_buffer_grid.py": 15
    }
   }
  }

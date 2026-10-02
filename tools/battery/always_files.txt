@@ -263,3 +263,7 @@ tests/test_research_catalog.py
 # 4810400f1).
 # The compiler census half is on the GPU shard (SHARD 1r).
 tests/test_literal_division_source_gate.py
+
+# Prevents compressed valid above-top layers and platform-libm profile
+# word expectations from escaping the CPU checks after a prep edit.
+tests/test_rrtmg_lw_buffer_grid.py

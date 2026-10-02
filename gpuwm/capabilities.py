@@ -40,6 +40,7 @@ import importlib.util
 import re
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 from gpuwm import data_assets
 from gpuwm.explain import layered
@@ -122,6 +123,77 @@ GPU_RUNTIME = Requirement(
     extras=("gpu-cu12", "gpu-cu13"),
     unlocks="every path that integrates the model on a card",
     remedy=GPU_RUNTIME_REMEDY)
+
+#: The oldest CuPy the engine integrates on: the floor the ``gpu-cu12``
+#: and ``gpu-cu13`` extras declare.  Breakage it prevents: the dycore's
+#: bookkeeping launches pass by-value tables as ``numpy.void`` (since
+#: 2.8.1), which CuPy 13 rejects, so a box still holding CuPy 13 passed
+#: this front door and stopped at its first model step with "TypeError:
+#: Unsupported type <class 'numpy.void'>" (a rented 8x RTX 5090 box,
+#: 2026-10-02).
+GPU_RUNTIME_MINIMUM = (14, 0)
+
+_CUPY_VERSION_ASSIGNMENT = re.compile(r"""__version__\s*=\s*['"](\d+)\.(\d+)""")
+
+
+def installed_cupy_version() -> tuple[int, int] | None:
+    """``(major, minor)`` of the CuPy an import would load, without importing it.
+
+    Read from ``cupy/_version.py`` beside the module ``find_spec``
+    resolves (or from the loaded module when CuPy is already imported).
+    ``None`` when CuPy does not resolve or its version cannot be read: an
+    unreadable version names no breakage, so it is not refused.
+    """
+
+    module = sys.modules.get("cupy")
+    loaded = getattr(module, "__version__", None) if module is not None else None
+    if loaded is not None:
+        match = re.match(r"(\d+)\.(\d+)", str(loaded))
+    else:
+        try:
+            spec = importlib.util.find_spec("cupy")
+        except (ImportError, ValueError):
+            return None
+        if spec is None or not spec.origin:
+            return None
+        try:
+            text = (Path(spec.origin).parent / "_version.py").read_text(encoding="utf-8")
+        except OSError:
+            return None
+        match = _CUPY_VERSION_ASSIGNMENT.search(text)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def outdated_gpu_runtime() -> tuple[int, int] | None:
+    """The installed CuPy's ``(major, minor)`` when it is below the floor, else ``None``."""
+
+    found = installed_cupy_version()
+    if found is not None and found < GPU_RUNTIME_MINIMUM:
+        return found
+    return None
+
+
+def gpu_runtime_floor_refusal(door: str, found: tuple[int, int], *,
+                              before: str | None = None) -> str:
+    """The refusal for a CuPy that resolves but is older than the floor."""
+
+    floor = ".".join(str(part) for part in GPU_RUNTIME_MINIMUM)
+    action = (f"{door}: this command needs CuPy {floor} or newer, and this "
+              f"install has CuPy {found[0]}.{found[1]}.\n"
+              "  What needs it: every model step; its bookkeeping launches "
+              "pass by-value tables that CuPy 13 rejects (\"Unsupported "
+              "type <class 'numpy.void'>\").\n")
+    if before:
+        action += f"  {before}\n"
+    action += GPU_RUNTIME_REMEDY
+    return layered(action, (
+        "Checked at the front door by reading the version file beside the "
+        "CuPy module an import would load, without importing it.  The "
+        f"gpuwm[gpu-cu12] and gpuwm[gpu-cu13] extras require CuPy {floor} "
+        "or newer, so installing either upgrades this one; a CuPy installed "
+        "by hand or carried in an image can predate that floor."))
 
 SCIENCE_CORE = Requirement(
     module="wrf",
@@ -492,6 +564,12 @@ def require(door: str, *requirements: Requirement,
         raise CapabilityMissing(
             refusal(door, requirement, before=before),
             requirement=requirement, command=door)
+    if GPU_RUNTIME in requirements:
+        found = outdated_gpu_runtime()
+        if found is not None:
+            raise CapabilityMissing(
+                gpu_runtime_floor_refusal(door, found, before=before),
+                requirement=GPU_RUNTIME, command=door)
 
 
 # ---------------------------------------------------------------------------
@@ -570,12 +648,16 @@ def unmet_run_requirements() -> tuple[Requirement, ...]:
     next step would refuse.
     """
 
-    return missing((GPU_RUNTIME,))
+    unmet = missing((GPU_RUNTIME,))
+    if not unmet and outdated_gpu_runtime() is not None:
+        return (GPU_RUNTIME,)
+    return unmet
 
 
 __all__ = ["CapabilityMissing", "COMMAND_REQUIREMENTS", "COMPANION_DATA",
-           "GPU_RUNTIME",
-           "GPU_RUNTIME_REMEDY", "PILLOW", "PYPROJ", "RASTERIO",
+           "GPU_RUNTIME", "GPU_RUNTIME_MINIMUM",
+           "GPU_RUNTIME_REMEDY", "gpu_runtime_floor_refusal",
+           "installed_cupy_version", "outdated_gpu_runtime", "PILLOW", "PYPROJ", "RASTERIO",
            "REQUIREMENTS", "Requirement", "SCIENCE_CORE", "SCIPY",
            "SHAPEFILE_READER", "is_installed", "missing",
            "remedy_for_error", "remedy_for_module", "refusal", "require",

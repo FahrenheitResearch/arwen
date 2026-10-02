@@ -37,6 +37,11 @@ crate-type = ["cdylib", "rlib"]
 libm = { version = "0.2.16", default-features = false, features = ["force-soft-floats"] }
 miniz_oxide = "0.8"
 rayon = { workspace = true }
+# The WPS default-REAL orographic projection's transcendentals, with
+# glibc 2.43's bits on every platform: the platform C library's last bits
+# differ between glibc versions and the UCRT, and the terrain-drag statics
+# must not.
+rw-libm = { path = "../rw-libm" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"

@@ -502,6 +502,31 @@ fn compressed_multi_record_inputs_keep_every_time_and_chunk() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// A ZIP made on Linux names its history members the way WRF does,
+/// `..._HH:MM:SS`.  Unpacking one used that member name for the scratch
+/// copy, and a colon is not a legal Windows file name (os error 123), so a
+/// Windows export of such a ZIP failed before reading anything.
+#[test]
+fn zip_members_with_the_wrf_colon_spelling_unpack_on_every_platform() {
+    let dir = scratch("colon-member");
+    let path = dir.join("wrfout_d01_2026-09-29_00_00_00");
+    write_wrfout(&path, &D01, &[0, 1, 6], true);
+    let zip = dir.join("history.zip");
+    rw_mlexport::zipout::write(&zip, &[("run/wrfout/wrfout_d01_2026-09-29_00:00:00".into(), path.clone())]).unwrap();
+    let ids = ["temperature", "total_precipitation"];
+    let plain = dir.join("plain");
+    assert_eq!(run(request(vec![path], &plain, rows(&ids), vec![500])).frames, 3);
+    let out = dir.join("zip");
+    assert_eq!(run(request(vec![zip], &out, rows(&ids), vec![500])).frames, 3);
+    let a = rw_mlexport::zipout::collect(&plain.join("d01.zarr"), "s").unwrap();
+    let b = rw_mlexport::zipout::collect(&out.join("d01.zarr"), "s").unwrap();
+    assert_eq!(a.len(), b.len());
+    for ((key, pa), (_, pb)) in a.iter().zip(&b) {
+        assert_eq!(std::fs::read(pa).unwrap(), std::fs::read(pb).unwrap(), "{key}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn column_vapour_does_not_depend_on_selected_vertical_levels() {
     let dir = scratch("tcwv-lid");

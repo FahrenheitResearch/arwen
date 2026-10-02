@@ -28,6 +28,7 @@ members = [
     "crates/rw-host-memory",
     "crates/rw-ingest",
     "crates/rw-isobaric",
+    "crates/rw-libm",
     "crates/rw-mpas",
     "crates/rw-mlexport",
     "crates/rw-netcdf",

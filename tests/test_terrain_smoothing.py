@@ -291,16 +291,35 @@ def test_both_builders_use_policy(synthetic_geog,monkeypatch,route,setting):
     monkeypatch.setenv('GPUWM_STATIC_PYTHON','1' if route=='python' else '0')
     selected=replace(selection,terrain_smoothing=setting)
     # Compute the expected sample through this route's unsmoothed builder.
+    # Portable Rust ('wps-sampling-portable-v1') and the Python fallback
+    # ('python-platform-sampling') have separate sampling contracts
+    # (gpuwm/static/sampling_contract.py): the Python float32 WPS twin takes
+    # np.arctan, which NumPy runs through its AVX-512 loop on such hosts and
+    # which lands one float32 ULP from the Rust twin's vendored libm atanf on
+    # 5 of this grid's 11 extended rows. Holding the Rust route to Python
+    # samples failed the smth-desmth_special x4 case on an AVX-512 runner and
+    # passed on AVX2 ones. Each route is therefore held to its own samples.
+    # A builder returns only the cropped domain, so the extended samples are
+    # the route's own unsmoothed build of this grid widened by the halo with
+    # the known point moved with it: every float32 twin offset (x - knowni)
+    # and the float64 longitude offset (x - known_x) are then exactly those
+    # of the halo cell, so each widened cell IS that extended cell.
+    halo=build.HALO
     none=replace(selection,terrain_smoothing=TerrainSmoothing('none'))
-    sampler=build._DomainSampler(grid,3)
-    from gpuwm.static.geog import GeogDataset
-    ds=GeogDataset(selection.path('terrain'))
-    extended=sampler.continuous(ds,sampler.window(ds),0)
+    wide=type(grid)(grid.ref_lat,grid.ref_lon,grid.truelat1,grid.truelat2,grid.stand_lon,
+                    grid.dx,grid.dy,grid.e_we+2*halo,grid.e_sn+2*halo,
+                    known_x=grid.known_x+halo,known_y=grid.known_y+halo)
+    extended=build.build_terrain(wide,root,selection=none)
+    sampler=build._DomainSampler(grid,halo)
+    if route=='python':
+        # Validate the widening on the route whose extended plane is
+        # visible: it must be the sampler's own halo-extended samples.
+        from gpuwm.static.geog import GeogDataset
+        ds=GeogDataset(selection.path('terrain'))
+        bits(extended,sampler.continuous(ds,sampler.window(ds),0))
     expected=smooth_terrain_reference(extended,setting)[sampler.crop]
     fields=build.build_static(grid,root,selection=selected)
     terrain=build.build_terrain(grid,root,selection=selected)
-    # Portable Rust and host sampling have separate contracts; here the
-    # synthetic source's linear values give the same extended samples.
     bits(terrain,expected)
     bits(fields['HGT_M'],terrain)
     if setting.is_default:

@@ -360,7 +360,7 @@ observation battery and the demo gallery's basemaps.
 | `gpuwm[gpu-cu13]` | `cupy-cuda13x[ctk]` | running the model on a CUDA-13-only box |
 | `gpuwm[gpu]` | alias of `gpu-cu12` | kept so existing install lines keep working |
 | `gpuwm[render]` | `wrf-rust>=0.2.39` | `gpuwm render`'s matplotlib engine, `gpuwm enprod`, and derived quantities. The default rust engine needs none of it. The floor is 0.2.39 because that is the oldest release with wheels for every supported interpreter (cp310-cp314); no environment marker, nothing skipped |
-| `gpuwm[dev]` | `pytest`, `psutil`, `pyyaml` | running the test battery |
+| `gpuwm[dev]` | `pytest`, `psutil`, `pyyaml`, `setuptools` | running the test battery (setuptools because the wheel-gate tests run `setup.py` with the battery's interpreter) |
 | `gpuwm[publish]` | `huggingface_hub` | maintainers only: publishing the WPS_GEOG mirror snapshot. Needs write credentials nobody else has, so it is deliberately outside `[all]` |
 | `gpuwm[all-cu12]` | `gpu-cu12` + `render` | one line for a CUDA 12.x forecasting box |
 | `gpuwm[all-cu13]` | `gpu-cu13` + `render` | one line for a CUDA-13-only forecasting box |

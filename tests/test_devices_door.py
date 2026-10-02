@@ -8,6 +8,7 @@ import tomllib
 import numpy as np
 import pytest
 
+from conftest import requires_cupy
 from gpuwm.config import RunConfig, load_device_options
 from gpuwm.core.devices import (DEVICES_OFF, DeviceOptions, DevicesRefused,
     override_device_count, refuse_unrouted_devices, validate_device_count)
@@ -756,6 +757,13 @@ def test_run_plan_refuses_nonpositive_or_noninteger_slab_counts(tmp_path, count)
                                run_options={"devices": count}))
 
 
+# The staged chain this drives starts with run-plan's capability preflight,
+# which refuses a card-integrating plan at acceptance (CapabilityMissing:
+# "needs cupy") on an install without cupy, before the fetch stage runs.
+# Without cupy the chain exits 1 there and this test would measure that
+# refusal instead of the split table reaching sim; it needs what every
+# other execute_plan chain test in test_staged_chain_as_posted.py needs.
+@requires_cupy
 @pytest.mark.parametrize("posted", [False, True])
 def test_posted_chain_keeps_split_table_and_count_override(tmp_path, monkeypatch, posted):
     """Posted fetch lifecycle and split composition must both reach sim."""

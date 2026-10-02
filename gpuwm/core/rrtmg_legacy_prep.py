@@ -779,14 +779,12 @@ def lwrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
         dzsum = F(dzsum + dz)
 
     # Buffer levels above the model top (Cavallo): 4-mb steps.  Same
-    # positivity rule as the batched wrapper: a top interface shallower
-    # than n_extra 4-mb steps takes the largest step that keeps every
-    # buffer level positive (WRF's plev(kte+1) is the p_top that sized
-    # nlayers, so it never meets this state); dp == DELTAP bitwise for
-    # in-contract tops.
+    # positivity rule as the batched wrapper: the final interface is
+    # overwritten with zero, so only n_extra-1 decrements must stay
+    # positive. Preserve WRF's 4-mb spacing for ordinary model tops.
     n_extra = nlayers - kte
     dp = DELTAP
-    if n_extra > 0:
+    if n_extra > 0 and plev[kte] <= F(DELTAP * F(n_extra - 1)):
         dp = min(DELTAP, F(plev[kte] / F(n_extra)))
     for L in range(kte, nlayers):          # Fortran L = kte+1 .. nlayers
         plev[L + 1] = F(plev[L] - dp)
@@ -1795,20 +1793,24 @@ def lwrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
     # Buffer levels above the model top (Cavallo): 4-mb steps; dz stays
     # the last model layer's thickness, exactly like the scalar loop.
     # POSITIVITY: nlayers is sized from the nominal p_top but the
-    # column tops in plev[:, kte] vary; a top shallower than n_extra
+    # column tops in plev[:, kte] vary; a top shallower than n_extra-1
     # 4-mb steps would march plev/play nonpositive, log(play) in
     # setcoef goes NaN, laytrop miscounts, and the band kernels index
     # absa/selfref outside their tables (pool-layout-dependent reads).
-    # WRF never meets that state (its plev(kte+1) IS the grid-constant
-    # p_top that sized nlayers); the defined behaviour for a shallower
-    # top is the same march with the largest per-column step that
-    # keeps every buffer level positive.  In-contract columns keep
-    # dp == DELTAP, bitwise.
+    # The final interface is overwritten with zero below, so its
+    # temporary subtraction does not constrain dp. WRF never meets
+    # that state (its plev(kte+1) IS the grid-constant
+    # p_top that sized nlayers); a genuinely shallow top retains the
+    # existing conservative reduced-step fallback. In-contract
+    # columns keep dp == DELTAP, bitwise.
     n_extra = nlayers - kte
     dp = DELTAP
     if n_extra > 0:
-        dp = xp.minimum(
-            DELTAP, (plev[:, kte] / F(n_extra)).astype(f32)).astype(f32)
+        shallow = plev[:, kte] <= F(DELTAP * F(n_extra - 1))
+        dp = xp.where(
+            shallow,
+            xp.minimum(DELTAP, (plev[:, kte] / F(n_extra)).astype(f32)),
+            DELTAP).astype(f32)
     for L in range(kte, nlayers):          # Fortran L = kte+1 .. nlayers
         plev[:, L + 1] = (plev[:, L] - dp).astype(f32)
         play[:, L] = (_HALF * (plev[:, L] + plev[:, L + 1]).astype(

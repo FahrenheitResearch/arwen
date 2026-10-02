@@ -15,6 +15,15 @@ const NY: usize = 3;
 
 fn label(hour: usize) -> String { format!("2026-09-29_{hour:02}:00:00") }
 
+/// The frame's file name.  WRF spells history files `..._HH:MM:SS` and the
+/// reader takes that and `..._HH_MM_SS`; a colon is not a legal Windows
+/// file-name character (os error 123), so Windows writes the underscore
+/// spelling and every other platform keeps the colon form under test.
+fn history_name(hour: usize) -> String {
+    let name = format!("wrfout_d01_{}", label(hour));
+    if cfg!(windows) { name.replace(':', "_") } else { name }
+}
+
 fn write_frame(path: &Path, hour: usize, projected: bool, moving: bool) {
     let shift = if moving { hour as f64 } else { 0.0 };
     write_frame_shift(path, hour, projected, shift);
@@ -116,7 +125,7 @@ fn exercise(projected: bool, moving: bool, layout: Layout, append: bool) {
     std::fs::create_dir_all(&scratch).unwrap();
     let mut inputs = Vec::new();
     for hour in 0..2 {
-        let path = scratch.join(format!("wrfout_d01_{}", label(hour)));
+        let path = scratch.join(history_name(hour));
         write_frame(&path, hour, projected, moving); inputs.push(path);
     }
     let out = scratch.join("export");
@@ -200,7 +209,7 @@ fn moving_precipitation_differences_the_same_ground_for_interval_and_six_hours()
     std::fs::create_dir_all(&scratch).unwrap();
     let mut inputs = Vec::new();
     for (hour, shift) in [(0, 0.0), (1, 1.0), (6, 2.0)] {
-        let path = scratch.join(format!("wrfout_d01_{}", label(hour)));
+        let path = scratch.join(history_name(hour));
         write_frame_shift(&path, hour, true, shift);
         inputs.push(path);
     }

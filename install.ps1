@@ -1,4 +1,6 @@
-# One-command install for a gpuwm (ArWen) developer checkout (PowerShell).
+# One-command install for a gpuwm (ArWen) developer checkout (Windows
+# PowerShell 5.1+ or PowerShell 7 on Windows; Linux and macOS use
+# install.sh, and this script refuses there, see below).
 #
 #   .\install.ps1 [-Yes] [-NoRender] [-Cuda 12|13]
 #                                           -- from a checkout root
@@ -46,6 +48,32 @@
 #
 # No param() block: the script must also run when piped through iex,
 # where param() is unavailable; flags arrive via $args or environment.
+#
+# Windows only.  Every step below assumes a Windows host: the venv
+# interpreter is .venv\Scripts\python.exe, Rust lands in
+# $env:USERPROFILE\.cargo\bin via win.rustup.rs's rustup-init.exe, and
+# Path entries are joined with ';'.  Under PowerShell 7 on Linux or
+# macOS none of that holds and the run broke partway, after the clone
+# or .venv step had already changed the tree: on the ubuntu-24.04 CI
+# runner's pwsh the .venv\Scripts\python.exe it invoked for pip was
+# handed to xdg-open, and the run then died at Join-Path on the unset
+# $env:USERPROFILE.  install.sh is the installer for those hosts, so
+# this script refuses there before it touches anything.  Windows
+# PowerShell 5.1 defines no $IsWindows and only runs on Windows, so an
+# absent $IsWindows means Windows.
+
+if ((Test-Path variable:IsWindows) -and -not $IsWindows) {
+    $refusal = ('install: ERROR: install.ps1 is the Windows installer and this host is not Windows ' +
+                '(it builds a .venv\Scripts layout, installs Rust under %USERPROFILE% and joins Path with '';''). ' +
+                'Nothing was changed.  On Linux or macOS run the POSIX installer from the checkout root ' +
+                'instead: bash install.sh  (same options: --yes, --no-render, --no-fetch-tables, --cuda 12|13)')
+    if ($MyInvocation.MyCommand.Path) {
+        [Console]::Error.WriteLine($refusal)
+        exit 2
+    }
+    # Piped (iwr | iex): `exit` would close the caller's console.
+    throw $refusal
+}
 
 $ErrorActionPreference = 'Stop'
 

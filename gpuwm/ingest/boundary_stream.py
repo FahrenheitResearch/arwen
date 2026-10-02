@@ -171,6 +171,17 @@ class BoundaryStreamStopped(BoundaryStreamError):
     """The consumer wrote ``stop.json``; the producer exits unsealed."""
 
 
+class PostedWaitStopped(BoundaryStreamError):
+    """The owner of a wait for a posted lead ended it (``PostedLeads.wait``).
+
+    Without it a waiter on its own thread polled the posting folder until
+    the lead posted or the fetch failed, long after the preparation that
+    started it had stopped (the A136 L7c admitter's thread outlived a
+    stopped admitter and read ``fNNN.json``, ``failed.json`` and
+    ``schedule.json`` of a finished preparation's folder).
+    """
+
+
 class StreamedClockChanged(BoundaryStreamError):
     """A later boundary interval moved the terrain-derived clock.
 
@@ -2679,8 +2690,14 @@ class PostedLeads:
                 "first_seen_at": row.get("first_seen_at"),
                 "last_answer": row.get("last_answer")}
 
-    def wait(self, lead: int) -> dict:
-        """Block until lead ``lead`` is fetched and verified; its marker."""
+    def wait(self, lead: int, *, stop: threading.Event | None = None) -> dict:
+        """Block until lead ``lead`` is fetched and verified; its marker.
+
+        ``stop`` is the owner's own end to the wait: once it is set the
+        wait raises :class:`PostedWaitStopped` before its next look at the
+        posting folder, so a waiter on a thread of its own ends with the
+        preparation that started it.
+        """
 
         lead = int(lead)
         started = time.monotonic()
@@ -2688,6 +2705,10 @@ class PostedLeads:
         record = None
         try:
             while True:
+                if stop is not None and stop.is_set():
+                    raise PostedWaitStopped(
+                        f"the wait for {self.source} {_lead_words(lead)} of "
+                        f"the {self.cycle} cycle was stopped by its owner")
                 record = self.marker(lead)
                 if record is not None:
                     break
@@ -4167,8 +4188,8 @@ __all__ = [
     "verify_as_posted_tree_children",
     "AS_POSTED_PLACEHOLDER_PREFIX", "posted_lead_marker_sha256",
     "POSTED_LEAD_SCHEMA", "POSTING_DIRNAME", "POSTING_FAILED_NAME",
-    "POSTING_SCHEDULE_NAME", "PostedLeads", "posted_lead_marker_name",
-    "read_replaced_json",
+    "POSTING_SCHEDULE_NAME", "PostedLeads", "PostedWaitStopped",
+    "posted_lead_marker_name", "read_replaced_json",
     "ClockBasis", "StreamedClockChanged", "derived_clock",
     "keep_interval_check",
     "BoundaryProducerFailed", "BoundaryProducerSilent", "BoundaryStreamError",

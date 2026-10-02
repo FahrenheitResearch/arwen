@@ -1496,6 +1496,9 @@ _IMPORT_NAME = {
     # The YAML reader ([dev] extra): the release contract tests read
     # the publication workflow through it.
     "pyyaml": "yaml",
+    # The wheel-gate tests' build backend ([dev] extra): they run setup.py
+    # with the battery's interpreter.
+    "setuptools": "setuptools",
     # The CDS client ([era5] extra): distribution and module share the name.
     "cdsapi": "cdsapi",
     "huggingface-hub": "huggingface_hub",

@@ -812,6 +812,9 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         # result-grid, SWDOWN and radius kernels joined the unit: all twelve
         # 0 B, the prep unit's four 0 B.
         'rrtmg_legacy_adapter': 0,
+        # Only this unit re-read 2026-10-02 at e035bb754 on this RTX 5090:
+        # the production device-prep loader (--ftz=false), NVRTC 13.4.92,
+        # reads all four kernels as 0 B after the LW spacing-guard fix.
         'rrtmg_legacy_prep': 0,
         'rrtmg_lw': 0,
         # Re-read 2026-09-30 with rmcw_fill_outputs_column added (the
@@ -1153,6 +1156,9 @@ SM89_NVRTC_13_4_92 = KernelFrameRecording(
         'refl': 18432,
         'rk_bookkeeping': 0,
         'rrtmg_legacy_adapter': 0,
+        # Only this unit re-read 2026-10-02 after the LW spacing-guard fix:
+        # RTX 4090, NVRTC 13.4.92, production device-prep loader,
+        # all four kernels 0 B; the existing ceiling is unchanged.
         'rrtmg_legacy_prep': 0,
         'rrtmg_lw': 0,
         'rrtmg_mcica_wrf': 0,

@@ -1962,3 +1962,19 @@ tests/test_wrfinput_reader_contract.py
 tests/test_coordinate_reference_prime.py
 tests/test_noah_initialization_guard.py
 tests/test_diff_opt1_wrf471.py
+
+# Native WRF longwave buffer-grid words and the shallow-column guard.
+# Prevents ordinary 50-hPa tops losing their prescribed 4-hPa spacing.
+tests/test_rrtmg_lw_buffer_grid.py
+
+# gpuwm go --cycle against existing inputs: an equal assertion is a recorded
+# no-op and a different one is refused.  Prevents the 2.8.1 production
+# breakage (every ERA5 worker run refused at prep for passing its bundle's
+# own cycle) and a cycle that nothing reads silently naming the wrong start.
+tests/test_go_cycle.py
+tests/test_input_cycle.py
+
+# The front door refuses a CuPy older than the extras' floor by name.  Prevents
+# a box still holding CuPy 13 passing the door and dying at its first model
+# step on the by-value numpy.void tables ("Unsupported type", 2026-10-02).
+tests/test_gpu_runtime_floor.py

@@ -4,7 +4,15 @@
 name: ci
 
 on:
+  # Tag pushes do not run: the release tag is pushed only after this workflow
+  # passed on the same commit from its push to main (tools/release/cut
+  # publish), and a second full run on those bytes made publish.yml's
+  # ci-passed gate wait for it again, about 90 minutes, for no new evidence.
+  # Both filters are needed: a push filter naming only tags would stop branch
+  # runs as well.
   push:
+    branches: ['**']
+    tags-ignore: ['**']
   pull_request:
   workflow_dispatch:
     inputs:

@@ -406,7 +406,9 @@ class PostedLeadAdmitter:
 
         hour = int(hour)
         paths = dict(self.rows)[hour]
-        marker = self.posted.wait(hour)
+        # The thread's wait ends with the admitter (stop), not only when
+        # the lead posts or the fetch fails.
+        marker = self.posted.wait(hour, stop=self._stopped)
         objects = {}
         for item in marker.get("objects") or ():
             role = str(item.get("role"))
@@ -474,7 +476,23 @@ class PostedLeadAdmitter:
         self._thread.start()
 
     def stop(self) -> None:
+        """End the admitter: its wait for a lead not posted ends too.
+
+        Breakage this prevents: ``stop`` used to be read only between
+        leads, so a thread waiting for a lead that never posted (the
+        decoder failed, the preparation gave up) went on polling the
+        posting folder for the life of the process; in the public CI
+        battery it was still reading a finished test's ``f007.json``
+        when a later test recorded every file opened.  The thread is
+        joined, so no read of the posting folder or a lead's files
+        follows the return: at most one poll and the lead being held to
+        its marker finish first.
+        """
+
         self._stopped.set()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join()
 
     def wait(self, hour: int, *, timeout: float | None = None) -> dict | None:
         """Block until lead ``hour`` is admitted; its marker, or the failure.

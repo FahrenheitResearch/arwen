@@ -591,8 +591,10 @@ BASELINE_PINNED: dict[str, str] = {
     # and test_rrtmg_lw_batched_layout.py.
     "rrtmg_legacy_adapter":
         "b19b4e13cb424b50789d75c7c8fa6066cf9a84808f9f9f5e14250e85d63b4524",
+    # Coastal LW native-entry regression: the positivity guard counts only
+    # retained interfaces; WRF overwrites the final interface with zero.
     "rrtmg_legacy_prep":
-        "857a68265a35ae893d118107519cbedc97e6bb4586d590bc6f896918fa62c815",
+        "92a11a6cb2498368171f2cbc9c52b21de3d3f1eccf311af35c0f57e417c01738",
     "rrtmg_lw_chain_coalesced":
         "2682d172388d4a31ae11be0168bdd13b33be9c1b8e77e7ca92e86a8f9a822401",
     "rrtmg_lw_zbatched":
