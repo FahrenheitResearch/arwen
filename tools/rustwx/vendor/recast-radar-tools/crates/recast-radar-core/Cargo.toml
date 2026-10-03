@@ -1,0 +1,28 @@
+[package]
+name = "recast-radar-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "FM301 weather radar data model for recast-radar-tools: volumes, sweeps, fields with CF packing, the FM301 group view, beam geometry and field names"
+readme.workspace = true
+keywords = ["radar", "weather", "meteorology", "remote-sensing", "cfradial"]
+categories = ["science", "science::geo", "data-structures"]
+# Not packaged: the integration tests read the repository's testdata/
+# through the unpublished recast-radar-testdata crate.
+exclude = ["tests/"]
+
+[dependencies]
+chrono.workspace = true
+serde = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[features]
+# `Serialize` and `Deserialize` for the data model (`Volume`, `Sweep`,
+# `Field`, names, codings, refractivity profiles), with chrono's serde
+# support for the timestamps. Off by default. `FieldName` serializes as its
+# FM301 spelling (`"DBZH"`). The facade's `serde` feature turns this on.
+serde = ["dep:serde", "chrono/serde"]
+
+[lints]
+workspace = true

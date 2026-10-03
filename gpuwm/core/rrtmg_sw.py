@@ -3900,6 +3900,13 @@ SW_TAKE_SLOTS = (
       for k in SETCOEF_INT_SLOTS + SETCOEF_REAL_SLOTS),
     ("taug", "rsw_taumol_b, every (column, g-point, layer)"),
     ("taur", "rsw_taumol_b, every (column, g-point, layer)"),
+    # True since rsw_sfluxzen_body stores on every path (WRF's zero where
+    # a band's loop never reaches laysolfr).  Before, bands 16 and 27
+    # returned without a store when laytrop == nlayers (model top below
+    # ~191 hPa), so this slot handed spcvmc the previous chunk's or call's
+    # bytes there: impossible surface fluxes on shallow or idealized
+    # domains.  tests/test_rrtmg_sw_no_upper_flux_gpu.py fills the slot
+    # with NaN, 1e30 or stale fluxes and holds the batched result to WRF.
     ("sflux", "rsw_sfluxzen_b, every (column, g-point)"),
     ("wk", "rsw_spcvmc_body: every entry read is written earlier by the "
            "same thread (fused layer pass and rsw_vrtqdr included)"),

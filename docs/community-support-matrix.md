@@ -52,7 +52,7 @@ evidence.
 
 | Capability | Status |
 |---|---|
-| WSM6 + YSU + classic MM5 option 91 + four-layer Noah | Certified slice |
+| WSM6 + YSU + classic MM5 option 91 + four-layer Noah | Stock-WRF gated slice: retained receipts report that unchanged WRF v4.6.1 opened the exact files and advanced 5 to 60 model seconds. This is an interoperability gate, not an accuracy certification; [receipt scope and binary caveats](wrf-interop-evidence.md). |
 | Thompson (`mp_physics=8`) writer | Inventory/direct writer implemented; exact hash-bound `f9760c9` current-GFS d01..d04 files advanced unchanged WRF v4.6.1 by 10 seconds; broader envelopes are not certified |
 | Morrison (`mp_physics=10`) writer | Inventory/direct writer implemented; exact hash-bound `f9760c9` current-GFS d01..d04 files advanced unchanged WRF v4.6.1 by 10 seconds; broader envelopes are not certified |
 | Other PBL/surface/LSM/microphysics state | Unsupported unless explicitly inventoried |

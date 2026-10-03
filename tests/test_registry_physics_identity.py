@@ -139,6 +139,9 @@ PHYSICS_CHANGES_SINCE_280 = {
         "WRF's implicit-explicit vertical advection, a knob 2.8.0 did not "
         "have (A158), off at 0, registered with its w solve's declared "
         "divergence from WRF v4.7.1 (A179)"),
+    "parameters.zadvect_implicit_variant": (
+        "the older WRF implicit split and current-mass coefficients are "
+        "selectable; the wrf_471 default keeps the existing operator"),
     "parameters.sf_surface_mosaic": (
         "Noah mosaic land use, declared but not implemented at 2.8.0, now "
         "implemented and off at 0 (the Noah mosaic lane, fa2e5efd8)"),
@@ -985,7 +988,8 @@ def test_without_the_configuration_an_added_knob_is_named(monkeypatch):
         for knob in ("diff_opt", "gwd_opt", "mix_full_fields", "mosaic_cat",
                      "mosaic_urban_canopy",
                      "sf_surface_mosaic", "slope_rad", "topo_shading",
-                      "topo_wind", "zadvect_implicit")])
+                     "topo_wind", "zadvect_implicit",
+                     "zadvect_implicit_variant")])
 
 
 def test_a_new_receipt_resolves_to_its_own_parts():

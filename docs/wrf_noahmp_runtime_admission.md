@@ -75,7 +75,7 @@ lane's flip recorded
 snow-species commit moved the value again before this one did, so that figure
 is two commits stale rather than one.
 
-## The option identity, and what "validated" means for each value
+## The option identity, and what evidence backs each value
 
 `gpuwm.config.NOAHMP_OPTION_IDENTITY_EVIDENCE` is the authority; it carries the
 evidence string in the refusal message, so a user who asks for `opt_run=1` is
@@ -450,12 +450,15 @@ arms are the same forecast and not merely two forecasts of similar quality.
 ## What is still open
 
 1. **No gpuwm/WRF forecast comparison exists for this scheme.** That is what
-   `validation-candidate` would require and it is why the registry row is
+   `wrf-matched-run-candidate` would require and it is why the registry row is
    `implemented-unverified`. The whole-column fixture proves one call; a
    trajectory proves the coupling.
 2. **Finish the device column.** `VEGE_FLUX` is complete: it is physically
-   batched on the device, oracle-matched at max ULP 0, trajectory-matched, and
-   worth 1.25x at width. The whole-column curve is still flat, so the remaining
+   batched on the device, matched to the WRF leaf oracle at max ULP 0,
+   and bitwise equal to the host column over the recorded 300-step
+   trajectory (host against device, not against WRF). It was worth
+   1.25x at width. At that stage the whole-column curve was still flat,
+   so the remaining
    order is:
    1. Remove the conservative pre-VEGE replay with an explicit ENERGY
       continuation, then move `BARE_FLUX` (about 7% of the original call).

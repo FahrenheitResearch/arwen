@@ -16,6 +16,15 @@ pub fn text(row: &'static Value, key: &str) -> &'static str { row[key].as_str().
 pub fn strings<'a>(row: &'a Value, key: &str) -> Vec<&'a str> {
     row[key].as_array().map(|v| v.iter().filter_map(Value::as_str).collect()).unwrap_or_default()
 }
+pub fn qualification_status(row: &Value) -> &str {
+    let status = row.get("qualification_status").or_else(|| row.get("validation_status"))
+        .and_then(Value::as_str).unwrap_or("");
+    match status {
+        "unvalidated" | "catalog recommendations are not science validation" => "unqualified",
+        "unvalidated-candidate-policy" => "unqualified-candidate-policy",
+        other => other,
+    }
+}
 pub fn config(index: usize) -> Option<&'static Value> { rows("configurations").get(index) }
 pub fn config_by_id(id: &str) -> Option<&'static Value> { rows("configurations").iter().find(|r| r["id"] == id) }
 pub fn method(row: &'static Value) -> &'static str {
@@ -86,7 +95,7 @@ pub fn hardware_preview(row: &'static Value) -> String {
 pub fn detail(row: &'static Value) -> String {
     let mut parts = vec![
         text(row, "research_question").to_owned(),
-        format!("Validation status  {}. Review the actual inputs, run and diagnostics before drawing scientific conclusions.", text(row, "validation_status")),
+        format!("Execution qualification  {}. This is not validation against observations. Review the actual inputs, run and diagnostics before drawing scientific conclusions.", qualification_status(row)),
         format!("Method  {}", method(row)),
         format!("Catalog geometry intent  {}. The profile below selects the actual requested ladder; native creation reports the fitted grid.", config_summary(row)),
         format!("Minimum root study span  {} km in each direction", row["geometry"]["minimum_root_span_km"]),
@@ -148,6 +157,29 @@ mod tests {
         for class in [8, 12, 16, 24, 32] {
             let row = preview.lines().find(|line| line.trim_start().starts_with(&format!("{class} GiB profile"))).unwrap();
             assert!(row.ends_with("fit not checked"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod qualification_tests {
+    use super::qualification_status;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_and_canonical_catalog_rows_display_execution_qualification() {
+        for (row, expected) in [
+            (json!({"validation_status": "unvalidated"}), "unqualified"),
+            (json!({"qualification_status": "unqualified"}), "unqualified"),
+            (json!({"qualification_status": "unqualified", "validation_status": "unvalidated"}), "unqualified"),
+            (json!({"validation_status": "unvalidated-candidate-policy"}), "unqualified-candidate-policy"),
+            (json!({"qualification_status": "unqualified-candidate-policy"}), "unqualified-candidate-policy"),
+            (json!({"qualification_status": "unqualified-candidate-policy", "validation_status": "unvalidated-candidate-policy"}), "unqualified-candidate-policy"),
+            (json!({"validation_status": "catalog recommendations are not science validation"}), "unqualified"),
+            (json!({"qualification_status": "catalog recommendations are not science validation"}), "unqualified"),
+            (json!({"qualification_status": "site-specific-qualified"}), "site-specific-qualified"),
+        ] {
+            assert_eq!(qualification_status(&row), expected);
         }
     }
 }

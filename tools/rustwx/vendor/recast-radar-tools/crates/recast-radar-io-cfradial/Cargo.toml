@@ -1,0 +1,22 @@
+[package]
+name = "recast-radar-io-cfradial"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure-Rust CfRadial 1 and CfRadial 2 (FM301) weather radar decoder and writer for classic netCDF and netCDF-4"
+readme.workspace = true
+keywords = ["cfradial", "netcdf", "radar", "weather", "meteorology"]
+categories = ["science::geo", "parser-implementations", "encoding"]
+# Not packaged: the integration tests read the repository's testdata/
+# through the unpublished recast-radar-testdata crate.
+exclude = ["tests/"]
+
+[dependencies]
+chrono.workspace = true
+recast-radar-core = { version = "0.1.3", path = "../recast-radar-core" }
+recast-radar-hdf5 = { version = "0.1.3", path = "../recast-radar-hdf5" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

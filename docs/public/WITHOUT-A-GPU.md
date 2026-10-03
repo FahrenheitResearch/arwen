@@ -127,10 +127,12 @@ warning: preprocess backend auto: <what it found>, so source-grid/WRF-real
 preprocessing runs on the deterministic parallel CPU backend
 ```
 
-That backend is the packaged Rust bridge, held to numeric parity with
-the CUDA path by the preprocessing parity suite. `--preprocess-backend
-cpu` forces the same thing explicitly; you do not need it, and a run
-that needs it would be a defect worth reporting.
+That backend is the packaged Rust bridge, checked against the CUDA path by
+the preprocessing parity suite. The documented CPU/GPU preparation comparison
+found start-state temperature differences of about 5e-4 K, not bit identity
+([TILES.md](TILES.md)); a forecast can amplify them. Prepare both arms of a
+comparison with the same `--preprocess-backend`. `--preprocess-backend cpu`
+selects this backend explicitly.
 
 Measured: 8.9 s of preprocessing inside a 10.4 s command — static build
 3.7 s, decode 0.8 s, initialize 2.5 s, export 1.0 s — writing 700 MiB

@@ -1,0 +1,40 @@
+{
+  "case_layers": {
+    "c00301": {
+      "model": 20,
+      "radiation": 21,
+      "laytrop": 21
+    },
+    "c00302": {
+      "model": 20,
+      "radiation": 21,
+      "laytrop": 21
+    },
+    "c00303": {
+      "model": 20,
+      "radiation": 21,
+      "laytrop": 16
+    }
+  },
+  "coefficients_sha256": {
+    "RRTMG_LW_DATA": "bcfdee24b63a4c909522a329b8e16c539f0173c7e5aea2caf933ab4fe28c5c97",
+    "RRTMG_SW_DATA": "a7d25f5b4d33be8629cbef7ecacc1ff413bf398a021297793e843ba1cc627baf"
+  },
+  "compiler": "GNU Fortran 15.2.0, -O0, FP32 RWORDSIZE=4, big-endian I/O",
+  "control": "The same build reproduces every WRF-computed record of fixtures_tall.npz bitwise (478 of 482); the other four are the driver's never-written top entry of rt/zdbt_nodel and rt/zdbtc_nodel, which no test reads.",
+  "files_sha256": {
+    "sw_build.sh": "d3c24c29ffb8aef081a2cf424d203914d664c88aa3cbaf3dcb6977741439b173",
+    "sw_fixture_driver.F90": "19294e76926baf5f4b980724b898e2fe42b54e22da704e6883054a1f8a8b1970",
+    "sw_fixtures/fixtures_shallow.npz": "5a11aba515e64ea0b73f07aed08a870c129ed632c1d09fc612c0419c68b93d00",
+    "sw_make_shallow.py": "53be1e21c674efa0463e458588611eae49dfa709b4dcfa1d3dcc1a19b89aedd5",
+    "sw_make_synthetic.py": "bf3797eca5ddc7b15bdd949239f812432a68f9db1312a76f7d15b6af96a1b677",
+    "sw_stub_wrf.F90": "05b975a340039983b600347f42c9650b07c75ee7c2ec3c60de567f8e73f0bcea"
+  },
+  "recording_contract": "The fixture driver checks recorded prep and staged fluxes bitwise against the unmodified WRF RRTMG_SWRAD call before writing a fixture.",
+  "reference": "Unmodified WRF v4.7.1 module_ra_rrtmg_sw.F, byte-identical to v4.6.1's; module_ra_rrtmg_lw.F from the same v4.7.1 tree, which supplies inirad, o3data, relcalc, reicalc and retab and differs from v4.6.1's only in how its #if selects the real kind (FP32 under this build either way)",
+  "schema": "gpuwm-rrtmg-sw-shallow-oracle-v1",
+  "wrf_source_sha256": {
+    "module_ra_rrtmg_lw.F": "c7a5238612aa8a4213c8d3af6708ec6a5248e6701e19758a80e563905d306de3",
+    "module_ra_rrtmg_sw.F": "7f8af1da0ca1d25ce784a917bc68600300a7c569881c57e7de8501cd53496b59"
+  }
+}

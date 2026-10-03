@@ -35,7 +35,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-DOC = ROOT / "docs" / "public" / "validation" / "mp28-matched-trajectory.md"
+DOC = ROOT / "docs" / "public" / "wrf-comparison" / "mp28-matched-trajectory.md"
 PHYSICS_MD = ROOT / "docs" / "public" / "PHYSICS.md"
 RECEIPTS = ROOT / "docs" / "public" / "receipts" / "mp28-matched-trajectory"
 
@@ -311,6 +311,7 @@ def test_the_document_does_not_upgrade_the_scheme_on_this_evidence():
     assert "implemented-unverified" in page
     for overclaim in ("model-validated", "validation-candidate",
                       "wrf-matched-run` on `mp_physics = 28",
+                      "wrf-matched-run-candidate` on `mp_physics = 28",
                       "matched-forecast", "forecast-validated"):
         if overclaim in ("model-validated", "validation-candidate"):
             assert f"mp=28 {overclaim}" not in page, overclaim

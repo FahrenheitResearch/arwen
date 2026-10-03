@@ -21,7 +21,10 @@ resolve the difference):
 | fixed dt = 30 | 78.89 | 9/9 | idle |
 | **adaptive, `target_cfl` 1.0** | **53.80** | 9/9 | idle |
 
-**1.466x, 31.8% less wall clock, SE ~0.1% on both arms.**  `dt` climbs
+**1.466x, 31.8% less wall clock, SE ~0.1% on both arms.** This is a
+cost result only. The forecast change from the larger step has not
+been measured against a small-step reference run (solution
+verification) or observations (validation); see What is open. `dt` climbs
 30 -> ~55 s, the CFL holds at target, every frame lands on its exact time
 and the run ends on the stop boundary.
 
@@ -793,7 +796,10 @@ minutes and all three landed exactly on their configured lattices: a
   first, is unresolved; the storm deepened 9.3 mb in its final hour,
   which is not a physical rate, so it may be a runaway no timestep policy
   would have caught.
-- **Any dt change needs intensity validation, not a wall-clock number.**
+- **A dt change needs a time-step sensitivity test of storm intensity
+  against a small-step reference run (solution verification), not only
+  a wall-clock measurement.** Comparison with observed intensity would
+  be validation and answers a separate question.
   Barrett et al. (2019, JAMES 11, 641) measured a 53% precipitation
   reduction going 1 s -> 15 s in COSMO, independent of stability.
 

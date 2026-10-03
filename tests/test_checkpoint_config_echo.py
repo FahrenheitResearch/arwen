@@ -32,6 +32,9 @@ MOVED = {
     "adaptive_nest_lattice": (dict(adaptive_nest_lattice=True),
                               {"adaptive_nest_lattice"}),
     "zadvect_implicit": (dict(zadvect_implicit=1), {"zadvect_implicit"}),
+    "zadvect_implicit_variant": (
+        dict(zadvect_implicit=1, zadvect_implicit_variant="wrf_legacy"),
+        {"zadvect_implicit", "zadvect_implicit_variant"}),
     "w_crit_cfl": (dict(zadvect_implicit=1, w_crit_cfl=2.0),
                    {"zadvect_implicit", "w_crit_cfl"}),
     "slope_rad": (dict(slope_rad=1), {"slope_rad"}),
@@ -58,6 +61,7 @@ DEFAULT_OFF = frozenset({
     "adaptive_nest_lattice", "zadvect_implicit", "w_crit_cfl", "slope_rad",
     "topo_shading", "shadlen", "topo_wind", "gwd_opt", "sf_surface_mosaic",
     "mosaic_cat", "mosaic_urban_canopy", "diff_opt", "mix_full_fields",
+    "zadvect_implicit_variant",
 })
 
 

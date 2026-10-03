@@ -13,8 +13,9 @@ at the whole-driver boundary — 216 oracle columns, 208 of them word for
 word on both the float32 CPU authority and the CUDA translation unit, the
 remaining 8 bounded by the driver's own `module_gfs_physcons` mixed
 precision at max 34 ULP — and that is **conformance evidence, not
-scientific validation**. No scored gpuwm/WRF forecast comparison exists
-for this scheme.
+scientific validation**. No gpuwm/WRF forecast comparison (code
+verification) is recorded for this scheme, and no GF forecast score
+against observations (validation) is published here.
 
 A first real-case trajectory (below) establishes that the scheme
 integrates a real domain without diverging, and that a dual run of it is

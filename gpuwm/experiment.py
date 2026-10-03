@@ -49,6 +49,7 @@ from gpuwm import physics_mode as physics_mode_module
 from gpuwm.core.devices import DeviceOptions, DEVICES_OFF, validate_device_road
 from gpuwm.core import streaming as streaming_module
 from gpuwm.io import history_selection as history_selection_module
+from gpuwm import simulated_radar_config as simulated_radar_module
 from gpuwm.config_keys import KeyRow, key_rows
 from gpuwm.config import (DEFAULT_COLUMN_CHUNK,
                           EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT,
@@ -795,6 +796,28 @@ def refuse_unrouted_spectral_numerics(exp, route: str) -> None:
         "runners), or set mode = \"off\".")
 
 
+def refuse_unrouted_simulated_radar(exp, route: str) -> None:
+    """Fail loud where an enabled [simulated_radar] would be dropped.
+
+    The radar listens on the forecast's history landings through
+    :class:`gpuwm.simulated_radar.LiveSimulatedRadar`, which the
+    ``gpuwm run``, ``gpuwm go`` and prepared-runner routes attach.  A route
+    that integrates without it (the ensemble member and local cycling
+    member legs) would accept the table, finish, and write no radar volume:
+    a requested product silently absent from a run that reports success.
+    ``enabled = false`` passes; it asks for nothing.
+    """
+    options = getattr(exp, "simulated_radar", None)
+    if options is None or not getattr(options, "enabled", False):
+        return
+    raise ValueError(
+        f"the {route} route does not attach [simulated_radar] to its history "
+        "landings; refused rather than ignored, because the run would finish "
+        "with no radar volume while its configuration asked for one.  Run "
+        "this configuration through gpuwm go, gpuwm run or gpuwm sim, or set "
+        "[simulated_radar] enabled = false for the members.")
+
+
 def refuse_unrouted_perturbation(exp, route: str) -> None:
     """Fail loud where a [perturbation] block would otherwise be dropped.
 
@@ -1369,6 +1392,8 @@ class ExperimentConfig:
     #: Excluded from the restart identity for the same reason ``tiles``
     #: is: it changes no number the model computes.
     output: "object" = history_selection_module.FULL
+    #: Radar products observe saved history and do not change restart state.
+    simulated_radar: simulated_radar_module.SimulatedRadarOptions = simulated_radar_module.OFF
     #: grid_ids whose ``mix_isotropic`` was CHOSEN BY THE MODEL because
     #: the config left it unset or wrote the ``"auto"`` sentinel (ArWen's
     #: 2026-08-16 auto-switch ruling; ``resolve_auto_mix_isotropic``).
@@ -3095,7 +3120,7 @@ def _parent_before_child(domain_tables: list, source: str) -> list:
 def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     """Validate a parsed experiment TOML dict and build the config."""
     known_tables = ("experiment", "shared", "projection", "domain",
-                    "relocation", "perturbation", "tiles", "devices", "output",
+                    "relocation", "perturbation", "tiles", "devices", "output", "simulated_radar",
                     "spectral_numerics")
     # [ingest] is INGEST POLICY, and it is validated-and-dropped HERE
     # rather than added to the companion list above.  The companion
@@ -3350,6 +3375,8 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     # field's docstring on ExperimentConfig.
     output = history_selection_module.HistorySelection.from_mapping(
         raw.get("output"), source=source)
+    simulated_radar = simulated_radar_module.SimulatedRadarOptions.from_mapping(
+        raw.get("simulated_radar"), source=source)
 
     # ---- [shared] ------------------------------------------------------
     shared = dict(raw.get("shared", {}))
@@ -4311,7 +4338,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         relocation=relocation,
         physics_mode=physics_mode,
         perturbation=perturbation,
-        tiles=tiles, devices=devices, output=output,
+        tiles=tiles, devices=devices, output=output, simulated_radar=simulated_radar,
         spectral_numerics=spectral_numerics,
         auto_epssm=tuple(sorted(auto_epssm_ids)))
     from gpuwm.static.terrain_smoothing import refuse_moving_reach
@@ -4333,6 +4360,8 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     for dc in experiment.domains:
         selection = history_selection_module.resolve(
             experiment.output, dc.output)
+        simulated_radar_module.validate_history_selection(
+            simulated_radar, selection, where=f"d{dc.grid_id:02d} of {source}")
         selection.warn_lost_products(
             history_selection_module.HISTORY_VOCABULARY,
             where=f"d{dc.grid_id:02d} of {source}")
@@ -5164,4 +5193,6 @@ def experiment_config_document(exp: ExperimentConfig) -> dict[str, object]:
     # public snapshots and plans retain their pre-feature bytes.
     if not exp.devices.enabled:
         document.pop("devices", None)
+    if not exp.simulated_radar.enabled:
+        document.pop("simulated_radar", None)
     return document

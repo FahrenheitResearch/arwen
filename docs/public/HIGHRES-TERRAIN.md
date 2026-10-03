@@ -446,8 +446,10 @@ ridges are once every seven cells.
 
 **The comparison that matters:** the two high-resolution sources agree with
 *each other* 99.1 % of the time on ridge-and-valley placement, and with the
-baseline only 86.5 %. Copernicus reproduces the US gold standard, which is
-the evidence for trusting it where no gold standard exists.
+baseline only 86.5 %. On this one Colorado Front Range domain, Copernicus
+agrees with 3DEP to the measures above after the canopy offset is removed.
+This is evidence for that domain; other terrain and land-cover types have
+not been compared here, so it does not establish the same agreement elsewhere.
 
 You can reproduce any of this. The tool ships in the wheel, so run it as a
 module -- `python tools/...` only works from a source checkout, which a

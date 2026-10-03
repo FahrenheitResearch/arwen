@@ -16,7 +16,7 @@
 #
 #   * RADIATION.  This file selects ra_lw_physics 0 / ra_sw_physics 1 (no
 #     longwave, Dudhia shortwave, radt 1 min), which is what the shipped
-#     profile thompson-mp8-ysu-mm5-noah-validation-v1 pins and therefore the
+#     profile thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1 pins and therefore the
 #     only radiation the HRRR root preparer will prepare.  It is NOT the
 #     battery's radiation: the faithful arm runs legacy RRTMG so that both
 #     model arms share one radiation lineage.  A shape measured here

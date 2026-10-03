@@ -357,14 +357,27 @@ def projected_run_bytes(exp, *, keep_checkpoints: int | None,
     download_bytes = max(0, int(download["bytes"] or 0) - int(download_present_bytes or 0))
     preparation_bytes = int(preparation["bytes"] or 0)
     scratch_bytes = int(scratch["bytes"] or 0)
+    # [simulated_radar] writes beside the history it scans: one volume per
+    # site per committed frame, priced from the native writer bound.
+    radar = None
+    if getattr(getattr(exp, "simulated_radar", None), "enabled", False):
+        from gpuwm.simulated_radar import output_projection
+        radar = output_projection(exp, {row["grid_id"]: row["history_frames"] for row in rows})
+        if radar["bytes"] is None:
+            unpriced.append(radar["unpriced"])
+    radar_bytes = 0 if radar is None else int(radar["bytes"] or 0)
     # The frame stream lives while the preparation runs and is removed
     # before the forecast writes anything, so it and the forecast's own
     # files are never on the disk together.
     total = download_bytes + preparation_bytes + max(scratch_bytes,
-                                                     history + checkpoints + pictures)
+                                                     history + checkpoints + pictures
+                                                     + radar_bytes)
+    # Keys only when radar is asked for, so a run without it projects
+    # exactly what it did before radar existed.
+    radar_keys = {} if radar is None else {"radar_bytes": radar_bytes, "radar": radar}
     return {"download_bytes": download_bytes, "preparation_bytes": preparation_bytes,
             "history_bytes": int(history), "checkpoint_bytes": int(checkpoints),
-            "picture_bytes": int(pictures),
+            "picture_bytes": int(pictures), **radar_keys,
             "compose_scratch_bytes": scratch_bytes,
             "compose_scratch_min_bytes": int(scratch["min_bytes"] or 0),
             "total_bytes": int(total), "checkpoint_sets_held": held,
@@ -559,7 +572,8 @@ def _disk_need(projection: dict[str, Any], stream: int, *, download_free, scratc
     download = int(projection.get("download_bytes") or 0)
     base = int(projection.get("preparation_bytes") or 0) + (download if download_free is None else 0)
     forecast = (int(projection["history_bytes"]) + int(projection["checkpoint_bytes"])
-                + int(projection.get("picture_bytes") or 0))
+                + int(projection.get("picture_bytes") or 0)
+                + int(projection.get("radar_bytes") or 0))
     on_run_disk = 0 if scratch_free is not None else stream
     return base + max(on_run_disk, forecast), base, forecast
 
@@ -613,7 +627,8 @@ def disk_refusal(projection: dict[str, Any], free: int | None, *,
               "of decoded frame stream while it prepares"),
              (projection["history_bytes"], "of history"),
              (projection["checkpoint_bytes"], "of checkpoints"),
-             (projection.get("picture_bytes", 0), "of pictures")]
+             (projection.get("picture_bytes", 0), "of pictures"),
+             (projection.get("radar_bytes", 0), "of simulated radar")]
     words = ", ".join(f"{value / GIB:.1f} GiB {what}" for value, what in parts if value)
     return (f"{subject} would write about {total / GIB:.1f} GiB ({words}) and the disk "
             f"that holds its run directory has {free / GIB:.1f} GiB free, so it would stop "

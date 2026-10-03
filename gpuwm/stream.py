@@ -33,6 +33,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 from gpuwm import fetch_guard
+from gpuwm.physics_registry import canonical_template_id
 from gpuwm.experiment import (
     build_experiment_from_config_tables, load_experiment,
     refuse_delayed_activation,
@@ -325,6 +326,9 @@ def load_stream_plan(path: str | Path) -> StreamPlan:
     profile = prepare["physics_profile"]
     if not isinstance(profile, str) or not profile.strip():
         raise ValueError("[prepare] physics_profile must be a non-empty id")
+    # An old profile ID is the same physics as its current ID; the
+    # preparation it drives records the current one.
+    profile = canonical_template_id(profile)
 
     wps = _path(base, prepare["wps_namelist"], "[prepare] wps_namelist")
     native = _path(base, prepare["namelist_input"], "[prepare] namelist_input")
@@ -1557,8 +1561,8 @@ def _valid_root(path: Path, *, plan: StreamPlan, cycle: datetime, lead: int,
             or payload.get("forcing_hours") != expected_hours
             or float(payload.get("history_interval_seconds", -1.0))
             != float(plan.experiment.root.history_interval_s)
-            or payload.get("physics", {}).get("profile")
-            != plan.physics_profile):
+            or canonical_template_id(payload.get("physics", {}).get("profile"))
+            != canonical_template_id(plan.physics_profile)):
         raise ValueError(
             f"root preparation receipt identity/status mismatch: {wrapper}")
     cache_contract = payload.get("prepared_cache_contract")

@@ -12,6 +12,8 @@ the experiment through gpuwm's existing atomic writer and carry
 
 from __future__ import annotations
 
+from gpuwm.physics_registry import canonical_template_id
+
 import argparse
 import copy
 from contextlib import contextmanager
@@ -1654,6 +1656,7 @@ def _profile_runtime_switches(source: str, profile: str) -> dict[str, object]:
 
 
 def _profile_readiness(source: str, profile: str) -> tuple[str, str | None]:
+    profile = canonical_template_id(profile)
     if source in _MAPPED_SOURCES:
         suffix = {
             THOMPSON_PHYSICS_PROFILE: (
@@ -1675,9 +1678,13 @@ def _profile_readiness(source: str, profile: str) -> tuple[str, str | None]:
             "this profile has no public forecast acceptance gate")
     if profile == THOMPSON_PHYSICS_PROFILE:
         return "WRF_MATCHED_RUN_EXPERIMENTAL_RUNTIME", (
-            "Thompson MP8 remains an experimental table-bound runtime")
+            "This legacy readiness code names an experimental runtime; "
+            "the July matched run is historical and does not cover this "
+            "current daytime-only suite.")
     if profile == MORRISON_PHYSICS_PROFILE:
-        return "WRF_MATCHED_RUN_RUNTIME_PROFILE", None
+        return "WRF_MATCHED_RUN_RUNTIME_PROFILE", (
+            "This legacy readiness code is a composition exemption; no "
+            "current matched-run manifest or decay tables cover this exact suite.")
     if profile in (
             NSSL2_PHYSICS_PROFILE,
             NSSL2_LEGACY_RRTMG_PHYSICS_PROFILE,
@@ -6314,6 +6321,7 @@ def preflight_prepared_forecast(
         run_seconds: float, history_interval_seconds: float,
         domain_bundle: Path | None = None,
         tiles=None, devices: int | None = None, devices_options=None,
+        simulated_radar=None,
 ) -> PreparedForecastInputs:
     """Validate every portable preparation authority without importing CuPy.
 
@@ -6352,7 +6360,8 @@ def preflight_prepared_forecast(
         run_seconds=run_seconds,
         history_interval_seconds=history_interval_seconds,
         domain_bundle=domain_bundle, tiles=tiles, devices=devices,
-        devices_options=devices_options))
+        devices_options=devices_options,
+        **({} if simulated_radar is None else {"simulated_radar": simulated_radar})))
     head = None
     #: An as-posted head's block (``basis.as_posted``): the head binds the
     #: input plan, and the manifest does not exist until its seal.
@@ -7024,6 +7033,14 @@ def preflight_prepared_forecast(
     if devices is not None:
         from gpuwm.core.devices import override_device_count
         exp = replace(exp, devices=override_device_count(exp.devices, devices))
+    from gpuwm.simulated_radar_config import apply_execution_options
+    exp = apply_execution_options(exp, simulated_radar)
+    if exp.simulated_radar.enabled:
+        # Before the model is built or a card allocated, not at the first
+        # history: a missing or stale rw_simradar, or a scan the host
+        # memory cannot hold, refuses here.
+        from gpuwm.simulated_radar_config import require_admitted
+        require_admitted(exp)
     return PreparedForecastInputs(
         source=source, layout=layout.kind, prepared_root=prepared_root,
         domain_bundle_path=layout.domain_bundle,
@@ -8901,7 +8918,8 @@ def run_prepared_forecast(
         # The tree-wide [output] history selection; a single-domain run's
         # own `output = {...}` on its [[domain]] table overrides it inside
         # the writer set, exactly as it does on a tree.
-        history_selection=exp.output)
+        history_selection=exp.output,
+        simulated_radar=exp.simulated_radar, radar_output_dir=outdir)
     model._io_manager = writers
     forecast_started = time.perf_counter()
 
@@ -9907,7 +9925,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-config", type=Path, required=True)
     parser.add_argument("--wps-namelist", type=Path, required=True)
     parser.add_argument(
-        "--physics-profile", default=None,
+        "--physics-profile", default=None, type=canonical_template_id,
         help=("optional assertion that the hash-bound experiment IS this "
               "shipped suite, refused on any switch drift; omitted, the "
               "experiment's own physics runs as written and its "
@@ -10003,6 +10021,8 @@ def build_parser() -> argparse.ArgumentParser:
     # The per-step progress surface, registered from one place so this
     # door and the tree runner's cannot drift in spelling or in help.
     add_progress_arguments(parser)
+    from gpuwm.simulated_radar_config import add_execution_argument
+    add_execution_argument(parser)
     return parser
 
 
@@ -10035,7 +10055,7 @@ def build_materialize_parser() -> argparse.ArgumentParser:
         "--base-experiment-config", type=Path, required=True)
     parser.add_argument("--base-wps-namelist", type=Path, required=True)
     parser.add_argument(
-        "--physics-profile", default=None,
+        "--physics-profile", default=None, type=canonical_template_id,
         help=("shipped suite to materialize into the experiment; omitted, "
               "the base config's own physics is published unchanged and "
               "its WRF-verification status is reported"))
@@ -10387,6 +10407,8 @@ def main(argv=None, *, observer=None) -> int:
         devices_options = (None if args.devices_table is None else
                            DeviceOptions.from_mapping(json.loads(args.devices_table),
                                                       source="--devices-table"))
+        from gpuwm.simulated_radar_config import execution_argument
+        simulated_radar = execution_argument(getattr(args, "simulated_radar_table", None))
     except (ValueError, TypeError) as error:
         print(f"prepared_single_domain_forecast: --tiles refused: {error}",
               file=sys.stderr)
@@ -10442,7 +10464,8 @@ def main(argv=None, *, observer=None) -> int:
             run_seconds=args.run_seconds,
             history_interval_seconds=args.history_interval_seconds,
             domain_bundle=args.domain_bundle,
-            tiles=tiles, devices=args.devices, devices_options=devices_options)
+            tiles=tiles, devices=args.devices, devices_options=devices_options,
+            **({} if simulated_radar is None else {"simulated_radar": simulated_radar}))
         preflight_seconds = time.perf_counter() - preflight_started
         verification = dict(inputs.physics_receipt).get("verification")
         if (isinstance(verification, dict)

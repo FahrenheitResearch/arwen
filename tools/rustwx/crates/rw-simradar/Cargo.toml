@@ -1,0 +1,36 @@
+[package]
+name = "rw-simradar"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version = "1.94"
+
+[[bin]]
+name = "rw_simradar"
+path = "src/main.rs"
+
+[dependencies]
+bowecho_simradar = { path = "../../vendor/bowecho/crates/bowecho_simradar" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+image = { version = "0.25", default-features = false, features = ["png", "gif"] }
+recast-radar-core = { path = "../../vendor/recast-radar-tools/crates/recast-radar-core" }
+recast-radar-io-nexrad = { path = "../../vendor/recast-radar-tools/crates/recast-radar-io-nexrad", features = ["write"] }
+recast-radar-io-cfradial = { path = "../../vendor/recast-radar-tools/crates/recast-radar-io-cfradial" }
+recast-radar-io-odim = { path = "../../vendor/recast-radar-tools/crates/recast-radar-io-odim" }
+rw-wrfbatch = { path = "../rw-wrfbatch" }
+rw-host-memory = { path = "../rw-host-memory" }
+rustwx-core = { path = "../rustwx-core" }
+rustwx-render = { path = "../rustwx-render" }
+netcrust = { path = "../../vendor/netcrust" }
+netcdf-writer = { path = "../netcdf-writer" }
+
+[dev-dependencies]
+nexrad_io = { path = "../../vendor/bowecho/crates/nexrad_io" }
+
+[build-dependencies]
+sha2 = "0.10"

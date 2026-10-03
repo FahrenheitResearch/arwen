@@ -822,6 +822,11 @@ def best_layout(row: dict[str, Any]) -> dict[str, Any]:
     domains = [{key: d.get(key) for key in LAYOUT_DOMAIN_FIELDS if key in d}
                for d in row.get("domains") or [] if isinstance(d, dict)]
     physics = row.get("physics") if isinstance(row.get("physics"), dict) else {}
+    if isinstance(physics.get("profile"), str) and physics["profile"]:
+        from gpuwm.physics_registry import canonical_template_id
+
+        # Named as New forecast names the set the plan runs: the current ID for one recorded before the rename.
+        physics = {**physics, "profile": canonical_template_id(physics["profile"])}
     # How often the run writes, as a plan that keeps the layout carries it: a cyclone setup's own arguments carry
     # the row's intervals, and every other row's are the intent keys the server carries into the plan
     # (``gpuwm.gui.api.CreateMixin._event_keys``).  A row whose plan carries none says none, so Review never names
@@ -865,6 +870,13 @@ def recipe_of(store: Store, ident: str, offered: Mapping[str, str] | set[str] | 
         raise FileNotFoundError(f"No recipe for {ident!r}.")
     else:
         recipe = event["recipe"]
+    if isinstance(recipe.get("profile"), str) and recipe["profile"]:
+        from gpuwm.physics_registry import canonical_template_id
+
+        # A best run made before the profile rename names the suite by its old ID; New forecast offers the current
+        # one, and a set it does not offer is dropped from the draft, so the event's run would fall back to the
+        # source's default set.
+        recipe = {**recipe, "profile": canonical_template_id(recipe["profile"])}
     runnable = recipe_runnable(recipe, offered)
     return {"event": ident, "title": event.get("title"), **recipe, "runnable": runnable,
             "start_cycle": recipe.get("cycle") if runnable else None,

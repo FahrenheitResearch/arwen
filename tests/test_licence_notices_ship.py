@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import pathlib
 import hashlib
+import json
 import re
 import tomllib
 
@@ -150,6 +151,9 @@ def test_the_notice_names_every_grant_that_conditions_reproduction() -> None:
         "SIL Open Font License",
         "public domain",                  # WRF / UCAR
         "WRF Preprocessing System",       # WPS
+        "BowEcho",                       # vendored simulation, MIT OR Apache-2.0
+        "recast-radar-tools",             # compiled writers, MIT OR Apache-2.0
+        "recast-radar-bzip2",             # retained libbzip2 randomisation table
     )
     missing = [token for token in required if token not in notice]
     assert missing == [], f"the NOTICE no longer names: {missing}"
@@ -216,6 +220,38 @@ def test_the_binary_form_notice_has_two_byte_identical_copies() -> None:
         "the bundle copy no longer sits under a directory "
         "build_bridge_bundle.collect_assets() walks, so it stops travelling "
         f"with the binaries: {bridge_assets.REQUIRED_ASSET_SUBDIRS}")
+
+
+_COUNT_WORDS = ("zero one two three four five six seven eight nine ten eleven twelve "
+                "thirteen fourteen fifteen sixteen seventeen eighteen nineteen").split()
+_TENS_WORDS = {2: "twenty", 3: "thirty", 4: "forty", 5: "fifty"}
+
+
+def _count_word(count: int) -> str:
+    if count < 20:
+        return _COUNT_WORDS[count]
+    tens, units = divmod(count, 10)
+    return _TENS_WORDS[tens] + ("" if not units else "-" + _COUNT_WORDS[units])
+
+
+def test_the_notices_count_the_artifacts_the_bundle_carries() -> None:
+    """The binary-form notice and NOTICE say how many compiled artifacts they
+    cover. Both said 27 while the bundle carried 31 (rw_simradar was the
+    31st), telling a recipient the notice covered fewer binaries than they
+    were handed. The count is gpuwm.bridge_assets.BUNDLED_ARTIFACTS'."""
+    _requires_source_tree()
+    from gpuwm import bridge_assets
+
+    count = len(bridge_assets.BUNDLED_ARTIFACTS)
+    for copy in (LICENSES / "THIRD-PARTY-LICENSES-bridge-binaries.txt",
+                 ROOT / "tools" / "rustwx" / "assets" / "basemap" / "THIRD-PARTY-LICENSES.txt"):
+        header = " ".join(_read(copy).split("\n")[:8])
+        assert f"wheels: {count} Rust executables and libraries" in header, (
+            f"{copy} does not count the {count} bundled artifacts")
+    notice = " ".join(_read(ROOT / "NOTICE").split())
+    assert (f"{_count_word(count).capitalize()} Rust executables and libraries "
+            "(gpuwm.bridge_assets .BUNDLED_ARTIFACTS)") in notice, (
+        f"NOTICE does not count the {count} bundled artifacts")
 
 
 def test_the_binary_form_notice_covers_the_first_party_ports() -> None:
@@ -696,3 +732,173 @@ def test_core_math_log10f_grant_is_reproduced_and_scoped() -> None:
         assert function in kernel
         assert function in notice
         assert function in adjacent
+
+
+@pytest.mark.parametrize("vendor,label", (
+    ("bowecho", "BowEcho"),
+    ("recast-radar-tools", "recast-radar-tools"),
+))
+def test_simulated_radar_grants_reach_source_and_binary_consumers(vendor, label) -> None:
+    """A compiled radar bridge must retain the grants from both source trees."""
+    _requires_source_tree()
+    source = ROOT / "tools" / "rustwx" / "vendor" / vendor
+    notice = _read(NOTICE)
+    binary = _read(LICENSES / "THIRD-PARTY-LICENSES-bridge-binaries.txt")
+    assert (source / "SOURCE.json").is_file(), "radar source revision record is missing"
+    assert vendor in notice and label in binary
+    for upstream, suffix in (("LICENSE-MIT", "MIT"), ("LICENSE-APACHE", "Apache-2.0")):
+        shipped = LICENSES / f"LICENSE-{label}-{suffix}.txt"
+        assert shipped.read_bytes() == (source / upstream).read_bytes(), (
+            f"{shipped.name} differs from the vendored grant")
+        assert f"licenses/{shipped.name}" in notice
+        for line in _read(shipped).splitlines():
+            if line:
+                assert line in binary, f"binary notice omits a line from {shipped.name}"
+    if vendor == "bowecho":
+        assert (source / "PYART-LICENSE.txt").read_bytes() == (
+            LICENSES / "LICENSE-PyART-Argonne-BSD-3-Clause.txt").read_bytes()
+
+    scoped = LICENSES / f"NOTICE-{label}.txt"
+    assert scoped.read_bytes() == (source / "NOTICE").read_bytes()
+    assert f"licenses/{scoped.name}" in notice
+    assert _read(scoped) in binary, "compiled radar loses the scoped vendor notice"
+
+
+def test_simulated_radar_dependency_grants_include_native_library_notices() -> None:
+    """New radar crates and their native libraries must reach binary consumers."""
+    _requires_source_tree()
+    path = ROOT / "tools/rustwx/crates/rw-simradar/data/dependency-licenses.json"
+    inventory = json.loads(_read(path))
+    notice = _read(LICENSES / "THIRD-PARTY-LICENSES-bridge-binaries.txt")
+    assert inventory["schema"] == "woof.simulated-radar-dependency-grants/v1"
+    assert inventory["packages"], "radar dependency notice inventory is empty"
+    nested_native_grants = []
+    for package in inventory["packages"]:
+        assert f"{package['name']} {package['version']} | {package['license']}" in notice
+        if package["name"] == "wrf-core":
+            assert package["declaration_source"] in notice
+            assert package["license"] == "MIT"
+            continue
+        assert package["grants"], f"no grant retained for {package['name']}"
+        for grant in package["grants"]:
+            source = ROOT / grant["path"]
+            assert hashlib.sha256(source.read_bytes()).hexdigest() == grant["sha256"]
+            assert grant["path"] in notice
+            assert f"[{grant['label']}] sha256 {grant['sha256']}" in notice
+            for line in _read(source).splitlines():
+                if line:
+                    assert line.rstrip() in notice, f"binary notice omits grant text from {grant['path']}"
+            if "/libdeflate/" in grant["path"]:
+                nested_native_grants.append(grant["path"])
+    assert nested_native_grants, "native libdeflate grant is missing from radar notices"
+
+
+def test_simulated_radar_bzip2_table_grant_reaches_binary_consumers() -> None:
+    """The decoder's copied randomisation table needs its original bzip2 grant."""
+    _requires_source_tree()
+    vendor = ROOT / "tools/rustwx/vendor/recast-radar-tools"
+    upstream = _read(vendor / "THIRD_PARTY_NOTICES.md")
+    section = upstream.split("## bzip2 / libbzip2\n", 1)[1].split("\n## ", 1)[0]
+    grant = section.split("```\n", 1)[1].split("```", 1)[0]
+    assert _read(LICENSES / "LICENSE-recast-radar-tools-bzip2.txt") == grant
+    assert grant in _read(LICENSES / "THIRD-PARTY-LICENSES-bridge-binaries.txt")
+    assert "randtable.c" in _read(vendor / "crates/recast-radar-bzip2/src/rand.rs")
+
+
+@pytest.mark.parametrize("vendor", ("bowecho", "recast-radar-tools"))
+def test_simulated_radar_vendor_inventory_is_complete_and_exportable(vendor) -> None:
+    """Missing source, drifted grants or pruned vendors break public offline builds."""
+    _requires_source_tree()
+    from tools.release_exclusions import matches, read_exclusions
+
+    source = ROOT / "tools/rustwx/vendor" / vendor
+    record = json.loads(_read(source / "SOURCE.json"))
+    assert record["schema_version"] == 2
+    assert record.get("licence", record.get("license")) == "MIT OR Apache-2.0"
+    revision = record.get("extraction_commit", record.get("revision"))
+    assert re.fullmatch(r"[0-9a-f]{40}", revision)
+    scope = _read(source / "NOTICE")
+    assert revision in scope
+    if vendor == "bowecho":
+        assert re.fullmatch(r"[0-9a-f]{40}", record["source_commit"])
+        assert record["source_commit"] in scope
+        assert record["local_commits"][-1] == revision
+    expected = {p.relative_to(source).as_posix() for p in source.rglob("*")
+                if p.is_file() and p.name != "SOURCE.json"}
+    entries = record["files"]
+    assert entries and len(entries) == len({entry["path"] for entry in entries})
+    assert {entry["path"] for entry in entries} == expected
+    rules = read_exclusions(ROOT)
+    for entry in entries:
+        relative = pathlib.PurePosixPath(entry["path"])
+        assert not relative.is_absolute() and ".." not in relative.parts
+        path = source / relative
+        raw = path.read_bytes()
+        assert len(raw) == entry["bytes"], entry["path"]
+        assert hashlib.sha256(raw).hexdigest() == entry["sha256"], entry["path"]
+        if entry.get("origin") == "vendoring":
+            assert entry["change"]
+        else:
+            assert entry["origin_revision"] == revision
+            assert entry["origin_path"] == entry["path"]
+        shipped = path.relative_to(ROOT).as_posix()
+        assert matches(shipped, rules) is None, f"public snapshot drops {shipped}"
+    assert set(record["notices"]) <= expected
+    assert {"NOTICE", "LICENSE-MIT", "LICENSE-APACHE"} <= set(record["notices"])
+    for relative in (source / "SOURCE.json", ROOT / "tools/rustwx/Cargo.lock",
+                     ROOT / "tools/rustwx/.cargo/config.toml",
+                     ROOT / "tools/rustwx/crates/rw-simradar/Cargo.toml"):
+        assert matches(relative.relative_to(ROOT).as_posix(), rules) is None
+
+
+def test_simulated_radar_writer_crates_resolve_from_the_public_source_tree() -> None:
+    """Unpublished writer crates must build from paths without Git or registry fetches."""
+    _requires_source_tree()
+    dependencies = tomllib.loads(_read(ROOT / "pyproject.toml"))["project"]["dependencies"]
+    # The writers are the vendored Rust crates; the PyPI distribution had no
+    # consumer in gpuwm/, tools/ or tests/, so declaring it only made every
+    # install download recast_radar, xarray and pandas for nothing.
+    assert not any(item.replace(" ", "").lower().startswith("recast-radar")
+                   for item in dependencies), "no recast-radar Python requirement is declared"
+    assert not any("recast-radar" in item and ("git+" in item or " @ " in item)
+                   for item in dependencies), "public installs require the declared PyPI version"
+    rust = ROOT / "tools/rustwx"
+    source = rust / "vendor/recast-radar-tools"
+    record = json.loads(_read(source / "SOURCE.json"))
+    crates = set(record["crates"])
+    assert len(crates) == 6
+    locked = tomllib.loads(_read(rust / "Cargo.lock"))["package"]
+    writer_locks = [package for package in locked if package["name"] in crates]
+    assert {package["name"] for package in writer_locks} == crates
+    for package in writer_locks:
+        assert package["version"] == record["version"]
+        assert "source" not in package, f"writer crate needs a fetch: {package['name']}"
+    manifests = [rust / "crates/rw-simradar/Cargo.toml", source / "Cargo.toml"]
+    manifests.extend(source / "crates" / crate / "Cargo.toml" for crate in sorted(crates))
+
+    def dependencies(table):
+        for key, value in table.items():
+            if key in ("dependencies", "dev-dependencies", "build-dependencies"):
+                yield from value.items()
+            elif isinstance(value, dict):
+                yield from dependencies(value)
+
+    seen = set()
+    for manifest in manifests:
+        for name, spec in dependencies(tomllib.loads(_read(manifest))):
+            if name not in crates:
+                continue
+            seen.add(name)
+            assert isinstance(spec, dict) and "path" in spec, name
+            assert "git" not in spec, f"writer crate uses a Git URL: {name}"
+            destination = (manifest.parent / spec["path"]).resolve()
+            assert destination == (source / "crates" / name).resolve()
+            assert (destination / "Cargo.toml").is_file()
+    assert seen == crates
+    config = tomllib.loads(_read(rust / ".cargo/config.toml"))["source"]
+    for registry in {"crates-io"} | {package["source"].split("#", 1)[0]
+                                    for package in locked
+                                    if package.get("source", "").startswith("git+")}:
+        replacement = config[registry]["replace-with"]
+        directory = rust / config[replacement]["directory"]
+        assert directory.is_dir(), f"offline source replacement is absent: {directory}"

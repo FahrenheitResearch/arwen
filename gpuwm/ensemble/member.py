@@ -180,6 +180,11 @@ def run_member(*, base_config, member_dir, index: int, seed: int,
         prepared = None
     else:
         exp, data, prepared = prepare(base_config)
+    # Before this member is prepared (on the base-config route): the member
+    # leg integrates without the radar landing queue, so an enabled
+    # [simulated_radar] is refused by name instead of silently not written.
+    from gpuwm.experiment import refuse_unrouted_simulated_radar
+    refuse_unrouted_simulated_radar(exp, "ensemble member (frozen single-domain loop)")
     if len(exp.domains) != 1:
         raise ValueError(
             f"{base_config} declares {len(exp.domains)} domains; the "

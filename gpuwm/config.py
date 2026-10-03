@@ -911,6 +911,12 @@ class RunConfig:
     #: orographic form drag, each tapered by grid length).  0 adds nothing.
     gwd_opt: int = 0
 
+    #: Numerical generation of WRF's implicit vertical advection.
+    #: wrf_471 preserves the existing module_ieva_em operator; wrf_legacy
+    #: selects module_advect_em's current-mass solve and one-sided split.
+    #: Both retain the declared lower-w-boundary unit correction.
+    zadvect_implicit_variant: str = "wrf_471"
+
 
 #: The Noah-MP option identity gpuwm admits, field -> the only accepted
 #: value, with what pins it.  ``validate_run_config`` refuses anything else
@@ -1941,7 +1947,7 @@ MP28_AEROSOL_SYNTHETIC_FALLBACK = (
 #: THE MEASUREMENT IS HERE AND NOT IN THE SENTENCE.  The front reaches
 #: 1.00454 of the wind speed, so a 100 km nest in a 20 m/s flow has lost its
 #: initial aerosol in 83 minutes and nothing NaNs, trips a bound or reports it
-#: (docs/public/validation/mp28-column-evidence.md).  A reader at a door
+#: (docs/public/wrf-comparison/mp28-column-evidence.md).  A reader at a door
 #: needs the breakage and the way out; the numbers are why the refusal
 #: exists, which is a question the source answers.
 #:
@@ -2223,6 +2229,14 @@ def experiment_preparation_refusals(experiment) -> tuple[tuple[str, str], ...]:
             continue
         for sentence in run_preparation_preconditions(run):
             said.append((label, sentence))
+    # An enabled [simulated_radar] needs a current rw_simradar and a scan
+    # the host memory holds; asked here, before the fetch, rather than at
+    # the forecast's first history.  Off (the default) asks nothing.
+    radar = getattr(experiment, "simulated_radar", None)
+    if radar is not None and getattr(radar, "enabled", False):
+        from gpuwm.simulated_radar_config import door_refusals
+
+        said.extend(door_refusals(experiment))
     return tuple(said)
 
 
@@ -2368,7 +2382,7 @@ _RUN_CONFIG_TABLES = ("grid", "dynamics", "run")
 #: restart identity -- a run that trimmed its history must resume from a
 #: checkpoint written by one that did not, and the checkpoint stream is
 #: a different file written from model state.
-_KNOWN_TABLES = (*_RUN_CONFIG_TABLES, "tiles", "devices", "output")
+_KNOWN_TABLES = (*_RUN_CONFIG_TABLES, "tiles", "devices", "output", "simulated_radar")
 
 #: ``[static]`` is known to ONE RunConfig-TOML route, the one that builds
 #: static geography from a RunConfig: a downscaled child's own terrain,
@@ -2529,6 +2543,11 @@ def load_config(path: str | Path, *, accept_epssm_auto: bool = False,
     # history_drop that silently does nothing is how a run comes to write
     # the full inventory under the name of your selection.
     load_history_selection(path)
+    from gpuwm.simulated_radar_config import load_options
+    if load_options(path).enabled:
+        raise ValueError("[simulated_radar] needs an [experiment]/[[domain]] run "
+                         "or the simulated-radar replay command; legacy case runners "
+                         "do not expose a common durable-history stream")
     # And for [static]: a misspelled smoother is how a child's terrain gets
     # built under the default with your value's name on it.
     if _CHILD_STATIC_TABLE in raw:
@@ -2953,12 +2972,17 @@ _DYNAMICS_RANGES: dict[str, tuple] = {
                         "(WRF Registry default 0.12)"),
 }
 
-#: Integer dynamics selectors, with the values this tree IMPLEMENTS.
+#: Dynamics selectors, with the values this tree IMPLEMENTS.
 #: A selector that is a real WRF choice but unimplemented here is the
 #: worst of the three cases: every damping site tests ``damp_opt == 3``,
 #: so ``damp_opt = 2`` used to run with the damping layer switched off
 #: while the config said it was on.
 _DYNAMICS_CHOICES: dict[str, tuple] = {
+    "zadvect_implicit_variant": (("wrf_471", "wrf_legacy"),
+                                 "'wrf_471' (module_ieva_em) or "
+                                 "'wrf_legacy' (module_advect_em); the "
+                                 "split and column masses differ, so an "
+                                 "unknown variant cannot be substituted"),
     "damp_opt": ((0, 3),
                  "0 (no upper damping) or 3 (the Klemp-Dudhia-Hassiotis "
                  "implicit w-only damper); WRF's damp_opt 1 (diffusive) "
@@ -4930,6 +4954,7 @@ def declared_key_rows() -> dict[str, dict[str, dict]]:
     from gpuwm.case_data import CASE_DATA_KEY_ROWS
     from gpuwm.fetch import FETCH_HINT_ROWS
     from gpuwm.ingest.soil_downscale import INGEST_TABLE_ROWS
+    from gpuwm.simulated_radar_config import declared_key_rows as radar_key_rows
 
     tables = {
         "experiment": experiment._EXPERIMENT_KEY_ROWS,
@@ -4939,6 +4964,7 @@ def declared_key_rows() -> dict[str, dict[str, dict]]:
         "case_data": CASE_DATA_KEY_ROWS,
         "fetch": FETCH_HINT_ROWS,
         "ingest": INGEST_TABLE_ROWS,
+        "simulated_radar": radar_key_rows(),
     }
     return {table: {name: row.to_json() for name, row in rows.items()}
             for table, rows in tables.items()}

@@ -1,0 +1,24 @@
+[package]
+name = "recast-radar-bzip2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure-Rust bzip2 compressor and decompressor without unsafe code, tuned for NEXRAD Level II LDM records"
+keywords = ["bzip2", "compression", "nexrad", "radar", "no-unsafe"]
+categories = ["compression", "parser-implementations"]
+# Not packaged: the encoder benchmark harness links C libbzip2, the
+# integration tests read the repository's testdata/ through the unpublished
+# recast-radar-testdata crate, and the examples are developer probes built on
+# dev-dependencies.
+exclude = ["bench/", "tests/", "examples/"]
+
+[features]
+# `encode_many`: compress independent inputs in parallel on rayon.
+rayon = ["dep:rayon"]
+
+[dependencies]
+rayon = { workspace = true, optional = true }
+
+[lints]
+workspace = true

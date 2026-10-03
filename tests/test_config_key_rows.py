@@ -32,6 +32,7 @@ from gpuwm.core import (nest_lifecycle, nest_spawn, storm_track_writer,
                         storm_tracking, streaming)
 from gpuwm.ingest import soil_downscale as S
 from gpuwm.io import history_selection as H
+from gpuwm.simulated_radar_config import SimulatedRadarOptions
 
 
 def _rows() -> dict[str, dict[str, dict]]:
@@ -124,6 +125,9 @@ def _loader_tables():
         "tiles": (streaming.STREAMING_KEYS, (streaming.StreamingOptions,),
                   {}),
         "output": (H.OUTPUT_KEYS, (H.HistorySelection,), {}),
+        # An advertised radar option must name a key accepted by its parser.
+        "simulated_radar": (set(SimulatedRadarOptions.__dataclass_fields__),
+                            (SimulatedRadarOptions,), {}),
         "case_data": (C._KNOWN_KEYS, (C.CaseDataConfig,), {}),
         "fetch": (F.FETCH_HINT_KEYS, (), {}),
         "ingest": (S.INGEST_TABLE_KEYS, (), {}),

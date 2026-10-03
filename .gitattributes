@@ -43,7 +43,10 @@ configs/rw-wps-era5-netcdf.mapping.json text eol=lf
 configs/rw-wps-era5-netcdf-terrain.composition.json text eol=lf
 gpuwm/authorities/*.json text eol=lf
 gpuwm/physics_registry_v2.json text eol=lf
-tools/rustwx/vendor/** -text
+# Vendored upstream sources keep their own bytes, trailing spaces included: the
+# BowEcho data-source test fixtures reproduce NHC/JTWC bulletins verbatim, and the
+# 2.8.4 cut's export whitespace check refused them (2026-10-03).
+tools/rustwx/vendor/** -text -whitespace
 tools/rustwx/crates/** -text
 tools/rustwx/assets/** -text
 tests/fixtures/**/*.grib2 -text

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "catalog_id": "arwen-research-workspaces-v1",
   "status": "development",
-  "note": "Scientific recommendations for review, not measured hardware-fit or forecast-skill claims. Geometry and cadence are experiment-design starting points; native sizing determines actual dimensions, fit and headroom. Every configuration begins unvalidated until source-bound execution evidence is recorded separately. Cite primary sources for physical questions; chosen numerical settings are catalog design hypotheses.",
+  "note": "Scientific recommendations for review, not measured hardware-fit or forecast-skill claims. Geometry and cadence are experiment-design starting points; native sizing determines actual dimensions, fit and headroom. Every configuration begins unqualified until source-bound execution evidence is recorded separately. qualification_status is canonical; validation_status retains the historical spelling as a compatibility alias and is not an observation-validation claim. Cite primary sources for physical questions; chosen numerical settings are catalog design hypotheses.",
   "citations": [
     {
       "id": "nssl-hail",
@@ -1580,6 +1580,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -1624,6 +1625,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -1666,6 +1668,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -1708,6 +1711,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The requested cloud panel shows low, middle and high layer cloud cover. It does not calculate total cloud fraction."
@@ -1755,6 +1759,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The requested cloud panel shows low, middle and high layer cloud cover. It does not calculate total cloud fraction."
@@ -1806,6 +1811,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The requested cloud panel shows low, middle and high layer cloud cover. It does not calculate total cloud fraction."
@@ -1855,6 +1861,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The stored 700-500 hPa lapse-rate plot uses plain temperature. It is not the virtual-temperature lapse rate; the virtual-temperature quantity requires separate analysis."
@@ -1905,6 +1912,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The stored 700-500 hPa lapse-rate plot uses plain temperature. It is not the virtual-temperature lapse rate; the virtual-temperature quantity requires separate analysis."
@@ -1958,6 +1966,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The stored 700-500 hPa lapse-rate plot uses plain temperature. It is not the virtual-temperature lapse rate; the virtual-temperature quantity requires separate analysis."
@@ -2006,6 +2015,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The stored 700-500 hPa lapse-rate plot uses plain temperature. It is not the virtual-temperature lapse rate; the virtual-temperature quantity requires separate analysis."
@@ -2055,6 +2065,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The stored 700-500 hPa lapse-rate plot uses plain temperature. It is not the virtual-temperature lapse rate; the virtual-temperature quantity requires separate analysis."
@@ -2107,6 +2118,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The stored 700-500 hPa lapse-rate plot uses plain temperature. It is not the virtual-temperature lapse rate; the virtual-temperature quantity requires separate analysis."
@@ -2156,6 +2168,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -2203,6 +2216,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -2263,6 +2277,7 @@
         "native-corridor"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -2309,6 +2324,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -2356,6 +2372,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -2406,6 +2423,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -2453,6 +2471,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations.",
@@ -2505,6 +2524,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations.",
@@ -2570,6 +2590,7 @@
         "native-corridor"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations.",
@@ -2616,6 +2637,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -2660,6 +2682,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -2717,6 +2740,7 @@
         "native-corridor"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -2763,6 +2787,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -2810,6 +2835,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -2870,6 +2896,7 @@
         "native-corridor"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -2917,6 +2944,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -2965,6 +2993,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -3016,6 +3045,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -3063,6 +3093,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations."
@@ -3114,6 +3145,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations."
@@ -3168,6 +3200,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations."
@@ -3227,6 +3260,7 @@
         "native-output"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -3283,6 +3317,7 @@
         "native-output"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -3339,6 +3374,7 @@
         "native-output"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -3383,6 +3419,7 @@
         "native-output"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -3429,6 +3466,7 @@
         "native-output"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -3488,6 +3526,7 @@
         "native-corridor"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -3533,6 +3572,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations."
@@ -3582,6 +3622,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations."
@@ -3634,6 +3675,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations."
@@ -3682,6 +3724,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations."
@@ -3731,6 +3774,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations."
@@ -3783,6 +3827,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations."
@@ -3830,6 +3875,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations.",
@@ -3879,6 +3925,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations.",
@@ -3931,6 +3978,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations.",
@@ -3982,6 +4030,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations.",
@@ -4035,6 +4084,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations.",
@@ -4091,6 +4141,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations.",
@@ -4144,6 +4195,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The plots show temperature, dewpoint and winds separately. The current ArWen history renderer does not calculate 2 m equivalent potential temperature; that quantity requires separate analysis."
@@ -4196,6 +4248,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The plots show temperature, dewpoint and winds separately. The current ArWen history renderer does not calculate 2 m equivalent potential temperature; that quantity requires separate analysis."
@@ -4251,6 +4304,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The plots show temperature, dewpoint and winds separately. The current ArWen history renderer does not calculate 2 m equivalent potential temperature; that quantity requires separate analysis."
@@ -4300,6 +4354,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations."
@@ -4351,6 +4406,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations."
@@ -4407,6 +4463,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations."
@@ -4457,6 +4514,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -4506,6 +4564,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -4558,6 +4617,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -4604,6 +4664,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations.",
@@ -4656,6 +4717,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations.",
@@ -4711,6 +4773,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations.",
@@ -4759,6 +4822,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Air temperature and relative humidity are context only. Vapour-pressure deficit is not calculated by this history-rendering path and requires separate analysis."
@@ -4809,6 +4873,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Air temperature and relative humidity are context only. Vapour-pressure deficit is not calculated by this history-rendering path and requires separate analysis."
@@ -4863,6 +4928,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Air temperature and relative humidity are context only. Vapour-pressure deficit is not calculated by this history-rendering path and requires separate analysis."
@@ -4914,6 +4980,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The current ArWen history renderer does not produce DCAPE. Moisture and temperature context cannot establish downdraft energy; that parcel calculation requires separate analysis.",
@@ -4969,6 +5036,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The current ArWen history renderer does not produce DCAPE. Moisture and temperature context cannot establish downdraft energy; that parcel calculation requires separate analysis.",
@@ -5027,6 +5095,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The current ArWen history renderer does not produce DCAPE. Moisture and temperature context cannot establish downdraft energy; that parcel calculation requires separate analysis.",
@@ -5075,6 +5144,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations."
@@ -5122,6 +5192,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations."
@@ -5173,6 +5244,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations."
@@ -5220,6 +5292,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -5266,6 +5339,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The comparison uses resolved 10 m wind snapshots. Surface gusts are not calculated by this history-rendering path and require separate analysis or observations."
@@ -5319,6 +5393,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -5367,6 +5442,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The current ArWen history renderer does not produce DCAPE. Moisture and temperature context cannot establish downdraft energy; that parcel calculation requires separate analysis.",
@@ -5420,6 +5496,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The current ArWen history renderer does not produce DCAPE. Moisture and temperature context cannot establish downdraft energy; that parcel calculation requires separate analysis.",
@@ -5476,6 +5553,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The current ArWen history renderer does not produce DCAPE. Moisture and temperature context cannot establish downdraft energy; that parcel calculation requires separate analysis.",
@@ -5523,6 +5601,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Air temperature and relative humidity are shown separately. Heat index is not calculated by this history-rendering path and requires separate analysis.",
@@ -5572,6 +5651,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Air temperature and relative humidity are shown separately. Heat index is not calculated by this history-rendering path and requires separate analysis.",
@@ -5619,6 +5699,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Air temperature and relative humidity are shown separately. Heat index is not calculated by this history-rendering path and requires separate analysis.",
@@ -5666,6 +5747,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Air temperature and 10 m wind are shown separately. Wind chill is not calculated by this history-rendering path and requires separate analysis.",
@@ -5716,6 +5798,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Air temperature and 10 m wind are shown separately. Wind chill is not calculated by this history-rendering path and requires separate analysis.",
@@ -5765,6 +5848,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Air temperature and 10 m wind are shown separately. Wind chill is not calculated by this history-rendering path and requires separate analysis.",
@@ -5814,6 +5898,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The requested cloud panel shows low, middle and high layer cloud cover. It does not calculate total cloud fraction."
@@ -5864,6 +5949,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The requested cloud panel shows low, middle and high layer cloud cover. It does not calculate total cloud fraction."
@@ -5915,6 +6001,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The requested cloud panel shows low, middle and high layer cloud cover. It does not calculate total cloud fraction.",
@@ -5965,6 +6052,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Low cloud cover and near-surface humidity describe the fog environment, not visibility distance. Visibility and verified fog boundaries require separate analysis or observations.",
@@ -6016,6 +6104,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Low cloud cover and near-surface humidity describe the fog environment, not visibility distance. Visibility and verified fog boundaries require separate analysis or observations.",
@@ -6064,6 +6153,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Low cloud cover and near-surface humidity describe the fog environment, not visibility distance. Visibility and verified fog boundaries require separate analysis or observations.",
@@ -6112,6 +6202,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Low cloud cover and near-surface humidity describe the fog environment, not visibility distance. Visibility and verified fog boundaries require separate analysis or observations."
@@ -6161,6 +6252,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Low cloud cover and near-surface humidity describe the fog environment, not visibility distance. Visibility and verified fog boundaries require separate analysis or observations."
@@ -6211,6 +6303,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Low cloud cover and near-surface humidity describe the fog environment, not visibility distance. Visibility and verified fog boundaries require separate analysis or observations."
@@ -6258,6 +6351,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations."
@@ -6307,6 +6401,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations."
@@ -6357,6 +6452,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations."
@@ -6407,6 +6503,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations."
@@ -6458,6 +6555,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations."
@@ -6512,6 +6610,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Precipitation-type categories are not supplied by the current ArWen history renderer. Temperature and moisture plots provide environmental context; rain/snow/freezing-rain/ice-pellet classification requires separate analysis or observations."
@@ -6561,6 +6660,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations."
@@ -6611,6 +6711,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations."
@@ -6664,6 +6765,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The wind maximum uses stored 10 m wind snapshots. It is not a gust diagnostic; gust magnitude or a gust swath requires separate analysis or observations."
@@ -6713,6 +6815,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The stored 0-3 km lapse-rate plot uses plain temperature. It is not the virtual-temperature lapse rate; the virtual-temperature quantity requires separate analysis."
@@ -6763,6 +6866,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The stored 0-3 km lapse-rate plot uses plain temperature. It is not the virtual-temperature lapse rate; the virtual-temperature quantity requires separate analysis."
@@ -6812,6 +6916,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "The stored 0-3 km lapse-rate plot uses plain temperature. It is not the virtual-temperature lapse rate; the virtual-temperature quantity requires separate analysis."
@@ -6860,6 +6965,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -6906,6 +7012,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -6951,6 +7058,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -6997,6 +7105,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -7044,6 +7153,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -7094,6 +7204,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated"
     },
     {
@@ -7139,6 +7250,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Low cloud cover and near-surface humidity describe the fog environment, not visibility distance. Visibility and verified fog boundaries require separate analysis or observations."
@@ -7188,6 +7300,7 @@
         "native-output"
       ],
       "requires_existing_state": false,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Low cloud cover and near-surface humidity describe the fog environment, not visibility distance. Visibility and verified fog boundaries require separate analysis or observations."
@@ -7240,6 +7353,7 @@
         "native-downscale"
       ],
       "requires_existing_state": true,
+      "qualification_status": "unqualified",
       "validation_status": "unvalidated",
       "further_analysis": [
         "Low cloud cover and near-surface humidity describe the fog environment, not visibility distance. Visibility and verified fog boundaries require separate analysis or observations."

@@ -1,0 +1,22 @@
+[package]
+name = "recast-radar-io-odim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure-Rust ODIM_H5 weather radar decoder (polar volumes and Cartesian products) and polar volume writer over recast-radar-hdf5"
+readme.workspace = true
+keywords = ["odim", "hdf5", "radar", "weather", "opera"]
+categories = ["science::geo", "parser-implementations", "encoding"]
+# Not packaged: the integration tests read the repository's testdata/
+# through the unpublished recast-radar-testdata crate.
+exclude = ["tests/"]
+
+[dependencies]
+chrono.workspace = true
+recast-radar-core = { version = "0.1.3", path = "../recast-radar-core" }
+recast-radar-hdf5 = { version = "0.1.3", path = "../recast-radar-hdf5" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

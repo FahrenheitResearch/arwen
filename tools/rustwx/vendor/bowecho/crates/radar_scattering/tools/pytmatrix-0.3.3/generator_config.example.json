@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "status": "research_only_unvalidated",
+  "kernel": "pytmatrix-0.3.3",
+  "table_id": "example-conventional-dry-ice-sband-unvalidated-v1",
+  "particle_population": {
+    "microphysics_family": "conventional",
+    "category": "hail",
+    "shape_family": "oblate_spheroid",
+    "size_distribution": "monodisperse_node",
+    "normalization_number_concentration_m3": 1.0
+  },
+  "axes": [
+    {
+      "kind": "equivolume_diameter",
+      "unit": "meter",
+      "coordinates": [0.0001, 0.05]
+    },
+    {
+      "kind": "minor_to_major_axis_ratio",
+      "unit": "unitless_fraction",
+      "coordinates": [0.7, 1.0]
+    },
+    {
+      "kind": "frequency",
+      "unit": "hertz",
+      "coordinates": [2700832954.954955]
+    },
+    {
+      "kind": "radar_elevation",
+      "unit": "degree",
+      "coordinates": [0.0]
+    }
+  ],
+  "dielectric": {
+    "model": "explicit_homogeneous",
+    "material": "ice",
+    "refractive_index": {
+      "real": 1.7861,
+      "imaginary": 0.0000966
+    },
+    "mass_density_kg_m3": 916.7,
+    "temperature_k": 273.15,
+    "frequency_dependence": "constant_over_configured_s_band_nodes"
+  },
+  "orientation": {
+    "model": "gaussian_canting",
+    "mean_deg": 0.0,
+    "standard_deviation_deg": 20.0,
+    "alpha_quadrature_points": 5,
+    "beta_quadrature_points": 10,
+    "quadrature_method": "pytmatrix_orient_averaged_fixed_gautschi",
+    "reference_symmetry_axis": "vertical_at_zero_canting"
+  },
+  "radar": {
+    "speed_of_light_m_s": 299792458.0,
+    "reference_water_dielectric_factor_squared": 0.93,
+    "length_unit_passed_to_pytmatrix": "millimeter",
+    "backscatter_geometry_deg": [90.0, 90.0, 0.0, 180.0, 0.0, 0.0],
+    "forward_scatter_geometry_deg": [90.0, 90.0, 0.0, 0.0, 0.0, 0.0],
+    "beam_elevation_transform": "pytmatrix_theta0_90_minus_e_theta_back_90_plus_e_theta_forward_90_minus_e_degrees",
+    "polarization_basis": "pytmatrix_local_horizontal_vertical_scattering_basis",
+    "view_applicability": "horizontal_singleton_zero_degree_axis",
+    "covariance_phase_convention": "pytmatrix_delta_hv_hh_times_conjugate_vv",
+    "solver": {
+      "shape": "spheroid",
+      "ddelt": 0.001,
+      "ndgs": 2
+    }
+  },
+  "terminal_velocity": {
+    "law": "schiller_naumann_gravity_drag",
+    "gravity_m_s2": 9.80665,
+    "air_density_kg_m3": 1.225,
+    "air_dynamic_viscosity_pa_s": 0.000017894,
+    "drag_transition_reynolds": 1000.0,
+    "high_reynolds_drag_coefficient": 0.44,
+    "drag_transition_boundary_policy": "select_exact_transition_reynolds_boundary_when_piecewise_drag_residual_jump_straddles_zero",
+    "maximum_iterations": 200,
+    "relative_tolerance": 1e-12
+  },
+  "temporal": {
+    "sampling": "instantaneous"
+  },
+  "execution": {
+    "point_timeout_seconds": 120,
+    "process_isolation": "fresh_python_subprocess_per_grid_point",
+    "result_collection_order": "declared_axis_order_last_axis_fastest",
+    "partial_grid_policy": "reject_entire_lut",
+    "thread_count_per_process": 1
+  },
+  "payload": {
+    "encoding": "f64_le_point_major_last_axis_fastest"
+  },
+  "references": [
+    "https://github.com/jleinonen/pytmatrix/tree/0.3.3",
+    "https://github.com/jleinonen/pytmatrix/blob/0.3.3/pytmatrix/orientation.py",
+    "https://github.com/jleinonen/pytmatrix/blob/0.3.3/pytmatrix/refractive.py",
+    "https://doi.org/10.1002/aic.690020110"
+  ]
+}

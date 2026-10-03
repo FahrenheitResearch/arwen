@@ -1,19 +1,71 @@
-# Verification
+# Verification and validation evidence
 
-WRF-derived mechanisms target WRF v4.6.1 (upstream
-<https://github.com/wrf-model/WRF>, tag `v4.6.1`, commit
-`d66e442fccc04111067e29274c9f9eaccc3cef28`), with declared deviations.
-Evidence differs by routine: some have comparisons against unmodified
-Fortran, some have transcription or self-consistency tests only, and
-some have no independent oracle measurement. Per-option evidence is
-listed in [PHYSICS.md](PHYSICS.md). This page describes the retained
-measurements, their scope, and how to reproduce the historical
-headline comparison. A historical receipt is not a measurement of a
-later engine revision.
+This page separates implementation checks, numerical-error estimates and
+comparisons against observations. Evidence is tied to its reference version,
+engine revision, configuration and measured quantities. A historical receipt
+is not a measurement of a later engine revision. Per-option evidence and
+declared deviations are listed in [PHYSICS.md](PHYSICS.md).
+
+## Verification and validation
+
+The terminology follows [ASME V&V 10/20](https://www.asme.org/codes-standards/publications-information/verification-validation-uncertainty),
+the [AIAA G-077 guide, summarized in the NASA V&V tutorial](https://www.grc.nasa.gov/www/wind/valid/tutorial/tutorial.html),
+and [Verification and Validation in Scientific Computing](https://assets.cambridge.org/97805211/13601/frontmatter/9780521113601_frontmatter.htm).
+
+- **Code verification:** does the code solve its intended equations correctly?
+  Evidence includes reference-implementation comparisons, component oracles,
+  ULP and byte-identity checks, ensemble consistency tests, and analytic,
+  manufactured-solution or convergence tests. Each checks only the operations
+  and conditions it exercises; agreement between two codes can share errors.
+- **Solution verification:** estimating numerical error in a particular run,
+  including spatial and temporal discretization, iteration and roundoff error.
+  A stability check or agreement with another model does not supply this estimate.
+- **Validation:** assessing how well the model represents reality by comparing
+  with observations for a stated use, including uncertainties in both simulation
+  and observations. Meteorology calls scoring against observations **forecast
+  verification**; that activity is validation in computational-science V&V terms.
+  This page uses the V&V terms below. Input and configuration validation retain
+  their separate software meaning.
+
+**Matching WRF is verification. It never validates a forecast.** ArWen can
+inherit WRF's published validation record only to the extent that the two are
+statistically indistinguishable for that configuration and the quantities and
+conditions covered by that record. A passed consistency test has finite power;
+it does not prove equivalence for unmeasured fields, regimes or later revisions.
+Neither a WRF match nor an isolated observation score establishes general
+forecast accuracy. The [ASME V&V 20 scope](https://www.asme.org/codes-standards/find-codes-standards/standard-for-verification-and-validation-in-computational-fluid-dynamics-and-heat-transfer)
+likewise ties accuracy assessment to specified variables and validation points.
+
+### Evidence by kind and reference version
+
+| Kind | Evidence and reference | Scope and remaining gap |
+|---|---|---|
+| Code verification | Historical component Fortran oracles and ULP checks: **WRF v4.6.1**, commit `d66e442fccc04111067e29274c9f9eaccc3cef28`; sections 1 and 5 and [PHYSICS.md](PHYSICS.md). Newer component ports identify **v4.7.1** explicitly in their option rows, for example UW PBL and urban physics. | Coverage differs by routine; transcription and self-consistency are distinguished from an independent Fortran oracle. A reference version belongs to the individual fixture, not to every component in the release. |
+| Code verification | Historical six-hour, four-domain comparison, initial-state digest and decay tables below: **WRF v4.6.1**, same commit; ArWen run of record `152f7d31`, 2026-07-28. | Initial states fail the recorded ceilings on all four domains. Differences combine initialization and forecast evolution; the tables are not evidence for all current configurations. |
+| Code verification | Byte identity for named component oracles and same-build replay/restart checks; [DETERMINISM.md](DETERMINISM.md). | WRF-based oracle claims use that oracle's version. Same-build checks have no external WRF reference and do not establish physical accuracy. |
+| Code verification | Light ensemble consistency test, 2026-10-02: 100 six-hour references per regime from **WRF v4.7.1**, commit `f52c197ed39d12e087d02c50f412d90d418f6186`, strict GNU flags `-O2 -fno-fast-math -ffp-contract=off`; ArWen `e459f79ed4c5ae74e8a23d6e1c6f66c1519dc1e1`. | Three ArWen runs per regime; hour-six area-weighted means of 11 fields. Convective and winter pass; coastal fails, so the overall three-regime result fails. The fixed rule rejects at least one regime in 33/5,000 held-out WRF resampling trials (0.66%); this is conditional on the sampled cases and can miss spatial error. |
+| Code verification | Descriptive 20-member envelope across five 24-hour cases: **WRF v4.7.1**, same commit and strict flags; corrected ArWen `1b15157c0f9803f75c2ecd9fb3a100c706bcf453`. | ArWen is at or below the largest reference-member RMSE from the WRF mean in 1,098/1,440 field-hours; a different WRF compiler build is within it in 941/1,440. The declared whole-case consistency result is 0/5. The envelope and accompanying PCA screen have no calibrated significance level and do not establish statistical indistinguishability. |
+| Code verification | Analytic and component convergence checks, including the NumPy advection reference's smooth-profile convergence test in `tests/test_advection.py::test_convergence_order`; no WRF version applies. | These are component tests, not a full-model manufactured-solution campaign or an error estimate for a weather forecast. |
+| Solution verification | No published run-specific numerical-error budget for the weather forecasts described here. | Grid/time-step refinement studies and quantified discretization, iteration and roundoff contributions remain gaps. The nested-grid comparisons below and ensemble spread are not substitutes. |
+| Validation against observations | Limited ASOS case scoring is described in the [snow/soil initialization note](../soil-texture-downscaling.md); the [physics selection record](PHYSICS.md#mynn-scope-note-what-composes-and-what-is-pinned) reports a small station/ceilometer fog comparison without a published case count or score receipt. MRMS reflectivity scoring of one model-top A/B has a [retained receipt](receipts/ptop-default-ab/RECEIPT.md). WRF version: not applicable as the reference is observations. | These specific comparisons are distinct from the preregistered observation battery, which has no scored forecast result in its published receipts. They do not establish skill across seasons, regions, physics suites or leads, or a complete numerical and observational uncertainty budget. |
+
+The [WOOF-versus-WRF ensemble consistency summary](receipts/wrf-consistency-20261002/SUMMARY.md)
+and its charts record the current fidelity instrument, including the coastal
+failure and the limits of the descriptive envelope. They describe the engine
+snapshots identified above, not a new test of every release assembled from them.
+
+The observation scoreboard is in development. Its implementation and data
+plumbing are not completed multi-case validation results. A broad observation
+campaign with stated uncertainty and coverage remains a gap. The two ensemble
+campaigns above are retained evidence summaries; their full replay bundles are
+not distributed with this page, so this checkout alone cannot reproduce them.
+The reproduction recipe in section 7 applies only to the historical v4.6.1
+comparison. The v4.7.1 ensemble results do not replace or re-label it.
 
 ## 1. Methodology
 
-Four distinct instruments; their conclusions are not interchangeable:
+The historical WRF v4.6.1 comparison uses three measurements and a review
+process; their conclusions are not interchangeable:
 
 1. **Component ULP comparisons.** An independent reference oracle
    drives the byte-unmodified WRF v4.6.1 Fortran (compiled from
@@ -59,15 +111,14 @@ Four distinct instruments; their conclusions are not interchangeable:
    summarized until every frame is scored; the full decay tables are
    published, not just the flattering leads.
 
-4. **Adversarial review.** Ports and their evidence were audited by
-   independent review lanes (including non-Anthropic models) whose
-   briefs were to falsify claims: several findings in this page's
-   sources exist because a reviewer broke an earlier claim and the
-   claim was corrected rather than defended.
+4. **Automated adversarial review.** AI review tools examined the ports
+   and their evidence for contradictions and unsupported claims. This is
+   a review process, not a measurement or independent verification by
+   outside scientists.
 
 ## 2. The reference case
 
-The deep-validation case is a historical severe-weather reference day
+The historical matched-run case is a historical severe-weather reference day
 (ERA5-initialized), four one-way nested domains at 12 km / 3 km / 1 km
 / 500 m, integrated
 12Z-18Z with Thompson microphysics (WRF's own tables, hash-pinned),
@@ -136,35 +187,39 @@ Two scored snapshots are highlighted because they bracket convective
 initiation: 15Z (+3 h, squall line organizing) and 18Z (+6 h, mature
 cell-scale convection). "Old" is the previous matched run of the same
 case (2026-07-27, before a series of seam closures); "new" is the
-release lineage. The point of publishing both: the release lineage
-moved toward the WRF reference on essentially every axis, and nothing
-moved materially away.
+development lineage at 2026-07-28, commit `152f7d31`. Neither is the
+current release engine, and later changes have not been rerun on this
+case. The new run is closer to the WRF reference on most of these metrics
+at these two leads. Each column is one deterministic run: small changes,
+such as W correlation 0.130 to 0.138, cannot be separated from trajectory
+sensitivity without a matched control ensemble and are not evidence of
+improved accuracy. Differences in the tables are signed new-minus-old.
 
 ### d03 (1 km), 18Z -- the verdict lead
 
-| metric | old | new | direction |
+| metric | old | new | new minus old |
 |---|---|---|---|
-| T2 MAE | 0.565 K | 0.347 K | toward WRF |
-| PSFC MAE | 22.91 Pa | 20.45 Pa | toward |
-| refl-comp corr | 0.717 | 0.715 | dead heat (-0.002) |
-| refl-comp MAE | 9.81 dBZ | 9.75 dBZ | toward |
-| CSI (20 dBZ) | 0.377 | 0.425 | toward |
-| W corr | 0.130 | 0.138 | toward |
-| wind10 corr | 0.891 | 0.901 | toward |
+| T2 MAE | 0.565 K | 0.347 K | -0.218 K |
+| PSFC MAE | 22.91 Pa | 20.45 Pa | -2.46 Pa |
+| refl-comp corr | 0.717 | 0.715 | -0.002 |
+| refl-comp MAE | 9.81 dBZ | 9.75 dBZ | -0.06 dBZ |
+| CSI (20 dBZ) | 0.377 | 0.425 | +0.048 |
+| W corr | 0.130 | 0.138 | +0.008 |
+| wind10 corr | 0.891 | 0.901 | +0.010 |
 
 ### d03 (1 km), 15Z
 
-| metric | old | new | direction |
+| metric | old | new | new minus old |
 |---|---|---|---|
-| T2 MAE | 0.281 K | 0.046 K | toward (6.1x) |
-| PSFC MAE | 7.15 Pa | 5.20 Pa | toward |
-| refl-comp corr | 0.976 | 0.981 | toward |
-| refl-comp MAE | 1.63 dBZ | 1.06 dBZ | toward |
-| CSI (20 dBZ) | 0.660 | 0.670 | toward |
-| W corr | 0.366 | 0.333 | away |
-| wind10 corr | 0.937 | 0.963 | toward |
+| T2 MAE | 0.281 K | 0.046 K | -0.235 K |
+| PSFC MAE | 7.15 Pa | 5.20 Pa | -1.95 Pa |
+| refl-comp corr | 0.976 | 0.981 | +0.005 |
+| refl-comp MAE | 1.63 dBZ | 1.06 dBZ | -0.57 dBZ |
+| CSI (20 dBZ) | 0.660 | 0.670 | +0.010 |
+| W corr | 0.366 | 0.333 | -0.033 |
+| wind10 corr | 0.937 | 0.963 | +0.026 |
 
-### d02 (3 km), both leads -- a clean sweep
+### d02 (3 km), both leads
 
 | d02 | old 15Z | new 15Z | old 18Z | new 18Z |
 |---|---|---|---|---|
@@ -174,10 +229,12 @@ moved materially away.
 | refl MAE | 1.821 dBZ | 1.326 dBZ | 4.768 dBZ | 4.02 dBZ |
 | CSI (20 dBZ) | 0.8078 | 0.8573 | 0.6518 | 0.682 |
 
-Sharpest single detail: at d02 15Z the new run has 14,230 pixels at or
+At d02 15Z the new run has 14,230 pixels at or
 above 20 dBZ against WRF's 14,227 -- a 3-pixel difference in echo
-coverage where the old run was off by 295. Reflectivity bias fell from
--0.311 dBZ to -0.004 dBZ.
+coverage where the old run was off by 295. The mean reflectivity difference
+from WRF changed from -0.311 dBZ to -0.004 dBZ. This is one snapshot
+chosen after the fact. Matching coverage does not show that echoes occupy
+the same locations, and neither number measures bias against observations.
 
 ### Full decay table (all domains, all leads)
 
@@ -232,7 +289,15 @@ On d03, W correlation falls from 0.986 at F2 to 0.333 at F3 and ends at
 0.138 at F6. On d04 it ends at 0.110. These are measured differences
 between the historical forecasts, not a diagnosis of their cause.
 
-Convective sensitivity and displacement are plausible contributors.
+Roundoff-sized differences can grow in convective flow. In the separate
+[idealized warm-bubble comparison](wrf-comparison/mp28-matched-trajectory.md),
+section 10, WRF against its own one-flag recompilation differed by 0.10%
+RMS in `w` at 600 s, versus 3.2% for the port against WRF, and the WRF
+control had not saturated by 7200 s. That control does not explain away
+the much larger port difference. Ensemble consistency tests compare the
+port with a distribution of perturbed reference runs; the v4.7.1 tests
+above are that kind of instrument, but do not cover this historical
+four-domain case. Convective sensitivity and displacement are plausible contributors.
 However, the initial-state digest fails, boundary tables were not
 retained, and these tables contain no matched reference-versus-reference
 control that establishes a nondegenerate sensitivity envelope for this
@@ -332,7 +397,7 @@ Claimed, each with its receipt above or in the linked pages:
 - Historical model-versus-model forecast agreement on the reference
   case at the levels tabulated in section 3, between runs that did not
   start from the same state.
-  This is not a pure test of time integration and does not validate
+  This is not a pure test of time integration and does not verify
   subsequent engine changes or a different physics configuration.
 - Bit-deterministic re-execution on fixed hardware and build.
 - Unchanged stock WRF v4.6.1 accepts and integrates this
@@ -366,20 +431,20 @@ Claimed, each with its receipt above or in the linked pages:
   dual-run byte comparison) -- never to WRF output files. What the
   dual-run byte comparison covers, and what it cannot detect in place
   of ECC, is [DETERMINISM.md](DETERMINISM.md).
-- **One case is deeply validated.** The matched-run evidence is one
+- **One historical case has detailed matched-run tables.** Those tables cover one
   meteorological situation, one season, one region, one option set.
-  Other cases, seasons, and physics combinations inherit component
-  evidence only; their maturity labels say so explicitly.
+  Other cases, seasons and physics combinations require their own evidence.
+  The v4.7.1 ensemble campaigns above are separate, narrowly scoped checks.
 - **Part of the 2026-07-28 improvement is by construction.** That
   rerun matched the reference configuration (legacy RRTMG, matched
-  cadence and geometry); it demonstrates fidelity of the matched
+  cadence and geometry); it shows the agreement reached by the matched
   configuration, not a universally improved solver. The old/new
   comparison also spans two output-writer versions (4-byte file-size
   difference; frames are identified by SHA256, never by size).
-- **No data assimilation, no ensemble calibration, no forecast-skill
-  claim against observations.** All comparisons on this page are
-  model-vs-model. Nothing here says ArWen (or WRF) verified well
-  against what actually happened on any date.
+- **No observation-validation claim from the historical comparison.**
+  Sections 1-7 describe model-versus-model and implementation checks.
+  The separate ASOS/MRMS evidence listed above assesses particular runs
+  against observations; it does not establish general forecast skill.
 - **No resolved tornado dynamics.** The 500 m nest and the STP/UH
   severe suite characterize the tornadic-supercell environment and
   mesocyclone-scale morphology; they do not resolve the near-surface

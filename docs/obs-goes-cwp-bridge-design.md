@@ -13,11 +13,12 @@ pack families have been produced from live granules and re-proved by
 `verify`; 32 unit tests are green; the crate builds
 `--release --locked --offline`.
 
-*Unverified* means exactly that: no obs-skill number, no comparison
+*Unverified and unvalidated* covers separate gaps here: no comparison
 against an independent CWP implementation beyond the DQF-count
-cross-check, and no scientific review of the PROVISIONAL ice/mixed-phase
-coefficients. Bytes move correctly; whether the observable is right for
-assimilation is not yet established.
+cross-check (code verification), no score against independent
+observations (validation), and no scientific review of the PROVISIONAL
+ice/mixed-phase coefficients. The byte-handling checks do not establish
+whether this observable is suitable for assimilation.
 
 **What does not exist:** any use of these packs by the DA cycle. The
 Python reader, the regrid to the model grid, superobbing, obs error, and

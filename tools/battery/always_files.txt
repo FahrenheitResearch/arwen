@@ -66,6 +66,11 @@ tests/test_tiles_gate_manifest.py
 # battery list with no manifest gate at all.
 tests/test_battery_list_census.py
 
+# A notice audit reads the tree rather than importing donor modules. Keep it
+# unconditional so a vendored Rust change cannot ship compiled code without
+# its required license and NOTICE texts in the Python distribution.
+tests/test_licence_notices_ship.py
+
 # Byte-level repository hygiene.  `.gitattributes` sets `* -text`, so an
 # LF-to-CRLF rewrite is a real byte change in files the product hashes for
 # identity.  Task #168 rewrote thirteen files that way and the stage-1

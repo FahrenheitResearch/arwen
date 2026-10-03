@@ -1,0 +1,43 @@
+{
+  "schema": "woof.radar-sites.provenance/v1",
+  "retrieved_at": "2026-10-02T20:04:35.880442+00:00",
+  "sites": 158,
+  "height_datum": "radar antenna MSL",
+  "input_height_units": "international foot",
+  "metres_per_foot": 0.3048,
+  "height_transform": "antenna_height_msl_m = NWS antenna elevation feet * 0.3048; no tower height is added",
+  "membership": "current NOAA ROC operational WSR-88D point layer, crosschecked against current NWS antenna list",
+  "source_crosscheck": "All 158 antenna heights exceed ROC site-base plus tower by 3 to 7 m, consistent with the antenna/feedhorn above the tower. The NCEI catalogue agrees in 157 rows; KHDC NCEI ELEV=43 is replaced by current NWS antenna elevation 157 feet.",
+  "omitted_catalogue_rows": "NCEI historical/test stations KCRI, KOUN, KLIX, LPLA and RODN are absent from the current NOAA operational point layer.",
+  "sites_sha256": "ee2a31827ffb52179c1b7a12e7bf284a01211047d5e191cc29803d42bb8399da",
+  "sources": [
+    {
+      "filename": "noaa-wsr88d-radar-list.pdf",
+      "url": "https://www.weather.gov/media/tg/wsr88d-radar-list.pdf",
+      "role": "Antenna elevation; document date 2026-08-18",
+      "sha256": "fb4661945f72a5679d740e5b42194c0069b254505fb4f3aaa1cdaa9db15a9f5b",
+      "bytes": 133973
+    },
+    {
+      "filename": "noaa-wsr88d-sites.js",
+      "url": "https://www.roc.noaa.gov/branches/program-branch/site-id-database/wsr88d-interactive-radar-coverage-map/layers/WSR88D_Names_8.js",
+      "role": "Site membership and longitude/latitude; coverage map version 20260803",
+      "sha256": "c13a6668f673df24ceb812507dfb2f8b85be485c0787a1f3c331e13fa22d6824",
+      "bytes": 35942
+    },
+    {
+      "filename": "noaa-nexrad-stations.txt",
+      "url": "https://www.ncei.noaa.gov/access/homr/file/nexrad-stations.txt",
+      "role": "Independent station and elevation crosscheck",
+      "sha256": "bbbc8d95ab49bdc97641f4e55b27fa6988fe85c1680685f982b52bb1070b3e16",
+      "bytes": 40916
+    },
+    {
+      "filename": "noaa-site-results.html",
+      "url": "https://www.roc.noaa.gov/branches/program-branch/site-id-database/site-id-search-advanced-results.php",
+      "role": "ROC public site database search: site-base elevation and tower height",
+      "sha256": "948687ceee6d0e4827d885bb69fc716a89ef0122ddb628c59d05af6123900252",
+      "bytes": 1831300
+    }
+  ]
+}

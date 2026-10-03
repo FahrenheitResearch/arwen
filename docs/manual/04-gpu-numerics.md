@@ -1,7 +1,7 @@
 # 4. GPU numerics a researcher must know
 
 The model state is FP32, like WRF's default REAL; no end-to-end bit-identity with
-WRF is claimed anywhere [README.md:480-483]. Four numerics facts govern how to read
+WRF is claimed anywhere [README.md, current release scope]. Four numerics facts govern how to read
 ArWen results: subnormal handling follows the compile route, FMA contraction and
 library reduction orders scope the determinism claim, dual-run byte comparison is a
 transient-fault screen (not ECC), and restart identity is a published contract.
@@ -180,7 +180,7 @@ Determinism results actually measured:
   before each kill were byte-compared when regenerated after relaunch:
   SHA256-identical. ArWen reproduces its own trajectory bit-for-bit under
   restart-free relaunch on the same hardware and build
-  [docs/public/VERIFICATION.md:205-209].
+  [docs/public/VERIFICATION.md, historical comparison and limits].
 - LES: two independent 14,400-step `km_opt=2` integrations produced byte-identical
   state and receipts identical in every field but wall time; since extended across
   hardware, the same seed is bit-identical on three different cards (two of them

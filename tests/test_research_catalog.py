@@ -117,10 +117,49 @@ def test_recipe_uses_native_products_and_valid_scientific_geometry(recipe):
     assert geometry["forecast_hours"] * 3600 >= geometry["history_interval_s"]
     assert len(geometry["nest_ratios"]) <= 2
     assert all(ratio in (2, 3, 4) for ratio in geometry["nest_ratios"])
-    assert recipe["validation_status"] == "unvalidated"
+    assert recipe["qualification_status"] == "unqualified"
+    assert recipe["validation_status"] == "unvalidated"  # legacy export alias
     assert recipe["comparison"] and recipe["limitations"] and recipe["input_requirements"]
     if recipe["method"] == "archived_downscale":
         assert recipe["requires_existing_state"]
+
+
+@pytest.mark.parametrize("field,value,canonical,legacy", [
+    ("qualification_status", "unqualified", "unqualified", "unvalidated"),
+    ("validation_status", "unvalidated", "unqualified", "unvalidated"),
+    ("qualification_status", "unqualified-candidate-policy",
+     "unqualified-candidate-policy", "unvalidated-candidate-policy"),
+    ("validation_status", "unvalidated-candidate-policy",
+     "unqualified-candidate-policy", "unvalidated-candidate-policy"),
+    ("validation_status", "catalog recommendations are not science validation",
+     "unqualified", "catalog recommendations are not science validation"),
+])
+def test_catalog_accepts_canonical_and_legacy_qualification_rows(
+        tmp_path, monkeypatch, field, value, canonical, legacy):
+    from gpuwm import research_workspaces as research
+    document = deepcopy(CATALOG)
+    for row in document["configurations"]:
+        row.pop("qualification_status", None)
+        row.pop("validation_status", None)
+        row[field] = value
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(research, "CATALOG_PATH", path)
+    restored = research.catalog_document()
+    assert len(restored["configurations"]) == len(CONFIGS)
+    for row in restored["configurations"]:
+        assert row["qualification_status"] == canonical
+        assert row["validation_status"] == legacy
+        assert _scientific_fingerprint(row) == _scientific_fingerprint(CONFIGS[row["id"]])
+
+
+def test_conflicting_qualification_aliases_are_refused_before_recipe_use():
+    from gpuwm.research_workspaces import validate_recipe
+    recipe = deepcopy(next(iter(CONFIGS.values())))
+    recipe["qualification_status"] = "qualified"
+    recipe["validation_status"] = "unvalidated"
+    with pytest.raises(ValueError, match="qualification_status and legacy validation_status disagree"):
+        validate_recipe(recipe)
 
 
 def test_tracker_fields_units_and_fallbacks_match_the_native_contract():
@@ -203,6 +242,7 @@ def test_hardware_profiles_preserve_scientific_window_and_extent_constraints():
                 assert actual[key] == original[key], (recipe["id"], hardware, key)
             assert profile["effective_finest_dx_km"] == pytest.approx(
                 actual["root_dx_km"] / math.prod(actual["nest_ratios"]))
+            assert profile["qualification_status"] == "unqualified-candidate-policy"
             assert profile["validation_status"] == "unvalidated-candidate-policy"
             assert profile["tradeoff"] and profile["resolution_tradeoff"]
             if recipe["scenario"]:

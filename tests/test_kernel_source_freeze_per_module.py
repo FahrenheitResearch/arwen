@@ -608,8 +608,20 @@ BASELINE_PINNED: dict[str, str] = {
     # terms take consistent units (the lower one uncouples the u/v
     # tendencies, the upper one divides by g), a declared divergence from
     # WRF 4.7.1 graded against WRF's routine with the same corrections.
+    # Moved a third time by lane/sol-hrrr-zadvect (37a99fcd4, lane tip
+    # fd1772ba0, merged at dd5ded73f): zadvect_implicit_variant =
+    # "wrf_legacy" selects the earlier WRF split (upwind-level winds with
+    # the mass-point map factor, cx+cy), current-mass face coefficients in
+    # the u/v solves and the earlier upper-w grouping (divide the whole
+    # increment by g); the "wrf_471" default runs the operator above
+    # unchanged.  Graded word for word against native Fortran extracted from
+    # the pinned NOAA-EMC/HRRR WRF source (40ee6058c) by
+    # tests/test_zadvect_legacy.py: 33,320 words at max ULP 0 for the legacy
+    # arm and 4,381 at max ULP 0 for wrf_471, on an RTX 5090 at NVRTC 13.4,
+    # whose reading also gives local frames of 1040/2064/4112 B at
+    # IEVA_KMAX 65/129/257, unchanged, so no frame recording or price moves.
     "ieva":
-        "45740ad8cbbe738a5b69b32a03a63cd878e6cd3f0378e2a9d6216deea7448df3",
+        "a3bcfbb1064f7513a4ffb0dfc5d0550da8576923c9ff0d71779397d4dd4b4aa2",
     # Lane 281-namelist-gaps: WRF v4.7.1 slope_rad / topo_shading
     # (module_radiation_driver.F toposhad/topo_rad_adj), held bit for bit
     # to WRF's Fortran by tests/test_topo_radiation.py on a card.

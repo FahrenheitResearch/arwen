@@ -273,9 +273,11 @@ amplification. **No float32 build of this scheme, WRF's included, determines
 `xmb` to better than tens of per cent.** Second, Grell-Freitas is
 `"maturity": "implemented-unverified"` with `"scientific_evidence": "none"`
 in `tools/build_registry.py`, whose own warning says no gpuwm/WRF forecast
-trajectory comparison exists for this scheme. There is no instrument in this
-project that could support a skill claim about GF, before or after this
-change.
+trajectory comparison exists for this scheme, and no GF forecast score
+against observations is published here. A WRF comparison would measure
+agreement between implementations; a skill claim needs observation
+scoring. The project has that instrument in `gpuwm.verify.obs`, but no
+application to GF before or after this change is recorded here.
 
 **Precedent.** This is the same ruling already applied twice in this tree:
 the GF shallow `k22` MAXLOC section-offset correction (shipped default

@@ -1275,3 +1275,33 @@ because format 2 on a file system is two JSON documents per array and a
 chunk per file, and the one codec the datasets use is the Blosc frame,
 which numcodecs decodes under zarr-python 2.18 and 3 (the proof opened
 every export with both).
+
+## Simulated radar (2026-10-02)
+
+`crates/rw-simradar` is the WOOF history consumer, writer adapter and PPI
+driver. It calls the extracted BowEcho forward operator in `vendor/bowecho`.
+That tree's `SOURCE.json` records the exact upstream and local extraction
+commits and per-file SHA-256 hashes. The app and reusable library share one
+physics implementation. Simulation fixes remain in that local upstream
+branch before being vendored here.
+
+The file writers are the six source crates under `vendor/recast-radar-tools`,
+pinned to version 0.1.3 at `c206a2495c36341caa2a62ff7be3025320dbb028`.
+Their `SOURCE.json` records source hashes and the packaging-only removal of
+test dependencies. All formats use their shared FM301 model.
+
+The simulation's `wrf-core` is pinned to
+`9874474d9566a7536a90f457a48be30caa5f973a`. `vendor/bowecho-git` is a separate
+Cargo replacement source because the renderer uses a different commit with
+the same package version. Its manifest spells the upstream workspace's 2021
+edition explicitly; its Rust sources are unchanged. Existing renderer
+dependencies and vendor files are retained. Added registry packages use
+versioned directory names under `vendor/crates-io`. The locked workspace
+resolves offline. The additional binary grants are inventoried in
+`crates/rw-simradar/data/dependency-licenses.json` and included in both binary
+notice copies.
+
+The NEXRAD station table has 158 operational sites, with antenna MSL heights
+from the current NOAA antenna list and positions from the NOAA operational
+site map. Source URLs, dates, and hashes are recorded beside the table in
+`crates/rw-simradar/data/sites-provenance.json`.

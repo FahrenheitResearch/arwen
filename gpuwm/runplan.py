@@ -991,6 +991,12 @@ def _build_intent(intent: object, *, route: str,
         except ValueError as error:
             raise PlanError(str(error)) from error
     intent = dict(intent)
+    if isinstance(intent.get("physics_profile"), str):
+        from gpuwm.physics_registry import canonical_template_id
+
+        # The wizard reads an old profile ID as its current ID; the chain's
+        # own assertion and the manifest read this value directly.
+        intent["physics_profile"] = canonical_template_id(intent["physics_profile"])
     if base is not None:
         # A relative file in a plan means a file beside the plan, as the
         # rest of the plan's paths do; left relative it would be read
@@ -1269,7 +1275,14 @@ def _run_option(key: str, value: object, base: Path) -> Any:
             raise PlanError(f"{label}: {problem}")
         return section
     if key == "physics_profile":
-        return None if value is None else _nonempty_string(value, label)
+        if value is None:
+            return None
+        from gpuwm.physics_registry import canonical_template_id
+
+        # An old profile ID is read as its current ID here, once, so the
+        # preparation's receipt check, the prepared-run conflict check and
+        # the manifest's component record all see the ID the registry keys.
+        return canonical_template_id(_nonempty_string(value, label))
     if key == "as_posted":
         if value is not None and not isinstance(value, bool):
             raise PlanError(f"{label} must be true or false")
@@ -2751,7 +2764,7 @@ def _schema_default_resolutions(raw: Mapping[str, Any]) -> list[dict[str, Any]]:
     spelled |= {name for name in raw if name != "experiment"}
     resolutions = []
     for field in dataclasses.fields(ExperimentConfig):
-        if field.name == "devices":
+        if field.name in {"devices", "simulated_radar"}:
             # OFF contributes no new schema row to an existing plan.
             continue
         if field.default is dataclasses.MISSING:
@@ -4790,6 +4803,9 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     if getattr(getattr(exp, "devices", None), "enabled", False):
         from gpuwm.stage_cli import devices_flags
         argv += devices_flags("single", options=exp.devices)
+    if getattr(getattr(exp, "simulated_radar", None), "enabled", False):
+        from gpuwm.simulated_radar_config import execution_flags
+        argv += execution_flags(exp.simulated_radar)
     observer.enter_stage("forecast", phase="forecast")
     from gpuwm import prepared_single_domain_forecast as runner
 
@@ -5061,6 +5077,9 @@ def _hrrr_single_chain(*, prep_root: Path, preparation, forecast_dir: Path,
         ]
         if exp.tiles.enabled:
             argv += stage_cli.streaming_flags("single", tiles=exp.tiles)
+        if getattr(getattr(exp, "simulated_radar", None), "enabled", False):
+            from gpuwm.simulated_radar_config import execution_flags
+            argv += execution_flags(exp.simulated_radar)
         observer.enter_stage("forecast", phase="forecast")
         from gpuwm import prepared_single_domain_forecast as runner
 

@@ -246,10 +246,19 @@ def _contains(outer, inner):
 
 
 def _profile(value, label):
+    """The offered profile ``value`` names, as its current ID.
+
+    The menu holds current IDs; an old ID (before the 2.8.4 rename) names
+    the same suite and is normalized as a source alias is, the original
+    catalog bytes unchanged.
+    """
     from gpuwm.physics_menu import WIZARD_PHYSICS_PROFILES
-    if value not in WIZARD_PHYSICS_PROFILES:
+    from gpuwm.physics_registry import canonical_template_id
+    current = canonical_template_id(value)
+    if current not in WIZARD_PHYSICS_PROFILES:
         raise CatalogError(f"{label} names an unknown native physics profile: {value!r}; "
                            "use an offered profile or explicitly typed native_overrides")
+    return current
 
 
 def validate_catalog(document: dict) -> dict:
@@ -317,6 +326,10 @@ def validate_catalog(document: dict) -> dict:
                     "cases": [{"id": ident, "title": case["title"], "event_kind": case["event_kind"],
                         "source_options": [{k: option[k] for k in ("id", "source", "cycle_utc")}],
                         "tiers": option["tier_geometry"]}]})
+                # A profile named there reads as its current ID, as in the case tiers.
+                for tier, row in option["tier_geometry"].items():
+                    if isinstance(row, dict) and "physics_profile" in row:
+                        row["physics_profile"] = _profile(row["physics_profile"], f"{tier}.physics_profile")
         if case.get("recommended_source_option") is not None and case["recommended_source_option"] not in option_ids:
             raise CatalogError(f"case {ident}.recommended_source_option does not name a listed option")
         tiers = _object(case["tiers"], f"case {ident}.tiers", allowed=set(TIERS), required=TIERS)
@@ -355,7 +368,7 @@ def validate_catalog(document: dict) -> dict:
             if "history_interval_s" in row:
                 _number(row["history_interval_s"], f"{tier}.history_interval_s", minimum=1, integer=True)
             if "physics_profile" in row:
-                _profile(row["physics_profile"], f"{tier}.physics_profile")
+                row["physics_profile"] = _profile(row["physics_profile"], f"{tier}.physics_profile")
             if "native_overrides" in row:
                 validate_native_overrides(row["native_overrides"], f"{tier}.native_overrides")
         if all("bounds_degrees" in tiers[t] for t in TIERS):
@@ -374,7 +387,7 @@ def validate_catalog(document: dict) -> dict:
         if not (tiers["lower"]["run_hours"] <= tiers["recommended"]["run_hours"] <= tiers["upper"]["run_hours"]):
             raise CatalogError(f"case {ident}: lower/recommended/upper run_hours must not decrease")
         if "physics_profile" in case:
-            _profile(case["physics_profile"], f"case {ident}.physics_profile")
+            case["physics_profile"] = _profile(case["physics_profile"], f"case {ident}.physics_profile")
         if "native_overrides" in case:
             validate_native_overrides(case["native_overrides"], f"case {ident}.native_overrides")
         for k in ("recommendations", "references", "tags", "research_recipe_ids"):
@@ -497,7 +510,9 @@ def preview_case(catalog, case_id: str, *, tier: str = "recommended",
         raise CatalogError(f"Source option {option['id']}: {error}") from error
     profile = physics_profile or row.get("physics_profile") or case.get("physics_profile")
     if profile is not None:
-        _profile(profile, "selected physics profile")
+        # The preview and the case it creates carry the current ID, as the
+        # wizard writes it, whichever spelling the flag used.
+        profile = _profile(profile, "selected physics profile")
     overrides = _merge_overrides(case.get("native_overrides"), row.get("native_overrides"), native_overrides)
     for domain in overrides["domains"]:
         if domain["grid_id"] > 1 + len(row["nest_ratios"]):
@@ -783,7 +798,7 @@ def create_case(catalog, case_id: str, *, out: str | Path, tier="recommended",
                 domain.get("wrf_rrtmg_compatibility",
                            raw["shared"].get("wrf_rrtmg_compatibility"))))
         text = _config_text(raw)
-        recipe = {"id": case_id, "method": "case catalog selection", "geometry": {"minimum_root_span_km": 0}, "validation_status": "catalog recommendations are not science validation"}
+        recipe = {"id": case_id, "method": "case catalog selection", "geometry": {"minimum_root_span_km": 0}, "qualification_status": "unqualified", "validation_status": "catalog recommendations are not science validation"}
         try:
             with redirect_stdout(log), redirect_stderr(log):
                 if geometry_only:

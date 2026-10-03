@@ -1,6 +1,6 @@
 """Derive the third gate's margins from the CONTROL's committed rows only.
 
-``docs/public/validation/mp28-distribution-gate.md`` states its two
+``docs/public/wrf-comparison/mp28-distribution-gate.md`` states its two
 amplification bounds relative to the WRF-against-itself control measured on
 the same run set, with fixed margins M (median) and P (p95).  Those margins
 must be justified by measurement noise and by nothing else -- in

@@ -1578,14 +1578,14 @@ def test_cli_hrrr_routes_absolute_source_windows_and_thompson_profile(
         "--run-seconds", str(6 * 3600),
         "--forecast-start-hour", start,
         "--forecast-end-hour", end,
-        "--physics-profile", "thompson-mp8-ysu-mm5-noah-validation-v1",
+        "--physics-profile", "thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1",
         "--dry-run",
     ])
     assert result == 0
     command = capsys.readouterr().out
     assert f"--forecast-start-hour {start}" in command
     assert f"--forecast-end-hour {end}" in command
-    assert "--physics-profile thompson-mp8-ysu-mm5-noah-validation-v1" \
+    assert "--physics-profile thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1" \
         in command
 
 

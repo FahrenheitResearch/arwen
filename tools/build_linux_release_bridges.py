@@ -264,8 +264,9 @@ def qualify_artifacts(release: Path, source: Path, revision: str,
     readelf = shutil.which("readelf", path=commands.environment.get("PATH"))
     require(readelf is not None, "readelf is required to verify native compatibility")
     declarations = bridge_assets.BUNDLED_ARTIFACTS
-    require(len(declarations) == 30 and len({a.name for a in declarations}) == 30,
-            "release declaration must contain all 30 distinct native artifacts")
+    # 31 since rw_simradar joined BUNDLED_ARTIFACTS (the simulated radar).
+    require(len(declarations) == 31 and len({a.name for a in declarations}) == 31,
+            "release declaration must contain all 31 distinct native artifacts")
     results = []
     for artifact in declarations:
         if artifact.crate not in workspaces:

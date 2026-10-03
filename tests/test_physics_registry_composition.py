@@ -199,3 +199,17 @@ def test_each_candidate_axis_reports_a_verdict_for_every_template(
     assert receipt["violation_counts"][axis] == sum(
         1 for row in receipt["templates"]
         if row["axes"][axis]["verdict"] == "violation")
+
+
+def test_historical_maturity_aliases_cannot_bypass_composition_checks():
+    from gpuwm.physics_registry import physics_registry
+
+    registry = physics_registry()
+    current = blast_radius.evaluate(registry)
+    aliases = {new: old for old, new in registry["maturity_ladder"]["aliases"].items()}
+    for template in registry["templates"].values():
+        template["maturity"] = aliases.get(template["maturity"], template["maturity"])
+    for component in registry["components"].values():
+        for option in component["options"].values():
+            option["maturity"] = aliases.get(option["maturity"], option["maturity"])
+    assert blast_radius.evaluate(registry) == current

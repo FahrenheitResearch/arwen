@@ -1,7 +1,7 @@
 """The nocturnal-radiation guard and the wizard's nocturnally sane default.
 
 Provenance: a wizard-emitted 48 h real case bound
-``thompson-mp8-ysu-mm5-noah-validation-v1`` (ra_lw_physics 0,
+``thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1`` (ra_lw_physics 0,
 ra_sw_physics 1).  Shortwave heated the surface by day; at night the
 surface radiated with no downward longwave, skin temperature cratered
 and 2 m dewpoints read in the 50s F inside a 70s airmass.  Two fixes,

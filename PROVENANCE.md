@@ -1,6 +1,6 @@
 # gpuwm oracle provenance and deviation register
 
-The transcription authority for every WRF-derived mechanism is WRF v4.6.1
+The historical WRF authority used by the evidence in this register is WRF v4.6.1
 (upstream <https://github.com/wrf-model/WRF.git>, tag `v4.6.1`, commit
 `d66e442fccc04111067e29274c9f9eaccc3cef28`). A verified checkout of that
 tree is the source-reading and line-citation authority; its machine-local
@@ -42,24 +42,28 @@ arithmetic policy, deliberate deviations, and fail-loud scope cuts.
   contract, while masked surface and soil fields use land-aware nearest donors
   and a globally proven nearest-water donor for model lake cells.  This is not
   a claim of numerical equivalence to WPS METGRID's four- and sixteen-point
-  masked interpolation.  The unchanged-WRF gate below proves file structure,
-  acceptance, and a stable smoke step for this exact slice, not WPS bitwise or
-  numerical parity.
+  masked interpolation. The WRF acceptance gate below used the instrumented
+  oracle build. It checks file structure, acceptance and a stable smoke step
+  for this exact slice, not WPS bitwise or numerical parity.
 - **Native runtime**: clean git commit
   `528e9d795da1090b239ff29367f463c52866e422` (tree
   `752ecac00c6964c8573e4d89935e6bfb394765ec`) completed decode,
   initialization, prepared-cache publication, and direct export in
   21.559 seconds internally (22.57 seconds process wall time).
-- **Stock-WRF gate**: native initialization/direct export produced
+- **WRF acceptance gate**: native initialization/direct export produced
   `wrfinput_d01` SHA-256
   `064b216010c0ed43ad06ac197b82cd3dbfe884890251e0ebac30a4405fe387f3`
   and `wrfbdy_d01` SHA-256
   `c74c5b9636f0e5a5cb54dbd9366d86a221ecbeb9a203fbbd6a3c0d39adc923f8`.
-  The unchanged stock WRF v4.6.1 executable SHA-256
+  The WRF v4.6.1 executable with SHA-256
   `f0fb585bf37b72fbdcece562047934cb8386db3958f153d6e4e6876e5fd997ac`
   accepted both, advanced to 2026-07-20 00:00:05, printed success, and wrote
   a finite history file.  Acceptance evidence SHA-256:
   `b8fca75fc263b23699b17ccadaf4a122199d92f460c83fbae3a8def702c05cc3`.
+  This register identifies that executable below as the instrumented oracle
+  built with an audited write-out-only patch. It is not an unchanged stock
+  build. Claiming stock acceptance for these exact files would require a
+  separate run with the clean tag build; none is claimed by this receipt.
 
 ## Binding numerical-oracle manifest
 
@@ -423,7 +427,7 @@ bytes are outside the numerical oracle.
     `nwp_diagnostics` scope entry above).*
 - **Inactive when**: none of the rejected options is requested.  Future
   implementation of any rejected mechanism is a roadmap item requiring its
-  own validation and scope amendment; it is not a vanish condition for this
+  own verification against WRF and scope amendment; it is not a vanish condition for this
   entry.
 
 #### D3b — exact-rational derivation and chained-FP32 dt
@@ -827,7 +831,11 @@ oversight, and each says what would close it.
   domain-total surface rain; the same measurement is now the SENSITIVITY of an
   mp=28 forecast to its aerosol initial condition and is published in
   `docs/public/validation/mp28-column-evidence.md` 6.1 and on the registry
-  option under `extensions.aerosol_initialisation`.  Pinned in code by
+  option under `extensions.aerosol_initialisation`. The folder name
+  `docs/public/validation/` is historical: its contents compare gpuwm
+  with WRF, which is code verification, not validation against
+  observations. The path is retained so existing evidence links keep
+  resolving. Pinned in code by
   `tests/test_mp28_forecast_smoke.py::test_microphysics_init_has_a_production_call_site`
   (which also asserts there is exactly ONE caller, because once-per-domain
   silently becoming per-step would overwrite an advected, activated and
@@ -899,14 +907,18 @@ oversight, and each says what would close it.
 - **D9g — mp=28 and mp=8 are deliberately NOT bit-identical thermodynamics.**
   `gpuwm/core/kernels/thompson_aerosol_common.cuh` contraction-pins the
   `RSLF`/`RSIF` Horner chains; `gpuwm/core/kernels/thompson.cu` leaves them
-  contracted and is byte-frozen.  nvrtc defaults to `--fmad=true` while the
+  contracted. nvrtc defaults to `--fmad=true` while the
   gfortran `-O2` baseline-x86-64 oracle emits no FMA, so the unpinned chain
   lands one ULP low.  That is not cosmetic: `module_mp_thompson.F:3401` opens
   the entire condensation / CCN-activation block on `ssatw > eps` with
-  `eps = 1.E-15` (`:185`), so one ULP flips a branch.  mp=28 matches WRF; mp=8
-  keeps the arithmetic its model-validated trajectory was measured on.  The
-  authority is WRF, and consistency between the two gpuwm schemes is
-  explicitly NOT the goal.
+  `eps = 1.E-15` (`:185`), so one ULP flips a branch. In mp=28 these two
+  Horner chains are pinned to reproduce WRF's rounding; mp=8 retains its
+  FMA-contracted saturation chains. This is code verification of those
+  expressions, not a claim that all mp=28 arithmetic matches WRF. The
+  mp=8 kernels changed in 2.7.4 and on 2026-09-23, after the 2026-07-28
+  WRF matched-run comparison, so that trajectory describes an earlier
+  build. WRF is the reference for this comparison; agreement between
+  the two gpuwm schemes is not the goal.
 
   CITATION REPOINTED 2026-08-01, from `:3400` to `:3401`.  Every publication
   of this deviation -- this entry, the registry warning, `docs/public/
@@ -931,9 +943,11 @@ oversight, and each says what would close it.
   `2730.0f` is CORRECT, because `calc_effectRad` genuinely uses WRF's INTEGER
   `g_ratio` PARAMETER.  So mp=8 carries a small deviation at five sites and
   none at a sixth.  mp=28 computes the ratio rather than inheriting the
-  literal.  This is a finding about the frozen scheme, recorded here because
-  the mp=28 port is what discovered it; mp=8 is not changed, since changing it
-  would move a model-validated trajectory.
+  literal. This records the arithmetic of the build inspected at that time.
+  That finding did not change mp=8 because doing so would have moved the
+  trajectory used in its historical matched-run comparison against WRF
+  (code verification). It does not imply a current byte freeze; later
+  mp=8 changes are recorded in D9k and `docs/public/PHYSICS.md`.
 
 - **D9i — `CCN_ACTIVATE.BIN` is a WRF-DISTRIBUTED INPUT, not a `thompson_init`
   product; gpuwm redistributes WRF's bytes verbatim.**  `table_ccnAct`
@@ -956,8 +970,8 @@ oversight, and each says what would close it.
   `tables/MANIFEST.sha256`, and shipped in the wheel and sdist through
   `[tool.setuptools.package-data]`'s `data/**/*` glob;
   `AEROSOL_ASSET_REDISTRIBUTED` is `True` and the notice travels in
-  `gpuwm/data/wrf_radiation/LICENSE-WRF.txt`.  A clean checkout can now
-  validate mp=28.
+  `gpuwm/data/wrf_radiation/LICENSE-WRF.txt`. A clean checkout can now
+  run the mp=28 WRF column-oracle gates (code verification).
 
   WHAT DID NOT MOVE.  It stays absent from
   `thompson_contract.CLASSIC_TABLE_ASSETS` (so `TABLE_SET_ID` is unchanged and
@@ -1031,7 +1045,8 @@ oversight, and each says what would close it.
   gates cannot say anything at all without setuptools, so the two are kept
   together and fail closed in both environments.
 
-- **D9k — validation status, stated as numbers.**  mp=28 is registered
+- **D9k: code-verification status against WRF column fixtures, stated as numbers.**
+  These comparisons use WRF as the reference, not observations. mp=28 is registered
   `implemented: true`, `maturity: implemented-unverified`,
   `reachability.state: component-override`.  The evidence is 22 committed WRF
   column fixtures -- the 19 the port spec names plus three `wp08-*` columns
@@ -1128,12 +1143,21 @@ oversight, and each says what would close it.
   `thompson_aerosol_sed.cu`'s cloud sedimentation, neither of which was this
   package's to edit.
 
-  NO forecast has ever been VALIDATED against WRF: there is no matched
-  gpuwm/WRF trajectory and no decay table.  That is the gap, not an absence of
-  running -- mp=28 integrates 150 steps x 12 s and, in a second gate, 600
-  steps (7200 s) on a specified-BC convective domain with 0 non-finite values,
-  0 bound violations and 0 spec-zone ring violations.  Finite and bounded is
-  not correct.  The same numbers are published on the registry option under
+  Three preregistered matched gpuwm/WRF mp=28 comparisons have run on an
+  idealized, single-domain, doubly periodic case. Their declared outcomes
+  were HOLD (`docs/public/validation/mp28-matched-trajectory.md`, V3 failed),
+  INCONCLUSIVE (`docs/public/validation/mp28-shortwindow-gate.md`) and HOLD
+  (`docs/public/validation/mp28-distribution-gate.md`, D1 failed). None
+  certified under its preregistered rule. These are code-verification
+  comparisons; no real-data matched mp=28 run with decay tables is
+  recorded here, and no mp=28 forecast score against observations is
+  published here. Such observation scoring would be validation.
+
+  Separate self-consistency runs integrate 150 steps x 12 s and, in a
+  second gate, 600 steps (7200 s) on a specified-BC convective domain
+  with 0 non-finite values, 0 bound violations and 0 spec-zone ring
+  violations. Finite and bounded does not establish agreement with WRF
+  or observations. These numbers are published on the registry option under
   `extensions.column_oracle_evidence`, and
   `tests/test_physics_registry.py::test_mp28_evidence_matches_the_bound_the_adapter_gate_actually_applies`
   binds them to the gate that produced them.
@@ -1318,9 +1342,14 @@ oversight, and each says what would close it.
 - **Consequences for verification**: (a) a true nested WRF d01 is **not**
   bit-identical to its no-nest run, while gpuwm's d01 is; (b) the N3/N4/N5
   bitwise ratchets certify gpuwm's own stronger invariance and protect this
-  deviation, not WRF identity; and (c) GPU-vs-WRF fidelity is adjudicated
-  by the matched-physics shadow gates at ensemble-envelope tolerances,
-  which absorb this deviation class.
+  deviation, not WRF identity; and (c) GPU-vs-WRF agreement was intended
+  to be judged by matched-physics shadow gates at ensemble-envelope
+  tolerances designed to accommodate this deviation class. No valid
+  result for those shadow gates is recorded here. The only green N5S
+  report had degenerate envelopes and was retired, as the historical
+  2026-07-28 ratchet record below explains. The separate WRF ensemble
+  comparisons in `docs/public/VERIFICATION.md` do not adjudicate these
+  older nest-shadow gates.
 
 ### Registered N1.5 harness seam — dumped-WRF theta restoration (Phase 5, lane p5n15)
 
@@ -1432,9 +1461,13 @@ receipts land; a superseded claim is replaced and said to be replaced, never
 left standing beside its successor.  A promoted patch changes the ArWen
 default and its entry becomes a numbered D-entry above.
 
-**No verdict exists yet.**  The battery has not run.  Every promotion cell
-below reads UNDECIDED, and that is the accurate state of the whole register on
-the day it is created.
+**No observation-battery verdict is recorded here.** This ledger began
+on 2026-08-03; its later edits, including the 2026-09-23 L1 correction,
+do not record a completed battery. The promotion cells below read
+UNDECIDED except L5, which DID NOT QUALIFY for battery arms. This is the
+state of this battery record, not a claim that no other run has been
+scored against observations. Specific observation comparisons are
+reported separately in `docs/public/VERIFICATION.md`.
 
 ### Class A — already the shipped default (no toggle exists or should)
 
@@ -1449,7 +1482,7 @@ the day it is created.
 |---|---|---|---|---|
 | **L3** gray-zone PBL | `bl_pbl_physics` (existing selector; no new key) | 1 (YSU) -> 11 (Shin-Hong 2015 scale-aware) | 1.5.2 headline; CPU authority max-ULP-0 against the byte-frozen `module_bl_shinhong.F`; partition ladder inside registered Honnert-envelope bands (`docs/public/receipts/grayzone/PHASE1-SHINHONG-20260803.md`); maturity implemented-unverified.  At dx 3000 m the scheme sits above its gated ladder, which is stated in the arm's registration and is exactly what an obs referee is for.  **Route:** the composition an L3 arm resolves to is registered as `thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1` (wrf-matched-run-candidate, template_only, HRRR-only), which is what makes the arm runnable: its three refusing gates — emission physics, root-preparation profile, certified hierarchy slice — now admit it, each by an enumerated admission keyed to that registration rather than a widened rail. | UNDECIDED |
 | **L4** 6th-order filter off the moist scalars | `moist_mix6_off` (WRF's own spelling) | `.false.` -> `.true.` | WRF v4.6.1 `Registry/Registry.EM_COMMON:2889` declares it verbatim: `rconfig   logical  moist_mix6_off   namelist,dynamics  max_domains  .false. rh  "moist_mix6_off"  "de-activate 6th-order horizontal filter for moisture"`.  It gates one call — `sixth_order_diffusion` on the moist array, `dyn_em/module_em.F:1421`, reached from `dyn_em/solve_em.F:2230` — so theta and the WRF `scalar`-package tracers keep their own filters.  This is therefore a **configuration-policy patch**: the WRF arm could be configured to match, and the battery tests it as an ArWen-DEFAULT candidate rather than as a capability.  Precedent: D-L4 ratified diff6 default-OFF in LES configs (`docs/superpowers/specs/P6-LES-DECISIONS-RATIFIED.md:35-39`).  The roadmap's "Sc-deck scales" framing has **no receipt in this tree** (verified: `diff_6th` and stratocumulus never co-occur; the Sc-deck finding is a SASE result, `gpuwm/verify/sase_ref.py:1280-1292`), so the entry is registered on WRF-community evidence plus D-L4 and is measured at 3 km. | UNDECIDED |
-| **L5** SASE closure | `bl_pbl_physics` -> 900 plus six mandatory companions (`docs/public/PHYSICS.md:718-723`) | 1 (YSU + `km_opt` 4) -> 900 | implemented-unverified PERMANENTLY (no WRF counterpart); met 2 of 7 frozen bars on its reference case; its first real-data forecast failed the health gate at 1 h. | **DID NOT QUALIFY.**  Registered entry gate: SASE earns battery arms only after one full 24 h battery-shape integration completes with `status: PASS`.  Until then it is scored on zero cases and reported as "did not qualify" -- accurate, and cheaper than crashed arms.  It is also not a bit-flip, so it enters as its own overlay and is deliberately not a member of patch-set v1. |
+| **L5** SASE closure | `bl_pbl_physics` -> 900 plus six mandatory companions (`docs/public/PHYSICS.md:718-723`) | 1 (YSU + `km_opt` 4) -> 900 | implemented-unverified on the WRF-conformance ladder (no WRF counterpart; this does not rule out code verification against its own reference implementation or validation against observations); met 2 of 7 frozen bars on its reference case; its first real-data forecast failed the health gate at 1 h. | **DID NOT QUALIFY.**  Registered entry gate: SASE earns battery arms only after one full 24 h battery-shape integration completes with `status: PASS`.  Until then it is scored on zero cases and reported as "did not qualify" -- accurate, and cheaper than crashed arms.  It is also not a bit-flip, so it enters as its own overlay and is deliberately not a member of patch-set v1. |
 
 ### Class C — knob exists, dormant (not in the battery suite)
 
@@ -1484,7 +1517,13 @@ guardrail list) is registered in the battery spec section 6.5 and is **frozen
 only by the owner's ratification** — an agent-invented gate is not a gate
 until the owner rules.
 
-## Seam-closure ratchet epoch (Davies clock bind, 2026-07-28)
+## Seam-closure ratchet epoch (Davies clock bind, 2026-07-28): historical record
+
+This section records the epoch at fix commit `439bc083`. The engine
+has changed since, including the 2026-09-23 fallout changes in D9k.
+These ratchet values measure that historical build, not the current
+engine. This register records neither ratification of the two verdicts
+marked pending below nor a later valid N5S regeneration.
 
 The batched end-of-Wave-1 ratchet regeneration executed with the Davies
 clock bind (branch `fix/davies-clock-bind`, fix commit `439bc083`):
@@ -1526,8 +1565,13 @@ clock bind (branch `fix/davies-clock-bind`, fix commit `439bc083`):
   `out/rungs/N4/manifest.json`, fingerprint `8ee7107c…` [old
   `2df55493…`]): d01-vs-anchor and d02-vs-regenerated-N3 bitwise
   ratchets TRUE; straight arm dual-run byte-identical (14/14 frames,
-  `N4-runA/n4-dualrun.json`); d03 statistics moved toward the
-  reference (MSLP corr 0.9526 -> 0.9989); both structural verdicts
+  `N4-runA/n4-dualrun.json`); d03 statistics against the reference
+  frame changed (MSLP corr 0.9526 -> 0.9989). That reference is one
+  WRF frame at +1:15 from the original run, whose physics differ from
+  this configuration (D3c and `gpuwm/verify/nest_gates.py`,
+  `CHILD_REFERENCE_FRAMES`). This is a regression signal for that
+  build, not evidence that either epoch is more accurate; accuracy
+  needs observations. Both structural verdicts were
   lane-adjudicated (`out/rungs/N4-verdicts-r3.json`, evidence
   `N4-runA/d03_refl_structure_matched_comparison.png`, d03 interior
   w_max 1.83 m/s) pending controller ratification.
@@ -1580,6 +1624,13 @@ Root-domain-only production pair, 2 h at 15-min cadence, base
   differences while means stay small: |dT| max 0.19 K at +15 min ->
   ~2.6 K local at +105 min (mean 3.5e-3 K at +120 min); |dMU| max to
   ~36 Pa local (mean 0.31 Pa); |dQVAPOR| max ~1e-3 kg/kg local.
+  A one-step phase change can grow during convective evolution, but
+  this pair has no perturbed control that establishes an expected
+  magnitude. The WRF recompilation control in
+  `docs/public/validation/mp28-matched-trajectory.md` demonstrates
+  growth on a different idealized case, not a bound for this one.
+  These numbers show the correction changes the run; they do not
+  establish whether either run is more accurate against observations.
 - **Cost**: byte-inert on timing — 0.335 vs 0.335 wall s per sim-min
   (both sides, dual-run).
 ## EXPERIMENTAL ensemble / perturbation / DA-cycle route (v1.2)

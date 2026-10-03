@@ -1817,7 +1817,7 @@ def test_emitted_radiation_uses_the_representation_the_guard_compares(
 
 @pytest.mark.parametrize("profile", [
     "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1",
-    "thompson-mp8-ysu-mm5-noah-validation-v1",
+    "thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1",
     "wsm6-ysu-mm5-noah-no-radiation-v1",
 ])
 def test_physics_profile_configs_pass_the_runner_guard_as_emitted(
@@ -1888,7 +1888,7 @@ def test_the_default_suite_states_its_physics_and_runs(
     full = physics_summary("morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1")
     assert "longwave RTE+RRTMGP, shortwave RTE+RRTMGP" in full
     assert "Kain-Fritsch cumulus" in full
-    reduced = physics_summary("thompson-mp8-ysu-mm5-noah-validation-v1")
+    reduced = physics_summary("thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1")
     assert "longwave OFF, shortwave Dudhia" in reduced
     assert "NO cumulus parameterization" in reduced
 
@@ -2955,8 +2955,8 @@ def test_the_wizard_labels_its_verdict_as_an_estimate_for_a_declared_card(
 
 
 NSSL2_PROFILES = (
-    "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1",
-    "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1",
+    "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-wrf-comparison-candidate-v1",
+    "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-wrf-comparison-candidate-v1",
 )
 
 

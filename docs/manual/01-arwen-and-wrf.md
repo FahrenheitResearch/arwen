@@ -2,22 +2,23 @@
 
 ## 1.1 The relationship in one paragraph
 
-ArWen integrates a WRF-ARW-class compressible nonhydrostatic core (RK3,
-split-explicit acoustics, one-way static nesting) in FP32 on CUDA
-[README.md:33-34]. Every physics scheme is a transcription of WRF v4.6.1 source
-(commit `d66e442f`), and every option carries a machine-readable maturity label in
-the physics registry (`gpuwm/physics_registry_v2.json`); the registry, not any prose
-page, is the authority, and `tests/test_registry_reachability.py` keeps the two from
-drifting [docs/public/PHYSICS.md:3-8]. The model state is FP32, like WRF's default
-REAL, and no end-to-end bit-identity with WRF is claimed anywhere
-[README.md:480-483]. Where ArWen deliberately diverges from WRF it documents the
-divergence in a numbered ledger (section 1.5), and the standard for judging a
-divergence is observational skill, not similarity to WRF output.
+ArWen integrates a WRF-ARW-class compressible nonhydrostatic core in FP32
+on CUDA. WRF-derived schemes use versioned WRF sources; the historical
+comparison below uses v4.6.1, while newer ports identify v4.7.1 in their
+rows. SASE and the RTE+RRTMGP coupling are original schemes or couplings
+without a WRF counterpart. The physics registry records the evidence
+status of each option; [the physics page](../public/PHYSICS.md) states
+the measured scope. No end-to-end bit identity with WRF is claimed.
 
-The WRF reference build used for matched comparisons is WRF v4.6.1 at the pinned
+Deliberate divergences are recorded in PROVENANCE.md. Their intended
+referee is skill against observations. The published observation-battery
+receipts contain no scored forecast result for that programme; a physical
+or numerical argument for a divergence is not an observation score.
+
+The WRF reference build for the historical July four-domain comparison is v4.6.1 at the pinned
 commit, built with GNU gfortran 15.2.0 (WRF `configure` option 34, dmpar; Intel
 oneAPI supplies the MPI layer only), run on 48 MPI ranks against a single RTX 5090
-GPU run [docs/public/VERIFICATION.md:65-69].
+GPU run [docs/public/VERIFICATION.md, historical comparison and limits].
 
 ## 1.2 What is kept from WRF-ARW
 
@@ -47,54 +48,75 @@ rather than silently substituted (chapter 5).
 
 ## 1.3 The maturity ladder
 
-The registry's raw maturity strings are `wrf-matched-run`,
+The registry's canonical strings are `wrf-matched-run`,
 `wrf-matched-run-candidate`, `supported`, `experimental-runtime`,
-`implemented-unverified`, and `planned`; the public physics page renders the first
-two as **model-validated** and **validation-candidate** [docs/public/PHYSICS.md,
-registry vocabulary note]. This manual uses the page vocabulary. Definitions
-[docs/public/PHYSICS.md:14-21]:
+`implemented-unverified`, and `planned`. These describe WRF-conformance
+evidence or its absence. None is validation against observations.
+Historical spellings remain readable aliases; new selections use the
+canonical names.
 
-- **model-validated**: a matched multi-hour ArWen-vs-WRF forecast of the reference
-  case has been run with this option and its decay tables are published.
-- **validation-candidate**: executable and gated, with a ratified reference
-  comparison, but deliberately not the default.
-- **supported**: production option from the longest-certified slice:
-  WRF-transcribed, standing unit and runtime gates, exercised by the certified
-  reference configurations.
-- **experimental-runtime**: executable, carrying a documented runtime restriction or
-  an unratified composition; selecting it warns and does not block.
-- **implemented-unverified**: runs on the GPU and is column-oracle-measured against
-  unmodified WRF Fortran, but no dedicated ArWen/WRF forecast-trajectory comparison
-  exists for it yet. The registry records its measured ULP (units in the last
-  place) distances and open divergences verbatim.
-- **planned / port-in-progress**: not selectable; nothing can resolve to it.
+- **wrf-matched-run:** a historical multi-hour comparison against WRF
+  exists for a named build and option set, with published tables. It
+  does not record a pass against a calibrated tolerance. The July case
+  failed its initial-state digest, and later kernel changes are not
+  measured by that run.
+- **wrf-matched-run-candidate:** executable with component checks and a
+  reference comparison accepted by the project; a candidate for a full
+  matched WRF comparison, not an observation-validation result.
+- **supported:** an executable option exercised by the named runtime
+  configurations, WRF-derived where a WRF counterpart exists. The label
+  is not an accuracy guarantee.
+- **experimental-runtime:** executable with a documented runtime
+  restriction or composition warning.
+- **implemented-unverified:** executable with the evidence its own row
+  states. Some options have WRF column comparisons; MYJ, WDM6,
+  Milbrandt-Yau and RRTM 1/1 have none. SASE has no WRF counterpart but
+  can still be checked against its own equations and reference code.
+- **planned / port-in-progress:** not selectable.
 
-"Certified" in these definitions, and wherever this manual applies it to
-physics, is the `gpuwm certify` contract: a run's capsule checked fail-closed against
-published bands from a matched WRF comparison of a pinned reference
-configuration [docs/public/CERTIFICATION.md]. The *certified slice* is the set
-of options those reference configurations exercise; chapter 3's tables name it
-scheme by scheme.
+The current registry has 45 component options, 27 labelled
+`implemented-unverified`. Most have component-level evidence rather than a matched forecast
+comparison; an independent Fortran oracle is not implied by the label
+`implemented-unverified`. See the current per-option inventory in
+[PHYSICS.md](../public/PHYSICS.md#maturity-vocabulary).
 
-The composition rule is machine-readable in the registry (clause C2): a template's
-maturity rank does not exceed the lowest maturity rank among the component options it
-selects; a composed suite is only as conformant as its weakest member
-[gpuwm/physics_registry_v2.json]. `implemented-unverified` is carried by 23 of the
-registry's 40 component options [docs/public/PHYSICS.md:32-38], so most of the
-physics inventory is at the oracle-measured tier, not the matched-run tier. Chapter 3
-gives the per-scheme evidence.
+The composition rule C2 takes the lowest component rung. The registry
+also carries explicit exemptions; a template label granted by an exemption
+does not establish a matched run of that exact tuple. In particular, the
+historical Thompson comparison used legacy RRTMG and does not cover the
+default RTE+RRTMGP radiation tuple. Read the exemption's scope, not just
+the label.
 
-## 1.4 The obs-skill standard for judging divergence
+`gpuwm certify` checks a run capsule against the named acceptance band.
+The historical `documented-margin` band is a margin around one old WRF
+comparison table. Passing it is a regression check, not evidence of
+statistical indistinguishability or forecast accuracy. A band calibrated
+from reference-ensemble spread is a separate instrument; the current
+[ensemble evidence](../public/receipts/wrf-consistency-20261002/SUMMARY.md)
+does not silently replace that historical band. The source-admission
+and component-oracle uses of certification elsewhere are identified by
+their actual checks.
 
-ArWen's governing ruling is model quality over optics: where the physics argument
-favors departing from WRF, ArWen departs, and the referee is skill against
-observations, not agreement with WRF. Wide-domain runs are graded against MRMS
-(`noaa-mrms-pds`, full files) as the verification truth for reflectivity-class
-fields, with surface observations (ASOS class) for near-surface state; ArWen's own
-multi-radar composite is a feed-space diagnostic, never the grader. Agreement with
-WRF remains a verification instrument (the matched-run protocol, chapter 7), because
-a transcription that cannot reproduce its source is wrong for uninteresting reasons;
-it is not the definition of correct.
+## 1.4 The intended observational standard for judging divergence
+
+Validation asks how well forecasts represent the atmosphere, using
+observations. Meteorology calls that scoring forecast verification; this
+manual uses the computational-science terms defined in
+[Verification and validation](../public/VERIFICATION.md#verification-and-validation).
+
+The intended broad observation programme uses MRMS for reflectivity and
+ASOS-class stations for near-surface state. Its archive and scoring tools
+exist, but its published battery receipts contain no scored forecast
+result. A multi-radar composite used as an input is a feed-space
+diagnostic, not an independent grader. Separate limited case scores are
+listed on the evidence page; they do not supply a broad validation record.
+
+Matching WRF remains code verification. WRF's published validation record
+can transfer only to the extent the models are statistically
+indistinguishable for the configuration and quantities in question.
+The old deterministic matched run does not establish that condition.
+The recent WRF ensemble comparisons are the appropriate fidelity
+instrument; their failures and coverage limits must be retained.
 
 ## 1.5 The divergence ledger
 

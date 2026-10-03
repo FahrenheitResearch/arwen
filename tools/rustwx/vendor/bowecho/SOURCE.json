@@ -1,0 +1,1606 @@
+{
+  "schema_version": 2,
+  "repository": "https://github.com/FahrenheitResearch/bowecho",
+  "source_commit": "eea07fc0a032d4de439d0bfe2def9098afd8b5a8",
+  "extraction_commit": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+  "crates": [
+    "bowecho_simradar",
+    "radar_core",
+    "radar_scattering",
+    "simradar_cuda",
+    "settings",
+    "data_source",
+    "nexrad_io"
+  ],
+  "licence": "MIT OR Apache-2.0",
+  "notices": [
+    "NOTICE",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "THIRD-PARTY-NOTICES.md",
+    "PYART-LICENSE.txt"
+  ],
+  "vendoring_changes": [
+    "Standalone workspace manifest and CPU-qualified lockfile.",
+    "Research LUT fixture assets are not bundled; existing exact hash checks and on-demand loader are retained.",
+    "Retain upstream notice collection, add scoped NOTICE and record all file origins; simulation source remains at the recorded extraction revision."
+  ],
+  "files": [
+    {
+      "path": "Cargo.lock",
+      "bytes": 68347,
+      "sha256": "b50927e925b1a7f5c01f6be85a9f77a9829673adaa9d25cc8458499e2f9675ca",
+      "origin": "vendoring",
+      "upstream_sha256": "2e870bff0f3ec7b4ef9828ac51c46daea1e230823d2e2afebef7ec04f2803a1d",
+      "change": "Standalone workspace and lockfile."
+    },
+    {
+      "path": "Cargo.toml",
+      "bytes": 1563,
+      "sha256": "6d9bcb44d684bb42a647e27c9451cbc5b6fe1b2d0fd86a04aadcf8c44662dda5",
+      "origin": "vendoring",
+      "upstream_sha256": "8208d3bd6463a4d9490a115cb4badf5de7cb51bd8794e390ac8a1df53791a73f",
+      "change": "Standalone workspace and lockfile."
+    },
+    {
+      "path": "LICENSE-APACHE",
+      "bytes": 9156,
+      "sha256": "6cf63d87586c7c25c3ab8e62eef5c75bbaa982b0a6f9c00c59e2720255aac9ec",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "LICENSE-APACHE"
+    },
+    {
+      "path": "LICENSE-MIT",
+      "bytes": 1076,
+      "sha256": "14c3175e602a6b60c1091a74fda2708e59f31b84d96031901558d7a2ebe804c3",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "LICENSE-MIT"
+    },
+    {
+      "path": "NOTICE",
+      "bytes": 1188,
+      "sha256": "28b354f78bf2712accf2ac1ee5e7a1c22ab0e219f2e6ba940945447577a96d72",
+      "origin": "vendoring",
+      "change": "Scoped notice for the retained subset."
+    },
+    {
+      "path": "PYART-LICENSE.txt",
+      "bytes": 2230,
+      "sha256": "7d306b5691e1ba34985c63503e753f31dd554fbb167bee53bc8376fc43dc69de",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "PYART-LICENSE.txt"
+    },
+    {
+      "path": "THIRD-PARTY-NOTICES.md",
+      "bytes": 19409,
+      "sha256": "089754659758222e74d75cdce0304eacb10bba9f22d86541d93cd671108723f5",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "THIRD-PARTY-NOTICES.md"
+    },
+    {
+      "path": "crates/bowecho_simradar/Cargo.toml",
+      "bytes": 600,
+      "sha256": "86c5ee6310f88fd4c6696d4b03ade584477ceb490391a4b4b5b6bb46f5d83e99",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/Cargo.toml"
+    },
+    {
+      "path": "crates/bowecho_simradar/README.md",
+      "bytes": 2099,
+      "sha256": "5b6b98cbfab173b1152a62eb9087f856fec048e6f9829ed0f3e47c1d1d4b642e",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/README.md"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/core_tests.rs",
+      "bytes": 112485,
+      "sha256": "07a8ffd85c7d4450bc10847a3be78f74d50ac4d14aca769f4fae5b7424d671ec",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/core_tests.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/lib.rs",
+      "bytes": 1046,
+      "sha256": "7f47bfaec70401a3ac56884a60d0ed33260309baa7aca18f896357bd773a9e95",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/lib.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/model_grid.rs",
+      "bytes": 16785,
+      "sha256": "51766ec6227f78fa9b73dbff5a1726af64c3b9637726dee6f9ad31cdeb3bdf42",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/model_grid.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/model_input.rs",
+      "bytes": 6429,
+      "sha256": "2a78d76e901e68c289a9c24d9dab0e958b27f4bdd9d2389edcddb527df1c3bc8",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/model_input.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/vcp_catalog.rs",
+      "bytes": 50094,
+      "sha256": "9e225894191e5af0c329106e162e00e209be601f4fb71ca3e743d563d01a6bf5",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/vcp_catalog.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_p3_assets.rs",
+      "bytes": 5992,
+      "sha256": "4c4d4fb2d8a40453a6f3b248de5f50af840fb2bb3e1fa5b72342d30fad25d249",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_p3_assets.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_property_reader.rs",
+      "bytes": 170353,
+      "sha256": "4dc3d9d45bc34e66cf105605b95e0def2667e2245a2e0de34e7c28279a00c563",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_property_reader.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_radar_core.rs",
+      "bytes": 394193,
+      "sha256": "94315e0b5f6b72526309782bd8bed072ad40bdecb7e69fd3e0f332cd368d437a",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_radar_core.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_radar_estimator.rs",
+      "bytes": 74875,
+      "sha256": "1679e64d28e3c1d9d708d4b8943073d57322293d7084550d21f27531edb3b040",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_radar_estimator.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_radar_physics.rs",
+      "bytes": 40210,
+      "sha256": "6bc4fea420981b058244695018f2d2b23b14aea0a1eefb161b775b9adb3f845e",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_radar_physics.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_radar_validation.rs",
+      "bytes": 47713,
+      "sha256": "13491dff1af881c41707b87cc90aa3056ac6d6129ba8cd0aebda8decf9f559bf",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_radar_validation.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_refractivity.rs",
+      "bytes": 44670,
+      "sha256": "d33c20beae6bf52e42d6e86534829602caaefea35d0bb72bb78d6a275d0969f9",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_refractivity.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_scene_adapter.rs",
+      "bytes": 14341,
+      "sha256": "4d9d037af3105482e00fc7494bfebdd78330f1b6114b0e2d0caef8fea84f3ddf",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_scene_adapter.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_scene_inventory.rs",
+      "bytes": 26020,
+      "sha256": "6d2b28875754a17ada51480a6a0cc95ad7bae58006bfecee06bc4d44b9e91cd7",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_scene_inventory.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_temporal.rs",
+      "bytes": 55685,
+      "sha256": "2bf0f795e8d4d5b1c1b0748c44943e20d24992d9002b71650774dbffcfddffd8",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_temporal.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_tmatrix_assets.rs",
+      "bytes": 52473,
+      "sha256": "104a8c45dfc06c242854f7a179b65350b061f35d272f47e55c4f2983919ff707",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_tmatrix_assets.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_tmatrix_band_assets.rs",
+      "bytes": 40444,
+      "sha256": "60f1958f09462f13474e6de862a8553d32ef246cceef9240893dde6e517848a4",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_tmatrix_band_assets.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_tmatrix_cuda.rs",
+      "bytes": 71432,
+      "sha256": "0a5da702751316295ead3b2b71b358e8af128d118442f186c3c18cc0c401b5ae",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_tmatrix_cuda.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_tmatrix_legacy_pack.rs",
+      "bytes": 26559,
+      "sha256": "2ce0dbce83e40b11c86981a68dfcaabf1a1260c353803df69cb35d7c238c7aa3",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_tmatrix_legacy_pack.rs"
+    },
+    {
+      "path": "crates/bowecho_simradar/src/wrf_tmatrix_scene.rs",
+      "bytes": 338789,
+      "sha256": "6be2b72c54ac8dae6e41547c4b721fa26d085da4945db303a65a040370c901db",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/bowecho_simradar/src/wrf_tmatrix_scene.rs"
+    },
+    {
+      "path": "crates/data_source/.gitignore",
+      "bytes": 8,
+      "sha256": "44c92e3a70ad3307b7056871c2bdb096d8bfa9373f5bf06a79bb6324a20ff2fb",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/.gitignore"
+    },
+    {
+      "path": "crates/data_source/Cargo.toml",
+      "bytes": 498,
+      "sha256": "0b517a724e86c05b91392c14c6743fc365154ea0de3a784f865771c18a43fa47",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/Cargo.toml"
+    },
+    {
+      "path": "crates/data_source/certs/sectigo_public_server_authentication_ca_dv_r36.pem",
+      "bytes": 2244,
+      "sha256": "b40358316fd9e1caaaab92c382927d2c13ef51b481eec9371a82e16c86f2a687",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/certs/sectigo_public_server_authentication_ca_dv_r36.pem"
+    },
+    {
+      "path": "crates/data_source/examples/intl_probe.rs",
+      "bytes": 3774,
+      "sha256": "598864f24ba56fa5136dbb22298d4e16f1fe0a2d1f7c6a6d4a58dcff420bf7c4",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/examples/intl_probe.rs"
+    },
+    {
+      "path": "crates/data_source/examples/kmkx_fetch.rs",
+      "bytes": 1117,
+      "sha256": "715de82086d0e5e1aea1f91f33570edd20fe1439af362711f7cafcc821f502fb",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/examples/kmkx_fetch.rs"
+    },
+    {
+      "path": "crates/data_source/examples/probe_sources.rs",
+      "bytes": 2308,
+      "sha256": "7cc9a7ef1426d8711235996c97b5d3c950fa6a498179d7548122968e8eaadedb",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/examples/probe_sources.rs"
+    },
+    {
+      "path": "crates/data_source/examples/site_list_probe.rs",
+      "bytes": 625,
+      "sha256": "6e1aebd540b131b4f1ed9d62a8439d904ea64b29982ed437a04f1cd8ef84e7e2",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/examples/site_list_probe.rs"
+    },
+    {
+      "path": "crates/data_source/examples/tile_fetch_probe.rs",
+      "bytes": 379,
+      "sha256": "85898d1b1ff990138eff55e1de8920fb202c167110f095e666f61bd85e8310f4",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/examples/tile_fetch_probe.rs"
+    },
+    {
+      "path": "crates/data_source/src/community_feeds.rs",
+      "bytes": 14932,
+      "sha256": "c443a63e61737a449211d9ebdcdd0a601c2ea6b9fef34b29f637a8ec24bb1d10",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/community_feeds.rs"
+    },
+    {
+      "path": "crates/data_source/src/embedded_sites.rs",
+      "bytes": 10345,
+      "sha256": "2dddfd891513ca347dc1008a48a0c60f97fa4f437357e5e4a3ce5f3c5498462f",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/embedded_sites.rs"
+    },
+    {
+      "path": "crates/data_source/src/fixtures/gdex_catalog_era20c_decade.xml",
+      "bytes": 2177,
+      "sha256": "43bb72d31ffd57f6d8bd631faf379345c99d70a81fd85a7450e6872081a30280",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/fixtures/gdex_catalog_era20c_decade.xml"
+    },
+    {
+      "path": "crates/data_source/src/fixtures/gdex_catalog_era20c_top.xml",
+      "bytes": 4556,
+      "sha256": "3da16f44b3b7049a40dcf19795cc2a0617c9d7c71cd0c700d370e3e7e1191a70",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/fixtures/gdex_catalog_era20c_top.xml"
+    },
+    {
+      "path": "crates/data_source/src/fixtures/gdex_catalog_leaf.xml",
+      "bytes": 3357,
+      "sha256": "935691c3491b79671501947c80f867b323aa7afdaa67a719c1c4f2cc9185b7d6",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/fixtures/gdex_catalog_leaf.xml"
+    },
+    {
+      "path": "crates/data_source/src/fixtures/gdex_catalog_top.xml",
+      "bytes": 3914,
+      "sha256": "86555551604fae20924c3138c5bcdb2652b7ec43f8231b266d1844089967a241",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/fixtures/gdex_catalog_top.xml"
+    },
+    {
+      "path": "crates/data_source/src/fixtures/gdex_ncss_dataset.xml",
+      "bytes": 4707,
+      "sha256": "a8534da900925300e9f0beac7e6c795a6ec4eb72281280515dc4a1249ee906e0",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/fixtures/gdex_ncss_dataset.xml"
+    },
+    {
+      "path": "crates/data_source/src/gdex.rs",
+      "bytes": 70613,
+      "sha256": "956e2fec7e20ab9a29cc07368b0aacd5aebe1a45c33677a3848204661a450815",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/gdex.rs"
+    },
+    {
+      "path": "crates/data_source/src/grid_products.rs",
+      "bytes": 70337,
+      "sha256": "7b433e3b4c093aef006d53c2282fa3bf9efc34a2ee9bb60787868a7a5de411e9",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/grid_products.rs"
+    },
+    {
+      "path": "crates/data_source/src/grid_products/fixtures/imgw_ram_cmax_listing.html",
+      "bytes": 2846,
+      "sha256": "918830a113d2f7094bebaaa88ef2ad44506583c9c1cf2512f52728cf36682a5c",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/grid_products/fixtures/imgw_ram_cmax_listing.html"
+    },
+    {
+      "path": "crates/data_source/src/grid_products/imgw.rs",
+      "bytes": 20865,
+      "sha256": "0c508758520f2231fe2854c87a1e13eef74025d75d7414dad0c5b2665de8b806",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/grid_products/imgw.rs"
+    },
+    {
+      "path": "crates/data_source/src/international.rs",
+      "bytes": 72540,
+      "sha256": "efbf109a4269dc10c31eaf2da2bdc4a002e8a23492d17535dd6b65b4dbd262b0",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international.rs"
+    },
+    {
+      "path": "crates/data_source/src/international/australia_nci.rs",
+      "bytes": 32492,
+      "sha256": "ecb1b7a6a93d448cd24cfbf6fe2e634f6207e316dff7396a84f4d07b32e97bba",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/australia_nci.rs"
+    },
+    {
+      "path": "crates/data_source/src/international/chmi.rs",
+      "bytes": 25100,
+      "sha256": "92f511379fe295c30cb3d469cd20e1a18f09824ad205283031ce39fc2e3c5e67",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/chmi.rs"
+    },
+    {
+      "path": "crates/data_source/src/international/dmi.rs",
+      "bytes": 16321,
+      "sha256": "c2b429711715ee04d446232d7f270672a6da8d47d115575aaf10d919f30f6e71",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/dmi.rs"
+    },
+    {
+      "path": "crates/data_source/src/international/dwd.rs",
+      "bytes": 33068,
+      "sha256": "54814303b6756bb265b83dd0b74923595c0c98bbff50ae25288ac764c025c5cf",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/dwd.rs"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/dmi_items_sorted.json",
+      "bytes": 2240,
+      "sha256": "a7d94f0cdf33b7acdf6120a0612d39ef40471a621d42e79ae803d258341a393f",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/dmi_items_sorted.json"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/fmi_fianj_listing.xml",
+      "bytes": 1611,
+      "sha256": "8d54ab59f5a1b731db35e074da2ad38c1156bd8bbdb2a688e2fe8060c1b778f7",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/fmi_fianj_listing.xml"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/fmi_site_prefixes.xml",
+      "bytes": 1101,
+      "sha256": "b3ee15b08800f31861b997d33a5ed84de8668e16d52edaeaffecae2375d9813b",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/fmi_site_prefixes.xml"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/geosphere_listing_recent.xml",
+      "bytes": 1467,
+      "sha256": "376b579878d57a85abbd706963f35bda2f9b24c1edd3cd22b6952ccf3fd09e8f",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/geosphere_listing_recent.xml"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/geosphere_listing_truncated.xml",
+      "bytes": 1287,
+      "sha256": "c2ce4d826a70a8b784fb933d06516f404a6c7f9180b2dc60a2831154412336c9",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/geosphere_listing_truncated.xml"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/meteoromania_buc_listing.html",
+      "bytes": 3493,
+      "sha256": "607aa1d608326dc5ecd8d07d0e293b9641def5ca4be981574d9a2bb8b96f93a2",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/meteoromania_buc_listing.html"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/ord_bejab_hour.xml",
+      "bytes": 2770,
+      "sha256": "5459d3bcf8f29583cd274fa8aca9df3983370161a739d3a8d763798eafcdfc33",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/ord_bejab_hour.xml"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/ord_es_site_prefixes.xml",
+      "bytes": 1052,
+      "sha256": "1bfd9fde733ccbe8a20cfb1066e33d2f3c6f22455ced33add90c780abb656f08",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/ord_es_site_prefixes.xml"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/ord_esatn_hour.xml",
+      "bytes": 2267,
+      "sha256": "56ee21d8849ce7c3c87b15fb1148936e9463fb6eccbce17b8305e9d3d5495592",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/ord_esatn_hour.xml"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/ord_fr_site_prefixes.xml",
+      "bytes": 1682,
+      "sha256": "52afb5d67be35fc766973043ff91af1708c445066fd7b5056e4fa5d7279430cf",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/ord_fr_site_prefixes.xml"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/ord_frtou_hour.xml",
+      "bytes": 4232,
+      "sha256": "af5666b2ee1e233d45a9bd3e01ef0fccb27607032bf71b43e580b45631c5a5a3",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/ord_frtou_hour.xml"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/ord_iedub_hour.xml",
+      "bytes": 1549,
+      "sha256": "fc4db58c34d63bac3790640ecef3358217602ed60b06829d0b083b661edb354b",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/ord_iedub_hour.xml"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/ord_mtgud_hour.xml",
+      "bytes": 3456,
+      "sha256": "5db269189913b823643330165661144fcb8e4d05c13fb39aae4840d83d473f62",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/ord_mtgud_hour.xml"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/ord_nlhrw_hour.xml",
+      "bytes": 1309,
+      "sha256": "e311c7d809a4ae762209938d0af970a547116646a9b5dcfd02acb38d81f3e6fd",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/ord_nlhrw_hour.xml"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/ord_nohur_hour.xml",
+      "bytes": 4053,
+      "sha256": "b6957ea5f3838c8f29bd73ae997f2332effa46f15a78633bcb63ced739e1e9c2",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/ord_nohur_hour.xml"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/smhi_areas.json",
+      "bytes": 1808,
+      "sha256": "664ce17f0266f902989d5a68290454782c7cb490e52bd3f5380cad56d65a7f22",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/smhi_areas.json"
+    },
+    {
+      "path": "crates/data_source/src/international/fixtures/smhi_qcvol_angelholm.json",
+      "bytes": 983,
+      "sha256": "1746add1d9aa2deb56ca70d17b3c526bcba75c33dee53c9d87cf3820acc9950e",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fixtures/smhi_qcvol_angelholm.json"
+    },
+    {
+      "path": "crates/data_source/src/international/fmi.rs",
+      "bytes": 12543,
+      "sha256": "14eb0577e12c4e56cea8e5c614757b0b698821fae9bccdbc63da049586f1c000",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/fmi.rs"
+    },
+    {
+      "path": "crates/data_source/src/international/geosphere.rs",
+      "bytes": 10474,
+      "sha256": "2e78d5dbe62185e2a1a8d8c2edc946d09ddbfd71fbd06946e2b23da849069c47",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/geosphere.rs"
+    },
+    {
+      "path": "crates/data_source/src/international/kaia.rs",
+      "bytes": 12147,
+      "sha256": "a09227c0004b3e9f1e86a78b907978ddf7d5def0316d808b7131a6b5eeb7d8f0",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/kaia.rs"
+    },
+    {
+      "path": "crates/data_source/src/international/listing.rs",
+      "bytes": 11659,
+      "sha256": "2d5b55ad9e402ce8ab606cceedf31bf95e9b8882ea50b32a8a7ccfeffbdf5823",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/listing.rs"
+    },
+    {
+      "path": "crates/data_source/src/international/lombardia.rs",
+      "bytes": 10717,
+      "sha256": "b4e03aa5bc360ef8fdfcdc8ebbb35808674581153f9ab95493c63b91a6446e1d",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/lombardia.rs"
+    },
+    {
+      "path": "crates/data_source/src/international/meteoromania.rs",
+      "bytes": 25383,
+      "sha256": "2dc8252e517791864bc17bae9d61ff7684db0f8837a8d726f7cb82c8946e16e4",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/meteoromania.rs"
+    },
+    {
+      "path": "crates/data_source/src/international/ord.rs",
+      "bytes": 115105,
+      "sha256": "251d7f2aa52b71d30e788078566efaae858f5f6345255d5e439c3f9e2bba09e3",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/ord.rs"
+    },
+    {
+      "path": "crates/data_source/src/international/piemonte.rs",
+      "bytes": 7783,
+      "sha256": "0b3c7ed28bd7f01154d693a263e7419053fd18b630f9efc80124c8c6966a67c3",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/piemonte.rs"
+    },
+    {
+      "path": "crates/data_source/src/international/shmu.rs",
+      "bytes": 19350,
+      "sha256": "2dbfd111c85b9163ae842286cda2a05b44e61b6673b4092de19533226412dc0c",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/shmu.rs"
+    },
+    {
+      "path": "crates/data_source/src/international/smhi.rs",
+      "bytes": 20859,
+      "sha256": "6499c1d64e993ae6f73d7f5c6389c9024783a4e8e747c3ca97718470abbfbdbd",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/international/smhi.rs"
+    },
+    {
+      "path": "crates/data_source/src/lib.rs",
+      "bytes": 106603,
+      "sha256": "1bc20a5976277d01302015f06da0f6e9b634829c987c35a954a3d53358b91a33",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/lib.rs"
+    },
+    {
+      "path": "crates/data_source/src/sites.rs",
+      "bytes": 22081,
+      "sha256": "28b6a434d8d294e1531c4493d09c1b930ac00021df6fa0e6ea43707700e8e355",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/sites.rs"
+    },
+    {
+      "path": "crates/data_source/src/tropical.rs",
+      "bytes": 168426,
+      "sha256": "3451c0c64f5b94bbb80633fcd33f2c416322e9680cb4f208564145be75949b2a",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/src/tropical.rs"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/chmi_brd_products.html",
+      "bytes": 981,
+      "sha256": "2b703da05b1e9053abd43476e094a024c3133191569cd6b309c3a2666c5010bc",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/chmi_brd_products.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/chmi_brd_vol_v_files.html",
+      "bytes": 1879,
+      "sha256": "3718eafca421500f13a5f722b7805e761e51f7f4317be20065da3908bc83687f",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/chmi_brd_vol_v_files.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/chmi_brd_vol_z_files.html",
+      "bytes": 1879,
+      "sha256": "b854632cc686509b7d9b9bf2d5dc5656003d31af8d3baa897ec0153ef1e3b8dd",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/chmi_brd_vol_z_files.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/chmi_sites_root.html",
+      "bytes": 409,
+      "sha256": "5251b1e4b1ea2ee489520fbdbf30743ac48e43a5063d2708d00a3ca083829513",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/chmi_sites_root.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/dwd_asb_v_filter_polarimetric_files.html",
+      "bytes": 5621,
+      "sha256": "b2470ebeba7301a0eb90e748264a43305ab128640d33b6bbb6965ea1fe1afc11",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/dwd_asb_v_filter_polarimetric_files.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/dwd_asb_v_hdf5_dir.html",
+      "bytes": 459,
+      "sha256": "dfd96b448f2bf20cae18f9871352518e09c7e5bb0105d194e921ff4b0c6623ba",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/dwd_asb_v_hdf5_dir.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/dwd_asb_v_station_dir.html",
+      "bytes": 313,
+      "sha256": "b52cd8c44c5a62e6258481f8392034d64c2f21409a869ae3bba3bc3719895155",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/dwd_asb_v_station_dir.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/dwd_asb_z_hdf5_dir.html",
+      "bytes": 459,
+      "sha256": "96acd408b58291e012663a6578b4c1c5d3dcdd9f77495bde0a20029359c4189d",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/dwd_asb_z_hdf5_dir.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/dwd_asb_z_station_dir.html",
+      "bytes": 431,
+      "sha256": "5d290e447cc28e67e54d002e2cdb981fe47d1c3b388151191519a6a1dfc8016b",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/dwd_asb_z_station_dir.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/dwd_asb_z_unfiltered_files.html",
+      "bytes": 14103,
+      "sha256": "bef16d682f4a6b97e9fab29033c27dd99b6098aca82442fae1e4a17c3b56a625",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/dwd_asb_z_unfiltered_files.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/dwd_sites_root.html",
+      "bytes": 2264,
+      "sha256": "188f7c74fe6c4dcd237e9b4dfeee2c1ef060cdac70e06ed801a9fb1ec7a626dc",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/dwd_sites_root.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/dwd_sweep_vol_z_stations.html",
+      "bytes": 2080,
+      "sha256": "d4f18fb13cc419b08154cf2f0f84d7f7ac335e63ec732fc1e5082d038a7c99b9",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/dwd_sweep_vol_z_stations.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/shmu_skjav_dbz_dates.html",
+      "bytes": 7115,
+      "sha256": "13b381e4bf93b1d0756b938dbde9235fb682af47fcd3286a80c594d17d970e72",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/shmu_skjav_dbz_dates.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/shmu_skjav_dbz_files.html",
+      "bytes": 2793,
+      "sha256": "e54fbd13946303927ebca541784db437337b1e3020192ce7b082d61deeb37eb4",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/shmu_skjav_dbz_files.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/shmu_skjav_products.html",
+      "bytes": 2271,
+      "sha256": "dd0bd644113f1ad5fffdc397b72f3ff55537f984bee3de079bf388a9b9add2fe",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/shmu_skjav_products.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/shmu_skjav_v_files.html",
+      "bytes": 2787,
+      "sha256": "10cc213eb43f10c907672f188a6be37cd10bb09953d3793e24dd51e0de62972a",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/shmu_skjav_v_files.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/shmu_volume_root.html",
+      "bytes": 1712,
+      "sha256": "bd898f4ad7155c58d9cb8186a3cee087a483bfe15651b396c49177649c3f184c",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/shmu_volume_root.html"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/tropical/gdacs_bavi_forecast_geometry.json",
+      "bytes": 5695,
+      "sha256": "dc98a78a80d39ed85330ec0664f97e847466afc0dc0ef07716040b06a8576c12",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/tropical/gdacs_bavi_forecast_geometry.json"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/tropical/gdacs_bavi_geometry.json",
+      "bytes": 7295,
+      "sha256": "e6ae786c12738d24359334c5428be1e63424335ff5f593891633148cbb04e101",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/tropical/gdacs_bavi_geometry.json"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/tropical/gdacs_bavi_wide_cone_geometry.json",
+      "bytes": 39499,
+      "sha256": "d9019c9598f3c6d935c8efd5bd19168160c02660f4370c83f37134b03ba0e343",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/tropical/gdacs_bavi_wide_cone_geometry.json"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/tropical/gdacs_tc_list.json",
+      "bytes": 2427,
+      "sha256": "d2f1763ed71f45e01a3a229f4d3a2165df3b25b0d0eb4d0ac503eece26b7710b",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/tropical/gdacs_tc_list.json"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/tropical/jtwc_bavi_warning.txt",
+      "bytes": 8380,
+      "sha256": "4a5134c6d035250530e7341cf50cf95d1109d8573b2239c97e81786564e0aef0",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/tropical/jtwc_bavi_warning.txt"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/tropical/jtwc_bavi_warning_25.txt",
+      "bytes": 8182,
+      "sha256": "b93e4e356dec02f5b4540b88fa9dc264045bd9a33c98c755fd4dd2f7ef6745b6",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/tropical/jtwc_bavi_warning_25.txt"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/tropical/jtwc_rss.xml",
+      "bytes": 4504,
+      "sha256": "4a4ec156431c29132587a5aac1be916086f4d4466d4dab43512a72da93cb39a0",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/tropical/jtwc_rss.xml"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/tropical/nhc_active_storms.json",
+      "bytes": 850,
+      "sha256": "0d04d35d6e17a030edc9d672827bf40bfcee0644a32ccfdec84b53eddf981a67",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/tropical/nhc_active_storms.json"
+    },
+    {
+      "path": "crates/data_source/tests/fixtures/tropical/nhc_milton_forecast_advisory.txt",
+      "bytes": 2403,
+      "sha256": "ad6abac765d6b1f8a1f6dab3d490a5d551039e0aa02c9e9bc04063cf70a98e4e",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/data_source/tests/fixtures/tropical/nhc_milton_forecast_advisory.txt"
+    },
+    {
+      "path": "crates/nexrad_io/.gitignore",
+      "bytes": 8,
+      "sha256": "44c92e3a70ad3307b7056871c2bdb096d8bfa9373f5bf06a79bb6324a20ff2fb",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/.gitignore"
+    },
+    {
+      "path": "crates/nexrad_io/Cargo.toml",
+      "bytes": 540,
+      "sha256": "68f053cf45e59af536f29b214ed4508cbf7bee88ad053142f01f1c7300e047b4",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/Cargo.toml"
+    },
+    {
+      "path": "crates/nexrad_io/examples/bench_decode.rs",
+      "bytes": 7019,
+      "sha256": "841abd544400d93f6363072ae5a703d37b86c4eefda32083ed6b0a1b6846199f",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/examples/bench_decode.rs"
+    },
+    {
+      "path": "crates/nexrad_io/examples/dorade_probe.rs",
+      "bytes": 2185,
+      "sha256": "acb82f99c9a8c6aa8e01f6c3f81a343fe35b6b86e60bf9a62b5848e2496f61f9",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/examples/dorade_probe.rs"
+    },
+    {
+      "path": "crates/nexrad_io/examples/dorade_xval.rs",
+      "bytes": 4894,
+      "sha256": "92169c2a43881767297fb47943e0fdfaa00a9a5619d781985c21eb0b9a6c30fd",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/examples/dorade_xval.rs"
+    },
+    {
+      "path": "crates/nexrad_io/examples/dump_radar.rs",
+      "bytes": 6008,
+      "sha256": "b32c0295ce6ff79cda8228f0357d6289b1d0b73392563041b4a8b2e377b9f53c",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/examples/dump_radar.rs"
+    },
+    {
+      "path": "crates/nexrad_io/examples/inspect.rs",
+      "bytes": 4204,
+      "sha256": "06b6d896b14a3fbea2294fd5ff8b2a956e3cc8132885b3c8b82335a421bc8c0a",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/examples/inspect.rs"
+    },
+    {
+      "path": "crates/nexrad_io/examples/intl_assembly_probe.rs",
+      "bytes": 4951,
+      "sha256": "35a6db9a4563ac06f9e705bc0a65686626d185749944618453151bd9bd0993df",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/examples/intl_assembly_probe.rs"
+    },
+    {
+      "path": "crates/nexrad_io/examples/jma_inspect.rs",
+      "bytes": 3726,
+      "sha256": "0da2ef94b591c18f539039e32ec96b984fe1a67c81262d361e6f32efd068d16c",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/examples/jma_inspect.rs"
+    },
+    {
+      "path": "crates/nexrad_io/examples/mobile_archive_probe.rs",
+      "bytes": 1404,
+      "sha256": "61ccd28da70421d4a22ddf769d2bc733dab2f0c5ef91c7506cf5b2364490e3b3",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/examples/mobile_archive_probe.rs"
+    },
+    {
+      "path": "crates/nexrad_io/examples/verify_pipeline.rs",
+      "bytes": 2081,
+      "sha256": "3a8f76b8f360678cde37c3e8a09fe80eefd348e9dbd37831627fbbab4975195a",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/examples/verify_pipeline.rs"
+    },
+    {
+      "path": "crates/nexrad_io/src/cfradial.rs",
+      "bytes": 40753,
+      "sha256": "4a4aa91d49f02958835a835997bb037831fbd2c6e669c7e72e88f46a38f5e828",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/src/cfradial.rs"
+    },
+    {
+      "path": "crates/nexrad_io/src/dorade.rs",
+      "bytes": 59518,
+      "sha256": "8159b25caee10c303b25bb3ec77010a2219d9457f6c2a80fc386bfa1e956f4af",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/src/dorade.rs"
+    },
+    {
+      "path": "crates/nexrad_io/src/hdf5lite.rs",
+      "bytes": 75985,
+      "sha256": "15d9c9fa15862c0b50220e1b514eda49d002b24b6c5370914640ebc1b079d076",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/src/hdf5lite.rs"
+    },
+    {
+      "path": "crates/nexrad_io/src/jma.rs",
+      "bytes": 62249,
+      "sha256": "8ba017b0dcdf0f212f3aef3a729a7508b7f6d7acbf21b081e3e2352335b87d96",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/src/jma.rs"
+    },
+    {
+      "path": "crates/nexrad_io/src/lib.rs",
+      "bytes": 114836,
+      "sha256": "7ae22534c1be75242b05c8c9f2be9e1e3c479ba6d1a0ef5d94695e0059efcd21",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/src/lib.rs"
+    },
+    {
+      "path": "crates/nexrad_io/src/mobile_archive.rs",
+      "bytes": 29339,
+      "sha256": "39c233ec865fb418538d155a8b0e82486f574caa141d9ce1c969a3bec85b8233",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/src/mobile_archive.rs"
+    },
+    {
+      "path": "crates/nexrad_io/src/netcdf3.rs",
+      "bytes": 26430,
+      "sha256": "bb500b1bdcb1538c8f2546b325c6802efeb13efbb980397e19a91b4bb227e5f3",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/src/netcdf3.rs"
+    },
+    {
+      "path": "crates/nexrad_io/src/odim.rs",
+      "bytes": 37019,
+      "sha256": "780bcc1ce8761cd7796d956e3bc680d234efa98336314f4cbf0a9a4edb86076e",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/src/odim.rs"
+    },
+    {
+      "path": "crates/nexrad_io/src/odim_cartesian.rs",
+      "bytes": 23493,
+      "sha256": "31f9ea3f85ff9e8db096de167509decfb228d159c331534a0ebe57007b8c3f94",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/src/odim_cartesian.rs"
+    },
+    {
+      "path": "crates/nexrad_io/src/vwp.rs",
+      "bytes": 30288,
+      "sha256": "854caf779a4a073a5f42109d4e2c968aa42e6543bf36d9beda67809976f84ccc",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/src/vwp.rs"
+    },
+    {
+      "path": "crates/nexrad_io/tests/cfradial_real.rs",
+      "bytes": 4532,
+      "sha256": "2f24de1c674ed4437070330968e013969e6f88c15dfef7876a36edea788ac507",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/cfradial_real.rs"
+    },
+    {
+      "path": "crates/nexrad_io/tests/cfradial_real_files.rs",
+      "bytes": 10019,
+      "sha256": "3b7449ee1aa3d74e8e1650a69d3e675bf1e535e2da00faedbc313fc3e5952273",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/cfradial_real_files.rs"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/20130429043000.rad.bewid.pvol.dbzh.scan1.hdf",
+      "bytes": 348893,
+      "sha256": "bcdf1c464e7e3d12872bf194b1493b6340509a5b7bdd51ce22ae1b15ee90380f",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/20130429043000.rad.bewid.pvol.dbzh.scan1.hdf"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/T_PAGZ35_C_ENMI_20170421090837.hdf",
+      "bytes": 422385,
+      "sha256": "207d8b90867324030b919db66f2fc30f8c5d25b9c468bdee2829185d8e995cf2",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/T_PAGZ35_C_ENMI_20170421090837.hdf"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/bejab.pvol.hdf",
+      "bytes": 640209,
+      "sha256": "7ae64c617f844e582ddb5d852f0f3b9470e1109a307ae897b85749e1de085f97",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/bejab.pvol.hdf"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/cfrad.20211011_223602_DOW8_RHI.trim3.nc",
+      "bytes": 888428,
+      "sha256": "1297315af9320dc7863d7b6843388300aa9d87386e873644487ca5f2be350e0a",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/cfrad.20211011_223602_DOW8_RHI.trim3.nc"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/cfrad.xsapr_sgp_ppi_20110520.classic.nc",
+      "bytes": 13624,
+      "sha256": "10fac97552b26e8c5a5ec5ddb1231f30cc44afbd9038efa4235ac95555a97bee",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/cfrad.xsapr_sgp_ppi_20110520.classic.nc"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/cfrad.xsapr_sgp_ppi_20110520.netcdf4.nc",
+      "bytes": 75587,
+      "sha256": "acf8ee8db097892f9e801e9d54fdc7274afb661f49cadb8e969555085adedc85",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/cfrad.xsapr_sgp_ppi_20110520.netcdf4.nc"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/cfrad_synth.nc",
+      "bytes": 5404,
+      "sha256": "d6a6054370c048264be35cf1afc2e7c618deed0b12dc0342c20ab096188bc727",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/cfrad_synth.nc"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/convert_cfradial.py",
+      "bytes": 1885,
+      "sha256": "18fc59ce1e5bd24fe79e3e6a7cd28864c1c024cde6cf120ee2b3a4d6647ae791",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/convert_cfradial.py"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/espdg.pvol.20260707.dbzh_vradh.h5",
+      "bytes": 162450,
+      "sha256": "1d297d435a504df3cf09e06054bb588be3417af112839a3a0685e5fd95abdfbd",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/espdg.pvol.20260707.dbzh_vradh.h5"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/gen_cfradial_fixture.py",
+      "bytes": 5020,
+      "sha256": "0e1253796485db5895523d9bb217a42288e1eeae31a6ff901d236093060ac29f",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/gen_cfradial_fixture.py"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/gen_odim_fixture.py",
+      "bytes": 4583,
+      "sha256": "f776fd8cd60568ba71b0569bccdc676330cc1d0088a59b8cd707ef633b70cbd6",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/gen_odim_fixture.py"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/imgw_polrad/2026071100150601KDP.max.h5",
+      "bytes": 33775,
+      "sha256": "18d05c3e75f337d2f96466be3e9be7de9736efd807d6d83809cfe58480c127af",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/imgw_polrad/2026071100150601KDP.max.h5"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/imgw_polrad/2026071100150601PhiDP.max.h5",
+      "bytes": 32534,
+      "sha256": "3ddca554dc250fda09aba9c7130646db9bcf96c9634f5e2a8e3a0f6da325de2d",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/imgw_polrad/2026071100150601PhiDP.max.h5"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/imgw_polrad/2026071100150601RhoHV.max.h5",
+      "bytes": 61984,
+      "sha256": "9758a4f7af62e0fa116e95088d22ef50123dd38dadde3381c2670f8d05acecd3",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/imgw_polrad/2026071100150601RhoHV.max.h5"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/imgw_polrad/2026071100150601ZDR.max.h5",
+      "bytes": 59793,
+      "sha256": "f65edfa5ee3bb7b37e7cf937750a20142661051d4e5961a925c401ca07ffda11",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/imgw_polrad/2026071100150601ZDR.max.h5"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/imgw_polrad/README.md",
+      "bytes": 1455,
+      "sha256": "ddb6540a1d28c7ee2485c13005667d98d6370ed8efbb76ab7a5471c854a113d8",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/imgw_polrad/README.md"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/nexrad_vwp/KBMX_SDUS54_NVWBMX_199804160006",
+      "bytes": 7090,
+      "sha256": "c163d010f48492ce9bf5208ee6940c637a0905b8997666b0411112734d2abeb6",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/nexrad_vwp/KBMX_SDUS54_NVWBMX_199804160006"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/nexrad_vwp/README.md",
+      "bytes": 646,
+      "sha256": "eb290b65a431dd4d15b3c8604ad030a6595e519c4674a3846bbe1b806b1c36ea",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/nexrad_vwp/README.md"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/odim_pvol_synth.h5",
+      "bytes": 28864,
+      "sha256": "5a1edb1b13f151285f811c51a16c51fc6cfb1fa66e3fe012bac0593309a1c25e",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/odim_pvol_synth.h5"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/ref_cfradial.py",
+      "bytes": 6559,
+      "sha256": "43a096fb8a1fa54a8a61d31a25e72f977f32cfa862d31f523976102657919c30",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/ref_cfradial.py"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/ref_odim.py",
+      "bytes": 5852,
+      "sha256": "7766035e4a5da4d788a02a4459428d88b15659a453181e9aa917a58a5d466a69",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/ref_odim.py"
+    },
+    {
+      "path": "crates/nexrad_io/tests/data/swp.1260521225514.COW2.229.1.0_SUR_v215.head24",
+      "bytes": 37380,
+      "sha256": "0609c4fe11b584f9b46254c4f6a3c481d72d93d2c09f0c02456e7ca518afcc9a",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/data/swp.1260521225514.COW2.229.1.0_SUR_v215.head24"
+    },
+    {
+      "path": "crates/nexrad_io/tests/dorade_real.rs",
+      "bytes": 7866,
+      "sha256": "7aa2be5f47c964fb5bbf18b19ae5bf969e8fb8654cc26f270a10f588974b94eb",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/dorade_real.rs"
+    },
+    {
+      "path": "crates/nexrad_io/tests/odim_cartesian_real.rs",
+      "bytes": 5926,
+      "sha256": "8053ba5928ec825b786a2f047737e79c0cd7bdc673d00c3dee98d87dc0db9e72",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/odim_cartesian_real.rs"
+    },
+    {
+      "path": "crates/nexrad_io/tests/odim_real.rs",
+      "bytes": 4120,
+      "sha256": "8dbc6c33fed43bfefb1eaa51776e32eb73800bb127b97be180d01459b3406a0b",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/odim_real.rs"
+    },
+    {
+      "path": "crates/nexrad_io/tests/odim_real_files.rs",
+      "bytes": 16612,
+      "sha256": "70160742a1473ffafc4c82412b5519f30c9ed637a40d3bd5efbf5834363f37db",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/odim_real_files.rs"
+    },
+    {
+      "path": "crates/nexrad_io/tests/router_real_files.rs",
+      "bytes": 10302,
+      "sha256": "4df007539d1046c2d9fae131f536ac5ed469b67338947308438c839181136c77",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/nexrad_io/tests/router_real_files.rs"
+    },
+    {
+      "path": "crates/radar_core/.gitignore",
+      "bytes": 8,
+      "sha256": "44c92e3a70ad3307b7056871c2bdb096d8bfa9373f5bf06a79bb6324a20ff2fb",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_core/.gitignore"
+    },
+    {
+      "path": "crates/radar_core/Cargo.toml",
+      "bytes": 168,
+      "sha256": "9613f9d3fe3d8d3b6359dbf41a5e024736b37f98e71846c5a92a51b5df2ca4d2",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_core/Cargo.toml"
+    },
+    {
+      "path": "crates/radar_core/src/geo.rs",
+      "bytes": 4131,
+      "sha256": "9035c929571d904da6dc86ad435006514da48c0c84775d9feea7efe567854fe9",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_core/src/geo.rs"
+    },
+    {
+      "path": "crates/radar_core/src/lib.rs",
+      "bytes": 58427,
+      "sha256": "c5cf239c71c68def83ad5381436af3245d091e49954d331c4b0e5025d5837a2f",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_core/src/lib.rs"
+    },
+    {
+      "path": "crates/radar_core/src/refractivity.rs",
+      "bytes": 15265,
+      "sha256": "556fb0b78df7bf2c45fad5b6bfe89ddb4609803fd4ea615272c57afb9039679d",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_core/src/refractivity.rs"
+    },
+    {
+      "path": "crates/radar_scattering/Cargo.toml",
+      "bytes": 422,
+      "sha256": "839ade7590363cd9c89fa9ccd8837d59d6efc3ba2afe1da4e64c4a58bc77111d",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/Cargo.toml"
+    },
+    {
+      "path": "crates/radar_scattering/README.md",
+      "bytes": 10294,
+      "sha256": "23ceca354a59ae2e5faebc5dfa41918c727a225a095bc3be6abb72ea2c93768d",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/README.md"
+    },
+    {
+      "path": "crates/radar_scattering/examples/validate_tmatrix_lut.rs",
+      "bytes": 1611,
+      "sha256": "00c39c4c1c950b42f7cf31aa974bf90508cad86dafe75eafa97556f212b3c173",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/examples/validate_tmatrix_lut.rs"
+    },
+    {
+      "path": "crates/radar_scattering/src/closure.rs",
+      "bytes": 91044,
+      "sha256": "3130b2fd81cf7f5b6c11d8c5512a991eb55cc1b9c21e630f52e4422332e35561",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/src/closure.rs"
+    },
+    {
+      "path": "crates/radar_scattering/src/digest.rs",
+      "bytes": 4540,
+      "sha256": "5c31b88e8ecd32918af9c48e8abf056aae919e3fb2d723012657a21d95aaabcd",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/src/digest.rs"
+    },
+    {
+      "path": "crates/radar_scattering/src/lib.rs",
+      "bytes": 6761,
+      "sha256": "dcc9bb7768845edca40f3cc53295cd8e6cda0441b5ae38da4dc1b443f5ac2c55",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/src/lib.rs"
+    },
+    {
+      "path": "crates/radar_scattering/src/lut.rs",
+      "bytes": 62638,
+      "sha256": "ef588d79b65feb40ace29fcfbfece66eba0bf7529f20051b3ab236391ba7b90b",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/src/lut.rs"
+    },
+    {
+      "path": "crates/radar_scattering/src/orientation.rs",
+      "bytes": 16904,
+      "sha256": "94e22e7d0263f57743336983f9834dfdc568a5ac95b4379ad0d72d9a0ee4121d",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/src/orientation.rs"
+    },
+    {
+      "path": "crates/radar_scattering/src/output.rs",
+      "bytes": 22023,
+      "sha256": "8d335447ac1d1e2d68f7664e137917e105bb3a317297591687590d29f1567d10",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/src/output.rs"
+    },
+    {
+      "path": "crates/radar_scattering/src/p3_integration.rs",
+      "bytes": 59255,
+      "sha256": "5dbf4184c252996db1d90728b3a0649890417a7684cfd90036e582ff91efa3a8",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/src/p3_integration.rs"
+    },
+    {
+      "path": "crates/radar_scattering/src/p3_psd.rs",
+      "bytes": 97343,
+      "sha256": "0acfefe24b0e8eb96559f3d86c9e9c0dc8289ff15670ce92611ff7ae1a4394b3",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/src/p3_psd.rs"
+    },
+    {
+      "path": "crates/radar_scattering/src/p3_table.rs",
+      "bytes": 50312,
+      "sha256": "3b211e677c2012804a0c2977f249391e04a89b00be9f29cb4dca6cb259e90e04",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/src/p3_table.rs"
+    },
+    {
+      "path": "crates/radar_scattering/src/particle.rs",
+      "bytes": 22286,
+      "sha256": "9853c2dd36a6636f754fd6d38d6ad18925d43ff038f91de497f72ac962394e38",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/src/particle.rs"
+    },
+    {
+      "path": "crates/radar_scattering/src/scheme_psd.rs",
+      "bytes": 173296,
+      "sha256": "6f55d08aa5ba9540b607601de5ce24a71616b71df9fb394738f543c25f634ddd",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/src/scheme_psd.rs"
+    },
+    {
+      "path": "crates/radar_scattering/src/science.rs",
+      "bytes": 13266,
+      "sha256": "073ee4fe42fd936267c94367b0e3b932950ebefc4b687771acb613a5388e4069",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/src/science.rs"
+    },
+    {
+      "path": "crates/radar_scattering/src/tmatrix_runtime.rs",
+      "bytes": 198191,
+      "sha256": "68f13f52bc5ae1ce5d6dbc8d52dc66af5fc78b705d5a3f3d42071b6bd6e40164",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/src/tmatrix_runtime.rs"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/.python-version",
+      "bytes": 7,
+      "sha256": "61141e9590171b900fdf709e7ea8f050d5c2a69198d4a4a1977d7c45186307e5",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/.python-version"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/Dockerfile",
+      "bytes": 3805,
+      "sha256": "b747657bc43a638d0aa638fb31d2089a5e459569c3228098483ed68f907bbc62",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/Dockerfile"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/FAILURE_RECORD.md",
+      "bytes": 9968,
+      "sha256": "9add818971596ed8fd9dbf4c2d1e46849b28c87321cf69bff7564fd3dbe8edd7",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/FAILURE_RECORD.md"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/PACK_FORMAT.md",
+      "bytes": 5080,
+      "sha256": "0d1b2583c266e0dafc2923ab6fd26169ede87b5a34a3dacfe9f58af37e5dd901",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/PACK_FORMAT.md"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/README.md",
+      "bytes": 9827,
+      "sha256": "5ffdbe2b3f7eedcfdd536a4b075c623e72ef6bbfa48330aae59fc36ef2872b56",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/README.md"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/emitter/Cargo.lock",
+      "bytes": 5514,
+      "sha256": "450a54baf04fd9adbb710181add46583b1ae1ded8669b1ce85a69eda50e3c6dc",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/emitter/Cargo.lock"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/emitter/Cargo.toml",
+      "bytes": 363,
+      "sha256": "6b93d4b0d27e3773fa48001d1321f59eb7dc30f1e196e72accbeec938f2088a5",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/emitter/Cargo.toml"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/emitter/src/bin/validate_tmatrix_lut.rs",
+      "bytes": 1611,
+      "sha256": "00c39c4c1c950b42f7cf31aa974bf90508cad86dafe75eafa97556f212b3c173",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/emitter/src/bin/validate_tmatrix_lut.rs"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/emitter/src/main.rs",
+      "bytes": 4455,
+      "sha256": "47615ca581798d118abc14e794c4f0e0b817704581036be363aa0bf9f416e10e",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/emitter/src/main.rs"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/generate_band_pack.py",
+      "bytes": 17247,
+      "sha256": "ab88ee85bb14d6b1e9bd62c4803d20f9b4aa207a4ff28d3f9d1f2cf269eaab69",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/generate_band_pack.py"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/generate_lut.py",
+      "bytes": 119707,
+      "sha256": "420cde42586eedf38502f7b11a482aa8683bd944fd4aaa7c6ea080e3040925c0",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/generate_lut.py"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/generator_config.example.json",
+      "bytes": 3334,
+      "sha256": "868231be3d01eeaae4225650e36c9592f3eb8e711e693ccfae868e59e5b72dbb",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/generator_config.example.json"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/requirements-bootstrap-pinned.txt",
+      "bytes": 1400,
+      "sha256": "c01ccf75c8634abd7c32f6ae203a64a8bf7e090b0b4f61aa9e7e5c69fd556184",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/requirements-bootstrap-pinned.txt"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/requirements-pytmatrix-pinned.txt",
+      "bytes": 397,
+      "sha256": "d754b6589041548bbb2fbb3c3aae49b17252b1f35629b5f8bef91ab0e24f3f72",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/requirements-pytmatrix-pinned.txt"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/run_all.ps1",
+      "bytes": 12294,
+      "sha256": "4e9702273f2e92595987ff57ac84bb3dd299a4aa67a321a5f802c9d0442ea841",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/run_all.ps1"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/test_generate_band_pack.py",
+      "bytes": 5133,
+      "sha256": "6325e72a4a19e07045868f9aaf30fb923aeb2ae24da0c13c104606e1b5be0b61",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/test_generate_band_pack.py"
+    },
+    {
+      "path": "crates/radar_scattering/tools/pytmatrix-0.3.3/toolchain.json",
+      "bytes": 1189,
+      "sha256": "84befbbe97d9c87e0aa73da6e001a8b2f034a5441f95d2a8df88ada56931c222",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/radar_scattering/tools/pytmatrix-0.3.3/toolchain.json"
+    },
+    {
+      "path": "crates/settings/.gitignore",
+      "bytes": 8,
+      "sha256": "44c92e3a70ad3307b7056871c2bdb096d8bfa9373f5bf06a79bb6324a20ff2fb",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/settings/.gitignore"
+    },
+    {
+      "path": "crates/settings/Cargo.toml",
+      "bytes": 291,
+      "sha256": "f910a96efe12a5965afc8da3a300143a845a073b5aa734c6901cb3ce65f5db6c",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/settings/Cargo.toml"
+    },
+    {
+      "path": "crates/settings/src/brand.rs",
+      "bytes": 24372,
+      "sha256": "5c7c61a462fc6580ea3c733410c3eb8d43c02d211ad7ee969e8df6dbc5bb4d10",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/settings/src/brand.rs"
+    },
+    {
+      "path": "crates/settings/src/lib.rs",
+      "bytes": 179388,
+      "sha256": "09593f129619a188cd2deda130cbb484621d318810f40d4bcd37279e7cacab81",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/settings/src/lib.rs"
+    },
+    {
+      "path": "crates/settings/src/persistence.rs",
+      "bytes": 21783,
+      "sha256": "1a9588297871054d67ef80022376d5be64e4294d21e859885d3a743b53d4a6b6",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/settings/src/persistence.rs"
+    },
+    {
+      "path": "crates/simradar_cuda/Cargo.toml",
+      "bytes": 846,
+      "sha256": "c163f7740117406b62a4cccda4fb6d9b39e00230d2ca4ce29d0ce66a6cfbdbb0",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/Cargo.toml"
+    },
+    {
+      "path": "crates/simradar_cuda/examples/rebuild_kernel.rs",
+      "bytes": 5125,
+      "sha256": "d8c6d8435d970c1cf2e3d43d17496e6c94262a5c9c947f947a7aa43376697140",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/examples/rebuild_kernel.rs"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments.cu",
+      "bytes": 5867,
+      "sha256": "ba6ab252e1402f5afc7ff9dba6e5f5fc1f3b539b3d903e29c3da1830efb84780",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments.cu"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments.manifest.json",
+      "bytes": 2934,
+      "sha256": "bce6d3d2533b0347fa951297925bc411ed8da1cf21574da87f4a3bfd00fe610b",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments.manifest.json"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments.ptx",
+      "bytes": 13695,
+      "sha256": "0a33b260a269d7537c395f2df564defef7dcb8d2deb0b9fb338703a12a3b2652",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments.ptx"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments_sm100.cubin",
+      "bytes": 14048,
+      "sha256": "7706ca247b3832f175c92b3aa405609480a9dbe15bc0bc49a584d5414097a620",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments_sm100.cubin"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments_sm103.cubin",
+      "bytes": 19272,
+      "sha256": "b361c4a3889a5e85c802a76543aa3b09253f022860843ab6f92b3f000ce78c1c",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments_sm103.cubin"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments_sm110.cubin",
+      "bytes": 19456,
+      "sha256": "39c75a1b0167c45cb464fa64b19157fc10631b82f63769f611e847a3c59c736b",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments_sm110.cubin"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments_sm120.cubin",
+      "bytes": 18784,
+      "sha256": "cb23c1968696fab99c204d80c72ec5b1fd0f4c8ecb6403388566243c63970a4f",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments_sm120.cubin"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments_sm121.cubin",
+      "bytes": 18784,
+      "sha256": "dfdd94ba625ed8c05a164e03495d5def2f942c588f0eb696473d73d2ec836d05",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments_sm121.cubin"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments_sm75.cubin",
+      "bytes": 8360,
+      "sha256": "b86f118df519d125f6bd9d62ffb0f04db7063183308cde6ffd6181c635cec6db",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments_sm75.cubin"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments_sm80.cubin",
+      "bytes": 8488,
+      "sha256": "a5b39e5c15fdfe58e5b31ab8efd83821ba5a1d9551ca8b0a9330c2e229119bf0",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments_sm80.cubin"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments_sm86.cubin",
+      "bytes": 8488,
+      "sha256": "e698a40c785d08e79757dd7b87f8fbdb655e3232fcef6695fe6ab3b13251279f",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments_sm86.cubin"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments_sm87.cubin",
+      "bytes": 8744,
+      "sha256": "5e590310a62ae0168f2f37478a93b2c46f6eea718a6794a2b439cd504ac1d933",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments_sm87.cubin"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments_sm88.cubin",
+      "bytes": 8488,
+      "sha256": "9b83c169a9c40eaf2dcdde8132e08c085fda0996d1d48c3daa91b1001e090693",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments_sm88.cubin"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments_sm89.cubin",
+      "bytes": 8488,
+      "sha256": "f76bd9abb1e2e96b37b525a8a5f5c30d771dff38c14525602b2db2ba1a38fbd9",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments_sm89.cubin"
+    },
+    {
+      "path": "crates/simradar_cuda/kernels/p3_lut_segments_sm90.cubin",
+      "bytes": 9184,
+      "sha256": "57990ce59d0f882ed0650e612015eefa473a3fe873c41c67b38f4d10c84802cd",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/kernels/p3_lut_segments_sm90.cubin"
+    },
+    {
+      "path": "crates/simradar_cuda/src/adapter.rs",
+      "bytes": 5591,
+      "sha256": "06e1b0a60532ff387a8a381e55a2ea4a79b25caf69a7f06bfefbc3913bf4e255",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/src/adapter.rs"
+    },
+    {
+      "path": "crates/simradar_cuda/src/kernel.rs",
+      "bytes": 36027,
+      "sha256": "7fb7f90805d2770f109a64c13d64d2ec52f05733ae976045effd1059c07708e5",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/src/kernel.rs"
+    },
+    {
+      "path": "crates/simradar_cuda/src/lib.rs",
+      "bytes": 9304,
+      "sha256": "5b764a58b2bb8f6cf9123866802cdcb25e67f67b311d6031cb4a8d741bedc392",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/src/lib.rs"
+    },
+    {
+      "path": "crates/simradar_cuda/src/prepared.rs",
+      "bytes": 8645,
+      "sha256": "9b0dd539e0a7405c39593f7ace86e464b20c72b5fdc584ba96ef4bd18a266009",
+      "origin_revision": "6b752c0a923d8fcef45d58f165b96a20886964d1",
+      "origin_path": "crates/simradar_cuda/src/prepared.rs"
+    }
+  ],
+  "local_commits": [
+    "6a34f28c8950163238e365364acc407c4d88cb4d",
+    "2c697156448ea5aa62c9bd61d8fb9cb7ecbae424",
+    "9dfc35c078ce5fc98a0422921bbfd4c8a89e8cd0",
+    "6b752c0a923d8fcef45d58f165b96a20886964d1"
+  ],
+  "fixes": [
+    "Declare exact JSON float parsing for LUT axis identity.",
+    "Refine coarse inverse-lookup seeds to containing cells; remove distant point fallback.",
+    "Require geometric domain edges with bounded and unbounded seed tables.",
+    "Preserve existing upstream lock pins and qualify its two same-version wrf-core sources."
+  ],
+  "inventory_scope": "Every retained file except SOURCE.json; hashes are raw bytes."
+}

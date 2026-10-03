@@ -17,7 +17,7 @@ Run the model on a local NVIDIA GPU or a Linux computer connected over SSH.
 | --- | --- |
 | [Windows desktop: GUI and TUI](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.0/ArWen-Desktop-1.0.8-Windows-x64.zip) | x86-64 Windows; compatible NVIDIA GPU and driver; internet for first setup |
 | [Linux desktop: GUI and TUI](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.0/ArWen-Desktop-1.0.8-Linux-x64-pip.tar.gz) | x86-64 Linux, glibc 2.39 or newer, such as Ubuntu 24.04; Python 3.11 or newer; X11 or Wayland with working OpenGL |
-| [Integration kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.3/ArWen-2.8.3-Integration-Kit.zip) | Developer guide, CLI/plan examples, catalogs, and client design notes |
+| [Integration kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.4/ArWen-2.8.4-Integration-Kit.zip) | Developer guide, CLI/plan examples, catalogs, and client design notes |
 
 The desktop archives contain the applications, native map library and map assets.
 Windows includes a graphical setup launcher that downloads a private Python and
@@ -26,7 +26,7 @@ compiler is needed for these binary packages.
 
 The Python package is named **`gpuwm`**. Its Windows and Linux platform wheels
 include the engine, native processing tools, and TUI. The desktop GUI is the
-separate download above. Check [release notes and checksums](https://github.com/FahrenheitResearch/arwen/releases/tag/v2.8.3)
+separate download above. Check [release notes and checksums](https://github.com/FahrenheitResearch/arwen/releases/tag/v2.8.4)
 for the exact artifacts and qualification records.
 
 ## Install the desktop for forecasts on your PC
@@ -170,7 +170,7 @@ for running preprocessing, the simulation and rendering on your own terms.
 ## Integrate ArWen into another application
 
 The [integration guide](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/docs/integration-kit/integration-guide.md)
-and [downloadable kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.3/ArWen-2.8.3-Integration-Kit.zip)
+and [downloadable kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.4/ArWen-2.8.4-Integration-Kit.zip)
 describe the CLI, run-plan documents, catalogs, and companion bridge boundaries.
 The kit contains an example subprocess client and tests. It is a documented
 integration surface, not a separate simulation engine or a replacement for
@@ -184,11 +184,15 @@ distinction between a preview and an executing forecast.
 
 ArWen independently implements a WRF-ARW-class regional atmospheric model and
 WRF-derived physics on the GPU. Its numerical comparisons and qualification
-apply to documented configurations and test cases. They do not establish
-universal equivalence with WRF or validate every combination of physics,
-input dataset, and hardware. Read the
-[verification record](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/docs/public/VERIFICATION.md),
-[physics documentation](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/docs/public/PHYSICS.md),
+apply to documented configurations and test cases. Matching WRF is code
+verification; it does not validate a forecast against reality. Validation
+requires observations. Existing ASOS and MRMS scores cover specific runs;
+the broader observation scoreboard is in development. ArWen can inherit
+WRF's published validation record only to the extent the two are statistically
+indistinguishable for that configuration. No universal WRF equivalence or
+general forecast-skill claim follows. Read the
+[verification and validation record](docs/public/VERIFICATION.md),
+[physics documentation](docs/public/PHYSICS.md),
 and [2.8 changes](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/CHANGELOG.md).
 
 2.8.0 adds ArWen in your browser, `gpuwm gui`, as a preview beside the desktop

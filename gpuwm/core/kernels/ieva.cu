@@ -2,6 +2,10 @@
 // zadvect_implicit = 1; Wicker and Skamarock 2020, after Shchepetkin 2015),
 // dyn_em/module_ieva_em.F, as rk_tendency and rk_scalar_tend call it on the
 // last RK3 substep (module_em.F:436-715, 1216-1364).
+// The wrf_legacy variant also preserves the earlier module_advect_em
+// current-mass operator and module_big_step_utilities_em directional split.
+// Source pins and the reproduced WRF public-domain notice: root NOTICE,
+// licenses/LICENSE-WRF-public-domain.txt, tools/ieva_wrf_oracle/legacy_build.py.
 //
 // ieva_ww_split     WW_SPLIT: the eta mass flux ww into its explicit part
 //                   wwE (advected by the usual upwind operators) and its
@@ -117,6 +121,7 @@ void ieva_ww_split(const float* __restrict__ ww,
                    float cutoff, float r4cmx, float quarter, float one,
                    float zero,
                    float* __restrict__ wwE, float* __restrict__ wwI,
+                   const float* __restrict__ msft, int has_msf, int legacy,
                    int nz, int ny, int nx)
 {
     size_t tid = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -143,6 +148,18 @@ void ieva_ww_split(const float* __restrict__ ww,
     float cy = f_mul(f_mul(quarter, rdy), sv);
     // cw_max = max(alpha_max - dt*Ceps*sqrt(cx**2 + cy**2), 0.0)
     float hyp = __fsqrt_rn(f_add(f_mul(cx, cx), f_mul(cy, cy)));
+    if (legacy) {
+        // The earlier WW_SPLIT takes the flow on the upwind mass level,
+        // including the mass-point map factor, and uses cx+cy.
+        size_t ul = (w < zero) ? ua : ub;
+        size_t vl = (w < zero) ? va : vb;
+        float msf = has_msf ? msft[c] : one;
+        cx = f_mul(f_mul(msf, rdx),
+                   f_sub(f_max(u[ul + 1], zero), f_min(u[ul], zero)));
+        cy = f_mul(f_mul(msf, rdy),
+                   f_sub(f_max(v[vl + nx], zero), f_min(v[vl], zero)));
+        hyp = f_add(cx, cy);
+    }
     float cw_max = f_max(f_sub(alpha_max, f_mul(f_mul(dt, ceps), hyp)), zero);
     // cr = ww*dt*rdnw(k)/(c1f(k)*mut + c2f(k))
     float mass = f_add(f_mul(c1f[k], mut[c]), c2f[k]);
@@ -331,6 +348,7 @@ void ieva_solve_u(float* __restrict__ tend,
                   const float* __restrict__ msfu,
                   float dt, float one, float zero, float half,
                   int has_msf, int periodic, int f_lo, int f_hi,
+                  const float* __restrict__ legacy_face, int legacy,
                   int nz, int ny, int nx)
 {
     size_t t = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -346,6 +364,7 @@ void ieva_solve_u(float* __restrict__ tend,
     const size_t fc = (size_t)j * nxu + f;
     float mo = face_mass(mut_old, row, f, nx, 1, periodic, half);
     float mn = face_mass(mut_new, row, f, nx, 1, periodic, half);
+    if (legacy) mo = mn = legacy_face[fc];
     float msf = has_msf ? msfu[fc] : one;
     double gam[IEVA_KMAX], bb[IEVA_KMAX];
     double bet = 0.0, ct_prev = 0.0;
@@ -403,6 +422,7 @@ void ieva_solve_v(float* __restrict__ tend,
                   const float* __restrict__ msfv,
                   float dt, float one, float zero, float half,
                   int has_msf, int periodic, int f_lo, int f_hi,
+                  const float* __restrict__ legacy_face, int legacy,
                   int nz, int ny, int nx)
 {
     size_t t = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -416,6 +436,7 @@ void ieva_solve_v(float* __restrict__ tend,
     const size_t fc = (size_t)f * nx + i;
     float mo = face_mass(mut_old, (size_t)i, f, ny, nx, periodic, half);
     float mn = face_mass(mut_new, (size_t)i, f, ny, nx, periodic, half);
+    if (legacy) mo = mn = legacy_face[fc];
     float msf = has_msf ? msfv[fc] : one;
     double gam[IEVA_KMAX], bb[IEVA_KMAX];
     double bet = 0.0, ct_prev = 0.0;
@@ -595,7 +616,7 @@ void ieva_solve_w(float* __restrict__ tend,
                   const float* __restrict__ msft,
                   float rdx, float rdy, float dt, float g,
                   float one, float zero, float half,
-                  int has_msf, int bx, int by,
+                  int has_msf, int bx, int by, int legacy,
                   int nz, int ny, int nx)
 {
     size_t c = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
@@ -682,6 +703,15 @@ void ieva_solve_w(float* __restrict__ tend,
             float pt = f_div(f_div(ph_tend[top], mass), g);
             float dw = f_sub(dph, pt);
             if (has_msf) dw = f_mul(msf, dw);
+            if (legacy) {
+                // Earlier WRF already divides the complete boundary
+                // increment by g. Preserve that FP32 grouping exactly.
+                dph = f_div(f_sub(ph_new[top], ph_old[top]), dt);
+                pt = f_div(ph_tend[top], mass);
+                dw = f_sub(dph, pt);
+                if (has_msf) dw = f_mul(msf, dw);
+                dw = f_div(dw, g);
+            }
             // rt = rt - (c1(k)*mut+c2(k))*ct*(dw - w_old(k+1))
             rt = d_sub(rt, d_mul(d_mul((double)mass, ct),
                                  (double)f_sub(dw, w_old[top])));

@@ -188,7 +188,8 @@ def test_manylinux_probes_every_declared_artifact_before_output(tmp_path, monkey
         result = linux_build.qualify_artifacts(release, Path(__file__).resolve().parents[1], SOURCE_REV,
                                               manylinux_policy, commands)
         assert {r["artifact"] for r in result} == {a.name for a in bridge_assets.BUNDLED_ARTIFACTS}
-        assert len(result) == 30
+        # 31: rw_simradar joined BUNDLED_ARTIFACTS as the thirty-first artifact.
+        assert len(result) == 31
         assert set(called) == {a.name for a in bridge_assets.BUNDLED_ARTIFACTS if a.kind == "executable"}
         assert set(commands.abi_calls) == {bridge_assets.library_abi_for(a.name)[0]
                                           for a in bridge_assets.BUNDLED_ARTIFACTS if a.kind == "library"}

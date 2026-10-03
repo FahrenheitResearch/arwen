@@ -747,9 +747,18 @@ def experiment_toml(settings: Mapping[str, Any]) -> str:
 
 
 def _with_preset(request: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """``request`` with a preset's suite and spacing filled into its blanks."""
+    """``request`` with a preset's suite and spacing filled into its blanks.
+
+    A suite named by an old profile ID is read as its current ID here, the
+    one step every request passes, so the base suite, its components and
+    the set the check names all agree for either spelling.
+    """
 
     request = dict(request)
+    if isinstance(request.get("suite"), str):
+        from gpuwm.physics_registry import canonical_template_id
+
+        request["suite"] = canonical_template_id(request["suite"])
     if not request.get("preset"):
         return request, None
     row = preset(str(request["preset"]))

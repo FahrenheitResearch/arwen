@@ -1503,7 +1503,10 @@ CHAINED_UNITS_WITHOUT_A_PER_PLATFORM_ROW = MappingProxyType({
     "rrtmg_sw_legacy":
         "rrtmg_sw.cu through its own unit (gpuwm/core/rrtmg_sw.py); the "
         "fragment fails NVRTC standalone.  Priced 0 B from the same "
-        "sm_120 / cupy 14.0.1 reading, 2026-07-27.",
+        "sm_120 / cupy 14.0.1 reading, 2026-07-27; re-read 0 B for all 17 "
+        "kernels on sm_120 (RTX 5070 Ti) at NVRTC 13.4.92 on 2026-10-02, "
+        "after rsw_sfluxzen_body's store on every path; bounded on a "
+        "device by tests/test_rrtmg_sw_cuda.py (LOCAL_FRAME_BOUNDS).",
     # BEP+BEM (sf_urban_physics = 3).
     "urban_bem_composed":
         "glibc_flt32.cuh + glibc_trig_flt32.cuh + urban_bem.cuh + "

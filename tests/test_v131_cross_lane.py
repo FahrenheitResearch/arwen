@@ -43,7 +43,7 @@ from gpuwm.wrf461_compatibility import (
 
 MORRISON_TEMPLATE_ID = "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1"
 NSSL2_TEMPLATE_ID = (
-    "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1")
+    "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-wrf-comparison-candidate-v1")
 MP_EDGE_POLICY = "mp-edge-mass-diagnosed-v1"
 
 

@@ -4,10 +4,11 @@
 radar's real Level-II volumes into a small GPU ensemble, then runs a
 free forecast past the last observation and draws the result on a real
 map.  It is a **demo**: ten members, one 3 km domain, no radiation, a
-GFS background, and no velocity dealiasing -- UNSCORED, outside any
-registered campaign, and no skill claim is made or implied.  The figures
-say so on every panel, and the numbers on them (>=35 dBZ column counts,
-FSS at 30 dBZ / 27 km) are diagnostics to look at, not scores to quote.
+GFS background, and no velocity dealiasing. It is outside any registered
+campaign, and no general skill claim is made. Free-forecast frames are
+unscored until observed radar at the same valid time is available. The
+figures then show case-specific comparisons (>=35 dBZ column counts,
+FSS at 30 dBZ / 27 km), not a forecast-system validation result.
 
 If you want the deeper version of that accuracy statement -- how this
 configuration differs from the Warn-on-Forecast System, and why its FSS
@@ -278,9 +279,10 @@ receipts, the same gallery.
 ### What you get at the end
 
 `CASE_DIR/gallery/index.html`.  Open it in a browser.  It opens with a
-dark banner reading `DEMO-GRADE NOWCAST -- UNSCORED, outside any
-registered campaign, not campaign evidence. No skill claim is made or
-implied.`, and then up to five figures, all drawn on the same county
+dark banner explaining that this is a demo outside a registered
+campaign, that frames are scored only when an observed counterpart
+exists, and that no general skill claim is made. It then shows up to
+five figures, all drawn on the same county
 level basemap with one reflectivity scale:
 
 | file | what it shows |
@@ -641,16 +643,18 @@ The free forecast runs *past the last observation*.  Its grade does not
 exist when the run ends -- reality has not happened yet.  Rather than
 leave that implicit, every forecast panel is stamped.
 
-**`PAST LAST OBS`** (orange, on wide panels `PAST LAST OBS --
-unverifiable yet`) means exactly what it says: this frame's valid time
+**`PAST LAST OBS`** (orange, on wide panels `PAST LAST OBS,
+unscored yet`) means exactly what it says: this frame's valid time
 is in the future relative to every observation the model has seen, so
 there is nothing to compare it against.  It is not a claim that the
 forecast is bad, and it is not a claim that it is good.
 
-**`VERIFIED`** (green, on wide panels `VERIFIED AFTER THE FACT -- see
-verification row`) replaces it once the archive covers that frame's
-valid time and an observed composite has been built for it.  From then
-on the frame appears in `03-verification.png` beside its observed
+**`SCORED`** (green, on wide panels `SCORED AFTER THE FACT, see
+observation row`) replaces it once the archive covers that frame's
+valid time and an observed composite has been built for it. The stamp
+means the frame has been compared with the observed radar composite;
+it does not mean the forecast was right. The frame appears in the
+historically named `03-verification.png` beside its observed
 counterpart, on the same colour scale, with counts and FSS.
 
 The transition is automatic.  When a run finishes it hands the case to a

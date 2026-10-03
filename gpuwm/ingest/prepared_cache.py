@@ -605,6 +605,11 @@ INERT_DIAGNOSTIC_IDENTITY_FIELDS = frozenset(
 #: recorded in docs/superpowers/receipts/les/
 #: INFLOW-GENERATOR-ACCEPTANCE-V2.md item 10.
 PREPARATION_INERT_RUN_FIELDS = frozenset({
+    # Only the forecast's final RK stage reads this numerical generation
+    # (core/ieva.py). Neither initial fields nor boundary tables depend on
+    # it, so one prepared bundle serves both variants. Checkpoints still
+    # bind the variant because switching it changes their trajectory.
+    "run.zadvect_implicit_variant",
     "run.inflow_perturbation",
     "run.inflow_perturbation_seed",
     "run.inflow_perturbation_amplitude_scale",

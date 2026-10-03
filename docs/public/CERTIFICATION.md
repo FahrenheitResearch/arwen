@@ -241,6 +241,13 @@ verdict that did not know what it was compared against is not a verdict.
 - It does not claim the interval is the right one. Under
   `documented-margin` the interval is a documented margin around a published
   comparison, and it says so in its own provenance field.
+- It does not measure accuracy against observations. Under `documented-margin`,
+  a PASS means that the run reproduced a historical ArWen-versus-WRF comparison
+  within a documented margin. This is a code-verification regression check,
+  not evidence of statistical indistinguishability: the margin is not calibrated
+  from WRF ensemble spread. The v4.7.1 ensemble studies described in
+  [VERIFICATION.md](VERIFICATION.md) are separate evidence; they do not supply
+  this band's intervals or confer an observation-based accuracy claim.
 - It does not claim reproducibility across hardware. The environment pins
   exist precisely because byte identity is a claim about a fixed stack; see
   [DETERMINISM.md](DETERMINISM.md).

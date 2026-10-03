@@ -24,3 +24,11 @@ replace-with = "vendored-sources"
 
 [source.vendored-sources]
 directory = "vendor/crates-io"
+
+[source."git+https://github.com/FahrenheitResearch/wrf-rust.git?rev=9874474d9566a7536a90f457a48be30caa5f973a"]
+git = "https://github.com/FahrenheitResearch/wrf-rust.git"
+rev = "9874474d9566a7536a90f457a48be30caa5f973a"
+replace-with = "bowecho-git-sources"
+
+[source.bowecho-git-sources]
+directory = "vendor/bowecho-git"

@@ -95,6 +95,7 @@ _EXPERIMENT_FIELD_PATH: dict[str, tuple[str, ...]] = {
     "tiles": ("tiles",),
     "devices": ("devices",),
     "output": ("output",),
+    "simulated_radar": ("simulated_radar",),
 }
 
 #: The per-domain half.  ``output_interval_s`` in the tolerance table is
@@ -139,7 +140,7 @@ if _unspelled:
 #: door and its documentation cannot drift.
 CHANGEABLE_SETTINGS = (
     "run_seconds, restart_interval_s, acknowledgements, relocation.*, "
-    "tiles.*, devices.*, output.*, domain.<grid_id>.history_interval_s, "
+    "tiles.*, devices.*, output.*, simulated_radar.*, domain.<grid_id>.history_interval_s, "
     "domain.<grid_id>.history_begin_s, domain.<grid_id>.history_end_s, "
     "domain.<grid_id>.tiles.*, domain.<grid_id>.output.*")
 
@@ -148,7 +149,7 @@ CHANGEABLE_SETTINGS = (
 #: refused as a typo -- reporting it as "pinned" sends the reader
 #: looking for a rule that does not exist.
 _KNOWN_TABLES = ("experiment", "shared", "projection", "domain",
-                 "relocation", "perturbation", "tiles", "devices", "output",
+                 "relocation", "perturbation", "tiles", "devices", "output", "simulated_radar",
                  "fetch", "case_data", "static", "ingest")
 
 #: Tables whose string values name files on disk, resolved by

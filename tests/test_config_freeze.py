@@ -50,6 +50,12 @@ def _frozen_constructors():
 def test_new_fields_are_reviewed_defaults_appended_last():
     """New fields remain appended, preserving positional construction."""
     names = [f.name for f in dataclasses.fields(RunConfig)]
+    # The numerical-generation selector preserves the existing WRF 4.7.1
+    # operator at its default and appends without moving any old argument.
+    assert names[-1] == "zadvect_implicit_variant"
+    assert RunConfig.__dataclass_fields__[
+        "zadvect_implicit_variant"].default == "wrf_471"
+    names = names[:-1]
     # The drag selectors follow the integrated diffusion and mosaic fields.
     # Removing their zero defaults leaves the existing positional sequence.
     assert names[-2:] == ["topo_wind", "gwd_opt"]
@@ -554,6 +560,7 @@ def test_every_existing_legacy_toml_resolves_identically():
         assert actual.pop("zadvect_implicit") == 0
         assert actual.pop("w_crit_cfl") == 1.0
         assert actual.pop("topo_wind") == 0 and actual.pop("gwd_opt") == 0
+        assert actual.pop("zadvect_implicit_variant") == "wrf_471"
         assert _pop_topo_radiation_defaults(actual)
         # These legacy files omit CQ. Its default-on defect fix is the
         # only approved change from the recorded field dictionary.
@@ -575,6 +582,7 @@ def test_frozen_case_constructed_configs_resolve_identically():
         assert actual.pop("zadvect_implicit") == 0
         assert actual.pop("w_crit_cfl") == 1.0
         assert actual.pop("topo_wind") == 0 and actual.pop("gwd_opt") == 0
+        assert actual.pop("zadvect_implicit_variant") == "wrf_471"
         assert _pop_topo_radiation_defaults(actual)
         # The constructors omit CQ too. Dry cases remain numerically
         # unchanged because their qv=None bypass does no CQ work.

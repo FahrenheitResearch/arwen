@@ -396,6 +396,8 @@ class PreparedBackend:
             raise RuntimeError(missing_render)
         self.exp = load_experiment(self.root / 'experiment.toml')
         refuse_unrouted_spectral_numerics(self.exp, 'local cycling member integration')
+        from gpuwm.experiment import refuse_unrouted_simulated_radar
+        refuse_unrouted_simulated_radar(self.exp, 'local cycling member integration')
         self.mp_physics = self.exp.domains[0].run.mp_physics
         if 'background' in self.plan:
             from gpuwm.regional_preparation import validate_saved_background

@@ -285,6 +285,15 @@ cpu  tools/rustwx  rw-store  146
 # is us.
 cpu  tools/rustwx  rw-wrfbatch  114
 
+# Native simulated radar: model-column conversion, preserved wind missingness,
+# beam physics, writer metadata and pre-allocation resource refusals. Prevents
+# plausible radar volumes with wrong atmospheric conventions or unbounded
+# sample arrays after accepting a CLI request, and (since 2.8.4's review
+# fixes) loops re-encoded whole on every history, superseded generations and
+# loops left on disk, and an output-size bound that misses a format or image.
+# Floor measured on node-2 (Ubuntu, Rust 1.94.0): 27 passed.
+cpu  tools/rustwx  rw-simradar  27
+
 # rw-mpas: THIS project's crate too, and the DEFAULT route from an MPAS
 # history frame to a picture -- `rw_mpas_convert` gathers an unstructured
 # mesh onto a structured render window and writes the wrfout-shaped
@@ -308,6 +317,12 @@ cpu  tools/rustwx  rw-wrfbatch  114
 # maintained-triangulation arm, the parallel monitor's tie rule, the
 # refusal-by-name doors).
 cpu  tools/rustwx  rw-mpas  418
+
+# Native hex history must preserve unsmoothed earth-relative winds and its
+# microphysics provenance, or radar interprets the converted scene with a
+# different wind basis or scheme. Keep this target visible independently of
+# the larger mesh suite so its three controls cannot disappear under its floor.
+cpu  tools/rustwx  rw-mpas  3  --test radar_history_contract
 
 # rw-isobaric: THIS project's crate.  The log-pressure column walk the
 # renderer's pressure-level charts and the ML exporter both interpolate

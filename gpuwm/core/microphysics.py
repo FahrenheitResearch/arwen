@@ -852,10 +852,10 @@ def _dispatch_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
             state, cfg, dt, refl_10cm_due=refl_10cm_due)
     elif cfg.mp_physics == 28:
         # Thompson aerosol-aware.  A SIBLING adapter, not a branch inside
-        # _apply_thompson: the classic body stays textually diffable against
-        # its model-validated form, which is what makes "mp=8 is frozen" a
-        # statement about bytes (tests/test_mp8_frozen.py) rather than about
-        # control flow.  Lazy import for the same reason the Morrison arm
+        # _apply_thompson: port-era isolation is recorded in
+        # tests/test_mp8_frozen.py. Those historical receipts are not a
+        # current mp=8 byte-freeze claim; its kernels changed later.
+        # Lazy import for the same reason the Morrison arm
         # uses one -- the aerosol module pulls in eight new CUDA translation
         # units that an mp=8 or Kessler run must never compile.
         from gpuwm.core.microphysics_aerosol import _apply_thompson_aerosol

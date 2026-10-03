@@ -95,7 +95,7 @@ A 2.5.0 fix worth knowing because it was a composition defect: `gpuwm sim`
 refused the run folder it had just created (the stage door allocated the stamped
 folder create-exclusively, then dispatched to a runner whose first act was an
 exclusive mkdir on the same path). Both runners now accept an empty directory and
-still refuse the moment it holds anything [CHANGELOG.md, Unreleased].
+still refuse the moment it holds anything [CHANGELOG.md, engine 2.5.0].
 
 ## 6.2 Run-stamped outputs
 
@@ -210,8 +210,12 @@ initiation, scored against the live nest of the same run on the interior grid):
 
 The scope statement the source attaches to the F+0.0 row travels with it: that row
 is four comparator metrics on one pair of runs, and no full-state digest was taken
-of the offline/live pair. Read every later row as forcing-path cost, hourly
-interval-linear boundaries against the live nest's every-parent-step forcing
+of the offline/live pair. Later rows combine the forcing-path difference
+(hourly interval-linear boundaries versus every-parent-step forcing),
+start-state differences those four metrics miss, and growth of small
+perturbations. No perturbed live-nest control was run, so the table cannot
+separate them or show that denser boundary cadence recovers convective-scale
+agreement. These are model-to-model differences, not errors against observations
 [docs/public/DOWNSCALE.md:143-149].
 
 Read it as two regimes, which is the doc's own framing: the mesoscale envelope
@@ -312,9 +316,10 @@ problem, `ValueError`; silence means the installation is, `RuntimeError`), and
 one message divergence is kept by design: the Python route quotes its subprocess
 tool and the engine speaks in-process, because faking a subprocess sentence
 would misreport which binary read the bytes
-[docs/dev/decode-vendor-design.md]. The engine is the default because it is
-correct, parity-proven on the real bytes, and carries the full registered format
-surface under the Python boundary. Decode wall at the tip, same frozen entry,
+[docs/dev/decode-vendor-design.md]. The engine is the default because it matched the in-house Python decoder
+on the real bytes in the stated parity batteries and carries the registered
+format surface under the Python boundary. Agreement between two in-house
+implementations is a verification check, not an independent proof of correctness. Decode wall at the tip, same frozen entry,
 real bytes, warm cache: after the parallel-assembly work the two re-measured
 frame-heavy cases land at 18.6 s for the hrrr pressure pair (largest frames,
 1002 Mcells) and 7.8 s for the gdas 0.25 pair (444 Mcells), measured on the same

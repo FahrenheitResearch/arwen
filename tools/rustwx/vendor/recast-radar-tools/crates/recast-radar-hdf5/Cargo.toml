@@ -1,0 +1,17 @@
+[package]
+name = "recast-radar-hdf5"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure-Rust HDF5 reader (superblock v0-v3, dense groups and attributes, fractal heaps, v2 B-trees, every chunk index) and writer for weather radar files"
+readme.workspace = true
+keywords = ["hdf5", "netcdf", "odim", "radar", "weather"]
+categories = ["science::geo", "parser-implementations", "encoding"]
+
+[dependencies]
+flate2.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

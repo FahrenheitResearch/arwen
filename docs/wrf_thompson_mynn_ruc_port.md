@@ -16,7 +16,7 @@ commit `d66e442fccc04111067e29274c9f9eaccc3cef28`.  The target namelist is:
   coupling on, urban and mosaic modes off.
 
 Scheme numbers remain fail-closed until every required state, kernel, coupling,
-restart/output, and validation gate for that component lands.  A numerically
+restart/output, and WRF verification gate for that component lands.  A numerically
 nearby existing gpuwm scheme is never an implicit substitute.
 
 ## Source-anchored port map
@@ -139,7 +139,14 @@ coupled.
 settings.  Any nonzero urban/mosaic request or disabled surface flux request
 fails instead of being dropped.
 
-## Staged implementation and evidence
+## Staged implementation and evidence (historical plan)
+
+This list records the original port plan, not the current admission
+state. Thompson, MYNN and RUC have since been admitted with the
+evidence and limits in `docs/public/PHYSICS.md`,
+`docs/public/VERIFICATION.md` and `docs/wrf_ruc_runtime_admission.md`.
+In particular, RUC admission did not supply a WRF forecast-trajectory
+comparison. A planned gate below must not be read as a completed result.
 
 1. **Configuration and fail-closed plumbing.** Add explicit compatibility
    identity, model-relevant WRF option schema, complete three-component blocker
@@ -148,12 +155,15 @@ fails instead of being dropped.
    diagnostic state, CPU transcription, CUDA kernels, physics-driver coupling,
    radiative radii, reflectivity/precipitation, restart/output/nesting, then
    column and short-case GPU gates.  Only then admit `mp_physics=8`.
-3. **MYNN surface + PBL.** Implement and validate the coupled surface exchange,
-   prognostic TKE, diffusion/EDMF and cloud coupling; add restart/output/LBC and
+3. **MYNN surface + PBL.** Implement the coupled surface exchange,
+   prognostic TKE, diffusion/EDMF and cloud coupling, and verify them
+   against WRF oracles; add restart/output/LBC and
    nesting.  Only then admit both option 5 selectors.
 4. **RUC nine-layer LSM.** Implement initialization contracts and table assets,
    nine-layer/snow/frozen-soil state and CUDA coupling, then restart/output and
-   real-data validation.  Only then admit option 3 with nine layers.
+   a real-data comparison against WRF (code verification). The original
+   plan placed admission of option 3 with nine layers after that gate.
+   Scoring against observations (validation) is a separate step.
 5. **Integrated suite.** Run deterministic CPU tests, CUDA poison/parity gates,
    restart split runs, nested short cases, end-to-end timing/VRAM receipts and
    WRF comparison.  Scientific claims will identify the deliberate RRTMGP
@@ -257,5 +267,10 @@ off the nonpersistent rental node.
   exposed prognostic field and is re-diagnosed from updated mass before
   sedimentation.
 
-The Thompson process/sedimentation kernel, direct GPU comparison and coupled
-trajectory gates remain open; `mp_physics=8` therefore still fails closed.
+At that milestone the Thompson process/sedimentation kernel, direct
+GPU comparison and coupled trajectory gates were open, and
+`mp_physics=8` failed closed. It has since been admitted and used in
+the historical matched-run comparison against WRF. See
+[public/PHYSICS.md](public/PHYSICS.md) and
+[public/VERIFICATION.md](public/VERIFICATION.md) for the evidence and
+the limits on applying that older comparison to later builds.

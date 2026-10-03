@@ -741,7 +741,7 @@ not price that.
 
 | workload | rate |
 |---|---|
-| 250x200x49 single domain, full certified physics, dt 60 s | ~0.55 s/step incl. output; 6 h in 3.6 min |
+| 250x200x49 single domain, Morrison + RTE+RRTMGP + YSU + Noah + Kain-Fritsch, dt 60 s (the [FIRST-LIGHT acceptance run](FIRST-LIGHT.md#5-run-measured-6-h-forecast-in-36-min)) | ~0.55 s/step incl. output; 6 h in 3.6 min |
 | four domains 12/3/1/0.5 km to 400x400, matched-run configuration | 67.2 wall-s per simulated minute whole-tree (61.4 pre-convective, 72.9 convective) |
 | 500 m offline downscaled child, 400x400x49, dt 2.5 s | 0.91 s/step warm; 3 h in 66 min |
 | legacy RRTMG vs RTE+RRTMGP (same 3-domain stack, radt 12/3/1) | 34.8 vs 18.7 wall-s per simulated minute |
@@ -801,8 +801,9 @@ machine-level facts worth knowing:
   `tools/ftz_receipt/receipt/sass/` (Cuda compilation tools, release 13.0,
   V13.0.39), all recorded in `tools/ftz_receipt/receipt/receipt.json`.
 <!-- END GENERATED ftz-statement: hardware-fp32-subnormals -->
-- The consequence that reaches the science is a branch flip on
-  physically negligible inputs, not a change in a resolved quantity.
+- The direct consequence is a branch flip on physically negligible inputs.
+  Such a perturbation can grow into differences in resolved fields during a
+  convective forecast. Its effect on a forecast has not been measured here.
 - Determinism holds per build and hardware: the reference run
   reproduced output frames SHA256-identically across a mid-run kill
   and relaunch. No cross-GPU or cross-driver bit-identity is claimed.

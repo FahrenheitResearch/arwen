@@ -1,0 +1,1337 @@
+{
+  "schema": "woof.simulated-radar-dependency-grants/v1",
+  "description": "Added source closure; includes build and platform-specific dependencies, not a count of linked runtime libraries.",
+  "packages": [
+    {
+      "name": "wrf-core",
+      "version": "0.1.0",
+      "directory": "tools/rustwx/vendor/bowecho-git/wrf-core",
+      "license": "MIT",
+      "grants": [],
+      "declaration_source": "https://github.com/FahrenheitResearch/wrf-rust/blob/9874474d9566a7536a90f457a48be30caa5f973a/pyproject.toml",
+      "declaration_sha256": "ceb4bde650118600e3ce20cbfd44d40c6187c8f1416901cec0cc7a1b1cb5f063",
+      "note": "The exact upstream source declares MIT in pyproject.toml and contains no standalone grant file. This is the same first-party wrf-core grant recorded by the root NOTICE. Cargo metadata is retained unchanged."
+    },
+    {
+      "name": "atomic-waker",
+      "version": "1.1.2",
+      "directory": "tools/rustwx/vendor/crates-io/atomic-waker-1.1.2",
+      "license": "Apache-2.0 OR MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/atomic-waker-1.1.2/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/atomic-waker-1.1.2/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "label": "RADAR-DEPS-002"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/atomic-waker-1.1.2/LICENSE-THIRD-PARTY",
+          "sha256": "6226d0632e2e1a80c23597e964da9812ae193c535fe058154afb034e94167aa5",
+          "label": "RADAR-DEPS-003"
+        }
+      ]
+    },
+    {
+      "name": "base64",
+      "version": "0.23.1",
+      "directory": "tools/rustwx/vendor/crates-io/base64-0.23.1",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/base64-0.23.1/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/base64-0.23.1/LICENSE-MIT",
+          "sha256": "ab499c75a0f0da8e0fe83bf9ba3a27e5c39705310f07107c6c66b69958d2401c",
+          "label": "RADAR-DEPS-004"
+        }
+      ]
+    },
+    {
+      "name": "bzip2",
+      "version": "0.6.1",
+      "directory": "tools/rustwx/vendor/crates-io/bzip2-0.6.1",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/bzip2-0.6.1/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/bzip2-0.6.1/LICENSE-MIT",
+          "sha256": "c8c6324cf2f0f076e3ed5dea4a21f00bd4dd6fce44f72b110bc52e7fe06f6e1e",
+          "label": "RADAR-DEPS-005"
+        }
+      ]
+    },
+    {
+      "name": "cfg_aliases",
+      "version": "0.2.2",
+      "directory": "tools/rustwx/vendor/crates-io/cfg_aliases-0.2.2",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/cfg_aliases-0.2.2/LICENSE",
+          "sha256": "31b94860253d8ec7b4529f51901044d3b459d6292d996504a36b1bae3a36a812",
+          "label": "RADAR-DEPS-006"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/cfg_aliases-0.2.2/NOTICES.md",
+          "sha256": "1e2b7ade3fb228130408b9990cae6a7618eb314c75aa0b164bfe485d9d9756ee",
+          "label": "RADAR-DEPS-007"
+        }
+      ]
+    },
+    {
+      "name": "chacha20",
+      "version": "0.10.2",
+      "directory": "tools/rustwx/vendor/crates-io/chacha20-0.10.2",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/chacha20-0.10.2/LICENSE-APACHE",
+          "sha256": "a9040321c3712d8fd0b09cf52b17445de04a23a10165049ae187cd39e5c86be5",
+          "label": "RADAR-DEPS-008"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/chacha20-0.10.2/LICENSE-MIT",
+          "sha256": "b8c6939380a400f53e11923d50fcc4dd2fa1ba8339fd9d04cda38a0251b6c9b0",
+          "label": "RADAR-DEPS-009"
+        }
+      ]
+    },
+    {
+      "name": "cpufeatures",
+      "version": "0.3.1",
+      "directory": "tools/rustwx/vendor/crates-io/cpufeatures-0.3.1",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/cpufeatures-0.3.1/LICENSE-APACHE",
+          "sha256": "a9040321c3712d8fd0b09cf52b17445de04a23a10165049ae187cd39e5c86be5",
+          "label": "RADAR-DEPS-008"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/cpufeatures-0.3.1/LICENSE-MIT",
+          "sha256": "73b9dc2e79c7308998dd30296e073aefaefb944a68fb89aa412c23c0edcabcaa",
+          "label": "RADAR-DEPS-010"
+        }
+      ]
+    },
+    {
+      "name": "cudarc",
+      "version": "0.19.8",
+      "directory": "tools/rustwx/vendor/crates-io/cudarc-0.19.8",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/cudarc-0.19.8/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "label": "RADAR-DEPS-011"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/cudarc-0.19.8/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "label": "RADAR-DEPS-002"
+        }
+      ]
+    },
+    {
+      "name": "displaydoc",
+      "version": "0.2.7",
+      "directory": "tools/rustwx/vendor/crates-io/displaydoc-0.2.7",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/displaydoc-0.2.7/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/displaydoc-0.2.7/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "label": "RADAR-DEPS-002"
+        }
+      ]
+    },
+    {
+      "name": "form_urlencoded",
+      "version": "1.2.2",
+      "directory": "tools/rustwx/vendor/crates-io/form_urlencoded-1.2.2",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/form_urlencoded-1.2.2/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/form_urlencoded-1.2.2/LICENSE-MIT",
+          "sha256": "20c7855c364d57ea4c97889a5e8d98470a9952dade37bd9248b9a54431670e5e",
+          "label": "RADAR-DEPS-012"
+        }
+      ]
+    },
+    {
+      "name": "futures-channel",
+      "version": "0.3.33",
+      "directory": "tools/rustwx/vendor/crates-io/futures-channel-0.3.33",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/futures-channel-0.3.33/LICENSE-APACHE",
+          "sha256": "275c491d6d1160553c32fd6127061d7f9606c3ea25abfad6ca3f6ed088785427",
+          "label": "RADAR-DEPS-013"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/futures-channel-0.3.33/LICENSE-MIT",
+          "sha256": "6652c868f35dfe5e8ef636810a4e576b9d663f3a17fb0f5613ad73583e1b88fd",
+          "label": "RADAR-DEPS-014"
+        }
+      ]
+    },
+    {
+      "name": "futures-io",
+      "version": "0.3.34",
+      "directory": "tools/rustwx/vendor/crates-io/futures-io-0.3.34",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/futures-io-0.3.34/LICENSE-APACHE",
+          "sha256": "275c491d6d1160553c32fd6127061d7f9606c3ea25abfad6ca3f6ed088785427",
+          "label": "RADAR-DEPS-013"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/futures-io-0.3.34/LICENSE-MIT",
+          "sha256": "6652c868f35dfe5e8ef636810a4e576b9d663f3a17fb0f5613ad73583e1b88fd",
+          "label": "RADAR-DEPS-014"
+        }
+      ]
+    },
+    {
+      "name": "futures-macro",
+      "version": "0.3.33",
+      "directory": "tools/rustwx/vendor/crates-io/futures-macro-0.3.33",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/futures-macro-0.3.33/LICENSE-APACHE",
+          "sha256": "275c491d6d1160553c32fd6127061d7f9606c3ea25abfad6ca3f6ed088785427",
+          "label": "RADAR-DEPS-013"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/futures-macro-0.3.33/LICENSE-MIT",
+          "sha256": "6652c868f35dfe5e8ef636810a4e576b9d663f3a17fb0f5613ad73583e1b88fd",
+          "label": "RADAR-DEPS-014"
+        }
+      ]
+    },
+    {
+      "name": "futures-sink",
+      "version": "0.3.34",
+      "directory": "tools/rustwx/vendor/crates-io/futures-sink-0.3.34",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/futures-sink-0.3.34/LICENSE-APACHE",
+          "sha256": "275c491d6d1160553c32fd6127061d7f9606c3ea25abfad6ca3f6ed088785427",
+          "label": "RADAR-DEPS-013"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/futures-sink-0.3.34/LICENSE-MIT",
+          "sha256": "6652c868f35dfe5e8ef636810a4e576b9d663f3a17fb0f5613ad73583e1b88fd",
+          "label": "RADAR-DEPS-014"
+        }
+      ]
+    },
+    {
+      "name": "hashbrown",
+      "version": "0.17.1",
+      "directory": "tools/rustwx/vendor/crates-io/hashbrown-0.17.1",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/hashbrown-0.17.1/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/hashbrown-0.17.1/LICENSE-MIT",
+          "sha256": "ff8f68cb076caf8cefe7a6430d4ac086ce6af2ca8ce2c4e5a2004d4552ef52a2",
+          "label": "RADAR-DEPS-015"
+        }
+      ]
+    },
+    {
+      "name": "http-body",
+      "version": "1.1.0",
+      "directory": "tools/rustwx/vendor/crates-io/http-body-1.1.0",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/http-body-1.1.0/LICENSE",
+          "sha256": "248378d0a3383c173fb925f17141b88e71580b3ba17ddc6ac3d2a344683232ab",
+          "label": "RADAR-DEPS-016"
+        }
+      ]
+    },
+    {
+      "name": "http-body-util",
+      "version": "0.1.5",
+      "directory": "tools/rustwx/vendor/crates-io/http-body-util-0.1.5",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/http-body-util-0.1.5/LICENSE",
+          "sha256": "248378d0a3383c173fb925f17141b88e71580b3ba17ddc6ac3d2a344683232ab",
+          "label": "RADAR-DEPS-016"
+        }
+      ]
+    },
+    {
+      "name": "hyper",
+      "version": "1.11.1",
+      "directory": "tools/rustwx/vendor/crates-io/hyper-1.11.1",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/hyper-1.11.1/LICENSE",
+          "sha256": "2d01890414494742ba4a509fcec8efa40f6d8be22cbd72be7cff08d6fda4ec89",
+          "label": "RADAR-DEPS-017"
+        }
+      ]
+    },
+    {
+      "name": "hyper-rustls",
+      "version": "0.27.10",
+      "directory": "tools/rustwx/vendor/crates-io/hyper-rustls-0.27.10",
+      "license": "Apache-2.0 OR ISC OR MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/hyper-rustls-0.27.10/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/hyper-rustls-0.27.10/LICENSE-ISC",
+          "sha256": "7cfafc877eccc46c0e346ccbaa5c51bb6b894d2b818e617d970211e232785ad4",
+          "label": "RADAR-DEPS-018"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/hyper-rustls-0.27.10/LICENSE-MIT",
+          "sha256": "709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c",
+          "label": "RADAR-DEPS-019"
+        }
+      ]
+    },
+    {
+      "name": "hyper-util",
+      "version": "0.1.21",
+      "directory": "tools/rustwx/vendor/crates-io/hyper-util-0.1.21",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/hyper-util-0.1.21/LICENSE",
+          "sha256": "9e0a97848ea543aef745c98e84fde696a9a3e0735538f6daefdd3cb1942effc1",
+          "label": "RADAR-DEPS-020"
+        }
+      ]
+    },
+    {
+      "name": "icu_collections",
+      "version": "2.3.0",
+      "directory": "tools/rustwx/vendor/crates-io/icu_collections-2.3.0",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/icu_collections-2.3.0/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "icu_locale_core",
+      "version": "2.3.0",
+      "directory": "tools/rustwx/vendor/crates-io/icu_locale_core-2.3.0",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/icu_locale_core-2.3.0/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "icu_normalizer",
+      "version": "2.3.0",
+      "directory": "tools/rustwx/vendor/crates-io/icu_normalizer-2.3.0",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/icu_normalizer-2.3.0/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "icu_normalizer_data",
+      "version": "2.3.0",
+      "directory": "tools/rustwx/vendor/crates-io/icu_normalizer_data-2.3.0",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/icu_normalizer_data-2.3.0/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "icu_properties",
+      "version": "2.3.0",
+      "directory": "tools/rustwx/vendor/crates-io/icu_properties-2.3.0",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/icu_properties-2.3.0/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "icu_properties_data",
+      "version": "2.3.0",
+      "directory": "tools/rustwx/vendor/crates-io/icu_properties_data-2.3.0",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/icu_properties_data-2.3.0/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "icu_provider",
+      "version": "2.3.1",
+      "directory": "tools/rustwx/vendor/crates-io/icu_provider-2.3.1",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/icu_provider-2.3.1/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "idna",
+      "version": "1.1.0",
+      "directory": "tools/rustwx/vendor/crates-io/idna-1.1.0",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/idna-1.1.0/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/idna-1.1.0/LICENSE-MIT",
+          "sha256": "b38f11f6096706e6de553dabe2a7ed142d59b6fa8c97e290c67496154745cdd5",
+          "label": "RADAR-DEPS-022"
+        }
+      ]
+    },
+    {
+      "name": "idna_adapter",
+      "version": "1.2.2",
+      "directory": "tools/rustwx/vendor/crates-io/idna_adapter-1.2.2",
+      "license": "Apache-2.0 OR MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/idna_adapter-1.2.2/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/idna_adapter-1.2.2/LICENSE-MIT",
+          "sha256": "8b43ce8accd61e9d370b5ca9e9c4f953279b5c239926c62315b40e24df51b726",
+          "label": "RADAR-DEPS-023"
+        }
+      ]
+    },
+    {
+      "name": "indexmap",
+      "version": "2.14.2",
+      "directory": "tools/rustwx/vendor/crates-io/indexmap-2.14.2",
+      "license": "Apache-2.0 OR MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/indexmap-2.14.2/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/indexmap-2.14.2/LICENSE-MIT",
+          "sha256": "ecc269ef87fd38a1d98e30bfac9ba964a9dbd9315c3770fed98d4d7cb5882055",
+          "label": "RADAR-DEPS-024"
+        }
+      ]
+    },
+    {
+      "name": "ipnet",
+      "version": "2.12.2",
+      "directory": "tools/rustwx/vendor/crates-io/ipnet-2.12.2",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/ipnet-2.12.2/LICENSE-APACHE",
+          "sha256": "87d9feb9238c6bd8e0024fc4733b06cff036f89f36d93b7df1c8a0549bbb7a5b",
+          "label": "RADAR-DEPS-025"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/ipnet-2.12.2/LICENSE-MIT",
+          "sha256": "47dc9ff29128ddfb4d6a0435383c9f89120bc374dbcc1dd00b933a0b28aa7865",
+          "label": "RADAR-DEPS-026"
+        }
+      ]
+    },
+    {
+      "name": "libdeflate-sys",
+      "version": "1.26.1",
+      "directory": "tools/rustwx/vendor/crates-io/libdeflate-sys-1.26.1",
+      "license": "Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/libdeflate-sys-1.26.1/libdeflate/COPYING",
+          "sha256": "4ad69099cb4374836fd27583d9991e2838cd86b6e4666ab26b2d32582c91e73a",
+          "label": "RADAR-DEPS-027"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/libdeflate-sys-1.26.1/LICENSE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        }
+      ]
+    },
+    {
+      "name": "libloading",
+      "version": "0.9.0",
+      "directory": "tools/rustwx/vendor/crates-io/libloading-0.9.0",
+      "license": "ISC",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/libloading-0.9.0/LICENSE",
+          "sha256": "b29f8b01452350c20dd1af16ef83b598fea3053578ccc1c7a0ef40e57be2620f",
+          "label": "RADAR-DEPS-028"
+        }
+      ]
+    },
+    {
+      "name": "litemap",
+      "version": "0.8.3",
+      "directory": "tools/rustwx/vendor/crates-io/litemap-0.8.3",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/litemap-0.8.3/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "lru-slab",
+      "version": "0.1.3",
+      "directory": "tools/rustwx/vendor/crates-io/lru-slab-0.1.3",
+      "license": "MIT OR Apache-2.0 OR Zlib",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/lru-slab-0.1.3/LICENSE-APACHE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "label": "RADAR-DEPS-029"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/lru-slab-0.1.3/LICENSE-MIT",
+          "sha256": "1466d9b4f3a59bb8997fc8d5fa977ce3f6a24bb2358793c09bfdf007039f6486",
+          "label": "RADAR-DEPS-030"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/lru-slab-0.1.3/LICENSE-ZLIB",
+          "sha256": "09785877275ffada6c371b652a30e95c26b435126fc0fc62f1bc2d72171f80a4",
+          "label": "RADAR-DEPS-031"
+        }
+      ]
+    },
+    {
+      "name": "mio",
+      "version": "1.2.3",
+      "directory": "tools/rustwx/vendor/crates-io/mio-1.2.3",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/mio-1.2.3/LICENSE",
+          "sha256": "07919255c7e04793d8ea760d6c2ce32d19f9ff02bdbdde3ce90b1e1880929a9b",
+          "label": "RADAR-DEPS-032"
+        }
+      ]
+    },
+    {
+      "name": "potential_utf",
+      "version": "0.1.6",
+      "directory": "tools/rustwx/vendor/crates-io/potential_utf-0.1.6",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/potential_utf-0.1.6/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "quick-xml",
+      "version": "0.39.4",
+      "directory": "tools/rustwx/vendor/crates-io/quick-xml-0.39.4",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/quick-xml-0.39.4/LICENSE-MIT.md",
+          "sha256": "5b2c207dcf571267ebe0bbdd5bf321f561ddc22ff597e7b363e96f4539507a29",
+          "label": "RADAR-DEPS-033"
+        }
+      ]
+    },
+    {
+      "name": "quinn",
+      "version": "0.11.12",
+      "directory": "tools/rustwx/vendor/crates-io/quinn-0.11.12",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/quinn-0.11.12/LICENSE-APACHE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "label": "RADAR-DEPS-034"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/quinn-0.11.12/LICENSE-MIT",
+          "sha256": "4b2d0aca6789fa39e03d6738e869ea0988cceba210ca34ebb59c15c463e93a04",
+          "label": "RADAR-DEPS-035"
+        }
+      ]
+    },
+    {
+      "name": "quinn-proto",
+      "version": "0.11.19",
+      "directory": "tools/rustwx/vendor/crates-io/quinn-proto-0.11.19",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/quinn-proto-0.11.19/LICENSE-APACHE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "label": "RADAR-DEPS-034"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/quinn-proto-0.11.19/LICENSE-MIT",
+          "sha256": "4b2d0aca6789fa39e03d6738e869ea0988cceba210ca34ebb59c15c463e93a04",
+          "label": "RADAR-DEPS-035"
+        }
+      ]
+    },
+    {
+      "name": "quinn-udp",
+      "version": "0.5.16",
+      "directory": "tools/rustwx/vendor/crates-io/quinn-udp-0.5.16",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/quinn-udp-0.5.16/LICENSE-APACHE",
+          "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+          "label": "RADAR-DEPS-034"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/quinn-udp-0.5.16/LICENSE-MIT",
+          "sha256": "4b2d0aca6789fa39e03d6738e869ea0988cceba210ca34ebb59c15c463e93a04",
+          "label": "RADAR-DEPS-035"
+        }
+      ]
+    },
+    {
+      "name": "rand",
+      "version": "0.10.3",
+      "directory": "tools/rustwx/vendor/crates-io/rand-0.10.3",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/rand-0.10.3/COPYRIGHT",
+          "sha256": "90eb64f0279b0d9432accfa6023ff803bc4965212383697eee27a0f426d5f8d5",
+          "label": "RADAR-DEPS-036"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/rand-0.10.3/LICENSE-APACHE",
+          "sha256": "35242e7a83f69875e6edeff02291e688c97caafe2f8902e4e19b49d3e78b4cab",
+          "label": "RADAR-DEPS-037"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/rand-0.10.3/LICENSE-MIT",
+          "sha256": "209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b",
+          "label": "RADAR-DEPS-038"
+        }
+      ]
+    },
+    {
+      "name": "rand_core",
+      "version": "0.10.1",
+      "directory": "tools/rustwx/vendor/crates-io/rand_core-0.10.1",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/rand_core-0.10.1/COPYRIGHT",
+          "sha256": "92b81db30f7ab6d693e0af5661a40d273ca1947e891123ed823924192c10cbc7",
+          "label": "RADAR-DEPS-039"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/rand_core-0.10.1/LICENSE-APACHE",
+          "sha256": "6df43f6f4b5d4587f3d8d71e45532c688fd168afa5fe89d571cb32fa09c4ef51",
+          "label": "RADAR-DEPS-040"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/rand_core-0.10.1/LICENSE-MIT",
+          "sha256": "8b6e9feec03e7c9a5facb26855cecd31662bf989b636bcfe79521bdf8ac863f0",
+          "label": "RADAR-DEPS-041"
+        }
+      ]
+    },
+    {
+      "name": "rand_pcg",
+      "version": "0.10.2",
+      "directory": "tools/rustwx/vendor/crates-io/rand_pcg-0.10.2",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/rand_pcg-0.10.2/COPYRIGHT",
+          "sha256": "90eb64f0279b0d9432accfa6023ff803bc4965212383697eee27a0f426d5f8d5",
+          "label": "RADAR-DEPS-036"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/rand_pcg-0.10.2/LICENSE-APACHE",
+          "sha256": "6df43f6f4b5d4587f3d8d71e45532c688fd168afa5fe89d571cb32fa09c4ef51",
+          "label": "RADAR-DEPS-040"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/rand_pcg-0.10.2/LICENSE-MIT",
+          "sha256": "2234e3cefee876aeb686ad89e978bdb07bf118a1186ab1cf161bcdf69d4b4f57",
+          "label": "RADAR-DEPS-042"
+        }
+      ]
+    },
+    {
+      "name": "reqwest",
+      "version": "0.12.28",
+      "directory": "tools/rustwx/vendor/crates-io/reqwest-0.12.28",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/reqwest-0.12.28/LICENSE-APACHE",
+          "sha256": "751963a8b88c0e3a9f27e98933079fbcf09b9998b2c13ac49c2e4d58444520d6",
+          "label": "RADAR-DEPS-043"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/reqwest-0.12.28/LICENSE-MIT",
+          "sha256": "47d4e1803702728e03d30f8a848ae2249ba274bbd9f8443e803f7924d83cd371",
+          "label": "RADAR-DEPS-044"
+        }
+      ]
+    },
+    {
+      "name": "rustc-hash",
+      "version": "2.1.3",
+      "directory": "tools/rustwx/vendor/crates-io/rustc-hash-2.1.3",
+      "license": "Apache-2.0 OR MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/rustc-hash-2.1.3/LICENSE-APACHE",
+          "sha256": "95bd3988beee069fa2848f648dab43cc6e0b2add2ad6bcb17360caf749802bcc",
+          "label": "RADAR-DEPS-045"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/rustc-hash-2.1.3/LICENSE-MIT",
+          "sha256": "30fefc3a7d6a0041541858293bcbea2dde4caa4c0a5802f996a7f7e8c0085652",
+          "label": "RADAR-DEPS-046"
+        }
+      ]
+    },
+    {
+      "name": "ryu",
+      "version": "1.0.23",
+      "directory": "tools/rustwx/vendor/crates-io/ryu-1.0.23",
+      "license": "Apache-2.0 OR BSL-1.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/ryu-1.0.23/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "label": "RADAR-DEPS-011"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/ryu-1.0.23/LICENSE-BOOST",
+          "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+          "label": "RADAR-DEPS-047"
+        }
+      ]
+    },
+    {
+      "name": "serde_urlencoded",
+      "version": "0.7.1",
+      "directory": "tools/rustwx/vendor/crates-io/serde_urlencoded-0.7.1",
+      "license": "MIT/Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/serde_urlencoded-0.7.1/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "label": "RADAR-DEPS-011"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/serde_urlencoded-0.7.1/LICENSE-MIT",
+          "sha256": "b9eb266294324f672cbe945fe8f2e32f85024f0d61a1a7d14382cdde0ac44769",
+          "label": "RADAR-DEPS-048"
+        }
+      ]
+    },
+    {
+      "name": "socket2",
+      "version": "0.6.5",
+      "directory": "tools/rustwx/vendor/crates-io/socket2-0.6.5",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/socket2-0.6.5/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/socket2-0.6.5/LICENSE-MIT",
+          "sha256": "378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397",
+          "label": "RADAR-DEPS-049"
+        }
+      ]
+    },
+    {
+      "name": "stable_deref_trait",
+      "version": "1.2.1",
+      "directory": "tools/rustwx/vendor/crates-io/stable_deref_trait-1.2.1",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/stable_deref_trait-1.2.1/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/stable_deref_trait-1.2.1/LICENSE-MIT",
+          "sha256": "5e05b024f653a5ce199e77cbbbd42fb5553562ec714b819421ed0c3e552a75d7",
+          "label": "RADAR-DEPS-050"
+        }
+      ]
+    },
+    {
+      "name": "sync_wrapper",
+      "version": "1.0.2",
+      "directory": "tools/rustwx/vendor/crates-io/sync_wrapper-1.0.2",
+      "license": "Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/sync_wrapper-1.0.2/LICENSE",
+          "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+          "label": "RADAR-DEPS-051"
+        }
+      ]
+    },
+    {
+      "name": "synstructure",
+      "version": "0.14.0",
+      "directory": "tools/rustwx/vendor/crates-io/synstructure-0.14.0",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/synstructure-0.14.0/LICENSE",
+          "sha256": "219920e865eee70b7dcfc948a86b099e7f4fe2de01bcca2ca9a20c0a033f2b59",
+          "label": "RADAR-DEPS-052"
+        }
+      ]
+    },
+    {
+      "name": "tinystr",
+      "version": "0.8.4",
+      "directory": "tools/rustwx/vendor/crates-io/tinystr-0.8.4",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/tinystr-0.8.4/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "tinyvec",
+      "version": "1.13.3",
+      "directory": "tools/rustwx/vendor/crates-io/tinyvec-1.13.3",
+      "license": "Zlib OR Apache-2.0 OR MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/tinyvec-1.13.3/LICENSE-APACHE.md",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "label": "RADAR-DEPS-029"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/tinyvec-1.13.3/LICENSE-MIT.md",
+          "sha256": "fd80a26fbb3f644af1fa994134446702932968519797227e07a1368dea80f0bc",
+          "label": "RADAR-DEPS-053"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/tinyvec-1.13.3/LICENSE-ZLIB.md",
+          "sha256": "84b34dd7608f7fb9b17bd588a6bf392bf7de504e2716f024a77d89f1b145a151",
+          "label": "RADAR-DEPS-054"
+        }
+      ]
+    },
+    {
+      "name": "tokio",
+      "version": "1.53.1",
+      "directory": "tools/rustwx/vendor/crates-io/tokio-1.53.1",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/tokio-1.53.1/LICENSE",
+          "sha256": "253cd04c6714889df2d32f3f64d669179a1c95c76ac43c40882c52eb06bc3552",
+          "label": "RADAR-DEPS-055"
+        }
+      ]
+    },
+    {
+      "name": "tokio-rustls",
+      "version": "0.26.6",
+      "directory": "tools/rustwx/vendor/crates-io/tokio-rustls-0.26.6",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/tokio-rustls-0.26.6/LICENSE-APACHE",
+          "sha256": "cc117d90b498b32b11a886f279b359da16a73c3b01efbb2f5cc004b20262334e",
+          "label": "RADAR-DEPS-056"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/tokio-rustls-0.26.6/LICENSE-MIT",
+          "sha256": "e20fa2b8e0a2565f24a792b94b4bf4b6c2b9d36f781d8a9516e218a036e6677a",
+          "label": "RADAR-DEPS-057"
+        }
+      ]
+    },
+    {
+      "name": "tokio-util",
+      "version": "0.7.19",
+      "directory": "tools/rustwx/vendor/crates-io/tokio-util-0.7.19",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/tokio-util-0.7.19/LICENSE",
+          "sha256": "253cd04c6714889df2d32f3f64d669179a1c95c76ac43c40882c52eb06bc3552",
+          "label": "RADAR-DEPS-055"
+        }
+      ]
+    },
+    {
+      "name": "tower",
+      "version": "0.5.3",
+      "directory": "tools/rustwx/vendor/crates-io/tower-0.5.3",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/tower-0.5.3/LICENSE",
+          "sha256": "4249c8e6c5ebb85f97c77e6457c6fafc1066406eb8f1ef61e796fbdc5ff18482",
+          "label": "RADAR-DEPS-058"
+        }
+      ]
+    },
+    {
+      "name": "tower-http",
+      "version": "0.6.11",
+      "directory": "tools/rustwx/vendor/crates-io/tower-http-0.6.11",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/tower-http-0.6.11/LICENSE",
+          "sha256": "5049cf464977eff4b4fcfa7988d84e74116956a3eb9d5f1d451b3f828f945233",
+          "label": "RADAR-DEPS-059"
+        }
+      ]
+    },
+    {
+      "name": "tower-layer",
+      "version": "0.3.3",
+      "directory": "tools/rustwx/vendor/crates-io/tower-layer-0.3.3",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/tower-layer-0.3.3/LICENSE",
+          "sha256": "4249c8e6c5ebb85f97c77e6457c6fafc1066406eb8f1ef61e796fbdc5ff18482",
+          "label": "RADAR-DEPS-058"
+        }
+      ]
+    },
+    {
+      "name": "tower-service",
+      "version": "0.3.3",
+      "directory": "tools/rustwx/vendor/crates-io/tower-service-0.3.3",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/tower-service-0.3.3/LICENSE",
+          "sha256": "4249c8e6c5ebb85f97c77e6457c6fafc1066406eb8f1ef61e796fbdc5ff18482",
+          "label": "RADAR-DEPS-058"
+        }
+      ]
+    },
+    {
+      "name": "tracing",
+      "version": "0.1.44",
+      "directory": "tools/rustwx/vendor/crates-io/tracing-0.1.44",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/tracing-0.1.44/LICENSE",
+          "sha256": "898b1ae9821e98daf8964c8d6c7f61641f5f5aa78ad500020771c0939ee0dea1",
+          "label": "RADAR-DEPS-060"
+        }
+      ]
+    },
+    {
+      "name": "tracing-core",
+      "version": "0.1.36",
+      "directory": "tools/rustwx/vendor/crates-io/tracing-core-0.1.36",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/tracing-core-0.1.36/LICENSE",
+          "sha256": "898b1ae9821e98daf8964c8d6c7f61641f5f5aa78ad500020771c0939ee0dea1",
+          "label": "RADAR-DEPS-060"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/tracing-core-0.1.36/src/spin/LICENSE",
+          "sha256": "58545fed1565e42d687aecec6897d35c6d37ccb71479a137c0deb2203e125c79",
+          "label": "RADAR-DEPS-061"
+        }
+      ]
+    },
+    {
+      "name": "try-lock",
+      "version": "0.2.5",
+      "directory": "tools/rustwx/vendor/crates-io/try-lock-0.2.5",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/try-lock-0.2.5/LICENSE",
+          "sha256": "c816a0749cdc6bf062a5111c159723de51b2bfac66a1dac2655abd9e6b1583eb",
+          "label": "RADAR-DEPS-062"
+        }
+      ]
+    },
+    {
+      "name": "typed-path",
+      "version": "0.12.3",
+      "directory": "tools/rustwx/vendor/crates-io/typed-path-0.12.3",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/typed-path-0.12.3/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "label": "RADAR-DEPS-011"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/typed-path-0.12.3/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "label": "RADAR-DEPS-002"
+        }
+      ]
+    },
+    {
+      "name": "url",
+      "version": "2.5.8",
+      "directory": "tools/rustwx/vendor/crates-io/url-2.5.8",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/url-2.5.8/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/url-2.5.8/LICENSE-MIT",
+          "sha256": "b38f11f6096706e6de553dabe2a7ed142d59b6fa8c97e290c67496154745cdd5",
+          "label": "RADAR-DEPS-022"
+        }
+      ]
+    },
+    {
+      "name": "utf8_iter",
+      "version": "1.0.4",
+      "directory": "tools/rustwx/vendor/crates-io/utf8_iter-1.0.4",
+      "license": "Apache-2.0 OR MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/utf8_iter-1.0.4/COPYRIGHT",
+          "sha256": "c30152c94a6d75e021adbc52b3a52470366a46edb917e17deae3259251af244c",
+          "label": "RADAR-DEPS-063"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/utf8_iter-1.0.4/LICENSE-APACHE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "label": "RADAR-DEPS-029"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/utf8_iter-1.0.4/LICENSE-MIT",
+          "sha256": "3fa4ca83dcc9237839b1bdeb2e6d16bdfb5ec0c5ce42b24694d8bbf0dcbef72c",
+          "label": "RADAR-DEPS-064"
+        }
+      ]
+    },
+    {
+      "name": "want",
+      "version": "0.3.1",
+      "directory": "tools/rustwx/vendor/crates-io/want-0.3.1",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/want-0.3.1/LICENSE",
+          "sha256": "a65f5d0a945d267751344c95665945b90c030ea107faf5c85d518929886187da",
+          "label": "RADAR-DEPS-065"
+        }
+      ]
+    },
+    {
+      "name": "wasm-bindgen-futures",
+      "version": "0.4.76",
+      "directory": "tools/rustwx/vendor/crates-io/wasm-bindgen-futures-0.4.76",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/wasm-bindgen-futures-0.4.76/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/wasm-bindgen-futures-0.4.76/LICENSE-MIT",
+          "sha256": "378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397",
+          "label": "RADAR-DEPS-049"
+        }
+      ]
+    },
+    {
+      "name": "wasm-streams",
+      "version": "0.4.2",
+      "directory": "tools/rustwx/vendor/crates-io/wasm-streams-0.4.2",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/wasm-streams-0.4.2/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "label": "RADAR-DEPS-011"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/wasm-streams-0.4.2/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "label": "RADAR-DEPS-002"
+        }
+      ]
+    },
+    {
+      "name": "web-sys",
+      "version": "0.3.103",
+      "directory": "tools/rustwx/vendor/crates-io/web-sys-0.3.103",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/web-sys-0.3.103/LICENSE-APACHE",
+          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+          "label": "RADAR-DEPS-001"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/web-sys-0.3.103/LICENSE-MIT",
+          "sha256": "378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397",
+          "label": "RADAR-DEPS-049"
+        }
+      ]
+    },
+    {
+      "name": "web-time",
+      "version": "1.1.0",
+      "directory": "tools/rustwx/vendor/crates-io/web-time-1.1.0",
+      "license": "MIT OR Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/web-time-1.1.0/LICENSE-APACHE",
+          "sha256": "54a744942eb3fa63a74d8d359989ed6962c04f3f10ff20cfa08ff8aa7efbe4e6",
+          "label": "RADAR-DEPS-066"
+        },
+        {
+          "path": "tools/rustwx/vendor/crates-io/web-time-1.1.0/LICENSE-MIT",
+          "sha256": "f428305bbf2e70fbd807af0f3c7ac1b7acfb95311640f451e9d2e48db6d7e96b",
+          "label": "RADAR-DEPS-067"
+        }
+      ]
+    },
+    {
+      "name": "writeable",
+      "version": "0.6.4",
+      "directory": "tools/rustwx/vendor/crates-io/writeable-0.6.4",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/writeable-0.6.4/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "yoke",
+      "version": "0.8.3",
+      "directory": "tools/rustwx/vendor/crates-io/yoke-0.8.3",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/yoke-0.8.3/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "yoke-derive",
+      "version": "0.8.4",
+      "directory": "tools/rustwx/vendor/crates-io/yoke-derive-0.8.4",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/yoke-derive-0.8.4/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "zerofrom",
+      "version": "0.1.8",
+      "directory": "tools/rustwx/vendor/crates-io/zerofrom-0.1.8",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/zerofrom-0.1.8/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "zerofrom-derive",
+      "version": "0.1.8",
+      "directory": "tools/rustwx/vendor/crates-io/zerofrom-derive-0.1.8",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/zerofrom-derive-0.1.8/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "zerotrie",
+      "version": "0.2.5",
+      "directory": "tools/rustwx/vendor/crates-io/zerotrie-0.2.5",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/zerotrie-0.2.5/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "zerovec",
+      "version": "0.11.8",
+      "directory": "tools/rustwx/vendor/crates-io/zerovec-0.11.8",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/zerovec-0.11.8/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "zerovec-derive",
+      "version": "0.11.6",
+      "directory": "tools/rustwx/vendor/crates-io/zerovec-derive-0.11.6",
+      "license": "Unicode-3.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/zerovec-derive-0.11.6/LICENSE",
+          "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
+          "label": "RADAR-DEPS-021"
+        }
+      ]
+    },
+    {
+      "name": "zip",
+      "version": "8.6.0",
+      "directory": "tools/rustwx/vendor/crates-io/zip-8.6.0",
+      "license": "MIT",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/zip-8.6.0/LICENSE",
+          "sha256": "58545fed1565e42d687aecec6897d35c6d37ccb71479a137c0deb2203e125c79",
+          "label": "RADAR-DEPS-061"
+        }
+      ]
+    },
+    {
+      "name": "zlib-rs",
+      "version": "0.6.8",
+      "directory": "tools/rustwx/vendor/crates-io/zlib-rs-0.6.8",
+      "license": "Zlib",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/zlib-rs-0.6.8/LICENSE",
+          "sha256": "e72111c52b7d96ebe25348dee19f0744f444d3c95ae6b1ecb6ccaecc5bce05ba",
+          "label": "RADAR-DEPS-068"
+        }
+      ]
+    },
+    {
+      "name": "zopfli",
+      "version": "0.8.3",
+      "directory": "tools/rustwx/vendor/crates-io/zopfli-0.8.3",
+      "license": "Apache-2.0",
+      "grants": [
+        {
+          "path": "tools/rustwx/vendor/crates-io/zopfli-0.8.3/COPYING",
+          "sha256": "018b1cb87efdf7a04c2fcc13d57ed63f62149113fb207b27ea13430d64f13513",
+          "label": "RADAR-DEPS-069"
+        }
+      ]
+    }
+  ]
+}

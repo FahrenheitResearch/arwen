@@ -272,6 +272,7 @@ def _without_forecast_stop(exp):
     result.pop("auto_mix_isotropic", None)
     # Likewise the off-centering provenance label (run.epssm binds).
     result.pop("auto_epssm", None)
+    result.pop("simulated_radar", None)
     domains = result.get("domains")
     if not isinstance(domains, list) or not domains:
         raise ValueError(
@@ -1728,6 +1729,7 @@ def preflight_prepared_tree(
     prepared_head_sha256: str | None = None,
     devices: int | None = None,
     devices_options=None,
+    simulated_radar=None,
 ) -> PreparedTreeInputs:
     """Verify the complete hierarchy and resolve a runnable CPU-only plan.
 
@@ -1744,7 +1746,8 @@ def preflight_prepared_tree(
         prepared_root=prepared_root, experiment_config=experiment_config,
         experiment_config_sha256=experiment_config_sha256,
         physics_profile=physics_profile, devices=devices,
-        devices_options=devices_options))
+        devices_options=devices_options,
+        **({} if simulated_radar is None else {"simulated_radar": simulated_radar})))
     if (preparation_receipt_sha256 is None) == (prepared_head_sha256 is None):
         raise ValueError(
             "a prepared tree binds its sealed preparation receipt or its "
@@ -1803,6 +1806,14 @@ def preflight_prepared_tree(
     if devices is not None:
         from gpuwm.core.devices import override_device_count
         exp = replace(exp, devices=override_device_count(exp.devices, devices))
+    from gpuwm.simulated_radar_config import apply_execution_options
+    exp = apply_execution_options(exp, simulated_radar)
+    if exp.simulated_radar.enabled:
+        # Before the model is built or a card allocated, not at the first
+        # history: a missing or stale rw_simradar, or a scan the host
+        # memory cannot hold, refuses here.
+        from gpuwm.simulated_radar_config import require_admitted
+        require_admitted(exp)
     from gpuwm.core.devices import validate_device_road, validate_tree_devices
     validate_device_road(exp.devices, getattr(exp, "tiles", None), exp.domains)
     validate_tree_devices(exp)
@@ -2972,6 +2983,8 @@ def run_prepared_tree(
 
     if io_mode not in {"history", "none"}:
         raise ValueError("io_mode must be 'history' or 'none'")
+    if io_mode == "none" and inputs.experiment.simulated_radar.enabled:
+        raise ValueError("simulated radar requires io_mode='history': virtual beams read durable atmospheric columns")
     from gpuwm.output_disk import require_output_space, renderer_products
 
     require_output_space(
@@ -3942,6 +3955,7 @@ def run_prepared_tree(
             # The tree-wide [output] history selection; each domain's own
             # `output = {...}` overrides it inside the writer set.
             history_selection=exp.output,
+            simulated_radar=exp.simulated_radar, radar_output_dir=outdir,
         )
         if io_mode == "history"
         else None
@@ -4808,6 +4822,8 @@ def build_parser() -> argparse.ArgumentParser:
     # The same four flags the single-domain door carries, registered
     # from the same function so the two cannot drift.
     add_progress_arguments(parser)
+    from gpuwm.simulated_radar_config import add_execution_argument
+    add_execution_argument(parser)
     return parser
 
 
@@ -4898,6 +4914,9 @@ def main(argv=None, *, observer=None) -> int:
             from gpuwm.core.devices import DeviceOptions
             binding["devices_options"] = DeviceOptions.from_mapping(
                 json.loads(args.devices_table), source="--devices-table")
+        if getattr(args, "simulated_radar_table", None) is not None:
+            from gpuwm.simulated_radar_config import execution_argument
+            binding["simulated_radar"] = execution_argument(args.simulated_radar_table)
         if (args.preparation_receipt_sha256 is None) \
                 == (args.prepared_head_sha256 is None):
             raise ValueError(

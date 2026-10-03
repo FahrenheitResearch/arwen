@@ -1,7 +1,7 @@
 """Compile reviewed research recipes through ArWen's native domain planner.
 
 Creation writes a new configuration bundle only. It does not acquire forcing,
-prepare a state, integrate a forecast, or turn pending research validation into
+prepare a state, integrate a forecast, or turn execution qualification into
 a successful scientific result. The TOML is published last as the commit marker.
 """
 from __future__ import annotations
@@ -33,7 +33,8 @@ _METHODS = {"regional", "nested", "moving_nest", "controlled_scenario",
 _RECIPE_KEYS = {"id", "leaf_id", "title", "research_question", "method",
                 "plot_preset", "geometry", "diagnostics", "input_requirements",
                 "tracker", "scenario", "comparison", "limitations",
-                "citation_ids", "requires_existing_state", "validation_status", "further_analysis"}
+                "citation_ids", "requires_existing_state", "qualification_status",
+                "validation_status", "further_analysis"}
 _GEOMETRY_KEYS = {"root_dx_km", "nest_ratios", "forecast_hours",
                   "history_interval_s", "extent_intent", "preferred_finest_dx_km",
                   "minimum_domain_span_km", "minimum_root_span_km"}
@@ -42,6 +43,43 @@ _TRACKER_KEYS = {"kind", "field", "units", "level_hpa", "threshold",
                  "extremum", "reduction", "model_level"}
 _SCENARIO_KEYS = {"operation", "amplitude_k", "center_height_m", "radius_km",
                   "depth_m", "rh_preserve", "placement"}
+
+
+_QUALIFICATION_STATUS_ALIASES = {
+    "unvalidated": "unqualified",
+    "unvalidated-candidate-policy": "unqualified-candidate-policy",
+    "catalog recommendations are not science validation": "unqualified",
+}
+_LEGACY_QUALIFICATION_STATUSES = {
+    "unqualified": "unvalidated",
+    "unqualified-candidate-policy": "unvalidated-candidate-policy",
+}
+
+
+def qualification_status(recipe: dict) -> str:
+    """Read execution qualification, accepting historical field/value aliases."""
+    statuses = {}
+    for key in ("qualification_status", "validation_status"):
+        if key not in recipe:
+            continue
+        value = recipe[key]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Research recipe {key} must be nonempty text")
+        statuses[key] = _QUALIFICATION_STATUS_ALIASES.get(value, value)
+    if not statuses:
+        raise ValueError("Research recipe is missing qualification_status "
+                         "(legacy validation_status is also accepted)")
+    if len(set(statuses.values())) != 1:
+        raise ValueError("Research recipe qualification_status and legacy "
+                         "validation_status disagree; use one status or matching aliases")
+    return next(iter(statuses.values()))
+
+
+def _qualification_fields(recipe: dict) -> dict[str, str]:
+    status = qualification_status(recipe)
+    # Keep the old exported field and spelling for existing JSON consumers.
+    legacy = recipe.get("validation_status", _LEGACY_QUALIFICATION_STATUSES.get(status, status))
+    return {"qualification_status": status, "validation_status": legacy}
 
 
 def _read_json(path: Path, label: str) -> tuple[dict, str]:
@@ -115,12 +153,13 @@ def validate_recipe(recipe: dict, *, known_products: set[str] | None = None,
                     _capabilities: dict | None = None) -> None:
     """Reject unsupported declarations before probing hardware or writing files."""
     _keys(recipe, _RECIPE_KEYS, "recipe")
-    missing = _RECIPE_KEYS - {"further_analysis"} - set(recipe)
+    missing = _RECIPE_KEYS - {"further_analysis", "qualification_status", "validation_status"} - set(recipe)
     if missing:
         raise ValueError(f"Research recipe is missing fields: {', '.join(sorted(missing))}")
     if not isinstance(recipe["id"], str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", recipe["id"]):
         raise ValueError("Research recipe id must use lowercase letters, digits, dots, underscores or hyphens")
-    for key in ("leaf_id", "title", "research_question", "comparison", "validation_status"):
+    qualification_status(recipe)
+    for key in ("leaf_id", "title", "research_question", "comparison"):
         if not isinstance(recipe[key], str) or not recipe[key].strip():
             raise ValueError(f"Research recipe {key} must be nonempty text")
     for key in ("input_requirements", "limitations", "citation_ids", "further_analysis"):
@@ -285,6 +324,7 @@ def catalog_document() -> dict:
                 raise ValueError(f"leaf {leaf['id']} has inconsistent configuration_ids")
         for row in collections["configurations"].values():
             validate_recipe(row, _capabilities=capabilities)
+            row.update(_qualification_fields(row))
             if row["leaf_id"] not in collections["leaves"]:
                 raise ValueError(f"configuration {row['id']} has unknown leaf_id")
             if any(citation not in collections["citations"] for citation in row["citation_ids"]):
@@ -339,6 +379,7 @@ def effective_profile(recipe: dict, hardware_class: str, *, hardware: dict | Non
                                     "Profile is coarser than the recipe's preferred finest spacing"
                                     if finest > original["preferred_finest_dx_km"] else
                                     "Profile meets or exceeds the recipe's preferred finest spacing"),
+            "qualification_status": "unqualified-candidate-policy",
             "validation_status": "unvalidated-candidate-policy"}
 
 
@@ -539,7 +580,7 @@ def _final_text(text: str, recipe: dict, *, lat: float, lon: float, data_dir: Pa
         body = re.sub(r"(?m)^forcing\s*=.*$", "forcing = " + forcing, case_data["body"])
         text = text[:case_data.start("body")] + body + text[case_data.end("body"):]
     heading = (f"# Research configuration: {recipe['id']}\n"
-               f"# Method: {recipe['method']}; validation remains {recipe['validation_status']}.\n")
+               f"# Method: {recipe['method']}; execution qualification remains {qualification_status(recipe)}.\n")
     return heading + text.rstrip() + "\n" + _method_text(
         recipe, lat=lat, lon=lon, grid_id=len(profile["geometry"]["nest_ratios"]) + 1)
 
@@ -584,7 +625,9 @@ def _admission(text: str, *, recipe: dict, source: str, sizing, path: Path,
                         "envelope_budget_bytes": budget,
                         "remaining_envelope_bytes": budget - phases.peak_envelope_bytes,
                         "forecast_started": False, "prepared_inputs_validated": False,
-                        "science_validation": recipe["validation_status"]}
+                        "execution_qualification": qualification_status(recipe),
+                        # Historical receipt key retained for existing consumers.
+                        "science_validation": _qualification_fields(recipe)["validation_status"]}
 
 
 def _publish_bundle(stage: Path, destination: Path, *, exp, source) -> list[Path]:

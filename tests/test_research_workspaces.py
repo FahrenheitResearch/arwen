@@ -157,7 +157,10 @@ def test_native_creation_honors_reviewed_bubble_and_exact_diagnostics(tmp_path, 
     assert sidecar["schema"] == "gpuwm-tui-plots-v1"
     saved = json.loads(Path(str(config) + ".arwen-research.json").read_text())
     assert saved["config_sha256"] == hashlib.sha256(config.read_bytes()).hexdigest()
-    assert saved["admission"]["science_validation"] == "unvalidated"
+    assert saved["admission"]["execution_qualification"] == "unqualified"
+    assert saved["admission"]["science_validation"] == "unvalidated"  # legacy receipt alias
+    assert "execution qualification remains unqualified" in config.read_text()
+    assert "validation remains" not in config.read_text()
     assert saved["admission"]["forecast_started"] is False
     assert receipt["domains"][1]["dx_km"] == 4
     assert ".arwen-research-" not in json.dumps(saved)

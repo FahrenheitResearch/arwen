@@ -38,7 +38,7 @@ MODEL = pathlib.Path(__file__).resolve().parents[1]
 if str(MODEL) not in sys.path:
     sys.path.insert(0, str(MODEL))
 
-from gpuwm.physics_registry import canonical_json  # noqa: E402
+from gpuwm.physics_registry import canonical_json, canonical_maturity  # noqa: E402
 
 RECEIPT_PATH = (
     MODEL / "docs" / "public" / "receipts" / "F2-composition-blast-radius.json"
@@ -190,7 +190,7 @@ def evaluate(registry: dict) -> dict[str, object]:
     rows = []
     for template_id in sorted(templates):
         template = templates[template_id]
-        label_maturity = template.get("maturity")
+        label_maturity = canonical_maturity(template.get("maturity"), registry)
         label_rank = _rank(order, label_maturity)
         selected = template.get("components", {})
         members = []
@@ -201,7 +201,7 @@ def evaluate(registry: dict) -> dict[str, object]:
                 .get("options", {})
                 .get(option_id, {})
             )
-            option_maturity = option.get("maturity")
+            option_maturity = canonical_maturity(option.get("maturity"), registry)
             members.append({
                 "component_id": component_id,
                 "option_id": option_id,

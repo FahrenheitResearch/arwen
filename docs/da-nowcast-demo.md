@@ -8,14 +8,14 @@ is the reference for the pipeline itself.
 
 One command takes any WSR-88D site id and a time window and produces a
 cycled, ensemble, GPU-LETKF nowcast with a map-styled gallery that
-verifies itself as reality arrives:
+scores its forecast frames against observed radar as reality arrives:
 
 ```
 python -m tools.da_nowcast run --site XXXX --window-end latest --out CASE_DIR
 ```
 
-That is the whole command.  **Verification is automatic**: when the run
-finishes it hands the case to a detached rolling verifier that grades
+That is the whole command. **Scoring against observed radar is automatic**:
+when the run finishes it hands the case to a detached rolling verifier that grades
 each free-forecast frame as the archive covers its valid time, updates
 the gallery in place, and stops with a verdict.  `--no-verify` opts
 out; the same verifier can be started or re-run by hand later:
@@ -28,8 +28,9 @@ python -m tools.da_nowcast verify --case-dir CASE_DIR   # one pass, then stop
 ## What it accurately is
 
 A **demo**, productized from the live-fire engineering exercises
-(receipts under `evidence/da-demo/`).  It is UNSCORED and outside any
-registered campaign.  Defaults are the demo shape: **N=10 members**,
+(receipts under `evidence/da-demo/`). It is outside any registered
+campaign. Frames are unscored until observed radar is available, then
+receive scores for that case. Defaults are the demo shape: **N=10 members**,
 six applied 15-minute cycles, six free forecast legs, a single 3 km
 domain sized to the radar's range authority.  Every figure it emits
 carries that statement; free-forecast panels are stamped
@@ -38,9 +39,10 @@ carries that statement; free-forecast panels are stamped
 For how this configuration compares to the Warn-on-Forecast System --
 members, domain, observations, compute, and why the FSS below does not
 sit next to a published WoFS number -- see
-[`da-vs-wofs.md`](da-vs-wofs.md).  That page also scores the demo against
-the **operational HRRR**, the one external baseline that could be scored:
-on one case it wins across the whole 90-minute free forecast, with the
+[`da-vs-wofs.md`](da-vs-wofs.md). That page scores both the demo and
+the **operational HRRR** against the same observed radar composites.
+HRRR is the one external baseline that could be scored.
+On one case the demo scored higher across the whole 90-minute free forecast, with the
 margin peaking near +45 min and spent by +1:30.  The window is part of the
 result -- quoting the win without it misstates the page -- and the HRRR
 ingests strictly more radar data than this demo does.
@@ -193,8 +195,9 @@ one N=20 analysis fixed and varying only the averaging depth
 |---|---|---|---|---|---|---|---|
 | FSS | .7470 | .7451 | .7435 | .7428 | .7425 | .7425 | .7423 |
 
-The measured skill-and-cost ladder, same case and same scorer
-throughout, mean FSS over the six free-forecast leads:
+The measured FSS-and-cost ladder uses one case, scored against observed
+radar with the same scorer throughout. It is not a general skill result.
+The table shows mean FSS over the six free-forecast leads:
 
 | N | FSS (32 GB) | wall (32 GB) | FSS (16 GB) | wall (16 GB) |
 |---|---|---|---|---|

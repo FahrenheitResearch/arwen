@@ -1,7 +1,11 @@
 # Physics options and maturity
 
-WRF-derived schemes target WRF v4.6.1 source (commit `d66e442f`),
-with declared deviations. ArWen also has original schemes and couplings
+WRF-derived schemes use versioned reference sources, with declared deviations.
+The historical component oracles and matched run use WRF v4.6.1
+(commit `d66e442f`); newer ports identify WRF v4.7.1 in their rows.
+The v4.7.1 ensemble comparisons are separate evidence, described in
+[VERIFICATION.md](VERIFICATION.md#verification-and-validation).
+ArWen also has original schemes and couplings
 without a WRF counterpart, including SASE and the RTE+RRTMGP coupling.
 Every option carries a machine-readable maturity label in the physics
 registry (`gpuwm/physics_registry_v2.json`). The registry is the authority
@@ -11,11 +15,21 @@ limits.
 
 ## Maturity vocabulary
 
+These are code-verification labels, not observation-validation claims.
+`wrf-matched-run` and `wrf-matched-run-candidate` are the registry names
+for WRF comparison evidence. Older records using `model-validated` or
+`validation-candidate` remain readable aliases. New profile selections use
+`wrf-comparison-candidate` or `dudhia-daytime` in place of the old
+`validation` spellings. The old profile IDs remain accepted aliases for
+saved configurations and receipts; they do not claim observation validation.
+The code-verification evidence now lives under `wrf-comparison/`;
+compatibility stubs at the old `validation/` paths keep links working.
+
 | label | meaning |
 |---|---|
-| **model-validated** | A matched multi-hour ArWen-vs-WRF forecast of the reference case has been run with this option and its decay tables are published ([VERIFICATION.md](VERIFICATION.md)). |
-| **validation-candidate** | Executable and gated, with a ratified reference comparison, but deliberately not the default; the next candidate for full matched-run validation. |
-| **supported** | Production option from the longest-certified slice: WRF-transcribed, standing unit/runtime gates, exercised by the certified reference configurations. |
+| **wrf-matched-run** | A matched multi-hour comparison against WRF is recorded for a named historical build and configuration, with published decay tables ([VERIFICATION.md](VERIFICATION.md)). It is code verification, not validation against observations or a claim about every later build. |
+| **wrf-matched-run-candidate** | Executable with component checks and a reference comparison against WRF accepted by the project; a candidate for a full matched run against WRF. This is not a comparison against observations. |
+| **supported** | Executable option with standing unit/runtime checks and the evidence stated in its row. WRF-derived where a WRF counterpart exists; original couplings such as RTE+RRTMGP do not acquire a WRF reference through this label. |
 | **experimental-runtime** | Executable, and carrying a documented runtime restriction or an unratified composition -- a table-bound runtime, or a nest edge between two microphysics schemes. Selecting it warns and does not block. |
 | **implemented-unverified** | Executable, with evidence limited as stated in its option row. This label alone does not imply that an independent Fortran oracle has run: some options have only smoke or self-consistency tests, some have oracle comparisons, and original schemes may have no WRF counterpart. A trajectory measurement, where present, remains limited to its recorded configuration and case. |
 | **planned / port-in-progress** | Not selectable. The registry publishes the target so the roadmap is machine-readable; nothing can resolve to it. |
@@ -40,14 +54,19 @@ that the option retains the evidence limits described in its own row.
 Some rows report an oracle or an idealized trajectory, while others
 explicitly report no independent oracle. This is separate from whether
 the option can be composed with others. Configuration admission is
-measured in the next section; it is not a numerical validation.
+measured in the next section; it is neither numerical-error estimation nor validation against observations.
 
-A *suite* then takes the **strict minimum** rung over the options it
-selects (the registry's composition rule C2, "a composed suite is only
-as conformant as its weakest member"), which is why a suite carrying
-Thompson's matched-run microphysics beside YSU and Noah still reads
-`implemented-unverified`. Nothing is graded down for being newly named
-or newly composed, and adding a named suite never moves a rung.
+A *suite* normally takes the **strict minimum** component rung under
+composition rule C2. The registry also lists explicit composition
+exemptions. In particular, the Thompson/YSU/Noah/RTE+RRTMGP default and
+the Morrison/YSU/Noah/RTE+RRTMGP template carry `wrf-matched-run` through
+exemptions: the July Thompson run used legacy RRTMG, and the Morrison
+tuple has no published matched-run manifest or decay table. Those
+exemption labels are not matched-run evidence for the exact suites.
+The registry's `verification_scope` distinguishes historical or exempted
+labels from a current matched run; the run status requires current
+evidence before calling a suite WRF-verified. Admission and scientific
+evidence remain separate.
 
 ## Can you compose your own suite? Yes, and it is measured
 
@@ -234,13 +253,13 @@ closure is genuinely missing.
 | option | WRF id | maturity | evidence, in one line |
 |---|---|---|---|
 | Kessler | 1 | supported | warm-rain certified slice; idealized + runtime gates |
-| WSM6 | 6 | supported | certified slice; matched-run anchors exist for this scheme on the reference case (refl corr 0.977 at F2, 0.815 at F5, d03) |
-| Thompson | 8 | **model-validated** | full matched 6 h, 4-domain run to 500 m; decay tables in [VERIFICATION.md](VERIFICATION.md); WRF's own coefficient tables packaged and SHA-256-validated at load |
+| WSM6 | 6 | supported | runtime-supported slice; earlier WRF comparisons reported reflectivity correlation 0.977 at F2 and 0.815 at F5 on d03, but no run date, engine revision or receipt is published here. These historical numbers do not measure the current release or accuracy against observations |
+| Thompson | 8 | **wrf-matched-run** (historical evidence) | one historical matched 6 h, 4-domain run to 500 m against WRF v4.6.1 on 2026-07-28, using legacy RRTMG and initial states that failed the t=0 digest on all four domains; [decay tables](VERIFICATION.md). The kernels changed in 2.7.4 and on 2026-09-23 and that matched run has not been repeated. Current component agreement is limited to the recorded column comparisons; this row supplies no observation score. WRF coefficient tables are packaged and SHA-256-checked at load |
 | Milbrandt-Yau 2-moment | 9 | implemented-unverified | **no oracle has been run.** Line-by-line transcription of `phys/module_mp_milbrandt2mom.F`; what is tested is a column smoke through the shipped seams (finite, bounded, water budget closing to 1.3e-4 relative or better on three seeding layouts, each resolving a named family of source/sink terms) plus a mutation control. Graupel and hail are separate prognostic categories and all twelve moments are transported. A preset selects it (with New Tiedtke and the legacy RRTMG engine) and it is also a per-domain override; the modern RTE+RRTMGP coupling is also implemented, with the radius derivation described below |
 | Morrison 2-moment | 10 | implemented-unverified | 28-column oracle vs unmodified WRF `MP_MORR_TWO_MOMENT`: theta within 154 ULP, but hydrometeor fields cross branch points and are not bitwise; both rimed-ice identities (graupel/hail) implemented. **Declared divergence:** deposition-freezing nucleation is bounded by the vapour excess over ice saturation and the nucleated number scales with it; WRF (F:2902-2905) applies no availability test and its FUDGEF rescale (F:3009-3015) tests only matching sign pairs, so below the 159.4887 K POLYSVP crossover -- where the extrapolated liquid curve falls under the ice curve and F:1315 clamps `QVI==QVS` -- the unbounded term drove qv to -1.87e-4 kg/kg out of 5.55e-8 available, dt-independent. That state is unreachable in WRF and in any p_top-limited regional domain; the bound also engages at 189.88-199.96 K where WRF does reach, scaling the number moment by 0.197-0.898 and moving the oracle fixture's ni by up to 67% relative, qi by 1.4e-3 and qv by 1.8e-16, with no pinned per-field max_ulp moved and the fixture mismatch count 3,512 -> 3,554 of 10,948 |
 | WDM6 double-moment warm rain | 16 | implemented-unverified | **no oracle comparison against the WRF Fortran has been run** -- the CUDA kernel and `wdm6init` are transcribed line by line from the byte-frozen `phys/module_mp_wdm6.F` with file:line citations, the float64 coefficient block pins the kernel's baked FP32 literals, and a column smoke through the shipped seams asserts finiteness, WDM6's own bounds, water conservation to the surface flux, and that CCN activation actually moves number from `nn` into `nc`; the oracle campaign is the declared next stage. WDM5 (14) and WDM7 (26) are refused by name. A preset selects it (with Grell-Freitas and RTE+RRTMGP) and it is also a per-domain override |
-| NSSL 2-moment | 18 | **validation-candidate** (default lane) / implemented-unverified (variants) | full CUDA port with fused-process oracles and a ratified 500 m comparison; explicitly not the default. The hail-off and diagnosed-CCN variants below carry column smoke and treatment proofs only, with no oracle comparison |
-| Thompson aerosol-aware | 28 | implemented-unverified | 22 WRF column fixtures end to end, 23 quantities each: 18 clear a flat 2e-6 gate, 3 do not, 1 clears only under two named allowances (numbers below); it runs multi-step and stays bounded; the one matched WRF forecast comparison is idealized only -- a single-domain doubly periodic warm bubble, [validation/mp28-matched-trajectory.md](validation/mp28-matched-trajectory.md), which publishes a failed declared condition alongside a control showing that condition fails for WRF against its own recompilation -- and no real-data or nested forecast has ever been validated against WRF; a preset on the prepared-domain-tree route selects it (with MYJ, the Eta surface layer and RTE+RRTMGP) and it is also a per-domain override. The fixed-template routes do not offer that preset: their cold-start contract has no arm for the aerosol-aware boundary species |
+| NSSL 2-moment | 18 | **wrf-matched-run-candidate** (default lane) / implemented-unverified (variants) | full CUDA port with fused-process oracles and a 500 m WRF reference comparison accepted by the project; the comparison is not described here and no receipt is linked. It supplies no observation-validation claim and is explicitly not the default. The hail-off and diagnosed-CCN variants below carry column smoke and treatment proofs only, with no oracle comparison |
+| Thompson aerosol-aware | 28 | implemented-unverified | 22 WRF column fixtures end to end, 23 quantities each: 18 clear a flat 2e-6 gate, 3 do not, 1 clears only under one named allowance (numbers below); it runs multi-step and stays bounded; the one matched WRF forecast comparison is idealized only -- a single-domain doubly periodic warm bubble, [wrf-comparison/mp28-matched-trajectory.md](wrf-comparison/mp28-matched-trajectory.md), which publishes a failed declared condition alongside a control showing that condition fails for WRF against its own recompilation -- and no real-data or nested mp=28 forecast has been compared against a matched WRF run; a preset on the prepared-domain-tree route selects it (with MYJ, the Eta surface layer and RTE+RRTMGP) and it is also a per-domain override. The fixed-template routes do not offer that preset: their cold-start contract has no arm for the aerosol-aware boundary species |
 | P3 one-category | 50 | implemented-unverified | **measured against WRF's own Fortran** — unmodified `phys/module_mp_p3.F` (P3 v4.5.2, byte-identical across WRF v4.6.1/v4.7.1/v4.8.0) compiled at -O0 -ffp-contract=off and driven through `mp_p3_wrapper_wrf` over twelve discriminating fixtures: 4 of 12 bit-identical, F02/F06/F08/F09/F11 within 2–7 ULP, F12 at 829 ULP (6.3e-5 relative); the two long mixed-phase cases (F07, F10) are exact for the first steps and then bifurcate — a property of the system, not the port (a one-ULP nudge to the Fortran's own input diverges it from itself by 100% within ten steps, measured); the parsed lookup table is exact (substituting the Fortran's own generated tables changes nothing); the column smoke still holds through the shipped seams (finite, non-negative, total water closing to 1e-4 against surface precipitation, rime mass ≤ ice mass, 50 ≤ rime density ≤ 900); STILL OPEN: an unexplained 1–6 ULP CUDA-specific `qib` residual on F06/F08/F11, and F09's separate, broader disagreement; no matched WRF forecast run and no comparison against observations — per-step agreement with Fortran is not evidence of forecast skill; reachable through the registered HRRR template `p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1` and as a per-domain override on the tree route |
 
 ### P3 one-category (`mp_physics = 50`) — read this before selecting it
@@ -383,7 +402,8 @@ scheme's exponential snow with the Brandes `m(D)` pair, then merged into
 RRTMGP's one ice species by number exactly as Morrison's row is. This is
 an ArWen coupling with no WRF referent (WRF has no RRTMGP); the two
 radiation arms therefore radiate different cloud radii for mp=9 by
-design, and obs skill, not agreement between them, is the referee. A
+design. Skill against observations is the intended referee; no
+observation comparison of the mp=9 radii is published here. A
 bare `mp_physics = 9` with the 4/4 pair validates and runs on the default
 variant; nothing has to be switched.
 
@@ -424,7 +444,7 @@ Four modes have a ported numerical path:
 
 | selectors | equals | maturity |
 |---|---|---|
-| everything unset (`-1`) | two moments, hail, predicted CCN, graupel and hail volume | validation-candidate (the shipped default lane) |
+| everything unset (`-1`) | two moments, hail, predicted CCN, graupel and hail volume | wrf-matched-run-candidate (the shipped default lane) |
 | `nssl_ccn_on = 0` | as above but CCN diagnosed, not predicted | implemented-unverified — WRF's deprecated `mp_physics = 17` |
 | `nssl_hail_on = 0` | two moments, no hail, predicted CCN, graupel volume | implemented-unverified |
 | `nssl_hail_on = 0, nssl_ccn_on = 0` | two moments, no hail, diagnosed CCN, graupel volume | implemented-unverified — WRF's deprecated `mp_physics = 22` |
@@ -700,11 +720,12 @@ this page. Beneath it, the per-kernel column gates and the
 device-helper probes against a Fortran probe harness pass, including
 bitwise agreement on the effective-radius branches.
 
-**No REAL-DATA or NESTED forecast has ever been validated against WRF, and
-none can be yet.** WRF's own `real.exe` is a fatal error on
-`wif_input_opt = 0` with `mp_physics = 28`, so the two models cannot be
-started from the same place on a real case. That, not an absence of running,
-is what holds the label at `implemented-unverified`. ArWen does couple
+**No REAL-DATA or NESTED mp=28 forecast comparison against matched WRF
+is recorded here.** WRF's `real.exe` refuses `wif_input_opt = 0` for
+mp=28, but the current supported climatology route uses the (1, 1)
+WIF/aerosol-input option pair. The old refusal does not make a real-data
+comparison impossible. Such a comparison still needs matched inputs and
+a retained result; its absence limits the evidence label. ArWen does couple
 `nwfa`/`nifa` from the lateral boundary when its aerosol initial state came
 from WRF's monthly WIF climatology; without that dataset a domain with
 external lateral boundaries is refused at the run door, before step 0,
@@ -741,7 +762,7 @@ force-back, as WRF does: the same 4 hour run holds the row on its table,
 
 **A matched IDEALIZED trajectory does now exist**, and it publishes its own
 failed gate:
-[validation/mp28-matched-trajectory.md](validation/mp28-matched-trajectory.md).
+[wrf-comparison/mp28-matched-trajectory.md](wrf-comparison/mp28-matched-trajectory.md).
 A doubly periodic single-domain warm-bubble forecast, 120 × 120 × 40 at
 dx = 2 km for 7200 s, with ArWen initialised *from WRF's own `wrfinput_d01`*
 (t = 0 field difference exactly zero in ten fields of thirteen, and one
@@ -751,10 +772,15 @@ built twice from identical source. Of the four conditions declared before the
 runs, three pass and **V3 fails** — but the same condition also fails when WRF
 is compared against its own recompilation with one optimization flag changed,
 so past t ≈ 2400 s the case is chaotic and V3 was mis-specified. The
-measurements that do discriminate are favourable: mp=28's per-step
-disagreement with WRF is the disagreement mp=8 already has (1.797e-02 versus
-1.800e-02 RMS in `w` after five steps from a mature state), and the domain
-aerosol budget matches WRF's to 1.530e-04 over two hours.
+measurements show that mp=28 adds little disagreement beyond mp=8: 1.797e-02
+versus 1.800e-02 RMS in `w` after five steps from a mature state, with a
+domain aerosol-budget difference of 1.530e-04 over two hours. That is a
+relative statement. At 600 s, the absolute difference from WRF is about
+30 times WRF's difference from its own one-flag recompilation: 3.2%
+against 0.10% RMS in `w`. The subsequent
+[short-window gate](wrf-comparison/mp28-shortwindow-gate.md) returned
+INCONCLUSIVE and the [distribution gate](wrf-comparison/mp28-distribution-gate.md)
+returned HOLD. No declared gate on this idealized case has passed.
 
 mp=28 has also been integrated multi-step against itself:
 `tests/test_mp28_forecast_smoke.py` runs 150 steps × 12 s on a specified-BC
@@ -765,7 +791,9 @@ calls. Finite and bounded is not correct: a scheme with a systematically
 wrong activation rate passes every one of those checks for two hours. The
 bounds are WRF's, but they are *clamps*, not answers. Full evidence grading, including which claims
 rest on ArWen-written Fortran drivers rather than on WRF's own answer, is
-in [validation/mp28-column-evidence.md](validation/mp28-column-evidence.md).
+in [wrf-comparison/mp28-column-evidence.md](wrf-comparison/mp28-column-evidence.md).
+Registry maturity remains `implemented-unverified`: the recorded idealized
+WRF comparisons did not qualify the scheme for a higher tier.
 
 #### What the aerosol initial condition is worth
 
@@ -812,7 +840,7 @@ established the size of that gap is the same pair of forecasts; what it
 means is not. It is now the measured **sensitivity** of an mp=28 forecast
 to its aerosol initial condition: two otherwise identical 150-step forecasts of the
 convective case in
-[validation/mp28-column-evidence.md](validation/mp28-column-evidence.md)
+[wrf-comparison/mp28-column-evidence.md](wrf-comparison/mp28-column-evidence.md)
 6.1, one taking the production init path and one with the profile removed:
 
 | quantity | with the profile (what a run does today) | with it removed | change |
@@ -906,22 +934,11 @@ neither is an open deviation and neither is a registry warning:
   reader sees; WRF forces `qnwfa`/`qnifa` at the boundary, so in WRF
   this zero does not arise. This matches ArWen's existing
   hydrometeor policy and is documented, not fixed.
-- **MYNN does not mix the aerosol numbers.** ArWen passes
-  `flag_qnc`/`flag_qnwfa`/`flag_qnifa` to MYNN as literal `False`, so
-  `nc`/`nwfa`/`nifa` are never vertically mixed by the PBL. WRF mixes
-  them at `bl_mynn_mixscalars = 1`
-  (`phys/module_bl_mynn.F:4735,:4777,:4957`) or through
-  `scalar_pblmix` (`phys/module_pbl_driver.F:2251`). At ArWen's pinned
-  MYNN identity `bl_mynn_mixscalars = 0`, and WRF's `check_a_mundo`
-  raises `scalar_pblmix` to 1 only when `use_aero_icbc` or
-  `use_rap_aero_icbc` is set
-  (`share/module_check_a_mundo.F:2477-2495`) — both of which ArWen
-  refuses — so WRF's own value here is 0 too and today the two models
-  agree. What differs is that ArWen's withholding is *structural*
-  rather than a namelist value, and mp=28 is the first configuration
-  in which those species carry real values and the withholding is
-  physically visible. (Snow is a separate contract and is *not*
-  withheld — see the second list below.)
+- **MYNN mixes aerosol numbers only when requested.**
+  `bl_mynn_mixscalars` is admitted at 0 (off, also WRF's Registry default)
+  and 1, which uses WRF's qn mixing solves for `nc`/`nwfa`/`nifa`.
+  The 1 arm requires `bl_pbl_physics = 5`, `mp_physics = 28` and
+  `bldt = 0`; see the MYNN scope note and the column-evidence page.
 - **Mixed mp=8 ↔ mp=28 nesting runs, with a declared entry closure.**
   An mp=28 child under a different-scheme parent takes its rain and ice
   numbers from Thompson's own two closures (the same ones the ratified
@@ -943,12 +960,14 @@ neither is an open deviation and neither is a registry warning:
   vapour pressures therefore differ by one ULP — and
   `module_mp_thompson.F:3401` opens the whole condensation/CCN
   activation block on `ssatw > 1.E-15` (`:185`), so one ULP flips a
-  branch. mp=28 matches WRF's own gfortran `-O2` arithmetic; mp=8 stays
-  byte-frozen at its model-validated trajectory. Neither is a defect,
+  branch. mp=28 matches WRF's own gfortran `-O2` arithmetic; mp=8 keeps
+  its FMA-contracted saturation chains. Its kernels changed in 2.7.4
+  and on 2026-09-23, after the 2026-07-28 matched run against WRF.
+  That run describes an earlier build, not a byte-frozen current trajectory. Neither is a defect,
   and "make them agree" is the wrong fix in both directions.
 - **`CCN_ACTIVATE.BIN` is distributed with ArWen, and a different copy
   is refused.** See the asset note below. It ships, so a clean checkout
-  validates mp=28; if it is ever missing, every device gate for the
+  can run every mp=28 device gate against WRF's column fixtures; if it is ever missing, every device gate for the
   scheme — including all 22 column fixtures — skips by name rather than
   passing, and the scheme itself fails closed rather than defaulting.
   A byte-different activation table is rejected, not used: it would be
@@ -1040,14 +1059,15 @@ Notes with teeth:
   SHA-256 are checked on every load, wherever it was resolved from.  It
   is deliberately outside the classic table set, so no mp=8 launch
   acquires a dependency on it.
-- Thompson is the default template scheme: `gpuwm domain` emits
-  `mp_physics = 8`, and the registry's declared default template
-  (`thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1`) carries the same
-  suite. Its warning states the one caveat verbatim: the matched-run
+- The registry's declared Thompson default template
+  (`thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1`) selects `mp_physics = 8`.
+  The domain wizard chooses defaults by source and spacing, as described
+  in "The default template suite" below. The evidence limitation is that the historical matched-run
   decay tables were produced with the exact-port legacy RRTMG engine
-  (`ra_rrtmg_variant = "rrtmg_legacy"`) to mirror the CPU reference bit
-  for bit, while the default template selects the ratified RTE+RRTMGP
-  substitution -- the same registry option 4/4 either way.
+  (`ra_rrtmg_variant = "rrtmg_legacy"`), which is bit-identical to its
+  transcription oracle, not to whole WRF output. The default template
+  selects the RTE+RRTMGP coupling instead, under the same 4/4 selectors.
+  The historical matched run does not cover that radiation tuple.
 - Morrison's registry entry records why it is not bitwise (CUDA vs
   glibc transcendentals, FTZ at subnormal branches, FMA contraction)
   and what closing it would take. It was the default template scheme
@@ -1062,7 +1082,7 @@ Notes with teeth:
 
 | option | WRF id | maturity | evidence, in one line |
 |---|---|---|---|
-| YSU | 1 | implemented-unverified | 24-column oracle vs unmodified `bl_ysu.F90`: theta tendency 1 ULP, exchange coefficients 7 ULP, PBLH 1 ULP; momentum/moisture tendencies 4.2e-8 m/s2 / 3.1e-11 kg/kg/s (near-total cancellations); part of the model-validated reference suite alongside Thompson |
+| YSU | 1 | implemented-unverified | 24-column oracle vs unmodified `bl_ysu.F90`: theta tendency 1 ULP, exchange coefficients 7 ULP, PBLH 1 ULP; momentum/moisture tendencies 4.2e-8 m/s2 / 3.1e-11 kg/kg/s (near-total cancellations); part of the option set used in the one historical matched run against WRF, alongside Thompson; no current whole-suite match is implied |
 | MYJ (Mellor-Yamada-Janjic 2.5) | 2 | implemented-unverified | float32 CPU authority transcribed line by line from the byte-frozen `module_bl_myjpbl.F`, with the CUDA translation unit agreeing with it on land and water columns inside a stated tolerance; column smokes assert finiteness, the `EPSQ2` TKE floor, non-negative mixing length and exchange coefficients, and vapour conservation in a surface-sealed column, each with a mutation control that stubs the ported routine itself. TKE cold-starts at WRF's `epsq2` = 0.2 (`MYJPBLINIT`), not zero -- the seed decides the first-step PBL depth. **Declared divergence:** interface heights are carried above ground rather than above sea level (WRF seeds `ZINT(KTE+1)=HT`), which cancels exactly in real arithmetic and to within 69 ULP in float32 over 4.4 km terrain, with `KPBL` unchanged; gpuwm's column is the better-conditioned one. **No oracle comparison against the WRF Fortran has been run** -- there is no gfortran replay, no fixture of WRF words and no ULP table -- so nothing here claims bit agreement with WRF; that campaign is the declared next stage. Selectable only as the 2/2 pair with the Eta similarity surface layer |
 | MYNN (EDMF) | 5 | implemented-unverified | assembled driver bitwise on the warm step vs unmodified `module_bl_mynn.F`; 300-step coupled forecast gate; composes with every radiation pairing the loader admits and with the MYNN (5), classic MM5 (91) or revised MM5 (1) surface layer -- see the MYNN scope note below |
 | UW moist turbulence (CAM5, Bretherton and Park 2009) | 9 | implemented-unverified | ported from WRF v4.7.1 (`module_bl_camuwpbl_driver.F` and the CAM modules it calls) in binary64, the scheme's own precision; every output word equals a gfortran -O0 build of the byte-unmodified sources (tools/uwpbl_wrf471_oracle) on the card and in the CPU reference, over six regime families (convective day, stable night, stratocumulus, valley cold pool, mixed-phase, shallow cumulus) on 35, 44 and 61 levels plus 48 branch-probe columns; cos and acos are correctly rounded rather than glibc's LGPL code, and float32 subnormal lanes under the loader's flush-to-zero are counted in tests/test_uwpbl_ftz_wrf471_parity.py; no matched forecast or observation score yet. Needs a surface layer that writes UST/HFX/QFX (1, 5 or 91) and `moist = true`; imports natively from a WRF namelist |
@@ -1129,8 +1149,12 @@ same routes and sources. The wizard and the Create page offer them, and
 the radiation-bearing one is the default below 1 km: a domain whose
 finest grid is finer than 1 km with no `--physics-profile` runs
 `thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1`
-wherever the source's route admits it, because on marine fog days it
-kept the coastal fog and low stratus that YSU or Noah each lost part of.
+wherever the source's route admits it. The selection record in
+`gpuwm/physics_menu.py` reports station and ceilometer comparisons on
+marine fog days at 750 m: stratus CSI 0.71, against 0.52 with Noah and
+0.55 with YSU and Noah. This is limited observation-based evidence;
+the number of days and a reproducible score receipt are not published
+here, so it is not a general forecast-skill result.
 A source whose published soil RUC cannot start from (GEM GDPS, one
 0-10 cm layer) keeps its own default at every spacing. A `--source
 hrrr` domain takes it with or without nests: that route's hierarchy
@@ -1140,7 +1164,7 @@ preparation records REFUSED for such a tree, as it does for any MYNN or
 RUC tree; the forecast itself is unaffected.
 
 **What is pinned, and it is a real scope limit.** MYNN's *namelist
-option identity* is a single validated combination. 11 knobs --
+option identity* is a single admitted combination. 11 knobs --
 `bl_mynn_closure` 2.6, `bl_mynn_cloudpdf` 2, `bl_mynn_mixlength` 1,
 `bl_mynn_edmf` 1, `bl_mynn_edmf_mom` 1, `bl_mynn_edmf_tke` 0,
 `bl_mynn_cloudmix` 1, `bl_mynn_mixqt` 0,
@@ -1223,7 +1247,7 @@ definition and for the measured difference between the two.
 
 | option | WRF id | maturity | evidence, in one line |
 |---|---|---|---|
-| Noah (4-layer) | 2 | implemented-unverified | 42-column oracle vs unmodified `module_sf_noahdrv.F`: 7 of 31 outputs bit-identical incl. the whole TSLB profile; TSK within 2 ULP, HFX worst at 375 ULP; part of the model-validated reference suite |
+| Noah (4-layer) | 2 | implemented-unverified | 42-column oracle vs unmodified `module_sf_noahdrv.F`: 7 of 31 outputs bit-identical incl. the whole TSLB profile; TSK within 2 ULP, HFX worst at 375 ULP; part of the option set used in the one historical matched run against WRF |
 | RUC (9-level) | 3 | implemented-unverified | column family oracle-matched vs unmodified `module_sf_ruclsm.F`; full device residency measured at production width (0.47 s per call at 360,000 columns, snow-free) |
 | Noah-MP | 4 | implemented-unverified | `NOAHMP_SFLX` bitwise on all four whole-column fixtures; device slab path max ULP 0 vs the scalar authority at 360,000 columns; expert-route option pinned to the exact WRF Registry default option identity |
 
@@ -1379,9 +1403,13 @@ clear column through both implementations agrees within 5 W m-2 at the
 surface and within 2.2 W m-2 in every band. On a 750 m coastal nest at
 solar noon, where every land column carried some subgrid cloud, the
 land-mean surface shortwave went from 549 to 725 W m-2 on RTE+RRTMGP
-and from 701 to 726 on legacy RRTMG (GOES-18 ABI 654), and the 2 m
-temperature error at the ASOS stations over the six hours to 21 UTC
-from 2.38 to 1.45 C and from 1.44 to 1.37 C. Legacy's change came mostly
+and from 701 to 726 on legacy RRTMG (GOES-18 ABI 654), on that one case
+and day. RTE+RRTMGP changed from below the
+GOES-18 estimate to above it. The earlier summary also reported smaller
+2 m temperature errors against ASOS, but supplied neither the error
+metric, station count nor a linked score receipt here; those numbers
+are not used to establish an observation-skill result on this page.
+Legacy's change came mostly
 from MYNN ice beside a trace of Thompson ice, in more than 80 percent of
 land columns from 16 UTC. With the subgrid cloud kept out of radiation
 the two implementations agree within 18 W m-2 at every hour, and the
@@ -1502,8 +1530,8 @@ earlier build is refused by name on resume and the run must restart from
 its prepared state; no other configuration's checkpoints are
 affected. The uncertified half is the same sentence
 YSU, MYNN and Shin-Hong carry: no matched ArWen-versus-WRF forecast
-trajectory has been run with `cu_physics = 3`, and no real-case
-verification receipt exists -- which is why the label is
+trajectory has been run with `cu_physics = 3`, and no receipt comparing a real case against WRF or against observations
+exists -- which is why the label is
 `implemented-unverified` and the scheme is always opt-in, never a
 default: a per-domain override on the named routes, or an explicit
 `cu_physics = 3` in a config you wrote.
@@ -1522,20 +1550,24 @@ and not verified against WRF. A value outside 0 to 16 is refused:
 above 16 reads past the 16-member closure array, and a negative value
 takes neither of WRF's two branches.
 
-What to expect from it before choosing it, measured (2026-08-17, 12 km
+Historical measurement before advective forcing was coupled (2026-08-17, 12 km
 single-domain 6 h real-case twins against a Kain-Fritsch control that
 differs only in the cumulus selection): under strong synoptic forcing
-GF's convective rain is roughly 40 per cent of KF's, which is ordinary
-inter-scheme spread; under weak forcing it is 1-2 per cent of KF's --
+GF's convective rain is roughly 40 per cent of KF's; under weak forcing
+it is 1-2 per cent of KF's --
 the scheme is nearly silent where KF still rains. A column-level probe
 of the weak-forcing state through the shipped kernel found the deep
 trigger rejecting every column whether the forcing seam was fed zeros,
 reconstructed boundary-layer rates, or radiative rates of either sign,
 so that silence is the scheme's own scale-aware trigger and closure
-design responding to those inputs, not a defect in the port. If a run
+design responding to those inputs. At the time the engine did not feed
+GF its advective forcing, and the same state was not run through WRF's
+Fortran, so this measurement cannot rule out a port or coupling cause. If a run
 with `cu_physics = 3` produces far less convective precipitation than
-the same run with Kain-Fritsch, that is the documented behaviour of the
-scheme as fed today.
+the same run with Kain-Fritsch, that was the documented behaviour on 2026-08-17, when the advective
+forcing lanes were zero. It has not been re-measured since those lanes
+were connected; these numbers do not describe the expected behaviour
+of the current engine.
 
 ## Map projections (`map_proj`)
 
@@ -1549,7 +1581,7 @@ worldwide section of [VERIFICATION.md](VERIFICATION.md).
 
 | option | WPS name | maturity | evidence, in one line |
 |---|---|---|---|
-| Lambert conformal, northern hemisphere | `lambert` | **model-validated** | the historical-reference four-domain matched-run family runs on it; binary64 `module_llxy` oracle at the pinned ceilings |
+| Lambert conformal, northern hemisphere | `lambert` | **wrf-matched-run** (one historical case) | the historical-reference four-domain matched-run family runs on it; binary64 `module_llxy` oracle at the pinned ceilings |
 | Lambert conformal, southern hemisphere | `lambert` | implemented-unverified | binary64 oracle rows (SH secant + SH tangent cones) at the pinned ceilings; Brisbane GPU smoke integration; no matched WRF run |
 | Mercator | `mercator` | implemented-unverified | binary64 oracle rows (tropical, subtropical, antimeridian) at the pinned ceilings; Singapore and Fiji (antimeridian) GPU smoke integrations; no matched WRF run |
 | Polar stereographic, either pole | `polar` | implemented-unverified | binary64 oracle rows (NH, SH, pole-anchored) at the pinned ceilings; Fairbanks GPU smoke integration; no matched WRF run |
@@ -1561,18 +1593,27 @@ than 180 degrees of longitude are refused for every projection
 
 ## The default template suite
 
-`gpuwm domain` emits the reference-configuration physics with the
-microphysics slot on the model-validated matched-run scheme: Thompson
+The source-dependent defaults are selected by `gpuwm.physics_menu`.
+For example, the HRRR route at kilometre-scale spacing uses the
+microphysics slot on the scheme used in the historical 2026-07-28
+matched run against WRF: Thompson
 (mp8, packaged hash-pinned tables), MM5 surface layer (91), Noah (2),
 YSU (1), RTE+RRTMGP (4/4), Kain-Fritsch on the 12 km root only, the
 49-level eta ladder, and the certified diffusion/damping/acoustic
 settings. Morrison (mp10) remains fully selectable at its maturity
 label. The acceptance forecast (6 h in 3.6 min on a 250x200x49 domain;
 [FIRST-LIGHT.md](FIRST-LIGHT.md)) ran this template's Morrison variant,
-the default at the time of that transcript. The matched-run validation
-suite runs Thompson with the legacy RRTMG engine
-(`ra_rrtmg_variant = "rrtmg_legacy"`) to mirror the CPU reference
-exactly ([VERIFICATION.md](VERIFICATION.md)).
+the default at the time of that transcript. The historical matched-run comparison used Thompson with legacy RRTMG
+(`ra_rrtmg_variant = "rrtmg_legacy"`) so the radiation code matches the
+CPU reference as closely as possible. It is not this default suite,
+and its two initial states differed: the t=0 full-state digest of that
+run is **FAIL** on all four domains
+([receipt](../../gpuwm/data/certification/t0_state_parity_digest.json)),
+so the runs are not bit-identical ([VERIFICATION.md](VERIFICATION.md)).
+Below 1 km, the current automatic
+choice is the Thompson/MYNN/RUC suite described above, where the source
+route can initialize RUC. Neither automatic choice has a current
+whole-forecast matched WRF comparison established by the July run.
 
 ## Selecting an experimental scheme
 
@@ -1872,12 +1913,12 @@ Where this page and that output disagree, the output is right.
 ## Nocturnal validity
 
 A suite whose shortwave runs while its longwave is OFF
-(`ra_sw_physics > 0`, `ra_lw_physics == 0`) is a **daytime validation
+(`ra_sw_physics > 0`, `ra_lw_physics == 0`) is a **daytime-only test
 configuration**. Shortwave heats the surface by day; after sunset the
 surface radiates to space with no downward longwave to balance it, so
 skin temperature craters, the surface saturation humidity collapses
 with it, and 2 m dewpoints read far below the airmass. A shipped 48 h
-case emitted with `thompson-mp8-ysu-mm5-noah-validation-v1` verified
+case emitted with `thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1` verified
 exactly this failure.
 
 If you are reading this because a run already did that to you, the
@@ -1898,8 +1939,8 @@ load, by the same guard.
 | profile | radiation (lw / sw) | nocturnally valid |
 |---|---|---|
 | `morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** (the wizard's gfs/era5 default) |
-| `nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
-| `nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1` | legacy RRTMG / legacy RRTMG | **yes** |
+| `nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-wrf-comparison-candidate-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
+| `nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-wrf-comparison-candidate-v1` | legacy RRTMG / legacy RRTMG | **yes** |
 | `thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** (the wizard's hrrr default) |
 | `thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (the same suite on the legacy engines) |
 | `thompson-mp8-shinhong-mm5-noah-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** |
@@ -1912,7 +1953,7 @@ load, by the same guard.
 | `milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** |
 | `wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
-| `thompson-mp8-ysu-mm5-noah-validation-v1` | OFF / Dudhia | **no** |
+| `thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1` | OFF / Dudhia | **no** |
 | `wsm6-ysu-mm5-noah-no-radiation-v1` | OFF / Dudhia | **no** |
 | `kessler-mp1-ysu-mm5-noah-dudhia-v1` | OFF / Dudhia | **no** |
 | `wsm6-mynn-mynn-noah-no-radiation-implemented-unverified-v1` | OFF / Dudhia | **no** -- nocturnal sibling: `wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1` |
@@ -1937,7 +1978,7 @@ invalid" look like the same choice; they were never the same thing, and
 now they do not even look alike.
 
 **Running one over a night window is one line.** The pairing stays
-fully selectable -- for daytime validation windows as it always was,
+fully selectable -- for daytime-only test windows as it always was,
 and for night windows as a **declared experiment**. Add to
 `[experiment]`:
 
@@ -2254,7 +2295,7 @@ exists yet), so it is no longer a substitution.  `bl_pbl_physics = 9`
 natively as 9 and runs the WRF v4.7.1 scheme.
 
 Every other unimplemented scheme id is a hard error. Options WRF
-accepts but ArWen has not validated -- moving nests, vertical
+accepts but ArWen does not support -- moving nests, vertical
 refinement, adaptive time step, `use_theta_m = 1`, non-SINT nest
 interpolation -- are rejected loudly at load; the
 complete register with WRF source citations is
@@ -2279,7 +2320,7 @@ refuse where WRF overwrites.
 
 The full knob table around the scheme selectors -- every tweakable
 namelist knob, its TOML spelling, default and allowed range, plus the
-keys ArWen pins at a single validated value -- is
+keys ArWen pins at a single code-verified value -- is
 [CONFIGURATION.md](CONFIGURATION.md). The import report itself is
 three-sectioned (translated / fixed-by-ArWen / not-implemented), so a
 translated namelist never hides a knob decision.

@@ -1,0 +1,37 @@
+[workspace]
+members = [
+    "crates/bowecho_simradar",
+    "crates/radar_core",
+    "crates/radar_scattering",
+    "crates/simradar_cuda",
+    "crates/settings",
+    "crates/data_source",
+    "crates/nexrad_io",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.35.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/FahrenheitResearch/bowecho"
+
+[workspace.dependencies]
+byteorder = "1.5"
+bzip2 = { version = "0.6", default-features = false, features = ["bzip2-sys"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+libdeflate-sys = "1.25.2"
+quick-xml = { version = "0.39", features = ["serialize"] }
+rayon = "1.11"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
+wrf-core = { git = "https://github.com/FahrenheitResearch/wrf-rust.git", rev = "9874474d9566a7536a90f457a48be30caa5f973a", package = "wrf-core", default-features = false, features = ["pure-rust-reader"] }
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
+
+[patch.crates-io]
+hdf5-reader = { git = "https://github.com/FahrenheitResearch/rusty-weather", rev = "369d65c2530cfec497d756dc137b93fd4e95e14d" }
+openjp2 = { git = "https://github.com/FahrenheitResearch/rusty-weather", rev = "369d65c2530cfec497d756dc137b93fd4e95e14d" }

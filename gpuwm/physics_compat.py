@@ -415,7 +415,7 @@ WSM6_PROFILE_ID = "wsm6-ysu-mm5-noah-no-radiation-v1"
 #: The profile is admitted only with the end-to-end HRRR probe and its
 #: source-frozen-species discard receipt.
 KESSLER_PROFILE_ID = "kessler-mp1-ysu-mm5-noah-dudhia-v1"
-THOMPSON_PROFILE_ID = "thompson-mp8-ysu-mm5-noah-validation-v1"
+THOMPSON_PROFILE_ID = "thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1"
 #: The observation battery's registered composition (lead ruling,
 #: obs-battery integration wave 2026-08-04): the Thompson validation
 #: suite with the exact WRF v4.6.1 legacy RRTMG in place of no-radiation,
@@ -459,10 +459,10 @@ MORRISON_PROFILE_ID = (
     "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1"
 )
 NSSL2_PROFILE_ID = (
-    "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1"
+    "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-wrf-comparison-candidate-v1"
 )
 NSSL2_LEGACY_RRTMG_PROFILE_ID = (
-    "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1"
+    "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-wrf-comparison-candidate-v1"
 )
 #: The P3 one-category composition: the Thompson legacy-RRTMG suite with
 #: exactly ONE selector moved (``mp_physics`` 8 -> 50), transcribed switch
@@ -592,7 +592,7 @@ THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID = (
     "thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1"
 )
 #: The same composition with Dudhia shortwave and longwave off, the
-#: sibling of :data:`MYNN_RUC_PROFILE_ID`.  A daytime validation suite, as
+#: sibling of :data:`MYNN_RUC_PROFILE_ID`.  A daytime-only suite, as
 #: that sibling is.
 THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID = (
     "thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1"
@@ -856,6 +856,8 @@ SINGLE_DOMAIN_PHYSICS_PROFILES, _SINGLE_DOMAIN_RUNTIME_SWITCHES = (
 def single_domain_runtime_switches(profile: str) -> dict[str, object]:
     """Return one complete canonical single-domain runtime product."""
 
+    from gpuwm.physics_registry import canonical_template_id
+    profile = canonical_template_id(profile)
     try:
         return dict(_SINGLE_DOMAIN_RUNTIME_SWITCHES[profile])
     except KeyError:
@@ -1059,12 +1061,12 @@ def _ack_instruction(acknowledgement: str) -> str:
 #: flags are merged.
 #:
 #: Provenance (2026-08-06): a wizard-emitted 48 h real case bound
-#: ``thompson-mp8-ysu-mm5-noah-validation-v1`` (ra_lw_physics 0,
+#: ``thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1`` (ra_lw_physics 0,
 #: ra_sw_physics 1).  Shortwave heated the surface by day; at night the
 #: surface radiated with no downward longwave, skin temperature
 #: cratered, the surface saturation humidity collapsed with it, and 2 m
 #: dewpoints read in the 50s F inside a 70s airmass.  The pairing is a
-#: legitimate DAYTIME validation configuration and stays selectable --
+#: legitimate DAYTIME-only configuration and stays selectable --
 #: loudly, never silently.
 ASYMMETRIC_RADIATION_NOCTURNAL_ACK = (
     "asymmetric-radiation-nocturnal-window-v1"
@@ -1503,7 +1505,7 @@ def nocturnal_radiation_refusal(
         "downward longwave to balance it: skin temperature craters, the "
         "surface saturation humidity collapses with it, and 2 m "
         "dewpoints read far below the airmass.  This pairing is a "
-        "daytime validation configuration; a shipped 48 h case emitted "
+        "daytime-only configuration; a shipped 48 h case emitted "
         "with it verified exactly this failure.  The acknowledgement is "
         "config-side (not --ack) because the refusal happens at config "
         "load, before any runner flag is read.")
@@ -2330,9 +2332,11 @@ def validate_single_domain_physics_profile(
     """
 
     from gpuwm.physics_registry import (
-        physics_registry, registry_physics_receipt, registry_sha256)
+        canonical_template_id, physics_registry, registry_physics_receipt,
+        registry_sha256)
 
     registry = physics_registry()
+    profile = canonical_template_id(profile, registry)
     template = registry["templates"].get(profile)
     if not isinstance(template, Mapping):
         raise ValueError(
@@ -2459,8 +2463,7 @@ _EXPERIMENTAL_MATURITY = "experimental-runtime"
 _NO_WRF_COUNTERPART = "wrf_counterpart"
 VERIFICATION_STATUS_SCHEMA = "gpuwm-physics-verification-status-v1"
 
-#: The registry maturity that constitutes WRF-verification evidence.
-#: Everything else the engine implements is accurately "supported".
+#: A historical label; current exact-suite evidence also needs a scope.
 _WRF_VERIFIED_MATURITY = "wrf-matched-run"
 
 
@@ -2564,15 +2567,17 @@ def single_domain_verification_status(run_config) -> dict[str, object]:
     product surfaces print -- detail stays in this receipt.
     """
 
-    from gpuwm.physics_registry import physics_registry
+    from gpuwm.physics_registry import canonical_maturity, physics_registry
 
     registry = physics_registry()
     matched = identify_single_domain_profile(run_config)
     maturity = None
+    verification_scope = None
     if matched is not None:
         template = registry["templates"].get(matched)
         if isinstance(template, Mapping):
-            maturity = template.get("maturity")
+            maturity = canonical_maturity(template.get("maturity"), registry)
+            verification_scope = template.get("verification_scope")
     component_match: dict[str, object] | None = None
     if matched is None:
         try:
@@ -2586,11 +2591,12 @@ def single_domain_verification_status(run_config) -> dict[str, object]:
                         == resolved):
                     component_match = {
                         "template": template_id,
-                        "maturity": template.get("maturity"),
+                        "maturity": canonical_maturity(template.get("maturity"), registry),
                         "scope": "components-only-not-switch-level",
                     }
                     break
-    verified = matched is not None and maturity == _WRF_VERIFIED_MATURITY
+    verified = (matched is not None and maturity == _WRF_VERIFIED_MATURITY
+                and verification_scope == "current-matched-run")
     experimental = experimental_component_labels(run_config, registry)
     if experimental:
         # One definition, in experimental_selection_sentence, so this
@@ -2616,6 +2622,7 @@ def single_domain_verification_status(run_config) -> dict[str, object]:
             else VERIFICATION_SUPPORTED),
         "matched_profile": matched,
         "matched_profile_maturity": maturity,
+        "matched_profile_verification_scope": verification_scope,
         "component_matched_template": component_match,
         "experimental_components": list(experimental),
         "sentence": sentence,
@@ -2942,6 +2949,7 @@ def physics_selection_differences(
 
     from gpuwm.physics_registry import (
         NO_OFF_VALUE, REGISTRY_PHYSICS_IDENTITY_SCHEMA, component_off_option,
+        canonical_template_id,
         physics_registry, recorded_registry_physics_parts,
         registry_knob_is_read, same_setting_value, setting_off_value)
 
@@ -2964,6 +2972,9 @@ def physics_selection_differences(
 
     def walk(prepared: object, current: object, path: str,
              key: object = None, container: object = None) -> None:
+        if key == "profile":
+            prepared = canonical_template_id(prepared, registry)
+            current = canonical_template_id(current, registry)
         if isinstance(prepared, Mapping) and isinstance(current, Mapping):
             for child in sorted(set(prepared) | set(current), key=str):
                 if not path and child in SELECTION_RECEIPT_RECORD_ONLY_FIELDS:

@@ -130,7 +130,7 @@ levels that bracket each ladder height. A ladder level below the lowest
 mass level but at or above the terrain takes the lowest level's value;
 a level below the terrain, or above the highest mass level, is missing
 (NaN), which titan treats as no data rather than as no echo. Linear in
-dBZ is the convention of the radar gridders titan is validated against,
+dBZ is the convention of the radar gridders that titan's output is compared against,
 and the model's field is already logarithmic. The ladder and the rule
 are written into `export-receipt.json` and the ladder into the stream
 itself, so a bundle never has to be guessed at.

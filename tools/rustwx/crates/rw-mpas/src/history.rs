@@ -4,8 +4,101 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{MpasError, MpasResult};
-use crate::fieldmap::{FieldMapping, FieldSource, FIELD_MAP};
+use crate::fieldmap::{FIELD_MAP, FieldMapping, FieldSource};
 use crate::weights::MeshCoordinates;
+use rw_store::netcdf_classic::{NcAttr, NcAttrValue};
+
+/// Physics identity is copied only when the native history actually declares it.
+/// A renderer conversion cannot infer a microphysics scheme from field names.
+const SCIENCE_ATTRIBUTES: &[&str] = &[
+    "MP_PHYSICS",
+    "WOOF_MICROPHYSICS_SCHEME",
+    "WOOF_ENGINE_MICROPHYSICS_SCHEME",
+    "WOOF_PHYSICS_BACKEND",
+    "WOOF_SCALAR_NAMES",
+    "RADAR_MIXING_RATIO_BASIS",
+    "MORR_RIMED_ICE",
+    "morr_rimed_ice",
+];
+
+fn read_science_attributes(file: &netcrust::File) -> MpasResult<Vec<NcAttr>> {
+    use netcrust::AttributeValue as Value;
+    let mut attributes = Vec::new();
+    for name in SCIENCE_ATTRIBUTES {
+        let Some(attribute) = file.attribute(name) else {
+            continue;
+        };
+        let unsupported = || {
+            MpasError::Refusal(format!(
+                "history physics attribute {name} cannot be represented exactly in classic netCDF"
+            ))
+        };
+        let value = match attribute.value() {
+            Value::Chars(value) => NcAttrValue::Text(value.clone()),
+            Value::Strings(values) if values.len() == 1 => NcAttrValue::Text(values[0].clone()),
+            Value::Bytes(values) => {
+                NcAttrValue::Ints(values.iter().map(|&v| i32::from(v)).collect())
+            }
+            Value::Shorts(values) => {
+                NcAttrValue::Ints(values.iter().map(|&v| i32::from(v)).collect())
+            }
+            Value::Ints(values) => NcAttrValue::Ints(values.clone()),
+            Value::UBytes(values) => {
+                NcAttrValue::Ints(values.iter().map(|&v| i32::from(v)).collect())
+            }
+            Value::UShorts(values) => {
+                NcAttrValue::Ints(values.iter().map(|&v| i32::from(v)).collect())
+            }
+            Value::UInts(values) => NcAttrValue::Ints(
+                values
+                    .iter()
+                    .map(|&v| i32::try_from(v))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| unsupported())?,
+            ),
+            Value::Int64s(values) => NcAttrValue::Ints(
+                values
+                    .iter()
+                    .map(|&v| i32::try_from(v))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| unsupported())?,
+            ),
+            Value::UInt64s(values) => NcAttrValue::Ints(
+                values
+                    .iter()
+                    .map(|&v| i32::try_from(v))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| unsupported())?,
+            ),
+            Value::Floats(values) => NcAttrValue::Floats(values.clone()),
+            Value::Doubles(values) => NcAttrValue::Doubles(values.clone()),
+            _ => return Err(unsupported()),
+        };
+        let canonical = if *name == "morr_rimed_ice" {
+            "MORR_RIMED_ICE"
+        } else {
+            name
+        };
+        let mapped = NcAttr {
+            name: canonical.to_string(),
+            value,
+        };
+        if let Some(previous) = attributes
+            .iter()
+            .find(|attr: &&NcAttr| attr.name == mapped.name)
+        {
+            if previous != &mapped {
+                return Err(MpasError::Refusal(format!(
+                    "history has conflicting values for physics attribute {}",
+                    mapped.name
+                )));
+            }
+        } else {
+            attributes.push(mapped);
+        }
+    }
+    Ok(attributes)
+}
 
 /// A calendar instant, to the second. The frame carries one and stamps it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -119,6 +212,8 @@ pub struct MpasFrame {
     pub latitude_degrees: Vec<f64>,
     pub longitude_degrees: Vec<f64>,
     pub absent: Vec<String>,
+    /// Exact declared physics values, absent when the history did not record them.
+    pub science_attributes: Vec<NcAttr>,
 }
 
 /// Read one cell-indexed field, dropping a leading single `Time` record.
@@ -144,7 +239,11 @@ fn read_cell_field(
     }
     let array = file.read_array_f64(name)?;
     let values = array.into_values();
-    let trailing: usize = if has_time { shape[1..].iter().product() } else { shape.iter().product() };
+    let trailing: usize = if has_time {
+        shape[1..].iter().product()
+    } else {
+        shape.iter().product()
+    };
     if values.len() < trailing {
         return Err(MpasError::Refusal(format!(
             "{name} read back {} value(s), fewer than the {trailing} its shape declares",
@@ -192,6 +291,7 @@ pub fn read_history(
     let mut absent: Vec<String> = Vec::new();
 
     let file = netcrust::File::open(history_path)?;
+    let science_attributes = read_science_attributes(&file)?;
     let n_cells = file
         .dimension("nCells")
         .ok_or_else(|| MpasError::Refusal("history has no nCells dimension".to_string()))?
@@ -309,6 +409,7 @@ pub fn read_history(
             .map(|v| (v * deg + 180.0).rem_euclid(360.0) - 180.0)
             .collect(),
         absent,
+        science_attributes,
     })
 }
 

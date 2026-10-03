@@ -168,7 +168,7 @@ def test_sizing_smoke_is_admitted_by_every_static_gate():
     assert receipt["refusing_gates"] == []
     profile = _gate(receipt, "hrrr.root_preparation.profile")
     assert profile["status"] == "ADMITS"
-    assert "thompson-mp8-ysu-mm5-noah-validation-v1" in profile["detail"]
+    assert "thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1" in profile["detail"]
     assert _gate(receipt, "hrrr.hierarchy.slice")["status"] == "ADMITS"
     assert _gate(receipt, "hrrr.coverage")["status"] == "ADMITS"
     # One forecast hour needs f00 and f01, which is what makes this smoke

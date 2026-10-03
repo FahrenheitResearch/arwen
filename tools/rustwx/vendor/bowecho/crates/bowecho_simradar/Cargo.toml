@@ -1,0 +1,24 @@
+[package]
+name = "bowecho_simradar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+zip.workspace = true
+reqwest.workspace = true
+wrf-core.workspace = true
+radar_core = { path = "../radar_core" }
+radar_scattering = { path = "../radar_scattering" }
+simradar_cuda = { path = "../simradar_cuda" }
+settings = { path = "../settings" }
+data_source = { path = "../data_source" }
+
+[dev-dependencies]
+tempfile = "3.20"

@@ -2654,6 +2654,7 @@ _CHECKED_ARTIFACTS = {
     "gpuwm_preprocess_cpu": "the `cpu preprocess library` line",
     "rw_fetch": "the `fetch backbone` line",
     "rw_wrfbatch": "the `renderer` line",
+    "rw_simradar": "the `simulated radar` line",
     "rw_mpas_mesh": "the `mesh generator` line",
     "rw_mpas_static": "the `mesh static builder` line",
     "rw_nexrad": "the `radar front door` line",
@@ -3432,6 +3433,38 @@ def _ml_export_check() -> Check:
             blocking=False, severity=SEVERITY_BROKEN)
     return Check(label, "verified", f"{found} -- {evidence}",
                  group=_GROUP_ENGINES)
+
+
+def _simulated_radar_check() -> Check:
+    """Check the optional native radar capability without touching a GPU.
+
+    Every gap carries its next command, as the sibling bridge checks do:
+    the one-line doctor layer otherwise showed a radar gap that led nowhere.
+    """
+    from gpuwm.rustwx import SIMULATED_RADAR_ENV, simulated_radar_binary
+    label = "simulated radar (rw_simradar)"
+    remedy = bridges.artifact_remedy(
+        env_var=SIMULATED_RADAR_ENV, filename=bridges.executable_name("rw_simradar"),
+        subject="the simulated radar engine", crate_relative=bridges.RUSTWX_CRATE_RELATIVE,
+        one_liner=bridges.rustwx_build_hint(), artifact="rw_simradar")
+    build = _build_action(bridges.RUSTWX_CRATE_RELATIVE)
+    try:
+        found = simulated_radar_binary()
+    except (FileNotFoundError, RuntimeError) as error:
+        return Check(label, "missing", str(error), remedy,
+                     action=f"unset {SIMULATED_RADAR_ENV}, or point it at a build",
+                     brief=f"{SIMULATED_RADAR_ENV} names a missing file",
+                     group=_GROUP_ENGINES, blocking=False, severity=SEVERITY_UNREACHABLE)
+    if found is None:
+        return Check(label, "missing", "not staged; simulated radar cannot run", remedy,
+                     action=build, brief="not staged; simulated radar cannot run",
+                     group=_GROUP_ENGINES, blocking=False, severity=SEVERITY_UNREACHABLE)
+    ok, evidence = bridges.bridge_abi_matches("rw_simradar", found)
+    return Check(label, "verified" if ok else "missing", f"{found}: {evidence}",
+                 None if ok else remedy, action=None if ok else build,
+                 brief=None if ok else "stale build; rebuild it",
+                 group=_GROUP_ENGINES, blocking=False,
+                 severity=None if ok else SEVERITY_BROKEN)
 
 
 def _nexrad_front_door_check() -> Check:
@@ -5815,6 +5848,7 @@ def _collect_checks(sources: tuple[str, ...] | None = None,
     # The five MPAS binaries no bundle carried and no check reported.
     checks.extend(_mpas_bridge_checks())
     checks.append(_ml_export_check())
+    checks.append(_simulated_radar_check())
     checks.append(_netcdf_decoder_check())
     checks.append(_mapped_engine_check())
     checks.append(_ncwrite_check())

@@ -222,7 +222,8 @@ input/domain envelope passes unchanged stock WRF.
 The certified root geometry slice is one specified Lambert domain, 49 mass levels,
 five boundary cells (`spec_zone=1`, `relax_zone=4`), equal positive `dx`/`dy`,
 and complete coverage by the CONUS HRRR source grid including interpolation
-halos.  Dynamic horizontal geometry is stock-WRF verified for Oklahoma and
+halos. Dynamic horizontal geometry passed the recorded stock-WRF
+acceptance gate (files opened and advanced a few model seconds) for Oklahoma and
 Ohio 192x160 at 3 km and Oklahoma 1000x1000 at 1 km.  Other projections,
 vertical counts, invalid or moving nests, Alaska
 HRRR, gapped/non-hourly forcing, and other physics suites fail closed.

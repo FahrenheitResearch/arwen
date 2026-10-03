@@ -1,32 +1,45 @@
-# 7. Verification instruments
+# 7. Verification and validation instruments
 
-ArWen's verification posture has one rule above the others: verify against the
-artifact. Runs are graded on the frames they wrote, the fields those frames carry,
-and the images rendered from them, never on logs or intentions. The instruments
-themselves are validated against known answers in both directions before their
-readings are believed, and an instrument's resolution limit is published with it.
+This chapter separates code verification against reference computations,
+numerical-resolution diagnostics, sensitivity studies and observation
+tooling. The matched WRF comparison in 7.1 and known-answer checks of the
+scorer in 7.2 are code verification. The first spectral campaign is a
+sensitivity study of two runs with different starts. Section 7.3 measures
+effective resolution; it informs solution verification but supplies no
+run-specific numerical-error bound. Section 7.4 describes observation
+tooling, not a completed multi-case validation result. Section 7.5 is an
+demo with limited case scores, not broad validation; 7.6 is a
+reproducibility screen for hardware faults.
+Measurements are made from retained output and scored with tools checked
+against known answers; neither a log nor a successful run proves accuracy.
 
 ## 7.1 The matched-run protocol against WRF
 
-The deep-validation case is ERA5-initialized, four one-way nested domains at
+The historical WRF-comparison case (code verification, not an observation
+comparison) is ERA5-initialized, four one-way nested domains at
 12/3/1/0.5 km, integrated over a 6 h window with Thompson microphysics (WRF's own
 hash-pinned tables), YSU, MM5 surface layer, Noah, Kain-Fritsch on the root, and
 the legacy-RRTMG transcription: the same option set as the CPU reference (WRF
 v4.6.1, gfortran 15.2.0, dmpar, 48 ranks; the GPU run one RTX 5090)
-[docs/public/VERIFICATION.md:65-69]. Four instruments: component ULP oracles, a
+[docs/public/VERIFICATION.md, historical comparison and limits]. Three measurements and a review process: component ULP oracles, a
 t=0 full-state digest, a matched-run streaming comparator scoring every frame on
-the interior grid (5-row rim excluded), and adversarial review
-[docs/public/VERIFICATION.md:13-55].
+the interior grid (5-row rim excluded), and automated review (not an independent scientific measurement)
+[docs/public/VERIFICATION.md, historical comparison and limits].
 
 The stated limit published beside the wins: the t=0 full-state comparison verdict
-is FAIL on all four domains. Only the precipitation accumulators are bit-identical
-at t=0; on d01 the largest disagreements are 66 Pa in perturbation pressure,
-0.75 m in terrain height, 296 K in the deepest soil layer, and ten categories in
+is FAIL on all four domains. Only the accumulation group passes as a whole on every domain; some
+individual arrays in other groups are also bit-identical at t=0; on d01 the largest disagreements are 66 Pa in perturbation pressure,
+0.75 m in terrain height, 296 K in soil temperature (the receipt does not identify the depth or active mask), and ten categories in
 the land-use index, so the decay tables contain initial-state differences as well
-as forecast divergence [docs/public/VERIFICATION.md:30-39, 107-113].
+as forecast divergence [docs/public/VERIFICATION.md, historical comparison and limits].
 
-Selected rows of the published decay table (interior grid)
-[docs/public/VERIFICATION.md:170-201]:
+Selected rows of the historical 2026-07-28 comparison (engine commit
+`152f7d31`, legacy RRTMG, one case; interior grid). These are not current
+release measurements: later kernel and dynamics changes alter trajectories.
+The historical certification band is an uncalibrated documented margin
+around this table. Part of the change from the previous run came from
+matching its reference configuration more closely; no row scores observations
+[docs/public/VERIFICATION.md, historical comparison and limits]:
 
 | dom | lead | T2 MAE K | PSFC MAE Pa | refl corr | refl MAE dBZ | CSI@20 | W corr | wind10 corr |
 |---|---|---|---|---|---|---|---|---|
@@ -36,30 +49,42 @@ Selected rows of the published decay table (interior grid)
 | d03 1 km | F6 | 0.347 | 20.45 | 0.715 | 9.75 | 0.425 | 0.138 | 0.901 |
 | d04 0.5 km | F6 | 0.434 | 22.70 | 0.577 | 14.20 | 0.222 | 0.110 | 0.795 |
 
-At +3 h on the 3 km domain the two models agree to composite-reflectivity
-correlation 0.985, with the squall line in the same place with the same structure;
-at that frame the ArWen run has 14,230 pixels at or above 20 dBZ against WRF's
-14,227, a 3-pixel difference in echo coverage, and reflectivity bias fell from
--0.311 dBZ (an earlier build) to -0.004 dBZ [README.md:29-31;
-docs/public/VERIFICATION.md:159-162].
+At +3 h on the 3 km domain, the highlighted lead has reflectivity
+correlation 0.985 against WRF, with 14,230 pixels at or above 20 dBZ
+against 14,227. The previous 2026-07-27 run differed by 295 pixels. The
+mean model-minus-WRF reflectivity difference changed from -0.311 to
+-0.004 dBZ. Matching a coverage count does not establish the same storm
+locations or structure; this is one selected lead, not bias against
+observations. Earlier correlations are higher and later/finer-grid
+agreement falls [docs/public/VERIFICATION.md, Matched-run results].
 
-How the late fine-mesh numbers must be read (the chaos floor): W correlation is a
-step function, not a decay curve; on d03 it falls from 0.986 to 0.333 in the
-single hour when deep convection initiates, then holds flat-to-recovering for two
-hours. Once individual updrafts exist, vertical velocity is a small-scale chaotic
-field and point correlation stops measuring model agreement. Across all 21 scored
-leads the GPU peak *composite reflectivity* exceeds the CPU peak 15 times, falls
-below it 5 times, and ties once (the count is a reflectivity count, not a vertical
-velocity one): chaotic divergence of individual cells, not a systematic intensity
-bias [docs/public/VERIFICATION.md:211-239]. Worldwide projections are deliberately
-a shallower verification tier (transcription oracle plus GPU smoke), not
-matched-run [docs/public/VERIFICATION.md:241-248].
+Small perturbations can grow in convective flow, but that does not
+explain away every model difference. On d03 W correlation falls from
+0.986 to 0.333 when convection initiates, stays near 0.33-0.37 for two
+hours, then ends at 0.138. The initial states differ and this historical
+case has no matched WRF-versus-WRF control ensemble. Mixed signs in peak
+reflectivity differences do not establish the absence of intensity bias;
+the tables do not exclude ingest, geometry, coupling, physics or dynamics
+errors. The original sign count has no cited retained receipt and is not
+used as evidence here.
+
+The [recent ensemble consistency tests](../public/receipts/wrf-consistency-20261002/SUMMARY.md)
+compare tested engine snapshots with perturbed WRF v4.7.1 references.
+They are the appropriate kind of fidelity instrument, with a coastal
+failure and stated power/coverage limits. They do not retroactively
+provide a control for this four-domain historical case. Worldwide
+projections have their stated projection-oracle and finite-state smoke
+evidence, not a matched forecast [docs/public/VERIFICATION.md, Worldwide projections].
 
 Determinism evidence from the same run: frames produced before two external
 process kills were byte-compared when regenerated after relaunch,
-SHA256-identical [docs/public/VERIFICATION.md:205-209].
+SHA256-identical [docs/public/VERIFICATION.md, historical comparison and limits].
 
-## 7.2 Spectral verification v2: the instrument
+## 7.2 Spectral comparison v2: the instrument
+
+The tool compares two gridded fields scale by scale. With a reference-model
+run it supports code verification; with observations it supports validation.
+The two-initialization campaign below is a sensitivity study.
 
 `gpuwm spectral` is an additive model-to-reference comparison class beside the
 frozen v1 chaos-envelope metric, whose pins did not move (v1 pin hash
@@ -88,7 +113,8 @@ come only from a predeclared known-good population via the calibration tool, and
 the candidate being judged may never be in the calibration population
 [docs/public/SPECTRAL_VERIFICATION.md].
 
-**Instrument validation, both directions, before any real use**
+**Instrument checks against known answers, both directions, before any real use**
+(code verification of the scoring tool)
 [gallery:spectral-v2-20260818/instrument-validation/]:
 
 | test | measured | truth |
@@ -107,7 +133,7 @@ for a properly resolved wave in a well-populated band, degrading to about
 position error means no information; 85-95 deg in a real comparison means the two
 runs are unrelated at that feature size.
 
-**Two findings from the validation pass, stated because under-claiming is the
+**Two findings from the known-answer checks, stated because under-claiming is the
 point** [gallery:spectral-v2-20260818/captions.md]:
 
 1. The shipped gate-calibration demo is degenerate: its known-good population is
@@ -173,8 +199,10 @@ own generated header flags it as a gray-zone configuration (sub-km dynamics with
 a 1-D PBL scheme active) [receipt:ARWEN-EFFECTIVE-RESOLUTION-2026-08-18.md;
 gallery:radt-subkm-fix-20260817/config-control.toml]. Against the widely cited
 ~7 dx effective resolution of WRF-class models (Skamarock 2004, Mon. Wea. Rev.,
-a literature figure, not an in-tree measurement), the reading is at or slightly
-sharper, with a clean tail. One caveat the receipts do not resolve: the reading
+a literature figure, not an in-tree measurement), the reading is consistent
+with it within its one-sigma spread, 6.09-7.48 dx. It does not show a
+sharper model: the literature figure uses a different criterion and
+configuration. The tail has no energy pileup but is strongly over-damped. One caveat the receipts do not resolve: the reading
 is at forecast hour 2, and the report's own guidance is that small scales need
 about 6 h of spin-up; the verifier accepted the 500 m number on its clean fit
 band, but no document explains why the spin-up objection that voided the 2 km
@@ -219,21 +247,19 @@ spectrum) and
 and the 3 km summary charts predate the corrections and present retracted
 numbers; they are not to be used.
 
-## 7.4 Observational skill: MRMS and surface observations
+## 7.4 Observation tooling for validation
 
-The standard for judging ArWen's deliberate divergences is skill against
-observations. For wide-domain runs the verification truth for reflectivity-class
-fields is MRMS (`noaa-mrms-pds`, full files); ArWen's own multi-radar composite
-is a feed-space diagnostic, never the grader. Surface verification runs against
-ASOS-class observations through the observation ingest doors. The observation
-front doors ship inside `gpuwm`: `gpuwm obs asos | goes | mrms | odim | opera |
-stage4 | radar`, with the radar family (`doctor`, `grid`, `nyquist`, `pack`,
-`sites`, `volumes`) carrying the interesting grammar [docs/public/CLI-OPTIONS.md].
-Two design points: `--max-range-km` is required rather than defaulted, because a
-build that quietly picked a different range than the one it is compared against
-produces a plausible, wrong answer; and `--require-assimilable` exists because
-without it the verdict field is null rather than true, since a check that did not
-run has no verdict.
+The broad observation battery is designed and preregistered, with a
+seven-case menu and hash-pinned MRMS, ASOS and Stage IV archives. Its
+published receipts state that no forecast has been scored and no model
+skill claim is made. The commands below are observation-ingest tools;
+their availability is not a validation result. The intended reflectivity
+reference is MRMS and the surface reference is ASOS-class stations.
+Specific case scores reported elsewhere are listed in
+[VERIFICATION.md](../public/VERIFICATION.md); they do not complete this
+programme or establish general forecast skill. The ingest doors are
+`gpuwm obs asos | goes | mrms | odim | opera | stage4 | radar`; command
+details remain in [CLI-OPTIONS.md](../public/CLI-OPTIONS.md).
 
 ## 7.5 DA and nowcasting: present, demo-grade, self-labelled
 
@@ -242,15 +268,13 @@ pip-installed subcommand) runs eight receipted stages: survey a radar site, size
 a domain around the echo, fetch the GFS background, prepare, run a georeference
 forecast, build per-cycle observation files, run six 15-minute LETKF cycles with
 ten members, draw the gallery, and hand the case to a detached verifier
-[docs/da-nowcast-quickstart.md]. Its gallery opens with a banner reading
-"DEMO-GRADE NOWCAST", then a dash, then "UNSCORED, outside any registered
-campaign, not campaign evidence. No skill claim is made or implied" (the product
-emits an em-dash as the joining punctuation, which this manual's style rule
-excludes from its own prose, so the banner is quoted in two pieces rather than
-altered) [tools/da_nowcast_render.py:1062]. That self-labelling is the
-designed behavior, not a disclaimer added after the fact: ten members, one 3 km
-domain, no radiation, GFS background, no velocity dealiasing, and the numbers on
-the panels are diagnostics, not scores. `docs/da-vs-wofs.md` states how the
+[docs/da-nowcast-quickstart.md]. Its gallery identifies the demo as outside
+a registered validation campaign. A frame becomes `SCORED` when an observed
+radar composite is available and compared with it; that badge means a
+comparison was made, not that the forecast was right. An observation-unavailable
+frame remains unscored. The retained demo uses ten members, one 3 km domain,
+no radiation and a GFS background. `docs/da-vs-wofs.md` reports a limited
+single-case radar comparison and states how the
 configuration differs from the Warn-on-Forecast System and why its FSS does not
 sit next to a published WoFS number.
 
@@ -266,9 +290,9 @@ full six-cycle demo at 136x134x49: N=4 431 s, N=10 727 s, N=20 1163 s, with
 whole-card peak near 15.9 GB at all three sizes because members advance one after
 another [docs/da-nowcast-quickstart.md; tests/test_da_nowcast*.py].
 
-No 2.5.0-line DA skill measurement with a Downloads receipt exists; the DA
-surface should be read as a working front door plus a demo, not a scored
-capability. That is also how it labels itself.
+The single-case radar scores do not establish a broadly validated forecast
+system, and a later release does not inherit those measurements without
+matching their configuration and evidence scope.
 
 ## 7.6 The dual-run screen
 

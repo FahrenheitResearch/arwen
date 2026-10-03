@@ -7,9 +7,11 @@ slow large step.  Default **off**, and off is bitwise inert — a config
 that never mentions `[spectral_numerics]` runs the bytes it always ran.
 
 The subsystem is research instrumentation with a hard audit trail, not an
-admitted physics change.  Nothing here is meteorologically endorsed until
-the applied A/B campaign runs and passes its gates; until then `shadow`
-is the mode that answers questions.
+admitted physics change. A proposal needs an applied A/B campaign with its
+reference and gates stated. Passing gates against another model measures
+agreement with that model; only observation-based gates can support a
+meteorological accuracy claim. Until those checks run, `shadow` is the mode
+for measuring the proposal without changing the forecast.
 
 ## Modes
 
@@ -95,6 +97,6 @@ gpuwm spectral-op calibrate --input bands.json --output proposal.json \
 ```
 
 All of it is CPU-reachable on an install without CuPy.  The calibrate
-output is a proposal, never a configuration change: it damps observed
-power excess only, amplifies nothing, and names the shadow-then-A/B gate
+output is a proposal, never a configuration change: it damps measured
+power excess relative to the reference only, amplifies nothing, and names the shadow-then-A/B gate
 it still has to pass.

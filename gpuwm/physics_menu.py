@@ -506,13 +506,14 @@ def maturity(profile: str) -> dict[str, Any]:
         VERIFICATION_EXPERIMENTAL, VERIFICATION_SUPPORTED,
         VERIFICATION_WRF_VERIFIED, _EXPERIMENTAL_MATURITY,
         _WRF_VERIFIED_MATURITY)
-    from gpuwm.physics_registry import physics_registry
+    from gpuwm.physics_registry import canonical_template_id, physics_registry
 
-    template = physics_registry()["templates"].get(profile)
+    template = physics_registry()["templates"].get(canonical_template_id(profile))
     declared = (template.get("maturity")
                 if isinstance(template, Mapping) else None)
     status = VERIFICATION_SUPPORTED
-    if declared == _WRF_VERIFIED_MATURITY:
+    if (declared == _WRF_VERIFIED_MATURITY
+            and template.get("verification_scope") == "current-matched-run"):
         status = VERIFICATION_WRF_VERIFIED
     elif declared == _EXPERIMENTAL_MATURITY:
         status = VERIFICATION_EXPERIMENTAL
@@ -520,6 +521,7 @@ def maturity(profile: str) -> dict[str, Any]:
         "registry_maturity": declared,
         "verification_status": status,
         "registered_template": template is not None,
+        "verification_scope": template.get("verification_scope") if template else None,
     }
 
 
@@ -708,7 +710,7 @@ def nocturnal_remedy(source: str) -> dict[str, Any]:
             "instruction": (
                 f"--source {source} admits no shipped suite that runs "
                 "both radiation streams, so this window can only run by "
-                "declaring the daytime validation experiment"),
+                "declaring the daytime-only experiment"),
         }
     # The wizard's own radiation wording, not the raw selectors.  A
     # pilot report already read "ra_physics: 0" as "radiation off" on a

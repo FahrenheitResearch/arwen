@@ -564,7 +564,8 @@ def _ieva_scalar(state, tend, q_old, implicit, mu0, mu, dt_eff) -> None:
     """``advect_s_implicit`` on one scalar's advective tendency, in place:
     ``mut_old`` the time-t mass, ``mut = mut_new`` the post-acoustic one."""
     from gpuwm.core import ieva
-    ieva.solve_scalar(state, tend, q_old, implicit[1], mu0, mu, dt_eff)
+    ieva.solve_scalar(state, tend, q_old, implicit[1], mu0, mu, dt_eff,
+                      variant=getattr(implicit, "variant", "wrf_471"))
 
 
 def advance_scalars_stage(state: DomainState, cfg: RunConfig,

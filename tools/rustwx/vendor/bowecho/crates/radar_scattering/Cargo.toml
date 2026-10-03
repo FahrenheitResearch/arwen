@@ -1,0 +1,14 @@
+[package]
+name = "radar_scattering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Typed, validated radar-scattering primitives and offline LUTs"
+
+[dependencies]
+serde.workspace = true
+# LUT axes are compared bit-for-bit with binary headers.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+sha2 = "0.10.9"
+thiserror.workspace = true

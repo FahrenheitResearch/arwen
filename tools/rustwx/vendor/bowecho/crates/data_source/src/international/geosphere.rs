@@ -1,0 +1,285 @@
+//! GeoSphere Austria (Hochficht) open radar data provider.
+//!
+//! Catalog: GeoSphere's public datahub, an anonymous S3-compatible store at
+//! `https://public.hub.geosphere.at/datahub`. The
+//! `radar_volumen_hochficht-v1-5min` dataset publishes one full ODIM_H5
+//! PVOL (EUMETNET OPERA Data Information Model; Michelson et al., OPERA
+//! WP 2.1/2.2, v2.2-2.3) every five minutes as
+//! `.../filelisting/WXRHOF_{yyyymmddhhmm}.hdf`.
+//!
+//! Newest-frame discovery: the bucket lists keys in ascending lexicographic
+//! (= chronological) order and holds far more than one page of history, so
+//! a plain `ListObjectsV2` returns the *oldest* page. The provider instead
+//! starts the listing just behind "now" with `start-after` (12 h, then a
+//! 72 h fallback for feed outages) and follows continuation pages until the
+//! final, newest key. Probed live 2026-06-12: anonymous listing and
+//! download both work (`\x89HDF` magic confirmed).
+
+use chrono::{Duration, Utc};
+
+use super::{
+    FramePlan, IntlProvider, IntlSite, PlanPart, RecentFrames, fetch_s3_style_listing,
+    s3_style_listing_url,
+};
+
+const DATAHUB_BASE: &str = "https://public.hub.geosphere.at/datahub";
+const FILE_PREFIX: &str = "resources/radar_volumen_hochficht-v1-5min/filelisting/";
+const SITE_ID: &str = "hochficht";
+
+/// Hochficht radar coordinates. The GeoSphere research radar is not in the
+/// EUMETNET OPERA radar database (checked `OPERA_RADARS_DB.json` and the
+/// `OPERA_RADARS_ARH_DB.json` archive, fetched 2026-06-12: no Austrian
+/// Hochficht entry), so these come from the authoritative bytes themselves:
+/// decoded live 2026-06-12 from the ODIM `/where` group of
+/// `WXRHOF_202606120820.hdf` (`lat=48.73688`, `lon=13.92089`,
+/// `height=1333 m`, source `RAD:hochficht`).
+const SITE_LATITUDE_DEG: f32 = 48.7369;
+const SITE_LONGITUDE_DEG: f32 = 13.9209;
+
+/// Listing lookback windows: a fresh feed answers within 12 h; the 72 h
+/// fallback still finds the newest frame across a multi-day outage without
+/// paging through the dataset's full history.
+const LOOKBACK_HOURS: [i64; 2] = [12, 72];
+
+/// Continuation-page cap per lookback window. At the 5-minute cadence even
+/// the 72 h window is under one 1000-key page; the cap only bounds work if
+/// the feed ever bursts.
+const MAX_LISTING_PAGES: usize = 12;
+
+/// GeoSphere Austria: the Hochficht research radar, single-file ODIM PVOL.
+pub struct GeoSphereProvider;
+
+impl GeoSphereProvider {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for GeoSphereProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IntlProvider for GeoSphereProvider {
+    fn id(&self) -> &'static str {
+        "geosphere"
+    }
+
+    fn label(&self) -> &'static str {
+        "GeoSphere Austria"
+    }
+
+    fn country(&self) -> &'static str {
+        "Austria"
+    }
+
+    fn list_sites(&self) -> Result<Vec<IntlSite>, String> {
+        Ok(self.static_sites())
+    }
+
+    fn latest(&self, site_id: &str) -> Result<FramePlan, String> {
+        validate_site(site_id)?;
+        let keys = window_wxrhof_keys()?;
+        recent_plans(&keys, 1).pop().ok_or_else(no_frames_error) // unreachable: keys are non-empty
+    }
+
+    fn recent_source(&self) -> Option<&dyn RecentFrames> {
+        Some(self)
+    }
+
+    fn static_sites(&self) -> Vec<IntlSite> {
+        vec![IntlSite {
+            provider_id: self.id(),
+            site_id: SITE_ID.to_owned(),
+            label: "Hochficht".to_owned(),
+            country: self.country(),
+            latitude_deg: Some(SITE_LATITUDE_DEG),
+            longitude_deg: Some(SITE_LONGITUDE_DEG),
+        }]
+    }
+}
+
+impl RecentFrames for GeoSphereProvider {
+    fn recent_frames(&self, site_id: &str, count: usize) -> Result<Vec<FramePlan>, String> {
+        validate_site(site_id)?;
+        let keys = window_wxrhof_keys()?;
+        Ok(recent_plans(&keys, count))
+    }
+}
+
+fn validate_site(site_id: &str) -> Result<(), String> {
+    if site_id == SITE_ID {
+        Ok(())
+    } else {
+        Err(format!(
+            "GeoSphere: unknown site '{site_id}' (only '{SITE_ID}')"
+        ))
+    }
+}
+
+fn no_frames_error() -> String {
+    format!(
+        "GeoSphere Hochficht listing returned no WXRHOF_*.hdf files in \
+         the last {} h",
+        LOOKBACK_HOURS[LOOKBACK_HOURS.len() - 1]
+    )
+}
+
+/// Every `WXRHOF_*.hdf` key in the freshest lookback window that lists any:
+/// the paged `start-after` walk `latest` has always done, but keeping ALL
+/// matching keys instead of only the newest one. Guaranteed non-empty on
+/// `Ok`.
+fn window_wxrhof_keys() -> Result<Vec<String>, String> {
+    let now = Utc::now();
+    for hours in LOOKBACK_HOURS {
+        let start_stamp = (now - Duration::hours(hours)).format("%Y%m%d%H%M");
+        let mut start_after = format!("{FILE_PREFIX}WXRHOF_{start_stamp}.hdf");
+        let mut collected: Vec<String> = Vec::new();
+
+        for _page in 0..MAX_LISTING_PAGES {
+            let url =
+                s3_style_listing_url(DATAHUB_BASE, FILE_PREFIX, None, Some(&start_after), 1000);
+            let listing =
+                fetch_s3_style_listing(&url).map_err(|err| format!("GeoSphere Hochficht {err}"))?;
+            collected.extend(
+                listing
+                    .keys
+                    .iter()
+                    .filter(|key| is_wxrhof_key(key))
+                    .cloned(),
+            );
+            let Some(last_key) = listing.keys.last() else {
+                break;
+            };
+            if !listing.is_truncated {
+                break;
+            }
+            start_after = last_key.clone();
+        }
+
+        if !collected.is_empty() {
+            return Ok(collected);
+        }
+    }
+    Err(no_frames_error())
+}
+
+fn is_wxrhof_key(key: &str) -> bool {
+    key.rsplit('/')
+        .next()
+        .is_some_and(|file_name| file_name.starts_with("WXRHOF_") && file_name.ends_with(".hdf"))
+}
+
+/// Up to `count` plans for the newest `WXRHOF_*.hdf` keys, OLDEST FIRST
+/// (the [`RecentFrames`] contract). Keys carry zero-padded UTC stamps, so
+/// lexicographic order is chronological order; non-matching keys (sidecar
+/// files, anything else under the prefix) are ignored. Identity is the file
+/// name — precisely what `latest` uses, so the newest plan is the live
+/// poll's dedupe key.
+fn recent_plans(keys: &[String], count: usize) -> Vec<FramePlan> {
+    let mut keys: Vec<&str> = keys
+        .iter()
+        .filter(|key| is_wxrhof_key(key))
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    let skip = keys.len().saturating_sub(count.max(1));
+    keys[skip..]
+        .iter()
+        .map(|key| FramePlan {
+            identity: key.rsplit('/').next().unwrap_or(key).to_owned(),
+            parts: vec![PlanPart {
+                url: format!("{DATAHUB_BASE}/{key}"),
+            }],
+            merge: false,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::international::parse_s3_style_listing;
+
+    /// Recorded live from the datahub `start-after` probe on 2026-06-12,
+    /// trimmed to the first two and last two Contents entries.
+    const RECENT_FIXTURE: &str = include_str!("fixtures/geosphere_listing_recent.xml");
+
+    #[test]
+    fn recent_window_listing_yields_the_newest_key() {
+        let listing = parse_s3_style_listing(RECENT_FIXTURE).expect("fixture parses");
+        assert!(!listing.is_truncated);
+        assert_eq!(listing.keys.len(), 4);
+        let newest = recent_plans(&listing.keys, 1);
+        assert_eq!(newest.len(), 1);
+        assert_eq!(newest[0].identity, "WXRHOF_202606120635.hdf");
+        assert_eq!(
+            newest[0].parts[0].url,
+            "https://public.hub.geosphere.at/datahub/resources/\
+             radar_volumen_hochficht-v1-5min/filelisting/WXRHOF_202606120635.hdf"
+        );
+    }
+
+    /// The provider must advertise the real loop it now has (fails on the
+    /// old single-frame GeoSphereProvider).
+    #[test]
+    fn provider_advertises_a_real_recent_loop() {
+        let provider = GeoSphereProvider::new();
+        assert!(provider.recent_source().is_some());
+        assert!(provider.supports_recent());
+    }
+
+    /// A rolling-window listing turns into plans OLDEST FIRST, newest last
+    /// (the loop-install order; the last identity is the poll dedupe key).
+    #[test]
+    fn recent_plans_keep_the_newest_count_keys_oldest_first() {
+        let listing = parse_s3_style_listing(RECENT_FIXTURE).expect("fixture parses");
+        let plans = recent_plans(&listing.keys, 3);
+        assert_eq!(plans.len(), 3);
+        let identities: Vec<&str> = plans.iter().map(|plan| plan.identity.as_str()).collect();
+        assert!(
+            identities.windows(2).all(|pair| pair[0] < pair[1]),
+            "plans must be oldest first: {identities:?}"
+        );
+        assert_eq!(identities.last(), Some(&"WXRHOF_202606120635.hdf"));
+        assert!(plans.iter().all(|plan| !plan.merge));
+        // Newest recent plan == the plan `latest` builds (dedupe key).
+        assert_eq!(
+            plans.last(),
+            recent_plans(&listing.keys, 1).first(),
+            "newest recent frame must equal the latest frame"
+        );
+        // Asking for more than exists returns everything, still ordered.
+        assert_eq!(recent_plans(&listing.keys, 99).len(), 4);
+    }
+
+    #[test]
+    fn recent_plans_ignore_non_wxrhof_keys() {
+        let keys = vec![
+            format!("{FILE_PREFIX}WXRHOF_202606120000.hdf"),
+            format!("{FILE_PREFIX}ZZZ_999912312359.txt"),
+            format!("{FILE_PREFIX}WXRHOF_202606120630.hdf"),
+        ];
+        let plans = recent_plans(&keys, 10);
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[1].identity, "WXRHOF_202606120630.hdf");
+        assert!(recent_plans(&[], 3).is_empty());
+        assert!(recent_plans(&[format!("{FILE_PREFIX}notes.txt")], 3).is_empty());
+    }
+
+    #[test]
+    fn provider_serves_exactly_one_site_and_rejects_others() {
+        let provider = GeoSphereProvider::new();
+        let sites = provider.list_sites().expect("static site list");
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].site_id, SITE_ID);
+        assert_eq!(sites[0].latitude_deg, Some(SITE_LATITUDE_DEG));
+        assert_eq!(sites[0].longitude_deg, Some(SITE_LONGITUDE_DEG));
+        assert_eq!(sites, provider.static_sites());
+
+        let err = provider.latest("vienna").unwrap_err();
+        assert!(err.contains("unknown site"), "unexpected error: {err}");
+    }
+}

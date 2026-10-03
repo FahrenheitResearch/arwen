@@ -46,6 +46,9 @@
 tests/test_rrtmg_sw_oracle.py  skips<=*  # night columns: SW is not called on
                                          # them, and how many of the fixture
                                          # columns are night is fixture data
+# The columns with no layer above the troposphere switch
+# (fixtures_shallow.npz): not slow, all day columns, nothing may skip.
+tests/test_rrtmg_sw_no_upper_flux.py
 
 # --- Grell-Freitas cumulus, against tools/gf_wrf461_oracle/
 tests/test_gf_deep_parity.py
@@ -116,6 +119,12 @@ tests/test_rrtmg_lw_cuda.py    the same fixtures as its NumPy twin above, and
 tests/test_rrtmg_sw_cuda.py    needs a CUDA device (the shortwave fixtures do
 #                              ship; only the device is absent).  Runs on the
 #                              gpu lane of .github/workflows/ci.yml.
+tests/test_rrtmg_sw_no_upper_flux_gpu.py  needs a CUDA device (its WRF
+#                              fixture, fixtures_shallow.npz, ships; only the
+#                              device is absent).  Runs on
+#                              tools/battery/gpu_shard_files.txt SHARD 1v; its
+#                              NumPy half, tests/test_rrtmg_sw_no_upper_flux.py,
+#                              runs on stage 1.
 tests/test_wrfout_dual_write.py  needs the Rust NetCDF writer built in this
 #                              checkout (cargo build --release); a wheel
 #                              install carries it, a bare source tree does not.

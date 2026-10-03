@@ -1,0 +1,822 @@
+{
+  "repository": "https://github.com/recastsystems/recast-radar-tools",
+  "revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+  "version": "0.1.3",
+  "license": "MIT OR Apache-2.0",
+  "crates": [
+    "recast-radar-core",
+    "recast-radar-bzip2",
+    "recast-radar-hdf5",
+    "recast-radar-io-nexrad",
+    "recast-radar-io-cfradial",
+    "recast-radar-io-odim"
+  ],
+  "packaging_changes": "Only crate manifests remove dev-dependencies and explicit test/example targets. Source files are byte-identical. The minimal workspace omits test corpus and unrelated crates. Retain the upstream notice collection and add a scoped NOTICE. The lockfile and all packaging files are included in this inventory.",
+  "files": [
+    {
+      "path": "Cargo.lock",
+      "bytes": 61574,
+      "sha256": "bcdc7f544e09e1aaa0b5fd5239a2e28ddaa10fc1fd5f5bd6d3b0401d6f4a038d",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "Cargo.lock"
+    },
+    {
+      "path": "Cargo.toml",
+      "bytes": 1141,
+      "sha256": "ae34e479c9c4d08c920e6e91c3403432d3156e01234af10ac0f158438ab4bb92",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "Cargo.toml"
+    },
+    {
+      "path": "LICENSE-APACHE",
+      "bytes": 9156,
+      "sha256": "6cf63d87586c7c25c3ab8e62eef5c75bbaa982b0a6f9c00c59e2720255aac9ec",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "LICENSE-APACHE"
+    },
+    {
+      "path": "LICENSE-MIT",
+      "bytes": 1076,
+      "sha256": "14c3175e602a6b60c1091a74fda2708e59f31b84d96031901558d7a2ebe804c3",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "LICENSE-MIT"
+    },
+    {
+      "path": "NOTICE",
+      "bytes": 1090,
+      "sha256": "a72cecd5463cc5e323b7949a98b29582fc6f099ee3765b2afb335fc6a43eebbb",
+      "origin": "vendoring",
+      "change": "Scoped notice for the retained subset."
+    },
+    {
+      "path": "README.md",
+      "bytes": 20057,
+      "sha256": "0aeca5af5fa30e63442747e7f1853db0aa5931c4c5e06ea7a450eb5ea3c64501",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "README.md"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "bytes": 7852,
+      "sha256": "ef4354dc68d3fbd58d46f223f329de1132650bcdf22b8f653f332783669a4b6f",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "THIRD_PARTY_NOTICES.md"
+    },
+    {
+      "path": "crates/recast-radar-bzip2/Cargo.toml",
+      "bytes": 860,
+      "sha256": "a7579190e0f5d1ec5067cb3bf6fcdbcdf85cd09c92e39dcbae1dfbbba35c672f",
+      "origin": "vendoring",
+      "upstream_sha256": "5621a9c629a050d9b068fb734212f190d380f1fa2d8c7cd029f67fe66ef3dfe3",
+      "change": "Remove development-only targets and dependencies."
+    },
+    {
+      "path": "crates/recast-radar-bzip2/src/bits.rs",
+      "bytes": 2359,
+      "sha256": "4081ce285c1895c56d7c8cb70287faff404fb037f518d0771be3613dd9e162ea",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-bzip2/src/bits.rs"
+    },
+    {
+      "path": "crates/recast-radar-bzip2/src/block.rs",
+      "bytes": 20446,
+      "sha256": "0a279a2f89dfeed7cc2615d7ff4eed3de16304de31fbb6627317bd12bd0da516",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-bzip2/src/block.rs"
+    },
+    {
+      "path": "crates/recast-radar-bzip2/src/crc.rs",
+      "bytes": 5359,
+      "sha256": "0e525e6d296fc0e861dd793f53dee46605965f7d49905700e9c6280b0a7859fb",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-bzip2/src/crc.rs"
+    },
+    {
+      "path": "crates/recast-radar-bzip2/src/enc/bits.rs",
+      "bytes": 1679,
+      "sha256": "eebd9081a465d75c4efb89df1c78f2e932d4fe3125a47e979c9f2b8246f21913",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-bzip2/src/enc/bits.rs"
+    },
+    {
+      "path": "crates/recast-radar-bzip2/src/enc/bwt.rs",
+      "bytes": 11605,
+      "sha256": "39bdab55c2888db3b81d2e61fd827da18212a3aa23a974487c49e802b9d5a243",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-bzip2/src/enc/bwt.rs"
+    },
+    {
+      "path": "crates/recast-radar-bzip2/src/enc/huffman.rs",
+      "bytes": 12474,
+      "sha256": "ef204f71c497f2724bacb61541dcfdcd1df94081ef0dacc7b01787533aaeb2b3",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-bzip2/src/enc/huffman.rs"
+    },
+    {
+      "path": "crates/recast-radar-bzip2/src/enc/mod.rs",
+      "bytes": 6832,
+      "sha256": "6a1b814e631df3dc8448dc89548de7166ae9425a84dac54b8e530fef30843363",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-bzip2/src/enc/mod.rs"
+    },
+    {
+      "path": "crates/recast-radar-bzip2/src/enc/mtf.rs",
+      "bytes": 5738,
+      "sha256": "02f45d11d555c68dce8cf4ede3dee2b6ce4c4578f6221268421e7fc4c1f90dd6",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-bzip2/src/enc/mtf.rs"
+    },
+    {
+      "path": "crates/recast-radar-bzip2/src/enc/par.rs",
+      "bytes": 4782,
+      "sha256": "c0500baf9bab99e8e7e053d6b224334f270412d14b8bf71b0a2bf6f73103c632",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-bzip2/src/enc/par.rs"
+    },
+    {
+      "path": "crates/recast-radar-bzip2/src/enc/rle1.rs",
+      "bytes": 4013,
+      "sha256": "c3fb7c7bd52abb8bc2473479816a73ad743650d91c9aa4a2f3684b16f32a6ccb",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-bzip2/src/enc/rle1.rs"
+    },
+    {
+      "path": "crates/recast-radar-bzip2/src/enc/sais.rs",
+      "bytes": 24633,
+      "sha256": "dbcfe85df76c99b947a4b2034ac7974e2eaa8c845eb7eece7adeda65b0fda170",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-bzip2/src/enc/sais.rs"
+    },
+    {
+      "path": "crates/recast-radar-bzip2/src/huff.rs",
+      "bytes": 9352,
+      "sha256": "cb596afaf3e14b87e27929ce25ce7e6eff8956b33e551df96d903eb9abf51a4a",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-bzip2/src/huff.rs"
+    },
+    {
+      "path": "crates/recast-radar-bzip2/src/lib.rs",
+      "bytes": 19957,
+      "sha256": "09543462141603b55a492cd65ebd986714a3f0c4ef14d5bbec7cefc335cc2736",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-bzip2/src/lib.rs"
+    },
+    {
+      "path": "crates/recast-radar-bzip2/src/rand.rs",
+      "bytes": 3496,
+      "sha256": "63371fe1d865d796d9d1713635423500868ce1b5f032421dce6133412df1929e",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-bzip2/src/rand.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/Cargo.toml",
+      "bytes": 1093,
+      "sha256": "b4cd0c3bd5eb8a7f1ce57b0ba6d1ddbd24fa1dc2a60a7d3cf766535fd2e1860f",
+      "origin": "vendoring",
+      "upstream_sha256": "f1ced19149fe2f9f1fa795d5983bce0accef5d07eefd6d058b2324f5c2be5042",
+      "change": "Remove development-only targets and dependencies."
+    },
+    {
+      "path": "crates/recast-radar-core/src/bounded_read.rs",
+      "bytes": 10953,
+      "sha256": "6588058ad71581f0941baf8947d660c894c52fc01a9fbe94a6d28a002a191ee7",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/bounded_read.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/src/fm301/build.rs",
+      "bytes": 68084,
+      "sha256": "3c09c1004cb495895355a0149160b11e283c7a1b158bf337e5173b115f6a7eb2",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/fm301/build.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/src/fm301/layout.rs",
+      "bytes": 12843,
+      "sha256": "ce69c3f9622d2b1578c731e040bb75b363d5204e13270bc78ea9d2559fb10925",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/fm301/layout.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/src/fm301/mod.rs",
+      "bytes": 18538,
+      "sha256": "6b06eefec92433a44356b8e2bfdcf7120d045e72ed45d7392856560811398a04",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/fm301/mod.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/src/lib.rs",
+      "bytes": 5598,
+      "sha256": "48ea6dcccad0e5d98235eba95820f3687b78176b583d4de260c2a0bcb6143ed2",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/lib.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/src/model/cycles.rs",
+      "bytes": 16854,
+      "sha256": "ed0f8f30be8d54c7e287e67483de275f06144c4142fdd28be58c6252a921a6aa",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/model/cycles.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/src/model/field.rs",
+      "bytes": 48410,
+      "sha256": "46d68bb1b61acdd04fc876782bbb7cc21f6390156030e186a11feeeb72c28442",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/model/field.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/src/model/merge.rs",
+      "bytes": 14040,
+      "sha256": "1111248ebbf3a79209a91eba9e9e3a9507b311662fad3666e76ffbc35f5668f9",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/model/merge.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/src/model/mod.rs",
+      "bytes": 2225,
+      "sha256": "ed3afa30ec979b782efd6fd5fd5adda645fae17f1d14ae7f4eb6c93a510026c5",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/model/mod.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/src/model/names.rs",
+      "bytes": 44452,
+      "sha256": "be6dfe16be03056126d65b6a9e39ab98ccc5de49de89a52d7618f8c60e54639b",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/model/names.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/src/model/serde_checked.rs",
+      "bytes": 11243,
+      "sha256": "f17bd5d1744a04d7eb5349c490f910b950ac374edb811cd664d2759c3bfc5702",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/model/serde_checked.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/src/model/sweep.rs",
+      "bytes": 57535,
+      "sha256": "5e35faec1b3bbb5fd00f87adbc861fa53ab6de311a78aa4287d094e43fa4f83c",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/model/sweep.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/src/model/values.rs",
+      "bytes": 16621,
+      "sha256": "bdf3531ac61666f29038e429154ae829dccb2d47cb7e306c383113ea3017700e",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/model/values.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/src/model/volume.rs",
+      "bytes": 36905,
+      "sha256": "afecfd3f6d7acc2c64ca4be607460012b65733ead3b41bee78d9be35349a5d4e",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/model/volume.rs"
+    },
+    {
+      "path": "crates/recast-radar-core/src/refractivity.rs",
+      "bytes": 17773,
+      "sha256": "770fa823053d00ca948970594b33cbce8451e8205437ae499d5bf95c89fcb4da",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-core/src/refractivity.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/Cargo.toml",
+      "bytes": 552,
+      "sha256": "dcfcbc2fd97fa6c9329762403b4fda43ba3b1c9cd1ecc7aaaa3c653484cbbc64",
+      "origin": "vendoring",
+      "upstream_sha256": "ed2bc1b6e9ed4be0e2f0d22d3d6a24d2c27788306b9cefd1ce6a58a5a753bc45",
+      "change": "Remove development-only targets and dependencies."
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/btree1.rs",
+      "bytes": 5451,
+      "sha256": "9049aac3871cee83d260341b0bd9dc5c7fa20298baee0d50fdb0871ec6847a06",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/btree1.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/btree2.rs",
+      "bytes": 9489,
+      "sha256": "ed20b4a439de308941fab2521b9ca23b62bb2a5c879bee641532d5df069c81cb",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/btree2.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/bytes.rs",
+      "bytes": 6324,
+      "sha256": "e79a6e07c217026d264b847485d65b09f67023d9beab28c13fa12e6df7cf6915",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/bytes.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/checksum.rs",
+      "bytes": 4162,
+      "sha256": "8da3728f9dd8745e77baf0cf7ade9be7e92eca452677b8af853fc78695042259",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/checksum.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/chunks.rs",
+      "bytes": 36543,
+      "sha256": "25bdcaea2e5031c7240f0b12d744568a977c3719b958b06ddeff6b497779779b",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/chunks.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/dataspace.rs",
+      "bytes": 3396,
+      "sha256": "1b743a9db484d33e2af729dc56e7f3ad6cfbdb632ea1dace80c2e3959b124555",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/dataspace.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/datatype.rs",
+      "bytes": 17474,
+      "sha256": "f6f99cae812ec55f518cf5d2e33886e85cf7c744a3e23b44695985c46c9991bf",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/datatype.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/error.rs",
+      "bytes": 2991,
+      "sha256": "d62faabdbb38d795b7016018fc116ee3843840dc4717e13d8a04ebe952b98326",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/error.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/file.rs",
+      "bytes": 53238,
+      "sha256": "96a0b9a3df8951a9456633e9119b209580bbbd1a7f7e649cb8cc57c50f842b0d",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/file.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/filters.rs",
+      "bytes": 9546,
+      "sha256": "00478ae55b2b3de9252a3a459e152b50baca324096d0e41d78a6d96480c3aa3d",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/filters.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/fractal.rs",
+      "bytes": 24810,
+      "sha256": "858fa5067c62c623867fb2175916781d085f371d62679df914cf7c42f19a4225",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/fractal.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/header.rs",
+      "bytes": 11892,
+      "sha256": "5d36ab4e63fe17a54b605339be083804cdbfaef1bc96682cfb76dafd46060ff5",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/header.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/heap.rs",
+      "bytes": 4664,
+      "sha256": "8b194acd93308e1db0a9b8baa6b57b23dfcba9624befbf3d5a0115ccffd8898e",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/heap.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/layout.rs",
+      "bytes": 9375,
+      "sha256": "df26ab27643ebedf1545bdbd0669539596f6bf8e9b566ee0a8f27faa81dcf0a6",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/layout.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/lib.rs",
+      "bytes": 8703,
+      "sha256": "82654d6ad51b123a6877f1826cc973e15eb6d3ae53e90a4ffc013b9d2764d56f",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/lib.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/limits.rs",
+      "bytes": 2986,
+      "sha256": "2de38d6274f5076c73922ce3218d5d9d5fa239cc078908da9111bf6515856960",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/limits.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/link.rs",
+      "bytes": 5209,
+      "sha256": "33a6a06bdb68436f1b036b7847fa572337b87c38988d3170c25627d690c02845",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/link.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/netcdf4.rs",
+      "bytes": 26629,
+      "sha256": "a9248caf2facf8356e7fde064d77f870a1212851b30260c48b8e8806ae7076c2",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/netcdf4.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/space.rs",
+      "bytes": 3630,
+      "sha256": "b9b1ce45dff4c08353af7b35a9e82fba215c6b084a775d7672a1da5b86542d10",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/space.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/superblock.rs",
+      "bytes": 5541,
+      "sha256": "830f5f9e05e2cab27bd2ae00ac8534349635c1f5bb523e83af734cd6061ab864",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/superblock.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/values.rs",
+      "bytes": 17165,
+      "sha256": "e54fea6c9fa7863c3f153917e3e91b0213c2c92346ded635904cb8d6098f997e",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/values.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/write/chunked.rs",
+      "bytes": 10262,
+      "sha256": "8cc280a5c351fd257656c7c27125675063427c0c9967ff1203286512e61be5d0",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/write/chunked.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/write/encode.rs",
+      "bytes": 14970,
+      "sha256": "d30b855d9083e67cae7584bb3b2b2993cfa3fbfabd3ab7dbd834be1cf6d225b5",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/write/encode.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/write/mod.rs",
+      "bytes": 44297,
+      "sha256": "5296b34900098dd0f3f9948e8957205dba2f5ed1ae38d119394a4ec9c41ceb1b",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/write/mod.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/write/netcdf4.rs",
+      "bytes": 26027,
+      "sha256": "f36cb68dd707e0ae35b54b94462ea317aa04613a9336a3c5c241ff76dcdaf4cc",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/write/netcdf4.rs"
+    },
+    {
+      "path": "crates/recast-radar-hdf5/src/write/tests.rs",
+      "bytes": 13815,
+      "sha256": "7db933cb170d7c6bd58cac3c4d5209f9a2160d8c39045a4da333c88565152f2b",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-hdf5/src/write/tests.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-cfradial/Cargo.toml",
+      "bytes": 820,
+      "sha256": "919aaa276abfb8b10ac6dc4127ff6f5ab19c35d6024a453bc1e54ea5b3a4f84e",
+      "origin": "vendoring",
+      "upstream_sha256": "806ca19aaf25e73f96417f4d46f343219a6b44d19da7f9db1e341ff4581cd688",
+      "change": "Remove development-only targets and dependencies."
+    },
+    {
+      "path": "crates/recast-radar-io-cfradial/src/cfradial.rs",
+      "bytes": 110242,
+      "sha256": "3791688eca387bff6dfccad32633c4d1768f6f4a21d99149ca406cf0b2882489",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-cfradial/src/cfradial.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-cfradial/src/cfradial2.rs",
+      "bytes": 39395,
+      "sha256": "13d0284625157f77e91c12da6a3d482295c4a079b3cd0ee03b33c80970729060",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-cfradial/src/cfradial2.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-cfradial/src/lib.rs",
+      "bytes": 8150,
+      "sha256": "c4111436f4f91c4c8778a116e2952c5863e2f436b14006b55e62f6543f49c787",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-cfradial/src/lib.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-cfradial/src/netcdf.rs",
+      "bytes": 19449,
+      "sha256": "8b32031fbc5a0156e4951c2aa1dcc07041669dc2908ceed1878335b609092d59",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-cfradial/src/netcdf.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-cfradial/src/netcdf3.rs",
+      "bytes": 36948,
+      "sha256": "23ea9db09f6c64e886d9eb30a75ac5e2ed5dc73ac85e60961c4372eb88a7fa30",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-cfradial/src/netcdf3.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-cfradial/src/write/cfradial1.rs",
+      "bytes": 118747,
+      "sha256": "a0468588454abba03f2458daabba057633f1608a99179ea96cfb5e45dad710fc",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-cfradial/src/write/cfradial1.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-cfradial/src/write/cfradial2.rs",
+      "bytes": 16635,
+      "sha256": "152d98ae8c971c99966e3c90d20415d7dc185cdaf212fc3e2b12ef482966d7ad",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-cfradial/src/write/cfradial2.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-cfradial/src/write/mod.rs",
+      "bytes": 1346,
+      "sha256": "5d395c5fc64d595d3914cddc93bc2fd76278d038c3b8fd8b4d936d4a033c8685",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-cfradial/src/write/mod.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-cfradial/src/write/netcdf3.rs",
+      "bytes": 15849,
+      "sha256": "fa6c6e9df9b977af7fa601b93edc606767907c553eb81f8300e6e989b6c811dd",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-cfradial/src/write/netcdf3.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/Cargo.toml",
+      "bytes": 1773,
+      "sha256": "67f0cab53e84c7fc791f7d2412dd4f1f375ce15a181465362dab2bdd10a35762",
+      "origin": "vendoring",
+      "upstream_sha256": "4ae3d4ee63ef168caf40493adb7428e741e90ed159043834a567b5cae16339a5",
+      "change": "Remove development-only targets and dependencies."
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/builder.rs",
+      "bytes": 39814,
+      "sha256": "c16876254c03b06d7759ba00c8e1e22ea2efad2fffb35bcaafe5f6c00307d313",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/builder.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/bzip2_prefix.rs",
+      "bytes": 27196,
+      "sha256": "a0f409f278d649a993155ac6f551b5e30b5ee5dbeaf4970b17a3449a18ae7920",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/bzip2_prefix.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/fm301_attrs.rs",
+      "bytes": 8752,
+      "sha256": "cb00181a646bd5f9f85600b9faefb8792d32e5e6f896069b4bca37d210d9bbac",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/fm301_attrs.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/gzip.rs",
+      "bytes": 28019,
+      "sha256": "ff9ab57a8b317d6034250961fc2256e1add0950642d4e7dd041d4612f1cf7328",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/gzip.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/lib.rs",
+      "bytes": 186744,
+      "sha256": "eb72d0b3586a552ec809153b88fb55ce1f229be5c6bc9f8bc6b85f2d1e79a625",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/lib.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/adaptation.rs",
+      "bytes": 48893,
+      "sha256": "f3d0b052146230f639d8c1557b13de5332a3f25cb2dbb0f2f640e29462911415",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/adaptation.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/bypass_map.rs",
+      "bytes": 10305,
+      "sha256": "66aa69b35fc2ba9c9f9cafbe50ac6f2246ce6af82ce07146150d962d2968f7a7",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/bypass_map.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/clutter_censor.rs",
+      "bytes": 3732,
+      "sha256": "12390eb73dd3b40dce6c842e7176f31e436fe705439a35d0edafcb5617c116ee",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/clutter_censor.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/clutter_filter_map.rs",
+      "bytes": 9180,
+      "sha256": "ba608610b1626532d44ece386c13913206ec5781d38929314393257e3a8fda2e",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/clutter_filter_map.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/console.rs",
+      "bytes": 2326,
+      "sha256": "d75d03168b7eada163f64b53596184956d748fd6a0f79d0c0f74eedf232781b7",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/console.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/control.rs",
+      "bytes": 13955,
+      "sha256": "eff94c7244131701a88ae9f27e1cb4f741f66f4179830167f22ffc689617926c",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/control.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/loopback.rs",
+      "bytes": 1917,
+      "sha256": "d24a546d771505536ef874a38c44db5cb17f96418e40421219e332529d078b5a",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/loopback.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/mod.rs",
+      "bytes": 32121,
+      "sha256": "978afd64382d08dd79d6e1d6aebd164e0362c4b9e48411e7b4b5ea3f2bb7def2",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/mod.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/msg31_blocks.rs",
+      "bytes": 46112,
+      "sha256": "d0364b7d9e103c72f62eb6b9d36e091084153b017c8fa3f696d75cb5bfb46aae",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/msg31_blocks.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/performance.rs",
+      "bytes": 50525,
+      "sha256": "692c69961564d6ea2d915bfd4854bf5516f96ef8b93c8398c93a25c7126590d4",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/performance.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/prf.rs",
+      "bytes": 5485,
+      "sha256": "181c348c23203651aae04cec8b3be6ec4be861ddaa4c138b0c3f81f13460e785",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/prf.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/rda_log.rs",
+      "bytes": 8082,
+      "sha256": "1ba6435969c5668bccb38b7d751db5eab1de8afa6eff11123a3e96f0dfa4992e",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/rda_log.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/rda_status.rs",
+      "bytes": 40062,
+      "sha256": "f5ea018bc2d3d734318bfe24525576fa16306ffd1f9b1d5a0fce9115de76e1cf",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/rda_status.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/request.rs",
+      "bytes": 3569,
+      "sha256": "96dc9561963bb489018132cfcce5ecf18240b6c1970f35e3647129feb62300c1",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/request.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/messages/vcp.rs",
+      "bytes": 22977,
+      "sha256": "c705be30d05f275074b2446875c110707b4c510576c674adffe466f772a52f72",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/messages/vcp.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/metadata.rs",
+      "bytes": 15286,
+      "sha256": "ca7eacb24c55ea68db0b80ac18414babf5893098dcccdfb90e33f0e1632574f9",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/metadata.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/passthrough.rs",
+      "bytes": 157495,
+      "sha256": "2fa9856542609a61c36a2dca0fa89234490cbc00cedb7426c41946113085a335",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/passthrough.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/radial_extras.rs",
+      "bytes": 43332,
+      "sha256": "0a70b34326145d232c323874191643f4a69c586d6ed5423d6bfc8fbae150bff0",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/radial_extras.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/write/compress.rs",
+      "bytes": 5373,
+      "sha256": "42d1b70ba80694e7fcd475b39a111b9be11df27933fb7cb80ec5667fec8b8c7f",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/write/compress.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/write/encode.rs",
+      "bytes": 30778,
+      "sha256": "e566a88c5a39647e763fbe5c598501408a6da85d6a04d9c74ee3686eff189ea7",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/write/encode.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/write/mod.rs",
+      "bytes": 36618,
+      "sha256": "7e2afd7cc42f9c986ab2123279cafb6954ea6fc116e5a75f7d0bec8ef555f629",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/write/mod.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/write/plan.rs",
+      "bytes": 84971,
+      "sha256": "4c94e9f714e4e902f92fc0427a754e194aedc15ce3b0635fa8ed0501bb156d09",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/write/plan.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/write/polling.rs",
+      "bytes": 18626,
+      "sha256": "d5f36b1741cade69ec727d063c1a43bd814bd74cc42a73492c8b94606c840d80",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/write/polling.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/write/quantize.rs",
+      "bytes": 29589,
+      "sha256": "aed13e78f14d5e965dae6295c7d4f978527662283c6749ff7f8f83fb08918c21",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/write/quantize.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-nexrad/src/write/realtime.rs",
+      "bytes": 18533,
+      "sha256": "0d8edf76413b5437ac8d93e24f0f26a2572dd5cbfb0f8449c4956bc67d1b1879",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-nexrad/src/write/realtime.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-odim/Cargo.toml",
+      "bytes": 821,
+      "sha256": "172bcd2c92c7c11417c93e7c43f327254f21fc1f5292314d6b0de513adef55d3",
+      "origin": "vendoring",
+      "upstream_sha256": "f02f8ca8a0f9e5c3cf26094c3a031f5041ecc7217215644f06f078d0cc88af3f",
+      "change": "Remove development-only targets and dependencies."
+    },
+    {
+      "path": "crates/recast-radar-io-odim/src/h5.rs",
+      "bytes": 19461,
+      "sha256": "2a78235349c8c87bfd338405037f85095734e45aa74f39856aa67c774a18ce03",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-odim/src/h5.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-odim/src/lib.rs",
+      "bytes": 3702,
+      "sha256": "ea981a4cc2545122e8d14db2a5bc466c8aaf1fc13154550cf591f903cd4ca455",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-odim/src/lib.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-odim/src/odim.rs",
+      "bytes": 81320,
+      "sha256": "8e145c272f32d11ea40518066f29f7c80309ed4133eb4c4f5a32da450ab4624e",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-odim/src/odim.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-odim/src/odim_cartesian.rs",
+      "bytes": 35065,
+      "sha256": "b90ce5ebce6792148fa3e41fcde361d2c7ec941e078a1c95dbea8c210e1b6f4b",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-odim/src/odim_cartesian.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-odim/src/tables.rs",
+      "bytes": 4002,
+      "sha256": "4e48bdc11c5a698b125d167ec5af2d15b10939c1b68f84a8abd984244f1b33ba",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-odim/src/tables.rs"
+    },
+    {
+      "path": "crates/recast-radar-io-odim/src/write.rs",
+      "bytes": 57675,
+      "sha256": "3b95f73c89c451888de0b2f4b20f13146cf43f62c4a63dc877e9fe8f79979468",
+      "origin_revision": "c206a2495c36341caa2a62ff7be3025320dbb028",
+      "origin_path": "crates/recast-radar-io-odim/src/write.rs"
+    }
+  ],
+  "schema_version": 2,
+  "inventory_scope": "Every retained file except SOURCE.json; hashes are raw bytes.",
+  "notices": [
+    "NOTICE",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "THIRD_PARTY_NOTICES.md"
+  ]
+}

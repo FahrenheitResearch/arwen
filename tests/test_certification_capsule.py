@@ -472,12 +472,6 @@ def test_the_digest_is_computed_after_the_final_sync_and_the_writer_drain():
     tree = ast.parse(source)
     functions = {node.name: node for node in ast.walk(tree)
                  if isinstance(node, ast.FunctionDef)}
-    # run_experiment delegates ordinary singles to integrate_prepared_case,
-    # and both adaptive singles and domain trees to _run_built_experiment.
-    delegated = {node.func.id for node in ast.walk(functions["run_experiment"])
-                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
-    assert {"integrate_prepared_case", "_run_built_experiment"} <= delegated
-
     def digest_lines(body):
         return [node.lineno for node in ast.walk(body)
                 if isinstance(node, ast.Call)
@@ -485,6 +479,31 @@ def test_the_digest_is_computed_after_the_final_sync_and_the_writer_drain():
                       and node.func.id == "canonical_state_digest")
                      or (isinstance(node.func, ast.Attribute)
                          and node.func.attr == "canonical_digest"))]
+
+    # run_experiment delegates ordinary singles to integrate_prepared_case,
+    # and both adaptive singles and domain trees to _run_built_experiment.
+    # Since the simulated-radar merge (lane/284-simradar, e4d945f49, merged
+    # at 794dafd16) the single arm hands integrate_prepared_case to
+    # gpuwm.simulated_radar.run_with_radar as its runner rather than calling
+    # it by name.  The wrapper only calls it; its radar thread reads history
+    # files the writer has already committed, never the device state, and
+    # it computes no digest, so the digest is still integrate_prepared_case's
+    # own, after that function's final sync.  The runner handed over counts
+    # as delegated, and the wrapper is held to computing no digest.
+    delegated = set()
+    for node in ast.walk(functions["run_experiment"]):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            delegated.add(node.func.id)
+            if (node.func.id == "run_with_radar" and node.args
+                    and isinstance(node.args[0], ast.Name)):
+                delegated.add(node.args[0].id)
+    assert {"integrate_prepared_case", "_run_built_experiment"} <= delegated
+    radar = ast.parse((REPO / "gpuwm" / "simulated_radar.py").read_text(
+        encoding="utf-8"))
+    wrapper = next(node for node in ast.walk(radar)
+                   if isinstance(node, ast.FunctionDef)
+                   and node.name == "run_with_radar")
+    assert not digest_lines(wrapper)
 
     assert not digest_lines(functions["run_experiment"])
     for name in ("integrate_prepared_case", "_run_built_experiment"):

@@ -1588,6 +1588,13 @@ tests/test_downscale_auto_vram.py
 tests/test_downscale_adaptive_parent.py
 tests/test_offline_child_geography.py
 tests/test_case_catalog.py
+
+# 2.8.4 old physics profile IDs at every door. Prevents an old ID (sent by
+# WOOF and by saved 2.8.3 plans, catalogs, drafts and receipts) from being
+# refused after a whole HRRR preparation by run-plan or stream, refused by
+# case-catalog, recorded with no physics components, or dropped by New forecast.
+tests/test_profile_alias_doors.py
+
 tests/test_source_availability.py
 tests/test_cli_memory_admission.py
 tests/test_go_supplements.py
@@ -1761,6 +1768,18 @@ tests/test_topo_radiation.py
 # refusals and the memory pricing; the WRF 4.7.1 kernel check and the
 # uniform-theta guard (4.17 K before the fix) run on gpu_shard_files.txt.
 tests/test_zadvect_implicit.py
+# The implicit-advection split must survive every tiled config copy.
+# Losing it silently replaces implicit vertical transport with the explicit
+# path on ranks. Device seam and rank-count identity rows run on the GPU shard.
+tests/test_zadvect_tiled.py
+# The older WRF split has different Courant and mass-weighting arithmetic.
+# Its fixture and config guards prevent selecting the modern split under the
+# older identity. Compiled-Fortran kernel comparisons run on the GPU shard.
+tests/test_zadvect_legacy.py
+# Changing the implicit-advection generation across a restart changes the
+# operator. Its validation, experiment and checkpoint identities must carry
+# that choice, including the default used by older prepared runs.
+tests/test_zadvect_variant_config.py
 
 # gpuwm run's preparation backend pin (A157): prevents a config run on a busy card
 # silently preparing on the CPU while the arm it is compared with prepared on the card.
@@ -1978,3 +1997,38 @@ tests/test_input_cycle.py
 # a box still holding CuPy 13 passing the door and dying at its first model
 # step on the by-value numpy.void tables ("Unsupported type", 2026-10-02).
 tests/test_gpu_runtime_floor.py
+
+# Legacy RRTMG shortwave with no layer above the troposphere switch
+# (laytrop == nlayers, a model top below ~191 hPa).  Prevents the NumPy
+# reference drifting from WRF on the columns whose bands 16, 17, 27, 28 and
+# 29 keep a zero solar source (fixtures_shallow.npz, recorded by the
+# unmodified Fortran), and rsw_sfluxzen_body regaining a return before its
+# store: the batched sflux slot is recycled scratch, and that return fed
+# leftover GPU memory to spcvmc on shallow and idealized domains.  The
+# card half is tests/test_rrtmg_sw_no_upper_flux_gpu.py on the GPU shard.
+tests/test_rrtmg_sw_no_upper_flux.py
+
+# Simulated-radar config, CLI metadata and per-history orchestration. Prevents
+# an accepted option being dropped by a forecast door, geometry requests
+# exhausting native allocations, or a failed requested product being hidden.
+tests/test_simulated_radar.py
+
+# Public capability metadata must identify executable model routes and their
+# required atmospheric fields. Prevents a displayed option being accepted by
+# a worker whose forecast route silently ignores it.
+tests/test_simulated_radar_capabilities.py
+
+# The compiled common-atmosphere adapter must preserve physical temperature,
+# wind masks and source provenance. Prevents hex/global columns producing
+# plausible radar values after a changed vertical or thermodynamic convention.
+tests/test_canonical_radar_scene.py
+
+# Native geometry pricing and refusal execute before allocating or sampling.
+# Prevents tiny positive gate/ray spacing from requesting unbounded arrays
+# and keeps worker quotes tied to the native sample and byte calculation.
+tests/test_simulated_radar_resources.py
+
+# Vendored source notices and packaged license texts must travel together.
+# Prevents a wheel carrying compiled donor code while omitting the license
+# and NOTICE files required for redistribution.
+tests/test_licence_notices_ship.py

@@ -916,6 +916,7 @@ def sim_command(bundle: dict, *, experiment_config: Path,
                 render_products: str | None = None,
                 render_dir: Path | None = None,
                 tiles=None, stream_init: str | None = None, devices: int | None = None, devices_options=None,
+                simulated_radar=None,
                 memory_gate: bool = True) -> list[str]:
     """The exact runner command this prepared tree needs.
 
@@ -945,6 +946,11 @@ def sim_command(bundle: dict, *, experiment_config: Path,
         raise StageRefusal(f"unknown runner arm {layout!r}")
     stream_flags = streaming_flags(layout, tiles=tiles, stream_init=stream_init)
     stream_flags += devices_flags(layout, options=devices_options)
+    from gpuwm.simulated_radar_config import execution_flags as radar_flags
+    try:
+        stream_flags += radar_flags(simulated_radar)
+    except (ValueError, TypeError) as error:
+        raise StageRefusal(str(error)) from error
     if devices is not None:
         stream_flags += ["--devices", str(devices)]
     profile_flags = ([] if physics_profile is None else
@@ -1145,6 +1151,7 @@ def sim_main(args) -> int:
             devices=getattr(args, "devices", None),
             devices_options=_devices_table_argument(
                 getattr(args, "devices_table", None)),
+            simulated_radar=getattr(args, "simulated_radar_table", None),
             stream_init=getattr(args, "stream_init", None),
             memory_gate=not getattr(args, "no_memory_gate", False))
         if not getattr(args, "print_command", False):
@@ -1246,7 +1253,9 @@ def register_cli(subparsers) -> None:
                      help="the experiment TOML this preparation was "
                           "bound to (the tree runner binds its digest; "
                           "the single-domain runner binds it through "
-                          "the proof)")
+                             "the proof)")
+    from gpuwm.simulated_radar_config import add_execution_argument
+    add_execution_argument(sim)
     sim.add_argument("--wps-namelist", type=Path, default=None,
                      metavar="WPS", dest="wps_namelist",
                      help="the namelist.wps this preparation consumed; "

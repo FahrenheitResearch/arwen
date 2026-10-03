@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from gpuwm.physics_registry import canonical_template_id
+
 import argparse
 from datetime import datetime
 from dataclasses import dataclass
@@ -351,7 +353,7 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
     )
     parser.add_argument("--namelist-input", type=Path)
     parser.add_argument(
-        "--physics-profile",
+        "--physics-profile", type=canonical_template_id,
         help=(
             "optional assertion that the experiment IS this shipped "
             "single-domain suite, refused on any switch drift; omitted, "

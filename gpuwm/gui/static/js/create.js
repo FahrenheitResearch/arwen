@@ -193,6 +193,10 @@ async function render(body, args, page) {
   // The map, the Where step and the When step draw at once; the data source list and the card come from the engine
   // (slow the first time), asked for separately, and only the source rows, How fine and Review wait on them.
   let sources = [];
+  // Old physics set ID -> current ID (the engine's alias table): a draft kept, linked or filled with an old ID keeps
+  // its set instead of being cleared as one the source does not offer.
+  let profileAliases = {};
+  const currentProfile = (id) => (id && Object.prototype.hasOwnProperty.call(profileAliases, id) ? profileAliases[id] : id);
   let cycleTouched = false;
   // The start the draft opened on by itself, which a start the download is known to take may still replace.
   let openedOn = null;
@@ -332,6 +336,7 @@ async function render(body, args, page) {
     customFields.hidden = !named;
     startHour.value = String(draft.startHour);
     wholeCycle.checked = !!draft.wholeCycle;
+    draft.profile = currentProfile(draft.profile);
     if ([...profile.options].some((o) => o.value === draft.profile)) profile.value = draft.profile;
     if ([...ladder.options].some((o) => o.value === draft.ladder)) ladder.value = draft.ladder;
     clock.value = ["adaptive", "fixed"].includes(draft.clock) ? draft.clock : "";
@@ -348,6 +353,7 @@ async function render(body, args, page) {
   function fillProfiles() {
     // Before the source list is in there is nothing to offer, and a kept set must not be dropped for that.
     if (!sources.length) return;
+    draft.profile = currentProfile(draft.profile);
     const s = sources.find((row) => row.id === draft.source);
     profile.replaceChildren(h("option", { value: "" }, w.profile_default),
       ...(s ? s.profiles.map((p) => h("option", { value: p.id, title: p.summary || "" }, p.id)) : []));
@@ -1640,6 +1646,7 @@ async function render(body, args, page) {
   api.get("/api/sources").then((data) => {
     if (closed) return;
     sources = data.sources;
+    profileAliases = data.profile_aliases || {};
     cards = data.cards;
     const offered = (id) => sources.some((row) => row.id === id);
     if (!offered(draft.source)) draft.source = (data.preferred || []).find(offered) || (sources[0] || {}).id || "";

@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-DOC = ROOT / "docs" / "public" / "validation" / "mp28-shortwindow-gate.md"
-FIRST = ROOT / "docs" / "public" / "validation" / "mp28-matched-trajectory.md"
+DOC = ROOT / "docs" / "public" / "wrf-comparison" / "mp28-shortwindow-gate.md"
+FIRST = ROOT / "docs" / "public" / "wrf-comparison" / "mp28-matched-trajectory.md"
 RECEIPTS = ROOT / "docs" / "public" / "receipts" / "mp28-shortwindow-gate"
 GATE = RECEIPTS / "shortwindow-gate.json"
 
@@ -38,8 +38,12 @@ def _gate() -> dict:
 
 def test_the_receipt_exists_and_is_the_declared_design():
     g = _gate()
+    # The immutable receipt keeps its original preregistration URL. That
+    # path now leads to the canonical page through a compatibility stub.
     assert g["declared_in"] == \
         "docs/public/validation/mp28-shortwindow-gate.md"
+    assert "../wrf-comparison/mp28-shortwindow-gate.md" in (
+        ROOT / g["declared_in"]).read_text(encoding="utf-8")
     assert g["start_s"] == 1800.0 and g["frame_dt_s"] == 60.0
     assert tuple(g["gate_fields"]) == GATE_FIELDS
     assert g["g1_ratio"] == 3.0 and g["g0_tol"] == 1.0e-8

@@ -5241,6 +5241,12 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     experimental_feedback = feedback_provenance(exp)
     if experimental_feedback is not None:
         print(FEEDBACK_EXPERIMENTAL_WARNING)
+    if exp.simulated_radar.enabled:
+        # Radar admission before the fetch, the preparation and any device
+        # work, for every caller of this route; the CLI door asks the same
+        # inventory first (gpuwm.config.experiment_preparation_refusals).
+        from gpuwm.simulated_radar_config import require_admitted
+        require_admitted(exp)
     _preparation_progress(progress_callback, "quarantine-wrfout")
     quarantine_orphan_wrfouts(outdir)
     # THE OUTPUT DISK ADMISSION (A190), after the structural refusals above
@@ -5415,8 +5421,10 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
                 prepared_decisions={int(dc.grid_id): single_decision})
         from gpuwm.io.history_selection import resolve
 
-        summary = integrate_prepared_case(
-            outdir, prepared, start_time=exp.start_time,
+        from gpuwm.simulated_radar import run_with_radar
+        summary = run_with_radar(
+            integrate_prepared_case, outdir, prepared, start_time=exp.start_time,
+            radar_options=exp.simulated_radar, radar_outdir=outdir,
             output_title=data.output_title, domain_id=data.output_domain,
             run_seconds=exp.run_seconds,
             history_interval_s=dc.history_interval_s,
@@ -5654,6 +5662,7 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
             # The tree-wide [output] history selection; each domain's own
             # `output = {...}` overrides it inside the writer set.
             history_selection=exp.output,
+            simulated_radar=exp.simulated_radar, radar_output_dir=outdir,
             # A domain resumed mid-episode-2 writes d0N/episode-002/ from
             # its FIRST frame; empty on every run that is not a lifecycle
             # resume, which is the byte-inert default.

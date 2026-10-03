@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from gpuwm.physics_registry import canonical_template_id
+
 import argparse
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
@@ -1407,7 +1409,7 @@ _INITIALIZATION_CONTRACT_ALIASES = MappingProxyType({
 
 def _initialization_contract_profile(profile: str) -> str:
     """The profile whose species/cold-start tables serve ``profile``."""
-
+    profile = canonical_template_id(profile)
     return _INITIALIZATION_CONTRACT_ALIASES.get(profile, profile)
 
 
@@ -1459,6 +1461,7 @@ _NAMELIST_CONTRACT_ALIASES = MappingProxyType({
 
 
 def _native_hrrr_profile_contract(profile: str) -> dict[str, object]:
+    profile = canonical_template_id(profile)
     contract_profile = _NAMELIST_CONTRACT_ALIASES.get(profile, profile)
     if contract_profile not in _NATIVE_HRRR_NAMELIST_CONTRACTS:
         raise _unsupported_profile(profile)
@@ -1470,6 +1473,7 @@ def _native_hrrr_profile_contract(profile: str) -> dict[str, object]:
 
 
 def _native_hrrr_runtime_switches(profile: str) -> dict[str, object]:
+    profile = canonical_template_id(profile)
     try:
         return dict(_NATIVE_HRRR_RUNTIME_SWITCHES[profile])
     except KeyError:
@@ -1559,7 +1563,7 @@ def _microphysics_table_authority(profile: str) -> dict[str, object] | None:
     Until 1.8 the only microphysics tables this route ever resolved were
     the ones :func:`_thompson_runtime_authority` resolves, and that
     function fires for exactly one profile id --
-    ``thompson-mp8-ysu-mm5-noah-validation-v1``, the guarded evidence
+    ``thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1``, the guarded evidence
     runtime -- behind two environment variables.  Every other mp8 suite,
     including BOTH legacy-RRTMG twins (the only full-radiation
     compositions this route's physics gate admits), reached GPU setup
@@ -1702,6 +1706,7 @@ def _validate_native_hrrr_physics_profile(
     the fix.
     """
 
+    profile = canonical_template_id(profile)
     from gpuwm.namelist_import import (
         MULTI_DOMAIN_ROOT_VIEW_HINT,
         parse_namelist,
@@ -1845,9 +1850,15 @@ def _validate_native_hrrr_physics_profile(
         receipt["microphysics_table_authority"] = table_authority
     if profile == THOMPSON_PROFILE_ID:
         receipt["readiness"] = "WRF_MATCHED_RUN_EXPERIMENTAL"
+        receipt["readiness_scope"] = (
+            "Legacy readiness identifier. The July matched run is historical "
+            "and does not cover this current daytime-only suite.")
         receipt["thompson_contract"] = _thompson_runtime_authority()
     elif profile == MORRISON_PROFILE_ID:
         receipt["readiness"] = "WRF_MATCHED_RUN_RUNTIME_PROFILE"
+        receipt["readiness_scope"] = (
+            "Legacy readiness identifier for a composition exemption; no "
+            "current matched-run manifest or decay tables cover this exact suite.")
         receipt["morrison_contract"] = {
             "selector": 10,
             "morr_rimed_ice": 1,
@@ -2087,7 +2098,7 @@ def _declare_asymmetric_radiation(
     Eight of the thirteen profiles this route stages run
     ``ra_sw_physics 1`` (Dudhia) with ``ra_lw_physics 0`` -- the whole
     wsm6 no-radiation family, ``kessler-mp1-ysu-mm5-noah-dudhia-v1``
-    and ``thompson-mp8-ysu-mm5-noah-validation-v1``.  1.7.1's
+    and ``thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1``.  1.7.1's
     nocturnal-radiation guard refuses that pairing at config load for
     any window that includes local night
     (:func:`gpuwm.physics_compat.nocturnal_radiation_refusal`), which is
@@ -2239,7 +2250,7 @@ def _initial_hrrr_microphysics_receipt(
     source-nonzero/state-zero refusal so old in-process callers neither gain
     nor lose admission through a schema reinterpretation.
     """
-
+    profile = canonical_template_id(profile)
     from gpuwm.ingest.real import (
         HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V1,
         HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V2,
@@ -5629,7 +5640,7 @@ def _parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bridge", type=Path, required=True)
     parser.add_argument(
-        "--physics-profile",
+        "--physics-profile", type=canonical_template_id,
         default=None,
         help="optional equality assertion against a named physics template; "
              "this route offers "

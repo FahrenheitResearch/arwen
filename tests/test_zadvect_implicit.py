@@ -109,12 +109,16 @@ def _same_bits(mine, wrf):
     return int((differ & ~signed_zero).sum()), int(signed_zero.sum())
 
 
-def _kernel_results(cp):
+def _kernel_results(cp, *, variant="wrf_471", fixture=FIXTURE):
     """Every kernel of the fixture's IEVA substep, chained as rk_tendency
     and rk_scalar_tend call them: ``{name: (array, shape, region)}``."""
     from gpuwm.core import ieva
 
-    with np.load(FIXTURE) as packed:
+    def _load(name, shape):
+        with np.load(fixture) as packed:
+            return np.asarray(packed[name], dtype=np.float32).reshape(shape)
+
+    with np.load(fixture) as packed:
         meta = [str(x) for x in packed["meta"]]
     nx, ny, nz = int(meta[0]), int(meta[1]), int(meta[2])
     dt, dx, dy, dt_s = (float(x) for x in meta[4:8])
@@ -150,13 +154,18 @@ def _kernel_results(cp):
         rph_t=d(_load("rph_t_explicit", fl)),
         rw_t=d(_load("rw_t_explicit", fl)))
     cfg = SimpleNamespace(dx=dx, dy=dy, dt=dt, open_x=False, open_y=False,
-                          specified=True, nested=False, zadvect_implicit=1)
+                          specified=True, nested=False, zadvect_implicit=1,
+                          zadvect_implicit_variant=variant)
     mut = d(_load("mut", (ny, nx)))
     mut_old = d(_load("mut_old", (ny, nx)))
 
     wwE, wwI = ieva.split_omega(state, cfg, d(_load("ww", fl)), state.u,
                                 state.v, mut, np.float32(dt))
-    mut_new = ieva.column_mass_new(state, cfg, mut, mut_old, np.float32(dt))
+    if variant == "wrf_legacy":
+        mut_old = mut
+        mut_new = mut
+    else:
+        mut_new = ieva.column_mass_new(state, cfg, mut, mut_old, np.float32(dt))
     ctx = ieva.DynamicsSplit(wwE, wwI, mut, mut_old, mut_new,
                              np.float32(dt))
     results = {"wwE": (cp.asnumpy(wwE).copy(), fl, (slice(1, nz),)),
@@ -186,7 +195,7 @@ def _kernel_results(cp):
     tend = d(_load("q_tend_explicit", m))
     ieva.solve_scalar(state, tend, d(_load("q_old", m)), wwI_m,
                       d(_load("mu0s", (ny, nx))), d(_load("muts", (ny, nx))),
-                      np.float32(dt_s))
+                      np.float32(dt_s), variant=variant)
     results["q_tend"] = (cp.asnumpy(tend), m, ())
     return results
 

@@ -1,6 +1,11 @@
-# Scale-resolved spectral verification
+# Scale-resolved spectral comparison
 
 Arwen has two deliberately separate spectral metric classes.
+Comparisons with WRF support code verification; comparisons with observations
+support validation for the scored quantities. Each receipt must state whether
+its reference is another model or observations. Neither kind of comparison
+estimates the numerical error of a run. See
+[Verification and validation](VERIFICATION.md#verification-and-validation).
 
 1. `gpuwm.verify.spectral` is the existing frozen `gpuwm.spectral-pins/v1`
    chaos-envelope metric. It compares radially averaged power for the pinned
@@ -20,13 +25,13 @@ both are described below. A receipt written under the previous pin is refused
 by name rather than reinterpreted; the frozen v1 chaos-envelope metric and its
 hash are untouched.
 
-The second class does **not** replace pointwise RMSE, FSS, object verification,
+The second class does **not** replace pointwise RMSE, FSS, object comparisons,
 conservation receipts, or the v1 chaos envelope. It answers a different
 question:
 
-> At which spatial scales does Arwen carry the right amount and kind of
-> structure, and at which scales is the disagreement amplitude, displacement,
-> or numerical noise?
+> At which spatial scales does Arwen carry the same amount and kind of
+> structure as the reference field, and at which scales is the disagreement
+> amplitude, displacement, or numerical noise?
 
 ## Why this is useful
 
@@ -248,7 +253,8 @@ first:
 
 Reflectivity is useful as a morphology diagnostic, but dBZ power is not
 physical atmospheric energy. Keep CSI, FSS, object timing, and neighborhood
-verification as the primary reflectivity claims.
+comparisons as the primary reflectivity measures. State whether each reference
+is a model run (code verification) or observed radar (validation).
 
 For multi-domain campaigns, each `[[pairs]]` record carries its own `dx_m` and
 `dy_m`. A physical band that a domain cannot resolve is marked `unresolved`.
@@ -260,8 +266,8 @@ Typical interpretations:
 
 | Power ratio | Signed correlation | Meaning |
 |---:|---:|---|
-| near 1 | near 1 | correct amount of structure and aligned phase/location |
-| near 1 | low | correct power, but displaced/rephased structure |
+| near 1 | near 1 | same amount of structure as the reference, with aligned phase/location |
+| near 1 | low | same power as the reference, but displaced/rephased structure |
 | below 1 | high | aligned but too weak or over-diffused |
 | above 1 | low | excess or misplaced structure; possible noise |
 | above 1 in divergent KE only | variable | possible acoustic/split-explicit or boundary noise |
@@ -486,7 +492,7 @@ finest structure a history file can carry — measured 1.24e-14. The floor sits
 ### This version does not regrid
 
 Both sides must already be on one common grid. Regridding inside the scorer
-would hide a second numerical operator under the verification metric. For
+would hide a second numerical operator under the comparison metric. For
 science-mode statements across different projections, generate a separately
 receipted common-grid product first.
 
@@ -506,8 +512,10 @@ a separate pin schema. It must not reinterpret these regional receipts.
 ### Power agreement is not forecast skill by itself
 
 A forecast can have an excellent spectrum and put every storm in the wrong
-county. Keep deterministic, neighborhood, object, observational, conservation,
-and distributional verification beside this class.
+county. Keep pointwise, neighborhood, object, conservation and distributional
+comparisons beside this class, and score against observations for any claim
+about forecast skill. Model-to-model spectral agreement does not supply that
+validation evidence.
 
 ## Future extensions
 

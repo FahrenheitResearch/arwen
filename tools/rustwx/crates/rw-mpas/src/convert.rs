@@ -17,8 +17,8 @@ use rw_store::netcdf_classic::{
 
 use crate::composite::{COMPOSITE_SCHEMA, CompositePlan, SeamStat};
 use crate::error::{MpasError, MpasResult};
-use crate::fieldmap::{field_set_allows, field_set_is_known, FieldSource, Rank, FIELD_MAP};
-use crate::history::{expected_levels, MpasFrame, Timestamp};
+use crate::fieldmap::{FIELD_MAP, FieldSource, Rank, field_set_allows, field_set_is_known};
+use crate::history::{MpasFrame, Timestamp, expected_levels};
 use crate::weights::NearestCellWeights;
 use crate::window::ProjAttr;
 
@@ -28,6 +28,11 @@ pub const COMPOSITE_SOURCE_VAR: &str = "COMPOSITE_SOURCE";
 pub const COMPOSITE_SPACING_VAR: &str = "COMPOSITE_DX_KM";
 
 pub const BRIDGE_SCHEMA: &str = "mpas-port.history-to-wrfout-render-frame/v1";
+
+/// Native mass winds bypass the ordinary WRF face-grid round-trip smoothing.
+pub const RADAR_NATIVE_WINDS: &str = "earth-relative-mass-grid/v1";
+pub const RADAR_U_EARTH: &str = "RADAR_U_EARTH";
+pub const RADAR_V_EARTH: &str = "RADAR_V_EARTH";
 
 /// WRF's `T` is a perturbation about this reference potential temperature,
 /// and wrf-core reconstructs full theta as `T + 300`.
@@ -325,6 +330,28 @@ pub fn convert_frame_composite(
     if let Some(label) = options.model_label.as_deref() {
         gattrs.push(NcAttr::text(MODEL_LABEL_ATTRIBUTE, label));
     }
+    // A composite can declare a single physics identity only when every source
+    // agrees. Missing metadata remains missing; no scheme is invented here.
+    gattrs.extend(
+        frame
+            .science_attributes
+            .iter()
+            .filter(|attribute| {
+                composite.is_none_or(|gather| {
+                    gather
+                        .layers
+                        .iter()
+                        .all(|layer| layer.frame.science_attributes.contains(attribute))
+                })
+            })
+            .cloned(),
+    );
+    let radar_winds = options.field_set == "full"
+        && frame.fields.contains_key("U")
+        && frame.fields.contains_key("V");
+    if radar_winds {
+        gattrs.push(NcAttr::text("RADAR_NATIVE_WINDS", RADAR_NATIVE_WINDS));
+    }
     for (name, value) in &projection {
         gattrs.push(match value {
             ProjAttr::Int(v) => NcAttr::int(name.clone(), *v),
@@ -380,10 +407,7 @@ pub fn convert_frame_composite(
     ]);
     if let Some(gather) = composite {
         gattrs.push(NcAttr::text("MPAS_COMPOSITE_SCHEMA", COMPOSITE_SCHEMA));
-        gattrs.push(NcAttr::text(
-            "MPAS_COMPOSITE_SPEC",
-            gather.plan.spec_json(),
-        ));
+        gattrs.push(NcAttr::text("MPAS_COMPOSITE_SPEC", gather.plan.spec_json()));
         gattrs.push(NcAttr::text(
             "MPAS_COMPOSITE_NONCLAIM",
             "values at a point come from exactly one model run; the change of source is a              hard switch and nothing is blended across it",
@@ -503,6 +527,26 @@ pub fn convert_frame_composite(
             ),
         );
     }
+    if radar_winds {
+        for (name, description) in [
+            (RADAR_U_EARTH, "EARTH-RELATIVE ZONAL WIND ON MASS GRID"),
+            (RADAR_V_EARTH, "EARTH-RELATIVE MERIDIONAL WIND ON MASS GRID"),
+        ] {
+            vars.push(
+                NcVarDef::new(
+                    name,
+                    NcType::Float,
+                    vec![
+                        dimid("Time"),
+                        dimid("bottom_top"),
+                        dimid("south_north"),
+                        dimid("west_east"),
+                    ],
+                )
+                .with_attrs(field_attrs(true, description, "m s-1", "")),
+            );
+        }
+    }
     // gpuwm addition (VENDOR.md): a composed frame carries the decision it
     // was made by, as data, on the same grid as the fields.  Two reasons
     // it is a variable rather than only an attribute: the seam can be
@@ -529,12 +573,7 @@ pub fn convert_frame_composite(
                 NcType::Float,
                 vec![dimid("Time"), dimid("south_north"), dimid("west_east")],
             )
-            .with_attrs(field_attrs(
-                false,
-                "COMPOSITE SHOWN CELL SPACING",
-                "km",
-                "",
-            )),
+            .with_attrs(field_attrs(false, "COMPOSITE SHOWN CELL SPACING", "km", "")),
         );
     }
     let since = format!(
@@ -636,6 +675,17 @@ pub fn convert_frame_composite(
                 "T" => values.iter_mut().for_each(|v| *v -= WRF_THETA_REFERENCE_K),
                 "PHB" => values.iter_mut().for_each(|v| *v *= WRF_GRAVITY),
                 _ => {}
+            }
+            if radar_winds {
+                let mass_name = match mapping.wrf_name {
+                    "U" => Some(RADAR_U_EARTH),
+                    "V" => Some(RADAR_V_EARTH),
+                    _ => None,
+                };
+                if let Some(name) = mass_name {
+                    writer.put_record(name, 0, NcData::Floats(&values))?;
+                    written.push(name.to_string());
+                }
             }
             let staggered = match mapping.rank {
                 Rank::U3d => restagger_x(&values, levels, ny, nx),

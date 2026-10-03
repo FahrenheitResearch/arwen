@@ -2,7 +2,7 @@
 
 ArWen's research catalog organizes 12 weather families into 23 submodes, 38 research questions and 114 recommended experiment configurations. Each final question has three distinct starting configurations; every family and submode also names at least three starting recommendations. The machine-readable authority is `gpuwm/data/tui/research-workspaces.json`.
 
-These are **development recommendations**. Every configuration is initially `unvalidated`. A recommendation becomes qualified only through execution evidence tied to its catalog identity, source revision, actual configuration, inputs and hardware. Existing release receipts do not validate this catalog.
+These are **development recommendations**. Every configuration starts with `qualification_status = "unqualified"`. This status records execution qualification, not accuracy against observations. A recommendation becomes qualified only through execution evidence tied to its catalog identity, source revision, actual configuration, inputs and hardware. Existing release receipts do not qualify this catalog or establish forecast skill. The historical `validation_status = "unvalidated"` field and value remain readable and are exported as compatibility aliases; receipts add `execution_qualification` and retain `science_validation` as a legacy alias. The terminal display and new configuration headings use execution qualification. A qualified configuration still needs separate observation-based validation.
 
 ## Reading a recommendation
 
@@ -921,7 +921,7 @@ Limit: Low cloud cover alone is not cloud-base height or flight category; invers
 
 All listed diagnostic identifiers exist in the native plot catalog. Required history inputs and time windows remain mandatory. A preset requests products; it does not enable physics, create missing variables, infer a missing 24-hour window or guarantee a useful scientific result. Some listed diagnostics supplement the family plot preset and should be retained in the reviewed plot selection. [Native plot data](../../gpuwm/data/tui/plot-presets.json), [output-variable contract](OUTPUT-VARIABLES.md).
 
-The separate validation matrix must identify every configuration by ID and record creation, preserved settings, review, preparation, forecast, diagnostics, restart/resume and the method-specific checks that apply. A failed or unrun recommendation remains visible and unqualified. For paired experiments, retain both the control and treatment receipts. Record actual device/driver/OS/free-memory conditions, distinguishing native hardware runs from restricted-budget tests and estimates.
+The separate execution-qualification matrix must identify every configuration by ID and record creation, preserved settings, review, preparation, forecast, diagnostics, restart/resume and the method-specific checks that apply. A failed or unrun recommendation remains visible and unqualified. For paired experiments, retain both the control and treatment receipts. Record actual device/driver/OS/free-memory conditions, distinguishing native hardware runs from restricted-budget tests and estimates.
 
 Sources were checked on 2026-09-06. External primary sources motivate the physical questions; native source files establish the admitted features. The selected geometry, cadence and comparison plans are this catalog's research proposals.
 

@@ -1,0 +1,9 @@
+# Operational NEXRAD sites
+
+`sites.json` contains all 158 WSR-88D points in the [NOAA ROC operational coverage map](https://www.roc.noaa.gov/branches/program-branch/site-id-database/site-id-location-maps.php), version 20260803. Coordinates come from that map's [point layer](https://www.roc.noaa.gov/branches/program-branch/site-id-database/wsr88d-interactive-radar-coverage-map/layers/WSR88D_Names_8.js). The IDs match the [NWS antenna-elevation list](https://www.weather.gov/media/tg/wsr88d-radar-list.pdf), dated 2026-08-18, exactly.
+
+Heights are antenna elevations above mean sea level. The NWS values in feet are converted to metres using exactly 0.3048 m per foot. They are not ground elevations, and tower height is not added a second time. The ROC site database separately publishes site-base elevations and tower heights in metres. For all 158 entries, the converted antenna height is 3 to 7 m above site-base elevation plus tower height, consistent with the antenna/feedhorn above the tower. NOAA describes those separate height components in its coverage-map documentation.
+
+The [NCEI station catalogue](https://www.ncei.noaa.gov/access/homr/file/nexrad-stations.txt) provides an independent check. Its elevations match 157 of the 158 current NWS antenna elevations. For KHDC it gives 43, while the current NWS antenna table gives 157 feet. This table uses the current NWS antenna value, 47.8536 m MSL. Historical and test catalogue rows absent from the current NOAA operational layer are not selected automatically. A custom station remains available for those locations.
+
+`sites-provenance.json` records the source URLs, retrieval time, source SHA256 hashes and the generated table hash. The original records and the per-site ground/tower crosscheck are retained with the validation evidence. These are public NOAA/NWS factual station data. No model terrain lookup supplies a station antenna height.

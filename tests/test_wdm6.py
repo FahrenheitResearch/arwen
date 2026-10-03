@@ -449,7 +449,8 @@ def test_the_registry_row_is_accurate_about_having_no_oracle():
     claim, _, _future = first.partition(
         "The oracle campaign that produced")
     for forbidden in ("max_ulp", "bitwise", "model-validated",
-                      "validation-candidate", "ULP parity"):
+                      "validation-candidate", "wrf-matched-run",
+                      "wrf-matched-run-candidate", "ULP parity"):
         assert forbidden not in claim, forbidden
     # RETIRED with the same defect, and replaced by what the absence was
     # standing in for.  A template DOES register mp=16 now -- that is the

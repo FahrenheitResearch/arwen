@@ -1,8 +1,8 @@
-"""The render module's entry points for the fine nested field.
+"""The nested-grid helpers and public observation-scoring badges.
 
-CPU only, and deliberately independent of the ``Gallery`` class: these
-are the functions a gallery panel adopts, and they have to be usable
-without a case directory, a basemap, or matplotlib.
+CPU only: the geometry helpers need no case directory, basemap or
+matplotlib. The badge test captures a Gallery method's text with fake
+axes and draws no weather map.
 """
 
 from __future__ import annotations
@@ -117,3 +117,44 @@ def test_the_composite_name_carries_the_domain_so_both_can_be_drawn():
     path = nest_composite_path("cycle", 9, "3", grid_id=2)
     assert path.name == "leg09_3_d02.npz"
     assert path.parent.name == "composites"
+
+
+@pytest.mark.parametrize("future,scored,compact,expected", [
+    (True, False, True, "PAST LAST OBS"),
+    (True, False, False, "PAST LAST OBS, unscored yet"),
+    (True, True, True, "SCORED"),
+    (True, True, False, "SCORED AFTER THE FACT, see observation row"),
+    (False, False, False, None),
+])
+def test_forecast_badges_distinguish_scored_from_pending(
+        future, scored, compact, expected):
+    """A completed radar score is an action, not a forecast-accuracy verdict.
+
+    Capture the text sent to the axes without drawing a weather map or
+    importing a plotting backend. Keep the historical ``verified`` keyword
+    usable by existing gallery callers.
+    """
+    from tools.da_nowcast_render import Gallery
+
+    class TextCaptureAxis:
+        def pcolormesh(self, *args, **kwargs):
+            return "field-artist"
+
+        def set_title(self, *args, **kwargs):
+            pass
+
+    gallery = Gallery.__new__(Gallery)
+    gallery.np = np
+    gallery.lat = gallery.lon = np.zeros((1, 1))
+    gallery.refl_cmap = lambda: (None, None)
+    gallery.map_frame = lambda axis, labels: None
+    gallery.map_finish = lambda axis: None
+    badges = []
+    gallery.badge = lambda axis, text, *style: badges.append(text)
+
+    artist = gallery.refl_panel(
+        TextCaptureAxis(), np.array([[40.0]]), "Forecast", "Valid time",
+        future=future, verified=scored, compact=compact)
+
+    assert artist == "field-artist"
+    assert badges == ([] if expected is None else [expected])

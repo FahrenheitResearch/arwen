@@ -757,9 +757,10 @@ warning.
 
    `--max-boundary-interval-seconds` bounds it explicitly and
    `--accept-parent-cadence` is the warning-free spelling of the default
-   (one or the other, never both). Boundary cadence is the dominant error
-   term (table below), so the line is worth reading -- but a runnable job
-   is never refused for it.
+   (one or the other, never both). Boundary cadence changes the forcing
+   supplied to the child. The single comparison below cannot rank that effect
+   against other sources of divergence, so the guidance is not a measured
+   error bound. A runnable job is never refused for it.
 4. **Full-physics children get their land identity and soil warm start
    automatically.** With `--child-surface-from` they come from a `wrfinput`
    or history file on the exact child grid, mirroring `ndown`'s own
@@ -789,8 +790,12 @@ the interior grid (5-row rim excluded).
 At F+0.0 the offline cold start matches the live nest on the four metrics
 this table scores. That row is the whole scope of that statement: four
 comparator metrics on one pair of runs, with no full-state digest taken.
-Read the rest as forcing-path cost -- hourly interval-linear boundaries
-versus the live nest's every-parent-step forcing.
+The later rows measure differences from the live nest, not errors against
+observations. They combine the changed forcing path (hourly interval-linear
+boundaries versus every-parent-step forcing), growth of small numerical
+differences during convection, and any start-state differences the four F+0
+metrics do not detect. No perturbed live-nest control was run, so this single
+pair cannot separate those contributions.
 
 | lead | T2 MAE (K) | T2 corr | PSFC MAE (Pa) | wind10 corr | refl corr | refl MAE (dBZ) | CSI@20 |
 |---|---|---|---|---|---|---|---|
@@ -818,12 +823,12 @@ non-finite values, receipts complete.
 ## The 15-minute guidance
 
 **Write parent history at 15-minute or denser cadence when you plan to
-downscale.** The table above is the measured price of hourly boundaries at
-500 m across convective initiation. With hourly boundaries an offline child
-is sound for mesoscale downscaling -- temperature, pressure, wind envelope
--- and is **not** a substitute for a live nest at convective scale: cell
-placement inside the child is decorrelated from what a live nest would
-produce.
+downscale.** The table above measures the difference between an hourly-boundary
+offline child and a live nest at 500 m across convective initiation in one
+three-hour case. In that case, temperature, pressure and the wind envelope
+stayed close while cell placement decorrelated. It is not a general skill
+result or an isolated measurement of cadence error, and no denser-cadence arm
+here establishes that 15-minute boundaries recover the live nest's storms.
 
 The CLI prints this guidance whenever the archive is coarser than 15
 minutes, however the cadence was chosen. `--accept-parent-cadence` is

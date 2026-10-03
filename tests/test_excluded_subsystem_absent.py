@@ -179,6 +179,45 @@ _MESSAGE_ALLOWANCE = {
 _FALSE_POSITIVE = re.compile("fore" + "cast" + "|" + "re" + "cast, transformed", re.I)
 
 _TIER1_RE = re.compile("|".join(re.escape(t) for t in _TIER1), re.I)
+
+#: The one sanctioned use of the org prefix in shipped files.  Drew,
+#: 2026-10-03, in the coordinator session: simulated radar vendors the
+#: PUBLIC radar volume writers under tools/rustwx/vendor (MIT OR Apache-2.0),
+#: and their licence attribution, crate names, lockfile entries and imports
+#: must name that project.  Breakage the pin prevents: an allowance wide enough to
+#: admit any spelling would let the excluded subsystem return under the
+#: same prefix.  So the prefix is admitted ONLY in these files and ONLY as
+#: that project's own identifiers (its repository path and its
+#: ``-radar``/``_radar`` crate and file names).  Any other spelling in these
+#: files, and any spelling at all in any other file, still fails.  A new
+#: file here is a decision, not a fix.  Spelled in halves, like the list.
+_RADAR_WRITER_FILES = frozenset("".join(parts) for parts in (
+    ("NOTICE",),
+    ("docs/simulated-radar.md",),
+    ("licenses/LICENSE-", "re", "cast-radar-tools-Apache-2.0.txt"),
+    ("licenses/LICENSE-", "re", "cast-radar-tools-MIT.txt"),
+    ("licenses/LICENSE-", "re", "cast-radar-tools-bzip2.txt"),
+    ("licenses/NOTICE-", "re", "cast-radar-tools.txt"),
+    ("licenses/THIRD-PARTY-LICENSES-bridge-binaries.txt",),
+    ("tests/test_licence_notices_ship.py",),
+    ("tools/rustwx/Cargo.lock",),
+    ("tools/rustwx/Cargo.toml",),
+    ("tools/rustwx/VENDOR.md",),
+    ("tools/rustwx/assets/basemap/THIRD-PARTY-LICENSES.txt",),
+    ("tools/rustwx/crates/rw-simradar/Cargo.toml",),
+    ("tools/rustwx/crates/rw-simradar/src/adapter.rs",),
+))
+_RADAR_WRITER_NAME = re.compile(
+    "re" + "castsystems/" + "re" + "cast-radar-tools"
+    + "|" + "re" + "cast[-_]radar[A-Za-z0-9_-]*", re.I)
+
+
+def _radar_writer_masked(name: str, text: str) -> str:
+    """``text`` with the vendored radar writers' own identifiers masked, in pinned files only."""
+
+    if name not in _RADAR_WRITER_FILES:
+        return text
+    return _RADAR_WRITER_NAME.sub("RADARWRITER", text)
 _TIER2_RE = re.compile("|".join(re.escape(t) for t in _TIER2), re.I)
 
 #: An added line longer than this is not hand-written source.  It is a
@@ -351,7 +390,7 @@ def test_no_tracked_path_names_the_excluded_subsystem():
 
     offenders = []
     for name in _tracked():
-        if _tier1_match(name) is not None:
+        if _tier1_match(_radar_writer_masked(name, name)) is not None:
             offenders.append(name)
         elif (_TIER2_RE.search(_mask(name))
                 and name not in _TIER2_PATH_ALLOWANCE):
@@ -376,7 +415,7 @@ def test_no_tracked_source_contains_the_excluded_subsystem():
             continue  # a binary asset; a byte pattern there is not source
         text = raw.decode("utf-8", "replace")
         for lineno, line in enumerate(text.splitlines(), 1):
-            token = _tier1_match(line)
+            token = _tier1_match(_radar_writer_masked(name, line))
             if token is not None:
                 offenders.append(f"{name}:{lineno}: {token!r}")
         if len(offenders) > 40:
@@ -438,7 +477,7 @@ def _diff_offenders(diff: str) -> list[str]:
             continue
         if skipping or not line.startswith("+") or line.startswith("+++"):
             continue
-        token = _tier1_match(line)
+        token = _tier1_match(_radar_writer_masked(current, line))
         if token is not None:
             offenders.append(f"{current}: {token!r} in: {line[:120]}")
             if len(offenders) > 40:

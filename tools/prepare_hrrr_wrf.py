@@ -18,6 +18,7 @@ import time
 
 from gpuwm import explain
 from gpuwm.progress import prep_stage
+from gpuwm.physics_registry import canonical_template_id
 from gpuwm.physics_compat import (
     route_physics_profiles,
     KESSLER_PROFILE_ID,
@@ -1011,9 +1012,13 @@ def _validated_physics_receipt(
     """Retain one exact runner profile and its cold-start evidence."""
 
     physics = preparation_report.get("physics")
+    # Both sides through the alias table: the benchmark records the current
+    # profile ID, while a request or a chain document written before the
+    # 2.8.4 rename may still carry the old one for the same physics.
     if (not isinstance(physics, dict)
             or physics.get("schema") != "gpuwm-prepared-physics-profile-v1"
-            or physics.get("profile") != requested_profile):
+            or canonical_template_id(physics.get("profile"))
+            != canonical_template_id(requested_profile)):
         raise RuntimeError(
             "HRRR preparation physics receipt differs from the request")
     if expected_selection is not None:
@@ -1186,9 +1191,12 @@ def _sealed_extension(args, *, valid_time: datetime,
         raise ValueError(
             "sealed root extension must append exactly the next hour to a "
             "zero-based sealed predecessor")
+    # A predecessor sealed under a profile's old ID (before the 2.8.4
+    # rename) ran the same physics as its current ID and still extends.
     if (prior_wrapper.get("source_cycle") != valid_time.isoformat()
-            or prior_wrapper.get("physics", {}).get("profile")
-            != args.physics_profile
+            or canonical_template_id(
+                prior_wrapper.get("physics", {}).get("profile"))
+            != canonical_template_id(args.physics_profile)
             or float(prior_wrapper.get("history_interval_seconds", -1.0))
             != float(args.history_interval_seconds)):
         raise ValueError("sealed predecessor belongs to another run contract")
@@ -1536,6 +1544,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--physics-profile",
         default=None,
+        # An old profile ID reads as its current ID, as the benchmark this
+        # wrapper drives reads it; otherwise the benchmark's report names
+        # the current ID and the receipt check below refuses the run after
+        # the whole preparation has finished.
+        type=canonical_template_id,
         help="optional equality assertion against a named physics template",
     )
     parser.add_argument(

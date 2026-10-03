@@ -105,15 +105,18 @@ def test_the_fields_are_appended_last():
     # its positional index.  The namelist-gaps merge appended slope_rad,
     # topo_shading and shadlen after them, the Noah mosaic trio followed,
     # lane/282-namelist-tolerance appended diff_opt and mix_full_fields
-    # after the trio, and lane/282-terrain-drag appended topo_wind and
-    # gwd_opt after those; tests/test_config_freeze.py pins the whole tail.
+    # after the trio, lane/282-terrain-drag appended topo_wind and gwd_opt
+    # after those, and lane/sol-hrrr-zadvect (37a99fcd4, merged at
+    # dd5ded73f) appended zadvect_implicit_variant last, default "wrf_471";
+    # tests/test_config_freeze.py pins the whole tail.
     names = [f.name for f in dataclasses.fields(RunConfig)]
     at = names.index("adaptive_nest_lattice")
     assert names[at + 1:at + 4] == ["sf_urban_physics", "use_wudapt_lcz",
                                     "num_urban_hi"]
-    assert names[-7:] == ["sf_surface_mosaic", "mosaic_cat",
+    assert names[-8:] == ["sf_surface_mosaic", "mosaic_cat",
                           "mosaic_urban_canopy", "diff_opt",
-                          "mix_full_fields", "topo_wind", "gwd_opt"]
+                          "mix_full_fields", "topo_wind", "gwd_opt",
+                          "zadvect_implicit_variant"]
 
 
 def test_the_memory_checks_price_the_urban_arrays():

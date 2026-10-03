@@ -20,8 +20,9 @@ If that is what you are looking at, this page is about your run.
 ## The cause
 
 The run has shortwave radiation switched on and longwave radiation
-switched off. That pairing is a **daytime** validation
-configuration. With no longwave scheme running, the downward longwave
+switched off. That pairing is a **daytime-only test configuration**.
+Its name does not establish either a comparison with WRF or validation against
+observations. With no longwave scheme running, the downward longwave
 the land surface integrates is not computed at all. It is a fixed
 300 W/m2, the buffer's allocation value, held constant for the whole
 run. That number answers to nothing: not to the clouds, not to the
@@ -278,7 +279,7 @@ On an affected config and a version that carries the guard, that
 prints:
 
 ```
-gpuwm check: experiment config myconfig.toml: this run's window includes local night (first at 2024-10-09T23:15Z at 27.5, -82.5) while domain(s) 1 run shortwave radiation with longwave OFF (ra_sw_physics 1 = Dudhia, ra_lw_physics 0; a suite matching no shipped profile).  Choose a nocturnally valid profile (both radiation streams on -- e.g. morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1, the wizard's default), or declare the validation experiment by adding acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"] to [experiment].  With ra_lw_physics 0 this configuration also FABRICATES its downward longwave, which is a second and separate claim, so the declaration it needs is both tokens together: acknowledgements = ["asymmetric-radiation-nocturnal-window-v1", "constant-downward-longwave-v1"].  Two claims, two tokens
+gpuwm check: experiment config myconfig.toml: this run's window includes local night (first at 2024-10-09T23:15Z at 27.5, -82.5) while domain(s) 1 run shortwave radiation with longwave OFF (ra_sw_physics 1 = Dudhia, ra_lw_physics 0; a suite matching no shipped profile).  Choose a nocturnally valid profile (both radiation streams on -- e.g. morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1, the wizard's default), or declare the daytime-only experiment by adding acknowledgements = ["asymmetric-radiation-nocturnal-window-v1"] to [experiment].  With ra_lw_physics 0 this configuration also FABRICATES its downward longwave, which is a second and separate claim, so the declaration it needs is both tokens together: acknowledgements = ["asymmetric-radiation-nocturnal-window-v1", "constant-downward-longwave-v1"].  Two claims, two tokens
   (run gpuwm check myconfig.toml --explain for the reason)
 ```
 
@@ -352,9 +353,9 @@ Re-run the case.
 
 ## If you want to run it anyway
 
-Shortwave-on with longwave-off remains a legitimate configuration for
-a daytime validation window, and it stays selectable. To run it across
-a window that includes night, declare it in the config:
+Shortwave-on with longwave-off remains selectable as a daytime-only
+experiment. To run it across a window that includes night, declare it in
+the config:
 
 ```toml
 [experiment]
@@ -399,7 +400,7 @@ longwave OFF and this window includes local night (first at 2021-12-11T00:00Z
 at 36.7, -88.6), so the config this would emit is one every front door refuses
 at load.  Choose a nocturnally valid profile with both radiation streams on --
 --physics-profile morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1 -- or, if you
-mean the daytime validation suite and accept the night, declare it yourself
+mean the daytime-only suite and accept the night, declare it yourself
 with --ack asymmetric-radiation-nocturnal-window-v1
 ```
 

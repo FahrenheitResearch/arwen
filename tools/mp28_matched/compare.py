@@ -3,7 +3,7 @@
 Reads the six run directories written by ``run_arwen.py`` and
 ``extract_wrfout.py`` and computes exactly the metrics M1-M8 and the verdict
 conditions V1-V4 declared in
-``docs/public/validation/mp28-matched-trajectory.md`` BEFORE any run existed.
+``docs/public/wrf-comparison/mp28-matched-trajectory.md`` BEFORE any run existed.
 Nothing here selects a statistic; the statistics were fixed in that commit.
 
 Usage:

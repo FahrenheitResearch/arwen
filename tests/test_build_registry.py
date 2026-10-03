@@ -314,10 +314,10 @@ def test_ratified_nssl2_legacy_profile_follows_every_base_route() -> None:
     registry = physics_registry()
     base = (
         "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-"
-        "validation-candidate-v1")
+        "wrf-comparison-candidate-v1")
     legacy = (
         "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-"
-        "validation-candidate-v1")
+        "wrf-comparison-candidate-v1")
     template = registry["templates"][legacy]
 
     assert template["maturity"] == "wrf-matched-run-candidate"

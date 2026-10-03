@@ -65,6 +65,8 @@ Sizing conventions (all documented, none silent):
 
 from __future__ import annotations
 
+from gpuwm.physics_registry import canonical_template_id
+
 import json
 import hashlib
 import math
@@ -1595,7 +1597,7 @@ def resolved_physics_profile(source: str, requested: str | None, *,
     source registered tomorrow get a working default as table work.
     """
     if requested is not None:
-        return requested
+        return canonical_template_id(requested)
     from gpuwm.physics_menu import default_profile_for
 
     return default_profile_for(source, finest_dx_m, domains)
@@ -3920,7 +3922,7 @@ def render_config(*, name: str, start_time: datetime, hours: int,
             f"# {first_night:%Y-%m-%dT%H:%M}Z).  Every front door refuses "
             "it at config load.\n"
             "# Re-emit with a full lw+sw profile, or -- if you mean the "
-            "daytime validation\n"
+            "daytime-only\n"
             "# suite and accept the night -- re-emit with `gpuwm domain "
             "--ack\n"
             f"# {ASYMMETRIC_RADIATION_NOCTURNAL_ACK}`.\n")
@@ -6691,7 +6693,7 @@ def domain_main(args, *, sizing_budget: SizingBudget | None = None,
             f"at load.  Choose a nocturnally valid profile with both "
             f"radiation streams on that --source {args.source} can "
             f"actually prepare -- {remedy['instruction']} -- or, if you "
-            f"mean the daytime validation suite and accept the night, "
+            f"mean the daytime-only suite and accept the night, "
             f"declare it yourself with --ack "
             f"{ASYMMETRIC_RADIATION_NOCTURNAL_ACK}.  `gpuwm run-plan "
             f"--physics-profiles` lists every suite this source admits",
@@ -7663,16 +7665,16 @@ def register_cli(subparsers) -> None:
                              "that fits the card), or --root-dx / --chain "
                              "for anything else; their closing block "
                              "names the tree runner they route to")
-    parser.add_argument("--physics-profile", default=None,
+    parser.add_argument("--physics-profile", default=None, type=canonical_template_id,
                         choices=WIZARD_PHYSICS_PROFILES,
                         help="shipped physics suite to emit; taken verbatim "
                              "from the registry the prepared-forecast "
                              "runner validates against, so the emitted "
                              "config passes its guard as written.  Read "
-                             "the names: the *-no-radiation-* and "
-                             "*-validation-* profiles run reduced physics "
-                             "with longwave OFF and are NOT nocturnally "
-                             "valid -- selecting one for a window that "
+                             "the resolved radiation selectors: a suite with "
+                             "shortwave ON and longwave OFF is a daytime-only "
+                             "experiment; "
+                             "selecting it for a window that "
                              "includes local night is REFUSED unless you "
                              "declare it yourself with --ack.  "
                              + _profile_help_route_note()
@@ -7710,8 +7712,8 @@ def register_cli(subparsers) -> None:
              "does, and refuses instead.  The id it accepts is "
              + ASYMMETRIC_RADIATION_NOCTURNAL_ACK
              + ": a longwave-OFF suite over a window that includes local "
-             "night, which you are running deliberately as a daytime "
-             "validation experiment")
+             "night, which you are running deliberately as a "
+             "daytime-only experiment")
     parser.add_argument("--root-dx", type=float, default=None,
                         metavar="KM",
                         help="custom root grid spacing in km "

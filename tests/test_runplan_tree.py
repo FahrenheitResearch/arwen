@@ -409,7 +409,7 @@ def _nested_closure_plan(tmp_path, physics: str, acknowledged: bool):
         "bldt = 0.0\nnwp_diagnostics = 1\ncu_physics = 0\n"
         "cudt_minutes = 0.0\ndiff_6th_factor = 0.08\ndiff_6th_opt = 2\n"
         "diff_6th_slopeopt = 1\nepssm = 0.5\nmoist = true\n"
-        "moist_cq = false\nmorr_rimed_ice = 1\nmp_physics = 6\n"
+        "moist_cq = true\nmorr_rimed_ice = 1\nmp_physics = 6\n"
         "num_soil_layers = 4\nra_lw_physics = 0\nra_physics = 0\n"
         "ra_sw_physics = 1\nradt = 1.0\nsf_surface_physics = 2\n"
         "terrain_opt = 1\ntop_lid = true\n"

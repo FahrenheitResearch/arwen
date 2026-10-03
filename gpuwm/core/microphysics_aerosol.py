@@ -2,11 +2,11 @@
 
 :func:`_apply_thompson_aerosol` is a **sibling** of
 ``gpuwm.core.microphysics._apply_thompson``, not a branch inside it.  That is
-deliberate and essential: the classic function body stays textually
-diffable against its model-validated form, so ``tests/test_mp8_frozen.py``'s
-receipts and any future ``git diff`` can prove mp=8 was not touched by this
-port.  The cost is a copied skeleton; the benefit is that "mp=8 is frozen" is
-a statement about bytes rather than about control flow.
+deliberate: the port's original isolation can be checked against its
+historical receipts in ``tests/test_mp8_frozen.py``. Those receipts describe
+the isolation of this aerosol port, not a current mp=8 byte-freeze claim.
+The classic kernels changed after their July 2026 matched WRF run.
+Current component comparisons and their limits are documented in PHYSICS.md.
 
 Numerical authority is ``wrf461-pristine/phys/module_mp_thompson.F``
 (WRF v4.6.1, commit ``d66e442``).  Bare ``:NNNN`` line numbers refer to it.

@@ -8,9 +8,9 @@ owner per CUDA device.
 
 It is deliberately a sibling of :mod:`gpuwm.core.thompson_runtime` rather than
 an extension of it.  The classic uploader owns four assets totalling 380 MB
-whose SHA-256 pins gate the model-validated ``mp_physics=8`` trajectory; that
-contract must remain untouched by this port.  An mp=28 adapter loads *both*
-owners from the same table root, so ``tnccn_act`` and the process tables can
+whose SHA-256 pins identify the WRF coefficient bytes used by mp=8. This
+table contract is separate from historical matched-run evidence. An mp=28
+adapter loads both owners from the same root, so ``tnccn_act`` and its tables can
 never come from different WRF builds.
 
 The one asset uploaded here, ``CCN_ACTIVATE.BIN``, **ships with gpuwm** as

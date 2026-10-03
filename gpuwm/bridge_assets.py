@@ -13,10 +13,10 @@ the GRIB decoders, the CPU preprocessing library, the fetch backbone,
 the batch renderer, the two radar front doors, the MRMS, Stage-IV,
 surface, GOES and European-composite front doors, the NetCDF decoder,
 the mapped decode engine, the Zarr reader, the observation remap, the ML
-dataset exporter and the terminal workspace onto a wheel install was to
-clone the repository and run ``cargo build`` -- a
+dataset exporter, the simulated radar and the terminal workspace onto a
+wheel install was to clone the repository and run ``cargo build`` -- a
 Rust toolchain, a 2.5 GB checkout and a few minutes of compiling, for
-thirty files.
+thirty-one files.
 ``gpuwm fetch-bridges`` is the same trade :mod:`gpuwm.table_assets`
 already makes for the externalized physics tables: the artifacts are
 published as versioned GitHub release assets, their exact size and
@@ -25,7 +25,7 @@ byte is verified against those pins *before* anything is installed.
 
 What is staged, and where
 -------------------------
-One bundle per platform, holding the thirty artifacts of
+One bundle per platform, holding the thirty-one artifacts of
 :data:`BUNDLED_ARTIFACTS`, staged into :func:`gpuwm.bridges
 .default_bridge_dir` (``~/.gpuwm/bridges``) -- the last rung of the
 resolution ladder every consumer already searches, so nothing else in
@@ -319,6 +319,15 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
     BundledArtifact(
         "rw_wrfbatch", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_WRFBATCH", "gpuwm render --engine rust"),
+    # The simulated radar.  Beam tracing, field sampling, the Level II,
+    # CfRadial and ODIM writers and the PPI images all run in it, so a
+    # bundle without it is an install whose `[simulated_radar]` table and
+    # `gpuwm simulated-radar` door can only refuse.  Its own build.rs
+    # stamps the source revision like every gpuwm-authored row here.
+    # Environment variable spelled to match gpuwm.rustwx's resolver.
+    BundledArtifact(
+        "rw_simradar", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_SIMRADAR", "WOOF simulated radar volumes and PPI images"),
     BundledArtifact(
         "rw_nexrad", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_NEXRAD", "radar observation ingest (the DA nowcast)"),
@@ -984,7 +993,7 @@ def verify_source_revision(payload: bytes, *, expected: str,
 #: What it is for.  A release cut reuses a binary built at an earlier
 #: commit when every path listed for its crate is byte-identical (the
 #: same git object) at the commit being released, so a release that
-#: changed one Python file does not recompile thirty unchanged
+#: changed one Python file does not recompile thirty-one unchanged
 #: binaries.  A path missing from this table is a binary that could be
 #: reused while carrying a stale copy of that file, so
 #: ``tests/test_native_build_inputs.py`` re-derives the outside inputs

@@ -37,6 +37,8 @@ def forecast_projection(exp, *, restart=None, io_mode="history",
     if io_mode == "none":
         projection["history_bytes"] = 0
         projection["picture_bytes"] = 0
+        if "radar_bytes" in projection:
+            projection["radar_bytes"] = 0
         projection["total_bytes"] = projection["checkpoint_bytes"]
         for domain in projection["domains"]:
             domain.update(history_bytes=0, history_frames=0, picture_bytes=0)

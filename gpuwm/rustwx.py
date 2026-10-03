@@ -59,6 +59,227 @@ RENDERER_NAME = "rw_wrfbatch"
 #: had to start over -- rather than reporting progress.
 NATIVE_WARNING_PREFIXES = ("warning:", "WARNING ")
 
+SIMULATED_RADAR_ABI = (
+    "rw_simradar --request REQUEST.json schema=simulated-radar.request/v1 "
+    "manifest=simulated-radar.manifest/v1 volume_paths=v1 scene_shapes=v1"
+)
+CANONICAL_RADAR_ABI = (
+    "native-atmosphere.columns/v1 temperature=temperature_k "
+    "winds=earth-relative-mass-grid/v1"
+)
+
+#: The environment variable naming an explicit ``rw_simradar`` build.
+SIMULATED_RADAR_ENV = "GPUWM_RW_SIMRADAR"
+
+#: What the replay door's native refusals say to do next.
+SIMULATED_RADAR_NEXT = (
+    "Next: correct the named option or input and run the command again; "
+    "`gpuwm simulated-radar --estimate --config CONFIG.toml` checks the scan "
+    "geometry and memory without writing radar.")
+
+
+class SimulatedRadarRefusal(RuntimeError):
+    """The simulated radar engine cannot serve a request.
+
+    The message names what breaks and the next step: a missing or stale
+    ``rw_simradar`` (no radar volume could be written, or one would be
+    written to a contract this release does not read), or the native
+    command's own refusal of an option or input. ``gpuwm simulated-radar``
+    prints it as one refusal at exit 2; a forecast door raises it before
+    the fetch.
+    """
+
+
+def _simulated_radar_remedy() -> str:
+    return artifact_remedy(
+        env_var=SIMULATED_RADAR_ENV, filename=executable_name("rw_simradar"),
+        subject="the simulated radar engine", crate_relative=RUSTWX_CRATE_RELATIVE,
+        one_liner=rustwx_build_hint(), artifact="rw_simradar")
+
+
+def simulated_radar_binary() -> Path | None:
+    """Resolve the native radar simulator through the standard artifact paths."""
+    filename = executable_name("rw_simradar")
+    override = os.environ.get(SIMULATED_RADAR_ENV)
+    root = Path(__file__).resolve().parent.parent
+    candidates = ([Path(override)] if override else []) + [
+        crate_dir() / "target" / "release" / filename,
+        crate_dir() / "target" / "debug" / filename,
+        root / "libexec" / "bridges" / filename,
+        packaged_bridge_dir() / filename,
+        default_bridge_dir() / filename,
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return bridges.accept_resolved(candidate.resolve())
+        if override and candidate == Path(override):
+            raise SimulatedRadarRefusal(
+                f"{SIMULATED_RADAR_ENV} names a missing file: {candidate}, so no "
+                f"radar volume can be written. Next: unset {SIMULATED_RADAR_ENV} "
+                "to use the installed rw_simradar, or point it at a built one.")
+    return None
+
+
+def require_simulated_radar_binary() -> Path:
+    """The ``rw_simradar`` this release's request contract can drive.
+
+    Resolves the binary and checks ``--abi`` against
+    :data:`SIMULATED_RADAR_ABI`. A forecast asking for radar calls this at
+    its door, before the fetch, preparation or GPU allocation: a missing or
+    stale binary otherwise surfaced only when the first history landed.
+    """
+    binary = simulated_radar_binary()
+    if binary is None:
+        raise SimulatedRadarRefusal(
+            "rw_simradar is not installed, so [simulated_radar] cannot write "
+            "a radar volume.\n" + _simulated_radar_remedy())
+    try:
+        probe = subprocess.run([str(binary), "--abi"], capture_output=True, text=True,
+                               timeout=60, env=renderer_env())
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SimulatedRadarRefusal(
+            f"{binary} did not run ({error}), so no radar volume can be "
+            "written.\n" + _simulated_radar_remedy()) from error
+    if probe.returncode or probe.stdout.strip() != SIMULATED_RADAR_ABI:
+        raise SimulatedRadarRefusal(
+            f"{binary} answers a different simulated radar request contract "
+            f"than this release writes (expected {SIMULATED_RADAR_ABI!r}, got "
+            f"{probe.stdout.strip()!r}), so its requests would be refused or "
+            "misread. Next: rebuild or re-stage it.\n" + _simulated_radar_remedy())
+    return binary
+
+
+def canonical_radar_binary() -> Path:
+    """Require native column and temperature support before a conversion."""
+    binary = require_simulated_radar_binary()
+    probe = subprocess.run([str(binary), "--canonical-abi"], capture_output=True,
+                           text=True, timeout=60, env=renderer_env())
+    if probe.returncode or probe.stdout.strip() != CANONICAL_RADAR_ABI:
+        raise SimulatedRadarRefusal(
+            "the simulated radar binary lacks the native atmosphere and "
+            "temperature contract, so it would read native columns without "
+            "their actual temperature. Next: rebuild or re-stage rw_simradar.\n"
+            + _simulated_radar_remedy())
+    return binary
+
+
+def canonical_radar_scene(source_path: Path, *, outdir: Path) -> Path:
+    """Convert native physical columns to a durable radar scene in Rust."""
+    import json
+
+    binary = canonical_radar_binary()
+    source_path = Path(source_path).resolve()
+    outdir = Path(outdir).resolve()
+    outdir.mkdir(parents=True, exist_ok=True)
+    # Source paths are one durable atmosphere per model time. The native reader
+    # validates its timestamp; orchestration never decodes the field transport.
+    target = outdir / ("wrfout_d01_" + source_path.stem + ".nc")
+    result = subprocess.run([str(binary), "--canonical-atmosphere", str(source_path),
+                             "--out", str(target)], capture_output=True, text=True,
+                            env=renderer_env())
+    if result.returncode:
+        raise SimulatedRadarRefusal(
+            "native radar atmosphere: " + (result.stderr.strip() or
+            f"native command exited {result.returncode}") + "\n" + SIMULATED_RADAR_NEXT)
+    event = json.loads(result.stdout.strip().splitlines()[-1])
+    if event.get("event") != "canonical_atmosphere_committed" or not target.is_file():
+        raise RuntimeError("native radar atmosphere did not publish its scene")
+    return target
+
+
+def simulate_radar(history_paths, *, outdir: Path, config: dict, volume_paths=None,
+                   binary: Path | None = None, started=None) -> dict:
+    """Pass durable histories to Rust and return its committed run inventory.
+
+    All field reads, beam sampling, file encoding, hashing and PPI rendering
+    happen in the native command. Python carries request metadata only.
+
+    ``volume_paths`` names the histories that publish volumes (default all);
+    the rest are scan-timing neighbours. ``binary`` is an already admitted
+    executable (:func:`require_simulated_radar_binary`), so a live forecast
+    probes it once rather than per history. ``started`` is called with the
+    native ``Popen`` so a forecast stopping early can terminate it.
+    """
+    import json
+    import tempfile
+
+    if binary is None:
+        binary = require_simulated_radar_binary()
+    paths = [str(Path(path).resolve()) for path in history_paths]
+    if not paths:
+        raise ValueError("simulated radar needs at least one durable history file")
+    outdir = Path(outdir).resolve()
+    outdir.mkdir(parents=True, exist_ok=True)
+    request = {"schema": "simulated-radar.request/v1", "history_paths": paths,
+               "outdir": str(outdir), "config": config}
+    if volume_paths is not None:
+        request["volume_paths"] = [str(Path(path).resolve()) for path in volume_paths]
+    with tempfile.TemporaryDirectory(prefix=".simulated-radar-", dir=outdir) as tmp:
+        request_path = Path(tmp) / "request.json"
+        request_path.write_text(json.dumps(request, allow_nan=False), encoding="utf-8")
+        process = subprocess.Popen([str(binary), "--request", str(request_path)],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, env=renderer_env())
+        try:
+            if started is not None:
+                started(process)
+            _stdout, stderr = process.communicate()
+        except BaseException:
+            # Never leave a child writing radar after its caller stopped.
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            raise
+    relay_native_warnings(stderr)
+    if process.returncode:
+        raise SimulatedRadarRefusal(
+            "simulated radar: " + (stderr.strip() or
+            f"native command exited {process.returncode}") + "\n" + SIMULATED_RADAR_NEXT)
+    manifest_path = outdir / "radar" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema") != "simulated-radar.manifest/v1" or manifest.get("simulated") is not True:
+        raise RuntimeError("native radar command did not commit a simulated volume manifest")
+    return manifest
+
+
+def estimate_simulated_radar(history_paths=(), *, outdir: Path, config: dict,
+                             scene_shapes=(), binary: Path | None = None) -> dict:
+    """Ask Rust for geometry, memory admission and output bounds.
+
+    An empty history list estimates polar work only. Full canonical scenes
+    add their header dimensions without reading weather arrays;
+    ``scene_shapes`` (``(nx, ny, nz)`` mass grids) price a forecast's grids
+    before any history exists. The native resource schema is checked
+    independently of the volume request ABI.
+    """
+    import json
+    import tempfile
+
+    if binary is None:
+        binary = require_simulated_radar_binary()
+    request = {"schema": "simulated-radar.request/v1",
+               "history_paths": [str(Path(path).resolve()) for path in history_paths],
+               "outdir": str(Path(outdir).resolve()), "config": config}
+    if scene_shapes:
+        request["scene_shapes"] = [[int(n) for n in shape] for shape in scene_shapes]
+    with tempfile.TemporaryDirectory(prefix="simulated-radar-estimate-") as tmp:
+        path = Path(tmp) / "request.json"
+        path.write_text(json.dumps(request, allow_nan=False), encoding="utf-8")
+        result = subprocess.run([str(binary), "--estimate", str(path)],
+                                capture_output=True, text=True, timeout=60,
+                                env=renderer_env())
+    if result.returncode:
+        raise SimulatedRadarRefusal(
+            "simulated radar estimate: " + (result.stderr.strip() or
+            f"native command exited {result.returncode}") + "\n" + SIMULATED_RADAR_NEXT)
+    try:
+        estimate = json.loads(result.stdout)
+    except ValueError as error:
+        raise RuntimeError("the simulated radar binary did not return its resource contract") from error
+    if estimate.get("schema") != "simulated-radar.resources/v1":
+        raise RuntimeError("the simulated radar binary lacks the resource estimate contract")
+    return estimate
+
 
 def relay_native_warnings(stderr: str | None) -> list[str]:
     """Print the native renderer's warning lines on this process's stderr.

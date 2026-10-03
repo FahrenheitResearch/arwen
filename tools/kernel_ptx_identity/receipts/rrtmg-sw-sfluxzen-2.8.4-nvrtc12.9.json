@@ -1,0 +1,101 @@
+{
+ "tool": "tools/kernel_ptx_identity/rrtmg_sw_unit.py",
+ "trees": [
+  "e8edf7664",
+  "fix-rrtmg-sw-sfluxzen"
+ ],
+ "nvrtc_version": [
+  12,
+  9
+ ],
+ "assembly": "gpuwm.core.rrtmg_sw._pack_cuda_tables(_sw_tables()) defines + kernels/rrtmg_sw.cu, as CudaSW.__init__ builds it, in a child process per tree; GPUWM_WRF_EXACT* removed, CUDA_VISIBLE_DEVICES empty",
+ "compile": "gpuwm.nvrtc_cache_key.compile_program(source, options + (-arch=<arch>,), target=ptx)",
+ "option_sets": {
+  "cudasw": [
+   "-std=c++17",
+   "--ftz=false"
+  ]
+ },
+ "archs": [
+  "compute_89",
+  "compute_90",
+  "compute_120"
+ ],
+ "modules": {
+  "rrtmg_sw": {
+   "file_sha256": {
+    "e8edf7664": "44a83f0e310996cd708fb186d81e49722a199d4ed965d9eca37177c480c1a044",
+    "fix-rrtmg-sw-sfluxzen": "43134d6d6d2be4b3e668c7ab92d5850f1f992a09812dd09c9536fce5d9ab791e"
+   },
+   "assembled_source_sha256": {
+    "e8edf7664": "9c4c537559bcb154b0117b857f65ff51ebe118eb909232a2d2a27aacf950ff26",
+    "fix-rrtmg-sw-sfluxzen": "2c73041c10fe584e66a9aabb2cc4ef2c0020699eeccf52bce88abafba372814e"
+   },
+   "entries": [
+    "rsw_cldprmc",
+    "rsw_cldprmc_b",
+    "rsw_inatm_layers",
+    "rsw_inatm_layers_b",
+    "rsw_laysolfr_b",
+    "rsw_post",
+    "rsw_post_b",
+    "rsw_setcoef",
+    "rsw_setcoef_b",
+    "rsw_sfluxzen",
+    "rsw_sfluxzen_b",
+    "rsw_spc_accum",
+    "rsw_spc_accum_b",
+    "rsw_spcvmc_gpt",
+    "rsw_spcvmc_gpt_b",
+    "rsw_taumol",
+    "rsw_taumol_b"
+   ],
+   "funcs": [],
+   "readings": {
+    "cudasw | compute_89": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "e8edf7664": "f75fb58d956f6bbfed9c14968188df658de4cdf27a827809b51410128d57a8bb",
+      "fix-rrtmg-sw-sfluxzen": "1f46c4539493104f3c5207cf20f526e154abbc0050b2bf794766b9cd62dc94c6"
+     },
+     "entry_compared": 17,
+     "entry_different": [
+      "rsw_sfluxzen",
+      "rsw_sfluxzen_b"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "cudasw | compute_90": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "e8edf7664": "42f5da7faa216ccc273caa8079e0dcae9a34875c0a74e61b5ce3c68bb2aded36",
+      "fix-rrtmg-sw-sfluxzen": "3fdfeefc344b60f0452735fcc0fb9f62a82c782b6119f21d908d6b07c6b1d90c"
+     },
+     "entry_compared": 17,
+     "entry_different": [
+      "rsw_sfluxzen",
+      "rsw_sfluxzen_b"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    },
+    "cudasw | compute_120": {
+     "ptx_identical": false,
+     "ptx_sha256": {
+      "e8edf7664": "7dd6b94dce1fa5a53202e4b48af91c70774ef53d83c22b76364dbba277429323",
+      "fix-rrtmg-sw-sfluxzen": "c4cea3d4806bb1ff950a114e49a462459fa7c2be8e3e64f4dc40a6878179a619"
+     },
+     "entry_compared": 17,
+     "entry_different": [
+      "rsw_sfluxzen",
+      "rsw_sfluxzen_b"
+     ],
+     "func_compared": 0,
+     "func_different": []
+    }
+   }
+  }
+ },
+ "nvrtc_build": "12.9.86"
+}

@@ -1033,6 +1033,21 @@ void rsw_taumol_b(int ncol, int nlayers,
 
 // sfluxzen: one thread per g-point; laysolfr per band precomputed on host
 // (pure integer scans of jp, identical to the gated NumPy port).
+//
+// Every thread stores sfluxzen[iw], on every path.  WRF's taumol_sw zeroes
+// sfluxzen(:) on entry "to prevent junk values when nlayers = laytrop", and
+// bands 16, 17, 27, 28 and 29 assign it only inside their upper loop
+// (lay = laytrop+1 .. nlayers, at lay == laysolfr).  When laytrop ==
+// nlayers (no layer above ~95.6 hPa: a model top below ~191 hPa) that loop
+// is empty and those five bands keep WRF's 0, which is lsf <= laytrop
+// here.  The other bands assign in their lower loop, where laysolfr always
+// lies in 1..laytrop and laytrop >= 1 (the surface layer is tropospheric).
+// The breakage this prevents: rsw_sfluxzen_b writes the batched path's
+// sflux slot, a recycled SWBatchScratch.take buffer (SW_TAKE_SLOTS in
+// rrtmg_sw.py); bands 16 and 27 used to return without storing, so on such
+// a column they kept whatever the previous chunk or call left there, and
+// bands 17, 28 and 29 computed a flux WRF never sets.
+// tests/test_rrtmg_sw_no_upper_flux_gpu.py holds it against WRF.
 __device__ void rsw_sfluxzen_body(int iw, int nlayers, int laytrop,
                   const real* __restrict__ tab,
                   const int* __restrict__ ngb,
@@ -1055,13 +1070,12 @@ __device__ void rsw_sfluxzen_body(int iw, int nlayers, int laytrop,
 
     switch (jb) {
     case 16: {
-        if (lsf > laytrop)   // set only when the upper loop runs
-            v = (tab + RSW_T_KG16_SFLUXREF)[iw - 0];
-        else
-            return;          // sfluxzen stays 0 (pre-zeroed)
+        if (lsf <= laytrop) break;   // upper loop empty: WRF's 0 stands
+        v = (tab + RSW_T_KG16_SFLUXREF)[iw - 0];
         break;
     }
     case 17: {
+        if (lsf <= laytrop) break;
         int ig = iw - 6;
         RswSpec s = rsw_spec(colh2o[L], colco2[L], RSW_C_KG17_STRRAT, 4.0f,
                              fac00[L], fac01[L], fac10[L], fac11[L]);
@@ -1129,12 +1143,11 @@ __device__ void rsw_sfluxzen_body(int iw, int nlayers, int laytrop,
         v = (tab + RSW_T_KG26_SFLUXREF)[iw - 80];
         break;
     case 27:
-        if (lsf > laytrop)
-            v = MU(RSW_C_KG27_SCALEKUR, (tab + RSW_T_KG27_SFLUXREF)[iw - 86]);
-        else
-            return;
+        if (lsf <= laytrop) break;
+        v = MU(RSW_C_KG27_SCALEKUR, (tab + RSW_T_KG27_SFLUXREF)[iw - 86]);
         break;
     case 28: {
+        if (lsf <= laytrop) break;
         int ig = iw - 94;
         RswSpec s = rsw_spec(colo3[L], colo2[L], RSW_C_KG28_STRRAT, 4.0f,
                              fac00[L], fac01[L], fac10[L], fac11[L]);
@@ -1144,6 +1157,7 @@ __device__ void rsw_sfluxzen_body(int iw, int nlayers, int laytrop,
         break;
     }
     default:   // 29
+        if (lsf <= laytrop) break;
         v = (tab + RSW_T_KG29_SFLUXREF)[iw - 100];
         break;
     }

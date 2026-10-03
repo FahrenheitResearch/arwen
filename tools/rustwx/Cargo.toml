@@ -36,6 +36,7 @@ members = [
     "crates/rw-odim",
     "crates/rw-obs",
     "crates/rw-sat",
+    "crates/rw-simradar",
     "crates/rw-goes",
     "crates/rw-store",
     "crates/rw-wrfbatch",
@@ -51,6 +52,8 @@ members = [
 ## complex-packed message decoded the encoder's missing-value markers as
 ## physical data.  Do not re-vendor a second copy here.
 exclude = [
+    "vendor/bowecho",
+    "vendor/recast-radar-tools",
     "vendor/ecape-rs",
     "vendor/metrust",
     "vendor/netcrust",

@@ -49,16 +49,18 @@ hunt for them.
 - **The t=0 full-state comparison against WRF is a FAIL on all four domains** of
   the reference case; decay tables mix initial-state difference with forecast
   divergence (section 7.1).
-- **23 of 40 physics component options are implemented-unverified**; several
-  schemes (MYJ, WDM6, P3, Milbrandt-Yau, RRTM 1/1) have no oracle comparison
+- **27 of 45 physics options carry implemented-unverified**, with their evidence
+  stated per option in the current registry. Several schemes
+  (MYJ, WDM6, Milbrandt-Yau, RRTM 1/1) have no oracle comparison
   against the WRF Fortran at all, and mp=28's 22 end-to-end column fixtures leave
-  four missing the flat gate field by field with one clearing only under a named
+  three missing the flat gate field by field with one clearing only under a named
   allowance (chapter 3).
 - **SASE's physics is unvalidated** (2 of 7 acceptance bars on one case), its
   subgrid TKE magnitudes are not to be believed, and it has not completed a
   certified forecast on operational data (section 3.8).
-- **The DA/nowcast surface is demo-grade and unscored**, by its own banner; no
-  2.5.0-line DA skill measurement exists (section 7.5).
+- **The DA/nowcast surface is demo-grade**, with a limited single-case radar
+  comparison and per-frame scoring where observations exist. This is not a
+  broad validation record (section 7.5).
 - **The perturbation ensemble engine is experimental** and off any certified
   path; "ensembles ship" means members-as-source-data and ensemble products,
   not the perturbation engine (sections 5.6, 6.3, 9.2).
@@ -92,18 +94,22 @@ in `[level, column]` layout, exact integer-step cadence bookkeeping, the full
 WSM6 species set, native surface-classification override with a receipt naming
 which source decided, and restart identity that refuses across a changed sea-ice
 threshold [docs/mpas-seam.md]. The direction is a second dynamical core driving
-the same validated physics through that seam rather than a fork of the physics.
+the same physics through that seam rather than a fork. Those options keep
+their individual evidence limits: some have WRF column comparisons and
+others smoke/self-consistency checks only. A shared seam is not
+validation against observations.
 
 **A proper coarse-grid effective-resolution measurement.** The 3 km measurement
-that failed verification defines its own successor: a larger domain (more modes
+that was retracted after an independent recompute defines its own successor: a larger domain (more modes
 per band), 12-24 h of spin-up, and the own-slope knee criterion formalized in
 place of the fixed -5/3 reference. Queued as post-cut science
 [receipt:ARWEN-EFFECTIVE-RESOLUTION-2026-08-18.md].
 
-**Oracle campaigns for the unmeasured schemes.** MYJ, WDM6, P3, Milbrandt-Yau,
+**Oracle campaigns for the unmeasured schemes.** MYJ, WDM6, Milbrandt-Yau,
 and the RRTM 1/1 pair are declared next-stage oracle subjects in the physics
 page; closing them moves real forecast options up the maturity ladder (chapter
-3).
+3). P3 has a twelve-fixture WRF Fortran comparison; its open items are
+the `qib` residual, F09 and the missing matched forecast comparison.
 
 **A certificate for caller-authored mappings.** The narrower second certificate
 that would let an authored mapping run through `gpuwm sim`, closing the largest
@@ -114,7 +120,7 @@ gate, a receipt, or a measurement before it can be more than stamped (section
 2.4).
 
 **Spectral v2 pin-owner items.** The calibration zero-variance guard and the
-coherence/correlation gate dedup found during instrument validation (section
+coherence/correlation gate dedup found during the instrument's known-answer checks (section
 7.2).
 
 **Two condensate products the renderer does not draw (2.7.7).** Both were

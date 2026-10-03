@@ -1,0 +1,30 @@
+[package]
+name = "simradar_cuda"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+radar_scattering = { path = "../radar_scattering" }
+thiserror.workspace = true
+
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+# Driver-only, dynamically loaded CUDA. BowEcho binaries never link cudart or
+# require the CUDA Toolkit; an NVIDIA display/compute driver is sufficient.
+cudarc = { version = "=0.19.8", default-features = false, features = [
+    "std",
+    "driver",
+    # `Ptx` is the driver module image wrapper. BowEcho never calls NVRTC at
+    # runtime; only the opt-in rebuild example below does.
+    "nvrtc",
+    "dynamic-loading",
+    "cuda-13000",
+] }
+
+[dev-dependencies]
+serde_json.workspace = true
+sha2 = "0.10"
+
+[[example]]
+name = "rebuild_kernel"
+path = "examples/rebuild_kernel.rs"

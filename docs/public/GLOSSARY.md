@@ -97,8 +97,10 @@ while the defect is fixed — not a mode to prefer.
 **Preprocess backend.** Which processor runs the interpolation inside
 `prep`: `cuda`, `cpu`, or `auto` (the default). `auto` selects the CPU
 backend wherever CUDA is unusable and says so in one line. The CPU
-backend is the packaged Rust bridge, held to numeric parity with the
-CUDA path. See [WITHOUT-A-GPU.md](WITHOUT-A-GPU.md).
+backend is the packaged Rust bridge, checked against the CUDA path by the
+preprocessing parity suite. Their prepared start states are close but not
+bit-identical ([TILES.md](TILES.md)); use the same backend for both arms of
+a forecast comparison. See [WITHOUT-A-GPU.md](WITHOUT-A-GPU.md).
 
 **Run stamp.** The timestamped folder every run of `go`, `sim` and
 `render` writes into, so two runs of one configuration never overwrite

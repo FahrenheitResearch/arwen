@@ -12,7 +12,9 @@ The one-sentence scope, which the rest of this page only elaborates:
 > **Both** additionally run as a 250 m nested child inside a real moist
 > terrain-following HRRR tree, carrying up to 8.4x (`km_opt=3`) and 9.9x
 > (`km_opt=2`) the 750 m parent's resolved vertical-velocity variance
-> over the same ground.
+> over the same ground. Those nested measurements used `mix_isotropic = 0`
+> on configurations now archived under `configs/frozen/`. The shipped
+> configurations have changed since and have not been re-scored (section 4).
 
 LES enters ArWen's existing maturity ladder as **implemented-unverified**.
 There is no separate "LES-verified" tier and none is claimed.
@@ -531,4 +533,4 @@ checkpoint crosses the change.
 - **The WP-L9 archive is not a like-for-like reference.** It holds 18
   distinct weather cases rather than perturbed realizations of one, and it
   was produced with `km_opt=5` (SMS-3DTKE) on WRF v4.7.1 — a different
-  closure on a different version. It cannot be used to validate these two.
+  closure on a different version. It cannot verify these two configurations or validate them against observations.

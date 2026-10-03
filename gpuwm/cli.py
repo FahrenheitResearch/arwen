@@ -111,6 +111,7 @@ ml_export_register_cli = _lazy_register("gpuwm.ml_export")
 multi_run_register_cli = _lazy_register("gpuwm.multi_run")
 obs_register_cli = _lazy_register("gpuwm.obs.cli")
 render_register_cli = _lazy_register("gpuwm.render")
+simulated_radar_register_cli = _lazy_register("gpuwm.simulated_radar")
 remote_register_cli = _lazy_register("gpuwm.remote_cli")
 report_register_cli = _lazy_register("gpuwm.report_bundle")
 run_plan_register_cli = _lazy_register("gpuwm.runplan")
@@ -434,6 +435,7 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
     # beside render, the other door that turns history files into a
     # product.
     ml_export_register_cli(sub)
+    simulated_radar_register_cli(sub)
     enprod_register_cli(sub)
     downscale_register_cli(sub)
     doctor_register_cli(sub)
@@ -498,9 +500,9 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
     lst.add_argument("--json", action="store_true",
                      help="emit the registry as JSON for a front end")
     ver = sub.add_parser(
-        "verify", help="run a benchmark or real case and check its gates")
+        "verify", help="run a benchmark or code-verification case and check its gates")
     ver.add_argument("case", choices=sorted(_CASES),
-                     help="verification case to run")
+                     help="benchmark or code-verification case to run (no observation scoring)")
     ver.add_argument("--outdir", type=Path, default=None, metavar="OUT",
                      help="directory for the PNG and wrfout NetCDF output "
                           "(omit to compute metrics only)")
@@ -947,6 +949,15 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
         from gpuwm.cycle.contracts import CycleRefusal
 
         if isinstance(error, CycleRefusal):
+            print(f"gpuwm {args.command}: "
+                  + _layer(error, args), file=sys.stderr)
+            return 2
+        # The simulated radar door's refusals (a missing or stale
+        # rw_simradar, a native refusal of an option or input) name the
+        # breakage and the next step; a traceback buried that sentence.
+        from gpuwm.rustwx import SimulatedRadarRefusal
+
+        if isinstance(error, SimulatedRadarRefusal):
             print(f"gpuwm {args.command}: "
                   + _layer(error, args), file=sys.stderr)
             return 2

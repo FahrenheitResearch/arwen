@@ -40,7 +40,10 @@ def _ysu(text):
 
 def test_the_fields_are_appended_last_at_wrfs_defaults():
     names = [f.name for f in dataclasses.fields(RunConfig)]
-    assert names[-2:] == ["topo_wind", "gwd_opt"]
+    # The drag pair was the tail until lane/sol-hrrr-zadvect (37a99fcd4,
+    # merged at dd5ded73f) appended zadvect_implicit_variant after it,
+    # default "wrf_471"; the pair keeps its positional place and WRF's 0.
+    assert names[-3:] == ["topo_wind", "gwd_opt", "zadvect_implicit_variant"]
     assert RunConfig.__dataclass_fields__["topo_wind"].default == 0
     assert RunConfig.__dataclass_fields__["gwd_opt"].default == 0
     assert TOPO_WIND_VALUES == (0, 1, 2) and GWD_OPT_VALUES == (0, 1, 3)

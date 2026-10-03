@@ -863,6 +863,18 @@ def offered_physics_profiles() -> tuple[str, ...]:
     return tuple(shipped_profiles())
 
 
+def current_physics_profile(value: str) -> str:
+    """An old profile ID as its current ID, before the offered-list check.
+
+    The offered list holds current IDs only, so without this an old ID that
+    every stage of this run accepts was refused in argument parsing.
+    """
+
+    from gpuwm.physics_registry import canonical_template_id
+
+    return str(canonical_template_id(value))
+
+
 # stage command builders (unit-tested; every stage is a shipped CLI)
 # ---------------------------------------------------------------------------
 def _py() -> str:
@@ -2348,6 +2360,7 @@ def build_parser() -> argparse.ArgumentParser:
                           "branch here")
     run.add_argument("--physics-profile",
                      default=NOWCAST_DEFAULT_PHYSICS_PROFILE,
+                     type=current_physics_profile,
                      choices=offered_physics_profiles(),
                      help="shipped physics profile for every stage "
                           f"(default {NOWCAST_DEFAULT_PHYSICS_PROFILE}, "

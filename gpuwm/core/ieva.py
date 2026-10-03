@@ -9,6 +9,15 @@ means this) the eta mass flux is split per w point into an explicit part,
 which the ordinary upwind operators advect, and an implicit part, which
 an upwind column solve advects:
 
+``zadvect_implicit_variant = "wrf_legacy"`` selects the earlier WRF
+``module_advect_em`` operator. Its directional horizontal-flow estimate
+includes map factors and uses ``alpha_max = 1.0``. Its column solves use
+the current stage mass on both sides, and its upper w boundary divides
+the complete increment by g. ``"wrf_471"`` retains the existing modern
+operator by default. The exact earlier source and native Fortran fixture
+are pinned by ``tools/ieva_wrf_oracle/legacy_build.py``. Both variants
+keep the declared A179 lower-boundary uncoupling correction below.
+
 * :func:`split_omega` is ``WW_SPLIT``: the explicit share of each w
   point's flux is 1 where its vertical Courant number is under about
   0.73 of the allowed maximum (``alpha_max`` 1.1, less a horizontal-flow
@@ -86,6 +95,11 @@ from gpuwm.core.state import DTYPE, mu_at_u_faces, mu_at_v_faces
 ALPHA_MAX = np.float32(1.1)
 ALPHA_MIN = np.float32(0.8)
 CEPS = np.float32(0.9)
+LEGACY_ALPHA_MAX = np.float32(1.0)
+LEGACY_CMNX_RATIO = np.float32(ALPHA_MIN / LEGACY_ALPHA_MAX)
+LEGACY_CUTOFF = np.float32(np.float32(2.0) - LEGACY_CMNX_RATIO)
+LEGACY_R4CMX = np.float32(np.float32(1.0)
+    / (np.float32(4.0) - np.float32(4.0) * LEGACY_CMNX_RATIO))
 #: gfortran folds these REAL PARAMETER expressions in single precision,
 #: one rounding per operation, which is what these float32 operations do.
 CMNX_RATIO = np.float32(ALPHA_MIN / ALPHA_MAX)
@@ -108,6 +122,11 @@ def enabled(cfg) -> bool:
 def active_stage(cfg, istage: int, nstages: int = 3) -> bool:
     """WRF ``CHK_IEVA``: on, and this is the last RK substep."""
     return enabled(cfg) and int(istage) == int(nstages) - 1
+
+
+def legacy(cfg) -> bool:
+    """Select the earlier WRF current-mass, directional-flux operator."""
+    return getattr(cfg, "zadvect_implicit_variant", "wrf_471") == "wrf_legacy"
 
 
 def _kernel(nz: int, name: str):
@@ -152,12 +171,17 @@ def split_omega(state, cfg, ww, u, v, mut, dt: float):
     wwE = state.scratch((nz + 1, ny, nx), "ieva_wwe")
     wwI = state.scratch((nz + 1, ny, nx), "ieva_wwi")
     rdx, rdy = _rdx_rdy(cfg)
+    old = legacy(cfg)
+    params = ((LEGACY_ALPHA_MAX, CEPS, LEGACY_CMNX_RATIO, LEGACY_CUTOFF,
+               LEGACY_R4CMX) if old else
+              (ALPHA_MAX, CEPS, CMNX_RATIO, CUTOFF, R4CMX))
     _kernel(nz, "ieva_ww_split")(
         _blocks((nz + 1) * ny * nx), (_TPB,),
         (ww, u, v, cp.ascontiguousarray(mut, dtype=DTYPE),
          state.rdnw, state.c1f, state.c2f,
-         rdx, rdy, DTYPE(dt), ALPHA_MAX, CEPS, CMNX_RATIO, CUTOFF, R4CMX,
+         rdx, rdy, DTYPE(dt), *params,
          DTYPE(0.25), DTYPE(1.0), DTYPE(0.0), wwE, wwI,
+         state.msft, np.int32(state.has_msf), np.int32(old),
          np.int32(nz), np.int32(ny), np.int32(nx)))
     return wwE, wwI
 
@@ -223,7 +247,7 @@ class DynamicsSplit:
 
 
 def prepare_dynamics(state, cfg, ww) -> DynamicsSplit:
-    """``rk_tendency``'s IEVA preamble (module_em.F:436-487)."""
+    """``rk_tendency``'s IEVA preamble, with the selected mass convention."""
     nz, ny, nx = state.p.shape
     dt = DTYPE(cfg.dt)
     mut = state.scratch((ny, nx), "ieva_mut")
@@ -231,7 +255,13 @@ def prepare_dynamics(state, cfg, ww) -> DynamicsSplit:
     mut_old = state.scratch((ny, nx), "ieva_mut_old")
     cp.add(state.mub2d, state.mup0, out=mut_old)        # mub + mu_1
     wwE, wwI = split_omega(state, cfg, ww, state.u, state.v, mut, dt)
-    mut_new = column_mass_new(state, cfg, mut, mut_old, dt)
+    # The earlier operator uses the stage mass in both coefficients and
+    # old-field terms. Modern WRF estimates a new mass for the coefficients.
+    if legacy(cfg):
+        mut_old = mut
+        mut_new = mut
+    else:
+        mut_new = column_mass_new(state, cfg, mut, mut_old, dt)
     return DynamicsSplit(wwE, wwI, mut, mut_old, mut_new, dt)
 
 
@@ -283,12 +313,15 @@ def solve_u(state, cfg, ctx: DynamicsSplit) -> None:
     periodic = _periodic_x(cfg)
     f_lo, f_hi = (0, nx) if periodic else (1, nx - 1)
     nfaces = f_hi - f_lo + 1
+    old = legacy(cfg)
+    face = stage_face_masses(state, cfg, ctx.mut)[0] if old else ctx.mut
     _kernel(nz, "ieva_solve_u")(
         _blocks(ny * nfaces), (_TPB,),
         (state.ru_t, state.u0, ctx.wwI, state.c1h, state.c2h,
          ctx.mut_old, ctx.mut_new, state.rdnw, state.msfu, ctx.dt,
          DTYPE(1.0), DTYPE(0.0), DTYPE(0.5), np.int32(state.has_msf),
          np.int32(periodic), np.int32(f_lo), np.int32(f_hi),
+         cp.ascontiguousarray(face), np.int32(old),
          np.int32(nz), np.int32(ny), np.int32(nx)))
 
 
@@ -298,12 +331,15 @@ def solve_v(state, cfg, ctx: DynamicsSplit) -> None:
     periodic = _periodic_y(cfg)
     f_lo, f_hi = (0, ny) if periodic else (1, ny - 1)
     nfaces = f_hi - f_lo + 1
+    old = legacy(cfg)
+    face = stage_face_masses(state, cfg, ctx.mut)[1] if old else ctx.mut
     _kernel(nz, "ieva_solve_v")(
         _blocks(nx * nfaces), (_TPB,),
         (state.rv_t, state.v0, ctx.wwI, state.c1h, state.c2h,
          ctx.mut_old, ctx.mut_new, state.rdnw, state.msfv, ctx.dt,
          DTYPE(1.0), DTYPE(0.0), DTYPE(0.5), np.int32(state.has_msf),
          np.int32(periodic), np.int32(f_lo), np.int32(f_hi),
+         cp.ascontiguousarray(face), np.int32(old),
          np.int32(nz), np.int32(ny), np.int32(nx)))
 
 
@@ -339,21 +375,39 @@ def solve_w(state, cfg, ctx: DynamicsSplit) -> None:
          rdx, rdy, ctx.dt, DTYPE(c.G), DTYPE(1.0), DTYPE(0.0), DTYPE(0.5),
          np.int32(state.has_msf), np.int32(not _periodic_x(cfg)),
          np.int32(not _periodic_y(cfg)),
+         np.int32(legacy(cfg)),
          np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
+class ScalarSplit(tuple):
+    """Two flux arrays with the selected scalar column-mass convention."""
+
+    def __new__(cls, wwE, wwI, variant="wrf_471"):
+        result = super().__new__(cls, (wwE, wwI))
+        result.variant = variant
+        return result
 
 
 def split_scalar_omega(state, cfg, ww_m, mut, dt: float):
     """``rk_scalar_tend``'s WW_SPLIT: the acoustic time-averaged ``ww_m``
     split with the time-n winds ``u_1``/``v_1`` and the post-acoustic
-    column mass ``muts``."""
-    return split_omega(state, cfg, ww_m, state.u0, state.v0, mut, dt)
+    column mass ``muts``. The earlier caller supplies the post-acoustic
+    ``u_2``/``v_2`` instead, so that variant reads the current winds."""
+    u, v = (state.u, state.v) if legacy(cfg) else (state.u0, state.v0)
+    return ScalarSplit(*split_omega(
+        state, cfg, ww_m, u, v, mut, dt),
+        variant=getattr(cfg, "zadvect_implicit_variant", "wrf_471"))
 
 
-def solve_scalar(state, tend, q_old, wwI, mu_old, mu_new, dt: float) -> None:
+def solve_scalar(state, tend, q_old, wwI, mu_old, mu_new, dt: float,
+                 *, variant="wrf_471") -> None:
     """``advect_s_implicit`` on a transported scalar's advective tendency
     (``rk_scalar_tend``: ``mut_old = mub + mu_1``, ``mut = mut_new =
-    muts``)."""
+    muts``). The earlier variant uses ``muts`` in the old-field multiplier
+    as well, matching its current-mass formulation."""
     nz, ny, nx = state.p.shape
+    if variant == "wrf_legacy":
+        mu_old = mu_new
     _kernel(nz, "ieva_solve_s")(
         _blocks(ny * nx), (_TPB,),
         (tend, q_old, q_old, np.int32(0), DTYPE(0.0), wwI, state.c1h,

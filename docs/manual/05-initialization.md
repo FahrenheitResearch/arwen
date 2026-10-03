@@ -134,7 +134,7 @@ has one definition and suppresses the probe before any card is touched) and
 refuses naming both flags when there is nothing to measure. The silent 24 GiB
 assumption is gone, an assumption not being a budget, and the wizard says when
 the source rather than the card stopped the domain search, so a saturated fit
-cannot look comfortable [gpuwm/domain_wizard.py; CHANGELOG.md, Unreleased;
+cannot look comfortable [gpuwm/domain_wizard.py; CHANGELOG.md, engine 2.5.0;
 receipt:RELEASE-CANDIDATE-2P5-2026-08-18.md]. The envelope every sizing gate
 prices is the one measured formula of section 8.5.
 
@@ -175,7 +175,7 @@ fan out (measured under the default 12 km ladder: 108 degrees of longitude at
 30 N, 147 at 48.5, 179 at 58), and once it passes 180 the fetch takes the
 source's full band with the forecast grid and latitude bounds unchanged -- a
 separate warning, also at plan review. The
-no-radiation and validation profiles
+profiles whose actual radiation pairing has shortwave ON and longwave OFF
 are refused for a window including local night unless explicitly acknowledged;
 profile/route pairings that cannot be prepared refuse naming the missing
 component, while a profile cadence landing on a fractional root step is snapped
@@ -289,7 +289,10 @@ battery (247 s wall for the 7-frame run) [receipt:MODEL-BATTERY-6H-2026-08-17.md
 three real GEFS members (control plus two perturbed) prepared through the generic
 mapped route ran 3 h each on an RTX 5090 with `rw_ensbatch` panels; the 3-member
 spread cross-checked against NCEP's own published spread file for the cycle (NCEP
-global mean 0.34 K / max 3.3 K; this domain 0.37 K / 2.8 K, inside the envelope)
+global mean 0.34 K / max 3.3 K; this domain 0.37 K / 2.8 K). This is a
+sanity check that three members differ by amounts of the same order as
+NCEP's spread, not an ensemble-calibration or spread-skill test. Those
+would require more members, cases and observations
 [gallery:gefs-member-ensemble-20260817/]. Chapter 6 covers ensemble products.
 
 ## 5.7 The model battery: one domain, eleven initializations
@@ -298,8 +301,12 @@ Receipt: [receipt:MODEL-BATTERY-6H-2026-08-17.md];
 renders [gallery:model-battery-6h/, 120 PNGs, sha256-verified 0 mismatched 0
 missing]. Conditions: one shared 300x300 domain at 3 km, 49 levels, over the
 central United States, one physics slice, 6 h forecast, serial on an RTX 5070 Ti;
-only the initialization source differs. Every run was verified against the
-artifact (frames, wrf-rust field sanity, `rw_wrfbatch` renders), not the log. The
+only the initialization source differs. Each run was checked on its
+output: frames, field sanity checks and `rw_wrfbatch` renders. PASS means
+completion and those output checks, not accuracy against observations
+or agreement with another model. The same meaning applies to "ran to PASS"
+in sections 5.5 and 5.6; no forecast in this battery was scored against
+observations. The
 report does not name the physics slice beyond "one physics slice", so this manual
 does not either.
 

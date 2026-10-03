@@ -217,6 +217,9 @@ _TOP_LEVEL_EXCLUDES = {
     # wheel resumes no forecast and draws no pictures.
     "restart_render.py",
     "runtime.py",
+    # Forecast-history consumers stay in WOOF; preparation still parses
+    # their metadata through simulated_radar_config.py.
+    "simulated_radar.py",
     "state_digest.py",
     "supervisor.py",
     # Forecast input runners and terminal job/catalog entry points have no

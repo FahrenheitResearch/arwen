@@ -304,11 +304,13 @@ levels alike, on every route):
   falls below it only while a warming surface has not yet reached it.
   The band lets through what HRRRv2 carried under western snowpack in
   2017, top soils of 170 to 243 K under a skin near 268 K. This rule
-  goes beyond real.exe, and it is the default because it wins against
-  observations: on 2017-01-19 15Z over Idaho (native `--source hrrr`,
+  goes beyond real.exe. It is the default because on the one case
+  tested it reduced 2 m temperature error against observations:
+  on 2017-01-19 15Z over Idaho (native `--source hrrr`,
   150 x 120 cells at 3 km, 3 h) the 2 m temperature at 13 ASOS stations
   on snow-covered land had a mean absolute error of 3.76 K and a bias of
   -2.51 K over hours 1 to 3 without it, and 1.65 K and -0.15 K with it.
+  That is a single-case validation result, not a general skill measurement.
   A healthy HRRRv4 analysis over the same ground (2024-01-19 15Z) never
   puts its top soil more than 10 K below the skin under snow, so the rule
   does not touch it.

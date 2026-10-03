@@ -3,7 +3,7 @@
 WHY THIS FILE EXISTS
 --------------------
 ``docs/public/PHYSICS.md`` is the page a user reads before selecting
-``mp_physics = 28``; ``docs/public/validation/mp28-column-evidence.md``,
+``mp_physics = 28``; ``docs/public/wrf-comparison/mp28-column-evidence.md``,
 ``PROVENANCE.md``, ``CHANGELOG.md`` and ``gpuwm/physics_registry_v2.json``
 are the four texts it points at.  Five waves of this port have shipped at
 least one of those five quoting a residual, a count or a call graph the
@@ -74,7 +74,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
 PHYSICS_MD = ROOT / "docs" / "public" / "PHYSICS.md"
-EVIDENCE_MD = (ROOT / "docs" / "public" / "validation"
+EVIDENCE_MD = (ROOT / "docs" / "public" / "wrf-comparison"
                / "mp28-column-evidence.md")
 PROVENANCE_MD = ROOT / "PROVENANCE.md"
 CHANGELOG_MD = ROOT / "CHANGELOG.md"
@@ -299,7 +299,7 @@ def test_physics_md_does_not_claim_the_synthetic_profile_is_installed():
             "the code gate that pins the call site":
                 "test_microphysics_init_has_a_production_call_site",
             "where the measurement lives":
-                "validation/mp28-column-evidence.md",
+                "wrf-comparison/mp28-column-evidence.md",
         }
         missing = sorted(what for what, token in required.items()
                          if token not in page)
@@ -317,7 +317,7 @@ def test_physics_md_does_not_claim_the_synthetic_profile_is_installed():
             "gpuwm/ calls microphysics_init, so every mp=28 run starts from "
             "nwfa = nifa = 0 and is clamped to WRF's floors "
             "(module_mp_thompson.F:3979-3982). See "
-            "docs/public/validation/mp28-column-evidence.md section 6.1")
+            "docs/public/wrf-comparison/mp28-column-evidence.md section 6.1")
     required = {
         "the hook is named": "microphysics_init",
         "the state it actually starts from": "nwfa = nifa = 0",
@@ -326,7 +326,7 @@ def test_physics_md_does_not_claim_the_synthetic_profile_is_installed():
         "the code gate that pins the same fact":
             "test_gap_microphysics_init_has_no_production_call_site",
         "where the measurement lives":
-            "validation/mp28-column-evidence.md",
+            "wrf-comparison/mp28-column-evidence.md",
     }
     missing = sorted(what for what, token in required.items()
                      if token not in page)
@@ -1132,7 +1132,7 @@ def test_physics_md_publishes_the_measured_cost_verbatim():
     missing = [n for n in numbers if n not in page]
     assert missing == [], (
         "docs/public/PHYSICS.md does not republish what "
-        "docs/public/validation/mp28-column-evidence.md section 6.1 "
+        "docs/public/wrf-comparison/mp28-column-evidence.md section 6.1 "
         f"measured: {missing}")
 
     ratio = re.search(r"(\d+\.\d+)\s*[x×]\s*fewer droplets", section)
@@ -1216,7 +1216,7 @@ def test_the_published_aerosol_sensitivity_is_a_live_measurement():
         what: value for what, value in measured.items()
         if value not in section or value not in page}
     assert missing == {}, (
-        "docs/public/validation/mp28-column-evidence.md §6.1 and/or "
+        "docs/public/wrf-comparison/mp28-column-evidence.md §6.1 and/or "
         "docs/public/PHYSICS.md publish an aerosol-sensitivity number this "
         f"run does not reproduce: {missing}.  Re-measure and republish; "
         "never round toward the published value.")
@@ -1508,7 +1508,7 @@ _MUST_BE_FINDABLE = {
     # forecast has ever been validated against WRF".  On 2026-08-01 that
     # sentence stopped being true: a matched IDEALIZED single-domain
     # doubly-periodic forecast was run against WRF v4.6.1 and published in
-    # validation/mp28-matched-trajectory.md.  Pinning a sentence is what
+    # wrf-comparison/mp28-matched-trajectory.md.  Pinning a sentence is what
     # broke -- the sentence was rewritten and the token was not -- so the
     # replacements obey this file's own rule and name durable things: the
     # registry maturity state, and the evidence document.  Both are still
@@ -1520,7 +1520,7 @@ _MUST_BE_FINDABLE = {
     "not raise it": "implemented-unverified",
     "where the one matched forecast comparison lives, so its limits and "
     "its failed condition are one click away":
-        "validation/mp28-matched-trajectory.md",
+        "wrf-comparison/mp28-matched-trajectory.md",
 }
 
 
@@ -1627,7 +1627,7 @@ def test_this_publication_gate_has_no_unaudited_skip_site():
         f"{sorted(found - _SKIP_SITES)}; removed: "
         f"{sorted(_SKIP_SITES - found)}. Every skip here must be device "
         "availability and must be named in "
-        "docs/public/validation/mp28-column-evidence.md section 8.")
+        "docs/public/wrf-comparison/mp28-column-evidence.md section 8.")
 
     tests = [function.name for function in functions
              if function.name.startswith("test_")]

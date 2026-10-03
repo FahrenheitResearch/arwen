@@ -130,7 +130,7 @@ tests/test_thompson_real_column_host_parity.py (no rate and no
 final-state quantity beyond 1e-2 unexplained, echo within 0.05 dB, exit
 temperature within 1e-5).  The 92 classic oracle CSVs (F1) are unchanged;
 tools/thompson_real_column_parity/README.md and
-docs/public/validation/mp28-column-evidence.md say what closed and what
+docs/public/wrf-comparison/mp28-column-evidence.md say what closed and what
 remains.
 
 This module does not import cupy in its own source and opens no device: the
@@ -1272,9 +1272,27 @@ FROZEN_MODULE_DIGESTS = {
         # e203fa9ea re-mapped rsw_taumol_b and the accumulation tile; a
         # clean RTX PRO 4500 profile measured both slower, so the next
         # commit restored this file byte for byte to its bfc177208 content,
-        # whose pin this is.
-        '44a83f0e310996cd708fb186d81e49722a199d4ed965d9eca37177c480c1a044',
-        'c9e02eeaa6c611943244ccbd786dd5ede27b52ac0621f9a86f6c5dfb13e0e701'),
+        # whose pin this was.
+        # Re-pinned for the solar source of columns with no layer above the
+        # troposphere switch (fix/rrtmg-sw-sfluxzen): rsw_sfluxzen_body now
+        # stores on every path, zero for bands 16, 17, 27, 28 and 29 when
+        # laytrop == nlayers, as WRF's taumol_sw leaves them.  Bands 16 and
+        # 27 used to return unstored, so the batched path read recycled
+        # scratch there, and 17, 28 and 29 computed a flux WRF never sets.
+        # Only rsw_sfluxzen and rsw_sfluxzen_b move: the other 15 entries
+        # compile to identical PTX for compute_89, compute_90 and
+        # compute_120 with NVRTC 13.4 and 12.9 (tools/kernel_ptx_identity/
+        # receipts/, rrtmg-sw-sfluxzen-2.8.4-nvrtc13.4.json and
+        # -nvrtc12.9.json).  Reading, on node-4's RTX 5070 Ti:
+        # tests/test_rrtmg_sw_no_upper_flux_gpu.py (the unmodified WRF
+        # Fortran's fixtures_shallow.npz at max_ulp 0, per column and
+        # batched through NaN, 1e30 and stale-flux scratch) fails 7 of 9 on
+        # the previous kernel and passes 9 of 9, tests/test_rrtmg_sw_cuda.py
+        # passes 162 of 162, and a 360 s legacy-RRTMG forecast with a 50 hPa
+        # top (133x125x50, 18 UTC) writes byte-identical wrfout files with
+        # either kernel.  Previously 44a83f0e/c9e02eea.
+        '43134d6d6d2be4b3e668c7ab92d5850f1f992a09812dd09c9536fce5d9ab791e',
+        '663d12d7556f379bdd0724bb4f018113450ce45666e13f3ec3220615409acd08'),
     'rrtmgp_cloud': (
         # Re-pinned for fused profile preparation, broadcasts, temperature casts and flux copies.
         # Exact-array gates and all five seeded digests match the base.

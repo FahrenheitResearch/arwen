@@ -688,6 +688,23 @@ def draft_default_suite(draft: dict[str, Any]) -> str | None:
     return default_profile_for(draft["source"], draft_finest_dx_m(draft), draft_domains(draft))
 
 
+def _current_profile(profile: str) -> str:
+    """A physics profile ID as the engine's menus name it now: an old ID becomes its current ID."""
+
+    from gpuwm.physics_registry import canonical_template_id
+
+    return str(canonical_template_id(profile))
+
+
+def profile_aliases() -> dict[str, str]:
+    """Old physics profile ID -> current ID, from the registry's own alias table, for the page's kept drafts."""
+
+    from gpuwm.physics_registry import physics_registry
+
+    aliases = physics_registry().get("template_aliases")
+    return dict(aliases) if isinstance(aliases, dict) else {}
+
+
 def draft_check_grid(draft: dict[str, Any]) -> dict[str, Any]:
     """The physics check's grid keys for a draft with nests: its root, its finest spacing and how many grids it has.
 
@@ -782,7 +799,9 @@ class CreateMixin:
             "clock": str(payload.get("clock") or "").strip() or None,
             "start_hour": _number(payload, "start_hour", 0, 384, default=0, integral=True),
             "card": card,
-            "profile": str(payload.get("profile") or "").strip() or None,
+            # An old profile ID (a saved draft or a best run made before the rename) is read as its current
+            # ID, which is what the source's offered list, the day-only check and the physics check name.
+            "profile": _current_profile(str(payload.get("profile") or "").strip()) or None,
             "preset": str(payload.get("preset") or "").strip() or None,
             "products": str(payload.get("products") or "").strip() or None,
             "render_section": str(payload.get("render_section") or "").strip() or None,
@@ -2069,7 +2088,7 @@ class SystemMixin:
             except (ValueError, KeyError):
                 pass
         return {"sources": rows, "default_cycle": opening, "cycles": recent_cycles(now=moment), "cards": list(CARDS),
-                "preferred": preferred, "ladders": ladder_names(),
+                "preferred": preferred, "ladders": ladder_names(), "profile_aliases": profile_aliases(),
                 "commands": [display(sources_argv), display(profiles_argv)]}
 
     def availability_of(self, source: str, cycle: str, hours: float, now: datetime | None = None) -> dict[str, Any]:

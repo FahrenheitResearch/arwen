@@ -2285,6 +2285,9 @@ def _carrier_attrs(policy: str, rows) -> dict:
 class PerDomainWrfoutWriters:
     """One asynchronous writer/side stream per domain in an experiment."""
 
+    _simulated_radar = None
+    _output_observer = None
+
     #: The tree-wide ``[output]`` history selection this writer set was
     #: built with (``ExperimentConfig.output``), or ``None`` for the FULL
     #: default.  A class attribute so the verification cases and the
@@ -2300,7 +2303,8 @@ class PerDomainWrfoutWriters:
     def __init__(self, model, output_dir, *, start_time, title,
                  initial_condition=None, source=None,
                  progress_callback=None, history_selection=None,
-                 episodes_by_grid_id=None):
+                 episodes_by_grid_id=None, simulated_radar=None,
+                 radar_output_dir=None):
         """``initial_condition`` is the preparation receipt's provenance
         block, stamped onto every domain's frames so the durable artifact
         states what its initial state was and not only when it began.
@@ -2350,6 +2354,8 @@ class PerDomainWrfoutWriters:
         #: what the duplicate-valid-time guard in submit() is scoped to.
         self._published_paths = set()
         self._abort_event = threading.Event()
+        self._output_observer = None
+        self._simulated_radar = None
         resumed_episodes = {int(gid): int(episode) for gid, episode
                             in dict(episodes_by_grid_id or {}).items()}
         for node in model.walk_parent_first():
@@ -2378,6 +2384,12 @@ class PerDomainWrfoutWriters:
                 grid_id=node.cfg.grid_id,
                 history_selection=self._selection_for(node.cfg))
         self.last_durable_wrfout = None
+        if simulated_radar is not None and simulated_radar.enabled:
+            from gpuwm.simulated_radar import LiveSimulatedRadar
+            self._simulated_radar = LiveSimulatedRadar(
+                simulated_radar, radar_output_dir or self.output_dir)
+            for writer in self._writers.values():
+                writer.landing_observer = self._notify_output
         if progress_callback is not None:
             self.attach_progress_callback(progress_callback)
             self.attach_write_progress(progress_callback)
@@ -2419,9 +2431,19 @@ class PerDomainWrfoutWriters:
                 "would silently miss them.  Attach before the first "
                 "history period, or pass progress_callback to the "
                 "constructor.")
-        observer = getattr(progress_callback, "output_committed", None)
+        self._output_observer = getattr(progress_callback, "output_committed", None)
+        observer = (self._notify_output if getattr(self, "_simulated_radar", None) is not None
+                    else self._output_observer)
         for writer in self._writers.values():
             writer.landing_observer = observer
+
+    def _notify_output(self, **event):
+        # Requested radar output is checked by drain/close on the model
+        # thread, since the writer treats landing callbacks as telemetry.
+        if self._simulated_radar is not None:
+            self._simulated_radar.output_committed(**event)
+        if self._output_observer is not None:
+            self._output_observer(**event)
 
     def attach_write_progress(self, progress_callback) -> None:
         """Tell ``progress_callback`` about each write between two steps.
@@ -2508,6 +2530,12 @@ class PerDomainWrfoutWriters:
                 source=self._source,
                 simulation_start_time=self.start_time),
             abort_event=self._abort_event,
+            grid_id=grid_id,
+            # Only [simulated_radar] listens for a late domain's frames.
+            # Without it a spawned nest reports nothing, exactly as 2.8.3
+            # wrote it: no output_committed events for those frames.
+            landing_observer=(self._notify_output if self._simulated_radar is not None
+                              else None),
             history_selection=self._selection_for(node.cfg))
 
     def remove_domain(self, grid_id: int) -> None:
@@ -2574,6 +2602,8 @@ class PerDomainWrfoutWriters:
         marker ``streaming.StreamedDomain`` leaves on the state it took
         over.
         """
+        if getattr(self, "_simulated_radar", None) is not None:
+            self._simulated_radar.check()
         seconds = ticks / node.clock.tick_den
         valid_time = self.start_time + timedelta(seconds=seconds)
         episode = int(self._episode_by_grid_id.get(node.cfg.grid_id, 0))
@@ -2701,6 +2731,8 @@ class PerDomainWrfoutWriters:
                     self._writers[gid].drain()
             if self._writers[gid].paths:
                 self.last_durable_wrfout = self._writers[gid].paths[-1]
+        if getattr(self, "_simulated_radar", None) is not None:
+            self._simulated_radar.drain()
 
     def close(self) -> None:
         saved: BaseException | None = None
@@ -2713,6 +2745,12 @@ class PerDomainWrfoutWriters:
                     saved = exc
             if writer.paths:
                 self.last_durable_wrfout = writer.paths[-1]
+        if getattr(self, "_simulated_radar", None) is not None:
+            try:
+                self._simulated_radar.close()
+            except BaseException as exc:
+                if saved is None:
+                    saved = exc
         if saved is not None:
             raise saved
 
@@ -2723,6 +2761,12 @@ class PerDomainWrfoutWriters:
         if exc_type is None:
             self.close()
         else:
+            # A stopping forecast does not wait for queued radar scans: they
+            # are dropped, the running rw_simradar is terminated, and close()
+            # names every history left without a volume.
+            if getattr(self, "_simulated_radar", None) is not None:
+                with suppress(BaseException):
+                    self._simulated_radar.cancel()
             # D2H already in flight must complete before process teardown;
             # publication failures remain quarantined by WrfoutWriter.
             self._abort_event.set()

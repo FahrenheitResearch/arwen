@@ -660,6 +660,14 @@ tests/test_terrain_drag_wrf471_parity.py
 # before the fix.  Both need a card; the import, refusal and pricing rows
 # run on stage 1.
 tests/test_zadvect_implicit.py
+# Live implicit flux must cross rank seams without changing any persisted
+# word across resident and 1/2/4-rank runs. The explicit and poisoned-seam
+# controls prevent a cold or inactive comparison claiming that coverage.
+tests/test_zadvect_tiled.py
+# The older WRF implicit split and scalar mass weighting must retain the
+# compiled Fortran oracle's output words. A modern WW_SPLIT under this
+# identity silently changes the implicit share and the transported fields.
+tests/test_zadvect_legacy.py
 
 # SHARD 1s: A165, WRF's w_crit_cfl (lane 281-w-crit-cfl).  The w_damp
 # kernel held word for word to WRF 4.7.1's compiled w_damp
@@ -725,6 +733,18 @@ tests/test_diffusion_drivers_wrf471_parity.py
 tests/test_diff_opt1_wrf471.py
 tests/test_wrfinput_cold_start.py
 tests/test_rk_addtend_dry_map_factors.py
+
+# SHARD 1v: legacy RRTMG shortwave on columns with no layer above the
+# troposphere switch (laytrop == nlayers, a model top below ~191 hPa).
+# Prevents the batched path reading leftover GPU memory as the solar
+# source of bands 16 and 27 (rsw_sfluxzen_body returned without a store
+# and the sflux slot is recycled scratch: NaN or impossible surface fluxes
+# on shallow and idealized domains), and the kernel computing bands 17, 28
+# and 29 where WRF keeps zero.  Held to the unmodified WRF Fortran
+# (fixtures_shallow.npz) at max_ulp 0, per column and batched through a
+# slot pre-filled with NaN, 1e30 and a previous call's fluxes; whole-module
+# GPU.  The NumPy half is tests/test_rrtmg_sw_no_upper_flux.py on stage 1.
+tests/test_rrtmg_sw_no_upper_flux_gpu.py
 
 # SHARD-2-BEGIN
 tests/test_gf_deep_cuda.py

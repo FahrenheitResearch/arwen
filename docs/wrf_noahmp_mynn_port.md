@@ -94,7 +94,7 @@ The first two remove ~490 lines from the port surface. The second two are
 required work that a namelist-only reading of the identity would miss.
 
 MYNN is admitted as a coupled 5/5 suite. Enabling only its surface layer or
-only its PBL does not form a validated configuration.
+only its PBL does not form the coupled configuration checked against WRF oracles.
 
 ## State contract
 
@@ -175,11 +175,18 @@ Two fixtures are pinned in `gpuwm/data/noahmp/oracle/` (full provenance in its
   sub-layer snow melting to ponding. WRF's own shortwave and energy residuals
   close to better than 0.01 W/m2 in every column.
 
-### What the harness does NOT admit
+### What the first harness did not admit (historical)
 
-- **No gpuwm parity number exists.** There is no Noah-MP column solver in
-  gpuwm yet, so gate 3 and everything after it remain fully open. The
-  validators check structure, conservation and branch coverage only.
+The list below records the initial harness scope. A Noah-MP column
+solver and leaf-oracle checks have since landed; the current evidence
+and its limits are in [wrf_noahmp_runtime_admission.md](wrf_noahmp_runtime_admission.md)
+and [noahmp_device_column_report.md](noahmp_device_column_report.md).
+
+- **No gpuwm parity number existed when this harness landed.** There
+  was no Noah-MP column solver, so gate 3 and later gates were open.
+  Those initial validators checked structure, conservation and branch
+  coverage. The later column is bitwise against the recorded
+  `noahmp-sflx` fixtures; that is code verification at their scope.
 - **No per-leaf oracles are reachable.** Every leaf routine of
   `MODULE_SF_NOAHMPLSM` (`THERMOPROP`, `CSNOW`, `TDFCND`, `PHASECHANGE`,
   `FRH2O`, `ESAT`, `TSNOSOI`, `HRT`, `SOILWATER`, `WDFCND1/2`, ...) carries an

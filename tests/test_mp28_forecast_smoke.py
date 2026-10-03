@@ -56,7 +56,7 @@ is a slow, silent, physically wrong trend, and the only defence is to
 MEASURE it and publish the number.  That is
 :func:`test_lbc_aerosol_depletion_rate_is_measured_on_a_cloud_free_forecast`,
 and its result is the headline of
-``docs/public/validation/mp28-column-evidence.md``.
+``docs/public/wrf-comparison/mp28-column-evidence.md``.
 
 The measurement is made on a deliberately CLOUD-FREE forecast (WK82's own
 sounding with no thermal, which is subsaturated at every level) so that the
@@ -140,7 +140,7 @@ with its aerosol above the surface untouched and its droplet number zero.
 #: Repository-relative path of the evidence document this file's measurements
 #: are published in.  The lockstep test below reads it.
 EVIDENCE_DOC = (pathlib.Path(__file__).resolve().parent.parent
-                / "docs" / "public" / "validation"
+                / "docs" / "public" / "wrf-comparison"
                 / "mp28-column-evidence.md")
 
 

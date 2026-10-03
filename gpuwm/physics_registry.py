@@ -52,15 +52,22 @@ INSTALL_STATE_CODES = frozenset({
 })
 
 WSM6_TEMPLATE_ID = "wsm6-ysu-mm5-noah-no-radiation-v1"
-THOMPSON_TEMPLATE_ID = "thompson-mp8-ysu-mm5-noah-validation-v1"
+THOMPSON_TEMPLATE_ID = "thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1"
 THOMPSON_KF_TEMPLATE_ID = "thompson-mp8-ysu-mm5-noah-kf-rte-rrtmgp-v1"
 MORRISON_TEMPLATE_ID = "morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1"
 NSSL2_TEMPLATE_ID = (
-    "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1"
+    "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-wrf-comparison-candidate-v1"
 )
 NSSL2_LEGACY_RRTMG_TEMPLATE_ID = (
-    "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1"
+    "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-wrf-comparison-candidate-v1"
 )
+
+# Historical public identifiers remain inputs. Menus emit the descriptive IDs.
+TEMPLATE_ID_ALIASES = {
+    "thompson-mp8-ysu-mm5-noah-validation-v1": THOMPSON_TEMPLATE_ID,
+    "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1": NSSL2_TEMPLATE_ID,
+    "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1": NSSL2_LEGACY_RRTMG_TEMPLATE_ID,
+}
 
 #: The registered template whose suite `gpuwm domain` emits by default
 #: (product decision, 2026-07-29): Thompson mp8 in the certified
@@ -96,6 +103,36 @@ if _pinned_sha256 is not None:
 
 def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON constant {value!r} is not allowed")
+
+
+def canonical_maturity(
+    maturity: object, registry: Mapping[str, object] | None = None,
+) -> object:
+    """Read a historical maturity spelling as its current evidence label.
+
+    The generated ladder owns the aliases as well as the canonical names.
+    Unknown values remain unknown; an alias never adds an evidence rung.
+    Registry bytes and profile identifiers are not rewritten on read.
+    """
+
+    if not isinstance(maturity, str):
+        return maturity
+    selected = _REGISTRY if registry is None else registry
+    ladder = selected.get("maturity_ladder", {})
+    aliases = ladder.get("aliases", {}) if isinstance(ladder, dict) else {}
+    return aliases.get(maturity, maturity) if isinstance(aliases, dict) else maturity
+
+
+def canonical_template_id(
+    template_id: object, registry: Mapping[str, object] | None = None,
+) -> object:
+    """Resolve a historical profile ID without changing its physics."""
+
+    if not isinstance(template_id, str):
+        return template_id
+    selected = _REGISTRY if registry is None else registry
+    aliases = selected.get("template_aliases", {})
+    return aliases.get(template_id, template_id) if isinstance(aliases, dict) else template_id
 
 
 def iter_maturity_surfaces(registry: Mapping[str, object]):
@@ -152,6 +189,15 @@ def _enforce_evidence_axes(registry: Mapping[str, object]) -> None:
         raise RuntimeError(
             "maturity_ladder.order and maturity_ladder.rungs disagree: "
             f"{sorted(set(order) ^ set(rungs))}")
+    aliases = ladder.get("aliases", {})
+    if not isinstance(aliases, dict) or any(
+        not isinstance(alias, str) or alias in rungs
+        or not isinstance(target, str) or target not in rungs
+        for alias, target in aliases.items()
+    ):
+        raise RuntimeError(
+            "maturity_ladder.aliases must map historical spellings to "
+            "canonical rungs without replacing a rung")
 
     axes = registry.get("evidence_axes")
     if not isinstance(axes, dict):
@@ -172,6 +218,7 @@ def _enforce_evidence_axes(registry: Mapping[str, object]) -> None:
 
     in_use = set()
     for path, maturity in iter_maturity_surfaces(registry):
+        maturity = canonical_maturity(maturity, registry)
         if maturity not in rungs:
             raise RuntimeError(
                 f"{path} carries maturity {maturity!r}, which names no rung "
@@ -245,8 +292,9 @@ MATURITY_RANK: dict[str, int] = {
 
 
 def maturity_rank(maturity: object) -> int | None:
-    """Rank of a maturity on the conformance ladder, or None if unknown."""
+    """Rank of a current or historical maturity, or None if unknown."""
 
+    maturity = canonical_maturity(maturity)
     return MATURITY_RANK.get(maturity) if isinstance(maturity, str) else None
 
 
@@ -374,6 +422,7 @@ REGISTRY_PHYSICS_IDENTITY_SCHEMA = "gpuwm-physics-registry-parts-v3"
 
 #: Top-level blocks no selection's physics identity binds.
 REGISTRY_BLOCKS_OUTSIDE_PHYSICS_IDENTITY: Mapping[str, str] = {
+    "template_aliases": "historical profile spellings, not executable settings",
     "authority": (
         "the registry's declarations of its own contracts and the WRF "
         "v4.6.1 compatibility matrix: statements about the document and "
@@ -481,6 +530,8 @@ REGISTRY_DOCUMENTATION_FIELDS: Mapping[str, str] = {
     # Evidence labels; the vocabularies they name are outside the parts.
     "maturity": "a conformance evidence label",
     "scientific_evidence": "a scientific evidence label",
+    "verification_scope": "the scope of a reported evidence label",
+    "verification_scope_note": "the dated limits of the evidence",
 }
 
 #: Objects whose KEYS are physics and whose values are prose: the key set
@@ -875,8 +926,14 @@ def registry_physics_part_sources(
     templates = templates if isinstance(templates, Mapping) else {}
     for template_id in (tuple(templates) if every
                         else (() if profile is None else (profile,))):
-        parts[f"templates.{template_id}"] = registry_off_template(
-            templates.get(template_id), selected)
+        canonical = canonical_template_id(template_id, selected)
+        # Keep the part key existing preparation receipts bind. Renaming a
+        # menu option must not turn unchanged physics into a restart refusal.
+        aliases = selected.get("template_aliases", {})
+        identity = next((old for old, new in aliases.items() if new == canonical),
+                        canonical)
+        parts[f"templates.{identity}"] = registry_off_template(
+            templates.get(canonical), selected)
     return dict(sorted(parts.items()))
 
 
@@ -2628,7 +2685,7 @@ def validate_physics_plan(
             )
             domain_id = f"invalid-domain-{index}"
 
-        template_id = domain.get("template_id")
+        template_id = canonical_template_id(domain.get("template_id"), selected_registry)
         template: Mapping[str, Any] = {}
         if template_id is not None:
             if not isinstance(template_id, str):
@@ -2708,7 +2765,8 @@ def validate_physics_plan(
                                     message,
                                 )
                             )
-                template_maturity = template.get("maturity")
+                template_maturity = canonical_maturity(
+                    template.get("maturity"), selected_registry)
                 if template_maturity in warn_maturities or (
                     warn_unknown_maturity
                     and template_maturity not in nonwarning_maturities
@@ -3103,7 +3161,7 @@ def validate_physics_plan(
                     )
                 )
                 continue
-            maturity = option.get("maturity")
+            maturity = canonical_maturity(option.get("maturity"), selected_registry)
             if maturity in warn_maturities or (
                 warn_unknown_maturity and maturity not in nonwarning_maturities
             ):
@@ -3671,7 +3729,7 @@ def validate_physics_plan(
                                     "nest_transition.mixed_edge_ported=true",
                                 )
                             )
-                maturity = rule.get("maturity")
+                maturity = canonical_maturity(rule.get("maturity"), selected_registry)
                 warning_maturities = _ladder_tier(selected_registry, "warn")
                 if maturity in warning_maturities:
                     warnings.append(
@@ -4030,6 +4088,9 @@ __all__ = [
     "VALIDATION_SCHEMA",
     "WSM6_TEMPLATE_ID",
     "canonical_json",
+    "canonical_maturity",
+    "canonical_template_id",
+    "TEMPLATE_ID_ALIASES",
     "component_override_declaration",
     "canonical_sha256",
     "conditional_refusal_remedy",

@@ -2,7 +2,7 @@
 
 The successor of ``shortwindow.py``, which was a post-hoc supplement and
 says so in its own receipt.  THIS tool implements the gate declared in
-``docs/public/validation/mp28-shortwindow-gate.md`` BEFORE any of the runs
+``docs/public/wrf-comparison/mp28-shortwindow-gate.md`` BEFORE any of the runs
 it reads existed.  Nothing here selects a statistic or a threshold; they
 were fixed in that document's design commit, and any change to the
 constants below without a matching change to that document (above its
@@ -130,7 +130,7 @@ def main() -> int:
     R = args.runs
 
     report = {
-        "declared_in": "docs/public/validation/mp28-shortwindow-gate.md",
+        "declared_in": "docs/public/wrf-comparison/mp28-shortwindow-gate.md",
         "start_s": 1800.0, "frame_dt_s": args.dt,
         "gate_fields": list(GATE_FIELDS),
         "published_only_fields": list(PUBLISHED_ONLY + MP28_ONLY),

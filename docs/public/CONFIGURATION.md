@@ -31,6 +31,16 @@ way WRF would. Physics *selection* values and their maturity labels
 live in [PHYSICS.md](PHYSICS.md); this page covers the knobs around
 them.
 
+**Matching names does not match the whole WRF configuration.** The defaults for
+`top_lid`, `emdiv`, `hypsometric_opt` and `h_sca_adv_order` differ from WRF's
+Registry defaults, as the rows below state. `moist_cq` now defaults to `true`;
+explicit `false` omits the moist correction and is a comparison counterfactual.
+A TOML file that relies on differing defaults is outside a WRF comparison unless
+that exact configuration was measured. The published WRF validation record does
+not transfer to an untested configuration. Importing a namelist makes the mapped
+values and declared substitutions explicit; it does not itself establish
+statistical equivalence or forecast accuracy.
+
 ## `[output]` -- which variables the wrfout files carry
 
 WRF's `iofields_filename`, as a selection over the inventory the run
@@ -105,7 +115,7 @@ list.
 | `spec_bdy_width` | `&bdy_control spec_bdy_width` | 5 | >= spec_zone + relax_zone | |
 | `smooth_cg_topo` | `&domains smooth_cg_topo` | false | bool | WRF v4.7.1's d01 boundary terrain blend: the outer `spec_bdy_width + blend_width` rows of domain 1's terrain are blended toward the source model's own terrain, bit for bit as WRF's `blend_terrain` does, once at the first time. Needs the source's terrain (its SOILHGT); refused without it |
 | `column_chunk` | -- | 3125 | >= 1 | ArWen-only radiation throughput knob; byte-identical across values |
-| `physics_mode` | -- | absent (see note) | `"wrf-faithful"` or `"arwen-patched"` | ArWen-only physics-FIDELITY axis. Present, it becomes the author of every divergence-ledger key and writes the faithful or patched side of each edge onto every domain; an explicit occurrence of one of those keys in `[shared]` or `[[domain]]` is then refused rather than merged, because a key with two authors runs a value neither of them chose. ABSENT it authors nothing, which is what every configuration written before the axis means -- and the reported mode is still `wrf-faithful`, because no registered patch is applied. The register is PROVENANCE.md, "Divergence ledger v1"; the resolved vector lands in the run receipt |
+| `physics_mode` | -- | absent (see note) | `"wrf-faithful"` or `"arwen-patched"` | ArWen-only axis selecting WRF-faithful code paths or registered patches. This describes faithfulness to WRF code, not accuracy against observations. Present, it becomes the author of every divergence-ledger key and writes the faithful or patched side of each edge onto every domain; an explicit occurrence of one of those keys in `[shared]` or `[[domain]]` is then refused rather than merged, because a key with two authors runs a value neither of them chose. ABSENT it authors nothing, which is what every configuration written before the axis means -- and the reported mode is still `wrf-faithful`, because no registered patch is applied. The register is PROVENANCE.md, "Divergence ledger v1"; the resolved vector lands in the run receipt |
 | `patchset` | -- | `"v1"` | a registered patch-set version | Which frozen ledger set the axis resolves. A version is frozen when it is registered, so a receipt naming `v1` keeps meaning the vector it meant; later entries get a new version beside it |
 | `patches` | -- | the whole set | array of ledger entry ids, e.g. `["L4"]` | The single-patch ablation arms. Only under `physics_mode = "arwen-patched"` -- a subset of the patches APPLIED is meaningless when none is. An entry the ledger holds back (SASE's entry gate; the dormant class-C rows) is refused with the gate as the reason |
 
@@ -119,10 +129,12 @@ fingerprint (Mercator and polar consume `truelat1`; `truelat2`
 mirrors it). All three projections are transcription-gated at
 binary64 against the pinned WRF v4.6.1 `share/module_llxy.F` oracle
 (`tests/test_projection_oracle.py`), but their maturity differs:
-northern-hemisphere Lambert carries the matched-run validation
-family, while Mercator, polar stereographic, and southern-hemisphere
-Lambert are oracle- and smoke-verified only -- see the worldwide
-section of [VERIFICATION.md](VERIFICATION.md) and the projection
+northern-hemisphere Lambert carries the historical matched ArWen-versus-WRF
+comparison, a code-verification check. Mercator, polar stereographic and
+southern-hemisphere Lambert have the binary64 projection oracle and finite-state
+smoke runs, with no matched-run comparison. A smoke run checks execution and
+finiteness, not numerical accuracy. See the worldwide section of
+[VERIFICATION.md](VERIFICATION.md) and the projection
 maturity rows in [PHYSICS.md](PHYSICS.md). Latitude-longitude
 (cylindrical) and rotated grids are refused, as are domains
 containing or touching a pole and forcing footprints wider than 180
@@ -406,7 +418,8 @@ wrong answer reported as a success. Put them in `[shared]`.
 | `zdamp` | `zdamp` | 5000.0 | m | |
 | `dampcoef` | `dampcoef` | 0.2 | | |
 | `w_damping`, `w_crit_cfl` | `w_damping`, `w_crit_cfl` | 0, 1.0 | 0, 1; > 0 | `w_crit_cfl` is where w-damping measures the excess vertical Courant number from, and with `zadvect_implicit = 1` where it starts (WRF suggests 2.0 there); without it damping starts at 1, so a value above 1 is refused there (it would push `w` along its own direction) |
-| `zadvect_implicit` | `zadvect_implicit` | 0 | 0, 1 (a positive WRF value imports as 1) | WRF's implicit-explicit vertical advection on the last RK substep; refused with open boundaries. Matches WRF v4.7.1's routines word for word except two boundary terms of the implicit `w` solve, a declared divergence: WRF builds the lower one from the mass-coupled u/v tendencies, about one column mass too large (a steep-ridge run went NaN in three steps), and leaves the upper one's geopotential change over dt undivided by g. ArWen uses the uncoupled tendencies and divides by g |
+| `zadvect_implicit` | `zadvect_implicit` | 0 | 0, 1 (a positive WRF value imports as 1) | WRF's implicit-explicit vertical advection on the last RK substep; refused with open boundaries. The default numerical generation is WRF v4.7.1, with two declared `w` boundary corrections: uncouple the lower boundary's momentum tendencies, and divide the upper boundary's geopotential change over dt by g. The lower correction prevents a column-mass-sized acceleration error |
+| `zadvect_implicit_variant` | no namelist spelling | `"wrf_471"` | `"wrf_471"`, `"wrf_legacy"` | `[shared]` selects the WRF numerical generation. `wrf_legacy` ports the operational HRRR v4 `module_advect_em` current-mass solve and `WW_SPLIT` one-sided horizontal Courant allowance (alpha_max 1.0); `wrf_471` retains the newer `module_ieva_em` old/new-mass solve and mean-flow allowance (alpha_max 1.1). Both retain the declared lower-boundary unit correction. A namelist does not identify its source revision, so import preserves `wrf_471`; select `wrf_legacy` explicitly when matching the older source. Changing this value changes forecast answers and is refused on restart |
 | `base_temp` | `base_temp` | 290.0 | K | base state; init-time only (see fixed table for `iso_temp`/lapse) |
 | `hypsometric_opt` | `hypsometric_opt` | 1 (ArWen legacy) | 1, 2 | WRF Registry default 2 emitted explicitly on import; WRF declares this key in **`&domains`**, as one scalar for the whole run (`Registry.EM_COMMON:2283`) -- a namelist that puts it in `&dynamics` is one `wrf.exe` cannot read, and the importer refuses it there by name |
 | `h_sca_adv_order` | `h_sca_adv_order` | 2 (ArWen legacy) | 2, 5 | **feeds the geopotential equation only**; transported-scalar stencils are fixed 5th/3rd order, so the importer accepts only the Registry default 5 |
@@ -555,8 +568,9 @@ fingerprint untouched.
 
 ### `[ingest]` -- soil-state ingest policy (ArWen-only)
 
-One key, and the only reason to write it is to turn a correctness
-remedy OFF for a stock-WRF comparison.
+This switch disables a deliberate divergence from WRF that removes the
+forcing grid's imprint from the initial soil state. Its measured scope is
+soil-state structure, not an observation-based forecast-skill improvement.
 
 ```toml
 [ingest]
@@ -565,8 +579,12 @@ soil_texture_downscale = false   # default: true
 
 A forcing model delivers its soil state on its own mesh -- 0.25 degrees
 for GFS and ERA5 -- and stock WRF uses the interpolated result as-is, so
-`SMOIS` holds no information below the source spacing and prints the
-forcing grid into the 2 m dewpoint as rectangular boxes over land.
+`SMOIS` holds no information below the source spacing and retains that
+imprint in the soil state. Boxes in analysis-time 2 m dewpoint instead come
+from the interpolated near-surface fields, which this operation does not
+touch. In the measured run, later dewpoint frames had no source-mesh
+signature with or without the change, and the block-scale amplitude moved
+by 0.9 percent ([soil-state measurements](../soil-texture-downscaling.md)).
 ArWen carries soil moisture across the resolution change as Noah's own
 degree-of-saturation ratio and reconstitutes it against the target
 grid's own 30 arc-second soil texture, and anchors the deep `TSLB`
@@ -574,8 +592,11 @@ layers on the sub-source-cell part of `TMN` with WRF's own
 linear-in-depth weight. Both are ON by default and apply on every
 route, nests included.
 
-`soil_texture_downscale = false` restores the previous, WRF-identical
-behaviour byte for byte. Every run records the soil-state source
+`soil_texture_downscale = false` restores the previous ArWen behaviour byte
+for byte: the interpolated source soil state is used as-is, as stock WRF does,
+without texture reconstitution. This is not byte identity with WPS/real.exe:
+ArWen's masked surface and soil interpolation differs from METGRID's
+([WRF-INTEROP.md](WRF-INTEROP.md)). Every run records the soil-state source
 resolution -- and whether the reconstitution ran -- under
 `soil_texture_downscale` in `proof.json`, and preparation prints an
 advisory when the model resolves more than five cells across one source
@@ -586,9 +607,11 @@ measurements in `docs/soil-texture-downscaling.md`.
 ## Identity-pinned option families
 
 These are real WRF namelist keys that ArWen carries as configuration
-fields but admits at exactly one value each -- the value the port was
-validated at against unmodified WRF Fortran. `validate_run_config`
-refuses anything else before a run starts, and the importer records
+fields but admits at exactly one value each. The admitted values and their
+implementation evidence are listed below. Comparisons with unmodified WRF
+Fortran are code verification, not validation against observations.
+`validate_run_config` checks configuration admission and refuses other values
+before a run starts, and the importer records
 each supplied key as *fixed by ArWen* (or refuses a non-identity
 value). Three Noah-MP keys are the exception, because they reach no
 transcribed code at all: `opt_pedo`, `noahmp_output` and

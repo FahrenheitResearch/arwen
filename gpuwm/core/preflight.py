@@ -2513,7 +2513,9 @@ CHAINED_TRANSLATION_UNIT_FRAMES: dict[str, ChainedTranslationUnitFrame] = {
         max_local_size_bytes=0,
         # Re-read 2026-09-30 after the fused spcvmc layer pass and the
         # coalesced slabs: all 17 kernels 0 B on sm_120 and sm_89 at
-        # NVRTC 13.4.92.
+        # NVRTC 13.4.92.  Re-read 2026-10-02 after rsw_sfluxzen_body's
+        # store on every path (fix/rrtmg-sw-sfluxzen): all 17 kernels 0 B
+        # on sm_120 (RTX 5070 Ti) at NVRTC 13.4.92, before and after.
         covers=frozenset({"rrtmg_sw"})),
     # P3 one-category (mp=50).  ``noahmp_leaves.cu`` + ``p3.cu`` compiled as
     # ONE unit by gpuwm/core/p3_device.p3_source(), the same shape the

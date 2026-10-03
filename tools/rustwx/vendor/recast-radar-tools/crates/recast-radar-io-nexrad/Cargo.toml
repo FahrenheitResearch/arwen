@@ -1,0 +1,41 @@
+[package]
+name = "recast-radar-io-nexrad"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure-Rust NEXRAD Archive II (Level II) weather radar decoder and writer"
+readme.workspace = true
+keywords = ["nexrad", "radar", "weather", "level2", "wsr-88d"]
+categories = ["science::geo", "parser-implementations", "encoding"]
+# Not packaged: the integration tests read the repository's testdata/
+# through the unpublished recast-radar-testdata crate, and the examples are
+# developer probes built on dev-dependencies.
+exclude = ["tests/", "examples/"]
+
+[features]
+# Decode consecutive LDM records two at a time on one thread with
+# `recast_radar_bzip2::Decoder::decode_two_into`, overlapping their
+# memory-latency-bound inverse-BWT chases. Same output; about 14% faster on
+# volumes with large records (KILX20260418) and no change on KTLX20240315 in
+# the single-core decode study, but slower on the default thread pool (1.2x
+# over the Level II corpus, docs/perf/cross-library.md). Doubles the
+# per-thread decoder workspace.
+paired-bzip2 = []
+# The Level II writer (`write` module: Archive II files, real-time chunks,
+# GR2Analyst polling directories), which compresses LDM records with
+# recast-radar-bzip2's encoder on rayon. Off by default so that decoding
+# alone does not build the encoder; `cargo test` of this crate alone needs
+# `--features write` to run the writer tests.
+write = ["recast-radar-bzip2/rayon"]
+
+[dependencies]
+chrono.workspace = true
+flate2.workspace = true
+rayon.workspace = true
+recast-radar-bzip2 = { version = "0.1.3", path = "../recast-radar-bzip2" }
+recast-radar-core = { version = "0.1.3", path = "../recast-radar-core" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

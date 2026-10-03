@@ -177,15 +177,16 @@ def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
     """The docstring is the contract a release engineer reads; keep it true.
 
     The literal below is this gate's own copy of the count, and it is the
-    side that moves last: ``rw_mlexport`` is the thirtieth bundled
-    artifact. The count and ``gpuwm.bridge_assets`` prose must move
-    together. It is raised to 30 and the previous
+    side that moves last: ``rw_mlexport`` was the thirtieth bundled
+    artifact and ``rw_simradar`` (the simulated radar) is the
+    thirty-first. The count and ``gpuwm.bridge_assets`` prose must move
+    together. It is raised to 31 and the previous
     spelling joins the stale list below, so the pin stays exact in both
     directions rather than being widened to accommodate the roster.
     """
 
-    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 30
-    assert "thirty artifacts" in bridge_assets.__doc__
+    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 31
+    assert "thirty-one artifacts" in bridge_assets.__doc__
     for stale in ("eight artifacts", "nine artifacts", "nine files",
                   "ten artifacts", "ten files", "eleven artifacts",
                   "eleven files", "fourteen artifacts", "fourteen files",
@@ -201,7 +202,8 @@ def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
                   "twenty-six artifacts", "twenty-six files",
                   "twenty-seven artifacts", "twenty-seven files",
                   "twenty-eight artifacts", "twenty-eight files",
-                  "twenty-nine artifacts", "twenty-nine files"):
+                  "twenty-nine artifacts", "twenty-nine files",
+                  "thirty artifacts", "thirty files"):
         # Match the complete count, so "eight" does not reject "twenty-eight".
         assert re.search(r"(?<![a-z-])" + re.escape(stale) + r"(?![a-z-])",
                          bridge_assets.__doc__) is None

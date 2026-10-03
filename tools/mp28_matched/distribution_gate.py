@@ -1,7 +1,7 @@
 """Evaluate the pre-registered distribution gate for mp_physics = 28.
 
 THIS tool implements the gate declared in
-``docs/public/validation/mp28-distribution-gate.md`` before any of the
+``docs/public/wrf-comparison/mp28-distribution-gate.md`` before any of the
 runs it reads existed, exactly as ``shortwindow_gate.py`` implemented the
 second gate's declaration.  Nothing here selects a statistic, a margin or
 a screen; they were fixed in that document's design commit (`0d69a648`)
@@ -46,7 +46,7 @@ from shortwindow_gate import (                                # noqa: E402
     NWFA_CEIL, NWFA_FLOOR, PUBLISHED_ONLY, arwen_frame, divergence_rows,
 )
 
-DECLARED_IN = "docs/public/validation/mp28-distribution-gate.md"
+DECLARED_IN = "docs/public/wrf-comparison/mp28-distribution-gate.md"
 DESIGN_COMMIT = "0d69a648"
 
 #: D1/D2 margins, transcribed from the declaration's section 3.

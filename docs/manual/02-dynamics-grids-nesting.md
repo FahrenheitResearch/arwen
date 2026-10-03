@@ -6,8 +6,8 @@ The core is a WRF-ARW-class compressible nonhydrostatic solver: three-stage
 Runge-Kutta outer integration wrapping split-explicit acoustic steps
 (forward-backward horizontal, implicit vertical, recoupled to the large step), on a
 hybrid terrain-following dry-mass vertical coordinate, FP32 on CUDA
-[docs/gpuwm-project-history.md:65; README.md:33-34]. The RK stage table is a
-config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:734].
+[docs/gpuwm-project-history.md:65; README.md, current release scope]. The RK stage table is a
+config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:756].
 
 Advection is WRF's stencils, hardcoded where WRF hardcodes behavior: horizontal
 momentum is the WRF flux5 (5th-order) stencil, vertical momentum and scalars the
@@ -15,13 +15,13 @@ flux3 (3rd-order) stencil (`gpuwm/core/kernels/advection.cu`)
 [docs/public/CONFIGURATION.md:730-731]. Transported-scalar stencils are fixed
 5th/3rd order, so the importer accepts only the Registry default
 `h_sca_adv_order = 5`; the configurable `h_sca_adv_order` (legacy default 2) feeds
-the geopotential equation only [docs/public/CONFIGURATION.md:412]. Moist transport
+the geopotential equation only [docs/public/CONFIGURATION.md:424]. Moist transport
 runs WRF option 1 (positive-definite limiter) with `scalar_adv_opt` required to
-match [docs/public/CONFIGURATION.md:413, 740].
+match [docs/public/CONFIGURATION.md:425, 762].
 
 Lateral boundaries use specified/relaxation zones with Davies-style weighting;
 `spec_bdy_width` defaults to 5 and must be at least `spec_zone + relax_zone`
-[docs/public/CONFIGURATION.md:105]. The damping stack is described in section 1.2.
+[docs/public/CONFIGURATION.md:115]. The damping stack is described in section 1.2.
 
 No symbolic statement of the governing equation set exists in the documentation
 tree; the prose description above and the WRF-ARW technical-note lineage are the
@@ -56,7 +56,7 @@ Eta levels are explicit, not generated: `eta_levels` is required for real runs,
 automatic level generation (`auto_levels_opt`, `max_dz`, `dzbot`,
 `dzstretch_s/u`) is not implemented, and with explicit `eta_levels` those keys
 are inert in WRF too, so they import as dropped. `p_top` defaults on import to
-the Registry's 5000 Pa [docs/public/CONFIGURATION.md:142].
+the Registry's 5000 Pa [docs/public/CONFIGURATION.md:154].
 
 Two hard properties a WRF user must plan around:
 
@@ -86,7 +86,7 @@ Two hard properties a WRF user must plan around:
 
 ## 2.3 Projections
 
-Implemented: Lambert conformal northern hemisphere (model-validated), Lambert
+Implemented: Lambert conformal northern hemisphere (projection-oracle checks and one historical matched WRF case; code verification only), Lambert
 conformal SH, Mercator, and polar stereographic at either pole (the latter three
 implemented-unverified: binary64 oracle plus GPU smoke). Latitude-longitude and
 rotated grids are not implemented, refused at load, never substituted. Domains
@@ -102,7 +102,7 @@ exact parent-step and forcing-cadence seam. Two-way feedback (`feedback = 1`) sh
 as an experimental path: it runs, it is stamped as experimental in the run's own
 provenance, and one-way consumers refuse a feedback-modified parent. It feeds back
 dynamic state only, where WRF also feeds back hundreds of masked land-surface
-fields, so it is not a WRF-equivalent claim [README.md:472-479;
+fields, so it is not a WRF-equivalent claim [README.md, current release scope;
 docs/public/CONFIGURATION.md:87-88]. `smooth_option` admits 0 only (the parent
 smoother acts only under two-way feedback). No receipt, gate, or measurement exists
 yet for the two-way path beyond its stamping; treat it accordingly.
@@ -201,7 +201,7 @@ the artifact to driver-held state. The fixed arm's small RAINC dips (-431 and -8
 mm-sum) are strip-exit losses (heavy-rain columns leaving the domain), not resets
 [gallery:2026-08-17-moving-nest-kf/INDEX.md;
 tests/test_relocation_physics_continuation.py, 8 tests]. The fix ships default-on on
-both moving-nest routes [CHANGELOG.md, Unreleased].
+both moving-nest routes [CHANGELOG.md, engine 2.5.0].
 
 ### 2.5.3 What a move does not promise
 

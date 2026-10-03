@@ -1,5 +1,6 @@
 {
   "schema": "arwen.research.hardware-profiles.v1",
+  "qualification_status": "unqualified-candidate-policy",
   "status": "unvalidated-candidate-policy",
   "policy": "Class selects geometry and vertical detail, never capacity. With no --vram-gib, measure actual total and free memory. Preserve recipe duration, cadence and minimum study extent; refuse a fitted footprint below that minimum. Controlled scenarios retain their declared ladder and 49 levels across classes.",
   "intent_rule": "No nests: regional. Otherwise preferred_finest_dx_km >= 3: mesoscale. Otherwise: storm. Controlled scenarios preserve exact geometry.",

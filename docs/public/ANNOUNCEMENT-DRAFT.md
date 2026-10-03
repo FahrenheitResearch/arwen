@@ -20,9 +20,10 @@ seconds. A four-domain nest ladder down to 500 m grid spacing fits on a
 24 GiB card; the built-in wizard sizes the grids to your GPU from a
 single command.
 
-The part I care most about is the verification story. Every physics
-scheme is a transcription of WRF v4.6.1 source, and the project applies
-three gates: bit-level kernel oracles against unmodified WRF Fortran
+The part I care most about is the verification story. The historical
+WRF comparison uses v4.6.1 sources, with the per-option evidence and
+original schemes described in PHYSICS.md. It applies three checks:
+bit-level kernel oracles against unmodified WRF Fortran
 (several components are bit-identical; the rest carry measured ULP
 distances, published per option), a full-state t=0 digest of the
 reference case, and matched-run forecasts scored frame by frame against
@@ -46,18 +47,18 @@ claim about everything the registry will let you select. On the reference case -
 to composite-reflectivity correlation 0.985, with >=20 dBZ echo
 coverage within 3 pixels of WRF's 14,227. The docs publish the full
 decay tables including the unflattering late-lead numbers at 1 km and
-500 m, the measured evidence that this collapse is a property of
-pixel-overlap scoring at convective scale rather than of this model
+500 m, the loss of pixel-overlap agreement at convective scale
 (the same run scores 0.86 storm-pixel overlap at 3 km while 1 km
-decorrelates), and an explicit list of what is *not* claimed: no end-to-end bit-exactness,
-one deeply validated case, FP32, no data assimilation. The
+decorrelates, without isolating the cause), and an explicit list of what is *not* claimed: no end-to-end bit-exactness,
+one historical matched WRF case, FP32, no data assimilation. The
 verification page ends with the config, commit, and commands to
 reproduce the comparison.
 
 Why build this: convective-scale NWP has been gated on institutional
 clusters, so most of the world -- including most of the tornado- and
-flood-prone world -- runs on 10-25 km global guidance. A verified
-1 km limited-area model that runs on a gaming GPU changes who gets to
+flood-prone world -- runs on 10-25 km global guidance. A 1 km limited-area
+model with scoped code-verification evidence that runs on a gaming GPU
+changes who gets to
 do this kind of simulation: researchers without allocations, students,
 forecast hobbyists, anyone in a region no convection-permitting model
 covers. To be clear about what it is for: ArWen is a research and

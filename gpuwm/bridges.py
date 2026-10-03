@@ -102,6 +102,9 @@ CRATE_RELATIVE = "tools/grib1_bridge"
 #: line naming the argument vector), never a version number, which a
 #: rebuild bumps whether or not anything changed.
 BRIDGE_ABI_MARKERS = {
+    "rw_simradar": (b"rw_simradar --request REQUEST.json "
+                   b"schema=simulated-radar.request/v1 manifest=simulated-radar.manifest/v1 "
+                   b"volume_paths=v1 scene_shapes=v1"),
     "rw_netcdf": b"dtype\t<f8\t|S1\twater_layer_conversion\tsource_soil_recovery",
     "gdt101_remap": b"arwen.gdt101-regional-remap.v1",
     # The reader's newest behaviour, not its record schema: two fixes

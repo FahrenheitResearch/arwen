@@ -670,7 +670,8 @@ The two things that would have to happen, in order:
    `f_min`/`f_max`, so any two in one translation unit are duplicate
    definitions. All of those files are in this lane's ownership, so the
    refactor is available; the low-risk form is a C++ namespace per source,
-   which keeps every leaf's *validated* arithmetic and its own libm copy
+   which keeps every leaf's arithmetic, as verified against its WRF oracle,
+   and its own libm copy
    exactly as measured and makes the composition the only new thing to gate.
 2. **Vectorise the driver loop and the write-back**, which are pure array
    shuffling, and stage the column state as arrays rather than as one Python
@@ -1284,13 +1285,17 @@ artifact; that is a different boundary layer.
 structure said it would be.** If `bldt` gated only the land surface this would
 be an easy trade: 36x for hundredths of a kelvin in the soil.  It does not.  It
 gates the surface layer and the PBL on the same clock, and a 333 m PBL updated
-once per simulated minute is visibly wrong during the morning transition --
-which, for a convective-storm case, is precisely the period the forecast exists
-to get right.
+once per simulated minute departs strongly from the every-step (`bldt = 0`)
+run during the morning transition. This is an update-interval sensitivity
+test with another model run as the reference, not validation against
+observations. Ordinary growth of small differences can contribute over
+hours; the 90.9% of columns differing by more than 100 m (median 826 m)
+at 100 minutes shows a widespread change, but this pair does not isolate
+that contribution. It does not establish which run is closer to reality.
 
-So the setting is recorded for what it is: the difference between a run that
-finishes and a run that does not, bought with a boundary layer that is
-noticeably degraded while it is growing.  It is not a physics recommendation,
+The setting is therefore recorded as the difference between a run that
+finishes and one that does not, with a materially different boundary
+layer during growth.  It is not a physics recommendation,
 it is scoped to one nest in one file, and the right way to retire it is to
 finish putting Noah-MP's column on the device rather than to widen its use.
 

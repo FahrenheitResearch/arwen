@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.8.4 (2026-10-03)
+
+New:
+
+- `[simulated_radar]` writes native radar volumes and PPI loops while a forecast runs under `gpuwm go`, `gpuwm run` or `gpuwm sim`, the routes WOOF drives. Sites, scan ladders, timing, fields and formats are configurable. Level II and CfRadial 1 are the defaults; CfRadial 2 and ODIM are optional. Before fetching, a forecast checks `rw_simradar` and the scan's host memory and prices listed sites' radar output into its disk check; ensemble and local-cycling members refuse the table by name. `gpuwm simulated-radar` replays saved full-column histories. The manifest carries immutable artifact paths, hashes, scan times and source revisions. Off by default.
+- `gpuwm simulated-radar --describe` reports installed native support and companion requirements. `--estimate` reports scan samples, memory and an output-size bound for quoting before processing history.
+- `zadvect_implicit_variant = "wrf_legacy"` selects the older WRF implicit vertical-advection split and scalar mass weighting. The default remains `"wrf_471"`; selecting the older variant changes forecast answers.
+
+Fixed:
+
+- Legacy RRTMG shortwave follows WRF on columns with no layer above the troposphere switch (a model top below about 190 hPa, as on shallow or idealized domains): the solar source of bands 16, 17, 27, 28 and 29 is zero there, as WRF leaves it. The batched path read leftover GPU memory for bands 16 and 27, giving NaN or impossible surface fluxes, and every path computed bands 17, 28 and 29. Answers change only on such columns.
+- Scientific documentation distinguishes code verification, solution verification and validation against observations. WRF comparisons name their reference version, tested build and limits; historical runs and composition exemptions no longer imply current forecast accuracy. Physics profiles use comparison or daytime names. Old profile IDs and labels are accepted as aliases wherever an ID is entered (flags, run and stream plans, case catalogs, the physics check, New forecast), and a preparation sealed under an old ID still matches and extends. Suites with no current matched WRF run, the defaults included, now report `supported-not-wrf-verified`, and a prepared forecast prints one line saying so; the run continues. WRF evidence moves to `docs/public/wrf-comparison/`, with stubs at the old paths. Observation-scoring badges say `SCORED`; execution qualification and observation validation remain separate.
+
 ## 2.8.3 (2026-10-02)
 
 New:
@@ -2141,7 +2154,7 @@ Fixed:
 - `gpuwm render --engine auto` refuses instead of quietly drawing weather
   fields on matplotlib, and the verify door's synoptic panels come from
   `rw_wrfbatch`.
-- The shipped public pages name the deep-validation case by its role, not
+- The shipped public pages name the detailed WRF-comparison case by its role, not
   an internal token and date; the reproduction section keeps every literal
   artifact name a reader types.
 - A run's pictures land in one folder: `gpuwm go` claims its run folder
@@ -4498,7 +4511,7 @@ Fixed:
 
 Evidence: crop-versus-direct bitwise identity re-proven for a corridor
 built through the HRRR chain's own grids and catalog, 5 placements x 14
-fields, with the instrument validated by a planted single-ULP flip
+fields, with the instrument checked by a planted single-ULP flip
 caught as exactly one differing word. Emission determinism, the
 receipt-bytes round trip, a tampered-cache refusal, and the real
 `prepare_hrrr_hierarchy` sealing and binding. Live on a real 18Z HRRR
@@ -5076,12 +5089,12 @@ New:
   0.8 * Nyquist carry a mesocyclone's couplet, and masking them removes
   the signal the analysis is for. Gates the unfolder cannot resolve are
   still dropped and counted. The same unfolding is applied to the
-  verification composites, so a run is graded against a truth field
+  observation-scoring composites, so a run is graded against a truth field
   built the way it was fed. Needs the new `[dealias]` extra.
 - GOES cloud water path is assimilated beside radar, from the model's
   own column integral, and an observed-clear column can remove cloud
   the model invented.
-- Verification against MRMS. `--truth mrms` grades a run against the
+- Validation against MRMS observations. `--truth mrms` grades a run against the
   national mosaic rather than against a composite assembled from the
   same radars that fed it, which is the honest grader for a domain
   wider than one radar's reach.
@@ -6160,7 +6173,7 @@ nest edge runs under a named transition policy.
 ### The wizard composes with `go`
 
 - `gpuwm domain` at a bare prompt asks its questions and emits a
-  config `gpuwm go` accepts: one 12 km domain on the model-validated
+  config `gpuwm go` accepts: one 12 km domain on the wrf-matched-run
   `morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1` profile, with both
   supplied defaults stated in the session. This changes the
   bare-session emission -- in 1.3.0 it was a four-domain ladder on
@@ -6331,7 +6344,7 @@ the export by name while the forecast itself prepares, and
 receipt. Registry-ratified tuples run without acknowledgement, and
 two joined the ratified set: Noah-MP on GFS as an expert template
 (the runner already advertised it), and NSSL-2 with legacy RRTMG as a
-fixed profile at validation-candidate maturity, buildable end to end
+fixed profile at wrf-matched-run-candidate maturity, buildable end to end
 on both the GFS and native HRRR routes -- the runner builds its
 configuration from the profile's complete declared switch inventory,
 and a profile switch without a declared forwarding home is a named
@@ -7962,7 +7975,7 @@ and educational tool; never a substitute for official warnings.
   `share/module_llxy.F` (tools/llxy_wrf461_oracle, fixtures in
   tests/data/llxy_oracle, gates in tests/test_projection_oracle.py
   with measured max-ULP ceilings) plus short GPU smoke integrations --
-  NOT matched-run verified. The deep matched-run validation (the 1974
+  NOT matched-run verified. The detailed matched-run verification (the 1974
   reference family, geo_em byte-level gates) remains
   northern-hemisphere Lambert only.
 - Genuine limits that remain: domains containing or touching a pole
@@ -7978,10 +7991,10 @@ and educational tool; never a substitute for official warnings.
   with WRF-recurrent boundary-clock semantics.
 - Physics transcribed from WRF v4.6.1 (`d66e442f`) with per-option
   maturity labels (docs/public/PHYSICS.md): Kessler, WSM6, Thompson
-  (model-validated; WRF tables SHA-256-pinned -- the two largest are
+  (wrf-matched-run; WRF tables SHA-256-pinned -- the two largest are
   published as release assets and staged by `gpuwm fetch-tables`,
   which install runs automatically), Morrison
-  2-moment, NSSL 2-moment (validation-candidate) microphysics; YSU and
+  2-moment, NSSL 2-moment (wrf-matched-run-candidate) microphysics; YSU and
   MYNN PBL; MM5 and MYNN surface layers; Noah, Noah-MP, and RUC land
   surface; RTE+RRTMGP (default) and legacy-RRTMG (verification tier)
   radiation; Kain-Fritsch cumulus.
@@ -8054,7 +8067,7 @@ southern-hemisphere grids at oracle + smoke maturity, not matched-run
 verified); one-way static nests; FP32; no data assimilation; ERA5
 drives the config-driven GPU loop (GFS/HRRR feed the native
 preprocessor front door; HRRR is CONUS-only); one case deeply
-validated, component evidence elsewhere.
+compared with WRF, component evidence elsewhere.
 
 ## Pre-1.0 development
 

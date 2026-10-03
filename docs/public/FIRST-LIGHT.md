@@ -208,8 +208,10 @@ than a wall it walks into, so a card big enough to want a wider box
 gets the largest domain one source crop can actually feed, and a line
 on stderr saying the source, not the card, is what stopped it. The
 new projections (Mercator, polar stereographic, southern-hemisphere
-Lambert) are oracle-verified and smoke-run verified, not matched-run
-verified ([VERIFICATION.md](VERIFICATION.md)).
+Lambert) have been checked against the WRF projection oracle and exercised
+in finite-state smoke runs. They have no matched-run comparison against WRF;
+the smoke runs check execution, not accuracy
+([VERIFICATION.md](VERIFICATION.md)).
 
 ## 3. Get data
 
@@ -506,7 +508,13 @@ OLR panel and measured the other four: 4 files x 4 products took 2.6 s.
 
 To compare two runs product-by-product (a rerun, a physics variant, a
 CPU WRF twin), render each into its own directory and compose labeled
-side-by-side sheets:
+side-by-side sheets. These are qualitative comparisons. Roundoff-level
+differences can grow during convection, including between different WRF builds;
+displaced cells alone establish neither a port defect nor statistical agreement.
+An ensemble consistency test estimates whether differences fit the reference
+model's sampled variability. The scoped WRF v4.7.1 ensemble results and their
+limits are in [VERIFICATION.md](VERIFICATION.md); they do not qualify an arbitrary
+pair of runs.
 
 ```bash
 gpuwm render --pair out/runA/png out/runB/png --out out/compare
@@ -557,5 +565,7 @@ sentence, exit 2.
   `gpuwm import-namelist namelist.wps namelist.input` -- emits an
   experiment TOML plus an explicit substitution report of every option
   it mapped or refused.
-- Understand what the model is verified against before you trust a
-  picture: [VERIFICATION.md](VERIFICATION.md).
+- Read what the evidence measures: [VERIFICATION.md](VERIFICATION.md)
+  separates code verification against WRF from limited comparisons with
+  observations. Neither a matching picture nor a completed run establishes
+  general forecast accuracy.

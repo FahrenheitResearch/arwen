@@ -360,7 +360,7 @@ conditions to verify a remap against.
 **No WRF trajectory comparison exists.** Every routine is bitwise against its
 WRF oracle and the assembled driver is bitwise against `oracle/lsmruc.csv`
 except its 26 pinned upstream-residue cells, but no gpuwm/WRF *forecast*
-comparison exists, which is what `validation-candidate` would require. Hence
+comparison exists, which is what `wrf-matched-run-candidate` would require. Hence
 `implemented-unverified`.
 
 **The six-layer geometry runs, unverified.** `init_soil_depth_3` also
@@ -380,7 +380,7 @@ not been measured.
 | Level geometry matches WRF | `test_soil_layer_geometry.py` against WRF 4.7.1 `real.exe` `wrfinput_d01` ZS/DZS at both counts (ZS 0 0.05 0.2 0.4 1.6 3; DZS 0.025 0.125 0.175 0.7 1.3 0.7) | **Oracle-grade.** Exact. |
 | The kernel's own depth literals are that table | `test_ruc_nzs_tier.py`, `test_soil_layer_geometry.py` — float32 bit patterns of each `#if` arm against `ruc_soil_depths(n)` | **Oracle-grade**, and stronger than the length check it replaced. |
 | The nine-level column did not move | `test_ruc_nzs_tier.py` — the shipped `ruc.cu` inverted to the pre-lift file and hashed against the mp=8 freeze digest, plus equal `cl.exe -EP` token streams and equal `nvcc -ptx` PTX, each with a negative control; and the 43-field host/device comparison at nine on the hardware | **Decisive** for n=9. The inversion now runs in two named steps — the ladder, then the `RUC_NZS DZSTOP` fix — so the identical-PTX claim is about the ladder and is not quietly covering a change that does move the generated code. That the fix moves it is asserted separately; that it moves no number at nine is measured on the card and by the unchanged eleven-file RUC suite. |
-| The tier machinery is arithmetically inert | `test_ruc_nzs_device.py` — the full 43-field driver comparison with every launcher forced through the *specialized* loader at nine levels, over snow-free, water+ice and snow columns | **Strong.** max_ulp 0. Validates the mechanism at the geometry that has an oracle. |
+| The tier machinery is arithmetically inert | `test_ruc_nzs_device.py`: the full 43-field driver comparison with every launcher forced through the *specialized* loader at nine levels, over snow-free, water+ice and snow columns | **Strong.** max_ulp 0. Verifies the mechanism at the geometry that has a WRF oracle. |
 | The six-level module builds and is distinct | `nvcc -ptx -DRUC_NZS=6`, and a CuPy/NVRTC compile through `get_kernel_int_defines` | **Good.** It is a real translation unit, not a hope. |
 | Host and device agree at six levels | `test_ruc_nzs_device.py::test_the_host_and_device_columns_agree_at_every_admitted_geometry` — the same 43-field driver comparison as the row above, run at **6** as well as 9, over snow-free, water+ice and snow columns | **Strong for consistency, silent on correctness.** max_ulp 0 at both counts. `ruc.py` and `ruc.cu` are line-for-line transcriptions of the same Fortran, so agreement means no transcription error entered the lift — it cannot detect an error present in both. It did catch one present in only one; see the next row. |
 | A nine-level constant left behind in the kernel | the row above, on its first run | **Found a real defect.** `ruc_soil_finalize` computed `dzstop = 1/(0.01f - 0.0f)` — WRF's nine-level `zsmain(2)-zsmain(1)` written as a literal instead of read from the table, and invisible to the RUC_NZS sweep because it is a depth, not an extent. At six levels the grid says 0.05, so the published `GRDFLX` came out exactly 5x too large: -337.1 W m-2 against the host's -67.4 on the same column, and on a real 1-hour HRRR case a domain-mean -472.5 W m-2 against -94.5. Fixed. Blast radius measured: 1 of the 93 wrfout variables moved, `GRDFLX`; `TSLB`, `TSK`, `HFX`, `T2` and the other 88 are bit-identical across the fix, so it corrupted a published diagnostic and not the trajectory. |
@@ -398,10 +398,12 @@ tridiagonal runs four interior steps instead of seven over a different layer
 thickness set, and only WRF adjudicates that. Internal consistency is not an
 answer to it and must never be reported as one.
 
-**How it ships, therefore.** No front-door template — a named
-`--physics-profile` asserts a validated suite and there is no six-level
-verification evidence to assert. What six levels gets instead is the
-hash-bound experiment config the prepared runner already takes, which is a
+**Historical admission stage.** At this stage no front-door template
+was supplied for six levels. A named `--physics-profile` declares a
+registered composition and its evidence status; it does not itself
+assert agreement with WRF or validation against observations. The
+six-level route described here used the hash-bound experiment config
+the prepared runner already takes, which is a
 door and not a workaround: it is loaded through the public
 `gpuwm.experiment.load_experiment`, the route gate admits `ruc-lsm` on
 `hrrr-prs`, `hrrr` and `era5`, and the whole path is gated by
@@ -489,7 +491,7 @@ harnesses at `nzs=6 / nddzs=8` with six-element `zsmain`; add the eight asset
 pins to `ruc_contract.py`; add six-level rows to `test_ruc.py` and
 `test_ruc_gpu.py`; flip the receipt field to `wrf-oracle`; downgrade the
 `physics_compat` warning; and only then add a registry template. Until the
-first of those exists, six levels is not a validation candidate and this
+first of those exists, six levels is not a WRF matched-run candidate and this
 document must not imply it is.
 
 **What audit R-038 did change.** The registry's `num_soil_layers` enum was
@@ -1777,13 +1779,16 @@ from the microphysics, PBL, surface layer, radiation, cumulus and diffusion
 settings.  That is the same discipline the MYNN template used and it is what
 makes the template useful as an experiment rather than merely available.
 
-The maturity did **not** move.  `implemented-unverified` is the accurate grade:
+The maturity did **not** move. `implemented-unverified` is the registry
+grade: here it means that no WRF forecast-scale comparison has been
+recorded. It does not erase the component-level code verification
+below, and none of these comparisons is validation against observations:
 every routine is oracle-matched against the byte-unmodified
 `module_sf_ruclsm.F`, the assembled driver is bitwise against
 `oracle/lsmruc.csv` except its 26 pinned upstream-residue cells, and the CUDA
 column a forecast launches is `max_ulp 0` against that host driver at width --
 but **no gpuwm/WRF forecast-trajectory comparison exists**, and that is what
-`validation-candidate` requires.
+`wrf-matched-run-candidate` requires.
 
 `registry_sha256()` is `sha256(raw[:-1])` and still reproduces: the file is
 one canonical compact line with a trailing newline, and the edit was applied
@@ -1850,7 +1855,7 @@ been awkward even if the first had gone the other way.
 ## Still open, accurately
 
 * No gpuwm/WRF **forecast trajectory** comparison.  That is the whole of the
-  distance between `implemented-unverified` and `validation-candidate`, and
+  distance between `implemented-unverified` and `wrf-matched-run-candidate`, and
   nothing in this session moved it.
 * The **mapped/declarative soil contract** still refuses RUC by name (item 3).
 * `namelist_compat.py` still refuses a RUC namelist import (item 5).

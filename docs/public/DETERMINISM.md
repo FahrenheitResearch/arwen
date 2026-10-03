@@ -64,7 +64,10 @@ in both runs:
 correctness.** Two runs that agree exactly may both be wrong — wrong
 input, wrong configuration, a physics error, a numerical error. The
 screen observes divergence. Nothing on this page is a statement about
-forecast quality; that is [VERIFICATION.md](VERIFICATION.md).
+forecast quality. [VERIFICATION.md](VERIFICATION.md) distinguishes scoped
+code-verification comparisons against WRF from the separate, limited
+observation-based validation results. Byte identity supplies neither an
+observation score nor a general forecast-accuracy claim.
 
 ### The independence trade
 

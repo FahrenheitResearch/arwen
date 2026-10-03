@@ -353,7 +353,7 @@ RESTART_TOLERATED_EXPERIMENT_FIELDS = (
     # exists for -- a run that filled its disk resuming with a trimmed
     # tape -- so a trimmed run resumes a full run's checkpoints and back
     # again.  Same law as "tiles" above.
-    "output")
+    "output", "simulated_radar")
 #: The history window (history_begin_s / history_end_s) is output-only
 #: like the cadence beside it: it decides which instants reach the history
 #: tape and changes no number the model integrates, so a resume may move
@@ -699,6 +699,8 @@ def restart_identity_payload(exp) -> dict:
         # ... and the original explicit vertical advection (A158).
         if not run.get("zadvect_implicit", 0):
             run.pop("zadvect_implicit", None)
+        if run.get("zadvect_implicit_variant", "wrf_471") == "wrf_471":
+            run.pop("zadvect_implicit_variant", None)
         # ... and w_damp measured from Courant 1, WRF's default (A165).
         if float(run.get("w_crit_cfl", 1.0)) == 1.0:
             run.pop("w_crit_cfl", None)

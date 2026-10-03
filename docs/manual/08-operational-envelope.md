@@ -84,7 +84,8 @@ Decode and static-field build times are in section 6.6.
 A 2.5.0-line first-contact receipt exists on the smallest authorized card: on
 an RTX 3080 10 GiB Windows/WDDM desktop, the forecast chain reached its first
 plot 2 m 45 s after `gpuwm go` launch and rendered 1,155 `rw_wrfbatch` PNGs to
-forecast validity PASS
+its own "forecast validity" verdict of PASS (health, stability and input-identity
+checks in report.json, not a check of forecast accuracy)
 [receipt:RELEASE-CANDIDATE-2P5-2026-08-18.md;
 receipt:ux-walks-replay/gpu-walk-3080.html]. That walk predates the
 memory-gate recalibration and ran the go leg under the gate workaround flag the
@@ -151,12 +152,11 @@ receipt above is the one measured where a user stands [commit 6775450d9].
 
 ## 8.6 Platform support
 
-- **Operating systems.** Bundles are published for Windows x86-64 and Linux
-  x86-64; the model is developed and measured on Windows 11 (RTX 5090 class) and
-  Linux CUDA 12.x nodes. The sealed Windows archive is CPU-preprocessing only
-  [README.md:563-564]; on Windows the GPU path is the wheel install plus CuPy,
-  walked end to end on an RTX 3080 (section 8.3)
-  [receipt:ux-walks-replay/gpu-walk-3080.html].
+- **Operating systems.** Current released platforms and native-tool availability
+  are stated in [README.md](../../README.md); this historical manual does not
+  establish that every assembled release ships a Windows native build. The
+  older Windows GPU walkthrough used a wheel plus CuPy on an RTX 3080
+  (section 8.3), and applies only to that recorded artifact.
 - **No GPU.** Everything upstream of the forecast runs without a card: install,
   doctor, fetch, a wizard sizing against a declared budget, and preparation on
   the CPU backend; the forecast loop is CUDA-only. The measured
@@ -166,7 +166,7 @@ receipt above is the one measured where a user stands [commit 6775450d9].
   The full install including the render extra is measured to resolve on Python
   3.10 through 3.14 since wrf-rust 0.2.39 published cp310-cp314 wheels on all
   five platforms; 2.5.0's suites are exercised against 0.2.39, and the runtime
-  window still accepts >= 0.2.35 [CHANGELOG.md, Unreleased]. The supported
+  window still accepts >= 0.2.35 [CHANGELOG.md, engine 2.5.0]. The supported
   window to state is therefore 3.11 to 3.14.
 - **GPU.** CUDA via CuPy (`cupy-cuda12x >= 13.0` lower bound
   [docs/public/DETERMINISM.md:104-108]); measured cards in this manual's receipts
@@ -174,7 +174,7 @@ receipt above is the one measured where a user stands [commit 6775450d9].
   RTX 3080 arms on specific studies. Driver-only CUDA 13 boxes install with
   `pip install 'gpuwm[gpu-cu13]'`, toolkit included; measured on a driver-only
   node: bare wheel fails cuBLAS/kernel probes, with `[ctk]` all three pass
-  [CHANGELOG.md, Unreleased].
+  [CHANGELOG.md, engine 2.5.0].
 - **Determinism scope.** Bit-reproducibility is scoped to one pinned
   environment; the distribution declares lower bounds and ships no lockfile, so
   pinning is the user's task (section 4.4).

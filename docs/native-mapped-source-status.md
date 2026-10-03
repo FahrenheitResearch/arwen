@@ -452,7 +452,7 @@ and 2.08e-7 kg/kg in specific humidity.  The composition receipt content
 SHA-256 is
 `39802e50006423a9eac1e29c807d69356d2a854a72719dada937fb949c4fa2fc`.
 
-## Native CUDA export and unchanged-stock-WRF gates
+## Native CUDA export and WRF acceptance gates
 
 The earlier genuine ERA5 GRIB1 path produced `wrfinput_d01` and `wrfbdy_d01`
 in 25.54 s and passed unchanged stock WRF v4.6.1 through 10 model seconds.
@@ -468,16 +468,20 @@ The new ERA5 NetCDF path produced:
 - proof content SHA-256
   `53444f9ccf4950462468db05a8cb5d31e3928563232d870fa5e3a0bde7576db8`.
 
-Unchanged stock WRF v4.6.1, commit
-`d66e442fccc04111067e29274c9f9eaccc3cef28`, executable SHA-256
+The instrumented WRF v4.6.1 oracle build, from commit
+`d66e442fccc04111067e29274c9f9eaccc3cef28` plus the audited write-out-only
+patch, executable SHA-256
 `f0fb585bf37b72fbdcece562047934cb8386db3958f153d6e4e6876e5fd997ac`,
 accepted both NetCDF-path products, advanced from 12:00:00 to 12:00:10,
 emitted `SUCCESS COMPLETE WRF`, and exited zero in 10.42 s.  Input hashes were
 identical before and after; no NaN, infinity, CFL, fatal, or segmentation
 pattern was present.  The output SHA-256 is
 `da6159a373a47829e7c207ea7186e16509bcee2ebf6419963c3c77f6a01dcf2c`.
-The clean oracle gates are serial because the available stock executable is a
-serial build.
+This gate is serial because the oracle executable is a serial build.
+`PROVENANCE.md` identifies this hash as instrumented, so this receipt
+does not establish acceptance by an unchanged stock executable. The clean
+tag build cited earlier has a different hash (`cfac9655...`); it must not
+be substituted for the binary that ran this gate.
 
 ## Remaining release gates
 

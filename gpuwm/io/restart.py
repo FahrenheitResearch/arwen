@@ -2402,6 +2402,9 @@ def _drop_default_off_run_keys(values: dict) -> None:
     # advection every header written before the field describes.
     if not values.get("zadvect_implicit", 0):
         values.pop("zadvect_implicit", None)
+    # Before the numerical-generation selector, IEVA used WRF 4.7.1.
+    if values.get("zadvect_implicit_variant", "wrf_471") == "wrf_471":
+        values.pop("zadvect_implicit_variant", None)
     # w_crit_cfl (A165, c0d566414): 1.0 is the w_damp every header written
     # before the field ran.
     if float(values.get("w_crit_cfl", 1.0)) == 1.0:
@@ -3638,6 +3641,10 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             # because it changes the integration trajectory.
             stored = 0 if stored is absent else stored
             live = 0 if live is absent else live
+        if key == "zadvect_implicit_variant":
+            # Changing the split or solve mass changes the trajectory.
+            stored = "wrf_471" if stored is absent else stored
+            live = "wrf_471" if live is absent else live
         if key == "w_crit_cfl":
             # Older checkpoints measured w_damp from Courant 1.0; a moved
             # value is refused, because it changes the trajectory.

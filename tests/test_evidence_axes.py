@@ -170,14 +170,14 @@ def _refuses(registry: dict) -> str:
 def test_control_option_maturity_off_the_ladder() -> None:
     registry = physics_registry()
     registry["components"]["microphysics"]["options"]["thompson-mp8"][
-        "maturity"] = "model-validated"
+        "maturity"] = "unknown-maturity"
     assert "names no rung" in _refuses(registry)
 
 
 def test_control_template_maturity_off_the_ladder() -> None:
     registry = physics_registry()
     registry["templates"]["wsm6-ysu-mm5-noah-no-radiation-v1"][
-        "maturity"] = "validation-candidate"
+        "maturity"] = "unknown-maturity"
     assert "names no rung" in _refuses(registry)
 
 
@@ -185,7 +185,7 @@ def test_control_transition_cross_option_maturity_off_the_ladder() -> None:
     registry = physics_registry()
     edges = registry["transitions"]["microphysics-one-way-v1"]["cross_options"]
     labelled = next(edge for edge in edges if "maturity" in edge)
-    labelled["maturity"] = "model-validated"
+    labelled["maturity"] = "unknown-maturity"
     message = _refuses(registry)
     assert "names no rung" in message and "transitions" in message
 
@@ -235,6 +235,48 @@ def test_the_shipped_document_passes_the_enforcement_it_declares() -> None:
     """The positive half: the controls above must not be passing vacuously."""
 
     _enforce_evidence_axes(physics_registry())
+
+
+@pytest.mark.parametrize("historical,current", [
+    ("model-validated", "wrf-matched-run"),
+    ("validation-candidate", "wrf-matched-run-candidate"),
+])
+def test_historical_maturities_remain_readable_without_new_rungs(
+    historical, current,
+) -> None:
+    from gpuwm.physics_registry import canonical_maturity, maturity_rank
+
+    registry = physics_registry()
+    assert canonical_maturity(historical) == current
+    assert maturity_rank(historical) == maturity_rank(current)
+    assert historical not in MATURITY_RANK
+
+    def replace(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "maturity" and value == current:
+                    node[key] = historical
+                else:
+                    replace(value)
+        elif isinstance(node, list):
+            for value in node:
+                replace(value)
+
+    for key in ("components", "templates", "transitions"):
+        replace(registry[key])
+    _enforce_evidence_axes(registry)
+    assert any(value == historical for _, value in iter_maturity_surfaces(registry))
+
+
+def test_unknown_maturity_is_not_promoted_by_aliases() -> None:
+    from gpuwm.physics_registry import canonical_maturity, maturity_rank
+
+    assert canonical_maturity("unknown-maturity") == "unknown-maturity"
+    assert maturity_rank("unknown-maturity") is None
+    assert maturity_rank(None) is None
+    registry = physics_registry()
+    registry["maturity_ladder"]["aliases"]["model-validated"] = "unknown-maturity"
+    assert "canonical rungs" in _refuses(registry)
 
 
 def test_no_case_token_reaches_the_new_vocabulary() -> None:

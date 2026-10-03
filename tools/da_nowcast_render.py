@@ -55,9 +55,10 @@ Layout read from the case directory (the front door's own):
     gallery/                    output (index.html + PNGs, replaced
                                 in place on re-render)
 
-ACCURACY: demo-grade nowcast output, UNSCORED; free-forecast panels are
-stamped "PAST LAST OBS" until an observed counterpart exists, and the
-verification numbers (>=35 dBZ column counts in the echo mask, and
+ACCURACY: demo-grade nowcast output; free-forecast panels are stamped
+"PAST LAST OBS" until an observed counterpart exists, then "SCORED".
+That means a comparison exists, not that the forecast is correct. The
+observation-comparison numbers (>=35 dBZ column counts in the echo mask, and
 FSS(30 dBZ, 27 km) via :func:`gpuwm.verify.field_metrics.fss_distance`)
 are labeled demo-grade on the figure.
 
@@ -428,9 +429,9 @@ class Gallery:
         self.range_km = self._great_circle_km()
         self.window_end = self.leg_valid(self.cycles - 1)
         self.foot = (
-            f"gpuwm radar-DA nowcast demo (N={self.members}) — real "
-            f"{self.site['label']} NEXRAD Level-II — UNSCORED demo, not "
-            "campaign evidence — basemap: Natural Earth 10m + US Census "
+            f"gpuwm radar-DA nowcast demo (N={self.members}), real "
+            f"{self.site['label']} NEXRAD Level-II; demo, not "
+            "campaign evidence; basemap: Natural Earth 10m + US Census "
             "counties (vendored ArWen assets)")
         self.src = (f"source: ArWen (model) · {self.site['label']} "
                     "Level-II (obs)")
@@ -629,12 +630,12 @@ class Gallery:
         # badge runs into its neighbour and off the figure.
         if future and not verified:
             self.badge(ax, "PAST LAST OBS" if compact
-                       else "PAST LAST OBS — unverifiable yet",
+                       else "PAST LAST OBS, unscored yet",
                        "#8a2b06", "#fff3e0", compact)
         elif verified:
-            self.badge(ax, "VERIFIED" if compact
-                       else "VERIFIED AFTER THE FACT — see "
-                            "verification row",
+            self.badge(ax, "SCORED" if compact
+                       else "SCORED AFTER THE FACT, see "
+                            "observation row",
                        "#0b5c2e", "#e8f5ec", compact)
         return m
 
@@ -871,8 +872,8 @@ class Gallery:
             ax.set_axisbelow(True)
         solves = ", ".join(f"{v['solve_seconds']}s" for v in a)
         fig.suptitle(
-            f"Across the applied cycles (solves: {solves}) — "
-            "accurate numbers, unscored", fontsize=11.5)
+            f"Across the applied cycles (solves: {solves}), "
+            "cycle diagnostics", fontsize=11.5)
         self.stamp(fig)
         f = "02-cycle-numbers.png"
         fig.savefig(self.out / f, dpi=self.dpi)
@@ -1154,11 +1155,11 @@ class Gallery:
         fig.text(0.5, 1.0 - 0.52 / height,
                  "per-frame ≥35 dBZ column counts in the echo mask "
                  f"and FSS({FSS_THRESHOLD_DBZ:g} dBZ, "
-                 f"{FSS_BOX_KM:g} km) vs the observed composite — "
-                 "demo-grade, unscored", ha="center", va="top",
+                 f"{FSS_BOX_KM:g} km) vs the observed composite; "
+                 "demo scores for this case", ha="center", va="top",
                  fontsize=9.2, color="0.30")
         fig.text(0.96, 1.0 - 0.88 / height,
-                 f"verified through {rows[-1]['valid'][11:16]}Z · "
+                 f"scored through {rows[-1]['valid'][11:16]}Z · "
                  f"updated {datetime.now(timezone.utc):%H:%M:%S}Z",
                  ha="right", va="top", fontsize=9, color="#0b5c2e",
                  fontweight="bold")
@@ -1166,8 +1167,8 @@ class Gallery:
         f = "04-scorecard.png"
         fig.savefig(self.out / f, dpi=self.dpi)
         plt.close(fig)
-        self.note(f, "Per-frame verification table: observed vs "
-                     "forecast vs never-analysed control.", "verify")
+        self.note(f, "Per-frame scores against observed radar: "
+                     "forecast and never-analysed control.", "verify")
 
     # -- page -------------------------------------------------------------
     def write_page(self, rows):
@@ -1188,9 +1189,11 @@ class Gallery:
             "font-size:.9rem;margin-bottom:.6rem}</style></head><body>",
             f"<h1>{self.site['label']} nowcast — "
             f"{html.escape(self.case_name)}</h1>",
-            "<div class='banner'>DEMO-GRADE NOWCAST — UNSCORED, "
-            "outside any registered campaign, not campaign evidence. "
-            "No skill claim is made or implied.</div>",
+            "<div class='banner'>DEMO-GRADE NOWCAST, outside any "
+            "registered campaign, not campaign evidence. Frames are "
+            "scored only when an observed counterpart exists; an "
+            "unscored frame is marked PAST LAST OBS. No general skill "
+            "claim is made.</div>",
         ]
         if self.notice:
             warn = self.notice.get("level") == "warn"

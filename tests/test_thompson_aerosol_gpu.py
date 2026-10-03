@@ -14,7 +14,7 @@ properties of the campaign AS A WHOLE, which is where a port quietly rots:
     still gets caught here.
 
 2.  THE PUBLISHED EVIDENCE CANNOT DRIFT FROM THE MEASUREMENT.
-    ``docs/public/validation/mp28-column-evidence.md`` is the document a user
+    ``docs/public/wrf-comparison/mp28-column-evidence.md`` is the document a user
     will quote back.  Its per-fixture table is recomputed here and compared.
     A fixture that IMPROVES also fails this file, deliberately: an evidence
     document that understates the port is still a document nobody re-read.
@@ -54,7 +54,7 @@ from conftest import requires_gpu
 
 _TESTS = pathlib.Path(__file__).resolve().parent
 _ROOT = _TESTS.parent
-EVIDENCE_DOC = (_ROOT / "docs" / "public" / "validation"
+EVIDENCE_DOC = (_ROOT / "docs" / "public" / "wrf-comparison"
                 / "mp28-column-evidence.md")
 
 #: The gate every fixture is measured against.  Transcribed from
@@ -329,7 +329,7 @@ def test_the_set_of_fixtures_clearing_the_gate_is_exactly_what_is_published():
     assert clean == expected, (
         f"newly clean: {sorted(clean - expected)}; no longer clean: "
         f"{sorted(expected - clean)}. Update _G3_CLEAN_FIXTURES, "
-        "_PUBLISHED_G3 and docs/public/validation/mp28-column-evidence.md "
+        "_PUBLISHED_G3 and docs/public/wrf-comparison/mp28-column-evidence.md "
         "in one change.")
     assert set(_PUBLISHED_G3) | expected == set(matrix), (
         "every fixture must be either clean or carry a published residual")
@@ -464,8 +464,8 @@ def test_the_evidence_document_states_the_maturity_it_may_claim():
 
     MP28_PORT_SPEC.md: thompson-aerosol-mp28 may reach
     'implemented-unverified' when tiers 1-3 pass and the measured distances
-    are published here; it may NOT claim 'validation-candidate' without a
-    ratified reference comparison, nor 'model-validated' without a matched
+    are published here; it may NOT claim 'wrf-matched-run-candidate' without a
+    ratified reference comparison, nor 'wrf-matched-run' without a matched
     multi-hour ArWen-vs-WRF forecast.  A public evidence document that omits
     the ceiling on its own claim is the exact failure this port is trying to
     avoid.
@@ -473,7 +473,11 @@ def test_the_evidence_document_states_the_maturity_it_may_claim():
     text, _rows = _document_rows()
     lowered = text.lower()
     assert "implemented-unverified" in lowered
-    for forbidden in ("model-validated", "validation-candidate"):
+    # Both spellings: the registry's current labels and the older ones that
+    # 2.8.3 and earlier records still carry (read as aliases), so a reader
+    # holding either finds the ceiling stated.
+    for forbidden in ("wrf-matched-run", "wrf-matched-run-candidate",
+                      "model-validated", "validation-candidate"):
         assert forbidden in lowered, (
             f"the document must say explicitly that it does NOT claim "
             f"'{forbidden}'")
@@ -510,7 +514,7 @@ _SUITE_MODULES = (
 #: tests/test_gpu_marker_discipline.py, not an mp=28 claim.
 #:
 #: Each entry is explained in the skip census of
-#: docs/public/validation/mp28-column-evidence.md.  ADD ONE HERE AND YOU MUST
+#: docs/public/wrf-comparison/mp28-column-evidence.md.  ADD ONE HERE AND YOU MUST
 #: ADD IT THERE: the point of this gate is that no skip is invisible.
 _SKIP_SITES = frozenset({
     # Structural: the six aerosol translation units are allow-listed to
@@ -661,7 +665,7 @@ def test_the_mp28_suite_has_no_unaudited_skip_site():
         "NEW skip site(s) in the mp=28 suite, none of them audited:\n  "
         + "\n  ".join(map(str, added))
         + "\nAdd each to _SKIP_SITES here AND to the skip census in "
-          "docs/public/validation/mp28-column-evidence.md, with the reason "
+          "docs/public/wrf-comparison/mp28-column-evidence.md, with the reason "
           "it is not an unmeasured claim.")
     assert not removed, (
         "skip site(s) gone; update the census and the document:\n  "

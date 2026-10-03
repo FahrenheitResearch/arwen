@@ -153,6 +153,117 @@ def _uniform_tree(template_id: str = WSM6_TEMPLATE_ID) -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("profile", [MORRISON_TEMPLATE_ID, NSSL2_PROFILE_ID])
+def test_historical_maturity_aliases_keep_plan_warnings_and_physics(profile):
+    registry = physics_registry()
+    plan = _single_plan(profile)
+    original = validate_physics_plan(plan, registry=registry)
+    aliases = registry["maturity_ladder"]["aliases"]
+    historical = {current: old for old, current in aliases.items()}
+    for component in registry["components"].values():
+        for option in component["options"].values():
+            option["maturity"] = historical.get(
+                option.get("maturity"), option.get("maturity"))
+    for template in registry["templates"].values():
+        template["maturity"] = historical.get(
+            template.get("maturity"), template.get("maturity"))
+    plan["registry_sha256"] = registry_sha256(registry)
+    compatible = validate_physics_plan(plan, registry=registry)
+    assert compatible["launchable"] == original["launchable"]
+    assert compatible["warnings"] == original["warnings"]
+    assert compatible["errors"] == original["errors"]
+    assert compatible["resolved_domains"] == original["resolved_domains"]
+
+
+def test_historical_maturity_keeps_the_reported_wrf_evidence(monkeypatch):
+    from types import SimpleNamespace
+    import importlib
+    from gpuwm.physics_compat import single_domain_verification_status
+
+    module = importlib.import_module("gpuwm.physics_registry")
+    config = SimpleNamespace(**single_domain_runtime_switches(MORRISON_TEMPLATE_ID))
+    original = single_domain_verification_status(config)
+    registry = physics_registry()
+    registry["templates"][MORRISON_TEMPLATE_ID]["maturity"] = "model-validated"
+    monkeypatch.setattr(module, "physics_registry", lambda: registry)
+    assert single_domain_verification_status(config) == original
+    assert original["matched_profile_maturity"] == "wrf-matched-run"
+
+
+@pytest.mark.parametrize("old,new", [
+    ("thompson-mp8-ysu-mm5-noah-validation-v1",
+     "thompson-mp8-ysu-mm5-noah-dudhia-daytime-v1"),
+    ("nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-validation-candidate-v1",
+     "nssl2-mp18-ysu-mm5-noah-kf-rte-rrtmgp-wrf-comparison-candidate-v1"),
+    ("nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-validation-candidate-v1",
+     "nssl2-mp18-ysu-mm5-noah-kf-rrtmg-legacy-wrf-comparison-candidate-v1"),
+])
+def test_every_historical_profile_resolves_through_the_public_doors(old, new):
+    from gpuwm.cli import build_parser
+    from gpuwm.physics_registry import canonical_template_id, registry_physics_parts
+    from gpuwm.physics_compat import (
+        physics_selection_differences, validate_single_domain_physics_profile)
+    from tools.hrrr_single_domain_benchmark import (
+        _native_hrrr_profile_contract, _native_hrrr_runtime_switches,
+        _initialization_contract_profile)
+
+    assert canonical_template_id(old) == new
+    assert old not in SINGLE_DOMAIN_PHYSICS_PROFILES
+    assert new in SINGLE_DOMAIN_PHYSICS_PROFILES
+    settings = single_domain_runtime_switches(old)
+    assert settings == single_domain_runtime_switches(new)
+    assert _native_hrrr_profile_contract(old) == _native_hrrr_profile_contract(new)
+    assert _native_hrrr_runtime_switches(old) == _native_hrrr_runtime_switches(new)
+    assert _initialization_contract_profile(old) == _initialization_contract_profile(new)
+    current = validate_single_domain_physics_profile(new, config=settings)
+    assert validate_single_domain_physics_profile(old, config=settings) == current
+    historical = {**current, "profile": old}
+    assert physics_selection_differences(historical, current, settings=settings) == []
+    assert registry_physics_parts(profile=old) == registry_physics_parts(profile=new)
+    assert f"templates.{old}" in registry_physics_parts(profile=new)
+    for command in ("domain", "prep"):
+        argv = [command, "--physics-profile", old]
+        if command == "domain":
+            argv += ["--point", "35,-97", "--cycle", "2026-01-01T00", "--out", "alias.toml"]
+        args = build_parser().parse_args(argv)
+        assert args.physics_profile == new
+    modern_plan = _single_plan(new)
+    old_plan = {**modern_plan, "domains": [{"domain_id": "d01", "template_id": old}]}
+    modern = validate_physics_plan(modern_plan)
+    compatible = validate_physics_plan(old_plan)
+    for field in ("launchable", "errors", "warnings", "resolved_domains"):
+        assert compatible[field] == modern[field], field
+    # A supplied old registry still owns its old identifiers and digest.
+    # Compatibility never silently rebinds an exact-digest plan.
+    legacy_registry = json.loads(canonical_json(physics_registry()).replace(new, old))
+    legacy_registry.pop("template_aliases")
+    old_plan["registry_sha256"] = registry_sha256(legacy_registry)
+    legacy = validate_physics_plan(old_plan, registry=legacy_registry)
+    assert legacy["launchable"] == modern["launchable"]
+    assert legacy["errors"] == modern["errors"]
+    assert [row["settings"] for row in legacy["resolved_domains"]] == [
+        row["settings"] for row in modern["resolved_domains"]]
+    current_with_old_pin = validate_physics_plan(old_plan)
+    assert "stale-registry-binding" in {row["code"] for row in current_with_old_pin["errors"]}
+
+
+def test_composition_exemptions_do_not_report_current_exact_suite_verification():
+    from types import SimpleNamespace
+    from gpuwm.physics_compat import (VERIFICATION_WRF_VERIFIED, single_domain_verification_status)
+    from gpuwm.physics_registry import THOMPSON_KF_TEMPLATE_ID
+    from gpuwm.physics_menu import maturity
+
+    for profile in (THOMPSON_KF_TEMPLATE_ID, MORRISON_TEMPLATE_ID):
+        report = maturity(profile)
+        assert report["verification_scope"] == "composition-exemption"
+        assert report["verification_status"] != VERIFICATION_WRF_VERIFIED
+    status = single_domain_verification_status(SimpleNamespace(
+        **single_domain_runtime_switches(MORRISON_TEMPLATE_ID)))
+    assert status["matched_profile_verification_scope"] == "composition-exemption"
+    assert status["status"] != VERIFICATION_WRF_VERIFIED
+    assert "carries WRF-verification evidence" not in status["sentence"]
+
+
 def test_tracked_registry_is_the_exact_canonical_gpuwm_authority():
     registry = physics_registry()
     raw = REGISTRY_PATH.read_bytes()
@@ -2066,7 +2177,7 @@ def test_mp28_publishes_its_measured_column_residuals_not_a_clean_claim():
     assert evidence["fixtures"] == len(committed)
     assert evidence["spec_fixtures"] == len(spec)
     assert evidence["gate_relative"] == 2.0e-6
-    # A forecast comparison now exists -- docs/public/validation/
+    # A forecast comparison now exists -- docs/public/wrf-comparison/
     # mp28-matched-trajectory.md, an idealized doubly-periodic single-domain
     # run against unmodified WRF v4.6.1.  The anti-overclaim rule this
     # assertion has always enforced is unchanged, only sharpened: the entry
@@ -2078,7 +2189,7 @@ def test_mp28_publishes_its_measured_column_residuals_not_a_clean_claim():
         "forecast_trajectory_comparison must either stay None or be a "
         "populated record; an empty one is a claim with no evidence")
     assert forecast["document"] == (
-        "docs/public/validation/mp28-matched-trajectory.md")
+        "docs/public/wrf-comparison/mp28-matched-trajectory.md")
     assert forecast["declared_verdict"] == "HOLD", (
         "the pre-declared gate FAILED (V3) and the registry must say so; "
         "changing this to a pass without re-running the comparison is the "
@@ -2486,34 +2597,41 @@ def test_mp28_plan_warns_at_every_deviation_rather_than_blocking():
     codes = {warning["code"] for warning in report["warnings"]}
     assert {"maturity", "component-warning"} <= codes
 
-    text = " ".join(warning["message"] for warning in report["warnings"])
+    emitted = {
+        warning["message"] for warning in report["warnings"]
+        if warning["code"] == "component-warning"
+        and warning["path"].endswith(".components.microphysics")
+    }
+    # Every option warning must reach plan review, not merely one phrase
+    # accidentally supplied by another component's warning.
+    assert set(_mp28_option()["warnings"]) <= emitted
+    text = " ".join(emitted)
     for phrase in (
-        "UNVERIFIED against a WRF forecast",
+        "No matched REAL-DATA or NESTED WRF trajectory",
         "THE COLUMN EVIDENCE IS NOT CLEAN",
         "AEROSOL INPUT LIMITS",
-        # The aerosol INITIALISATION, which flipped on 2026-08-01.  Until
-        # then the registry warned that the synthetic CCN/IN profile was
-        # implemented and never installed; the call is now wired, so what
-        # must survive the trip through the planner is the CALLER, the fact
-        # the supported input limits, and the measured sensitivity -- the
-        # same number, which was the cost of the gap and is now the value of
-        # the profile.  Asserting the old phrases here would preserve a
-        # false statement in the one channel a front end renders.
         "gpuwm/core/physics.py::initialize_physics",
+        "HISTORICAL SYNTHETIC-PROFILE SENSITIVITY",
         "the aerosol-free run rains 63.8% MORE",
         "5.4x fewer droplets",
         "wif_input_opt=0 but mp_physics=28",
         "dyn_em/module_initialize_real.F:2734-2736",
-        "carries NO aerosol inflow",
-        # ...with the number that says how fast, which is the only thing
-        # that turns "documented, not fixed" into a decision a user can make.
-        "20.0909 m/s",
-        "flag_qnc/flag_qnwfa/flag_qnifa to MYNN as literal False",
-        "MIXED NESTING IS REFUSED BY NAME",
+        "current WIF-climatology route",
+        "MYNN aerosol-number mixing is optional",
+        "bl_mynn_mixscalars=0",
+        "bldt=0",
+        "MIXED NESTING uses the registered transition policy",
         "DELIBERATE THERMODYNAMIC DIVERGENCE FROM mp_physics=8",
         "CCN_ACTIVATE.BIN",
     ):
         assert phrase in text, f"the mp=28 warnings no longer say: {phrase}"
+    for retired_claim in (
+        "carries NO aerosol inflow",
+        "flag_qnc/flag_qnwfa/flag_qnifa to MYNN as literal False",
+        "MIXED NESTING IS REFUSED BY NAME",
+        "byte-frozen at its",
+    ):
+        assert retired_claim not in text
 
 
 def test_mp28_mixed_nest_edge_is_published_by_registry_and_runtime_alike():
@@ -2806,17 +2924,17 @@ def test_the_published_mp28_evidence_agrees_between_registry_and_docs():
     #     tests/test_physics_md_aerosol_claims.py uses.
     #
     # 2.  It required a claim that had become FALSE.  "No forecast has ever
-    #     been validated against WRF" was true until a single-domain doubly
+    #     been verified against WRF" was true until a single-domain doubly
     #     periodic idealized forecast was run against WRF v4.6.1 and
     #     published, with its own failed declared condition, in
-    #     docs/public/validation/mp28-matched-trajectory.md.  A gate that
+    #     docs/public/wrf-comparison/mp28-matched-trajectory.md.  A gate that
     #     forces the page to keep publishing a superseded sentence is a gate
     #     that manufactures a false statement.
     #
     # What is still true, and is what this now requires, is the NARROWER
-    # claim: no REAL-DATA and no NESTED forecast has been compared, and
-    # neither can be -- WRF's own real.exe is a fatal error on the
-    # configuration and ArWen has no aerosol lateral boundary condition.
+    # claim: no REAL-DATA or NESTED matched comparison is recorded here.
+    # The WIF boundary carrier now exists; absence of comparison evidence
+    # must not be described as absence of a current runtime capability.
     # Tokens, not sentences, so a rewrite of the prose does not break it
     # and cannot quietly drop the qualification either.
     section = page[page.index("### Thompson aerosol-aware (`mp_physics = 28`)")
@@ -2825,11 +2943,13 @@ def test_the_published_mp28_evidence_agrees_between_registry_and_docs():
     assert "real-data" in section and "nested" in section, (
         "the mp=28 section must qualify its forecast evidence: the matched "
         "comparison that exists is idealized, and no real-data or nested "
-        "forecast has been validated against WRF")
-    assert "validated against wrf" in section, (
-        "the mp=28 section must still make an explicit statement about what "
-        "has and has not been validated against WRF")
-    assert "validation/mp28-matched-trajectory.md" in section, (
+        "matched WRF comparison is recorded here")
+    assert re.search(
+        r"no real-data or nested\b[^.]*comparison against matched wrf"
+        r"[^.]*is recorded here", section), (
+        "the mp=28 section must explicitly state the missing real-data "
+        "and nested matched-WRF comparison evidence")
+    assert "wrf-comparison/mp28-matched-trajectory.md" in section, (
         "the mp=28 section must point at the one matched forecast "
         "comparison, so a reader reaches its limits and its failed "
         "declared condition without being told they exist")
@@ -2837,6 +2957,7 @@ def test_the_published_mp28_evidence_agrees_between_registry_and_docs():
         "the matched idealized comparison did not raise the maturity label, "
         "and the section is where a reader learns that")
     for overclaim in ("model-validated | 28", "validation-candidate | 28",
+                      "wrf-matched-run-candidate | 28",
                       "wrf-matched-run | 28"):
         assert overclaim not in page, overclaim
 

@@ -136,7 +136,8 @@ the SFE daily domains ... presumably due to the abundance of easy nulls".
 
 ### What can accurately be said
 
-- The DA works.  Going from 0.236 to 0.727 -- roughly tripling -- against
+- On this case the assimilation helped. Going from 0.236 to 0.727,
+  roughly tripling, against
   an identically-configured, identically-scored control is a real
   measurement of what six cycles of velocity assimilation bought on this
   case.  That is an internally-controlled comparison and it does not
@@ -296,8 +297,9 @@ No number above depends on it.
   and no WoFS value has been invented to sit in these tables.
 - **One case, six frames, one radar, one metric, one card.**  This is a
   demonstration that the machinery beats a strong public baseline in a
-  narrow window.  It is not a verification study, it carries no error bar,
-  and a single draw cannot state a skill level.
+  narrow window. It is not a multi-case study scored against
+  observations, it carries no error bar, and a single draw cannot
+  establish general forecast skill.
 - **The window is the claim.**  "Beats HRRR" without "for about 90 minutes"
   is a misquotation of this page.
 
@@ -496,8 +498,8 @@ measure.
 
 ## 6. What this is
 
-**A demo-grade system with one verified case.  Not a verified forecast
-system.**
+**A demo-grade system with one case scored against radar observations.
+Not a validated forecast system.**
 
 Every receipt in `evidence/da-demo/` is stamped LIVE-FIRE ENGINEERING
 EXERCISE, NOT CAMPAIGN EVIDENCE, and that stamp is accurate:
